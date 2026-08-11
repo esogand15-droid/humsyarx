@@ -1,0 +1,660 @@
+"""
+🛠️ Utilities — ثابت‌ها، کیبوردها، و توابع کمکی مشترک
+"""
+import os
+import html
+import logging
+from datetime import datetime
+from typing import Optional, List
+from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ConversationHandler
+
+logger = logging.getLogger(__name__)
+
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
+
+# ══════════════════════════════════════════════════
+#  ثابت‌های مشترک
+# ══════════════════════════════════════════════════
+TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
+
+CONTENT_TYPES = [
+    ('video', '🎥 ویدیو کلاس'),
+    ('ppt',   '📊 پاورپوینت'),
+    ('pdf',   '📄 جزوه PDF'),
+    ('note',  '📝 نکات'),
+    ('test',  '🧪 تست'),
+    ('voice', '🎙 ویس استاد'),
+]
+
+CONTENT_ICONS = {k: v for k, v in CONTENT_TYPES}
+
+NOTIF_LABELS = {
+    'new_resources':  '📚 منابع جدید',
+    'schedule':       '📅 تغییر برنامه',
+    'exam':           '📝 یادآوری امتحان',
+    'daily_question': '🧪 سوال روزانه',
+}
+
+DIFF_LABELS = {
+    'easy':   'آسان 🟢',
+    'medium': 'متوسط 🟡',
+    'hard':   'سخت 🔴',
+}
+
+JALALI_MONTHS = [
+    'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
+    'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
+]
+JALALI_DAYS = ['دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه', 'شنبه', 'یکشنبه']
+
+# ══════════════════════════════════════════════════
+#  کیبوردهای ReplyKeyboard
+# ══════════════════════════════════════════════════
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🩺 داشبورد"),     KeyboardButton("📚 منابع")],
+        [KeyboardButton("🧪 بانک سوال"),   KeyboardButton("❓ سوالات متداول")],
+        [KeyboardButton("🤖 هوشیار"),      KeyboardButton("📅 برنامه")],
+        [KeyboardButton("👤 پروفایل"),     KeyboardButton("💎 اشتراک ویژه")],
+        [KeyboardButton("💙 حمایت مالی"),  KeyboardButton("🔔 اعلان‌ها")],
+        [KeyboardButton("🎫 پشتیبانی")],
+    ], resize_keyboard=True)
+
+
+def content_admin_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🩺 داشبورد"),     KeyboardButton("📚 منابع")],
+        [KeyboardButton("🧪 بانک سوال"),   KeyboardButton("❓ سوالات متداول")],
+        [KeyboardButton("🤖 هوشیار"),      KeyboardButton("📅 برنامه")],
+        [KeyboardButton("👤 پروفایل"),     KeyboardButton("💎 اشتراک ویژه")],
+        [KeyboardButton("💙 حمایت مالی"),  KeyboardButton("🔔 اعلان‌ها")],
+        [KeyboardButton("🎫 پشتیبانی")],
+        [KeyboardButton("🎓 پنل محتوا")],
+    ], resize_keyboard=True)
+
+
+def admin_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🩺 داشبورد"),     KeyboardButton("📚 منابع")],
+        [KeyboardButton("🧪 بانک سوال"),   KeyboardButton("❓ سوالات متداول")],
+        [KeyboardButton("🤖 هوشیار"),      KeyboardButton("📅 برنامه")],
+        [KeyboardButton("👤 پروفایل"),     KeyboardButton("💎 اشتراک ویژه")],
+        [KeyboardButton("💙 حمایت مالی"),  KeyboardButton("🔔 اعلان‌ها")],
+        [KeyboardButton("🎫 پشتیبانی")],
+        [KeyboardButton("👨‍⚕️ پنل ادمین"), KeyboardButton("🎓 پنل محتوا")],
+    ], resize_keyboard=True)
+
+
+def sub_admin_keyboard() -> ReplyKeyboardMarkup:
+    """
+    FIX جدید: کیبورد برای کاربرانی که نقش فرعی ادمین دارند
+    (support/broadcaster) — دکمه‌های دانشجویی عادی + پنل ادمین محدود.
+    """
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("🩺 داشبورد"),     KeyboardButton("📚 منابع")],
+        [KeyboardButton("🧪 بانک سوال"),   KeyboardButton("❓ سوالات متداول")],
+        [KeyboardButton("🤖 هوشیار"),      KeyboardButton("📅 برنامه")],
+        [KeyboardButton("👤 پروفایل"),     KeyboardButton("💎 اشتراک ویژه")],
+        [KeyboardButton("💙 حمایت مالی"),  KeyboardButton("🔔 اعلان‌ها")],
+        [KeyboardButton("🎫 پشتیبانی")],
+        [KeyboardButton("👨‍⚕️ پنل ادمین")],
+    ], resize_keyboard=True)
+
+
+async def get_keyboard_for_user(user: dict, uid: int) -> ReplyKeyboardMarkup:
+    """
+    کیبورد مناسب بر اساس نقش کاربر — FIX جدید: حالا async است تا
+    بتواند نقش‌های فرعی ادمین (admin_roles) را هم چک کند.
+    """
+    if uid == ADMIN_ID:
+        return admin_keyboard()
+    role = user.get('role', 'student') if user else 'student'
+    if role == 'content_admin':
+        return content_admin_keyboard()
+    # FIX جدید: چک نقش فرعی (support/broadcaster/content_scoped)
+    from database import db
+    role_doc = await db.get_admin_role(uid)
+    if role_doc:
+        sub_role = role_doc.get('role', '')
+        if sub_role == 'content_scoped':
+            return content_admin_keyboard()
+        return sub_admin_keyboard()
+    # 🛡 RBAC-W3 (افزایشی — مسیرهای بالا دست‌نخورده‌اند): نقش
+    # دیتابی‌سی با مجوز content.*/tickets.reply هم کیبورد متناسب می‌گیرد
+    if await db.has_perm(uid, 'content.manage') or \
+            await db.has_perm(uid, 'content.scoped'):
+        return content_admin_keyboard()
+    if await db.has_perm(uid, 'tickets.reply'):
+        return sub_admin_keyboard()
+    return main_keyboard()
+
+
+# ══════════════════════════════════════════════════
+#  دکمه‌های InlineKeyboard کمکی
+# ══════════════════════════════════════════════════
+
+def back_btn(label: str = "🔙 بازگشت", cb: str = 'dashboard:refresh') -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=cb)]])
+
+
+def confirm_keyboard(yes_cb: str, no_cb: str,
+                     yes_label: str = "✅ بله",
+                     no_label: str = "❌ خیر") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(yes_label, callback_data=yes_cb),
+        InlineKeyboardButton(no_label, callback_data=no_cb),
+    ]])
+
+
+def paginate(items: list, page: int, per_page: int = 8,
+             cb_prefix: str = 'page') -> tuple:
+    """برگرداندن صفحه جاری و دکمه‌های ناوبری"""
+    total_pages = max(1, (len(items) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    chunk = items[start:start + per_page]
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ قبلی", callback_data=f'{cb_prefix}:{page - 1}'))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("بعدی ▶️", callback_data=f'{cb_prefix}:{page + 1}'))
+
+    return chunk, nav, page, total_pages
+
+
+# ══════════════════════════════════════════════════
+#  توابع فرمت‌بندی
+# ══════════════════════════════════════════════════
+
+def progress_bar(pct: float, length: int = 10,
+                 fill: str = '█', empty: str = '░') -> str:
+    filled = int(min(pct, 100) / 100 * length)
+    return fill * filled + empty * (length - filled)
+
+
+def get_rank(correct_answers: int) -> str:
+    if correct_answers >= 200: return "🏆 نخبه"
+    if correct_answers >= 100: return "🥇 حرفه‌ای"
+    if correct_answers >= 50:  return "🥈 پیشرفته"
+    if correct_answers >= 20:  return "🥉 در حال رشد"
+    return "🌱 تازه‌کار"
+
+
+def get_level(pct: float) -> str:
+    if pct >= 90: return "🏆 خبره"
+    if pct >= 75: return "⭐ پیشرفته"
+    if pct >= 60: return "📈 متوسط"
+    if pct >= 40: return "📚 مبتدی"
+    return "🌱 تازه‌کار"
+
+
+def exam_countdown(days: int) -> str:
+    if days < 0:  return f"({abs(days)} روز پیش)"
+    if days == 0: return "🔴 امروز!"
+    if days == 1: return "🔴 فردا!"
+    if days <= 3: return f"🟠 {days} روز دیگر"
+    if days <= 7: return f"🟡 {days} روز دیگر"
+    return f"🟢 {days} روز دیگر"
+
+
+# ══════════════════════════════════════════════════
+#  تبدیل تاریخ میلادی به شمسی
+# ══════════════════════════════════════════════════
+
+def _to_jalali(gy: int, gm: int, gd: int) -> tuple:
+    g_l = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2, gm2, gd2 = gy - 1600, gm - 1, gd - 1
+    g_day_no = (365 * gy2 + (gy2 + 3) // 4 - (gy2 + 99) // 100
+                + (gy2 + 399) // 400 + g_l[gm2]
+                + (1 if gm2 > 1 and ((gy2 % 4 == 0 and gy2 % 100 != 0) or gy2 % 400 == 0) else 0)
+                + gd2)
+    j_day_no = g_day_no - 79
+    j_np = j_day_no // 12053
+    j_day_no %= 12053
+    jy = 979 + 33 * j_np + 4 * (j_day_no // 1461)
+    j_day_no %= 1461
+    if j_day_no >= 366:
+        jy += (j_day_no - 1) // 365
+        j_day_no = (j_day_no - 1) % 365
+    j_mi = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+    jm = 11
+    for i in range(11):
+        if j_day_no < j_mi[i]:
+            jm = i
+            break
+        j_day_no -= j_mi[i]
+    return jy, jm + 1, j_day_no + 1
+
+
+def jalali_weekday_index(date_str: str) -> int:
+    """
+    FIX جدید: index روز هفته با شنبه=۰ تا جمعه=۶ — برای ساخت
+    جدول هفتگی برنامه کلاسی (شنبه تا جمعه) لازم است.
+    پایتون weekday() دوشنبه=۰ می‌دهد؛ نگاشت به شنبه=۰:
+    دوشنبه=۰→۲, سه‌شنبه=۱→۳, چهارشنبه=۲→۴, پنج‌شنبه=۳→۵,
+    جمعه=۴→۶, شنبه=۵→۰, یکشنبه=۶→۱
+    """
+    try:
+        from datetime import datetime
+        y, m, d = map(int, date_str.split('-'))
+        py_weekday = datetime(y, m, d).weekday()  # 0=دوشنبه ... 6=یکشنبه
+        mapping = {5: 0, 6: 1, 0: 2, 1: 3, 2: 4, 3: 5, 4: 6}
+        return mapping[py_weekday]
+    except Exception:
+        return 0
+
+
+JALALI_WEEK_SAT_FIRST = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه']
+
+
+def fmt_jalali(date_str: str) -> str:
+    """تبدیل YYYY-MM-DD به مثلاً: ۱۵ فروردین ۱۴۰۴ (شنبه)"""
+    try:
+        from datetime import datetime
+        y, m, d = map(int, date_str.split('-'))
+        jy, jm, jd = _to_jalali(y, m, d)
+        day_of_week = JALALI_DAYS[datetime(y, m, d).weekday()]
+        return f"{jd} {JALALI_MONTHS[jm - 1]} {jy} ({day_of_week})"
+    except Exception:
+        return date_str
+
+
+def now_tehran() -> 'datetime':
+    """
+    FIX جدید: سرور ربات (Railway) روی UTC اجرا می‌شود، نه وقت تهران.
+    هر جا که «همین الان» باید به وقت تهران باشد (نه محاسبات داخلی که
+    فقط با خودشان مقایسه می‌شوند)، به‌جای datetime.now() از این
+    استفاده شود.
+    """
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
+
+
+def today_start_utc_str() -> str:
+    """
+    FIX جدید: فیلدهایی مثل last_active/registered_at با
+    datetime.now().isoformat() خام (UTC) ذخیره می‌شوند. برای پیدا کردن
+    «چه کسی از ابتدای امروز (به‌وقت تهران) فعالیت داشته»، باید مرز
+    نیمه‌شب تهران را دوباره به معادل UTC برگرداند تا با مقدار ذخیره‌شده
+    قابل مقایسه باشد — صرفاً گرفتن ساعت تهران کافی نیست چون خودِ
+    ذخیره هنوز UTC است.
+    """
+    from datetime import timedelta
+    tehran_midnight = now_tehran().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (tehran_midnight - timedelta(hours=3, minutes=30)).strftime('%Y-%m-%dT%H:%M:%S')
+
+
+def now_tehran_str(with_time: bool = True) -> str:
+    """
+    FIX مهم: now_tehran() از قبل افست تهران را اعمال کرده است. در چند
+    جا اشتباهاً با fmt_jalali_dt(now_tehran().isoformat()) ترکیب شده
+    بود که باعث می‌شد افست ۳:۳۰ ساعت دوباره روی نتیجه‌ی already-shifted
+    اعمال شود (چون isoformat() یک +00:00 به رشته می‌چسباند و
+    fmt_jalali_dt آن را دوباره UTC خام فرض می‌کند) — یعنی ساعت نمایشی
+    ۷ ساعت جلوتر از UTC واقعی می‌شد، نه ۳:۳۰ ساعت درست. این تابع
+    مستقیماً از روی همان شیء already-shifted فرمت می‌دهد، بدون افست
+    دوباره — برای «همین الان» همیشه از این استفاده شود، نه ترکیب بالا.
+    """
+    nt = now_tehran()
+    date_part = fmt_jalali(nt.strftime('%Y-%m-%d'))
+    if with_time:
+        return f"{date_part} — ساعت {nt.strftime('%H:%M')}"
+    return date_part
+
+
+def fmt_jalali_dt(iso_str: str, with_time: bool = True) -> str:
+    """
+    FIX جدید: برای timestampهای سرورساخته (created_at/registered_at/
+    submitted_at/...) که با datetime.now().isoformat() ذخیره شده‌اند —
+    یعنی خام UTC هستند، نه وقت تهران. برخلاف fmt_jalali (که برای
+    تاریخ خالصِ وارد‌شده توسط ادمین/دانشجو، مثل تاریخ امتحان، است و
+    نباید افست بخورد)، این تابع اول ۳:۳۰ ساعت افست تهران را اضافه
+    می‌کند، بعد به شمسی نمایش می‌دهد. در صورت هر خطایی (فرمت نامعتبر و
+    غیره)، بدون کرش به‌صورت امن به ۱۰ کاراکتر خام برمی‌گردد.
+    """
+    from datetime import datetime, timedelta
+    try:
+        raw = (iso_str or '').strip()
+        if not raw:
+            return ''
+        dt = datetime.fromisoformat(raw) + timedelta(hours=3, minutes=30)
+        date_part = fmt_jalali(dt.strftime('%Y-%m-%d'))
+        if with_time:
+            return f"{date_part} — ساعت {dt.strftime('%H:%M')}"
+        return date_part
+    except Exception:
+        return (iso_str or '')[:10]
+
+
+def days_until(date_str: str) -> int:
+    try:
+        from datetime import datetime
+        d = datetime.strptime(date_str, '%Y-%m-%d')
+        return (d.replace(hour=0, minute=0, second=0, microsecond=0) -
+                datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)).days
+    except Exception:
+        return 0
+
+
+# ══════════════════════════════════════════════════
+#  هندلر لغو
+# ══════════════════════════════════════════════════
+
+async def cancel_handler(update, context):
+    """لغو هر عملیات در جریان با /cancel"""
+    keys_to_clear = [
+        'ca_mode', 'ca_pending_file', 'ca_content_type',
+        'ca_edit_target', 'ca_edit_field', 'ca_ref_lang', 'ca_ref_volume',
+        'ticket_mode', 'mode', 'creating_question',
+        'profile_edit', 'awaiting_search', 'search_mode',
+        'edit_user', 'backup_mode',
+        # FIX جدید: سیستم اشتراک
+        'sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
+        'sub_reject_pid', 'suba_target_uid', 'suba_grant_role',
+        'suba_plan_edit_id', 'suba_grant_list',
+        'grade_intake_scope', 'grade_lesson', 'grade_exam_title',
+        'grades_lesson_options', 'grade_matched',
+    ]
+    for key in keys_to_clear:
+        context.user_data.pop(key, None)
+
+    await update.message.reply_text(
+        "✅ عملیات لغو شد.\n\nاز دکمه‌های منو استفاده کنید.",
+        reply_markup=main_keyboard()
+    )
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════
+#  ارسال امن پیام (بدون کرش روی Forbidden)
+# ══════════════════════════════════════════════════
+
+async def safe_send(bot, uid: int, text: str, **kwargs) -> bool:
+    """
+    ارسال پیام با مدیریت خطا — برای broadcast.
+
+    🐛 باگ واقعی که اینجا بود: این تابع هیچ فرقی بین «کاربر ربات را
+    بلاک کرده» (خطای دائمی) و «تلگرام موقتاً محدودمان کرده / خطای
+    شبکه‌ی گذرا» (RetryAfter / TimedOut — قابل‌حل با کمی صبر) قائل
+    نمی‌شد؛ هر دو را یکسان «ناموفق» می‌شمرد و برای همیشه از دستش
+    می‌داد. چون این تابع پایه‌ی broadcast_message است و آن هم پایه‌ی
+    اطلاع‌رسانی برنامه/امتحان/منابع جدید در کل ربات، همین یک باگ روی
+    همه‌ی کانال‌های اعلان اثر می‌گذاشت. حالا RetryAfter و خطاهای موقت
+    شبکه باعث یک صبر کوتاه و تلاش مجدد می‌شوند، نه از دست رفتن پیام.
+    """
+    import asyncio
+    from telegram.error import RetryAfter, TimedOut, NetworkError
+    for attempt in range(3):
+        try:
+            await bot.send_message(uid, text, **kwargs)
+            return True
+        except RetryAfter as e:
+            await asyncio.sleep(min(e.retry_after, 30) + 0.5)
+            continue
+        except (TimedOut, NetworkError):
+            await asyncio.sleep(1.5)
+            continue
+        except Exception as e:
+            logger.debug(f"safe_send failed for {uid}: {e}")
+            return False
+    return False
+
+
+async def broadcast_message(bot, users: List[dict], text: str,
+                            parse_mode: str = 'HTML') -> tuple:
+    """ارسال همگانی — برمی‌گردونه (sent, failed)"""
+    import asyncio
+    sent, failed = 0, 0
+    # ارسال دسته‌ای با تاخیر کم برای جلوگیری از flood
+    for i, u in enumerate(users):
+        ok = await safe_send(bot, u['user_id'], text, parse_mode=parse_mode)
+        if ok:
+            sent += 1
+        else:
+            failed += 1
+        if i % 30 == 29:
+            await asyncio.sleep(1)  # تنفس بین دسته‌ها
+    return sent, failed
+
+
+# ══════════════════════════════════════════════════
+#  لاگ فعالیت حساس — ارسال به گروه‌های مشخص‌شده
+# ══════════════════════════════════════════════════
+
+# FIX بازطراحی کامل طبق استاندارد جدید Audit Log:
+# هر پیام باید در کمتر از ۵ ثانیه نشان دهد چه کسی/چه نقشی/چه کاری/
+# روی چه چیزی/چه تغییری/چه سطح اهمیتی — بدون نیاز به مراجعه به دیتابیس.
+
+SEVERITY_META = {
+    'INFO':     {'icon': '🟢', 'label': 'INFO'},
+    'WARNING':  {'icon': '🟡', 'label': 'WARNING'},
+    'HIGH':     {'icon': '🟠', 'label': 'HIGH'},
+    'CRITICAL': {'icon': '🔴', 'label': 'CRITICAL'},
+}
+
+
+def new_correlation_id() -> str:
+    """
+    FIX طبق سند: شناسه رهگیری برای عملیات چندمرحله‌ای (مثل broadcast
+    که شروع/ارسال/پایان دارد) — همه با یک correlation_id مشترک ثبت
+    می‌شوند تا با get_logs_by_correlation کل فرآیند قابل پیگیری باشد.
+    """
+    import uuid
+    return uuid.uuid4().hex[:10]
+
+
+def _fa_module(module: str) -> str:
+    """ترجمه نام ماژول انگلیسی (پایدار در کد) به فارسی (فقط برای نمایش)"""
+    from database import db
+    return db.MODULE_LABELS_FA.get(module, module)
+
+
+def build_audit_log_text(category: str, actor_name: str, actor_id: int,
+                          action: str, module: str = '', details: str = '',
+                          severity: str = 'INFO', actor_role: str = '',
+                          target_id: str = '', target_type: str = '',
+                          target_label: str = '', before: dict = None,
+                          after: dict = None, tags: list = None) -> str:
+    """
+    🧱 متن نهایی پیام لاگ — تابع خالص بدون وابستگی به تلگرام، تا هم
+    ربات (send_audit_log) و هم بک‌اند مینی‌اپ (صف bot_notifications)
+    دقیقاً همان قالب را تولید کنند و لاگ هر دو کانال در گروه یکدست
+    به‌نظر برسد.
+
+    FIX باگ: همه‌ی فیلدهای داینامیک html-escape می‌شوند — پیام با
+    parse_mode=HTML فرسته می‌شود و قبل از این، یک نام یا جزئیات حاوی
+    «<» یا «&» کل پیام را BadRequest می‌کرد و لاگ بی‌صدا گم می‌شد.
+    FIX باگ: سقف ۴۰۹۶ کاراکتر تلگرام — متن به ۴۰۰۰ کاراکتر محدود
+    می‌شود تا لاگ‌های پرجزئیات (مثل broadcast) هرگز drop نشوند.
+    """
+    def esc(v) -> str:
+        return html.escape(str(v))
+
+    sev_meta  = SEVERITY_META.get(severity, SEVERITY_META['INFO'])
+    cat_icon  = '🛡' if category == 'admin' else '🎓'
+    cat_title = 'گزارش فعالیت مدیریتی' if category == 'admin' else 'گزارش فعالیت محتوا'
+    now_str   = now_tehran_str()
+    module_fa = _fa_module(module) if module else ''
+
+    lines = [
+        f"{cat_icon} <b>{cat_title}</b>",
+        "",
+        f"🕒 <b>زمان</b>",
+        esc(now_str),
+        "",
+        f"👤 <b>انجام‌دهنده</b>",
+        f"• نام: {esc(actor_name)}",
+        f"• نقش: {esc(actor_role or 'نامشخص')}",
+        f"• شناسه: <code>{esc(actor_id)}</code>",
+        "",
+        f"⚡ <b>عملیات</b>",
+        esc(action),
+    ]
+
+    if target_label or target_id:
+        lines += ["", f"🎯 <b>هدف</b>"]
+        if target_label:
+            lines.append(f"• عنوان: {esc(target_label)}")
+        if target_id:
+            lines.append(f"• شناسه: <code>{esc(target_id)}</code>")
+
+    if module_fa:
+        lines += ["", f"📂 <b>بخش</b>", esc(module_fa)]
+
+    if details:
+        lines += ["", f"📝 <b>جزئیات</b>", esc(details)]
+
+    if before and after:
+        change_lines = []
+        for key in after:
+            old_val = before.get(key, '—')
+            new_val = after.get(key, '—')
+            change_lines.append(f"• {esc(key)}: {esc(old_val)} ← {esc(new_val)}")
+        if change_lines:
+            lines += ["", f"🔄 <b>تغییرات</b>"] + change_lines
+
+    lines += ["", f"🏷 <b>سطح اهمیت</b>", f"{sev_meta['icon']} {sev_meta['label']}"]
+
+    # تگ‌های جستجو — همیشه ماژول فارسی + نقش، به‌علاوه تگ‌های اضافی
+    auto_tags = []
+    if module_fa:
+        auto_tags.append(module_fa.replace(' ', '_'))
+    if actor_role:
+        clean_role = actor_role.split('(')[0].strip().replace(' ', '_')
+        if clean_role:
+            auto_tags.append(clean_role)
+    # حذف تگ تکراری با حفظ ترتیب
+    all_tags = list(dict.fromkeys(auto_tags + (tags or [])))
+    if all_tags:
+        lines += ["", ' '.join(f"#{esc(t)}" for t in all_tags if t)]
+
+    text = '\n'.join(lines)
+    if len(text) > 4000:
+        text = text[:3960] + "\n… <i>(ادامه در لاگ دیتابیس)</i>"
+    return text
+
+
+async def send_audit_log(bot, category: str, actor_name: str, actor_id: int,
+                          action: str, module: str = '', details: str = '',
+                          severity: str = 'INFO', actor_role: str = '',
+                          target_id: str = '', target_type: str = '',
+                          target_label: str = '', before: dict = None,
+                          after: dict = None, tags: list = None,
+                          correlation_id: str = None) -> str:
+    """
+    ثبت در دیتابیس + ارسال همان متن به گروه لاگ تلگرام.
+    متن پیام را build_audit_log_text می‌سازد (مشترک با وب‌پنل).
+
+    FIX پایداری: اگر ارسال به گروه شکست بخورد (ربات اخراج شده، گروه
+    حذف یا به سوپرگروه تبدیل شده و آیدی عوض شده)، قبلاً فقط یک warning
+    در لاگ سرور می‌ماند و کسی متوجه نمی‌شد. حالا فقط در اولین شکست،
+    یک هشدار به پیوی مدیر ارشد می‌رود (فلگ log_group_alerted_*) و با
+    اولین موفقیت مجدد، فلگ پاک می‌شود — نه اسپم، نه سکوت مرگبار.
+    اگر گروه لاگ تنظیم نشده باشد، فقط در دیتابیس ثبت می‌شود — هرگز
+    به پیوی شخصی ادمین ارشد نمی‌رود.
+    """
+    from database import db
+
+    log_id = await db.log_action(
+        actor_id, actor_name, actor_role, action, module, category,
+        severity, target_id, target_type, target_label,
+        before, after, details, tags, correlation_id
+    )
+
+    group_key = 'log_group_admin' if category == 'admin' else 'log_group_content'
+    alert_key = f'log_group_alerted_{category}'
+    chat_id   = await db.get_setting(group_key, None)
+    if not chat_id:
+        return log_id
+
+    text = build_audit_log_text(
+        category, actor_name, actor_id, action,
+        module=module, details=details, severity=severity,
+        actor_role=actor_role, target_id=target_id, target_type=target_type,
+        target_label=target_label, before=before, after=after, tags=tags,
+    )
+
+    try:
+        await bot.send_message(int(chat_id), text, parse_mode='HTML')
+        # موفقیت — اگر قبلاً هشدار خرابی داده بودیم، فلگ را پاک کن
+        if await db.get_setting(alert_key, False):
+            await db.set_setting(alert_key, False)
+    except Exception as e:
+        logger.warning(f"send_audit_log failed for chat {chat_id}: {e}")
+        # هشدار یک‌باره به مدیر ارشد تا گروه را دوباره تنظیم کند
+        try:
+            if not await db.get_setting(alert_key, False):
+                await db.set_setting(alert_key, True)
+                group_fa = 'لاگ مدیریت' if category == 'admin' else 'لاگ محتوا'
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>ارسال لاگ به گروه {group_fa} ناموفق بود</b>\n\n"
+                    f"🔑 گروه فعلی: <code>{chat_id}</code>\n"
+                    f"⚠️ خطا: <code>{str(e)[:300]}</code>\n\n"
+                    "💡 معمولاً یعنی ربات از گروه حذف/اخراج شده یا گروه به "
+                    "سوپرگروه تبدیل شده و آیدی‌اش عوض شده. لطفاً از مسیر «پنل "
+                    "مدیریت ← ⚙️ تنظیمات ← تنظیم گروه لاگ» دوباره تنظیمش کن.\n"
+                    "تا درست نشود، لاگ‌ها فقط در دیتابیس ثبت می‌شوند و هیچ‌جا "
+                    "نمایش داده نمی‌شوند.",
+                    parse_mode='HTML')
+        except Exception:
+            pass
+
+    return log_id
+
+
+# ══════════════════════════════════════════════════
+#  بررسی حالت تعمیر و نگهداری (Maintenance mode)
+# ══════════════════════════════════════════════════
+
+async def is_maintenance_on() -> bool:
+    """آیا ربات در حالت تعمیر و نگهداری است؟"""
+    from database import db
+    return bool(await db.get_setting('maintenance_mode', False))
+
+
+async def maintenance_message() -> str:
+    from database import db
+    custom = await db.get_setting('maintenance_text', '')
+    if custom:
+        return custom
+    return (
+        "🔧 <b>ربات موقتاً در حال بروزرسانی است</b>\n\n"
+        "لطفاً چند دقیقه دیگر دوباره تلاش کنید.\n"
+        "از صبر شما سپاسگزاریم 🙏"
+    )
+
+# ══════════════════════════════════════════════════
+#  🧠 موج N2 — دیپ‌لینک WebApp در DMها (مرکز اعلان ربات)
+#  هر رویداد که Link دارد، روی پیام دکمه‌ی web_app
+#  (مینی‌اپ به‌جای بازکردن ناوبری) می‌گیرد. سازنده از
+#  WEBAPP_URL (همان متغیری که API سرو می‌کند) می‌خواند.
+# ══════════════════════════════════════════════════
+
+import os as _os
+
+def webapp_url(link: str = '') -> str:
+    """🔗 url مطلق مینی‌اپ برای Deep Link (خود link از / شروع می‌شود).
+    اگر WEBAPP_URL تنظیم نشده (محیط لوکال)، None → بدون دکمه."""
+    base = (_os.getenv('WEBAPP_URL') or '').strip()
+    if not base or base == '*':
+        return None
+    if link and not link.startswith('/'):
+        link = '/' + link
+    if link and '://' not in base:  # دفاع در برابر host خام
+        base = 'https://' + base
+    return (base.rstrip('/') + link) if link else base.rstrip('/')
+
+
+def webapp_kb(link: str, label: str = '📱 باز کردن در هامزیار'):
+    """🧩 InlineKeyboardMarkup تک‌کلیده‌ی web_app — اگر base نداشت None"""
+    url = webapp_url(link)
+    if not url:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(label, web_app=WebAppInfo(url=url))
+    ]])

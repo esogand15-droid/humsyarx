@@ -1,0 +1,1665 @@
+"""
+🩺 ربات پزشکی — نسخه نهایی کامل
+  ✅ broadcast کاملاً خارج از ConversationHandler
+  ✅ unified_file/text_handler با broadcast + qbank
+  ✅ job_queue برای یادآوری‌ها
+  ✅ error_handler مرکزی با گزارش به ادمین
+  ✅ سازگار با python-telegram-bot 21.x
+"""
+import os
+import sys
+import html
+import logging
+import asyncio
+from datetime import datetime, time as dtime, timezone, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ConversationHandler,
+    filters, ContextTypes, Application, TypeHandler,
+    ApplicationHandlerStop
+)
+
+# ── ایمپورت ماژول‌ها ──
+# 🧠 FIX معماری «دو مغز»: قبلاً ثبت‌نام، ساخت سوال، پنل محتوا، پروفایل
+# و تیکت هم داخل ConversationHandler مرکزی state داشتند و هم موازی
+# با آن از context.user_data['mode' / 'ca_mode' / 'ticket_mode'] در
+# unified_text_handler/unified_file_handler/message_router پیروی
+# می‌کردند. دو سیستم مستقل که هر دو فکر می‌کردند مسئول مسیر کاربرند
+# دقیقاً همان چیزی بود که باعث شد یک بار پیام broadcast ادمین به‌جای
+# مقصد درست، وسط یک state قدیمی (مثلاً ساخت سوال) قورت داده شود.
+# الان ConversationHandler فقط مسئول تنها فلوی واقعاً چندمرحله‌ای‌ای
+# است که معادل mode-based ندارد: «ثبت‌نام». همه‌ی بقیه (ساخت سوال،
+# پنل محتوا، پروفایل، تیکت، پاسخ به سوال) از قبل به‌طور کامل توسط
+# unified_text_handler / unified_file_handler / CallbackQueryHandlerهای
+# standalone پایین همین فایل پوشش داده می‌شوند — همان‌ها تنها مرجع
+# باقی می‌مانند تا همیشه state واقعی و به‌روز را ببینند.
+from start import (
+    start_handler, register_start_callback, step_name_handler,
+    register_intake_callback, step_student_id_handler,
+    REGISTER, STEP_NAME, STEP_GROUP, STEP_INTAKE, STEP_STUDENT_ID
+)
+from dashboard import dashboard_callback
+from questions import questions_callback, handle_difficulty_choice
+from schedule import schedule_callback
+from stats import stats_callback
+from notifications import notifications_callback
+from admin import (
+    admin_callback, admin_broadcast_handler, upload_file_handler,
+    handle_admin_text, BROADCAST
+)
+from backup import backup_callback, backup_file_handler, backup_confirm_restore
+from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, CONTENT_ICONS, fmt_jalali, webapp_kb
+from subscription import subscription_callback, screenshot_handler as sub_screenshot_handler
+from subscription_admin import subscription_admin_callback
+from grades import grades_callback
+from profile import profile_callback
+from message_router import route_message
+from basic_science import basic_science_callback
+from resources import resources_callback
+from references import references_callback
+from content_admin import content_admin_callback, ca_file_handler, ca_text_handler
+from faq import faq_callback
+from ticket import ticket_callback, ticket_message_handler
+from reports import report_callback, handle_report_note_text   # FIX جدید
+from ai_admin import ai_admin_callback, ai_admin_text_handler   # 🤖 هوشیار
+from ai_solver import (                                          # 🤖 هوشیار
+    handle_ai_text, handle_ai_media, ai_user_callback,
+)
+from database import db
+
+logging.basicConfig(
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+if not TOKEN:
+    logger.error("❌ TELEGRAM_TOKEN تنظیم نشده!")
+    sys.exit(1)
+
+
+# ══════════════════════════════════════════════════
+#  Job: یادآوری امتحانات — هر روز ۰۸:۰۰ تهران
+# ══════════════════════════════════════════════════
+
+async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX جدید: لاگ کامل وضعیت ارسال در notif_runs برای پایش و retry.
+    ضد-تکرار از قبل با mark_exam_notified/notified_days درست بود — حفظ شد.
+    """
+    logger.info("🔔 اجرای job یادآوری امتحان...")
+    run_id = await db.notif_run_start('exam_reminder')
+    total_sent, total_failed, total_targets = 0, 0, 0
+    failed_records = []  # FIX جدید: [{'user_id':, 'message':}, ...] برای retry دقیق
+    day_labels = {1: "⚠️ فردا امتحان دارید!", 3: "📅 ۳ روز دیگر", 7: "📅 ۷ روز دیگر"}
+    try:
+        for days, label in day_labels.items():
+            exams = await db.get_exams_for_reminder(days)
+            for exam in exams:
+                sid = str(exam['_id'])
+                msg = (
+                    f"🔔 <b>یادآوری امتحان</b>\n\n"
+                    f"📚 <b>{exam.get('lesson', '')}</b>\n"
+                    f"⏰ {label}\n"
+                    f"📅 تاریخ: {fmt_jalali(exam.get('date', ''))}  ساعت {exam.get('time', '')}\n"
+                    f"📍 مکان: {exam.get('location', '')}\n"
+                    f"👨‍🏫 استاد: {exam.get('teacher', '')}\n\n"
+                    f"<i>⚙️ خاموش‌کردن: 🔔 اعلان‌ها ← یادآوری امتحان</i>"
+                )
+                users = await db.notif_users('exam', group=exam.get('group'))
+                sent  = 0
+                total_targets += len(users)
+                import urllib.parse as _upq
+                # 🧠 موج N2 — Deep Link: باز شدن روز/درسِ امتحان در مینی‌اپ
+                _ekb = webapp_kb('/schedule?hl=' + _upq.quote(str(exam.get('lesson') or '')))
+                # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ: سابقه‌ی رویداد برای همه‌ی
+                # مخاطبان ثبت می‌شود (حتی اگر تلگرام بلاک باشد، کاربر در
+                # مینی‌اپ یادآوری را می‌بیند) — Deep Link به تب «برنامه»
+                import urllib.parse as _upq2
+                _ex_hl = ('/schedule?hl=' +
+                          _upq2.quote(str(exam.get('lesson') or '')))
+                await db.inbox_add_many([
+                    {'user_id': u['user_id'], 'type': 'exam_reminder',
+                     'title': f"🔔 یادآوری امتحان — {label}",
+                     'body': (f"📚 {exam.get('lesson', '')}\n"
+                              f"📅 {fmt_jalali(exam.get('date', ''))}  ساعت {exam.get('time', '')}\n"
+                              f"📍 {exam.get('location', '')}"),
+                     # 🧠 N2 — Deep Link: همان روز/درس+Anchor فلش در مینی‌اپ
+                     'link': _ex_hl}
+                    for u in users if u.get('user_id')
+                ])
+                for u in users:
+                    ok = await safe_send(context.bot, u['user_id'], msg,
+                                         parse_mode='HTML', reply_markup=_ekb)
+                    if ok:
+                        sent += 1
+                    else:
+                        total_failed += 1
+                        failed_records.append({'user_id': u['user_id'], 'message': msg})
+                    await asyncio.sleep(0.05)
+                total_sent += sent
+                if sent:
+                    await db.mark_exam_notified(sid, days)
+                    logger.info(f"امتحان {exam.get('lesson')} — {sent} نفر مطلع شدند")
+        await db.notif_run_finish(run_id, total_sent, total_failed, total_targets)
+        if failed_records:
+            await db.notif_run_add_failed_detailed(run_id, failed_records)
+    except Exception as e:
+        logger.error(f"exam_reminder_job error: {e}")
+        await db.notif_run_finish(run_id, total_sent, total_failed, total_targets,
+                                   status='error', error=str(e))
+
+
+async def daily_question_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Job: سوال روزانه — هر روز ۰۹:۰۰ تهران.
+    FIX باگ قبلی: همیشه یک سوال ثابت می‌فرستاد. حالا با چرخش
+    (get_daily_rotation_question) واقعاً هر روز سوال عوض می‌شود.
+    FIX جدید: وضعیت ارسال در notif_runs ثبت می‌شود تا قابل پایش
+    و retry باشد.
+    """
+    run_id = await db.notif_run_start('daily_question')
+    sent, failed = 0, 0
+    failed_ids = []
+    try:
+        q = await db.get_daily_rotation_question()
+        if not q:
+            await db.notif_run_finish(run_id, 0, 0, 0, status='skipped', error='no questions')
+            return
+        opts    = q.get('options', [])
+        letters = ['🅐', '🅑', '🅒', '🅓']
+        opts_text = '\n'.join(
+            f"{letters[i]} {opt}" for i, opt in enumerate(opts)
+        )
+        text = (
+            f"🧪 <b>سوال روزانه</b>\n\n"
+            f"📚 {q.get('lesson', '')} — {q.get('topic', '')}\n\n"
+            f"❓ {q.get('question', '')}\n\n"
+            f"{opts_text}\n\n"
+            f"<i>برای تمرین بیشتر از بانک سوال استفاده کنید 👇</i>\n"
+            f"<i>⚙️ خاموش‌کردن: 🔔 اعلان‌ها ← سوال روزانه</i>"
+        )
+        users = await db.notif_users('daily_question')
+        await db.notif_run_set_message(run_id, text)
+        _qkb = webapp_kb('/learn/questions')
+        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به بانک سؤال)
+        await db.inbox_add_many([
+            {'user_id': u['user_id'], 'type': 'daily_question',
+             'title': '🧪 سؤال روزانه رسید',
+             'body': (f"📚 {q.get('lesson', '')} — {q.get('topic', '')}\n"
+                      f"❓ {q.get('question', '')[:140]}"),
+             'link': '/learn/questions'}
+            for u in users if u.get('user_id')
+        ])
+        for u in users:
+            ok = await safe_send(context.bot, u['user_id'], text,
+                                 parse_mode='HTML', reply_markup=_qkb)
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+                failed_ids.append(u['user_id'])
+            await asyncio.sleep(0.05)
+        await db.notif_run_finish(run_id, sent, failed, len(users))
+        if failed_ids:
+            await db.notif_run_add_failed(run_id, failed_ids)
+    except Exception as e:
+        logger.error(f"daily_question_job error: {e}")
+        await db.notif_run_finish(run_id, sent, failed, sent + failed, status='error', error=str(e))
+
+
+# ── آیکون هر نوع فایل — جایگزین پیشوند متنی «PDF:» / «نمونه سوال:» قبلی؛
+#    آیکون خودش نوع فایل را می‌گوید، پس چشم مستقیم می‌رود سراغ اسم فایل.
+#    FIX: به‌جای یک دیکشنری جداگانه و ناهماهنگ، مستقیماً از CONTENT_ICONS
+#    مرکزی (utils.py) خوانده می‌شود — همان چیزی که داشبورد، پنل محتوا و
+#    بخش «منابع علوم پایه» استفاده می‌کنند — تا آیکون هر نوع فایل در
+#    همه‌جای بات یکسان بماند (مثلاً ویدیو همیشه 🎥، ویس همیشه 🎙). فقط
+#    'audio' به‌عنوان alias برای 'voice' نگه داشته شده برای سازگاری با
+#    محتوای قدیمی که ممکن است این مقدار را داشته باشد.
+_RESOURCE_ICONS = {**CONTENT_ICONS, 'audio': CONTENT_ICONS.get('voice', '🎙'), 'ref': '📖'}
+_DEFAULT_RESOURCE_ICON = '📎'
+
+
+async def _build_new_resources_text(new_items: list) -> str:
+    """
+    ساخت متن نوتیف «منابع جدید» — بازطراحی UX:
+      • آیکون به‌جای پیشوند متنی نوع فایل (📄 به‌جای «PDF:»)
+      • همه‌ی منابع نمایش داده می‌شوند، نه فقط چند مورد اول
+      • گروه‌بندی بر اساس درس با هدر بولد
+      • کل لیست داخل یک <blockquote> واحد تلگرام قرار می‌گیرد تا پیام
+        فشرده و جمع‌وجور بماند (نه پراکنده روی کل صفحه)
+      • توضیح فایل عیناً همان چیزی است که ادمین تایپ کرده (شامل هر
+        اعتبار/نام تیم که خودش در انتهای توضیح نوشته) — بدون افزودن
+        هیچ برچسب/فلش مصنوعی اضافه که معنای مستقلی ندارد
+      • FIX جدید: علاوه بر محتوای علوم‌پایه (bs_content)، فایل‌های
+        رفرنس (ref_files) هم پشتیبانی می‌شوند — هرکدام بسته به
+        '_source' از تابع full-path مخصوص خودشان خوانده می‌شوند.
+    """
+    by_lesson: dict = {}
+    lesson_order: list = []
+
+    for item in new_items:
+        source = item.get('_source', 'bs_content')
+        if source == 'ref_files':
+            path = await db.ref_get_file_full_path(str(item['_id']))
+        else:
+            path = await db.bs_get_content_full_path(str(item['_id']))
+        lesson_name = path.get('lesson_name') or 'سایر'
+        if lesson_name not in by_lesson:
+            by_lesson[lesson_name] = []
+            lesson_order.append(lesson_name)
+        content_type = 'ref' if source == 'ref_files' else path.get('content_type', '')
+        icon = _RESOURCE_ICONS.get(content_type, _DEFAULT_RESOURCE_ICON)
+        desc = html.escape(path.get('description') or path.get('topic') or 'بدون عنوان')
+        by_lesson[lesson_name].append(f"{icon} {desc}")
+
+    lesson_blocks = []
+    for lesson_name in lesson_order:
+        header = f"📘 <b>{html.escape(lesson_name)}</b>"
+        lesson_blocks.append(header + "\n" + "\n".join(by_lesson[lesson_name]))
+
+    quote_body = "\n\n".join(lesson_blocks)
+    title  = f"🆕 <b>{len(new_items)} منبع جدید اضافه شد</b>"
+    footer = (
+        "\n\n📚 مشاهده کامل ← بخش «منابع»\n"
+        "<i>⚙️ خاموش‌کردن: 🔔 اعلان‌ها ← منابع جدید</i>"
+    )
+
+    # ایمنی: اگر (به‌ندرت) تعداد منابع خیلی زیاد باشد و پیام از سقف
+    # ۴۰۹۶ کاراکتری تلگرام رد شود، فقط داخل Quote کوتاه می‌شود — نه وسط
+    # پیام — تا تگ <blockquote> همیشه درست بسته شود و کل پیام رد نشود.
+    shell_len = len(title) + len(footer) + len("\n\n<blockquote></blockquote>")
+    budget    = 4096 - shell_len - 100
+    if len(quote_body) > budget:
+        quote_body = quote_body[:max(budget, 0)] + "\n…"
+
+    return f"{title}\n\n<blockquote>{quote_body}</blockquote>{footer}"
+
+
+async def _run_new_resources_notif(bot, force: bool = False) -> dict:
+    """
+    FIX جدید: هسته‌ی مشترک نوتیف منابع جدید — هم توسط جاب ساعتی و هم
+    توسط دکمه‌ی «🚀 ارسال فوری» در پنل ادمین صدا زده می‌شود.
+    force=True یعنی از چک فاصله‌ی زمانی (۲۴/۴۸/۷۲ ساعت) رد شو و همین
+    الان بفرست، حتی اگه هنوز وقتش نشده.
+    خروجی یک dict وضعیت برمی‌گرداند تا هم لاگ و هم دکمه‌ی دستی بتوانند
+    نتیجه را نشان بدهند (چند نفر، چند مورد، یا چرا ارسال نشد).
+    """
+    try:
+        interval_hours = await db.get_setting('resource_notif_interval_hours', 24)
+        last_sent_str  = await db.get_setting('resource_notif_last_sent', None)
+
+        if not force and last_sent_str:
+            last_sent = datetime.fromisoformat(last_sent_str)
+            elapsed_hours = (datetime.now() - last_sent).total_seconds() / 3600
+            if elapsed_hours < interval_hours:
+                return {'sent': False, 'reason': 'not_due', 'elapsed_hours': round(elapsed_hours, 1),
+                        'interval_hours': interval_hours}
+
+        new_items = await db.get_unnotified_resources()
+        if not new_items:
+            # حتی اگه چیزی نبود، last_sent را آپدیت نمی‌کنیم — منتظر محتوای واقعی می‌مانیم
+            return {'sent': False, 'reason': 'no_items'}
+
+        run_id = await db.notif_run_start('new_resources')
+
+        # 🌊 C1.5 — نوتیف scope-aware: آیتم‌ها پیشاً در DB لایه‌ی
+        # get_unnotified_resources کلید '_intake' گرفته‌اند (resolver والد).
+        # گروه‌بندی: '' = سراسری → همه‌ی کاربران واجد شرایط؛
+        # کد ورودی → فقط دانشجویان همان ورودی (notif_users_by_intake).
+        groups: dict = {}
+        for _it in new_items:
+            groups.setdefault(_it.get('_intake') or '', []).append(_it)
+
+        sent, failed, failed_ids, total_recipients = 0, 0, [], 0
+        first_message = None
+        for _icode, _gitems in groups.items():
+            text = await _build_new_resources_text(_gitems)
+            if first_message is None:
+                first_message = text
+            if _icode:
+                users = await db.notif_users_by_intake(_icode, 'new_resources')
+            else:
+                users = await db.notif_users('new_resources')
+            if not users:
+                continue
+            total_recipients += len(users)
+            # 🧠 موج N2 — دایجست تفکیک‌شدهٔ منابع/رفرنس + Smart Grouping:
+            # موج خوانده‌نشدهٔ قبلی ـبه‌جای انباشت سطرهاـ تازه می‌شود (count).
+            bs_items  = [i for i in _gitems if i.get('_source', 'bs_content') == 'bs_content']
+            ref_items = [i for i in _gitems if i.get('_source') == 'ref_files']
+            if bs_items:
+                await db.inbox_add_many([
+                    {'user_id': u['user_id'], 'type': 'new_resources',
+                     'title': f"🆕 {len(bs_items)} منبع جدید اضافه شد",
+                     'body': ('محتوای تازهٔ درسی (علوم پایه/جزوه) منتشر شد؛ '
+                              'از بخش یادگیری بازش کنید.'),
+                     'link': '/learn/resources?hl=new',
+                     'group_key': 'digest_resources',
+                     'group_title': '🆕 منابع جدید (×{count} موج)'}
+                    for u in users if u.get('user_id')
+                ])
+            if ref_items:
+                await db.inbox_add_many([
+                    {'user_id': u['user_id'], 'type': 'new_references',
+                     'title': f"🆕 {len(ref_items)} رفرنس جدید اضافه شد",
+                     'body': ('کتاب/خواندنی‌های تازهٔ رفرنس رسید؛ '
+                              'از بخش رفرنس‌ها بازش کنید.'),
+                     'link': '/learn/references?hl=new',
+                     'group_key': 'digest_refs',
+                     'group_title': '🆕 رفرنس‌های جدید (×{count} موج)'}
+                    for u in users if u.get('user_id')
+                ])
+            for u in users:
+                ok = await safe_send(bot, u['user_id'], text, parse_mode='HTML')
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+                    failed_ids.append(u['user_id'])
+                await asyncio.sleep(0.05)
+
+        await db.notif_run_set_message(run_id, first_message or '(—)')
+
+        bs_ids  = [item['_id'] for item in new_items if item.get('_source', 'bs_content') == 'bs_content']
+        ref_ids = [item['_id'] for item in new_items if item.get('_source') == 'ref_files']
+        await db.mark_resources_notified(bs_ids)
+        await db.mark_ref_files_notified(ref_ids)
+        await db.set_setting('resource_notif_last_sent', datetime.now().isoformat())
+        await db.set_setting('resource_notif_last_error', None)
+        await db.notif_run_finish(run_id, sent, failed, total_recipients)
+        if failed_ids:
+            await db.notif_run_add_failed(run_id, failed_ids)
+        logger.info(f"📚 نوتیف منابع جدید: {len(new_items)} مورد به {sent} نفر ارسال شد")
+        return {'sent': True, 'items': len(new_items), 'users_sent': sent, 'users_failed': failed}
+    except Exception as e:
+        logger.error(f"new_resources_notif_job error: {e}")
+        try:
+            from utils import now_tehran
+            await db.set_setting('resource_notif_last_error',
+                                  f"{now_tehran().strftime('%Y-%m-%d %H:%M')} (تهران) | {e}")
+        except Exception:
+            pass
+        return {'sent': False, 'reason': 'error', 'error': str(e)}
+
+
+async def new_resources_notif_job(context: ContextTypes.DEFAULT_TYPE):
+    """FIX جدید: wrapper سبک برای job زمان‌بندی‌شده — هسته‌ی اصلی به _run_new_resources_notif منتقل شد"""
+    await _run_new_resources_notif(context.bot, force=False)
+
+
+async def _discount_soldout_edit_task(bot, code: str):
+    """
+    ⛔ موج D2 — ادیت همگانی «اتمام موجودی»:
+    همه‌ی پیام‌های کمپینِ این کد (در هر دو مسیر بات و وب) که مرجعشان در
+    سند کمپین ذخیره شده، به متن «ظرفیت تکمیل شد» (بدون دکمه‌ی CTA) ادیت
+    می‌خورند. RetryAfter با صبر دقیق + گام ۰٫۰۵ثانیه؛ پیام حذف‌شده/
+    از‌دست‌رفته نادیده گرفته می‌شود. ایدمپوتنت: هر کمپین با فلگ
+    soldout_marked فقط یک‌بار پردازش می‌شود.
+    """
+    from telegram.error import RetryAfter, BadRequest, TimedOut, NetworkError
+    try:
+        discount = await db.discount_get(code)
+        if not discount:
+            return
+        from discount_campaign import build_soldout_message
+        soldout = build_soldout_message(discount)
+        bcasts = await db.discount_bcast_with_msgs(code)
+        if not bcasts:
+            return
+        total = edited = skipped = 0
+        for bc in bcasts:
+            refs = bc.get('sent_msgs') or []
+            bc_edited = 0
+            for ref in refs:
+                total += 1
+                done = False
+                for _attempt in range(3):
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=ref['c'], message_id=ref['m'],
+                            text=soldout, parse_mode='HTML', reply_markup=None)
+                        done = True
+                        break
+                    except RetryAfter as e:
+                        await asyncio.sleep(e.retry_after + 0.5)
+                        continue
+                    except BadRequest:
+                        break  # «پیام پیدا نشد»/«محتوا یکسان» — نادیده
+                    except (TimedOut, NetworkError):
+                        await asyncio.sleep(1.5)
+                        continue
+                    except Exception:
+                        break
+                if done:
+                    edited += 1
+                    bc_edited += 1
+                else:
+                    skipped += 1
+                await asyncio.sleep(0.05)  # گام‌بندی نرخ تلگرام
+            await db.discount_bcast_update(bc['broadcast_id'], {
+                'soldout_marked': True,
+                'soldout_at': datetime.now().isoformat(),
+                'soldout_edited': bc_edited,
+            })
+        logger.info(f"⛔ D2 soldout edit: {code} → ✅{edited} ⏭{skipped} (مجموع {total})")
+        try:
+            from utils import send_audit_log
+            await send_audit_log(
+                bot, 'system', 'سیستم کمپین', 0,
+                f"⛔ کد تخفیف {code} تکمیل ظرفیت شد — {edited} پیام کمپین به «اتمام موجودی» ادیت شد",
+                module='Discounts', severity='INFO',
+                target_label=code, tags=['اتمام_ظرفیت_کد', 'کمپین'])
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"_discount_soldout_edit_task error ({code}): {e}")
+
+
+async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    🔴 FIX حیاتی: پردازش صف «bot_notifications» که بک‌اند Mini App
+    (FastAPI) توش پیام می‌ذاره — تأیید/رد/تعلیق/بلاک کاربر، پاسخ
+    تیکت، تغییر زمان کلاس، نمره‌ی جدید، broadcast و... .
+    قبل از این job، هیچ‌چیزی این کالکشن رو نمی‌خوند — یعنی این پیام‌ها
+    فقط توی دیتابیس می‌موندن و هرگز واقعاً برای کاربر ارسال نمی‌شدن.
+    از فیلد send_at هم پشتیبانی می‌کنه — یعنی broadcast زمان‌دار هم از
+    همین صف رد می‌شه، فقط تا زمان مقرر sent:False می‌مونه.
+    """
+    try:
+        coll = db.client["medicalbot"]["bot_notifications"]
+        now_iso = datetime.now().isoformat()
+        cursor = coll.find({
+            "sent": False,
+            "$or": [{"send_at": {"$exists": False}}, {"send_at": None}, {"send_at": {"$lte": now_iso}}],
+        }).limit(200)
+        docs = await cursor.to_list(200)
+        for d in docs:
+            text = d.get("text", "")
+
+            # 🧠 موج N2 — Deep Link: هر صف که link دارد،
+            # دکمه‌ی «📱 باز کردن در هامزیار» (web_app) می‌گیرد
+            _dl_kb = webapp_kb(d.get("link")) if d.get("link") else None
+
+            # ── سیگنال درخواست خروجی اکسل از پنل وب ──
+            # قبلاً همه پیام‌های __* به‌صورت skipped رد می‌شدند و
+            # خروجی هرگز به ادمین نمی‌رسید (فیچر مرده). حالا مصرف می‌شود.
+            if text == "__EXCEL_EXPORT__":
+                try:
+                    from excel_report import build_database_excel
+                    buf, fname, caption, _counts = await build_database_excel()
+                    buf.seek(0)
+                    await context.bot.send_document(
+                        chat_id=d["chat_id"], document=buf,
+                        filename=fname, caption=caption, parse_mode="HTML",
+                    )
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                except Exception as e:
+                    logger.error(f"__EXCEL_EXPORT__ failed: {e}")
+                    # FIX باگ پنهان: قبلاً sent:False می‌ماند و پیام هر چرخه
+                    # بی‌نهایت retry می‌شد. حالا مصرف‌شده علامت می‌خورد و
+                    # به درخواست‌کننده هم اطلاع می‌دهیم.
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": True,
+                        "error": str(e)[:200],
+                        "sent_at": datetime.now().isoformat(),
+                    }})
+                    try:
+                        await safe_send(context.bot, d["chat_id"],
+                            "❌ ساخت فایل اکسل ناموفق بود — جزئیات در لاگ سرور.")
+                    except Exception:
+                        pass
+                continue
+
+            # ── سیگنال درخواست فایل پشتیبان از پنل وب (فاز B) ──
+            # الگوی مشترک با اکسل: وب می‌نویسد، ربات می‌سازد و می‌فرستد.
+            if text.startswith("__BACKUP_REQUEST__"):
+                try:
+                    section = text.split(":", 1)[1] if ":" in text else "all"
+                    from backup import send_backup_from_web
+                    total = await send_backup_from_web(
+                        context.bot, d["chat_id"], section)
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                    logger.info(
+                        f"💾 web backup sent: section={section} records={total}")
+                except Exception as e:
+                    logger.error(f"__BACKUP_REQUEST__ failed: {e}")
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": True,
+                        "error": str(e)[:200],
+                        "sent_at": datetime.now().isoformat(),
+                    }})
+                    try:
+                        await safe_send(context.bot, d["chat_id"],
+                            "❌ ساخت فایل پشتیبان ناموفق بود — جزئیات در لاگ سرور.")
+                    except Exception:
+                        pass
+                continue
+
+            # ── ⛔ موج D2 — سیگنال اتمام ظرفیت کد تخفیف ──
+            # با آخرین مصرف (گذار اتمیک max-1→max) دقیقاً یک‌بار نوشته می‌شود؛
+            # پیام‌های کمپینِ ذخیره‌شده به «اتمام موجودی» ادیت می‌خورند.
+            if text.startswith("__DISCOUNT_EXHAUSTED__"):
+                try:
+                    _code = text.split(":", 1)[1] if ":" in text else ""
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                    if _code:
+                        asyncio.create_task(
+                            _discount_soldout_edit_task(context.bot, _code))
+                except Exception as e:
+                    logger.error(f"__DISCOUNT_EXHAUSTED__ failed: {e}")
+                continue
+
+            # سایر سیگنال‌های داخلی (__*) متنی نیستند — skip
+            if text.startswith("__"):
+                await coll.update_one({"_id": d["_id"]}, {"$set": {"sent": True, "skipped": True}})
+                continue
+            # 🧠 N2 — دکمه‌ی Deep Link (اگر صف لینک داشت) روی متنِ پایانی سوار است
+            ok = await safe_send(context.bot, d["chat_id"], text,
+                                 parse_mode="HTML", reply_markup=_dl_kb)
+            await coll.update_one({"_id": d["_id"]}, {"$set": {
+                "sent": ok, "sent_at": datetime.now().isoformat(), "failed": not ok,
+            }})
+        if docs:
+            logger.info(f"📤 mini_app_outbox: {len(docs)} پیام پردازش شد")
+    except Exception as e:
+        logger.error(f"mini_app_outbox_job error: {e}")
+
+
+async def subscription_expiry_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX جدید: جاب روزانه‌ی سیستم اشتراک —
+      ۱) اشتراک‌هایی که تاریخشون گذشته را expired می‌کند و به کاربر خبر می‌دهد
+      ۲) یادآوری پلکانی: ۳ روز قبل و ۱ روز قبل (هرکدام فقط یک‌بار،
+         دقیقاً مثل الگوی یادآوری امتحان)، همراه با دکمه‌ی «تمدید سریع»
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    # 🧠 موج N2 — ردیف دوم: بازکردن مستقیم صفحه‌ی تمدید در مینی‌اپ
+    _sub_rows = [[InlineKeyboardButton("🔄 تمدید کن", callback_data='sub:back')]]
+    _sk = webapp_kb('/me/subscription')
+    if _sk: _sub_rows += _sk.inline_keyboard
+    renew_kb = InlineKeyboardMarkup(_sub_rows)
+    try:
+        expired = await db.sub_expire_due()
+        for s in expired:
+            # 🔔 موج ۴.۹۰ — اینباکس (انقضا): تنها کانال قطعی دیده‌شدن
+            await db.inbox_add(s['_id'], 'sub_expired',
+                "⌛ اشتراکت تموم شد",
+                "برای تمدید، از بخش اشتراک اقدام کن.",
+                link='/me/subscription')
+            await safe_send(
+                context.bot, s['_id'],
+                "⌛ <b>اشتراکت تموم شد</b>\n\n"
+                "برای تمدید، دوباره از بخش «📚 منابع» یا «🧪 بانک سوال» اقدام کن.",
+                parse_mode='HTML', reply_markup=renew_kb
+            )
+        if expired:
+            logger.info(f"⌛ اشتراک {len(expired)} کاربر منقضی شد")
+
+        for days_before, flag in ((3, 'reminder_3d_sent'), (1, 'reminder_1d_sent')):
+            expiring = await db.sub_expiring_soon(days_before=days_before, flag_field=flag)
+            for s in expiring:
+                days_left = max(0, (datetime.fromisoformat(s['end_date']) - datetime.now()).days)
+                icon = "🔴" if days_before == 1 else "⏳"
+                # 🔔 موج ۴.۹۰ — اینباکس (یادآوری پایان اشتراک)
+                await db.inbox_add(s['_id'], 'sub_expiring',
+                    f"{icon} اشتراکت رو به پایانه",
+                    f"{days_left} روز دیگه مونده — برای جلوگیری از وقفه، تمدید کن.",
+                    link='/me/subscription')
+                await safe_send(
+                    context.bot, s['_id'],
+                    f"{icon} <b>اشتراکت داره تموم می‌شه!</b>\n\n"
+                    f"{days_left} روز دیگه مونده. اگه می‌خوای وقفه نیفته، از حالا تمدید کن.",
+                    parse_mode='HTML', reply_markup=renew_kb
+                )
+                await db.sub_mark_reminder_sent(s['_id'], flag)
+            if expiring:
+                logger.info(f"⏳ یادآوری {days_before}روزه برای {len(expiring)} کاربر ارسال شد")
+    except Exception as e:
+        logger.error(f"subscription_expiry_job error: {e}")
+
+
+async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX جدید: بکاپ خودکار روزانه. این job هر ساعت اجرا می‌شود و
+    خودش تشخیص می‌دهد آیا الان همان ساعتی است که ادمین تنظیم کرده
+    (auto_backup_hour، به‌وقت تهران UTC+3:30) — تا بتوان از پنل
+    ادمین ساعت را آزادانه تغییر داد بدون نیاز به ری‌استارت ربات.
+    """
+    try:
+        enabled = await db.get_setting('auto_backup_enabled', False)
+        if not enabled:
+            return
+
+        target_hour = await db.get_setting('auto_backup_hour', 3)
+        now_tehran  = datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
+        if now_tehran.hour != target_hour:
+            return
+
+        # جلوگیری از اجرای تکراری در همان ساعت (چون job هر ساعت چک می‌شود)
+        last_run = await db.get_setting('auto_backup_last_run', None)
+        if last_run:
+            last_dt = datetime.fromisoformat(last_run)
+            if (datetime.now() - last_dt).total_seconds() < 3600 * 20:
+                return  # کمتر از ۲۰ ساعت از آخرین بکاپ گذشته — رد کن
+
+        from backup import build_full_backup_data, send_backup_to_bot_chat
+        from utils import send_audit_log
+        data = await build_full_backup_data()
+        await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
+        await db.set_setting('auto_backup_last_run', datetime.now().isoformat())
+        logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
+        # FIX جدید طبق سند: بکاپ‌گیری باید لاگ شود — این یک job
+        # سیستمی است (نه عمل یک ادمین خاص)، پس actor خود ربات است.
+        summary = data.get('summary', {})
+        await send_audit_log(
+            context.bot, 'admin', 'سیستم (Job خودکار)', 0,
+            "بکاپ‌گیری خودکار", module='Backup', severity='WARNING',
+            actor_role='سیستم',
+            details=f"کاربران: {summary.get('users',0)} | سوالات: {summary.get('questions',0)}",
+            tags=['بکاپ_خودکار']
+        )
+    except Exception as e:
+        logger.error(f"auto_backup_job error: {e}")
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"⚠️ <b>خطا در بکاپ خودکار</b>\n<code>{str(e)[:300]}</code>",
+                parse_mode='HTML'
+            )
+            # FIX جدید: خطای بکاپ هم باید در Audit Log ثبت شود — CRITICAL
+            from utils import send_audit_log
+            await send_audit_log(
+                context.bot, 'admin', 'سیستم (Job خودکار)', 0,
+                "خطا در بکاپ خودکار", module='Backup', severity='CRITICAL',
+                actor_role='سیستم', details=str(e)[:200],
+                tags=['خطای_بکاپ']
+            )
+        except Exception:
+            pass
+
+
+async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX باگ مهم: گزارش هفتگی دیگر به پیوی شخصی ادمین ارشد ارسال
+    نمی‌شود — طبق درخواست صریح، فقط به گروه لاگ ادمین می‌رود.
+    اگر گروه تنظیم نشده باشد، گزارش فقط در لاگ سرور ثبت می‌شود
+    (و ارسالی به هیچ‌جا صورت نمی‌گیرد).
+    """
+    logger.info("📊 اجرای job گزارش هفتگی...")
+    try:
+        chat_id = await db.get_setting('log_group_admin', None)
+        if not chat_id:
+            logger.info("گزارش هفتگی: گروه لاگ ادمین تنظیم نشده — ارسالی صورت نگرفت.")
+            return
+        s = await db.weekly_report_stats()
+        text = (
+            "📊 <b>گزارش هفتگی ربات</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"👥 کاربران جدید این هفته: <b>{s['new_users']}</b>\n"
+            f"👤 کل کاربران تأییدشده: <b>{s['total_users']}</b>\n"
+            f"🟢 کاربران فعال این هفته: <b>{s['active_users_count']}</b>\n"
+            f"😴 کاربران غیرفعال (۱۴+ روز): <b>{s['inactive_count']}</b>\n\n"
+            f"📚 پرطرفدارترین درس هفته: <b>{s['top_lesson']}</b>\n\n"
+            f"🎫 تیکت باز فعلی: <b>{s['open_tickets']}</b>\n"
+            f"✅ تیکت بسته‌شده این هفته: <b>{s['closed_week']}</b>\n"
+            f"📨 کل تیکت‌های این هفته: <b>{s['total_tickets_week']}</b>\n\n"
+            "<i>گزارش بعدی: یکشنبه آینده 🗓</i>"
+        )
+        await context.bot.send_message(int(chat_id), text, parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"weekly_report_job error: {e}")
+
+
+# ══════════════════════════════════════════════════
+#  👑 جاب‌های Prestige (بستن هفته + یادآوری چالش آماده)
+# ══════════════════════════════════════════════════
+
+async def prestige_weekly_close_job(context: ContextTypes.DEFAULT_TYPE):
+    """👑 بستن هفته‌ی پرستیژ — دوشنبه ۰۰:۰۵ تهران (یکشنبه ۲۰:۳۵ UTC).
+    خود متد DB با پرچم weekly_closed:<week> کاملاً idempotent است."""
+    logger.info("👑 اجرای job بستن هفته‌ی پرستیژ...")
+    try:
+        rep = await db.prestige_weekly_close()
+        if rep.get('skipped'):
+            return
+        champ = rep.get('champion') or {}
+        # DM نرم به قهرمان هفته (شکست ارسال، جاب را نمی‌شکند)
+        if champ.get('uid'):
+            try:
+                await context.bot.send_message(
+                    chat_id=int(champ['uid']),
+                    text=("👑 <b>صدر جدول هفتگی مال تو شد!</b>\n\n"
+                          f"این هفته با <b>{champ.get('weekly_xp', 0)}</b> XP قهرمان شدی. "
+                          "جایزه‌ی +۱۰۰ XP و نشان «صدرنشین هفته» به حسابت نشست 🏅"),
+                    parse_mode='HTML', reply_markup=webapp_kb('/leaderboard'))
+            except Exception:
+                pass
+        try:
+            await send_audit_log(
+                context.bot, 'PRESTIGE', 'job:weekly_close', 0,
+                'بستن هفته', 'prestige',
+                details=(f"هفته {rep.get('week')} · ردیف‌ها {rep.get('rows', 0)} · "
+                         f"قهرمان: {champ.get('name', '—')} ({champ.get('weekly_xp', 0)} XP)"),
+                severity='INFO')
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"prestige_weekly_close_job error: {e}")
+
+
+async def prestige_challenge_scan_job(context: ContextTypes.DEFAULT_TYPE):
+    """⚔️ بررسی هفتگی چالش آماده — یکشنبه ۱۹:۴۰ تهران (۱۶:۱۰ UTC).
+    به هر کاربر واجد شرط (ready) حداکثر یک‌بار در هفته یک اینباکس می‌رود."""
+    logger.info("⚔️ اجرای job اسکن چالش آماده...")
+    try:
+        today = db._tehran_today()
+        iso_week = (f"{today[:4]}-W"
+                    f"{datetime.fromisoformat(today).isocalendar().week:02d}")
+        cursor = db.users.find({'approved': True,
+                                'effective_xp': {'$gte': 2400}})
+        docs = await cursor.to_list(5000)
+        sent = 0
+        for u in docs:
+            try:
+                uid = int(u.get('user_id') or 0)
+                if not uid or (u.get('challenge_notified_week') or '') == iso_week:
+                    continue
+                st = await db.prestige_state(uid, lite=True)
+                ch = (st or {}).get('challenge') or {}
+                if ch.get('mode') != 'ready':
+                    continue
+                # 🧠 N2 — سینک‌فیکس: رویداد آمادگی چالش فقط Inbox بود؛
+                # الان تک‌منبع (Inbox + DM با دکمه‌ی Deep Link) می‌رود
+                await db.notify_user(
+                    uid, 'challenge',
+                    title=f"⚔️ چالش ارتقا آمده: {ch.get('icon', '')} {ch.get('title', '')}",
+                    body=('استخر ۲۰ سؤال با قبولی ۸۰٪ — مهلت ۲۴ ساعت پس از شروع. '
+                          'هر وقت آماده بودی از مرکز آزمون برو سراغش! 💪'),
+                    link='/learn/exams?promo=1',
+                    dm=(f"⚔️ <b>چالش ارتقا رسید: {ch.get('icon', '')} {ch.get('title', '')}</b>\n\n"
+                        'استخر ۲۰ سؤال، قبولی با ۸۰٪ و مهلت ۲۴ ساعت پس از شروع. '
+                        'هر وقت آماده بودی شروعش کن! 💪'))
+                await db.users.update_one({'user_id': uid},
+                    {'$set': {'challenge_notified_week': iso_week}})
+                sent += 1
+            except Exception:
+                continue
+        if sent:
+            logger.info(f"⚔️ challenge scan: {sent} کاربر مطلع شدند")
+    except Exception as e:
+        logger.error(f"prestige_challenge_scan_job error: {e}")
+
+
+# ══════════════════════════════════════════════════
+#  Error Handler مرکزی
+# ══════════════════════════════════════════════════
+
+# FIX باگ: این خطاها کاملاً طبیعی و بی‌خطر هستند — رفتار عادی
+# کاربران (کلیک روی دکمه قدیمی، زدن دکمه‌ای که چیزی تغییر نمی‌دهد)
+# نه نشانه‌ی یک مشکل واقعی. بدون این فیلتر، هر کدام پیوی شخصی
+# ادمین ارشد را شلوغ می‌کرد و خطاهای واقعی در میانشان گم می‌شدند.
+SILENT_ERRORS = (
+    'Query is too old',
+    'query id is invalid',
+    'Message is not modified',
+    'MESSAGE_ID_INVALID',
+    'message to edit not found',
+    'message to delete not found',
+    "Message can't be deleted",
+    'Have no rights to send a message',
+)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    err_str = str(context.error)
+
+    # خطای بی‌خطر — فقط در لاگ سرور، بدون پیوی به ادمین
+    if any(e in err_str for e in SILENT_ERRORS):
+        logger.warning(f"⚠️ Silent error (نادیده گرفته شد): {err_str[:150]}")
+        if isinstance(update, Update) and update.callback_query:
+            try:
+                await update.callback_query.answer()
+            except Exception:
+                pass
+        return
+
+    # از اینجا به بعد فقط خطاهای واقعی — همان‌طور که بود
+    logger.error(f"Exception: {context.error}", exc_info=context.error)
+    if ADMIN_ID:
+        try:
+            uid_info = ""
+            if isinstance(update, Update) and update.effective_user:
+                u = update.effective_user
+                uid_info = f"\n👤 کاربر: {u.full_name} | آیدی: {u.id}"
+            err_text = (
+                f"⚠️ <b>خطای ربات</b>{uid_info}\n"
+                f"<code>{err_str[:300]}</code>"
+            )
+            await context.bot.send_message(ADMIN_ID, err_text, parse_mode='HTML')
+        except Exception:
+            pass
+
+
+# ══════════════════════════════════════════════════
+#  هندلرهای یکپارچه — FIX کامل
+# ══════════════════════════════════════════════════
+
+async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    # ۰. FIX جدید: اسکرین‌شات رسید پرداخت اشتراک
+    if context.user_data.get('sub_mode') == 'awaiting_screenshot' and update.message.photo:
+        return await sub_screenshot_handler(update, context)
+
+    # 🤖 هوشیار — عکس/PDF/صدا در حالت «پرسش از AI»
+    # ⚠️ قابلیتِ جدید: قبلاً فقط عکس پشتیبانی می‌شد؛ حالا PDF (جزوه/برگه‌ی
+    # اسکن‌شده) و پیامِ صوتی/فایلِ صوتی (سوالِ گفتاری) هم قبول می‌شه —
+    # جزئیاتِ تشخیصِ نوع و اعتبارسنجی داخلِ خودِ handle_ai_media است.
+    if context.user_data.get('mode') == 'ai_query' and (
+        update.message.photo or update.message.voice or update.message.audio or
+        (update.message.document and (
+            (update.message.document.mime_type or '').startswith('image/') or
+            update.message.document.mime_type == 'application/pdf'
+        ))
+    ):
+        return await handle_ai_media(update, context)
+
+    # ۱. بکاپ restore
+    if uid == ADMIN_ID and context.user_data.get('backup_mode') == 'waiting_restore':
+        return await backup_file_handler(update, context)
+
+    # ۲. FIX: broadcast — عکس/ویدیو/فایل در حالت broadcast
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'broadcast':
+        return await admin_broadcast_handler(update, context)
+
+    # ۳. FIX: qbank file upload
+    if uid == ADMIN_ID and context.user_data.get('mode') in ('qbank_awaiting_file', 'upload_file'):
+        return await upload_file_handler(update, context)
+
+    # ۴. محتوا ادمین
+    ca_mode = context.user_data.get('ca_mode', '')
+    if ca_mode in ('waiting_file', 'waiting_ref_file') and await db.is_content_admin(uid):
+        return await ca_file_handler(update, context)
+
+
+async def maintenance_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX جدید: حالت تعمیر و نگهداری — اجرا می‌شود با group=-1 یعنی
+    قبل از همه‌ی handlerهای دیگر (پیام و callback). اگر maintenance
+    فعال باشد و کاربر ادمین ارشد نباشد، پیام تعمیر نشان داده می‌شود
+    و با ApplicationHandlerStop از اجرای ادامه‌ی handlerها جلوگیری
+    می‌شود — بدون نیاز به لمس کردن ده‌ها تابع callback موجود.
+    """
+    # FIX باگ مهم: این گیت فقط باید روی پیوی خصوصی اثر کند —
+    # وگرنه پیام «ربات در حال بروزرسانی است» در گروه‌های لاگ
+    # (ادمین/محتوا) هم به اعضای آن گروه نمایش داده می‌شد.
+    if update.effective_chat is None or update.effective_chat.type != 'private':
+        return
+
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None or uid == ADMIN_ID:
+        return  # ادمین ارشد همیشه دسترسی کامل دارد
+
+    if not await is_maintenance_on():
+        return
+
+    msg = await maintenance_message()
+    try:
+        if update.callback_query:
+            await update.callback_query.answer("🔧 ربات در حال بروزرسانی است", show_alert=True)
+        elif update.message:
+            await update.message.reply_text(msg, parse_mode='HTML')
+    except Exception:
+        pass
+    raise ApplicationHandlerStop
+
+
+async def channel_lock_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX جدید: قفل اجباری عضویت کانال. اگر ادمین یک یا چند کانال را
+    در تنظیمات اضافه کرده باشد، هر کاربر عادی (غیر از ادمین ارشد و
+    نقش‌های فرعی ادمین) باید عضو همه آن‌ها باشد تا بتواند از ربات
+    استفاده کند. با group=-1 یعنی قبل از maintenance_gate نیست —
+    اجرا می‌شود بعد از آن، چون اگر maintenance فعال باشد آن پیام
+    اولویت دارد (maintenance_gate با ApplicationHandlerStop متوقف
+    می‌کند و این تابع اصلاً اجرا نمی‌شود).
+    """
+    # FIX باگ مهم: همین مشکل maintenance_gate — فقط پیوی خصوصی
+    if update.effective_chat is None or update.effective_chat.type != 'private':
+        return
+
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None or uid == ADMIN_ID:
+        return
+
+    # دکمه «بررسی مجدد عضویت» با callback خاص — نباید مسدود شود
+    if update.callback_query and update.callback_query.data == 'channel_lock:check':
+        return
+
+    channels = await db.get_required_channels()
+    if not channels:
+        return
+
+    # نقش‌های فرعی ادمین هم معاف هستند
+    role_doc = await db.get_admin_role(uid)
+    if role_doc:
+        return
+
+    not_joined = []
+    for ch in channels:
+        try:
+            member = await context.bot.get_chat_member(ch['id'], uid)
+            if member.status in ('left', 'kicked'):
+                not_joined.append(ch)
+        except Exception:
+            # اگر ربات نتواند وضعیت را چک کند (مثلاً ادمین کانال نیست)
+            # برای امنیت، آن کانال را به‌عنوان عضو‌نشده در نظر می‌گیریم
+            not_joined.append(ch)
+
+    if not not_joined:
+        return
+
+    keyboard = []
+    for ch in not_joined:
+        if ch.get('invite_link'):
+            keyboard.append([InlineKeyboardButton(f"📢 عضویت در {ch['title']}", url=ch['invite_link'])])
+    keyboard.append([InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data='channel_lock:check')])
+
+    text = (
+        "🔒 <b>عضویت در کانال الزامی است</b>\n\n"
+        "برای استفاده از ربات، ابتدا باید در کانال(های) زیر عضو شوید:\n\n"
+        + '\n'.join(f"• {ch['title']}" for ch in not_joined)
+    )
+    try:
+        if update.callback_query:
+            await update.callback_query.answer("🔒 ابتدا باید عضو کانال شوید", show_alert=True)
+        elif update.message:
+            await update.message.reply_text(text, parse_mode='HTML',
+                                             reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        pass
+    raise ApplicationHandlerStop
+
+
+async def broadcast_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    FIX باگ اصلی گزارش‌شده: «گاهی پیام همگانی خونده میشه، گاهی نه».
+    علت: ConversationHandler اصلی (conv) و MessageHandler عمومی متن
+    (unified_text_handler) هر دو در همون گروه پیش‌فرض (group=0) ثبت
+    می‌شن و conv زودتر ثبت می‌شه. در PTB، توی هر گروه فقط اولین
+    هندلری که check_update‌ش True بشه اجرا میشه. پس اگه ادمین قبلاً
+    (حتی خیلی وقت پیش) وارد یکی از state های conv شده باشه (مثلاً
+    پنل محتوا، ساخت سوال، ویرایش پروفایل، تیکت) و بدون /cancel یا
+    رسیدن به END از اون خارج نشده باشه، اون state گیر می‌مونه و از
+    اون به بعد پیام‌های متنی خصوصی — از جمله متن broadcast — اول به
+    هندلر state قدیمی می‌افتن، نه به admin_broadcast_handler.
+
+    راه‌حل: این گیت با group جداگانه‌ی خودش (قبل از conv) ثبت می‌شه، پس
+    همیشه — فارغ از هر state گیرافتاده‌ای — اول چک می‌کنه mode ==
+    'broadcast' هست یا نه و در صورت وجود مستقیم admin_broadcast_handler
+    رو صدا می‌زنه و با ApplicationHandlerStop جلوی ادامه رو می‌گیره.
+
+    ⛔️ نکته‌ی مهم‌تر (ریشه‌ی واقعی باگ که این گیت به‌تنهایی حلش
+    نمی‌کرد): این تابع و maintenance_gate/channel_lock_gate/
+    update_last_active قبلاً همگی با group=-1 مشترک ثبت شده بودند.
+    در PTB، توی هر group فقط اولین Handler ای که check_update اش True
+    بشه اجرا می‌شه و بقیه‌ی همون group اصلاً چک نمی‌شن. چون
+    TypeHandler(Update, ...) روی هر آپدیتی True برمی‌گردونه، فقط
+    maintenance_gate (که زودتر ثبت شده بود) واقعاً اجرا می‌شد و این
+    تابع هیچ‌وقت حتی صدا زده نمی‌شد! الان در bot.py هرکدام از این ۴
+    گیت group منفیِ مجزای خودشان را دارند (-4 تا -1) تا واقعاً همه
+    برای هر آپدیت اجرا شوند.
+    """
+    if update.effective_chat is None or update.effective_chat.type != 'private':
+        return
+    msg = update.message
+    if msg is None:
+        return
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None:
+        return
+    if context.user_data.get('mode') != 'broadcast':
+        return
+
+    if uid != ADMIN_ID:
+        role_doc = await db.get_admin_role(uid)
+        perms = db.ROLE_PERMISSIONS.get(role_doc.get('role', ''), set()) if role_doc else set()
+        if 'broadcast' not in perms:
+            return
+
+    if not (msg.text or msg.photo or msg.video or msg.document or msg.voice or msg.audio):
+        return
+
+    await admin_broadcast_handler(update, context)
+    raise ApplicationHandlerStop
+
+
+async def channel_lock_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمه «عضو شدم، بررسی کن» — چک مجدد و عبور در صورت موفقیت"""
+    query = update.callback_query
+    uid   = update.effective_user.id
+    channels = await db.get_required_channels()
+    still_not_joined = []
+    for ch in channels:
+        try:
+            member = await context.bot.get_chat_member(ch['id'], uid)
+            if member.status in ('left', 'kicked'):
+                still_not_joined.append(ch)
+        except Exception:
+            still_not_joined.append(ch)
+
+    if still_not_joined:
+        await query.answer("❌ هنوز عضو همه کانال‌ها نشده‌اید!", show_alert=True)
+        return
+
+    await query.answer("✅ عضویت تأیید شد!", show_alert=True)
+    await query.edit_message_text("✅ عضویت شما تأیید شد. لطفاً /start را بزنید.")
+
+
+async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    برای گزارش هفتگی نیاز داریم بدانیم آخرین فعالیت هر کاربر کِی
+    بوده. فقط در پیوی خصوصی معنی دارد — فعالیت یک کاربر در گروه
+    لاگ ربات (که اصلاً عضو معمولی ربات نیست) را نباید به‌عنوان
+    «فعالیت در ربات» ثبت کرد.
+    """
+    if update.effective_chat is None or update.effective_chat.type != 'private':
+        return
+    uid = update.effective_user.id if update.effective_user else None
+    if uid is None:
+        return
+    try:
+        from database import db
+        await db.users.update_one(
+            {'user_id': uid},
+            {'$set': {'last_active': datetime.now().isoformat()}}
+        )
+    except Exception:
+        pass
+
+
+# FIX باگ: این modeها وقتی کاربر دکمه‌ی اصلی منو را می‌زند (یعنی
+# قصد خروج از فلوی نیمه‌کاره را دارد) باید پاک شوند — وگرنه پیام
+# بعدی او در هر بخش دیگری از ربات به اشتباه به همین mode می‌رسد.
+INTERRUPTIBLE_SIMPLE_MODES = {
+    'search_user', 'edit_user', 'add_intake', 'add_admin_role',
+    'qbank_awaiting_desc', 'add_schedule', 'flex_time_change',
+    'set_auto_backup_hour', 'report_note', 'ticket_search',
+    'set_maintenance_text', 'set_log_group_admin', 'set_log_group_content',
+    'add_required_channel', 'edit_schedule_field', 'set_donation_link',
+    # FIX جدید: هوشیار — اگر کاربر وسط حالت «پرسش از AI» باشد و دکمه‌ی
+    # دیگری از منو بزند، باید از حالت خارج شود نه اینکه پیامش به‌عنوان
+    # سوال جدید برای هوش مصنوعی ارسال شود.
+    'ai_query',
+    # FIX جدید: همین موضوع برای modeهای پنل مدیریت هوشیار (ادمین) هم
+    # صادق است — قبلاً این‌ها اینجا نبودند، برای همین اگر ادمین وسط
+    # «ویرایش دستور سیستمی» (یا کلید/محدودیت/ریست سهمیه) دکمه‌ی دیگری
+    # از منو می‌زد، متنِ آن دکمه به‌جای ناوبری، به‌عنوان ورودیِ همان
+    # حالتِ نیمه‌کاره ذخیره می‌شد (مثلاً «📚 منابع» به‌عنوان دستور
+    # سیستمیِ جدید ست می‌شد).
+    'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt',
+    'ai_reset_quota_search', 'ai_save_persona_name', 'ai_set_disabled_msg',
+    'ai_ban_search', 'ai_profile_search',
+    # FIX جدید: طراحی سوال با هوشیار (AI) — همین موضوع برای مرحله‌ی
+    # «نکته‌ی اختیاری» هم صادقه.
+    'ai_question_note',
+    # FIX جدید: دستیارِ نوشتنِ اطلاعیه با هوشیار
+    'bc_ai_notes',
+}
+MENU_BUTTON_TEXTS = {
+    '🩺 داشبورد', '📚 منابع', '🧪 بانک سوال', '❓ سوالات متداول',
+    '📅 برنامه', '👤 پروفایل', '🔔 اعلان‌ها', '🎫 پشتیبانی',
+    '🎓 پنل محتوا', '👨\u200d⚕️ پنل ادمین', '🤖 هوشیار',
+}
+
+
+async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    # FIX باگ لغو رول/گزارش/و غیره گیر کردن: اگر کاربر دکمه منو زده
+    # و در یکی از modeهای ساده گیر بود، آن mode را پاک کن و رد شو
+    # تا روتر اصلی پیام را عادی پردازش کند.
+    msg_text = update.message.text.strip() if update.message and update.message.text else ''
+    if msg_text in MENU_BUTTON_TEXTS and context.user_data.get('mode') in INTERRUPTIBLE_SIMPLE_MODES:
+        for k in ('mode', 'new_role_type', 'new_role_intake', 'flex_change_sid',
+                  'report_target_type', 'report_target_id', 'report_reason',
+                  'edit_schedule_sid', 'edit_schedule_field', 'schedule_edit_sid',
+                  'schedule_type', 'pending_schedule'):
+            context.user_data.pop(k, None)
+        # ادامه نده — اجازه بده همین تابع پایین‌تر پیام دکمه را عادی مسیر کند
+
+    # FIX باگ مهم: 'NoneType' object has no attribute 'text' —
+    # وقتی mode فعال است (منتظر یک ورودی متنی) ولی کاربر media
+    # (عکس/فایل/استیکر/ویس) بدون متن می‌فرستد، update.message.text
+    # می‌شود None و توابع پایین‌دستی با .strip() کرش می‌کنند.
+    # broadcast و چند mode خاص که خودشان از فایل/عکس پشتیبانی
+    # می‌کنند (مثل آپلود فایل بانک سوال) از این گارد معاف هستند.
+    active_mode    = context.user_data.get('mode', '')
+    active_ca_mode = context.user_data.get('ca_mode', '')
+    active_ticket_mode = context.user_data.get('ticket_mode', '')
+    MEDIA_ALLOWED_MODES = {
+        'broadcast', 'qbank_awaiting_desc', 'waiting_description',
+        'waiting_ref_description', 'creating_question',
+        'waiting_file', 'waiting_ref_file',  # ca_mode هایی که فایل می‌گیرند
+    }
+    any_active_mode = active_mode or active_ca_mode or active_ticket_mode
+    is_media_allowed = (
+        active_mode in MEDIA_ALLOWED_MODES or active_ca_mode in MEDIA_ALLOWED_MODES
+    )
+    if (any_active_mode and not is_media_allowed
+            and update.message is not None and not update.message.text):
+        await update.message.reply_text(
+            "⚠️ لطفاً پاسخ خود را به‌صورت متن ارسال کنید."
+        )
+        return
+
+    # ۱. FIX: broadcast — باید اول از همه چک بشه
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'broadcast':
+        return await admin_broadcast_handler(update, context)
+
+    # ⚠️ قابلیتِ جدید: نکته‌های اطلاعیه برای هوشیار (دستیارِ نوشتنِ اطلاعیه)
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'bc_ai_notes':
+        from admin import _broadcast_ai_generate
+        context.user_data['mode'] = ''
+        context.user_data['bc_ai_notes'] = update.message.text or ''
+        return await _broadcast_ai_generate(update.message, context, is_message=True)
+
+    # ۲. FIX: profile_edit — ویرایش نام/شماره دانشجویی (هر کاربری)
+    if context.user_data.get('mode') == 'profile_edit':
+        from profile import profile_text_handler
+        return await profile_text_handler(update, context)
+
+    # ۳. FIX: search_user ادمین
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'search_user':
+        return await handle_admin_text(update, context)
+
+    # ۳b. ✉️ موج ۴.۸۰: پیام مستقیم ادمین به کاربر (از کارت مدیریت)
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'admin_dm':
+        return await handle_admin_text(update, context)
+
+    # ۳. FIX: edit_user ادمین
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'edit_user':
+        return await handle_admin_text(update, context)
+
+    # ۴. FIX: add_intake ادمین
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'add_intake':
+        return await handle_admin_text(update, context)
+
+    # ۴b. FIX جدید: add_admin_role — افزودن نقش فرعی (فقط مدیر ارشد)
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'add_admin_role':
+        return await handle_admin_text(update, context)
+
+    # ۴c. FIX جدید: تنظیمات ربات — متن تعمیر و گروه‌های لاگ (فقط مدیر ارشد)
+    if uid == ADMIN_ID and context.user_data.get('mode') in (
+        'set_maintenance_text', 'set_log_group_admin', 'set_log_group_content',
+        'set_poll_channel',
+        'poll_question', 'poll_option',
+        'set_donation_link',
+    ):
+        return await handle_admin_text(update, context)
+
+    # ۴d. 🤖 هوشیار — تنظیمات پنل ادمین (API Key/مدل/محدودیت/prompt/ریست سهمیه/پرسونا/بن/پیام‌خاموش)
+    if uid == ADMIN_ID and context.user_data.get('mode') in (
+        'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt',
+        'ai_reset_quota_search', 'ai_save_persona_name', 'ai_set_disabled_msg',
+        'ai_ban_search', 'ai_profile_search',
+    ):
+        return await ai_admin_text_handler(update, context)
+
+    # ۴e. 🤖 هوشیار — حالت «پرسش از AI» برای هر کاربر تأییدشده
+    if context.user_data.get('mode') == 'ai_query':
+        return await handle_ai_text(update, context)
+
+    # ۵. FIX: qbank_awaiting_desc
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'qbank_awaiting_desc':
+        return await handle_admin_text(update, context)
+
+    # ۵b. FIX: add_schedule — افزودن برنامه کلاسی/امتحان (باگ: قبلاً هیچ‌جا چک نمی‌شد)
+    if context.user_data.get('mode') == 'add_schedule':
+        from schedule import handle_add_schedule_text
+        return await handle_add_schedule_text(update, context)
+
+    # ۵c. FIX جدید: flex_time_change — اعلام تغییر زمان کلاس منعطف
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'flex_time_change':
+        from schedule import handle_flex_time_change_text
+        return await handle_flex_time_change_text(update, context)
+
+    # ۵c2. FIX جدید (بخش اول): edit_schedule_field — ویرایش تک‌فیلدی برنامه
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'edit_schedule_field':
+        from schedule import handle_edit_schedule_field_text
+        return await handle_edit_schedule_field_text(update, context)
+
+    # ۵d. FIX جدید: ساعت دلخواه بکاپ خودکار
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'set_auto_backup_hour':
+        from backup import handle_auto_backup_hour_text
+        return await handle_auto_backup_hour_text(update, context)
+
+    # ۵e. FIX جدید: توضیح گزارش ایراد (دلیل 'سایر')
+    if context.user_data.get('mode') == 'report_note':
+        return await handle_report_note_text(update, context)
+
+    # ۵f. FIX جدید: افزودن کانال اجباری
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'add_required_channel':
+        return await handle_admin_text(update, context)
+
+    # ۶. ca_text_handler
+    ca_mode = context.user_data.get('ca_mode', '')
+    ca_text_modes = {
+        'add_lesson', 'add_session', 'waiting_description',
+        'waiting_ref_description', 'add_faq', 'add_ref_subject',
+        'add_ref_book', 'edit_lesson', 'edit_session',
+        'edit_ref_subject', 'edit_ref_book',
+    }
+    if ca_mode in ca_text_modes and await db.is_content_admin(uid):
+        return await ca_text_handler(update, context)
+
+    # ۷. ticket mode — شامل user_reply و admin_search هم هست
+    if context.user_data.get('ticket_mode') in (
+        'waiting_message', 'admin_reply', 'user_reply',
+        'admin_search', 'awaiting_confirm'
+    ):
+        return await ticket_message_handler(update, context)
+
+    # ۷b. ticket_search mode برای ادمین
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'ticket_search':
+        return await ticket_message_handler(update, context)
+
+    # ۸. روتر اصلی
+    return await route_message(update, context)
+
+
+# ══════════════════════════════════════════════════
+#  منوی منابع
+# ══════════════════════════════════════════════════
+
+async def route_resources(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("🔬 علوم پایه", callback_data='bs:main')],
+        [InlineKeyboardButton("📖 رفرنس‌ها",  callback_data='ref:main')],
+        [InlineKeyboardButton("🔙 بازگشت",    callback_data='dashboard:refresh')],
+    ]
+    await query.edit_message_text(
+        "📚 <b>منابع درسی</b>\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "🔬 <b>علوم پایه:</b> محتوای جلسات (ویدیو، جزوه، پاورپوینت و...)\n"
+        "📖 <b>رفرنس‌ها:</b> کتاب‌های مرجع (PDF فارسی/لاتین)",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ══════════════════════════════════════════════════
+#  ساخت Application
+# ══════════════════════════════════════════════════
+
+def build_application() -> Application:
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(True)
+        .read_timeout(30)
+        .write_timeout(30)
+        .connect_timeout(15)
+        .pool_timeout(15)
+        .build()
+    )
+
+    # ── ConversationHandler مرکزی ──
+    # NOTE: BROADCAST از اینجا حذف شد — در unified_text_handler مدیریت میشه
+    conv = ConversationHandler(
+        entry_points=[
+            # FIX باگ مهم: /start و همه‌ی mode‌های گفتگو فقط در پیوی
+            # خصوصی فعال باشند — وگرنه ربات روی پیام‌های گروه‌های لاگ
+            # (ادمین/محتوا) هم واکنش می‌داد و می‌گفت «/start بزنید».
+            #
+            # 🧠 FIX معماری: ورودی‌های questions:cr_topic: و ^ca: قبلاً
+            # هم اینجا entry_point بودند هم پایین‌تر standalone
+            # CallbackQueryHandler داشتند — یعنی یک تپ روی «ca:...»
+            # می‌توانست یک conversation جدید و بی‌مصرف باز کند (چون
+            # دیگر هیچ‌کدام از state هایش را نگه نمی‌داریم) درحالی‌که
+            # نسخه‌ی standalone پایین همین فایل به‌تنهایی کاملاً کافی
+            # است. حذف شدند تا ConversationHandler فقط برای «ثبت‌نام»
+            # — تنها فلوی واقعاً چندمرحله‌ای بدون معادل mode-based —
+            # یک conversation باز کند.
+            CommandHandler('start', start_handler, filters=filters.ChatType.PRIVATE),
+        ],
+        states={
+            REGISTER: [
+                CallbackQueryHandler(register_start_callback, pattern=r'^register:')
+            ],
+            STEP_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, step_name_handler),
+                CallbackQueryHandler(register_start_callback, pattern=r'^register:cancel'),
+            ],
+            STEP_GROUP: [
+                CallbackQueryHandler(
+                    register_start_callback,
+                    pattern=r'^register:(group1|group2|cancel)'
+                )
+            ],
+            STEP_INTAKE: [
+                CallbackQueryHandler(register_intake_callback, pattern=r'^register:intake:')
+            ],
+            STEP_STUDENT_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, step_student_id_handler),
+            ],
+            # 🧠 FIX معماری «دو مغز» (پرریسک‌ترین ایراد معماری پروژه):
+            # state های ANSWERING، CREATING_Q، CA_WAITING_FILE/TEXT،
+            # PROFILE_EDIT_WAITING، TICKET_WAITING/REPLY_WAITING از
+            # اینجا حذف شدند. بررسی کد نشان داد هر کدام از قبل و به‌طور
+            # کامل معادل mode-based خودشان را داشتند (ANSWERING حتی
+            # هیچ‌وقت واقعاً وارد نمی‌شد — یک state کاملاً مرده بود):
+            #   • answer:            → questions_callback (استاندالون پایین همین فایل)
+            #   • creating_question  → unified_text_handler → route_message
+            #   • qd:                → استاندالون شد (لیست cbs پایین‌تر)
+            #   • ca_mode (فایل/متن) → unified_file_handler / unified_text_handler
+            #   • profile_edit       → unified_text_handler
+            #   • ticket_mode        → unified_text_handler
+            # نگه‌داشتن این state ها همزمان با معادل mode-based شان
+            # دقیقاً همان چیزی بود که باعث شد یک بار پیام broadcast
+            # ادمین وسط یک state قدیمی گم شود: وقتی کاربر از یک فلوی
+            # چندمرحله‌ای خارج می‌شد بدون رسیدن به پایانش، conv در همان
+            # state قدیمی «گیر» می‌ماند و پیام بعدی‌اش را — حتی اگر
+            # مربوط به بخش کاملاً متفاوتی بود — با handler همان state
+            # قدیمی قورت می‌داد. حالا چون این مسیرها هیچ state ای در
+            # ConversationHandler ندارند، هر پیام همیشه مستقیم به
+            # unified_text_handler/unified_file_handler می‌رسد و مقدار
+            # واقعیِ همین‌الانِ mode/ca_mode/ticket_mode را می‌بیند —
+            # نه یک state منجمد از چند دقیقه قبل.
+        },
+        fallbacks=[
+            CommandHandler('start', start_handler, filters=filters.ChatType.PRIVATE),
+            CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE),
+        ],
+        allow_reentry=True,
+        per_message=False,
+        conversation_timeout=1800,
+    )
+    # ══════════════════════════════════════════════════
+    # ⛔️ باگ اصلیِ واقعی «پیام همگانی گاهی دریافت نمی‌شود» اینجا بود:
+    # کتابخانه python-telegram-bot توی هر group فقط اولین Handler ای
+    # که check_update اش True برگردونه رو اجرا می‌کنه و فوراً break
+    # می‌کنه — بدون اینکه بقیه‌ی Handlerهای همون group اصلاً چک بشن
+    # (منبع خود کتابخونه: «Only a max of 1 handler per group is
+    # handled»). چون maintenance_gate و channel_lock_gate و
+    # broadcast_gate و update_last_active هر چهارتا TypeHandler(Update, ...)
+    # بودن و همگی توی یک group مشترک (-1) ثبت شده بودن، و
+    # TypeHandler(Update, ...) روی *هر* آپدیتی True برمی‌گردونه، همیشه
+    # فقط maintenance_gate واقعاً اجرا می‌شد و broadcast_gate هیچ‌وقت
+    # حتی یک‌بار هم فراخوانی نمی‌شد — صرف‌نظر از اینکه ادمین چی
+    # می‌فرستاد. الان هر گیت یک group منفیِ جداگانه‌ی خودش را دارد تا
+    # هر ۴ تا، برای هر آپدیت، به‌ترتیب اجرا شوند.
+    # ══════════════════════════════════════════════════
+    app.add_handler(TypeHandler(Update, maintenance_gate),   group=-4)
+    app.add_handler(TypeHandler(Update, channel_lock_gate),  group=-3)
+    # FIX باگ اصلی: پیام همگانی باید زودتر از ConversationHandler اصلی
+    # (conv) چک بشه، وگرنه اگه ادمین در یکی از state های قدیمی conv
+    # گیر کرده باشه، متن broadcast اصلاً بهش نمی‌رسه.
+    app.add_handler(TypeHandler(Update, broadcast_gate), group=-2)
+    app.add_handler(TypeHandler(Update, update_last_active), group=-1)
+
+    app.add_handler(conv)
+
+    # ── Callback handlers — ترتیب مهم: specific قبل از general ──
+    cbs = [
+        # پروفایل
+        (profile_callback,         r'^profile:'),
+        # علوم پایه
+        (basic_science_callback,   r'^bs[_:]'),
+        (basic_science_callback,   r'^bs_dl:'),
+        (basic_science_callback,   r'^resources:bs'),
+        # رفرنس‌ها
+        (references_callback,      r'^ref[_:]'),
+        (references_callback,      r'^resources:ref'),
+        # منابع
+        (route_resources,          r'^resources:menu'),
+        (resources_callback,       r'^download_resource:'),
+        (route_resources,          r'^resources:'),
+        # داشبورد
+        (dashboard_callback,       r'^dashboard'),
+        # سوالات
+        (questions_callback,       r'^(questions|answer:|download_qbank:)'),
+        # بقیه
+        (schedule_callback,        r'^schedule'),
+        (stats_callback,           r'^stats'),
+        (notifications_callback,   r'^notif'),
+        (admin_callback,           r'^admin'),
+        (backup_confirm_restore,   r'^backup:confirm_restore$'),
+        (backup_callback,          r'^backup:'),
+        (faq_callback,             r'^faq:'),
+        (content_admin_callback,   r'^ca:'),
+        (ticket_callback,          r'^ticket:'),
+        (report_callback,          r'^report:'),   # FIX جدید
+        (channel_lock_check_callback, r'^channel_lock:check'),   # FIX جدید
+        # 🧠 FIX معماری: قبلاً qd: (انتخاب سختی سوال) فقط داخل state
+        # CREATING_Q قابل‌دسترس بود؛ چون آن state حذف شد، اینجا
+        # standalone ثبت می‌شود تا فلوی ساخت سوال دست‌نخورده بماند.
+        (handle_difficulty_choice, r'^qd:'),
+        # FIX جدید: سیستم اشتراک
+        (subscription_callback,       r'^sub:'),
+        (subscription_admin_callback, r'^suba:'),
+        (grades_callback,             r'^grades:'),
+        (ai_admin_callback,           r'^ai:'),   # 🤖 هوشیار — پنل ادمین
+        (ai_user_callback,            r'^aiu:'),  # 🤖 هوشیار — دکمه‌های زیر جواب (گفتگوی جدید/گزارش)
+    ]
+    for handler, pattern in cbs:
+        app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
+
+    # 🧠 FIX معماری: /cancel قبلاً فقط داخل state های حذف‌شده
+    # (CA_WAITING_FILE/TEXT، PROFILE_EDIT_WAITING، TICKET_WAITING/
+    # REPLY_WAITING) و در fallbacks خودِ conv در دسترس بود. حالا که آن
+    # فلوها دیگر conversation جدا ندارند، /cancel باید مستقل ثبت شود
+    # تا همچنان بتواند ca_mode/ticket_mode/profile_edit/creating_question
+    # را با همان تابع قبلی (cancel_handler) پاک کند.
+    app.add_handler(CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE))
+
+    # ── File handler — همه انواع فایل ──
+    # FIX باگ مهم: فقط در پیوی خصوصی فعال باشد — وگرنه فایل‌هایی
+    # که در گروه‌های لاگ (ادمین/محتوا) فرستاده شوند هم پردازش می‌شدند.
+    app.add_handler(MessageHandler(
+        (filters.Document.ALL | filters.VIDEO | filters.AUDIO |
+         filters.VOICE | filters.PHOTO) & filters.ChatType.PRIVATE,
+        unified_file_handler
+    ))
+
+    # ── Text handler ──
+    # FIX باگ اصلی گزارش‌شده: این handler عمومی هیچ فیلتر چت نداشت،
+    # پس روی هر پیام متنی در گروه‌های لاگ هم اجرا می‌شد و از طریق
+    # route_message پاسخ «/start بزنید» می‌فرستاد. حالا فقط پیوی.
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+        unified_text_handler
+    ))
+
+    # ── Error handler ──
+    app.add_error_handler(error_handler)
+
+    return app
+
+
+# ══════════════════════════════════════════════════
+#  post_init: ایندکس‌ها + job‌ها
+# ══════════════════════════════════════════════════
+
+async def post_init(application: Application):
+    await db.ensure_indexes()
+    logger.info("✅ ایندکس‌های دیتابیس آماده شدند")
+
+    # FIX جدید: یک‌بار (idempotent) رفرنس‌های قدیمی را «قبلاً دیده‌شده»
+    # علامت می‌زند تا با اضافه‌شدن ref_files به سیستم نوتیف منابع جدید،
+    # اولین اجرای job یک‌جا سیل نوتیف قدیمی نفرستد. خطای احتمالی این
+    # مرحله نباید مانع بالا آمدن ربات شود.
+    try:
+        await db.migrate_mark_existing_ref_files_notified()
+    except Exception as e:
+        logger.error(f"migrate_mark_existing_ref_files_notified error: {e}")
+
+    # 🛡 موج RBAC-W1 — بذر + مهاجرت هر دو idempotent‌اند (§۱۰ قرارداد):
+    # اجرای تکراری هیچ داده/ویرایش دستی‌ای را بازنویسی نمی‌کند و خطای
+    # این مرحله نباید مانع بالا آمدن ربات شود.
+    try:
+        seeded = await db.ensure_rbac_seed()
+        migrated = await db.rbac_migrate_users()
+        logger.info(f"🛡 RBAC seed: {seeded} — migrate: {migrated}")
+    except Exception as e:
+        logger.error(f"rbac seed/migrate error: {e}")
+
+    # 🌊 موج C1 — مهاجرت scope ورودی محتوا (idempotent: backfill '' فقط
+    # روی اسناد فاقد فیلد + rename شرطی label). خطا مانع بوت نمی‌شود.
+    try:
+        c1 = await db.migrate_content_intake_scope()
+        logger.info(f"🌊 C1 migrate content-intake-scope: {c1}")
+    except Exception as e:
+        logger.error(f"C1 migrate error: {e}")
+
+    # FIX جدید: افزودن یک‌باره‌ی سؤالات FAQ اشتراک/کپی‌رایت
+    try:
+        await db.seed_subscription_copyright_faqs()
+    except Exception as e:
+        logger.error(f"seed_subscription_copyright_faqs error: {e}")
+
+    # FIX: گارد ایمن — اگر JobQueue نصب نباشد، ربات کرش نکند
+    if application.job_queue is not None:
+        # یادآوری امتحان — ۰۸:۰۰ تهران (04:30 UTC)
+        application.job_queue.run_daily(
+            exam_reminder_job,
+            time=dtime(hour=4, minute=30, tzinfo=timezone.utc),
+            name='exam_reminder'
+        )
+
+        # سوال روزانه — ۰۹:۰۰ تهران (05:30 UTC)
+        application.job_queue.run_daily(
+            daily_question_job,
+            time=dtime(hour=5, minute=30, tzinfo=timezone.utc),
+            name='daily_question'
+        )
+
+        # FIX جدید: گزارش هفتگی — یکشنبه‌ها ۰۹:۳۰ تهران (06:00 UTC)
+        # نکته: در PTB days=(0,) یعنی یکشنبه (0=sunday...6=saturday)
+        application.job_queue.run_daily(
+            weekly_report_job,
+            time=dtime(hour=6, minute=0, tzinfo=timezone.utc),
+            days=(0,),
+            name='weekly_report'
+        )
+
+        # 🔴 FIX حیاتی: پردازش صف پیام‌های Mini App — هر ۲۰ ثانیه چک می‌شود
+        application.job_queue.run_repeating(
+            mini_app_outbox_job,
+            interval=20,
+            first=10,
+            name='mini_app_outbox'
+        )
+
+        # FIX جدید: نوتیف منابع جدید — هر ساعت چک می‌شود، خودش تشخیص
+        # می‌دهد آیا فاصله‌ی تنظیم‌شده (۲۴/۴۸/۷۲ ساعت) گذشته یا نه
+        application.job_queue.run_repeating(
+            new_resources_notif_job,
+            interval=3600,
+            first=120,
+            name='new_resources_notif'
+        )
+
+        # FIX جدید: بکاپ خودکار — هر ساعت چک می‌شود، فقط در ساعت
+        # تنظیم‌شده (از پنل ادمین) واقعاً بکاپ می‌گیرد
+        application.job_queue.run_repeating(
+            auto_backup_job,
+            interval=3600,
+            first=180,
+            name='auto_backup'
+        )
+
+        # FIX جدید: چک روزانه‌ی انقضای اشتراک + یادآوری ۳ روز قبل —
+        # ۰۹:۱۵ تهران (05:45 UTC)
+        application.job_queue.run_daily(
+            subscription_expiry_job,
+            time=dtime(hour=5, minute=45, tzinfo=timezone.utc),
+            name='subscription_expiry'
+        )
+
+        # 👑 بستن هفته‌ی پرستیژ — دوشنبه ۰۰:۰۵ تهران (یکشنبه ۲۰:۳۵ UTC)
+        application.job_queue.run_daily(
+            prestige_weekly_close_job,
+            time=dtime(hour=20, minute=35, tzinfo=timezone.utc),
+            days=(0,),
+            name='prestige_weekly_close'
+        )
+
+        # ⚔️ اسکن هفتگی چالش آماده — یکشنبه ۱۹:۴۰ تهران (۱۶:۱۰ UTC)
+        application.job_queue.run_daily(
+            prestige_challenge_scan_job,
+            time=dtime(hour=16, minute=10, tzinfo=timezone.utc),
+            days=(0,),
+            name='prestige_challenge_scan'
+        )
+
+        # FIX: قبلاً اینجا یه job برای جاروی حافظه‌ی موقتِ RAM هوشیار بود؛
+        # حافظه الان روی دیتابیس ذخیره می‌شه (پایدار در برابرِ ری‌استارت)
+        # و TTL موقعِ خوندن چک می‌شه، پس این job دیگه لازم نیست.
+
+        logger.info("✅ Job‌های زمان‌بندی ثبت شدند")
+
+        # FIX (ارسال زماندار پایدار): اگر ربات بین ثبت یک پیام زماندار
+        # و زمان ارسالش ری‌استارت شود، job در حافظه‌ی job_queue از بین
+        # می‌رفت و پیام هرگز ارسال نمی‌شد. حالا رکورد آن در دیتابیس هم
+        # ذخیره شده بود؛ اینجا در شروع ربات آن‌ها را می‌خوانیم و دوباره
+        # زمان‌بندی می‌کنیم (یا اگر زمانش گذشته، فوراً ارسال می‌کنیم).
+        try:
+            from admin import _scheduled_broadcast_job
+            pending = await db.get_settings_by_prefix('scheduled_broadcast_')
+            for key, rec in pending.items():
+                job_id = key[len('scheduled_broadcast_'):]
+                try:
+                    send_at = datetime.fromisoformat(rec['send_at'])
+                except Exception:
+                    continue
+                remaining = (send_at - datetime.now()).total_seconds()
+                delay = max(remaining, 0)
+                application.job_queue.run_once(
+                    _scheduled_broadcast_job,
+                    when=timedelta(seconds=delay),
+                    data={'msg_data': rec.get('msg_data', {}), 'target': rec.get('target', 'all'),
+                          'admin_id': rec.get('created_by', ADMIN_ID)},
+                    name=job_id,
+                )
+            if pending:
+                logger.info(f"✅ {len(pending)} پیام زماندار قدیمی دوباره زمان‌بندی شد")
+        except Exception:
+            logger.exception("خطا در بازیابی پیام‌های زماندار قبلی")
+    else:
+        logger.warning("⚠️ JobQueue فعال نیست — یادآوری‌ها و گزارش هفتگی غیرفعال هستند")
+        logger.warning('   نصب با: pip install "python-telegram-bot[job-queue]"')
+
+
+def main():
+    app = build_application()
+    app.post_init = post_init
+
+    logger.info("🩺 ربات پزشکی شروع به کار کرد...")
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+        poll_interval=0.5,
+    )
+
+
+if __name__ == '__main__':
+    main()
