@@ -822,6 +822,10 @@ SILENT_ERRORS = (
     'message to delete not found',
     "Message can't be deleted",
     'Have no rights to send a message',
+    # 🌊 WA3 — تداخل getUpdates هنگام redeploy/روی‌ل‌اوور Railway: دو نمونه‌ی
+    # موقتِ ربات (قدیمی در حال خاموش‌شدن + جدید) هم‌زمان poll می‌کنند؛ چند
+    # ثانیه بعد خودکار حل می‌شود. پیویِ مالک نباید با این نویز بمباردان شود.
+    'terminated by other getUpdates request',
 )
 
 
