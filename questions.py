@@ -123,11 +123,12 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         caption = (f"📁 <b>بانک سوال</b>\n📚 {item.get('lesson','')} — {item.get('topic','')}\n"
                    f"📝 {item.get('description','')}\n⬇️ {item.get('downloads',0)} دانلود")
         protect = await db.get_setting('protect_content_enabled', True)
+        # 🌊 Q2-W11 — bare except → except Exception (fallback document→photo عیناً حفظ شد)
         try:
             await query.message.reply_document(item['file_id'], caption=caption, parse_mode='HTML', protect_content=protect)
-        except:
+        except Exception:
             try:    await query.message.reply_photo(item['file_id'], caption=caption, parse_mode='HTML', protect_content=protect)
-            except: await query.answer("خطا در ارسال فایل!", show_alert=True)
+            except Exception: await query.answer("خطا در ارسال فایل!", show_alert=True)
         return
 
     # ── آزمون سفارشی ──
@@ -386,53 +387,10 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _ca_question_view(query, uid, qid)
 
     elif action == 'ca_q_del':
-        qid = parts[2] if len(parts) > 2 else ''
-        if await db.is_content_admin(uid):
-            # FIX طبق سند: حذف سوال در پنل محتوا قبلاً اصلاً لاگ نمی‌شد
-            q_doc = await db.get_question_by_id(qid)
-            # 🌊 C1 — enforce scope قبل از حذف (ضد callback-manipulation)
-            if not await db.can_access_intake(uid, (q_doc or {}).get('intake') or ''):
-                await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
-                                   show_alert=True)
-                return
-            await db.delete_question(qid)
-            await query.answer("🗑 سوال حذف شد!", show_alert=True)
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "حذف سوال", module='Questions', severity='HIGH',
-                actor_role=actor_role,
-                target_id=qid, target_type='question',
-                target_label=(q_doc.get('question', '')[:60] if q_doc else ''),
-                tags=['حذف_سوال']
-            )
-            await _ca_question_list(query, uid, context)
+        await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '')
 
     elif action == 'ca_q_approve':
-        qid = parts[2] if len(parts) > 2 else ''
-        if await db.is_content_admin(uid):
-            q_doc_approve = await db.get_question_by_id(qid)
-            # 🌊 C1 — enforce scope قبل از تأیید
-            if not await db.can_access_intake(
-                    uid, (q_doc_approve or {}).get('intake') or ''):
-                await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
-                                   show_alert=True)
-                return
-            await db.approve_question(qid)
-            await query.answer("✅ تأیید شد!", show_alert=True)
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "تأیید سوال", module='Questions', severity='INFO',
-                actor_role=actor_role, target_id=qid, target_type='question',
-                target_label=(q_doc_approve.get('question', '')[:60] if q_doc_approve else ''),
-                tags=['تایید_سوال']
-            )
-            await _ca_question_list(query, uid, context)
+        await _h_ca_q_approve(query, context, uid, parts[2] if len(parts) > 2 else '')
 
     elif action == 'ca_q_filter':
         # فیلتر: ca_q_filter:type:value
@@ -443,6 +401,61 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif data.startswith('answer:'):
         await handle_question_answer(update, context)
+
+
+# ══════════════════════════════════════════════════════════
+#  🌊 Q2-W8 — هندلرهای استخراج‌شده از questions_callback
+#  (بدون تغییر رفتار؛ routing/scope/audit دقیقاً مثل قبل)
+# ══════════════════════════════════════════════════════════
+async def _h_ca_q_del(query, context, uid: int, qid: str):
+    """شاخه‌ی ca_q_del — حذف سوال توسط ادمین محتوا (با enforce scope + audit)."""
+    if await db.is_content_admin(uid):
+        # FIX طبق سند: حذف سوال در پنل محتوا قبلاً اصلاً لاگ نمی‌شد
+        q_doc = await db.get_question_by_id(qid)
+        # 🌊 C1 — enforce scope قبل از حذف (ضد callback-manipulation)
+        if not await db.can_access_intake(uid, (q_doc or {}).get('intake') or ''):
+            await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
+                               show_alert=True)
+            return
+        await db.delete_question(qid)
+        await query.answer("🗑 سوال حذف شد!", show_alert=True)
+        actor = await db.get_user(uid)
+        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
+        actor_role = await db.get_actor_role_label(uid)
+        await send_audit_log(
+            context.bot, 'content', actor_name, uid,
+            "حذف سوال", module='Questions', severity='HIGH',
+            actor_role=actor_role,
+            target_id=qid, target_type='question',
+            target_label=(q_doc.get('question', '')[:60] if q_doc else ''),
+            tags=['حذف_سوال']
+        )
+        await _ca_question_list(query, uid, context)
+
+
+async def _h_ca_q_approve(query, context, uid: int, qid: str):
+    """شاخه‌ی ca_q_approve — تأیید سوال توسط ادمین محتوا (با enforce scope + audit)."""
+    if await db.is_content_admin(uid):
+        q_doc_approve = await db.get_question_by_id(qid)
+        # 🌊 C1 — enforce scope قبل از تأیید
+        if not await db.can_access_intake(
+                uid, (q_doc_approve or {}).get('intake') or ''):
+            await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
+                               show_alert=True)
+            return
+        await db.approve_question(qid)
+        await query.answer("✅ تأیید شد!", show_alert=True)
+        actor = await db.get_user(uid)
+        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
+        actor_role = await db.get_actor_role_label(uid)
+        await send_audit_log(
+            context.bot, 'content', actor_name, uid,
+            "تأیید سوال", module='Questions', severity='INFO',
+            actor_role=actor_role, target_id=qid, target_type='question',
+            target_label=(q_doc_approve.get('question', '')[:60] if q_doc_approve else ''),
+            tags=['تایید_سوال']
+        )
+        await _ca_question_list(query, uid, context)
 
 
 # ══════════════════════════════════════════════════════════
