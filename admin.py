@@ -323,6 +323,48 @@ ROOT_ONLY_ACTIONS = {
 }
 
 
+# ── 🧹 موج Q2/W7 — هندلرهای استخراج‌شده از admin_callback ──
+# (گام اول: گروه notif_*. رفتار/روتینگ عیناً حفظ شده؛ فقط
+# بدنه‌ی شاخه‌ها به توابع سطح ماژول منتقل شده‌اند)
+
+async def _h_notif_set_interval(query, context, parts, uid):
+    hours = int(parts[2])
+    await db.set_setting('resource_notif_interval_hours', hours)
+    await query.answer(f"✅ فاصله اعلان منابع جدید: هر {hours} ساعت", show_alert=True)
+    await _show_notif_manage(query)
+
+async def _h_notif_history(query, context, parts, uid):
+    job_name = parts[2] if len(parts) > 2 else None
+    await _show_notif_history(query, job_name)
+
+async def _h_notif_retry(query, context, parts, uid):
+    run_id = parts[2]
+    await _retry_failed_notif(query, context, run_id)
+
+async def _h_notif_default_toggle(query, context, parts, uid):
+    ntype = parts[2]
+    defaults = await db.get_notif_defaults()
+    new_val  = not defaults.get(ntype, True)
+    await db.set_notif_default(ntype, new_val)
+    # FIX (بخش سوم): تغییر پیش‌فرض دیگر فقط روی کاربران جدید اعمال
+    # نمی‌شود — همین لحظه روی همه کاربران (قدیمی/جدید/فعال/غیرفعال)
+    # هم اعمال می‌شود، چون قبلاً هر کاربر یک کپی صریح از تنظیمات
+    # پیش‌فرض زمان ثبت‌نامش را نگه می‌داشت و از تغییرات بعدی بی‌خبر
+    # می‌ماند.
+    affected = await db.apply_notif_default_to_all_users(ntype, new_val)
+    admin_user = await db.get_user(uid)
+    actor_name = admin_user.get('name', 'مدیر ارشد') if admin_user else 'مدیر ارشد'
+    actor_role = await db.get_actor_role_label(uid)
+    await send_audit_log(
+        context.bot, 'admin', actor_name, uid,
+        "تغییر تنظیمات اعلان‌ها", module='Settings', severity='WARNING',
+        actor_role=actor_role,
+        details=f"پیش‌فرض {ntype}: {'روشن' if new_val else 'خاموش'} | اعمال روی {affected} کاربر",
+        tags=['تنظیمات_اعلان']
+    )
+    await query.answer(f"✅ بروزرسانی شد و روی {affected} کاربر اعمال شد", show_alert=True)
+    await _show_notif_defaults(query)
+
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid   = update.effective_user.id
@@ -671,48 +713,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _show_notif_manage(query)
 
     elif action == 'notif_set_interval':
-        hours = int(parts[2])
-        await db.set_setting('resource_notif_interval_hours', hours)
-        await query.answer(f"✅ فاصله اعلان منابع جدید: هر {hours} ساعت", show_alert=True)
-        await _show_notif_manage(query)
+        await _h_notif_set_interval(query, context, parts, uid)
 
     elif action == 'notif_force_send':
         await _handle_notif_force_send(query)
 
     elif action == 'notif_history':
-        job_name = parts[2] if len(parts) > 2 else None
-        await _show_notif_history(query, job_name)
+        await _h_notif_history(query, context, parts, uid)
 
     elif action == 'notif_retry':
-        run_id = parts[2]
-        await _retry_failed_notif(query, context, run_id)
+        await _h_notif_retry(query, context, parts, uid)
 
     elif action == 'notif_defaults':
         await _show_notif_defaults(query)
 
     elif action == 'notif_default_toggle':
-        ntype = parts[2]
-        defaults = await db.get_notif_defaults()
-        new_val  = not defaults.get(ntype, True)
-        await db.set_notif_default(ntype, new_val)
-        # FIX (بخش سوم): تغییر پیش‌فرض دیگر فقط روی کاربران جدید اعمال
-        # نمی‌شود — همین لحظه روی همه کاربران (قدیمی/جدید/فعال/غیرفعال)
-        # هم اعمال می‌شود، چون قبلاً هر کاربر یک کپی صریح از تنظیمات
-        # پیش‌فرض زمان ثبت‌نامش را نگه می‌داشت و از تغییرات بعدی بی‌خبر
-        # می‌ماند.
-        affected = await db.apply_notif_default_to_all_users(ntype, new_val)
-        admin_user = await db.get_user(uid)
-        actor_name = admin_user.get('name', 'مدیر ارشد') if admin_user else 'مدیر ارشد'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'admin', actor_name, uid,
-            "تغییر تنظیمات اعلان‌ها", module='Settings', severity='WARNING',
-            actor_role=actor_role,
-            details=f"پیش‌فرض {ntype}: {'روشن' if new_val else 'خاموش'} | اعمال روی {affected} کاربر",
-            tags=['تنظیمات_اعلان']
-        )
-        await query.answer(f"✅ بروزرسانی شد و روی {affected} کاربر اعمال شد", show_alert=True)
-        await _show_notif_defaults(query)
+        await _h_notif_default_toggle(query, context, parts, uid)
 
     # ══════════════════════════════════════════════
     # 🛡 سطوح دسترسی چندگانه ادمین (admin_roles)
