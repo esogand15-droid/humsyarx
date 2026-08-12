@@ -44,6 +44,16 @@ export function NoPerm({ text = 'دسترسی لازم برای این بخش ر
 // ── Badge ─────────────────────────────────────────────
 export function B({ kind = '', children }) { return <span className={`badge ${kind}`}>{children}</span>; }
 
+// ── Switch (WA2.3) ────────────────────────────────────
+export function Switch({ on, onChange, disabled }) {
+  return (
+    <button type="button" className={`switch ${on ? 'on' : ''}`} disabled={disabled}
+            onClick={() => onChange && onChange(!on)} aria-pressed={on}>
+      <span className="knob" />
+    </button>
+  );
+}
+
 // ── DataTable (سرورساید) ──────────────────────────────
 // props: columns[{k,label,render,width}], rows, rowKey, selectable,
 // onSelect(ids), pager:{page,pages,total,onPage}, loading, onRow(row)
@@ -151,12 +161,17 @@ export function Confirm({ text, onYes, onNo, danger }) {
   );
 }
 
-// ── Command Palette (Ctrl+K) ──────────────────────────
-export function Palette({ open, onClose, commands }) {
+// ── Command Palette 2.0 (Ctrl+K) — WA2.5: جست‌وجوی سراسری اختیاری ──
+// props: open, onClose(bool), commands, search?(q)→[{group,icon,label,hint,go}], go?(path)
+export function Palette({ open, onClose, commands, search, go }) {
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
+  const [results, setResults] = useState(null);   // نتایج جست‌وجوی سراسری
+  const [searching, setSearching] = useState(false);
   const ref = useRef(null);
-  useEffect(() => { if (open) { setQ(''); setIdx(0); setTimeout(() => ref.current && ref.current.focus(), 30); } }, [open]);
+  const debRef = useRef(null);
+
+  useEffect(() => { if (open) { setQ(''); setIdx(0); setResults(null); setTimeout(() => ref.current && ref.current.focus(), 30); } }, [open]);
   useEffect(() => {
     const h = e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); onClose(!open); }
@@ -165,22 +180,47 @@ export function Palette({ open, onClose, commands }) {
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [open, onClose]);
+
+  // WA2.5 — جست‌وجوی سراسری با debounce
+  useEffect(() => {
+    if (!search) return;
+    clearTimeout(debRef.current);
+    if (q.trim().length < 2) { setResults(null); setSearching(false); return; }
+    setSearching(true);
+    debRef.current = setTimeout(async () => {
+      try { setResults(await search(q.trim())); }
+      catch { setResults([]); }
+      setSearching(false);
+    }, 300);
+    return () => clearTimeout(debRef.current);
+  }, [q, search]);
+
   if (!open) return null;
+
   const list = commands.filter(c => !q || c.label.includes(q) || (c.hint || '').includes(q));
+  const flat = results || [];
+  const total = q.trim().length >= 2 && results ? flat.length : list.length;
+  const runAt = (i) => {
+    if (q.trim().length >= 2 && results) {
+      const it = flat[i];
+      if (it) { it.run ? it.run() : (it.go && go && go(it.go)); onClose(false); }
+    } else if (list[i]) { list[i].run(); onClose(false); }
+  };
+
   return (
     <>
       <div className="scrim" onClick={() => onClose(false)} />
       <div className="palette">
-        <input ref={ref} placeholder="جست‌وجو یا رفتن سریع… (Ctrl+K)"
+        <input ref={ref} placeholder="جست‌وجو در همه‌چیز… (کاربر، تیکت، سؤال، محتوا، لاگ)"
                value={q}
                onChange={e => { setQ(e.target.value); setIdx(0); }}
                onKeyDown={e => {
-                 if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, list.length - 1)); }
+                 if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, total - 1)); }
                  if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
-                 if (e.key === 'Enter' && list[idx]) { list[idx].run(); onClose(false); }
+                 if (e.key === 'Enter') runAt(idx);
                }} />
-        <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-          {list.map((c, i) => (
+        <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+          {!(q.trim().length >= 2 && results) && list.map((c, i) => (
             <div key={c.label} className={`opt ${i === idx ? 'on' : ''}`}
                  onMouseEnter={() => setIdx(i)}
                  onClick={() => { c.run(); onClose(false); }}>
@@ -188,7 +228,31 @@ export function Palette({ open, onClose, commands }) {
               <span className="spacer" /><span className="muted">{c.hint}</span>
             </div>
           ))}
-          {!list.length && <div className="center-state">نتیجه‌ای نیست</div>}
+          {q.trim().length >= 2 && results && flat.length === 0 && !searching &&
+            <div className="center-state">نتیجه‌ای برای «{q}» نیست</div>}
+          {q.trim().length >= 2 && results && (() => {
+            const groups = [];
+            let lastGroup = null;
+            return flat.map((it, i) => {
+              const head = it.group !== lastGroup
+                ? <div key={'g' + i} className="pal-sec">{it.group}</div> : null;
+              lastGroup = it.group;
+              return (
+                <React.Fragment key={i}>
+                  {head}
+                  <div className={`opt ${i === idx ? 'on' : ''}`}
+                       onMouseEnter={() => setIdx(i)}
+                       onClick={() => runAt(i)}>
+                    <span>{it.icon}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+                    <span className="spacer" /><span className="muted">{it.hint}</span>
+                  </div>
+                </React.Fragment>
+              );
+            });
+          })()}
+          {q.trim().length >= 2 && searching && <div className="center-state" style={{ padding: 18 }}>… در حال جست‌وجو</div>}
+          {!list.length && !(q.trim().length >= 2) && <div className="center-state">نتیجه‌ای نیست</div>}
         </div>
       </div>
     </>
