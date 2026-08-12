@@ -960,8 +960,13 @@ async def content_tree(intake: Optional[str] = Query(None),
     iv = resolve_content_intake(admin, intake)  # '' یا کد ورودی (scope-enforced)
     scope_intakes = ["", iv] if iv else [""]
 
-    lessons = await db.bs_lessons.find(
-        {"term": {"$in": TERMS}, "intake": {"$in": scope_intakes}}).to_list(400)
+    # 🌊 WA3-fix — داکیومنت‌های پیش از موج C1 ممکن است فیلد intake نداشته
+    # باشند؛ با $or آن‌ها را هم می‌آوریم (معادل '' سراسری تلقی می‌شوند).
+    lessons = await db.bs_lessons.find({
+        "term": {"$in": TERMS},
+        "$or": [{"intake": {"$in": scope_intakes}}, {"intake": {"$exists": False}},
+                {"intake": None}],
+    }).to_list(400)
     lesson_ids = [str(l.get("_id")) for l in lessons]
     sessions = await db.bs_sessions.find(
         {"lesson_id": {"$in": lesson_ids}}).to_list(2000) if lesson_ids else []
@@ -992,13 +997,15 @@ async def content_tree(intake: Optional[str] = Query(None),
 
     tree = []
     for term in TERMS:
+        # 🌊 WA3-fix — order/number ممکن است در داکیومنت legacy مفقود یا
+        # None باشند؛ مقایسه‌ی None با int پایتون TypeError می‌دهد (ریشه‌ی 500).
         t_lessons = sorted([l for l in lessons if l.get("term") == term],
-                           key=lambda x: x.get("order", 0))
+                           key=lambda x: (x.get("order") or 0))
         trow = {"term": term, "lessons": []}
         for l in t_lessons:
             lid = str(l.get("_id"))
             l_sessions = sorted([s for s in sessions if s.get("lesson_id") == lid],
-                                key=lambda x: (x.get("number", 0), str(x.get("_id"))))
+                                key=lambda x: ((x.get("number") or 0), str(x.get("_id"))))
             srows = []
             for s in l_sessions:
                 sid = str(s.get("_id"))
@@ -1006,7 +1013,7 @@ async def content_tree(intake: Optional[str] = Query(None),
                 s_intake_effective = s_intake if s_intake else (l.get("intake") or "")
                 fork_of = s.get("fork_of") or ""
                 srows.append({
-                    "id": sid, "number": s.get("number", 0),
+                    "id": sid, "number": s.get("number") or 0,
                     "topic": s.get("topic", ""), "teacher": s.get("teacher", ""),
                     "intake": s_intake_effective,
                     "intake_label": intake_labels.get(s_intake_effective, ""),
@@ -1230,6 +1237,213 @@ async def notif_retry(run_id: str, user=Depends(_perm("notifications.manage"))):
     await _audit(user["id"], f"تلاش مجدد ارسال اعلان ({n} گیرنده)",
                  severity="INFO", target_label=run_id, tags=["retry_notif", "پنل_وب"])
     return {"ok": True, "requeued": n}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA3 — پریتی کامل «مدیریت کاربران» (آینه‌ی دقیق رفتار پنل وب قبلی ولی
+# permission-based؛ هیچ endpoint موجود تغییر نمی‌کند)
+# ══════════════════════════════════════════════════════════════════
+
+class DmIn(BaseModel):
+    text: str
+
+
+@router.post("/users/{uid}/message")
+async def wa_user_message(uid: int, body: DmIn, user=Depends(_perm("users.message"))):
+    """✉️ پیام مستقیم ادمین به کاربر — همان کانال outbox ربات."""
+    text = (body.text or "").strip()
+    if not (1 <= len(text) <= 1500):
+        raise HTTPException(422, "متن پیام باید بین ۱ تا ۱۵۰۰ کاراکتر باشد")
+    target = await db.get_user(uid)
+    if not target:
+        raise HTTPException(404, "کاربر یافت نشد")
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": f"admin_dm", "chat_id": uid,
+        "text": f"📩 <b>پیام از پشتیبانی هامزیار</b>\n\n{text}",
+        "sent": False, "created_at": _now()})
+    await _audit(user["id"], "ارسال پیام مستقیم به کاربر", severity="INFO",
+                 target_id=uid, target_type="user",
+                 target_label=target.get("name", ""), tags=["dm_کاربر", "پنل_وب"])
+    return {"ok": True}
+
+
+class UserActionIn(BaseModel):
+    action: str          # approve|reject|suspend|unsuspend|delete|block|unblock
+    reason: str = ""
+
+
+@router.post("/users/{uid}/action")
+async def wa_user_action(uid: int, body: UserActionIn, user=Depends(_guard_any_admin)):
+    """⚙️ اکشن‌های تکی کاربر — معناشناسی دقیقاً برابر پنل قبلی/ربات + آینه‌ی
+    Inbox مینی‌اپ (سه کلاینت سینک می‌مانند)."""
+    _PERM = {"approve": "users.manage", "reject": "users.manage",
+             "suspend": "users.suspend", "unsuspend": "users.suspend",
+             "delete": "users.delete", "block": "users.delete", "unblock": "users.delete"}
+    need = _PERM.get(body.action)
+    if not need:
+        raise HTTPException(400, "اکشن نامعتبر است")
+    actor = user["id"]
+    if not await db.has_permission(actor, need):
+        raise HTTPException(403, "forbidden")
+    if uid == ADMIN_ID and body.action in ("suspend", "delete", "block", "reject"):
+        raise HTTPException(403, "روی مالک سامانه قابل اعمال نیست")
+    target = await db.get_user(uid)
+    notif = db.client["medicalbot"]["bot_notifications"]
+
+    if body.action == "unblock":
+        ok = await db.unblock_user(uid)
+        if not ok:
+            raise HTTPException(404, "این کاربر در بلک‌لیست نیست")
+        await _audit(actor, "رفع مسدودیت کاربر", severity="HIGH",
+                     target_id=uid, target_type="user", tags=["آنبلاک_کاربر", "پنل_وب"])
+        return {"ok": True}
+    if not target:
+        raise HTTPException(404, "کاربر یافت نشد")
+    label = target.get("name", "")
+
+    if body.action == "approve":
+        await db.update_user(uid, {"approved": True})
+        await notif.insert_one({"type": "user_approved", "chat_id": uid,
+            "text": "✅ <b>حساب شما تأیید شد!</b>\n\nاکنون می‌توانید از هامزیار استفاده کنید.\n/start بزنید.",
+            "sent": False, "created_at": _now()})
+        await db.inbox_add(uid, 'account', "✅ حسابت تأیید شد!",
+            "اکنون به تمام بخش‌های هامزیار دسترسی داری — خوش اومدی! 🎓", link='/')
+        await _audit(actor, "تأیید حساب کاربر", target_id=uid, target_type="user",
+                     target_label=label, tags=["تأیید_کاربر", "پنل_وب"])
+    elif body.action == "reject":
+        await db.users.delete_one({"user_id": uid})
+        await _audit(actor, "رد درخواست عضویت", severity="WARNING", target_id=uid,
+                     target_type="user", target_label=label, tags=["رد_کاربر", "پنل_وب"])
+    elif body.action == "suspend":
+        await db.update_user(uid, {"suspended": True, "approved": False})
+        await notif.insert_one({"type": "user_suspended", "chat_id": uid,
+            "text": "⚠️ دسترسی شما موقتاً تعلیق شد.", "sent": False, "created_at": _now()})
+        await _audit(actor, "تعلیق حساب کاربر", severity="HIGH", target_id=uid,
+                     target_type="user", target_label=label, tags=["تعلیق_کاربر", "پنل_وب"])
+    elif body.action == "unsuspend":
+        await db.update_user(uid, {"suspended": False, "approved": True})
+        await _audit(actor, "رفع تعلیق حساب کاربر", target_id=uid, target_type="user",
+                     target_label=label, tags=["رفع_تعلیق", "پنل_وب"])
+    elif body.action == "delete":
+        await notif.insert_one({"type": "user_deleted", "chat_id": uid,
+            "text": "❌ حساب شما حذف شد.", "sent": False, "created_at": _now()})
+        await db.delete_user(uid)
+        await _audit(actor, "حذف حساب کاربر", severity="CRITICAL", target_id=uid,
+                     target_type="user", target_label=label, tags=["حذف_کاربر", "پنل_وب"])
+    elif body.action == "block":
+        await db.block_user(uid, reason=body.reason or "",
+                            blocked_by=actor, blocked_by_name=(user.get("_db") or {}).get("name", ""))
+        try:
+            await db.blacklist.update_one({"_id": uid}, {"$set": {"name": label}})
+        except Exception:
+            pass
+        await notif.insert_one({"type": "user_blocked", "chat_id": uid,
+            "text": "🚫 حساب شما مسدود شد و امکان ثبت‌نام مجدد ندارید.",
+            "sent": False, "created_at": _now()})
+        await _audit(actor, "مسدودسازی کاربر (بلک‌لیست)", severity="CRITICAL",
+                     target_id=uid, target_type="user", target_label=label,
+                     tags=["بلاک_کاربر", "پنل_وب"])
+    return {"ok": True}
+
+
+class WaUserPatch(BaseModel):
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    group: Optional[str] = None
+    intake: Optional[str] = None
+    student_id: Optional[str] = None
+
+
+@router.patch("/users/{uid}")
+async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.manage"))):
+    """✏️ ویرایش فیلدهای پروفایل — همان whitelist پنل قبلی + لقب از مسیر
+    IdentityService (اعتبارسنجی/audit خودکار داخل db)."""
+    if not await db.get_user(uid):
+        raise HTTPException(404, "کاربر یافت نشد")
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name.strip()[:80]
+    if body.group is not None:
+        updates["group"] = body.group
+    if body.intake is not None:
+        updates["intake"] = body.intake
+    if body.student_id is not None:
+        updates["student_id"] = body.student_id.strip()[:40]
+    nick_note = ""
+    if body.nickname is not None:
+        ok, err, _info = await db.set_nickname(
+            uid, body.nickname, changed_by=f"admin:{user['id']}", reason="پنل وب‌ادمین")
+        if not ok:
+            raise HTTPException(422, f"لقب نامعتبر: {err}")
+        nick_note = " + لقب"
+    if updates:
+        await db.update_user(uid, updates)
+    if updates or body.nickname is not None:
+        await _audit(user["id"], "ویرایش اطلاعات کاربر" + nick_note, severity="WARNING",
+                     target_id=uid, target_type="user",
+                     target_label=" / ".join(f"{k}: {v}" for k, v in updates.items())[:300],
+                     tags=["ویرایش_کاربر", "پنل_وب"])
+    return {"ok": True, "changed": list(updates.keys()) + (["nickname"] if body.nickname is not None else [])}
+
+
+@router.get("/blacklist")
+async def wa_blacklist(user=Depends(_perm("users.view"))):
+    """🚫 بلک‌لیست — همان شکل پنل قبلی."""
+    items = await db.get_blacklist()
+    return {"blacklist": [{
+        "id": b.get("_id"), "name": b.get("name", ""),
+        "blocked_by_name": b.get("blocked_by_name", ""),
+        "blocked_at": str(b.get("blocked_at", ""))[:10]} for b in items]}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA3 — مرتب‌سازی محتوا (reorder) — همان متدهای db که ربات استفاده می‌کند
+# ══════════════════════════════════════════════════════════════════
+
+class ReorderIn(BaseModel):
+    direction: str       # up | down
+
+
+@router.post("/content/lessons/{lid}/reorder")
+async def content_lesson_reorder(lid: str, body: ReorderIn,
+                                 admin=Depends(get_content_admin_user)):
+    lesson = await db.bs_get_lesson(lid)
+    if not lesson:
+        raise HTTPException(404, "درس یافت نشد")
+    if not await db.can_access_intake(admin["id"], lesson.get("intake") or ""):
+        raise HTTPException(403, "intake_out_of_scope")
+    q = {"term": lesson.get("term", ""), "intake": lesson.get("intake") or ""}
+    fn = db.reorder_up if body.direction == "up" else db.reorder_down
+    ok = await fn("bs_lessons", lid, q)
+    return {"ok": bool(ok)}
+
+
+@router.post("/content/sessions/{sid}/reorder")
+async def content_session_reorder(sid: str, body: ReorderIn,
+                                  admin=Depends(get_content_admin_user)):
+    ses = await db.bs_get_session(sid)
+    if not ses:
+        raise HTTPException(404, "جلسه یافت نشد")
+    if not await db.can_access_intake(admin["id"], await db.session_intake(sid)):
+        raise HTTPException(403, "intake_out_of_scope")
+    q = {"lesson_id": ses.get("lesson_id", "")}
+    fn = db.reorder_up if body.direction == "up" else db.reorder_down
+    ok = await fn("bs_sessions", sid, q)
+    return {"ok": bool(ok)}
+
+
+@router.post("/content/items/{cid}/reorder")
+async def content_item_reorder(cid: str, body: ReorderIn,
+                               admin=Depends(get_content_admin_user)):
+    item = await db.bs_get_content_item(cid)
+    if not item:
+        raise HTTPException(404, "فایل یافت نشد")
+    if not await db.can_access_intake(admin["id"], await db.content_intake(cid)):
+        raise HTTPException(403, "intake_out_of_scope")
+    sid = item.get("session_id", "")
+    fn = db.reorder_content_up if body.direction == "up" else db.reorder_content_down
+    ok = await fn(cid, sid)
+    return {"ok": bool(ok)}
 
 
 # ══════════════════════════════════════════════════════════════════
