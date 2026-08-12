@@ -10,9 +10,11 @@ import Rbac from './pages/Rbac.jsx';
 import Audit from './pages/Audit.jsx';
 import Content from './pages/Content.jsx';
 import Questions from './pages/Questions.jsx';
+import Exams from './pages/Exams.jsx';
 import Notify from './pages/Notify.jsx';
 import AiAdmin from './pages/AiAdmin.jsx';
 import System from './pages/System.jsx';
+import Settings from './pages/Settings.jsx';
 import Analytics from './pages/Analytics.jsx';
 
 const NAV = [
@@ -25,10 +27,12 @@ const NAV = [
   { path: '/subscriptions', icon: '💎', label: 'اشتراک‌ها و رسیدها' },
   { path: '/notify',     icon: '🔔', label: 'اعلان‌ها و همگانی' },
   { sec: 'محتوا' },
-  { path: '/content',    icon: '📚', label: 'مدیریت محتوا' },
+  { path: '/content',    icon: '📚', label: 'مرکز فرماندهی محتوا' },
   { path: '/questions',  icon: '🧪', label: 'بازبینی سوالات' },
+  { path: '/exams',      icon: '📝', label: 'آزمون‌ها' },
   { path: '/ai',         icon: '🤖', label: 'هوشیار' },
   { sec: 'سیستم' },
+  { path: '/settings',   icon: '⚙️', label: 'تنظیمات' },
   { path: '/rbac',       icon: '🛡', label: 'نقش‌ها و مجوزها' },
   { path: '/audit',      icon: '🧭', label: 'لاگ حسابرسی' },
   { path: '/system',     icon: '🖥', label: 'سلامت سامانه' },
@@ -69,6 +73,30 @@ export default function App() {
     { icon: '🚪', label: 'خروج از حساب', hint: 'logout', run: async () => { try { await api.logout(); } catch {} setMe(null); } },
   ], [go]);
 
+  // 🔎🌊 WA2.5 — جست‌وجوی سراسری پالت (گروه‌بندی‌شده → ناوبری مستقیم)
+  const paletteSearch = async (q) => {
+    const r = await api.waSearch(q);
+    const out = [];
+    (r.users || []).forEach(u => out.push({
+      group: 'کاربران', icon: '👤',
+      label: `${u.name || '—'} · ${u.student_id || u.id}`,
+      hint: u.intake || '', go: `/users`,
+    }));
+    (r.tickets || []).forEach(t => out.push({
+      group: 'تیکت‌ها', icon: '🎫', label: `#${t.id} ${t.subject}`, hint: t.status, go: '/tickets',
+    }));
+    (r.questions || []).forEach(x => out.push({
+      group: 'سؤال‌ها', icon: '🧪', label: x.text, hint: `${x.lesson} · ${x.topic}`, go: '/questions',
+    }));
+    (r.content || []).forEach(c => out.push({
+      group: 'محتوا', icon: '📚', label: c.title || '—', hint: c.type, go: '/content',
+    }));
+    (r.audit || []).forEach(a => out.push({
+      group: 'رویدادها', icon: '🧭', label: `${a.actor} — ${a.action}`, hint: a.at, go: '/audit',
+    }));
+    return out;
+  };
+
   if (me === undefined) {
     return <div className="login-hero"><div className="skel" style={{ width: 200, height: 60 }} /></div>;
   }
@@ -82,8 +110,8 @@ export default function App() {
   const Page = {
     '/dashboard': Dashboard, '/users': Users, '/tickets': Tickets,
     '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
-    '/content': Content, '/questions': Questions, '/notify': Notify,
-    '/ai': AiAdmin, '/system': System, '/analytics': Analytics,
+    '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
+    '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   }[route.split('?')[0]] || Dashboard;
 
   return (
@@ -128,7 +156,7 @@ export default function App() {
         </div>
       </div>
 
-      <Palette open={pal} onClose={setPal} commands={commands} />
+      <Palette open={pal} onClose={setPal} commands={commands} search={paletteSearch} go={go} />
       <ToastHost />
     </div>
   );
