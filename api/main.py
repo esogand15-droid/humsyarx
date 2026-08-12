@@ -29,6 +29,7 @@ from api.routers import (
     subscription,
     subscription_management,
     tickets,
+    web_admin,
 )
 from database import db
 
@@ -186,6 +187,13 @@ app.include_router(
     tags=["rbac"],
 )
 
+# 🖥️ موج WA — Web Admin API (احراز هویت OTP + سشن، داشبورد و اکشن‌های وب)
+app.include_router(
+    web_admin.router,
+    prefix="/api/web-admin",
+    tags=["web-admin"],
+)
+
 
 @app.get("/api/health")
 async def health():
@@ -193,3 +201,33 @@ async def health():
         "status": "ok",
         "version": "2.0.0",
     }
+
+
+# ──────────────────────────────────────────────────────────
+#  🖥️ موج WA — سرو Web Admin SPA روی همان دامنه‌ی Railway:
+#  /admin/* → فایل‌های استاتیک build فرانت (webadmin/dist)
+#  - SPA fallback: هر مسیر /admin/... بدون فایل ⇒ index.html
+#  - /api/* و سایر routeهای فعلی کاملاً دست‌نخورده‌اند.
+# ──────────────────────────────────────────────────────────
+_WA_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "webadmin", "dist")
+if os.path.isdir(_WA_DIST):
+    from fastapi.staticfiles import StaticFiles
+
+    class _WebAdminSPA(StaticFiles):
+        """StaticFiles + fallback به index.html برای مسیرهای SPA (بدون تغییر 404های /api)."""
+
+        async def get_response(self, path: str, scope):   # noqa: D401
+            from starlette.exceptions import HTTPException as StarletteHTTPException
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code == 404:
+                    return await super().get_response("index.html", scope)
+                raise
+
+    app.mount("/admin", _WebAdminSPA(directory=_WA_DIST, html=True), name="web-admin-spa")
+else:
+    @app.get("/admin")
+    async def _wa_not_built():
+        return {"detail": "web-admin build not present (webadmin/dist)"}
