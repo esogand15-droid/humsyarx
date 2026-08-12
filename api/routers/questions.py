@@ -411,19 +411,16 @@ async def get_lessons(
         if text(item)
     })
 
+    # 🌊 Q2-W10 — شمارش گروهی با یک کوئری به‌جای N+1 count_documents
+    _lcounts = {}
+    async for _q in db.questions.find({"approved": True, **scope_q}):
+        _lv = _q.get('lesson')
+        _lcounts[_lv] = _lcounts.get(_lv, 0) + 1
+
     result = []
 
     for name in names:
-        count = (
-            await db.questions
-            .count_documents(
-                {
-                    "lesson": name,
-                    "approved": True,
-                    **scope_q,
-                }
-            )
-        )
+        count = _lcounts.get(name, 0)
 
         result.append({
             "name": name,
@@ -477,20 +474,17 @@ async def get_topics(
         if text(item)
     })
 
+    # 🌊 Q2-W10 — شمارش گروهی با یک کوئری به‌جای N+1 count_documents
+    _tcounts = {}
+    async for _q in db.questions.find(
+            {"lesson": lesson, "approved": True, **scope_q}):
+        _tv = _q.get('topic')
+        _tcounts[_tv] = _tcounts.get(_tv, 0) + 1
+
     result = []
 
     for topic in names:
-        count = (
-            await db.questions
-            .count_documents(
-                {
-                    "lesson": lesson,
-                    "topic": topic,
-                    "approved": True,
-                    **scope_q,
-                }
-            )
-        )
+        count = _tcounts.get(topic, 0)
 
         result.append({
             "name": topic,
