@@ -13,7 +13,36 @@ const EXT_MAP = { pdf: 'pdf', ppt: 'ppt', pptx: 'ppt', mp4: 'video', mov: 'video
 
 // 📚🌊 WA2.1 — مرکز فرماندهی محتوا: درخت ترم→درس→جلسه، fork-aware،
 // آپلود چندفایلی با پیشنهاد نوع، کلون/انتقال/حذف گروهی — بدون ترک صفحه.
+// 🌊 WA3 — پوسته‌ی چندتبه: علوم پایه + رفرنس‌ها + کلاس‌ها + بانک سؤال + راهنما
+import { RefsTab, ScheduleTab, QbankTab, FaqTab } from './contentTabs.jsx';
+
+const CCONTENT_TABS = [
+  ['bs', '📚 علوم پایه'],
+  ['refs', '📖 رفرنس‌ها'],
+  ['schedule', '🗓 کلاس‌ها/برنامه'],
+  ['qbank', '🧪 بانک سؤال'],
+  ['faq', '❓ راهنما/FAQ'],
+];
+
 export default function Content() {
+  const [tab, setTab] = useState('bs');
+  return (
+    <>
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        {CCONTENT_TABS.map(([k, label]) => (
+          <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </div>
+      {tab === 'bs' && <BsTab />}
+      {tab === 'refs' && <RefsTab />}
+      {tab === 'schedule' && <ScheduleTab />}
+      {tab === 'qbank' && <QbankTab />}
+      {tab === 'faq' && <FaqTab />}
+    </>
+  );
+}
+
+function BsTab() {
   const [intake, setIntake] = useState('');
   const [tree, setTree] = useState(null);
   const [intakes, setIntakes] = useState([]);
@@ -59,6 +88,14 @@ export default function Content() {
   const act = async (fn, okMsg = 'انجام شد') => {
     try { await fn(); toast(okMsg); load(); }
     catch (e) { toast(errText(e), 'err'); }
+  };
+  // 🌊 WA3 — reorder: پاسخ {ok:false} یعنی به مرز لیست رسیده‌ایم (خطا نیست)
+  const reorder = async (fn, okMsg) => {
+    try {
+      const r = await fn();
+      if (r && r.ok === false) return toast('به ابتدا/انتهای لیست رسیده‌اید', 'err');
+      toast(okMsg); load();
+    } catch (e) { toast(errText(e), 'err'); }
   };
   const bulk = async (body) => act(() => api.sessionsBulk(body).then(r => toast(`${r.done} مورد انجام شد`)));
 
@@ -117,6 +154,12 @@ export default function Content() {
                     <B>{l.session_count} جلسه</B>
                     <B kind="acc">{l.content_count} فایل</B>
                     <span className="spacer" />
+                    <button className="btn sm" title="جابه‌جایی بالا"
+                            disabled={t.lessons.findIndex(x => x.id === l.id) <= 0}
+                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
+                    <button className="btn sm" title="جابه‌جایی پایین"
+                            disabled={t.lessons.findIndex(x => x.id === l.id) >= t.lessons.length - 1}
+                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
                     <button className="btn sm" onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕ جلسه</button>
                     <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
                       text: `حذف درس «${l.name}» با همه‌ی جلسات و فایل‌هایش؟`,
@@ -141,6 +184,12 @@ export default function Content() {
                             {Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'}${v}`).join(' ') || '—'}
                           </span>
                           <div className="row" style={{ gap: 3 }}>
+                            <button className="btn sm" title="جابه‌جایی بالا"
+                                    disabled={l.sessions.findIndex(x => x.id === s.id) <= 0}
+                                    onClick={() => reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑')}>↑</button>
+                            <button className="btn sm" title="جابه‌جایی پایین"
+                                    disabled={l.sessions.findIndex(x => x.id === s.id) >= l.sessions.length - 1}
+                                    onClick={() => reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓')}>↓</button>
                             <button className="btn sm" title="فایل‌ها" onClick={() => setFilesOf(s)}>📁 {s.content_count || ''}</button>
                             {s.kind === 'global' && intake &&
                               <button className="btn sm warn" title="ساخت نسخه اختصاصی برای این ورودی"
@@ -266,6 +315,24 @@ function FilesDrawer({ session, onClose }) {
                   <div className="muted">{c.extra_info || ''}</div>
                 </div>
                 <B>{Number(c.downloads || 0).toLocaleString('fa')} DL</B>
+                <button className="btn sm" title="جابه‌جایی بالا"
+                        disabled={items.findIndex(x => x.id === c.id) <= 0}
+                        onClick={async () => {
+                          try {
+                            const r = await api.waReorderItem(c.id, 'up');
+                            if (r && r.ok === false) return toast('به ابتدای لیست رسیده‌اید', 'err');
+                            setChanged(true); load();
+                          } catch (e) { toast(errText(e), 'err'); }
+                        }}>↑</button>
+                <button className="btn sm" title="جابه‌جایی پایین"
+                        disabled={items.findIndex(x => x.id === c.id) >= items.length - 1}
+                        onClick={async () => {
+                          try {
+                            const r = await api.waReorderItem(c.id, 'down');
+                            if (r && r.ok === false) return toast('به انتهای لیست رسیده‌اید', 'err');
+                            setChanged(true); load();
+                          } catch (e) { toast(errText(e), 'err'); }
+                        }}>↓</button>
                 <button className="btn sm danger" onClick={() => del(c.id)}>🗑</button>
               </div>
             ))}
