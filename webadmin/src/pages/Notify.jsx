@@ -12,14 +12,25 @@ export default function Notify() {
   const [count, setCount] = useState(null);
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState(null);
+  const [runs, setRuns] = useState(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {});
-    loadHist();
+    loadHist(); loadRuns();
   }, []);
   const loadHist = async () => {
     try { setHistory((await api.broadcastHistory()).broadcasts || []); } catch { setHistory([]); }
+  };
+  const loadRuns = async () => {
+    try { setRuns((await api.notifRuns()).runs || []); } catch { setRuns([]); }
+  };
+  const retry = async (id) => {
+    try {
+      const r = await api.notifRetry(id);
+      toast(`${r.requeued} گیرنده دوباره در صف قرار گرفت 🔁`);
+      loadRuns();
+    } catch (e) { toast(errText(e), 'err'); }
   };
 
   const preview = async () => {
@@ -102,23 +113,45 @@ export default function Notify() {
         )}
       </div>
 
-      <div className="panel panel-pad">
-        <b>تاریخچه‌ی ارسال‌ها</b>
-        {!history ? <Loading rows={3} /> : !history.length ? <p className="muted" style={{ marginTop: 10 }}>موردی نیست</p> : (
-          <div className="grid" style={{ gap: 8, marginTop: 10 }}>
-            {history.map((h, i) => (
-              <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
-                <div className="row">
-                  <B kind="acc">{Number(h.recipients || h.total || 0).toLocaleString('fa')} نفر</B>
-                  <span className="muted">{(h.created_at || h.at || '').slice(0, 16).replace('T', ' ')}</span>
+      <div className="grid" style={{ gap: 14, alignContent: 'start' }}>
+        <div className="panel panel-pad">
+          <b>تاریخچه‌ی ارسال‌های همگانی</b>
+          {!history ? <Loading rows={3} /> : !history.length ? <p className="muted" style={{ marginTop: 10 }}>موردی نیست</p> : (
+            <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+              {history.map((h, i) => (
+                <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+                  <div className="row">
+                    <B kind="acc">{Number(h.recipients || h.total || 0).toLocaleString('fa')} نفر</B>
+                    <span className="muted">{(h.created_at || h.at || '').slice(0, 16).replace('T', ' ')}</span>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>
+                    {(h.text || '').slice(0, 120)}{(h.text || '').length > 120 ? '…' : ''}
+                  </div>
                 </div>
-                <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>
-                  {(h.text || '').slice(0, 120)}{(h.text || '').length > 120 ? '…' : ''}
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 🌊 WA2.7 — اجراهای جاب‌های اعلان + تلاش مجدد */}
+        <div className="panel panel-pad">
+          <div className="row"><b>🔔 اجراهای اخیر اعلان‌ها</b><span className="spacer" />
+            <button className="btn sm" onClick={loadRuns}>🔄</button></div>
+          {!runs ? <Loading rows={3} /> : !runs.length ? <p className="muted" style={{ marginTop: 10 }}>اجلاسی ثبت نشده — یا مجوز notifications.manage ندارید</p> : (
+            <div className="grid" style={{ gap: 6, marginTop: 10 }}>
+              {runs.map(r => (
+                <div key={r.id} className="row" style={{ padding: '7px 0', borderBottom: '1px solid var(--line)' }}>
+                  <B kind={r.status === 'done' || r.status === 'finished' ? 'ok' : r.failed > 0 ? 'warn' : 'acc'}>{r.status || '—'}</B>
+                  <span style={{ minWidth: 130 }}>{r.job_name}</span>
+                  <span className="muted">✔{r.sent} · ✖{r.failed} · {r.total}</span>
+                  <span className="spacer" />
+                  <span className="muted">{r.started_at}</span>
+                  {r.failed > 0 && <button className="btn sm" onClick={() => retry(r.id)}>🔁 تلاش مجدد</button>}
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
