@@ -1,8 +1,11 @@
 """Subscription administration endpoints."""
 
+import logging
 import re
 
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from fastapi import (
     APIRouter,
@@ -1399,8 +1402,10 @@ async def start_discount_broadcast(
         _defaults = await db.get_notif_defaults()
         users = [u for u in users if db.notif_pref_on(
             u.get("notification_settings", {}), "discounts", _defaults)]
-    except Exception:
-        pass
+    except Exception as e:
+        # 🧹 W5 — فیلتر ترجیحات در صورت خطا fail-open مانده (رفتار قبلی
+        # حفظ شده) ولی دیگر silent نیست: در لاگ ثبت می‌شود
+        logger.warning(f"discount notif-pref filter failed (fail-open): {e}")
     if not users:
         raise HTTPException(status_code=422,
             detail="هیچ مخاطبی در این بخش نیست (پس از اعمال ترجیحات اعلان کاربران).")
@@ -1488,8 +1493,9 @@ async def start_discount_broadcast(
                     if msg_refs:
                         try:
                             await db.discount_bcast_add_msgs(bid, msg_refs)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # 🧹 W5 — از دست رفتن مرجع پیام‌ها silent نماند
+                            logger.warning(f"bcast add_msgs failed ({bid}): {e}")
                         msg_refs = []
                     await db.discount_bcast_update(bid, {
                         "sent": sent, "failed": failed, "blocked": blocked})
@@ -1497,8 +1503,8 @@ async def start_discount_broadcast(
         if msg_refs:
             try:
                 await db.discount_bcast_add_msgs(bid, msg_refs)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"bcast add_msgs final flush failed ({bid}): {e}")
         await db.discount_bcast_update(bid, {
             "status": "cancelled" if cancelled else "completed",
             "sent": sent, "failed": failed,
