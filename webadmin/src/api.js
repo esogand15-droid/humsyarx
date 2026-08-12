@@ -31,10 +31,46 @@ export const api = {
   overview: () => req('/api/web-admin/overview'),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
-  usersBulk: (action, ids) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids } }),
+  usersBulk: (action, ids, value) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
   userAction: (uid, act) => req(`/api/admin/users/${uid}/${act}`, { method: 'POST' }),
+  // ── 🌊 WA2 core ──
+  attention: () => req('/api/web-admin/attention'),
+  activity: (limit = 40) => req(`/api/web-admin/activity?limit=${limit}`),
+  waSearch: (q) => req('/api/web-admin/search?q=' + encodeURIComponent(q)),
+  savedFilters: (scope) => req('/api/web-admin/saved-filters' + (scope ? `?scope=${scope}` : '')),
+  saveFilter: (body) => req('/api/web-admin/saved-filters', { method: 'POST', body }),
+  delFilter: (id) => req(`/api/web-admin/saved-filters/${id}`, { method: 'DELETE' }),
+  user360: (uid) => req(`/api/web-admin/users/${uid}/360`),
+  ticketsBulk: (action, ids) => req('/api/web-admin/tickets/bulk', { method: 'POST', body: { action, ids } }),
+  questionsBulk: (action, ids) => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids } }),
+  settingsCenter: () => req('/api/web-admin/settings/center'),
+  patchSetting: (key, value) => req(`/api/web-admin/settings/center/${encodeURIComponent(key)}`, { method: 'PATCH', body: { value } }),
+  exams: (status) => req('/api/web-admin/exams' + (status ? `?status=${status}` : '')),
+  examCreate: (body) => req('/api/web-admin/exams', { method: 'POST', body }),
+  examUpdate: (id, body) => req(`/api/web-admin/exams/${id}`, { method: 'PATCH', body }),
+  examDelete: (id) => req(`/api/web-admin/exams/${id}`, { method: 'DELETE' }),
+  examStats: () => req('/api/web-admin/exams/stats'),
+  waAnalytics: () => req('/api/web-admin/wa-analytics'),
+  notifRuns: (job) => req('/api/web-admin/notif/runs' + (job ? `?job_name=${job}` : '')),
+  notifRetry: (id) => req(`/api/web-admin/notif/runs/${id}/retry`, { method: 'POST' }),
+  // ── 🌊 WA2.1 Content Command Center ──
+  contentTree: (intake) => req('/api/web-admin/content/tree' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
+  dupSession: (sid) => req(`/api/web-admin/content/sessions/${sid}/duplicate`, { method: 'POST' }),
+  sessionsBulk: (body) => req('/api/web-admin/content/sessions/bulk', { method: 'POST', body }),
+  itemsBulk: (body) => req('/api/web-admin/content/items/bulk', { method: 'POST', body }),
+  caSessionContent: (sid) => req(`/api/content/basic-science/sessions/${sid}/content`),
+  caAddContent: (sid, form) => req(`/api/content/basic-science/sessions/${sid}/content`, { method: 'POST', form }),
+  caDelContent: (cid) => req(`/api/content/basic-science/content/${cid}`, { method: 'DELETE' }),
+  caAddSession: (lid, body) => req(`/api/content/basic-science/lessons/${lid}/sessions`, { method: 'POST', body }),
+  caDelSession: (sid) => req(`/api/content/basic-science/sessions/${sid}`, { method: 'DELETE' }),
+  caForkSession: (sid, intake) => req(`/api/content/basic-science/sessions/${sid}/fork?intake=${encodeURIComponent(intake)}`, { method: 'POST' }),
+  caUnforkSession: (sid) => req(`/api/content/basic-science/sessions/${sid}/fork`, { method: 'DELETE' }),
+  caAddLesson: (body) => req('/api/content/basic-science/lessons', { method: 'POST', body }),
+  caDelLesson: (lid) => req(`/api/content/basic-science/lessons/${lid}`, { method: 'DELETE' }),
+  caReports: (status) => req('/api/content/reports' + (status ? `?status=${status}` : '')),
+  caReportStatus: (rid, status) => req(`/api/content/reports/${rid}/status`, { method: 'POST', body: { status } }),
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
   botStatus: () => req('/api/admin/bot-status'),
@@ -59,6 +95,7 @@ export const api = {
   createRole: (body) => req('/api/admin/rbac/roles', { method: 'POST', body }),
   patchRole: (k, body) => req(`/api/admin/rbac/roles/${k}`, { method: 'PATCH', body }),
   deleteRole: (k) => req(`/api/admin/rbac/roles/${k}`, { method: 'DELETE' }),
+  roleOf: (uid) => req(`/api/admin/rbac/users/${uid}`),
   // ── subscription admin ──
   subOverview: () => req('/api/subscription-admin/overview'),
   subPayments: (p) => req('/api/subscription-admin/payments?' + new URLSearchParams(p || {})),
@@ -83,6 +120,21 @@ export function errText(e) {
     admin_only: 'این بخش فقط برای مالک سامانه است',
     not_registered: 'حساب یافت نشد',
     missing_init_data: 'نشست منقضی شده — دوباره وارد شوید',
+    intake_out_of_scope: 'این مورد خارج از scope ورودی شماست',
+    content_admin_only: 'این بخش فقط برای مدیر محتواست',
   };
   return map[d] || d || 'خطای ناشناخته';
+}
+
+// 📥 خروجی CSV سمت کلاینت (بدون رفت‌وبرگشت سرور)
+export function exportCSV(filename, columns, rows) {
+  const esc = v => '"' + String(v ?? '').replaceAll('"', '""') + '"';
+  const lines = [columns.map(c => esc(c.label)).join(',')];
+  for (const r of rows) lines.push(columns.map(c => esc(typeof c.v === 'function' ? c.v(r) : r[c.v])).join(','));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
