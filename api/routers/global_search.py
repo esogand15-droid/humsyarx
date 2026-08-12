@@ -404,20 +404,54 @@ async def search(
         })
 
 
+    # ⚡ W1 — prefetch گروهی (ضد N+1): قبلاً به‌ازای هر کتاب یک
+    # resolver‌کوئری + یک کوئری fork می‌رفت؛ حالا موضوع والد و forkها
+    # یک‌جا با $in خوانده می‌شوند. معنای ref_book_intake عیناً حفظ شده:
+    # intake صریح کتاب (fork) مقدم بر intake موضوع والد است.
+    if _filt is not None and books:
+        from bson import ObjectId as _OId
+
+        def _safe_oid(v):
+            try:
+                return _OId(text(v))
+            except Exception:
+                return None
+
+        _need_subj = {
+            text(b.get("subject_id"))
+            for b in books if "intake" not in b
+        }
+        _soids = [o for o in (_safe_oid(x) for x in _need_subj) if o]
+        _sdocs = await db.ref_subjects.find(
+            {"_id": {"$in": _soids}}).to_list(50) if _soids else []
+        _subj_intake = {
+            text(s.get("_id")): s.get("intake") or ""
+            for s in _sdocs
+        }
+
+        _viewer = next((v for v in _filt if v), "")
+        _suppressed = set()
+        if _viewer:
+            _fdocs = await db.ref_books.find({
+                "intake": _viewer,
+                "fork_of": {"$in": [text(b.get("_id")) for b in books]},
+            }).to_list(50)
+            _suppressed = {text(f.get("fork_of")) for f in _fdocs}
+
     for item in books:
         # 🌊 C1.5 — کتاب فرزند موضوع است؛ scope از resolver والد می‌آید
-        if _filt is not None and (
-            await db.ref_book_intake(text(item.get("_id")))
-        ) not in _filt:
-            continue
-
-        # 🍴 Q1 — baseای که برای ورودیِ بیننده fork دارد سرکوب می‌شود
-        # (جستجو نباید نسخه‌ی سراسری+اختصاصی را با هم تکراری نشان دهد)
         if _filt is not None:
-            _viewer = next((v for v in _filt if v), "")
-            if _viewer and await db.book_superseded_by_fork(
-                text(item.get("_id")), _viewer
-            ):
+            _bi = (
+                (item.get("intake") or "")
+                if "intake" in item
+                else _subj_intake.get(text(item.get("subject_id")), "")
+            )
+            if _bi not in _filt:
+                continue
+
+            # 🍴 Q1 — baseای که برای ورودیِ بیننده fork دارد سرکوب می‌شود
+            # (جستجو نباید نسخه‌ی سراسری+اختصاصی را با هم تکراری نشان دهد)
+            if _viewer and text(item.get("_id")) in _suppressed:
                 continue
 
         results.append({
