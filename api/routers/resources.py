@@ -117,12 +117,16 @@ async def terms(
         }
     )
 
+    # 🌊 Q2-W10 — شمارش گروهی با یک کوئری به‌جای N+1 count_documents
+    _tcounts = {}
+    async for _d in db.bs_lessons.find(fq):
+        _t = _d.get('term')
+        _tcounts[_t] = _tcounts.get(_t, 0) + 1
+
     result = []
 
     for term in term_names:
-        count = await db.bs_lessons.count_documents(
-            dict(fq, term=term)
-        )
+        count = _tcounts.get(term, 0)
 
         result.append(
             {
@@ -149,6 +153,12 @@ async def lessons(
         intake=await _viewer_intake(user),
     )
 
+    # 🌊 Q2-W10 — شمارش گروهی جلسات با یک کوئری به‌جای N+1 count_documents
+    _scounts = {}
+    async for _s in db.bs_sessions.find({}):
+        _lid = _s.get('lesson_id')
+        _scounts[_lid] = _scounts.get(_lid, 0) + 1
+
     result = []
 
     for item in (
@@ -163,13 +173,7 @@ async def lessons(
         if not lesson_id:
             continue
 
-        session_count = (
-            await db.bs_sessions.count_documents(
-                {
-                    "lesson_id": lesson_id,
-                }
-            )
-        )
+        session_count = _scounts.get(lesson_id, 0)
 
         result.append(
             {
@@ -216,6 +220,12 @@ async def sessions(
         intake=await _viewer_intake(user),
     )
 
+    # 🌊 Q2-W10 — شمارش گروهی فایل‌ها با یک کوئری به‌جای N+1 count_documents
+    _fcounts = {}
+    async for _f in db.bs_content.find({}):
+        _sid = _f.get('session_id')
+        _fcounts[_sid] = _fcounts.get(_sid, 0) + 1
+
     result = []
 
     for item in (
@@ -230,13 +240,7 @@ async def sessions(
         if not session_id:
             continue
 
-        file_count = (
-            await db.bs_content.count_documents(
-                {
-                    "session_id": session_id,
-                }
-            )
-        )
+        file_count = _fcounts.get(session_id, 0)
 
         result.append(
             {
