@@ -85,6 +85,10 @@ class DBCore:
         # سشن‌های HttpOnly. افزایشی است؛ هیچ مسیر فعلی تغییر نمی‌کند.
         self.web_admin_otps     = _db['web_admin_otps']
         self.web_admin_sessions = _db['web_admin_sessions']
+        # 🖥️🌊 موج WA2 — افزایشی: فیلترهای ذخیره‌شده‌ی وب‌ادمین (per-admin)
+        # و متای آخرین تغییر تنظیمات (Last-Modified-By/At) برای Settings Center.
+        self.wa_saved_filters  = _db['wa_saved_filters']
+        self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # FIX جدید: سیستم اشتراک — پلن‌ها، وضعیت هر کاربر، رسیدهای
         # در انتظار بررسی، و کدهای تخفیف
