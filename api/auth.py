@@ -3,10 +3,12 @@ import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 
 from database import db
 
@@ -78,9 +80,55 @@ def verify_telegram_init_data(init_data: str) -> dict:
     return user
 
 
+# ──────────────────────────────────────────────────────────
+#  🖥️ موج WA — Web Admin Session (HttpOnly cookie)
+#  مسیر initData عیناً حفظ شده و همیشه در اولویت است؛ اگر هدر
+#  نبود و کوکی wa_session معتبر بود، همان dict کاربر ساخته می‌شود.
+# ──────────────────────────────────────────────────────────
+WA_SESSION_COOKIE = "wa_session"
+WA_SESSION_TTL_H = 12
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def new_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+async def resolve_web_session(token: str) -> dict | None:
+    """توکن خام کوکی را به سند سشن معتبر نگاشت می‌کند (expiry/revoke چک‌شده)."""
+    if not token:
+        return None
+    now = datetime.utcnow().isoformat()
+    doc = await db.web_admin_sessions.find_one({
+        "_id": _hash_token(token),
+        "revoked": False,
+        "expires_at": {"$gt": now},
+    })
+    return doc
+
+
 async def get_current_user(
+    request: Request,
     x_init_data: str = Header(default="", alias="X-Init-Data"),
 ) -> dict:
+    if not x_init_data:
+        # 🖥️ WA — fallback سشن وب‌ادمین (فقط وقتی هدر غایب است)
+        sess = await resolve_web_session(request.cookies.get(WA_SESSION_COOKIE, ""))
+        if sess:
+            uid = int(sess["uid"])
+            db_user = await db.get_user(uid)
+            if not db_user:
+                raise HTTPException(status_code=403, detail="not_registered")
+            if not db_user.get("approved"):
+                raise HTTPException(status_code=403, detail="pending_approval")
+            if db_user.get("suspended"):
+                raise HTTPException(status_code=403, detail="suspended")
+            return {"id": uid, "first_name": db_user.get("name", ""),
+                    "_db": db_user, "_wa_session": sess}
+        raise _auth_error("missing_init_data")
     tg_user = verify_telegram_init_data(x_init_data)
     try:
         uid = int(tg_user["id"])
