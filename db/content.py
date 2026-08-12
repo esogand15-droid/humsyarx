@@ -444,7 +444,9 @@ class DBContent:
 
     async def _normalize_order(self, col, query_filter: dict):
         items = await col.find(query_filter).to_list(1000)
-        items.sort(key=lambda x: (x.get('order', 99999), str(x['_id'])))
+        # 🌊 WA3-fix — order مفقود/None در داکیومنت legacy مقایسه را نمی‌شکند
+        items.sort(key=lambda x: ((x.get('order') if isinstance(x.get('order'), int) else 99999),
+                                  str(x['_id'])))
         updates = []
         for i, item in enumerate(items):
             if item.get('order') != i:
