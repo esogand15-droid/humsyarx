@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, toast, Modal } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, toast, Modal, Confirm } from '../ui.jsx';
 
-// 🧪 صف بازبینی سوالات (scope-aware) — approve/reject از API content_admin
+// 🧪 صف بازبینی سوالات (scope-aware) + ⚡ WA2.4 تأیید/رد گروهی
 export default function Questions() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [view, setView] = useState(null);
+  const [sel, setSel] = useState([]);
+  const [confirm, setConfirm] = useState(null);
 
   const load = async () => {
     setErr('');
@@ -25,11 +27,20 @@ export default function Questions() {
     } catch (e) { toast(errText(e), 'err'); }
   };
 
+  const bulk = async (action) => {
+    if (!sel.length) return;
+    try {
+      const r = await api.questionsBulk(action, sel);
+      toast(`${r.done} سؤال ${action === 'approve' ? 'تأیید' : 'رد'} شد`);
+      setSel([]); load();
+    } catch (e) { toast(errText(e), 'err'); }
+  };
+
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const cols = [
     { k: 'question', label: 'سؤال', render: r => (
-      <div style={{ maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {r.question || r.text}</div>) },
     { k: 'lesson', label: 'درس' },
     { k: 'topic', label: 'مبحث' },
@@ -49,9 +60,18 @@ export default function Questions() {
 
   return (
     <>
-      <div className="h1">بازبینی سوالات</div>
-      <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید</div>
+      <div className="row">
+        <div><div className="h1">بازبینی سوالات</div>
+          <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید — تک‌تک یا گروهی</div></div>
+        <span className="spacer" />
+        {sel.length > 0 && <>
+          <span className="badge acc">{sel.length} انتخاب‌شده</span>
+          <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
+          <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
+        </>}
+      </div>
       {!rows ? <Loading /> : <DataTable columns={cols} rows={rows} rowKey="id"
+        selectable onSelect={setSel}
         empty={<div className="center-state">🎉 صف بازبینی خالی است</div>} />}
       {view && (
         <Modal title="مشاهده سؤال" onClose={() => setView(null)}>
@@ -66,6 +86,12 @@ export default function Questions() {
           </div>
           {view.explanation && <p className="muted" style={{ marginTop: 10 }}>💡 {view.explanation}</p>}
         </Modal>
+      )}
+      {confirm && (
+        <Confirm text={`${confirm.action === 'approve' ? 'تأیید' : 'رد'} ${confirm.n} سؤال انتخاب‌شده؟ (فقط موارد داخل scope شما پردازش می‌شوند)`}
+                 danger={confirm.action === 'reject'}
+                 onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
+                 onNo={() => setConfirm(null)} />
       )}
     </>
   );
