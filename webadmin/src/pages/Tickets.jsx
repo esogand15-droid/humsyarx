@@ -11,6 +11,16 @@ export default function Tickets() {
   const [detail, setDetail] = useState(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState([]);   // ⚡ WA2.4 — انتخاب گروهی
+
+  const bulk = async (action) => {
+    if (!sel.length) return;
+    try {
+      const r = await api.ticketsBulk(action, sel);
+      toast(`${r.done} تیکت ${action === 'close' ? 'بسته' : 'بازگشایی'} شد`);
+      setSel([]); load();
+    } catch (e) { toast(errText(e), 'err'); }
+  };
 
   const load = async () => {
     setErr('');
@@ -44,10 +54,19 @@ export default function Tickets() {
     <>
       <div className="h1">کنسول تیکت‌ها</div>
       <div className="sub">پاسخ، بستن و بازگشایی — بدون ترک صفحه</div>
-      <div className="tabs">
-        {[['', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']].map(([k, v]) => (
-          <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
-        ))}
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div className="tabs" style={{ flex: 1, marginBottom: sel.length ? 0 : 14 }}>
+          {[['', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']].map(([k, v]) => (
+            <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
+          ))}
+        </div>
+        {sel.length > 0 && (
+          <div className="row" style={{ marginBottom: 6 }}>
+            <span className="badge acc">{sel.length} انتخاب‌شده</span>
+            <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
+            <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button>
+          </div>
+        )}
       </div>
       <div className="grid" style={{ gridTemplateColumns: '300px 1fr', alignItems: 'start' }}>
         <div className="panel" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
@@ -58,6 +77,10 @@ export default function Tickets() {
                  style={{ cursor: 'pointer', borderBottom: '1px solid var(--line)',
                           background: cur === (t.id || t.tid) ? 'var(--panel2)' : '' }}
                  onClick={() => open(t)}>
+              <input type="checkbox" checked={sel.includes(t.id || t.tid)}
+                     onClick={e => e.stopPropagation()}
+                     onChange={() => setSel(x => x.includes(t.id || t.tid)
+                       ? x.filter(i => i !== (t.id || t.tid)) : [...x, t.id || t.tid])} />
               <span>🎫</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
