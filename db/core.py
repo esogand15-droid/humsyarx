@@ -81,6 +81,10 @@ class DBCore:
         self.user_roles   = _db['user_roles']
         self.perm_catalog = _db['perm_catalog']
         self.migrations   = _db['migrations']        # 🌊 C1 — وضعیت مهاجرت‌ها
+        # 🖥️ موج WA (Web Admin) — احراز هویت مستقل دسکتاپ: OTP تلگرامی +
+        # سشن‌های HttpOnly. افزایشی است؛ هیچ مسیر فعلی تغییر نمی‌کند.
+        self.web_admin_otps     = _db['web_admin_otps']
+        self.web_admin_sessions = _db['web_admin_sessions']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # FIX جدید: سیستم اشتراک — پلن‌ها، وضعیت هر کاربر، رسیدهای
         # در انتظار بررسی، و کدهای تخفیف
