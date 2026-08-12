@@ -27,37 +27,14 @@ async def resources_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     parts = data.split(':')
 
     if data.startswith('download_resource:'):
-        rid = parts[1]
-        resource = await db.get_resource(rid)
-        if not resource:
-            await query.answer("❌ فایل پیدا نشد!", show_alert=True)
-            return
-        await db.inc_download(rid, update.effective_user.id)
-        m = resource['metadata']
-        rtype = resource.get('type', '')
-        caption = (
-            f"{rtype} <b>{resource.get('lesson','')} / {resource.get('topic','')}</b>\n"
-            f"📌 نسخه {m.get('version','1')} | {'⭐'*m.get('importance',3)}\n"
-            f"🏷 {', '.join(m.get('tags',[]))}\n"
-            f"📝 {m.get('description','')}"
-        )
-        # ویس = ارسال به عنوان audio
-        if '🎙' in rtype:
-            try:
-                await context.bot.send_audio(update.effective_chat.id, resource['file_id'],
-                                              caption=caption, parse_mode='HTML')
-                return
-            except:
-                pass
-        try:
-            await context.bot.send_document(update.effective_chat.id, resource['file_id'],
-                                            caption=caption, parse_mode='HTML')
-        except:
-            try:
-                await context.bot.send_voice(update.effective_chat.id, resource['file_id'],
-                                             caption=caption, parse_mode='HTML')
-            except:
-                await query.answer("❌ خطا در ارسال فایل!", show_alert=True)
+        # 🧹 W4 (موج Q2) — مسیر legacy: db.get_resource دیگر وجود ندارد و
+        # تولیدکننده‌ی جدید این callback از موج Q1 حذف شده است. فقط دکمه‌های
+        # پیام‌های خیلی قدیمی ممکن است هنوز این‌جا برسند — به‌جای crash
+        # (AttributeError در error_handler)، پیام سازگار می‌دهیم.
+        await query.answer(
+            "ℹ️ این دکمه مربوط به نسخه‌ی قدیمی است؛\n"
+            "لطفاً از منوی «📚 منابع» یا جستجو دوباره استفاده کنید.",
+            show_alert=True)
         return
 
     action = parts[1] if len(parts) > 1 else 'main'
