@@ -69,6 +69,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 🛡🌊 WA2.9 — سربرگ‌های امنیتی (افزایشی؛ هیچ پاسخ/رفتار فعلی تغییر نمی‌کند):
+# برای همه‌ی مسیر‌ها nosniff/no-referrer-safe؛ CSP سخت‌گیر فقط روی /admin
+# (SPA وب‌ادمین) اعمال می‌شود تا مینی‌اپ/وب‌هوک‌های دیگر دست‌نخورده بمانند.
+@app.middleware("http")
+async def _wa2_security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    try:
+        path = request.url.path or ""
+    except Exception:
+        path = ""
+    if path.startswith("/admin"):
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+    return resp
+
+
 # 🗜 موج ۴.۶۰ — فشرده‌سازی پاسخ‌های JSON بزرگ؛
 # payloadهای چند‌ده‌KB (لیست کاربران/رسیدها/آمار)
 # روی شبکه‌ی موبایل محسوس کوچک‌تر و سریع‌تر می‌شوند.
