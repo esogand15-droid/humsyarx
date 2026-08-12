@@ -137,6 +137,141 @@ def _back_btn(label, cb):
 # ══════════════════════════════════════════════════════════
 #  Callback اصلی
 # ══════════════════════════════════════════════════════════
+
+async def _audit(context, uid, action, *, severity='INFO', details='',
+                 target_id='', target_type='', target_label='', tags=None):
+    """🧹 موج Q2/W6 — helper مشترک audit پنل محتوا (حذف ۱۲ بلوک تکراری).
+    فرمت/رفتار لاگ عیناً حفظ شده؛ خطای audit هرگز اقدام اصلی را نمی‌شکند."""
+    try:
+        from utils import send_audit_log
+        actor = await db.get_user(uid)
+        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
+        await send_audit_log(
+            context.bot, 'content', actor_name, uid, action,
+            module='Content', severity=severity,
+            actor_role=await db.get_actor_role_label(uid),
+            target_id=target_id, target_type=target_type, target_label=target_label,
+            details=details, tags=tags)
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════
+#  🌊 Q2-W9 — هندلرهای Fork/Unfork استخراج‌شده از content_admin_callback
+#  (بدون تغییر رفتار؛ scope/audit و ترتیب پیام‌ها عیناً حفظ شده)
+# ══════════════════════════════════════════════════════════
+async def _h_fork_session(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
+    """شاخه‌ی fork_session — ساخت نسخه‌ی اختصاصی جلسه برای ورودی هدف."""
+    base_id = parts[2]
+    _target = (_cscope.get('intake') or '') if is_scoped \
+        else (context.user_data.get('ca_intake') or '')
+    if not _target:
+        await query.answer(
+            "ℹ️ سفارشی‌سازی روی سطل سراسری معنا ندارد؛ "
+            "ابتدا یک ورودی را انتخاب کنید.", show_alert=True)
+        return ConversationHandler.END
+    new_sid = await db.bs_fork_session(base_id, _target)
+    if not new_sid:
+        await query.answer("❌ فقط جلسه‌ی سراسری قابل سفارشی‌سازی است.",
+                           show_alert=True)
+        return ConversationHandler.END
+    try:
+        _base = await db.bs_get_session(base_id) or {}
+        await _audit(context, uid, "ساخت نسخه‌ی اختصاصی (Fork) جلسه",
+            severity='INFO',
+            details=(f"🍴 Fork Session: {_base.get('topic', '')}\n"
+                     f"🏷 ورودی: {await _intake_label(_target)}"),
+            tags=['فورک_محتوا'])
+    except Exception:
+        pass
+    await query.answer("⭐ نسخه‌ی اختصاصی ساخته شد — حالا قابل ویرایش است")
+    _ls = await db.bs_get_session(base_id)
+    await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
+    return ConversationHandler.END
+
+
+async def _h_unfork_session(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
+    """شاخه‌ی unfork_session — بازگردانی جلسه‌ی فورک‌شده به سراسری."""
+    fork_id = parts[2]
+    _fi = await db.session_intake(fork_id)
+    if not await db.can_access_intake(uid, _fi):
+        await _deny_scope(query, uid)
+        return ConversationHandler.END
+    base_id = await db.bs_unfork_session(fork_id)
+    if not base_id:
+        await query.answer("❌ این جلسه نسخه‌ی اختصاصی نیست.",
+                           show_alert=True)
+        return ConversationHandler.END
+    try:
+        await _audit(context, uid, "بازگردانی جلسه به نسخه‌ی سراسری (حذف Fork)",
+            severity='INFO',
+            details=f"↩️ Unfork Session\n🏷 ورودی: {await _intake_label(_fi)}",
+            tags=['فورک_محتوا'])
+    except Exception:
+        pass
+    await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
+    _ls = await db.bs_get_session(base_id)
+    await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
+    return ConversationHandler.END
+
+
+async def _h_fork_book(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
+    """شاخه‌ی fork_book — ساخت نسخه‌ی اختصاصی کتاب رفرنس برای ورودی هدف."""
+    base_bid = parts[2]
+    _target = (_cscope.get('intake') or '') if is_scoped \
+        else (context.user_data.get('ca_intake') or '')
+    if not _target:
+        await query.answer(
+            "ℹ️ سفارشی‌سازی روی سطل سراسری معنا ندارد؛ "
+            "ابتدا یک ورودی را انتخاب کنید.", show_alert=True)
+        return ConversationHandler.END
+    new_bid = await db.ref_fork_book(base_bid, _target)
+    if not new_bid:
+        await query.answer("❌ فقط کتاب سراسری قابل سفارشی‌سازی است.",
+                           show_alert=True)
+        return ConversationHandler.END
+    try:
+        _bb = await db.ref_get_book(base_bid) or {}
+        await _audit(context, uid, "ساخت نسخه‌ی اختصاصی (Fork) کتاب رفرنس",
+            severity='INFO',
+            details=(f"🍴 Fork Book: {_bb.get('name', '')}\n"
+                     f"🏷 ورودی: {await _intake_label(_target)}"),
+            tags=['فورک_محتوا'])
+    except Exception:
+        pass
+    await query.answer("⭐ نسخه‌ی اختصاصی کتاب ساخته شد")
+    _bk = await db.ref_get_book(base_bid)
+    await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
+    return ConversationHandler.END
+
+
+async def _h_unfork_book(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
+    """شاخه‌ی unfork_book — بازگردانی کتاب فورک‌شده به سراسری."""
+    fork_bid = parts[2]
+    _fi = await db.ref_book_intake(fork_bid)
+    if not await db.can_access_intake(uid, _fi):
+        await _deny_scope(query, uid)
+        return ConversationHandler.END
+    base_bid = await db.ref_unfork_book(fork_bid)
+    if not base_bid:
+        await query.answer("❌ این کتاب نسخه‌ی اختصاصی نیست.",
+                           show_alert=True)
+        return ConversationHandler.END
+    try:
+        await _audit(context, uid, "بازگردانی کتاب به نسخه‌ی سراسری (حذف Fork)",
+            severity='INFO',
+            details=f"↩️ Unfork Book\n🏷 ورودی: {await _intake_label(_fi)}",
+            tags=['فورک_محتوا'])
+    except Exception:
+        pass
+    await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
+    _bk = await db.ref_get_book(base_bid)
+    await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
+    return ConversationHandler.END
+
+# ─ آپلود جلد رفرنس ─
+
+
 async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query  = update.callback_query
     await query.answer()
@@ -177,16 +312,10 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['ca_intake'] = code
         if prev != code:
             try:
-                from utils import send_audit_log
-                actor = await db.get_user(uid)
-                actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-                await send_audit_log(
-                    context.bot, 'content', actor_name, uid,
-                    "تغییر متن مدیریت محتوا", module='Content', severity='INFO',
-                    actor_role=await db.get_actor_role_label(uid),
+                await _audit(context, uid, "تغییر متن مدیریت محتوا",
+                    severity='INFO',
                     details=f"🏷 ورودی: {await _intake_label(code)}",
-                    tags=['تغییر_ورودی']
-                )
+                    tags=['تغییر_ورودی'])
             except Exception:
                 pass
         await query.answer(f"📅 {await _intake_label(code)}")
@@ -318,17 +447,12 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         name = lesson['name'] if lesson else ''
         await db.bs_delete_lesson(lid)
         idx = context.user_data.get('ca_term_idx', 0)
-        from utils import send_audit_log
-        actor = await db.get_user(uid)
-        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'content', actor_name, uid,
-            "حذف درس", module='Content', severity='HIGH',
-            actor_role=actor_role,
-            target_id=lid, target_type='lesson', target_label=name,
-            tags=['حذف_درس']
-        )
+        await _audit(context, uid, "حذف درس",
+            severity='HIGH',
+            target_id=lid,
+            target_type='lesson',
+            target_label=name,
+            tags=['حذف_درس'])
         await query.edit_message_text(f"✅ درس «{name}» حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:term:{idx}'))
 
@@ -397,17 +521,12 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         session_label = f"{session.get('number','')} — {session.get('topic','')}" if session else sid
         await db.bs_delete_session(sid)
         lid = context.user_data.get('ca_lesson_id','')
-        from utils import send_audit_log
-        actor = await db.get_user(uid)
-        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'content', actor_name, uid,
-            "حذف جلسه", module='Content', severity='HIGH',
-            actor_role=actor_role,
-            target_id=sid, target_type='session', target_label=session_label,
-            tags=['حذف_جلسه']
-        )
+        await _audit(context, uid, "حذف جلسه",
+            severity='HIGH',
+            target_id=sid,
+            target_type='session',
+            target_label=session_label,
+            tags=['حذف_جلسه'])
         await query.edit_message_text("✅ جلسه حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:lesson:{lid}'))
 
@@ -418,68 +537,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # ── 🍴 موج C2 — سفارشی‌سازی جلسه‌ی سراسری برای یک ورودی ──
     elif action == 'fork_session':
-        base_id = parts[2]
-        _target = (_cscope.get('intake') or '') if is_scoped \
-            else (context.user_data.get('ca_intake') or '')
-        if not _target:
-            await query.answer(
-                "ℹ️ سفارشی‌سازی روی سطل سراسری معنا ندارد؛ "
-                "ابتدا یک ورودی را انتخاب کنید.", show_alert=True)
-            return ConversationHandler.END
-        new_sid = await db.bs_fork_session(base_id, _target)
-        if not new_sid:
-            await query.answer("❌ فقط جلسه‌ی سراسری قابل سفارشی‌سازی است.",
-                               show_alert=True)
-            return ConversationHandler.END
-        try:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = (actor or {}).get('name', 'ادمین محتوا')
-            _base = await db.bs_get_session(base_id) or {}
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "ساخت نسخه‌ی اختصاصی (Fork) جلسه", module='Content',
-                severity='INFO',
-                actor_role=await db.get_actor_role_label(uid),
-                details=(f"🍴 Fork Session: {_base.get('topic', '')}\n"
-                         f"🏷 ورودی: {await _intake_label(_target)}"),
-                tags=['فورک_محتوا'])
-        except Exception:
-            pass
-        await query.answer("⭐ نسخه‌ی اختصاصی ساخته شد — حالا قابل ویرایش است")
-        _ls = await db.bs_get_session(base_id)
-        await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
-        return ConversationHandler.END
-
+        return await _h_fork_session(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'unfork_session':
-        fork_id = parts[2]
-        _fi = await db.session_intake(fork_id)
-        if not await db.can_access_intake(uid, _fi):
-            await _deny_scope(query, uid)
-            return ConversationHandler.END
-        base_id = await db.bs_unfork_session(fork_id)
-        if not base_id:
-            await query.answer("❌ این جلسه نسخه‌ی اختصاصی نیست.",
-                               show_alert=True)
-            return ConversationHandler.END
-        try:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = (actor or {}).get('name', 'ادمین محتوا')
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "بازگردانی جلسه به نسخه‌ی سراسری (حذف Fork)", module='Content',
-                severity='INFO',
-                actor_role=await db.get_actor_role_label(uid),
-                details=f"↩️ Unfork Session\n🏷 ورودی: {await _intake_label(_fi)}",
-                tags=['فورک_محتوا'])
-        except Exception:
-            pass
-        await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
-        _ls = await db.bs_get_session(base_id)
-        await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
-        return ConversationHandler.END
-
+        return await _h_unfork_session(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'upload_content':
         sid = parts[2]; context.user_data['ca_session_id'] = sid
         kb = [[InlineKeyboardButton(label, callback_data=f'ca:sel_ctype:{sid}:{ct}')]
@@ -529,19 +589,13 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await db.bs_delete_content(cid)
         sid = context.user_data.get('ca_session_id','')
         if item_before:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
             type_fa = dict(CONTENT_TYPES).get(item_before.get('type', ''), 'فایل')
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                f"حذف {type_fa}", module='Content', severity='HIGH',
-                actor_role=actor_role,
-                target_id=cid, target_type='content',
+            await _audit(context, uid, f"حذف {type_fa}",
+                severity='HIGH',
+                target_id=cid,
+                target_type='content',
                 target_label=item_before.get('description', '')[:60] or type_fa,
-                tags=['حذف_محتوا']
-            )
+                tags=['حذف_محتوا'])
         await query.edit_message_text("✅ محتوا حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:session:{sid}'))
 
@@ -671,69 +725,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # ── 🍴 موج C2 — سفارشی‌سازی کتاب سراسری برای یک ورودی ──
     elif action == 'fork_book':
-        base_bid = parts[2]
-        _target = (_cscope.get('intake') or '') if is_scoped \
-            else (context.user_data.get('ca_intake') or '')
-        if not _target:
-            await query.answer(
-                "ℹ️ سفارشی‌سازی روی سطل سراسری معنا ندارد؛ "
-                "ابتدا یک ورودی را انتخاب کنید.", show_alert=True)
-            return ConversationHandler.END
-        new_bid = await db.ref_fork_book(base_bid, _target)
-        if not new_bid:
-            await query.answer("❌ فقط کتاب سراسری قابل سفارشی‌سازی است.",
-                               show_alert=True)
-            return ConversationHandler.END
-        try:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = (actor or {}).get('name', 'ادمین محتوا')
-            _bb = await db.ref_get_book(base_bid) or {}
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "ساخت نسخه‌ی اختصاصی (Fork) کتاب رفرنس", module='Content',
-                severity='INFO',
-                actor_role=await db.get_actor_role_label(uid),
-                details=(f"🍴 Fork Book: {_bb.get('name', '')}\n"
-                         f"🏷 ورودی: {await _intake_label(_target)}"),
-                tags=['فورک_محتوا'])
-        except Exception:
-            pass
-        await query.answer("⭐ نسخه‌ی اختصاصی کتاب ساخته شد")
-        _bk = await db.ref_get_book(base_bid)
-        await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
-        return ConversationHandler.END
-
+        return await _h_fork_book(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'unfork_book':
-        fork_bid = parts[2]
-        _fi = await db.ref_book_intake(fork_bid)
-        if not await db.can_access_intake(uid, _fi):
-            await _deny_scope(query, uid)
-            return ConversationHandler.END
-        base_bid = await db.ref_unfork_book(fork_bid)
-        if not base_bid:
-            await query.answer("❌ این کتاب نسخه‌ی اختصاصی نیست.",
-                               show_alert=True)
-            return ConversationHandler.END
-        try:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = (actor or {}).get('name', 'ادمین محتوا')
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "بازگردانی کتاب به نسخه‌ی سراسری (حذف Fork)", module='Content',
-                severity='INFO',
-                actor_role=await db.get_actor_role_label(uid),
-                details=f"↩️ Unfork Book\n🏷 ورودی: {await _intake_label(_fi)}",
-                tags=['فورک_محتوا'])
-        except Exception:
-            pass
-        await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
-        _bk = await db.ref_get_book(base_bid)
-        await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
-        return ConversationHandler.END
-
-    # ─ آپلود جلد رفرنس ─
+        return await _h_unfork_book(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'upload_ref_volume_prompt':
         bid  = parts[2]; lang = parts[3]
         files = await db.ref_get_files(bid)
@@ -1516,18 +1510,12 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _clear(context)
         msg = f"✅ درس «{name}» اضافه شد!" if result else "⚠️ این درس قبلاً وجود دارد."
         if result:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "ایجاد درس جدید", module='Content', severity='INFO',
-                actor_role=actor_role,
-                target_type='lesson', target_label=name,
+            await _audit(context, uid, "ایجاد درس جدید",
+                severity='INFO',
+                target_type='lesson',
+                target_label=name,
                 details=f"ترم: {term}\n🏷 ورودی: {await _intake_label(_ctx_intake)}",
-                tags=['ایجاد_درس']
-            )
+                tags=['ایجاد_درس'])
         await update.message.reply_text(msg, reply_markup=_back_btn("🔙 برگشت", f'ca:term:{idx}'))
 
     elif ca_mode == 'edit_lesson':
@@ -1542,19 +1530,14 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = await db.bs_update_lesson(lid, {field: text})
         _clear(context)
         if ok:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "ویرایش درس", module='Content', severity='WARNING',
-                actor_role=actor_role,
-                target_id=lid, target_type='lesson',
+            await _audit(context, uid, "ویرایش درس",
+                severity='WARNING',
+                target_id=lid,
+                target_type='lesson',
                 target_label=old_lesson.get('name', '') if old_lesson else '',
-                before={field: old_value}, after={field: text},
-                tags=['ویرایش_درس']
-            )
+                before={field: old_value},
+                after={field: text},
+                tags=['ویرایش_درس'])
         await update.message.reply_text("✅ ذخیره شد." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:lesson:{lid}'))
 
@@ -1576,17 +1559,11 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         topic = ps[1]; teacher = ps[2] if len(ps) > 2 else ''
         await db.bs_add_session(lid, number, topic, teacher)
         _clear(context)
-        from utils import send_audit_log
-        actor = await db.get_user(uid)
-        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'content', actor_name, uid,
-            "ایجاد جلسه جدید", module='Content', severity='INFO',
-            actor_role=actor_role,
-            target_type='session', target_label=f"جلسه {number} — {topic}",
-            tags=['ایجاد_جلسه']
-        )
+        await _audit(context, uid, "ایجاد جلسه جدید",
+            severity='INFO',
+            target_type='session',
+            target_label=f"جلسه {number} — {topic}",
+            tags=['ایجاد_جلسه'])
         await update.message.reply_text(f"✅ جلسه {number} — «{topic}» اضافه شد!",
             reply_markup=_back_btn("🔙 برگشت", f'ca:lesson:{lid}'))
 
@@ -1602,19 +1579,15 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok  = await db.bs_update_session(sid, {field: val})
         _clear(context)
         if ok:
-            from utils import send_audit_log
-            actor = await db.get_user(uid)
-            actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-            actor_role = await db.get_actor_role_label(uid)
             session_label_for_log = f"جلسه {old_session.get('number','')} — {old_session.get('topic','')}" if old_session else sid
-            await send_audit_log(
-                context.bot, 'content', actor_name, uid,
-                "ویرایش جلسه", module='Content', severity='WARNING',
-                actor_role=actor_role,
-                target_id=sid, target_type='session', target_label=session_label_for_log,
-                before={field: old_value}, after={field: val},
-                tags=['ویرایش_جلسه']
-            )
+            await _audit(context, uid, "ویرایش جلسه",
+                severity='WARNING',
+                target_id=sid,
+                target_type='session',
+                target_label=session_label_for_log,
+                before={field: old_value},
+                after={field: val},
+                tags=['ویرایش_جلسه'])
         await update.message.reply_text("✅ جلسه ویرایش شد." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
