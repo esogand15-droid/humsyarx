@@ -165,9 +165,25 @@ async def stats(
         get_admin_user
     ),
 ):
-    return await db.ai_usage_stats(
+    raw = await db.ai_usage_stats(
         10
     )
+    # 🌊 W-Admin — سریالایزر ساخت‌یافته برای وب‌ادمین (کلیدهای قدیمی
+    # دست‌نخورده می‌مانند تا مصرف‌کننده‌های فعلی نشکنند): لیست‌های خام
+    # tuple به‌جای رشته‌ی comma-separated، آبجکت {name,user_id,count} می‌شوند.
+    def _rows(lst):
+        return [
+            {
+                "name": (t[0] or "—"),
+                "user_id": t[1],
+                "count": t[2],
+            }
+            for t in (lst or [])
+        ]
+
+    raw["top_today_users"] = _rows(raw.get("top_today"))
+    raw["top_alltime_users"] = _rows(raw.get("top_alltime"))
+    return raw
 
 
 @router.get("/reports")
