@@ -12,9 +12,11 @@ router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
 
 
-def _notify(chat_id: int, text: str, ntype: str = "admin_notice"):
+async def _notify(chat_id: int, text: str, ntype: str = "admin_notice"):
+    # 🌊 W-Admin-fix: قبلاً coroutine اینسرت هرگز await نمی‌شد ⇒ همه‌ی اعلان‌های
+    # این روتر (تأیید کاربر، پاسخ تیکت، سیگنال‌ها) سکوت-coroutine می‌شدند.
     notif = db.client["medicalbot"]["bot_notifications"]
-    return notif.insert_one({"type":ntype,"chat_id":chat_id,"text":text,
+    return await notif.insert_one({"type":ntype,"chat_id":chat_id,"text":text,
         "sent":False,"created_at":datetime.now().isoformat()})
 
 
@@ -65,7 +67,7 @@ async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
                     target_label=target_label, before=before, after=after,
                     details=details, tags=sync_tags,
                 )
-                _notify(int(chat_id), text, "audit_log_web")
+                await _notify(int(chat_id), text, "audit_log_web")
         except Exception:
             pass
     except Exception:
@@ -176,7 +178,7 @@ async def approve(uid: int, admin=Depends(get_admin_user)):
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
     await db.update_user(uid,{"approved":True})
-    _notify(uid, "✅ <b>حساب شما تأیید شد!</b>\n\nاکنون می‌توانید از هامزیار استفاده کنید.\n/start بزنید.", "user_approved")
+    await _notify(uid, "✅ <b>حساب شما تأیید شد!</b>\n\nاکنون می‌توانید از هامزیار استفاده کنید.\n/start بزنید.", "user_approved")
     # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (تأیید حساب)
     await db.inbox_add(uid, 'account', "✅ حسابت تأیید شد!",
         "اکنون به تمام بخش‌های هامزیار دسترسی داری — خوش اومدی! 🎓", link='/')
@@ -203,7 +205,7 @@ async def suspend(uid: int, admin=Depends(get_admin_user)):
     suspended = not user.get("suspended",False)
     await db.update_user(uid,{"suspended":suspended, "approved": not suspended})
     if suspended:
-        _notify(uid, "⚠️ دسترسی شما موقتاً تعلیق شد.", "user_suspended")
+        await _notify(uid, "⚠️ دسترسی شما موقتاً تعلیق شد.", "user_suspended")
     await _audit(admin,
         "تعلیق حساب کاربر" if suspended else "رفع تعلیق حساب کاربر",
         "Users", severity="HIGH" if suspended else "INFO",
@@ -240,7 +242,7 @@ async def dm_user_ep(uid: int, body: DmBody, admin=Depends(get_admin_user)):
     # coroutine باشد (motor) باید await شود تا درج واقعاً اجرا شود —
     # در حالت درایور همگام هم بی‌اثر است. بدون این، پیام گاهی فقط
     # «برنامه‌ریزی» می‌شد و هرگز به outbox نمی‌نشست.
-    _res = _notify(uid, out, "admin_dm")
+    _res = await _notify(uid, out, "admin_dm")
     if asyncio.iscoroutine(_res):
         await _res
     # 🔔 موج ۴.۹۰ — پیام مستقیم در مرکز اعلان مینی‌اپ هم می‌نشیند؛
@@ -257,7 +259,7 @@ async def delete_user_ep(uid: int, admin=Depends(get_admin_user)):
     if uid == ADMIN_ID: raise HTTPException(403,"نمی‌توانید ادمین ارشد را حذف کنید")
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
-    _notify(uid, "❌ حساب شما حذف شد.", "user_deleted")
+    await _notify(uid, "❌ حساب شما حذف شد.", "user_deleted")
     await db.delete_user(uid)
     await _audit(admin, "حذف حساب کاربر", "Users", severity="CRITICAL",
         target_id=uid, target_type="user", target_label=user.get("name",""),
@@ -272,7 +274,7 @@ async def block_user_ep(uid: int, admin=Depends(get_admin_user)):
     actor_name = admin["_db"].get("name","مدیر ارشد")
     await db.block_user(uid, blocked_by=admin["id"], blocked_by_name=actor_name)
     await db.blacklist.update_one({"_id":uid},{"$set":{"name":user.get("name","")}})
-    _notify(uid, "🚫 حساب شما مسدود شد و امکان ثبت‌نام مجدد ندارید.", "user_blocked")
+    await _notify(uid, "🚫 حساب شما مسدود شد و امکان ثبت‌نام مجدد ندارید.", "user_blocked")
     await _audit(admin, "مسدودسازی کاربر (بلک‌لیست)", "Users", severity="CRITICAL",
         target_id=uid, target_type="user", target_label=user.get("name",""),
         tags=["بلاک_کاربر","پنل_وب"])
@@ -306,7 +308,7 @@ async def grant_content_admin(uid: int, admin=Depends(get_admin_user)):
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
     await db.update_user(uid,{"role":"content_admin"})
-    _notify(uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", "content_admin_granted")
+    await _notify(uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", "content_admin_granted")
     await _audit(admin, "اعطای دسترسی ادمین ارشد محتوا", "Roles", severity="HIGH",
         target_id=uid, target_type="user", target_label=user.get("name",""),
         tags=["اعطای_نقش","پنل_وب"])
@@ -315,7 +317,7 @@ async def grant_content_admin(uid: int, admin=Depends(get_admin_user)):
 @router.delete("/content-admins/{uid}")
 async def revoke_content_admin(uid: int, admin=Depends(get_admin_user)):
     await db.update_user(uid,{"role":"student"})
-    _notify(uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", "content_admin_revoked")
+    await _notify(uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", "content_admin_revoked")
     await _audit(admin, "لغو دسترسی ادمین ارشد محتوا", "Roles", severity="HIGH",
         target_id=uid, target_type="user",
         tags=["لغو_نقش","پنل_وب"])
@@ -445,7 +447,7 @@ async def admin_reply(tid: int, body: AdminReply, admin=Depends(get_admin_user))
     msg=body.message.strip()
     if not msg: raise HTTPException(422)
     await db.ticket_add_reply(tid, msg)
-    _notify(t["user_id"], f"💬 <b>پاسخ پشتیبانی #{tid}</b>\n{msg}", "ticket_admin_reply")
+    await _notify(t["user_id"], f"💬 <b>پاسخ پشتیبانی #{tid}</b>\n{msg}", "ticket_admin_reply")
     await _audit(admin, "پاسخ به تیکت پشتیبانی", "Tickets", severity="INFO",
         target_id=tid, target_type="ticket", target_label=t.get("subject",""),
         tags=["تیکت","پنل_وب"])
@@ -538,6 +540,48 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20))
     return {"history":[{"text":r["_id"]["text"][:80],"created_at":r["_id"]["created_at"],
         "total":r["total"],"sent":r["sent"],"failed":r["failed"]} for r in rows]}
 
+# ── 🌊 موج Notif-Scheduled — مدیریت ارسال‌های همگانی زمان‌دارِ در انتظار ──
+# پاریت با ربات: تا لحظه‌ی send_at پیام‌ها sent=False می‌مانند؛ لغو = حذف همان
+# دسته (کلید یکتای دسته = text + created_at). همه‌ی مسیرها سطح مالک می‌مانند.
+
+@router.get("/broadcast/scheduled")
+async def broadcast_scheduled(admin=Depends(get_admin_user), limit: int=Query(10, ge=1, le=50)):
+    """فهرست دسته‌های ارسال همگانی زمان‌دار که هنوز موعدشان نرسیده است."""
+    notif = db.client["medicalbot"]["bot_notifications"]
+    now_iso = datetime.now().isoformat()
+    docs = await notif.find(
+        {"type": "broadcast", "sent": False, "send_at": {"$gt": now_iso}}
+    ).sort("send_at", 1).limit(500).to_list(500)
+    groups = {}
+    for d in docs:
+        key = (d.get("text", ""), d.get("created_at", ""), d.get("send_at", ""))
+        g = groups.setdefault(key, {"text": key[0], "created_at": key[1],
+                                    "send_at": key[2], "total": 0})
+        g["total"] += 1
+    items = sorted(groups.values(), key=lambda x: x["send_at"])[:limit]
+    for it in items:
+        it["text"] = it["text"][:120]
+    return {"scheduled": items}
+
+class BroadcastCancel(BaseModel):
+    text: str
+    created_at: str
+
+@router.post("/broadcast/cancel")
+async def broadcast_cancel(body: BroadcastCancel, admin=Depends(get_admin_user)):
+    """لغو یک دسته‌ی ارسال زمان‌دار — فقط پیام‌های هنوز ارسال‌نشده‌ی همان دسته."""
+    notif = db.client["medicalbot"]["bot_notifications"]
+    res = await notif.delete_many({"type": "broadcast", "sent": False,
+                                   "text": body.text, "created_at": body.created_at})
+    n = getattr(res, "deleted_count", 0)
+    if not n:
+        raise HTTPException(404, "دسته‌ی ارسالی یافت نشد (شاید قبلاً ارسال شده)")
+    await _audit(admin, "لغو ارسال همگانی زمان‌دار", "Notifications", severity="HIGH",
+        target_type="broadcast", target_label=f"{n} گیرنده",
+        details=body.text[:300],
+        tags=["ارسال_همگانی", "لغو", "پنل_وب"])
+    return {"ok": True, "cancelled": n}
+
 # ══════════════════════════════════════════════
 # 📊 نظرسنجی کانال
 # ══════════════════════════════════════════════
@@ -622,7 +666,7 @@ async def notif_retry(run_id: str, admin=Depends(get_admin_user)):
 
 @router.post("/export/excel")
 async def export_excel(admin=Depends(get_admin_user)):
-    _notify(ADMIN_ID, "__EXCEL_EXPORT__", "excel_export_request")
+    await _notify(ADMIN_ID, "__EXCEL_EXPORT__", "excel_export_request")
     return {"ok":True,"message":"📊 فایل اکسل از طریق ربات ارسال می‌شود."}
 
 
@@ -651,7 +695,7 @@ async def request_backup(body: BackupRequestBody, admin=Depends(get_admin_user))
         raise HTTPException(422, "بخش بکاپ نامعتبر است")
     signal = ("__BACKUP_REQUEST__" if body.section == "all"
               else f"__BACKUP_REQUEST__:{body.section}")
-    _notify(admin.get("id", ADMIN_ID), signal, f"backup_request_{body.section}")
+    await _notify(admin.get("id", ADMIN_ID), signal, f"backup_request_{body.section}")
     await _audit(admin, "درخواست فایل پشتیبان از پنل وب", "Backup", severity="HIGH",
         details=f"بخش: {BACKUP_SECTION_LABELS_FA[body.section]}",
         tags=["بکاپ", "پنل_وب"])
@@ -833,7 +877,7 @@ async def test_log_group(body: LogGroupTestBody, admin=Depends(get_admin_user)):
     chat_id = await db.get_setting(key, None)
     if not chat_id:
         raise HTTPException(404, "این گروه هنوز تنظیم نشده است")
-    _notify(int(chat_id),
+    await _notify(int(chat_id),
         f"🧪 <b>پیام تست گروه {label}</b>\n\n"
         "این پیام از پنل وب مینی‌اپ ارسال شد — اگر آن را می‌خوانی، "
         "اتصال کامل وب ← ربات ← گروه لاگ سالم است. ✅",
@@ -922,92 +966,11 @@ async def analytics_admin(
 ):
     """آمار روزانه بازه اخیر + کاربران فعال + توزیع عملیات و ساعات اوج.
 
-    timestamp ها به‌صورت رشته ISO ذخیره می‌شوند، پس تاریخ روز با
-    $substrBytes روی ۱۰ کاراکتر اول استخراج می‌شود (سازگار با الگوی
-    موجود در database.py).
+    🌊 موج Analytics-Filters — بدنه به db.stats_analytics_bundle منتقل شد
+    (تک‌منبع حقیقت: هم این endpoint مالک، هم wa-analytics با گیت stats.deep).
+    خروجی دقیقاً همان شکل قبلی است.
     """
-    since = (datetime.now() - timedelta(days=days)).isoformat()
-
-    async def _daily(col, ts_field):
-        expr = {"$substrBytes": [f"${ts_field}", 0, 10]}
-        rows = await col.aggregate([
-            {"$match": {ts_field: {"$gte": since}}},
-            {"$group": {"_id": expr, "count": {"$sum": 1}}},
-            {"$sort": {"_id": 1}},
-        ]).to_list(days + 2)
-        return [{"date": r["_id"], "count": r["count"]}
-                for r in rows if r.get("_id")]
-
-    users_daily, activity_daily, tickets_daily = (
-        await asyncio.gather(
-            _daily(db.users, "registered_at"),
-            _daily(db.stats_col, "timestamp"),
-            _daily(db.tickets, "created_at"),
-        )
-    )
-
-    # KPI ها
-    active_uids = await db.stats_col.distinct(
-        "user_id", {"timestamp": {"$gte": since}}
-    )
-    new_users = await db.users.count_documents(
-        {"registered_at": {"$gte": since}}
-    )
-    total_actions = await db.stats_col.count_documents(
-        {"timestamp": {"$gte": since}}
-    )
-    new_tickets = await db.tickets.count_documents(
-        {"created_at": {"$gte": since}}
-    )
-    open_reports = await db.content_reports.count_documents(
-        {"status": "new"}
-    )
-
-    # پرکاربردترین عملیات‌ها
-    top_actions_rows = await db.stats_col.aggregate([
-        {"$match": {"timestamp": {"$gte": since}}},
-        {"$group": {"_id": "$action", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 8},
-    ]).to_list(8)
-    top_actions = [
-        {"action": r["_id"] or "نامشخص", "count": r["count"]}
-        for r in top_actions_rows
-    ]
-
-    # ساعت‌های اوج فعالیت (ساعت از کاراکترهای ۱۱ تا ۱۳ رشته ISO)
-    hourly_rows = await db.stats_col.aggregate([
-        {"$match": {"timestamp": {"$gte": since}}},
-        {"$group": {
-            "_id": {"$substrBytes": ["$timestamp", 11, 2]},
-            "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 6},
-    ]).to_list(6)
-    hourly = sorted(
-        [{"hour": int(r["_id"]), "count": r["count"]}
-         for r in hourly_rows
-         if r.get("_id") and str(r["_id"]).isdigit()],
-        key=lambda x: x["hour"],
-    )
-
-    return {
-        "days": days,
-        "kpis": {
-            "active_users": len(active_uids),
-            "new_users": new_users,
-            "total_actions": total_actions,
-            "new_tickets": new_tickets,
-            "open_reports": open_reports,
-        },
-        "daily": {
-            "users": users_daily,
-            "activity": activity_daily,
-            "tickets": tickets_daily,
-        },
-        "top_actions": top_actions,
-        "hourly": hourly,
-    }
+    return await db.stats_analytics_bundle(days)
 
 
 # ══════════════════════════════════════════════════
