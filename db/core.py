@@ -904,6 +904,85 @@ class DBCore:
         return bs + refs
 
 
+    # 🌊 موج Analytics-Filters — منطق واحد سری تحلیلی بازه‌ای.
+    # قبلاً این تجمیع فقط داخل endpoint مالک (/api/admin/analytics) بود؛
+    # حالا تک‌منبع حقیقت اینجاست و هر دو مسیر (مالک + stats.deep وب‌ادمین)
+    # از آن استفاده می‌کنند — خروجی دقیقاً همان شکل قبلی است (Never Break).
+    async def stats_analytics_bundle(self, days: int = 14) -> dict:
+        try:
+            days = max(7, min(90, int(days or 14)))
+        except (TypeError, ValueError):
+            days = 14
+        since = (datetime.now() - timedelta(days=days)).isoformat()
+
+        async def _daily(col, ts_field):
+            expr = {"$substrBytes": [f"${ts_field}", 0, 10]}
+            rows = await col.aggregate([
+                {"$match": {ts_field: {"$gte": since}}},
+                {"$group": {"_id": expr, "count": {"$sum": 1}}},
+                {"$sort": {"_id": 1}},
+            ]).to_list(days + 2)
+            return [{"date": r["_id"], "count": r["count"]}
+                    for r in rows if r.get("_id")]
+
+        users_daily, activity_daily, tickets_daily = await asyncio.gather(
+            _daily(self.users, "registered_at"),
+            _daily(self.stats_col, "timestamp"),
+            _daily(self.tickets, "created_at"),
+        )
+
+        active_uids = await self.stats_col.distinct(
+            "user_id", {"timestamp": {"$gte": since}})
+        new_users = await self.users.count_documents(
+            {"registered_at": {"$gte": since}})
+        total_actions = await self.stats_col.count_documents(
+            {"timestamp": {"$gte": since}})
+        new_tickets = await self.tickets.count_documents(
+            {"created_at": {"$gte": since}})
+        open_reports = await self.content_reports.count_documents(
+            {"status": "new"})
+
+        top_actions_rows = await self.stats_col.aggregate([
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 8},
+        ]).to_list(8)
+        top_actions = [{"action": r["_id"] or "نامشخص", "count": r["count"]}
+                       for r in top_actions_rows]
+
+        hourly_rows = await self.stats_col.aggregate([
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": {"$substrBytes": ["$timestamp", 11, 2]},
+                        "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 6},
+        ]).to_list(6)
+        hourly = sorted(
+            [{"hour": int(r["_id"]), "count": r["count"]}
+             for r in hourly_rows
+             if r.get("_id") and str(r["_id"]).isdigit()],
+            key=lambda x: x["hour"])
+
+        return {
+            "days": days,
+            "kpis": {
+                "active_users": len(active_uids),
+                "new_users": new_users,
+                "total_actions": total_actions,
+                "new_tickets": new_tickets,
+                "open_reports": open_reports,
+            },
+            "daily": {
+                "users": users_daily,
+                "activity": activity_daily,
+                "tickets": tickets_daily,
+            },
+            "top_actions": top_actions,
+            "hourly": hourly,
+        }
+
+
     async def activity_pulse(self) -> dict:
         """
         FIX جدید: نبض فعالیت ربات — حجم کل کنش‌های ثبت‌شده در ۷ روز
