@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 // ── Toast ─────────────────────────────────────────────
 let _push;
@@ -60,12 +60,17 @@ export function Switch({ on, onChange, disabled }) {
   );
 }
 
-// ── DataTable (سرورساید) ──────────────────────────────
-// props: columns[{k,label,render,width}], rows, rowKey, selectable,
-// onSelect(ids), pager:{page,pages,total,onPage}, loading, onRow(row)
+// ── DataTable v2 (سرورساید + قابلیت‌های اختیاری دسکتاپی) ──────
+// props: columns[{k,label,render,width,sortable,sortVal}], rows, rowKey,
+// selectable, onSelect(ids), pager:{page,pages,total,onPage}, loading,
+// onRow(row), empty, colToggle(bool → منوی نمایش/پنهان ستون‌ها)
+// 🌊 W-Design 3 — sortable کلاینت‌ساید opt-in + نمایش ستون‌ها؛ رفتار قبلی دست‌نخورده
 export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
-  pager, loading, onRow, empty }) {
+  pager, loading, onRow, empty, colToggle }) {
   const [sel, setSel] = useState(new Set());
+  const [sort, setSort] = useState(null);               // {k, dir: 'asc'|'desc'}
+  const [hidden, setHidden] = useState(new Set());      // کلید ستون‌های پنهان
+  const [colMenu, setColMenu] = useState(false);
   const toggle = (id) => {
     const s = new Set(sel); s.has(id) ? s.delete(id) : s.add(id);
     setSel(s); onSelect && onSelect([...s]);
@@ -76,27 +81,83 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
     const s = allOn ? new Set() : new Set([...sel, ...allIds]);
     setSel(s); onSelect && onSelect([...s]);
   };
+
+  const visCols = columns.filter(c => !hidden.has(c.k));
+  const sorted = useMemo(() => {
+    if (!sort) return rows || [];
+    const col = columns.find(c => c.k === sort.k);
+    if (!col || !col.sortable) return rows || [];
+    const val = (r) => col.sortVal ? col.sortVal(r) : r[col.k];
+    return [...(rows || [])].sort((a, b) => {
+      const va = val(a); const vb = val(b);
+      const na = Number(va); const nb = Number(vb);
+      let cmp;
+      if (va !== '' && vb !== '' && !isNaN(na) && !isNaN(nb)) cmp = na - nb;
+      else cmp = String(va ?? '').localeCompare(String(vb ?? ''), 'fa');
+      return sort.dir === 'asc' ? cmp : -cmp;
+    });
+  }, [rows, sort, columns]);
+
+  const clickSort = (c) => {
+    if (!c.sortable) return;
+    setSort(s => !s || s.k !== c.k ? { k: c.k, dir: 'asc' }
+      : s.dir === 'asc' ? { k: c.k, dir: 'desc' } : null);
+  };
+
   return (
     <div className="panel tbl-wrap">
+      {colToggle && (
+        <div className="tbl-tools">
+          <button className="btn sm" onClick={() => setColMenu(v => !v)}
+                  aria-expanded={colMenu} aria-label="نمایش ستون‌ها">☰ ستون‌ها</button>
+          {colMenu && (
+            <div className="colmenu" role="menu">
+              {columns.map(c => (
+                <label key={c.k} className="colmenu-item">
+                  <input type="checkbox" checked={!hidden.has(c.k)}
+                         onChange={() => setHidden(h => {
+                           const s = new Set(h);
+                           s.has(c.k) ? s.delete(c.k) : s.add(c.k);
+                           return s;
+                         })} />
+                  <span>{c.label || c.k}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <table className="tbl">
         <thead>
           <tr>
             {selectable && <th style={{ width: 30 }}>
-              <input type="checkbox" checked={allOn} onChange={toggleAll} /></th>}
-            {columns.map(c => <th key={c.k} style={c.width ? { width: c.width } : {}}>{c.label}</th>)}
+              <input type="checkbox" checked={allOn} onChange={toggleAll}
+                     aria-label="انتخاب همه" /></th>}
+            {visCols.map(c => (
+              <th key={c.k} style={{ ...(c.width ? { width: c.width } : {}),
+                    ...(c.sortable ? { cursor: 'pointer', userSelect: 'none' } : {}) }}
+                  onClick={() => clickSort(c)}
+                  aria-sort={sort?.k === c.k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
+                  title={c.sortable ? 'مرتب‌سازی' : undefined}>
+                {c.label}{c.sortable && (
+                  <span className="sort-ic">{sort?.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅'}</span>)}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {loading && <tr><td colSpan={columns.length + 1}><Loading rows={3} /></td></tr>}
-          {!loading && (!rows || !rows.length) &&
-            <tr><td colSpan={columns.length + 1}>{empty || <Empty />}</td></tr>}
-          {!loading && (rows || []).map(r => (
+          {loading && <tr><td colSpan={visCols.length + 1}><Loading rows={3} /></td></tr>}
+          {!loading && (!sorted || !sorted.length) &&
+            <tr><td colSpan={visCols.length + 1}>{empty || <Empty />}</td></tr>}
+          {!loading && (sorted || []).map(r => (
             <tr key={r[rowKey]} className={sel.has(r[rowKey]) ? 'sel' : ''}
+                aria-selected={sel.has(r[rowKey]) || undefined}
                 onClick={() => onRow && onRow(r)} style={onRow ? { cursor: 'pointer' } : {}}>
               {selectable && <td onClick={e => e.stopPropagation()}>
-                <input type="checkbox" checked={sel.has(r[rowKey])} onChange={() => toggle(r[rowKey])} />
+                <input type="checkbox" checked={sel.has(r[rowKey])} onChange={() => toggle(r[rowKey])}
+                       aria-label="انتخاب ردیف" />
               </td>}
-              {columns.map(c => (
+              {visCols.map(c => (
                 <td key={c.k} onClick={c.stop ? e => e.stopPropagation() : undefined}>
                   {c.render ? c.render(r) : (r[c.k] ?? '—')}
                 </td>
@@ -266,11 +327,23 @@ export function Palette({ open, onClose, commands, search, go }) {
   );
 }
 
-export function Stat({ icon, label, value, tint = 'var(--acc)' }) {
+// 🌊 W-Design 4 — delta اختیاری: ترند vs دوره‌ی قبل (▲/▼ خواب‌دار)
+export function Stat({ icon, label, value, tint = 'var(--acc)', delta, hint }) {
   return (
     <div className="panel stat">
       <div className="ic" style={{ background: `${tint}1c`, border: `1px solid ${tint}44` }}>{icon}</div>
-      <div><div className="v">{value ?? '—'}</div><div className="l">{label}</div></div>
+      <div style={{ minWidth: 0 }}>
+        <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+          <div className="v">{value ?? '—'}</div>
+          {delta != null && (
+            <span className={`trend ${delta >= 0 ? 'up' : 'down'}`}>
+              {delta >= 0 ? '▲' : '▼'} {Number(Math.abs(delta)).toLocaleString('fa')}٪
+            </span>
+          )}
+        </div>
+        <div className="l">{label}</div>
+        {hint && <div className="l" style={{ color: 'var(--txt3)', fontSize: 'var(--fs-caption)' }}>{hint}</div>}
+      </div>
     </div>
   );
 }
