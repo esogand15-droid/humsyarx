@@ -27,14 +27,17 @@ export default function Audit() {
 
   if (err) return <ErrorState error={err} onRetry={load} />;
 
+  const SEv_RANK = { INFO: 0, WARNING: 1, HIGH: 2, CRITICAL: 3 };
   const cols = [
-    { k: 'at', label: 'زمان', render: r => <span className="muted">{(r.at || r.created_at || '').replace('T', ' ').slice(5, 16)}</span> },
+    { k: 'at', label: 'زمان', sortable: true, sortVal: r => r.at || r.created_at || '',
+      render: r => <span className="muted">{(r.at || r.created_at || '').replace('T', ' ').slice(5, 16)}</span> },
     { k: 'actor', label: 'عامل', render: r => (
       <div>{r.actor_name || r.actor_id}<div className="muted">{r.actor_role || ''}</div></div>) },
     { k: 'action', label: 'عمل', render: r => <b style={{ color: 'var(--txt)' }}>{r.action}</b> },
     { k: 'module', label: 'ماژول', render: r => <B>{r.module || '—'}</B> },
     { k: 'target', label: 'هدف', render: r => <span className="muted">{r.target_label || r.target_id || '—'}</span> },
-    { k: 'severity', label: 'شدت', render: r => <B kind={SEV[r.severity] || ''}>{r.severity || 'INFO'}</B> },
+    { k: 'severity', label: 'شدت', sortable: true, sortVal: r => SEv_RANK[r.severity] ?? 0,
+      render: r => <B kind={SEV[r.severity] || ''}>{r.severity || 'INFO'}</B> },
   ];
 
   return (
@@ -62,7 +65,7 @@ export default function Audit() {
       {!rows ? <Loading /> : (
         <>
           <DataTable columns={cols} rows={rows} rowKey={(r) => r.id || r._id || Math.random()}
-                     onRow={setDetail}
+                     onRow={setDetail} colToggle
                      pager={{ page: skip / LIMIT + 1, pages: rows.length < LIMIT ? skip / LIMIT + 1 : 99,
                               total: '', onPage: p => setSkip((p - 1) * LIMIT) }} />
         </>
