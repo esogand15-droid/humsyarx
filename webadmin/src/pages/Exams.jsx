@@ -10,7 +10,22 @@ const ST = [
 ];
 
 // 📝🌊 WA2.2 — مدیریت آزمون‌ها: CRUD روی schedules type=exam + آمار آزمون‌های تمرینی
+// 🌊 WA3 — تب دوم «نمرات»: recent + جستجوی دانشجو + ثبت گروهی (معادل ربات)
 export default function Exams() {
+  const [tab, setTab] = useState('exams');
+  return (
+    <>
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        {[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']].map(([k, v]) => (
+          <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
+        ))}
+      </div>
+      {tab === 'exams' ? <ExamsTab /> : <GradesTab />}
+    </>
+  );
+}
+
+function ExamsTab() {
   const [status, setStatus] = useState('');
   const [data, setData] = useState(null);
   const [stats, setStats] = useState(null);
@@ -130,6 +145,143 @@ function ExamModal({ row, onClose }) {
             } catch (e) { toast(errText(e), 'err'); }
             setBusy(false);
           }}>{row ? 'ذخیره' : 'ایجاد'}</button>
+          <button className="btn" onClick={() => onClose(false)}>انصراف</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── 📊🌊 WA3 — تب نمرات: لیست اخیر + ثبت گروهی (همان grades ربات) ───── */
+function GradesTab() {
+  const [skip, setSkip] = useState(0);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [permErr, setPermErr] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const LIMIT = 30;
+
+  const load = async () => {
+    setErr('');
+    try { setData(await api.gradesRecent(skip, LIMIT)); }
+    catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
+  };
+  useEffect(() => { setData(null); load(); }, [skip]);
+
+  if (permErr) return <NoPerm text="مدیریت نمرات نیازمند مجوز «مدیریت نمرات» (grades.manage) است" />;
+  if (err) return <ErrorState error={err} onRetry={load} />;
+
+  const total = data?.total || 0;
+  const page = Math.floor(skip / LIMIT) + 1;
+  const pages = Math.max(1, Math.ceil(total / LIMIT));
+  const cols = [
+    { k: 'student_name', label: 'دانشجو', render: r => (
+      <div><b style={{ color: 'var(--txt)' }}>{r.student_name || '—'}</b>
+        <div className="muted code">#{r.student_id}</div></div>) },
+    { k: 'lesson', label: 'درس' },
+    { k: 'exam_title', label: 'عنوان آزمون' },
+    { k: 'exam_date', label: 'تاریخ', render: r => <span className="code">{r.exam_date}</span> },
+    { k: 'score', label: 'نمره', render: r => (
+      <B kind={r.score >= 10 ? 'ok' : 'bad'}>{Number(r.score).toLocaleString('fa')}</B>) },
+  ];
+  return (
+    <>
+      <div className="row">
+        <div><div className="h1">نمرات</div>
+          <div className="sub">ثبت گروهی نمره — همان «📊 مدیریت نمرات» پنل ربات؛ به هر دانشجو از سمت ربات خبر می‌رسد</div></div>
+        <span className="spacer" />
+        <button className="btn primary" onClick={() => setBulkOpen(true)}>➕ ثبت گروهی نمره</button>
+      </div>
+
+      {!data ? <Loading /> : (
+        <>
+          <DataTable columns={cols} rows={data.grades} empty={
+            <div className="center-state">نمره‌ای ثبت نشده</div>} />
+          <div className="row" style={{ marginTop: 10 }}>
+            <span className="muted">مجموع: {Number(total).toLocaleString('fa')} نمره</span>
+            <span className="spacer" />
+            <button className="btn sm" disabled={skip <= 0} onClick={() => setSkip(Math.max(0, skip - LIMIT))}>قبلی ◂</button>
+            <B>{Number(page).toLocaleString('fa')} / {Number(pages).toLocaleString('fa')}</B>
+            <button className="btn sm" disabled={skip + LIMIT >= total} onClick={() => setSkip(skip + LIMIT)}>▸ بعدی</button>
+          </div>
+        </>
+      )}
+      {bulkOpen && <GradeBulkModal onClose={(ch) => { setBulkOpen(false); if (ch) { setSkip(0); load(); } }} />}
+    </>
+  );
+}
+
+function GradeBulkModal({ onClose }) {
+  const [meta, setMeta] = useState({ lesson: '', exam_title: '', exam_date: '' });
+  const [rows, setRows] = useState([{ q: '', hits: null, picked: null, score: '' }]);
+  const [busy, setBusy] = useState(false);
+  const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
+
+  const find = async (i) => {
+    const q = rows[i].q.trim();
+    if (q.length < 2) return toast('حداقل ۲ حرف برای جست‌وجو', 'err');
+    try { setRow(i, { hits: (await api.gradesFind(q)).students || [], picked: null }); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const submit = async () => {
+    const entries = rows.filter(r => r.picked && r.score !== '').map(r => ({
+      student_id: r.picked.id, score: Number(r.score),
+    }));
+    if (!entries.length) return toast('حداقل یک دانشجو با نمره لازم است', 'err');
+    setBusy(true);
+    try {
+      const r = await api.gradesBulk({ entries, lesson: meta.lesson.trim(),
+        exam_title: meta.exam_title.trim(), exam_date: meta.exam_date });
+      toast(`${r.updated} نمره ثبت شد و برای دانشجویان ارسال شد 📊`);
+      onClose(true);
+    } catch (e) { toast(errText(e), 'err'); setBusy(false); }
+  };
+
+  return (
+    <Modal title="➕ ثبت گروهی نمره" onClose={() => onClose(false)}>
+      <div className="grid" style={{ gap: 10 }}>
+        <div className="row">
+          <input className="inp" placeholder="درس *" value={meta.lesson}
+                 onChange={e => setMeta({ ...meta, lesson: e.target.value })} />
+          <input className="inp" placeholder="عنوان آزمون *" value={meta.exam_title}
+                 onChange={e => setMeta({ ...meta, exam_title: e.target.value })} />
+          <input className="inp" type="date" title="تاریخ آزمون" value={meta.exam_date}
+                 onChange={e => setMeta({ ...meta, exam_date: e.target.value })} />
+        </div>
+        {rows.map((r, i) => (
+          <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+            <div className="row">
+              <input className="inp" style={{ flex: 1 }} placeholder="نام/شماره دانشجویی/یوزرنیم…"
+                     value={r.q} onChange={e => setRow(i, { q: e.target.value, hits: null, picked: null })}
+                     onKeyDown={e => e.key === 'Enter' && find(i)} />
+              <button className="btn sm" onClick={() => find(i)}>🔎</button>
+              <input className="inp" type="number" step="0.25" min="0" max="20" style={{ width: 90 }}
+                     placeholder="نمره" value={r.score} onChange={e => setRow(i, { score: e.target.value })} />
+              <button className="btn sm danger" disabled={rows.length === 1}
+                      onClick={() => setRows(rs => rs.filter((_, j) => j !== i))}>✕</button>
+            </div>
+            {r.hits && !r.picked && (
+              <div style={{ marginTop: 6 }}>
+                {r.hits.length === 0 && <span className="muted">دانشجویی یافت نشد</span>}
+                {r.hits.slice(0, 5).map(s => (
+                  <button key={s.id} className="btn sm" style={{ margin: '3px 0 3px 5px' }}
+                          onClick={() => setRow(i, { picked: s, hits: null, q: `${s.name} (${s.student_id || s.id})` })}>
+                    {s.name} · <span className="code">{s.student_id || s.id}</span> {s.group ? `· ${s.group}` : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+            {r.picked && <div className="muted" style={{ marginTop: 5 }}>✅ {r.picked.name} انتخاب شد</div>}
+          </div>
+        ))}
+        <div className="row">
+          <button className="btn sm" onClick={() => setRows(rs => [...rs, { q: '', hits: null, picked: null, score: '' }])}>➕ ردیف جدید</button>
+          <span className="spacer" />
+          <span className="muted">{rows.filter(r => r.picked && r.score !== '').length} دانشجو آماده</span>
+        </div>
+        <div className="row">
+          <button className="btn primary" disabled={busy || !meta.lesson.trim() || !meta.exam_title.trim() || !meta.exam_date}
+                  onClick={submit}>{busy ? '⏳ …' : 'ثبت و ارسال به دانشجویان'}</button>
           <button className="btn" onClick={() => onClose(false)}>انصراف</button>
         </div>
       </div>
