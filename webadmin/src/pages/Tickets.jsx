@@ -2,16 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, Empty, B, toast } from '../ui.jsx';
 
-// 🎫 کنسول سه‌ستونه‌ی تیکت: لیست | گفت‌وگو | اکشن
-export default function Tickets() {
-  const [status, setStatus] = useState('');
+// 🎫🌊 W-Admin — Support Command Center سه‌ستونه: صف | گفت‌وگو | کانتکست کاربر
+// (اصلاح باگ: فیلد پاسخ = message — قبلاً text می‌رفت و 422 می‌شد؛ حباب support راست‌چین شد)
+export default function Tickets({ go }) {
+  const [status, setStatus] = useState('open');
   const [list, setList] = useState(null);
   const [err, setErr] = useState('');
   const [cur, setCur] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [ctx, setCtx] = useState(null);          // user360-lite برای کانتکست
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [sel, setSel] = useState([]);   // ⚡ WA2.4 — انتخاب گروهی
+  const [sel, setSel] = useState([]);
+  const [q, setQ] = useState('');
 
   const bulk = async (action) => {
     if (!sel.length) return;
@@ -30,10 +33,14 @@ export default function Tickets() {
   useEffect(() => { load(); }, [status]);
 
   const open = async (t) => {
-    setCur(t.id || t.tid);
-    setDetail(null);
-    try { setDetail((await api.ticket(t.id || t.tid)).ticket); }
-    catch (e) { toast(errText(e), 'err'); }
+    const id = t.id ?? t.tid;
+    setCur(id); setDetail(null); setCtx(null);
+    try {
+      const d = (await api.ticket(id)).ticket;
+      setDetail(d);
+      // کانتکست غنی: user360 موجود (users.view) — ضدخطا، اختیاری
+      if (d.user?.id) api.user360(d.user.id).then(x => setCtx(x)).catch(() => {});
+    } catch (e) { toast(errText(e), 'err'); }
   };
   const send = async () => {
     if (!text.trim()) return;
@@ -42,81 +49,164 @@ export default function Tickets() {
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
-  const act = async (fn) => {
-    try { await fn(cur); open({ id: cur }); load(); toast('انجام شد'); }
+  const act = async (fn, okMsg) => {
+    try { await fn(cur); open({ id: cur }); load(); toast(okMsg); }
     catch (e) { toast(errText(e), 'err'); }
   };
 
-  if (err) return <ErrorState error={err} onRetry={load} />;
-  const items = (list && (list.tickets || list)) || [];
+  if (err) return <ErrorState title="بارگذاری تیکت‌ها ناموفق بود" error={err} onRetry={load} />;
+  const raw = (list && (list.tickets || list)) || [];
+  const items = q.trim()
+    ? raw.filter(t => (t.subject || '').includes(q.trim()) || (t.user_name || '').includes(q.trim()))
+    : raw;
 
   return (
     <>
-      <div className="h1">کنسول تیکت‌ها</div>
-      <div className="sub">پاسخ، بستن و بازگشایی — بدون ترک صفحه</div>
-      <div className="row" style={{ alignItems: 'flex-end' }}>
-        <div className="tabs" style={{ flex: 1, marginBottom: sel.length ? 0 : 14 }}>
-          {[['', 'همه'], ['open', 'باز'], ['answered', 'پاسخ‌داده‌شده'], ['closed', 'بسته']].map(([k, v]) => (
-            <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
-          ))}
+      <div className="row">
+        <div>
+          <div className="h1">کنسول پشتیبانی</div>
+          <div className="sub">صف ⬅ گفت‌وگو ⬅ کانتکست کاربر — بدون ترک صفحه</div>
         </div>
+        <span className="spacer" />
         {sel.length > 0 && (
-          <div className="row" style={{ marginBottom: 6 }}>
+          <>
             <span className="badge acc">{sel.length} انتخاب‌شده</span>
             <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
             <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button>
-          </div>
+          </>
         )}
       </div>
-      <div className="grid" style={{ gridTemplateColumns: '300px 1fr', alignItems: 'start' }}>
-        <div className="panel" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-          {!list && <div className="panel-pad"><Loading /></div>}
-          {list && !items.length && <Empty icon="🎫" text="تیکتی نیست" />}
-          {items.map(t => (
-            <div key={t.id || t.tid} className={`tree-row ${cur === (t.id || t.tid) ? 'on' : ''}`}
-                 style={{ cursor: 'pointer', borderBottom: '1px solid var(--line)',
-                          background: cur === (t.id || t.tid) ? 'var(--panel2)' : '' }}
-                 onClick={() => open(t)}>
-              <input type="checkbox" checked={sel.includes(t.id || t.tid)}
-                     onClick={e => e.stopPropagation()}
-                     onChange={() => setSel(x => x.includes(t.id || t.tid)
-                       ? x.filter(i => i !== (t.id || t.tid)) : [...x, t.id || t.tid])} />
-              <span>🎫</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {t.subject || t.title || `تیکت ${t.id || t.tid}`}
-                </div>
-                <div className="muted">{t.user_name || t.name || ''}</div>
-              </div>
-              <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
-                {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}
-              </B>
-            </div>
+
+      <div className="row" style={{ alignItems: 'flex-end', marginBottom: 10 }}>
+        <div className="tabs" style={{ flex: 1, marginBottom: 0 }}>
+          {[['open', '🟠 باز'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
+            <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
           ))}
         </div>
-        <div className="panel" style={{ minHeight: '60vh', display: 'flex', flexDirection: 'column' }}>
-          {!cur && <Empty icon="💬" text="یک تیکت را انتخاب کنید" />}
+        <input className="inp" style={{ width: 220 }} placeholder="🔎 موضوع/نام…"
+               value={q} onChange={e => setQ(e.target.value)} />
+      </div>
+
+      <div className="tk-grid">
+        {/* ستون ۱ — صف */}
+        <div className="panel" style={{ maxHeight: '74vh', overflowY: 'auto' }}>
+          {!list && <div className="panel-pad"><Loading /></div>}
+          {list && !items.length && <Empty icon="🎫" text="تیکتی در این صف نیست" />}
+          {items.map(t => {
+            const id = t.id ?? t.tid;
+            return (
+              <div key={id} className={`tree-row ${cur === id ? 'on' : ''}`}
+                   style={{ cursor: 'pointer', borderBottom: '1px solid var(--line)', alignItems: 'flex-start',
+                            background: cur === id ? 'var(--panel2)' : '' }}
+                   onClick={() => open(t)}>
+                <input type="checkbox" checked={sel.includes(id)} aria-label="انتخاب تیکت"
+                       onClick={e => e.stopPropagation()}
+                       onChange={() => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id])} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.subject || `تیکت ${id}`}
+                  </div>
+                  <div className="muted">
+                    {t.user_name || ''} · {t.created_at || ''}
+                    {t.reply_count ? ` · 💬 ${Number(t.reply_count).toLocaleString('fa')}` : ''}
+                  </div>
+                </div>
+                <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
+                  {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}
+                </B>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ستون ۲ — گفت‌وگو */}
+        <div className="panel" style={{ minHeight: '66vh', display: 'flex', flexDirection: 'column' }}>
+          {!cur && <Empty icon="💬" text="یک تیکت را از صف انتخاب کنید" />}
           {cur && !detail && <div className="panel-pad"><Loading /></div>}
           {detail && (
             <>
-              <div className="chat" style={{ flex: 1, overflowY: 'auto', maxHeight: '55vh' }}>
-                {(detail.replies || detail.messages || [
-                  { by: 'user', text: detail.text || detail.body || detail.subject || '' },
-                ]).map((m, i) => (
-                  <div key={i} className={`bubble ${(m.by || m.sender) === 'admin' ? 'admin' : 'user'}`}>
+              <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 14px' }}>
+                <b style={{ color: 'var(--txt)', fontSize: 13 }}>{detail.subject || `تیکت ${detail.id}`}</b>
+                <span className="muted">#{detail.id} · {detail.created_at}</span>
+                <span className="spacer" />
+                <B kind={detail.status === 'open' ? 'bad' : detail.status === 'answered' ? 'warn' : 'ok'}>
+                  {detail.status === 'open' ? 'باز' : detail.status === 'answered' ? 'پاسخ‌داده‌شده' : 'بسته'}
+                </B>
+              </div>
+              <div className="chat" style={{ flex: 1, overflowY: 'auto', maxHeight: '48vh' }}>
+                {detail.message && (
+                  <div className="bubble user">
+                    {detail.message}
+                    <div className="muted" style={{ marginTop: 4 }}>{detail.created_at || ''}</div>
+                  </div>
+                )}
+                {(detail.replies || []).map((m, i) => (
+                  <div key={i} className={`bubble ${(m.sender || m.by) === 'support' || (m.sender || m.by) === 'admin' ? 'admin' : 'user'}`}>
                     {m.text || m.message}
-                    <div className="muted" style={{ marginTop: 4 }}>{m.at || m.created_at || ''}</div>
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      {(m.sender || m.by) === 'support' || (m.sender || m.by) === 'admin' ? '🛟 پشتیبانی · ' : ''}{m.at || m.created_at || ''}
+                    </div>
                   </div>
                 ))}
               </div>
-              <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
-                <input className="inp" style={{ flex: 1 }} placeholder="پاسخ…"
-                       value={text} onChange={e => setText(e.target.value)}
-                       onKeyDown={e => e.key === 'Enter' && send()} />
-                <button className="btn primary" disabled={busy} onClick={send}>ارسال ➤</button>
-                {detail.status !== 'closed'
-                  ? <button className="btn sm" onClick={() => act(api.ticketClose)}>✅ بستن</button>
-                  : <button className="btn sm" onClick={() => act(api.ticketReopen)}>🔓 بازگشایی</button>}
+              {detail.status !== 'closed' ? (
+                <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)', flexWrap: 'nowrap' }}>
+                  <textarea className="inp" rows={1} style={{ flex: 1, resize: 'none' }}
+                            placeholder="پاسخ پشتیبانی… (Enter برای ارسال)"
+                            value={text} onChange={e => setText(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+                  <button className="btn primary" disabled={busy || !text.trim()} onClick={send}>ارسال ➤</button>
+                  <button className="btn sm" onClick={() => act(api.ticketClose, 'تیکت بسته شد ✅')}>✅ بستن</button>
+                </div>
+              ) : (
+                <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
+                  <span className="muted">این تیکت بسته شده است.</span>
+                  <span className="spacer" />
+                  <button className="btn sm" onClick={() => act(api.ticketReopen, 'بازگشایی شد 🔓')}>🔓 بازگشایی</button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ستون ۳ — کانتکست کاربر */}
+        <div className="panel panel-pad tk-ctx">
+          {!detail && <Empty icon="👤" text="کانتکست کاربر" />}
+          {detail && (
+            <>
+              <div className="row" style={{ flexWrap: 'nowrap' }}>
+                <div className="avatar" style={{ width: 38, height: 38, fontSize: 15 }}>
+                  {(detail.user?.name || '?')[0]}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <b style={{ color: 'var(--txt)' }}>{detail.user?.name || '—'}</b>
+                  <div className="muted code">#{detail.user?.id}</div>
+                </div>
+              </div>
+              <dl className="kv" style={{ gridTemplateColumns: '92px 1fr' }}>
+                {Object.entries({
+                  'شماره دانشجویی': detail.user?.student_id,
+                  'ورودی': detail.user?.intake,
+                  'گروه': detail.user?.group,
+                }).filter(([, v]) => v).map(([k, v]) => (
+                  <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>
+                ))}
+              </dl>
+              {ctx ? (
+                <dl className="kv" style={{ gridTemplateColumns: '92px 1fr' }}>
+                  <dt>وضعیت حساب</dt>
+                  <dd>{ctx.user?.suspended ? '⏸ تعلیق' : ctx.user?.approved ? '✅ فعال' : '🕓 در انتظار'}</dd>
+                  <dt>اشتراک</dt>
+                  <dd>{ctx.subscription?.status === 'active'
+                    ? `💎 ${ctx.subscription.plan} · ${ctx.subscription.days_left ?? '—'} روز` : '—'}</dd>
+                  <dt>پاسخ‌ها</dt>
+                  <dd>{Number(ctx.user?.total_answers || 0).toLocaleString('fa')}</dd>
+                  <dt>تیکت‌ها</dt>
+                  <dd>{Number(ctx.counts?.tickets || 0).toLocaleString('fa')}</dd>
+                </dl>
+              ) : detail && <div className="muted" style={{ fontSize: 11 }}>در حال تکمیل کانتکست…</div>}
+              <div className="row" style={{ marginTop: 12 }}>
+                <button className="btn sm primary" onClick={() => go && go('/users')}>👤 بازکردن در کاربران</button>
               </div>
             </>
           )}
