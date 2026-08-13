@@ -1,14 +1,71 @@
-import React, { useEffect, useState } from 'react';
-import { api } from '../api.js';
-import { Stat, Loading, ErrorState, B } from '../ui.jsx';
+import React, { useEffect, useRef, useState } from 'react';
+import { api, exportCSV } from '../api.js';
+import { Stat, Loading, ErrorState, B, toast } from '../ui.jsx';
 
 // 📊 داشبورد عملیات + ⚠️ نیازمند اقدام (WA2.7) + 🕓 فید فعالیت واقعی (WA2.7)
+// 🌊 موج Dash-Personalize — نمایش/پنهان بخش‌ها (ترجیح محلی هر مرورگر، localStorage)
+const WKEY = 'wa_dash_widgets';
+const WIDGETS = [
+  ['attn', '⚠️ نیازمند اقدام'],
+  ['kpis', '📊 کارت‌های عملیات'],
+  ['sys', '📈 شاخص‌های سامانه'],
+  ['feed', '🕓 جریان فعالیت'],
+];
+
 export default function Dashboard({ me, go }) {
   const [ov, setOv] = useState(null);
   const [stats, setStats] = useState(null);
   const [attn, setAttn] = useState(null);
   const [feed, setFeed] = useState(null);
   const [err, setErr] = useState('');
+  const [prefsOpen, setPrefsOpen] = useState(false);
+  const prefsRef = useRef(null);
+  const [wcfg, setWcfg] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(WKEY)) || {}; } catch { return {}; }
+  });
+  const won = (k) => wcfg[k] !== false;
+  const toggleW = (k) => setWcfg(s => {
+    const n = { ...s, [k]: !(s[k] !== false) };
+    try { localStorage.setItem(WKEY, JSON.stringify(n)); } catch { /* حریم خصوصی */ }
+    return n;
+  });
+  useEffect(() => {
+    if (!prefsOpen) return;
+    const h = (e) => { if (prefsRef.current && !prefsRef.current.contains(e.target)) setPrefsOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [prefsOpen]);
+
+  // 🌊 موج Export — خروجی CSV کامل کاربران (همان داده‌ی واقعی جدول سرورساید)
+  const [expBusy, setExpBusy] = useState(false);
+  const exportUsers = async () => {
+    setExpBusy(true);
+    try {
+      const us = await api.usersAll();
+      if (!us.length) { toast('داده‌ای برای خروجی نیست', 'err'); return; }
+      const stamp = (ov?.jalali_today || new Date().toISOString().slice(0, 10));
+      exportCSV(
+        `humsyar-users-${stamp}.csv`,
+        [
+          { label: 'آیدی عددی', v: 'id' },
+          { label: 'نام', v: 'name' },
+          { label: 'لقب', v: 'nickname' },
+          { label: 'نام کاربری', v: 'username' },
+          { label: 'شماره دانشجویی', v: 'student_id' },
+          { label: 'ورودی', v: 'intake' },
+          { label: 'گروه', v: 'group' },
+          { label: 'نقش', v: 'role' },
+          { label: 'وضعیت', v: u => u.suspended ? 'معلق' : u.approved ? 'تأییدشده' : 'در انتظار' },
+          { label: 'تاریخ ثبت‌نام', v: 'registered_at' },
+          { label: 'کل پاسخ‌ها', v: 'total_answers' },
+          { label: 'رنک', v: u => `${u.rank || ''} ${u.div || ''}`.trim() },
+        ],
+        us,
+      );
+      toast(`${Number(us.length).toLocaleString('fa')} کاربر صادر شد ✅`);
+    } catch (e) { toast(e.message || 'خطا در خروجی', 'err'); }
+    setExpBusy(false);
+  };
 
   const load = async () => {
     setErr('');
@@ -34,11 +91,31 @@ export default function Dashboard({ me, go }) {
   const attnItems = (attn?.items || []).filter(i => i.count > 0);
   return (
     <>
-      <div className="h1">داشبورد عملیات</div>
-      <div className="sub">نمای زنده‌ی صف‌های عملیاتی سامانه</div>
+      <div className="row">
+        <div>
+          <div className="h1">داشبورد عملیات</div>
+          <div className="sub">نمای زنده‌ی صف‌های عملیاتی سامانه</div>
+        </div>
+        <span className="spacer" />
+        <div className="tbl-tools" ref={prefsRef} style={{ border: 0, padding: 0 }}>
+          <button className="btn sm" title="سفارشی‌سازی ویجت‌ها" aria-label="سفارشی‌سازی داشبورد"
+                  onClick={() => setPrefsOpen(x => !x)}>⚙️ ویجت‌ها</button>
+          {prefsOpen && (
+            <div className="colmenu" role="menu">
+              {WIDGETS.map(([k, label]) => (
+                <label key={k} className="colmenu-item">
+                  <input type="checkbox" checked={won(k)} onChange={() => toggleW(k)} />
+                  <span>{label}</span>
+                </label>
+              ))}
+              <div className="muted" style={{ padding: '4px 8px', fontSize: 10 }}>ترجیح فقط روی همین مرورگر ذخیره می‌شود</div>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* ⚠️ WA2.7 — نیازمند اقدام (کلیک → مستقیم به همان صف) */}
-      {attn && (
+      {attn && won('attn') && (
         <div className="panel panel-pad" style={{ marginBottom: 14, borderColor: attnItems.length ? 'rgba(251,191,36,.35)' : 'rgba(52,211,153,.35)' }}>
           <div className="row">
             <b>⚠️ نیازمند اقدام</b>
@@ -68,15 +145,17 @@ export default function Dashboard({ me, go }) {
         </div>
       )}
 
-      <div className="grid g4">
-        {cards.map((c, i) => (
-          <div key={i} onClick={() => c.go && go(c.go)} style={{ cursor: c.go ? 'pointer' : 'default' }}>
-            <Stat icon={c.icon} label={c.label} value={Number(c.v ?? 0).toLocaleString('fa')} tint={c.tint} />
-          </div>
-        ))}
-      </div>
+      {won('kpis') && (
+        <div className="grid g4">
+          {cards.map((c, i) => (
+            <div key={i} onClick={() => c.go && go(c.go)} style={{ cursor: c.go ? 'pointer' : 'default' }}>
+              <Stat icon={c.icon} label={c.label} value={Number(c.v ?? 0).toLocaleString('fa')} tint={c.tint} />
+            </div>
+          ))}
+        </div>
+      )}
 
-      {stats && (() => {
+      {stats && won('sys') && (() => {
         // 🌊 W-Design 4 — ترند امروز نسبت به میانگین ۶ روز قبلِ هفته (client-side، بدون API جدید)
         const today = Number(stats.active_today ?? 0);
         const othersAvg = Math.max(0, (Number(stats.active_week ?? 0) - today)) / 6;
@@ -96,7 +175,7 @@ export default function Dashboard({ me, go }) {
       })()}
 
       {/* 🕓 WA2.7 — فید فعالیت واقعی */}
-      {feed !== null && (
+      {feed !== null && won('feed') && (
         <>
           <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>🕓 جریان فعالیت</div>
           <div className="panel" style={{ marginTop: 10 }}>
@@ -114,6 +193,23 @@ export default function Dashboard({ me, go }) {
                 {f.module && <B>{f.module}</B>}
               </div>
             ))}
+          </div>
+        </>
+      )}
+
+      {/* 🌊 موج Export — خروجی داده (سمت مرورگر، از همان داده‌ی واقعی API) */}
+      {me?.is_owner && (
+        <>
+          <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>📥 خروجی داده</div>
+          <div className="panel panel-pad" style={{ marginTop: 10 }}>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <button className="btn" disabled={expBusy} onClick={exportUsers}>
+                {expBusy ? '⏳ در حال آماده‌سازی…' : '⬇️ کاربران (CSV کامل)'}
+              </button>
+              <span className="muted" style={{ fontSize: 11 }}>
+                همان داده‌ی واقعی جدول کاربران با صفحه‌بندی خودکار · دانلود مستقیم مرورگر (بدون IDM) — برای خروجی اکسل گروهی، از بخش «سیستم → خروجی اکسل» استفاده کنید.
+              </span>
+            </div>
           </div>
         </>
       )}
