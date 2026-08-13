@@ -25,8 +25,14 @@ export function Loading({ rows = 4 }) {
   return <div className="grid" style={{ gap: 8 }}>{Array.from({ length: rows }).map((_, i) =>
     <div key={i} className="skel" style={{ height: 42 }} />)}</div>;
 }
-export function Empty({ icon = '🗂', text = 'موردی یافت نشد' }) {
-  return <div className="center-state"><div style={{ fontSize: 30 }}>{icon}</div><div>{text}</div></div>;
+export function Empty({ icon = '🗂', text = 'موردی یافت نشد', children }) {
+  return (
+    <div className="center-state">
+      <div style={{ fontSize: 30 }} role="img">{icon}</div>
+      <div>{text}</div>
+      {children && <div style={{ marginTop: 12 }}>{children}</div>}
+    </div>
+  );
 }
 export function ErrorState({ error, onRetry }) {
   return (
@@ -123,11 +129,12 @@ export function Drawer({ title, onClose, children, wide }) {
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <div className="drawer" style={wide ? { width: 'min(640px,96vw)' } : {}}>
+      <div className="drawer" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'پانل'}
+           style={wide ? { width: 'min(660px,96vw)' } : {}}>
         <div className="row" style={{ marginBottom: 12 }}>
           <b style={{ fontSize: 15 }}>{title}</b>
           <span className="spacer" />
-          <button className="btn sm" onClick={onClose}>✕ بستن (Esc)</button>
+          <button className="btn sm" onClick={onClose} aria-label="بستن (Esc)">✕ بستن (Esc)</button>
         </div>
         {children}
       </div>
@@ -138,11 +145,11 @@ export function Modal({ title, onClose, children }) {
   return (
     <>
       <div className="scrim" onClick={onClose} />
-      <div className="modal">
+      <div className="modal" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'مودال'}>
         <div className="row" style={{ marginBottom: 12 }}>
           <b style={{ fontSize: 15 }}>{title}</b>
           <span className="spacer" />
-          <button className="btn sm" onClick={onClose}>✕</button>
+          <button className="btn sm" onClick={onClose} aria-label="بستن">✕</button>
         </div>
         {children}
       </div>
