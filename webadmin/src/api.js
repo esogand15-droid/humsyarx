@@ -31,6 +31,17 @@ export const api = {
   overview: () => req('/api/web-admin/overview'),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
+  // 🌊 موج Export — صفحه‌بندی خودکار برای خروجی کامل (سقف ۶۰ صفحه × ۱۰۰ = ۶هزار)
+  usersAll: async (p = {}) => {
+    const out = [];
+    for (let pg = 1; pg <= 60; pg++) {
+      const r = await api.users({ ...p, page: pg, per_page: 100 });
+      const us = r.users || [];
+      out.push(...us);
+      if (pg >= (r.pages || 1) || !us.length) break;
+    }
+    return out;
+  },
   usersBulk: (action, ids, value) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
@@ -52,7 +63,8 @@ export const api = {
   examUpdate: (id, body) => req(`/api/web-admin/exams/${id}`, { method: 'PATCH', body }),
   examDelete: (id) => req(`/api/web-admin/exams/${id}`, { method: 'DELETE' }),
   examStats: () => req('/api/web-admin/exams/stats'),
-  waAnalytics: () => req('/api/web-admin/wa-analytics'),
+  // 🌊 موج Analytics-Filters — بازه‌ی روزانه (۷ تا ۹۰)
+  waAnalytics: (days) => req('/api/web-admin/wa-analytics' + (days ? `?days=${days}` : '')),
   notifRuns: (job) => req('/api/web-admin/notif/runs' + (job ? `?job_name=${job}` : '')),
   notifRetry: (id) => req(`/api/web-admin/notif/runs/${id}/retry`, { method: 'POST' }),
   // ── 🌊 WA2.1 Content Command Center ──
@@ -74,19 +86,25 @@ export const api = {
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
   botStatus: () => req('/api/admin/bot-status'),
-  analytics: () => req('/api/admin/analytics'),
+  analytics: (days) => req('/api/admin/analytics' + (days ? `?days=${days}` : '')),
   tickets: (status) => req('/api/admin/tickets' + (status ? `?status=${status}` : '')),
   ticket: (tid) => req(`/api/admin/tickets/${tid}`),
-  ticketReply: (tid, text) => req(`/api/admin/tickets/${tid}/reply`, { method: 'POST', body: { text } }),
+  ticketReply: (tid, text) => req(`/api/admin/tickets/${tid}/reply`, { method: 'POST', body: { message: text } }),
   ticketClose: (tid) => req(`/api/admin/tickets/${tid}/close`, { method: 'POST' }),
   ticketReopen: (tid) => req(`/api/admin/tickets/${tid}/reopen`, { method: 'POST' }),
   broadcast: (body) => req('/api/admin/broadcast', { method: 'POST', body }),
   broadcastPreview: (body) => req('/api/admin/broadcast/preview', { method: 'POST', body }),
   broadcastHistory: () => req('/api/admin/broadcast/history'),
+  // 🌊 موج Notif-Scheduled — مدیریت ارسال‌های زمان‌دارِ در انتظار (سطح مالک)
+  broadcastScheduled: () => req('/api/admin/broadcast/scheduled'),
+  broadcastCancel: (text, created_at) =>
+    req('/api/admin/broadcast/cancel', { method: 'POST', body: { text, created_at } }),
   auditLogs: (p) => req('/api/admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
   settings: () => req('/api/admin/settings'),
   patchSettings: (body) => req('/api/admin/settings', { method: 'PATCH', body }),
   backup: () => req('/api/admin/backup', { method: 'POST' }),
+  // 🌊 موج Export — درخواست خروجی اکسل کامل (ربات فایل را در گفت‌وگوی ادمین می‌فرستد)
+  exportExcel: () => req('/api/admin/export/excel', { method: 'POST' }),
   intakes: () => req('/api/admin/intakes'),
   pendingUsers: () => req('/api/admin/users/pending'),
   // ── rbAC ──
@@ -149,6 +167,13 @@ export const api = {
   // ── ai admin ──
   aiStats: () => req('/api/ai-admin/stats'),
   aiConfig: () => req('/api/ai-admin/config'),
+  // 🌊 W-Admin — صفحه‌ی کامل هوشیار
+  aiConfigUpdate: (body) => req('/api/ai-admin/config', { method: 'PUT', body }),
+  aiReports: () => req('/api/ai-admin/reports'),
+  aiBanned: () => req('/api/ai-admin/banned'),
+  aiUsers: (q) => req('/api/ai-admin/users?q=' + encodeURIComponent(q)),
+  aiBan: (uid) => req('/api/ai-admin/users/ban', { method: 'POST', body: { user_id: uid } }),
+  aiResetQuota: (uid) => req('/api/ai-admin/users/reset-quota', { method: 'POST', body: { user_id: uid } }),
 };
 
 export function errText(e) {
