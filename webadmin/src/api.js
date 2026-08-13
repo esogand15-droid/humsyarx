@@ -101,6 +101,8 @@ export const api = {
   subPayments: (p) => req('/api/subscription-admin/payments?' + new URLSearchParams(p || {})),
   subPaymentDecision: (pid, approved, note = '') =>
     req(`/api/subscription-admin/payments/${pid}/decision`, { method: 'POST', body: { approved, note } }),
+  // 🌊 W-Design — منبع تصویر رسید (سشن HttpOnly خودش ضمیمه‌ی درخواست img می‌شود)
+  subReceiptSrc: (pid) => `/api/subscription-admin/payments/${pid}/receipt`,
   discounts: () => req('/api/subscription-admin/discounts'),
   // ── content (scope-aware) ──
   caIntakes: () => req('/api/content/intakes'),
