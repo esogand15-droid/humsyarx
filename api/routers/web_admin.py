@@ -114,7 +114,11 @@ def _perm(permission: str):
 
 async def _audit(actor_uid: int, action: str, *, severity: str = "INFO",
                  target_id: str = "", target_type: str = "",
-                 target_label: str = "", tags=None):
+                 target_label: str = "", tags=None,
+                 before: dict = None, after: dict = None):
+    # 🌊 موج Audit-Diff — before/after افزودنی: db.log_action از همیشه
+    # changes را می‌ساخت؛ حالا روتر وب‌ادمین هم آن را پاس می‌دهد تا
+    # کشوی Diff «قبل/بعد» داده‌ی واقعی داشته باشد.
     try:
         u = await db.get_user(actor_uid)
         await db.log_action(
@@ -123,6 +127,7 @@ async def _audit(actor_uid: int, action: str, *, severity: str = "INFO",
             action, "WebAdmin", category="admin", severity=severity,
             target_id=str(target_id), target_type=target_type,
             target_label=target_label, tags=tags or [],
+            before=before, after=after,
         )
     except Exception:
         pass
@@ -789,6 +794,7 @@ async def settings_center_patch(key: str, body: SettingPatch,
         {"$set": {"by": uid, "by_name": udb.get("name", str(uid)), "at": _now()}},
         upsert=True)
     await _audit(uid, f"تغییر تنظیم «{label}»", severity=sev if not is_notif else "INFO",
+                 before={label: before}, after={label: after},
                  tags=["تنظیمات", "پنل_وب", f"setting:{key}"])
     return {"ok": True, "key": key, "before": before, "after": after}
 
@@ -1169,9 +1175,16 @@ async def content_items_bulk(body: ItemsBulk,
 # ══════════════════════════════════════════════════════════════════
 
 @router.get("/wa-analytics")
-async def wa_analytics(user=Depends(_perm("stats.view"))):
-    """📈 متحد از داشبوردهای آماری واقعی db + شمارش‌های زنده — فقط خواندنی."""
+async def wa_analytics(user=Depends(_perm("stats.view")),
+                       days: int = Query(14, ge=7, le=90)):
+    """📈 متحد از داشبوردهای آماری واقعی db + شمارش‌های زنده — فقط خواندنی.
+
+    🌊 موج Analytics-Filters: پارامتر days (۷ تا ۹۰ روز) برای متریکهای
+    بازه‌ای؛ دارندگان مجوز stats.deep علاوه‌بر snapshot، «bundle»‌ی کامل
+    تحلیلی (KPI/سری روزانه/اکشن‌ها/ساعات اوج — همان منطق واحد db) می‌گیرند.
+    """
     out = {}
+    out["days"] = days
     for name, fn in (("users", getattr(db, "stats_dashboard_users", None)),
                      ("content", getattr(db, "stats_dashboard_content", None)),
                      ("questions", getattr(db, "stats_dashboard_questions", None)),
@@ -1195,9 +1208,25 @@ async def wa_analytics(user=Depends(_perm("stats.view"))):
     except Exception:
         out["new_resources_7d"] = 0
     try:
+        out["new_resources_in_range"] = await db.new_resources_count(days)
+    except Exception:
+        out["new_resources_in_range"] = 0
+    try:
         out["active_today"] = await db.count_active_users_today()
     except Exception:
         out["active_today"] = 0
+    # 🌊 تحلیل عمیق بازه‌ای — فقط با مجوز جداگانه (گیت دومرحله‌ای)
+    deep = False
+    try:
+        deep = bool(await db.has_permission(user["id"], "stats.deep"))
+    except Exception:
+        deep = False
+    if deep:
+        try:
+            out["bundle"] = await db.stats_analytics_bundle(days)
+        except Exception:
+            pass
+    out["deep"] = deep
     return out
 
 
@@ -1358,7 +1387,8 @@ class WaUserPatch(BaseModel):
 async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.manage"))):
     """✏️ ویرایش فیلدهای پروفایل — همان whitelist پنل قبلی + لقب از مسیر
     IdentityService (اعتبارسنجی/audit خودکار داخل db)."""
-    if not await db.get_user(uid):
+    old_doc = await db.get_user(uid)
+    if not old_doc:
         raise HTTPException(404, "کاربر یافت نشد")
     updates = {}
     if body.name is not None:
@@ -1376,12 +1406,17 @@ async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.m
         if not ok:
             raise HTTPException(422, f"لقب نامعتبر: {err}")
         nick_note = " + لقب"
+    # 🌊 موج Audit-Diff — اسنپ‌شات «قبل» پیش از update (مقادیر scalar تغییرناپذیرند)
+    _LBL = {"name": "نام", "group": "گروه", "intake": "ورودی", "student_id": "شماره دانشجویی"}
+    _before = {_LBL.get(k, k): old_doc.get(k) for k in updates}
+    _after = {_LBL.get(k, k): updates[k] for k in updates}
     if updates:
         await db.update_user(uid, updates)
     if updates or body.nickname is not None:
         await _audit(user["id"], "ویرایش اطلاعات کاربر" + nick_note, severity="WARNING",
                      target_id=uid, target_type="user",
                      target_label=" / ".join(f"{k}: {v}" for k, v in updates.items())[:300],
+                     before=_before or None, after=_after or None,
                      tags=["ویرایش_کاربر", "پنل_وب"])
     return {"ok": True, "changed": list(updates.keys()) + (["nickname"] if body.nickname is not None else [])}
 
@@ -1518,4 +1553,45 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         } for l in logs]
     except Exception:
         pass
+
+    # 🌊 W-Admin — بخش‌های جدید User 360 (افزودنی؛ هر بخش جدا ضدخطا)
+    try:  # 📊 تحصیلی — آخرین نمرات
+        gdocs = await db.grades.find({"student_id": uid}).sort("exam_date", -1).limit(6).to_list(6)
+        out["academic"] = {"grades_recent": [{
+            "lesson": g.get("lesson", ""), "exam_title": g.get("exam_title", ""),
+            "exam_date": g.get("exam_date", ""), "score": g.get("score", 0),
+        } for g in gdocs]}
+    except Exception:
+        out.setdefault("academic", {"grades_recent": []})
+    try:  # 🤖 هوشیار — از روی سند کاربر (بدون کوئری اضافه)
+        today = datetime.now().strftime("%Y-%m-%d")
+        out["ai"] = {
+            "total_usage": target.get("ai_total_usage", 0) or 0,
+            "today": (target.get("ai_usage_count", 0) or 0)
+                     if target.get("ai_usage_date") == today else 0,
+            "total_tokens": target.get("ai_total_tokens", 0) or 0,
+            "banned": bool(target.get("ai_banned")),
+        }
+    except Exception:
+        out.setdefault("ai", {})
+    try:  # 🏆 افتخار — رنک/XP/استریک از سند کاربر
+        dx = target.get("daily_xp") or {}
+        out["prestige"] = {
+            "rank": target.get("prestige_rank", ""), "div": target.get("prestige_div", ""),
+            "prestige_xp": target.get("prestige_xp", 0) or 0,
+            "effective_xp": target.get("effective_xp", 0) or 0,
+            "weekly_xp": target.get("weekly_xp", 0) or 0,
+            "monthly_xp": target.get("monthly_xp", 0) or 0,
+            "streak_current": target.get("streak_current", 0) or 0,
+            "streak_best": target.get("streak_best", 0) or 0,
+            "daily_xp_amount": dx.get("amount", 0) or 0,
+        }
+    except Exception:
+        out.setdefault("prestige", {})
+    try:  # 🔔 اعلان‌ها — شمارش خوانده‌نشده/کل
+        un = await db.user_notifs.count_documents({"user_id": uid, "read": {"$ne": True}})
+        tot = await db.user_notifs.count_documents({"user_id": uid})
+        out["notifs"] = {"unread": un, "total": tot}
+    except Exception:
+        out.setdefault("notifs", {})
     return out
