@@ -493,3 +493,30 @@ select:focus-visible, textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ── 17) 🌊 W-Design 3+: ابزار جدول / مرتب‌سازی / ترند KPI / رسید دوپه‌ای ── */
+.tbl-tools { position: relative; display: flex; justify-content: flex-end; padding: 6px 10px; border-bottom: 1px solid var(--c-line); }
+.colmenu {
+  position: absolute; top: 100%; inset-inline-start: 10px; z-index: var(--z-topbar);
+  min-width: 168px; background: var(--c-bg2); border: 1px solid var(--c-line2);
+  border-radius: var(--r-lg); box-shadow: var(--sh-2); padding: 6px;
+  animation: toastIn var(--d-micro) var(--ease);
+}
+.colmenu-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: var(--r-sm); font-size: var(--fs-body); color: var(--c-txt2); cursor: pointer;
+}
+.colmenu-item:hover { background: var(--c-surface2); color: var(--c-txt); }
+.sort-ic { color: var(--c-txt3); font-size: 9px; }
+.tbl th[aria-sort] .sort-ic { color: var(--c-acc); }
+
+.trend { font-size: var(--fs-meta); font-weight: 700; padding: 1px 7px; border-radius: var(--r-pill); white-space: nowrap; }
+.trend.up { color: var(--c-ok); background: rgba(58,210,155,.1); border: 1px solid rgba(58,210,155,.35); }
+.trend.down { color: var(--c-bad); background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.35); }
+
+/* بازبینی رسید دوپه‌ای: جزئیات | تصویر */
+.rcpt { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 820px) { .rcpt { grid-template-columns: 1fr 1.05fr; align-items: start; } }
+.rcpt-img { background: var(--c-bg); border: 1px solid var(--c-line); border-radius: var(--r-lg); padding: 8px; position: sticky; top: 0; }
+.rcpt-img img { width: 100%; height: auto; display: block; border-radius: var(--r-md); }
+.rcpt-img .zoom-hint { text-align: center; color: var(--c-txt3); font-size: var(--fs-caption); margin-top: 5px; }
