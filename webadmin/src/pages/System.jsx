@@ -18,6 +18,16 @@ export default function System() {
     try { const r = await api.backup(); toast(r.message || 'پشتیبان‌گیری آغاز شد'); }
     catch (e) { toast(errText(e), 'err'); }
   };
+  // 🌊 موج Export — درخواست خروجی اکسل؛ ربات فایل را در گفت‌وگوی ادمین می‌فرستد
+  const [excelBusy, setExcelBusy] = useState(false);
+  const doExcel = async () => {
+    setExcelBusy(true);
+    try {
+      await api.exportExcel();
+      toast('درخواست ثبت شد 📑 ربات فایل اکسل را در گفت‌وگوی شما می‌فرستد');
+    } catch (e) { toast(errText(e), 'err'); }
+    setExcelBusy(false);
+  };
 
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!bs) return <Loading rows={4} />;
@@ -58,6 +68,9 @@ export default function System() {
           <div><b>💾 پشتیبان‌گیری دستی</b>
             <div className="muted" style={{ marginTop: 4 }}>auto_backup روزانه‌ی ربات فعال است؛ این اکشن یک نسخه‌ی فوری می‌سازد و در لاگ ثبت می‌شود.</div></div>
           <span className="spacer" />
+          <button className="btn" disabled={excelBusy} onClick={doExcel}>
+            {excelBusy ? '⏳ …' : '📑 خروجی اکسل کامل'}
+          </button>
           <button className="btn" onClick={() => setConfirm(true)}>ساخت پشتیبان فوری</button>
         </div>
       </div>
