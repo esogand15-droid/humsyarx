@@ -76,17 +76,24 @@ export default function Dashboard({ me, go }) {
         ))}
       </div>
 
-      {stats && (
+      {stats && (() => {
+        // 🌊 W-Design 4 — ترند امروز نسبت به میانگین ۶ روز قبلِ هفته (client-side، بدون API جدید)
+        const today = Number(stats.active_today ?? 0);
+        const othersAvg = Math.max(0, (Number(stats.active_week ?? 0) - today)) / 6;
+        const delta = othersAvg > 0 ? Math.round((today - othersAvg) / othersAvg * 100) : null;
+        return (
         <>
           <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>شاخص‌های سامانه</div>
           <div className="grid g4" style={{ marginTop: 10 }}>
-            <Stat icon="📡" label="کاربران فعال امروز" value={Number(stats.active_today ?? 0).toLocaleString('fa')} tint="var(--ok)" />
+            <Stat icon="📡" label="کاربران فعال امروز" delta={delta} hint="نسبت به میانگین ۶ روز قبل"
+                  value={today.toLocaleString('fa')} tint="var(--ok)" />
             <Stat icon="📅" label="کاربران فعال هفته" value={Number(stats.active_week ?? 0).toLocaleString('fa')} tint="var(--ok)" />
             <Stat icon="🆕" label="ثبت‌نام‌های امروز" value={Number(stats.new_today ?? stats.today_new ?? 0).toLocaleString('fa')} tint="var(--acc)" />
             <Stat icon="📥" label="کل پاسخ‌های ثبت‌شده" value={Number(stats.total_answers ?? 0).toLocaleString('fa')} tint="var(--purple)" />
           </div>
         </>
-      )}
+        );
+      })()}
 
       {/* 🕓 WA2.7 — فید فعالیت واقعی */}
       {feed !== null && (
