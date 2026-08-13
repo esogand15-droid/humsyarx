@@ -1,8 +1,18 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
-import { DataTable, Drawer, Loading, ErrorState, B, toast, Confirm, Modal } from '../ui.jsx';
+import { DataTable, Drawer, Loading, ErrorState, B, toast, Confirm, Modal, Empty } from '../ui.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
+// 🌊 WA3 — اکشن‌های تکی (دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات)
+const USER_ACTIONS = {
+  approve:    { icon: '✅', label: 'تأیید حساب', perm: 'manage' },
+  reject:     { icon: '✖️', label: 'رد و حذف درخواست', danger: true },
+  suspend:    { icon: '⏸', label: 'تعلیق', danger: true },
+  unsuspend:  { icon: '🔓', label: 'رفع تعلیق' },
+  block:      { icon: '⛔', label: 'مسدود (لیست سیاه)', danger: true },
+  unblock:    { icon: '🕊', label: 'رفع مسدودیت' },
+  delete:     { icon: '🗑', label: 'حذف کامل حساب', danger: true },
+};
 
 // 👥 WA2.4/2.8 — فیلتر ذخیره‌شده + bulk گسترده (تغییر ورودی/CSV) + دراور ۳۶۰ کاربر
 export default function Users({ go }) {
@@ -24,6 +34,7 @@ export default function Users({ go }) {
   const [filters, setFilters] = useState(null);
   const [saveModal, setSaveModal] = useState(false);
   const [filterName, setFilterName] = useState('');
+  const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
 
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
   useEffect(() => { api.savedFilters('users').then(r => setFilters(r.filters || [])).catch(() => setFilters([])); }, []);
@@ -112,6 +123,7 @@ export default function Users({ go }) {
         <div><div className="h1">مدیریت کاربران</div>
           <div className="sub">جست‌وجو، فیلتر ذخیره‌شده، pagination سرورساید و اکشن گروهی</div></div>
         <span className="spacer" />
+        <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
         {sel.length > 0 && <>
           <span className="badge acc">{sel.length} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>
@@ -156,6 +168,7 @@ export default function Users({ go }) {
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
       {detail && <UserDrawer row={detail} go={go} onClose={() => { setDetail(null); load(); }} />}
+      {blOpen && <BlacklistModal onClose={() => { setBlOpen(false); load(); }} />}
       {confirm && (
         <Confirm text={confirm.text} danger={confirm.action === 'suspend'}
                  onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
@@ -195,6 +208,7 @@ function UserDrawer({ row, go, onClose }) {
   const [d, setD] = useState(null);
   const [failed, setFailed] = useState(false);
   const [tab, setTab] = useState('overview');
+  const refetch = () => api.user360(row.id).then(r => setD(r)).catch(() => {});
   useEffect(() => {
     let on = true;
     api.user360(row.id)
@@ -203,7 +217,8 @@ function UserDrawer({ row, go, onClose }) {
     return () => { on = false; };
   }, [row.id]);
 
-  const TABS = [['overview', '👤 نمای کلی'], ['sub', '💎 اشتراک'], ['tickets', '🎫 تیکت‌ها'], ['audit', '🧭 رویدادها']];
+  const TABS = [['overview', '👤 نمای کلی'], ['actions', '⚙️ اقدامات'], ['sub', '💎 اشتراک'],
+                ['tickets', '🎫 تیکت‌ها'], ['audit', '🧭 رویدادها']];
 
   return (
     <Drawer wide title={`👤 ${row.display_name || row.name} · #${row.id}`} onClose={onClose}>
@@ -222,7 +237,10 @@ function UserDrawer({ row, go, onClose }) {
           ))}
         </dl>
       )}
-      {!failed && !d && <Loading />}
+      {!failed && !d && tab !== 'actions' && <Loading />}
+      {tab === 'actions' && (
+        <UserActions row={row} d={d} onChanged={refetch} onClose={onClose} />
+      )}
       {d && tab === 'overview' && (
         <>
           <dl className="kv">
@@ -294,5 +312,177 @@ function UserDrawer({ row, go, onClose }) {
         </>
       )}
     </Drawer>
+  );
+}
+
+/* ── ⚙️🌊 WA3 — تب اقدامات: DM + ویرایش پروفایل + اکشن‌های مدیریتی ─────
+   دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات؛ همه از API /api/web-admin
+   با guard سمت سرور و audit رد می‌شوند (سینک کامل با ربات/مینی‌اپ). */
+function UserActions({ row, d, onChanged, onClose }) {
+  const u = d?.user || row;
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [intakes, setIntakes] = useState([]);
+  const [form, setForm] = useState({
+    name: u.name || '', student_id: u.student_id || '',
+    group: u.group || '', intake: u.intake || '', nickname: u.nickname || '',
+  });
+  const [confirm, setConfirm] = useState(null);   // {action,text,danger}
+  const [blockModal, setBlockModal] = useState(false);
+  const [reason, setReason] = useState('');
+  useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
+
+  const sendDM = async () => {
+    if (!msg.trim()) return;
+    setBusy(true);
+    try { await api.waUserMessage(row.id, msg.trim()); toast('پیام در صف ارسال به کاربر قرار گرفت 📨'); setMsg(''); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = {};
+      ['name', 'student_id', 'group', 'intake', 'nickname'].forEach(k => {
+        if (String(form[k] || '') !== String(u[k] || '')) body[k] = form[k];
+      });
+      if (!Object.keys(body).length) { toast('تغییری اعمال نشده است', 'err'); return; }
+      const r = await api.waUserPatch(row.id, body);
+      toast(`ذخیره شد ✅ (${(r.changed || []).length} فیلد)`);
+      onChanged();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const runAction = async (action, rs = '') => {
+    setBusy(true);
+    try {
+      await api.waUserAction(row.id, action, rs);
+      toast(`${USER_ACTIONS[action].icon} ${USER_ACTIONS[action].label} — انجام شد`);
+      if (action === 'delete' || action === 'reject') return onClose();
+      onChanged();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const ask = (action, text) => setConfirm({ action, text, danger: USER_ACTIONS[action].danger });
+
+  return (
+    <div className="grid" style={{ gap: 12 }}>
+      {/* 📨 پیام مستقیم — همان ارسال پیام پنل ربات (outbox → ربات می‌فرستد) */}
+      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+        <b>📨 ارسال پیام مستقیم (از سمت ربات)</b>
+        <textarea className="inp" rows={3} style={{ width: '100%', marginTop: 8, resize: 'vertical' }}
+                  placeholder="متن پیام برای کاربر… (حداکثر ۱۵۰۰ کاراکتر)"
+                  maxLength={1500} value={msg} onChange={e => setMsg(e.target.value)} />
+        <div className="row" style={{ marginTop: 8 }}>
+          <span className="muted">{Number(msg.length).toLocaleString('fa')} / ۱۵۰۰</span>
+          <span className="spacer" />
+          <button className="btn primary sm" disabled={busy || !msg.trim()} onClick={sendDM}>ارسال 📨</button>
+        </div>
+      </div>
+
+      {/* ✏️ ویرایش پروفایل */}
+      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+        <b>✏️ ویرایش پروفایل</b>
+        <div className="grid g2" style={{ gap: 8, marginTop: 10 }}>
+          <label className="fld"><span>نام</span>
+            <input className="inp" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
+          <label className="fld"><span>نام‌نما (نمایش به دیگران)</span>
+            <input className="inp" value={form.nickname} onChange={e => setForm({ ...form, nickname: e.target.value })} /></label>
+          <label className="fld"><span>شماره دانشجویی</span>
+            <input className="inp" style={{ direction: 'ltr' }} value={form.student_id}
+                   onChange={e => setForm({ ...form, student_id: e.target.value })} /></label>
+          <label className="fld"><span>گروه</span>
+            <input className="inp" value={form.group} onChange={e => setForm({ ...form, group: e.target.value })} /></label>
+          <label className="fld"><span>ورودی</span>
+            <select className="inp" value={form.intake} onChange={e => setForm({ ...form, intake: e.target.value })}>
+              <option value="">(بدون ورودی)</option>
+              {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
+            </select></label>
+        </div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="btn primary sm" disabled={busy} onClick={save}>💾 ذخیره تغییرات</button>
+          <span className="muted">تاریخچه‌ی تغییر نام‌نما در پروفایل کاربر ثبت می‌شود</span>
+        </div>
+      </div>
+
+      {/* 🎛 اکشن‌های مدیریتی — همان دکمه‌های ربات */}
+      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+        <b>🎛 اکشن‌های مدیریتی</b>
+        <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: 'wrap' }}>
+          {!u.approved && !u.suspended && <>
+            <button className="btn ok sm" disabled={busy}
+                    onClick={() => ask('approve', `تأیید حساب «${u.name || row.id}»؟ به کاربر اطلاع‌رسانی می‌شود.`)}>✅ تأیید حساب</button>
+            <button className="btn danger sm" disabled={busy}
+                    onClick={() => ask('reject', `رد و حذف درخواست «${u.name || row.id}»؟`)}>✖️ رد درخواست</button>
+          </>}
+          {u.suspended
+            ? <button className="btn ok sm" disabled={busy}
+                      onClick={() => ask('unsuspend', `رفع تعلیق «${u.name || row.id}»؟`)}>🔓 رفع تعلیق</button>
+            : <button className="btn danger sm" disabled={busy}
+                      onClick={() => ask('suspend', `تعلیق «${u.name || row.id}»؟ به کاربر اطلاع‌رسانی می‌شود.`)}>⏸ تعلیق</button>}
+          <button className="btn danger sm" disabled={busy} onClick={() => { setReason(''); setBlockModal(true); }}>⛔ مسدود</button>
+          <button className="btn sm" disabled={busy}
+                  onClick={() => ask('unblock', `رفع مسدودیت «${u.name || row.id}» از لیست سیاه؟`)}>🕊 رفع مسدودیت</button>
+          <button className="btn danger sm" disabled={busy}
+                  onClick={() => ask('delete', `حذف کامل حساب «${u.name || row.id}»؟ این عمل برگشت‌پذیر نیست.`)}>🗑 حذف حساب</button>
+        </div>
+      </div>
+
+      {confirm && (
+        <Confirm text={confirm.text} danger={confirm.danger}
+                 onYes={async () => { await runAction(confirm.action); setConfirm(null); }}
+                 onNo={() => setConfirm(null)} />
+      )}
+      {blockModal && (
+        <Modal title={`⛔ مسدودسازی «${u.name || row.id}»`} onClose={() => setBlockModal(false)}>
+          <p className="muted" style={{ marginBottom: 8 }}>
+            کاربر به لیست سیاه اضافه می‌شود و دسترسی‌اش به ربات/مینی‌اپ قطع خواهد شد.</p>
+          <input className="inp" style={{ width: '100%' }} placeholder="دلیل مسدودسازی (در لیست سیاه نمایش داده می‌شود)…"
+                 value={reason} onChange={e => setReason(e.target.value)} />
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className="btn danger" disabled={busy} onClick={async () => {
+              setBlockModal(false); await runAction('block', reason.trim());
+            }}>⛔ مسدود کن</button>
+            <button className="btn" onClick={() => setBlockModal(false)}>انصراف</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ── ⛔🌊 WA3 — لیست سیاه + رفع مسدودیت ─────────────────────── */
+function BlacklistModal({ onClose }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState('');
+  const load = async () => {
+    setErr('');
+    try { setItems((await api.blacklist()).blacklist || []); }
+    catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+  const unblock = async (uid) => {
+    try { await api.waUserAction(uid, 'unblock'); toast('رفع مسدودیت شد 🕊'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  return (
+    <Modal title="⛔ لیست سیاه — کاربران مسدودشده" onClose={onClose}>
+      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading /> : (
+        <div className="grid" style={{ gap: 6, maxHeight: '60vh', overflowY: 'auto' }}>
+          {items.length === 0 && <Empty icon="🕊" text="هیچ کاربر مسدودشده‌ای نیست" />}
+          {items.map(b => (
+            <div key={b.id} className="row" style={{ padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 10 }}>
+              <span>⛔</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ color: 'var(--txt)' }}>{b.name || `#${b.id}`}</b>{' '}
+                <span className="code muted">{b.id}</span>
+                <div className="muted">{b.blocked_by_name ? `توسط ${b.blocked_by_name}` : ''} {b.blocked_at || ''}</div>
+              </div>
+              <button className="btn sm ok" onClick={() => unblock(b.id)}>🕊 رفع مسدودیت</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
