@@ -34,11 +34,15 @@ export function Empty({ icon = '🗂', text = 'موردی یافت نشد', chil
     </div>
   );
 }
-export function ErrorState({ error, onRetry }) {
+// 🌊 W-Admin §58 — خطای دوست‌داشتنی: عنوان انسانی + جزئیات + تلاش مجدد
+export function ErrorState({ error, onRetry, title }) {
   return (
-    <div className="center-state">
+    <div className="center-state" role="alert">
       <div style={{ fontSize: 28 }}>⚠️</div>
-      <div style={{ marginBottom: 10 }}>{error}</div>
+      <div style={{ fontWeight: 700, color: 'var(--txt2)', marginBottom: 4 }}>
+        {title || 'در بارگذاری اطلاعات مشکلی پیش آمد'}
+      </div>
+      <div className="muted" style={{ marginBottom: 12, direction: 'auto' }}>{error}</div>
       {onRetry && <button className="btn" onClick={onRetry}>🔄 تلاش مجدد</button>}
     </div>
   );
