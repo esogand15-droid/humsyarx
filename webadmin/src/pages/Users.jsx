@@ -164,7 +164,7 @@ export default function Users({ go }) {
       )}
 
       <DataTable columns={cols} rows={data.users} selectable onSelect={setSel}
-                 loading={loading} onRow={r => setDetail(r)}
+                 loading={loading} onRow={r => setDetail(r)} colToggle
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
       {detail && <UserDrawer row={detail} go={go} onClose={() => { setDetail(null); load(); }} />}
