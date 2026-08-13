@@ -17,26 +17,41 @@ import System from './pages/System.jsx';
 import Settings from './pages/Settings.jsx';
 import Analytics from './pages/Analytics.jsx';
 
+// 🎛🌊 W-Design 2 — ناوبری گروه‌بندی‌شده‌ی Command Center (فقط صفحات واقعی)
 const NAV = [
-  { sec: 'کلان' },
+  { sec: 'نمای کلی' },
   { path: '/dashboard', icon: '📊', label: 'داشبورد' },
   { path: '/analytics', icon: '📈', label: 'تحلیل‌ها' },
-  { sec: 'عملیات' },
+  { sec: 'افراد' },
   { path: '/users',      icon: '👥', label: 'کاربران' },
-  { path: '/tickets',    icon: '🎫', label: 'تیکت‌ها' },
-  { path: '/subscriptions', icon: '💎', label: 'اشتراک‌ها و رسیدها' },
-  { path: '/notify',     icon: '🔔', label: 'اعلان‌ها و همگانی' },
-  { sec: 'محتوا' },
+  { path: '/rbac',       icon: '🛡', label: 'نقش‌ها و مجوزها' },
+  { sec: 'آموزش' },
   { path: '/content',    icon: '📚', label: 'مرکز فرماندهی محتوا' },
   { path: '/questions',  icon: '🧪', label: 'بازبینی سوالات' },
-  { path: '/exams',      icon: '📝', label: 'آزمون‌ها' },
+  { path: '/exams',      icon: '📝', label: 'آزمون‌ها و نمرات' },
+  { sec: 'هوش مصنوعی' },
   { path: '/ai',         icon: '🤖', label: 'هوشیار' },
+  { sec: 'ارتباطات' },
+  { path: '/tickets',    icon: '🎫', label: 'تیکت‌ها' },
+  { path: '/notify',     icon: '🔔', label: 'اعلان‌ها و همگانی' },
+  { sec: 'مالی' },
+  { path: '/subscriptions', icon: '💎', label: 'اشتراک‌ها و رسیدها' },
   { sec: 'سیستم' },
   { path: '/settings',   icon: '⚙️', label: 'تنظیمات' },
-  { path: '/rbac',       icon: '🛡', label: 'نقش‌ها و مجوزها' },
   { path: '/audit',      icon: '🧭', label: 'لاگ حسابرسی' },
   { path: '/system',     icon: '🖥', label: 'سلامت سامانه' },
 ];
+
+// مسیر فعلی → [گروه، برچسب، آیکون] برای Breadcrumb
+function crumbFor(route) {
+  const path = route.split('?')[0];
+  let sec = 'نمای کلی';
+  for (const n of NAV) {
+    if (n.sec) sec = n.sec;
+    else if (n.path === path) return { sec, label: n.label, icon: n.icon };
+  }
+  return { sec: 'نمای کلی', label: 'داشبورد', icon: '📊' };
+}
 
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash.replace(/^#/, '') || '/dashboard');
@@ -52,8 +67,9 @@ function useHashRoute() {
 export default function App() {
   const [me, setMe] = useState(undefined);      // undefined=loading, null=guest
   const [route, go] = useHashRoute();
-  const [mini, setMini] = useState(false);
+  const [mini, setMini] = useState(() => localStorage.getItem('wa_mini') === '1');
   const [pal, setPal] = useState(false);
+  const [attn, setAttn] = useState(0);          // 🌊 جمع صف‌های نیازمند اقدام
 
   const loadMe = () => {
     setMe(undefined);
@@ -65,6 +81,14 @@ export default function App() {
     window.addEventListener('wa:unauthorized', h);
     return () => window.removeEventListener('wa:unauthorized', h);
   }, []);
+  useEffect(() => { localStorage.setItem('wa_mini', mini ? '1' : '0'); }, [mini]);
+  // نشان توجه: یک‌بار پس از ورود
+  useEffect(() => {
+    if (!me) return;
+    api.attention()
+      .then(r => setAttn((r.items || []).reduce((a, i) => a + (i.count || 0), 0)))
+      .catch(() => {});
+  }, [!!me]);
 
   const commands = useMemo(() => [
     ...NAV.filter(n => n.path).map(n => ({
@@ -113,24 +137,32 @@ export default function App() {
     '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
     '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   }[route.split('?')[0]] || Dashboard;
+  const crumb = crumbFor(route);
 
   return (
     <div className="shell">
-      <aside className={`sidebar ${mini ? 'mini' : ''}`}>
+      <aside className={`sidebar ${mini ? 'mini' : ''}`} aria-label="ناوبری اصلی">
         <div className="brand">
           <div className="logo">🏥</div>
           <div className="brand-txt"><b>هامزیار</b><small>مرکز فرماندهی</small></div>
         </div>
-        {NAV.map((n, i) => n.sec
-          ? <div key={i} className="nav-sec">{n.sec}</div>
-          : (
-            <a key={n.path} className={`nav-item ${route.startsWith(n.path) ? 'on' : ''}`}
-               href={`#${n.path}`}>
-              <span className="ic">{n.icon}</span><span className="nl">{n.label}</span>
-            </a>
-          ))}
-        <div style={{ marginTop: 'auto', padding: 8 }}>
-          <button className="btn sm" style={{ width: '100%' }} onClick={() => setMini(!mini)}>
+        <nav>
+          {NAV.map((n, i) => n.sec
+            ? <div key={i} className="nav-sec">{n.sec}</div>
+            : (
+              <a key={n.path} className={`nav-item ${route.startsWith(n.path) ? 'on' : ''}`}
+                 href={`#${n.path}`} title={mini ? n.label : undefined}
+                 aria-current={route.startsWith(n.path) ? 'page' : undefined}>
+                <span className="ic">{n.icon}</span><span className="nl">{n.label}</span>
+                {n.path === '/dashboard' && attn > 0 &&
+                  <span className="nav-badge" title="موارد نیازمند اقدام">{attn > 99 ? '۹۹+' : attn.toLocaleString('fa')}</span>}
+              </a>
+            ))}
+        </nav>
+        <div style={{ marginTop: 'auto', padding: '8px 2px' }}>
+          <button className="btn sm" style={{ width: '100%' }} aria-label="جمع‌کردن سایدبار"
+                  title={mini ? 'بازکردن سایدبار' : 'جمع‌کردن سایدبار'}
+                  onClick={() => setMini(!mini)}>
             {mini ? '⇤' : '⇥ جمع‌کردن'}
           </button>
         </div>
@@ -138,8 +170,14 @@ export default function App() {
 
       <div className="main">
         <div className="topbar">
-          <button className="btn sm" onClick={() => setPal(true)}>⌘K / Ctrl+K</button>
-          <span className="badge acc">وب‌ادمین دسکتاپ</span>
+          <div className="crumb" aria-label="breadcrumb">
+            <span className="c-sec">{crumb.sec}</span>
+            <span className="c-sep">‹</span>
+            <span className="c-page">{crumb.icon} {crumb.label}</span>
+          </div>
+          <button className="btn sm" onClick={() => setPal(true)} aria-label="جست‌وجو و فرمان (Ctrl+K)">
+            🔎 جست‌وجو / فرمان <span className="kbd">Ctrl K</span>
+          </button>
           {me.is_owner && <span className="badge purple">مالک سامانه</span>}
           <div className="who">
             <div style={{ textAlign: 'left' }}>
@@ -147,7 +185,7 @@ export default function App() {
               <div className="muted">{me.role_label || ''}</div>
             </div>
             <div className="avatar">{(me.name || '?')[0]}</div>
-            <button className="btn sm" title="خروج"
+            <button className="btn sm" title="خروج از حساب" aria-label="خروج از حساب"
                     onClick={async () => { try { await api.logout(); } catch {} setMe(null); }}>🚪</button>
           </div>
         </div>
