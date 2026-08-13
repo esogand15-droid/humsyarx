@@ -1,16 +1,49 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, Drawer } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, Drawer, NoPerm, Empty } from '../ui.jsx';
 
-// 🧭 لاگ حسابرسی — فیلتر دسته/شدت/جست‌وجو + جزئیات
+const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
+
+// 🧭 لاگ حسابرسی + 🌊 موج Audit-Diff: کشوی «قبل/بعد» برای رویدادهای دارای
+// changes (db.log_action از همیشه آن‌ها را ذخیره می‌کرد؛ حالا پنل وب هم
+// می‌نویسد و هم اینجا به‌صورت بصری نمایش می‌دهد). FIX: متادیتای تو در تو
+// (actor/target/timestamp) — قبلاً فیلدهای تخت خوانده می‌شد و خالی می‌ماند.
 const SEV = { INFO: '', WARNING: 'warn', HIGH: 'bad', CRITICAL: 'bad' };
+const SEV_RANK = { INFO: 0, WARNING: 1, HIGH: 2, CRITICAL: 3 };
+const SEV_ICON = { INFO: 'ℹ️', WARNING: '⚠️', HIGH: '🔥', CRITICAL: '⛔' };
+const MOD_FA = {
+  Users: 'کاربران', Roles: 'نقش‌ها', Settings: 'تنظیمات', Questions: 'سوالات',
+  Content: 'محتوا', Schedules: 'برنامه کلاسی', Tickets: 'تیکت‌ها', Reports: 'گزارش‌ها',
+  Notifications: 'اعلان‌ها', Backup: 'بکاپ', System: 'سیستم', Auth: 'ورود/خروج',
+  Subscription: 'اشتراک', Grades: 'نمرات', WebAdmin: 'پنل وب',
+};
+const CAT_FA = { admin: 'مدیریت', content: 'محتوا', user: 'کاربر' };
+
+const actorName = (r) => r.actor?.name ?? r.actor_name ?? '—';
+const actorRole = (r) => r.actor?.role ?? r.actor_role ?? '';
+const actorId = (r) => r.actor?.id ?? r.actor_id ?? '';
+const targetLabel = (r) => r.target?.label ?? r.target_label ?? '';
+const targetId = (r) => r.target?.id ?? r.target_id ?? '';
+const targetType = (r) => r.target?.type ?? r.target_type ?? '';
+const atOf = (r) => r.timestamp ?? r.at ?? r.created_at ?? '';
+
+const valText = (v) => {
+  if (v === null || v === undefined) return '—';
+  if (v === true) return 'فعال';
+  if (v === false) return 'غیرفعال';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v) === '' ? '(خالی)' : String(v);
+};
 
 export default function Audit() {
   const [filters, setFilters] = useState({ category: '', min_severity: '', q: '' });
   const [q2, setQ2] = useState('');
   const [skip, setSkip] = useState(0);
   const [rows, setRows] = useState(null);
+  const [counters, setCounters] = useState(null);
+  const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
+  const [denied, setDenied] = useState(false);
   const [detail, setDetail] = useState(null);
   const LIMIT = 25;
 
@@ -21,31 +54,62 @@ export default function Audit() {
     try {
       const r = await api.auditLogs({ ...filters, skip, limit: LIMIT });
       setRows(r.logs || r.items || []);
-    } catch (e) { setErr(errText(e)); }
+      setCounters(r.counters || null);
+      setTotal(r.total || 0);
+    } catch (e) {
+      if (e.status === 403) setDenied(true);
+      else setErr(errText(e));
+    }
   };
   useEffect(() => { load(); }, [filters, skip]);
 
+  if (denied) return <NoPerm text="لاگ حسابرسی فقط برای مالک سامانه است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
-  const SEv_RANK = { INFO: 0, WARNING: 1, HIGH: 2, CRITICAL: 3 };
+  const setSev = (s) => { setFilters(f => ({ ...f, min_severity: f.min_severity === s ? '' : s })); setSkip(0); };
+
   const cols = [
-    { k: 'at', label: 'زمان', sortable: true, sortVal: r => r.at || r.created_at || '',
-      render: r => <span className="muted">{(r.at || r.created_at || '').replace('T', ' ').slice(5, 16)}</span> },
+    { k: 'at', label: 'زمان', sortable: true, sortVal: r => atOf(r),
+      render: r => <span className="muted">{atOf(r).replace('T', ' ').slice(5, 16)}</span> },
     { k: 'actor', label: 'عامل', render: r => (
-      <div>{r.actor_name || r.actor_id}<div className="muted">{r.actor_role || ''}</div></div>) },
+      <div>{actorName(r)}<div className="muted">{actorRole(r)}</div></div>) },
     { k: 'action', label: 'عمل', render: r => <b style={{ color: 'var(--txt)' }}>{r.action}</b> },
-    { k: 'module', label: 'ماژول', render: r => <B>{r.module || '—'}</B> },
-    { k: 'target', label: 'هدف', render: r => <span className="muted">{r.target_label || r.target_id || '—'}</span> },
-    { k: 'severity', label: 'شدت', sortable: true, sortVal: r => SEv_RANK[r.severity] ?? 0,
-      render: r => <B kind={SEV[r.severity] || ''}>{r.severity || 'INFO'}</B> },
+    { k: 'module', label: 'ماژول', render: r => <B>{MOD_FA[r.module] || r.module || '—'}</B> },
+    { k: 'target', label: 'هدف', render: r => <span className="muted">{targetLabel(r) || targetId(r) || '—'}</span> },
+    { k: 'diff', label: 'Δ', width: 46, render: r =>
+      (r.changes || []).length > 0
+        ? <B kind="acc" title={`${fa(r.changes.length)} تغییر میدانی`}>Δ {fa(r.changes.length)}</B>
+        : <span className="muted">·</span> },
+    { k: 'severity', label: 'شدت', sortable: true, sortVal: r => SEV_RANK[r.severity] ?? 0,
+      render: r => <B kind={SEV[r.severity] || ''}>{SEV_ICON[r.severity] || ''} {r.severity || 'INFO'}</B> },
   ];
 
   return (
     <>
-      <div className="h1">لاگ حسابرسی</div>
-      <div className="sub">ردیابی کامل اعمال حساس — عامل، هدف، شدت، همبستگی</div>
+      <div className="row">
+        <div>
+          <div className="h1">لاگ حسابرسی</div>
+          <div className="sub">ردیابی کامل اعمال حساس — عامل، هدف، شدت، قبل/بعد</div>
+        </div>
+        <span className="spacer" />
+        {rows && <B>{fa(total)} رویداد</B>}
+      </div>
+
+      {/* شمارنده‌ی سطوح (کلیک ⇒ فیلتر سریع) */}
+      {counters && (
+        <div className="row" style={{ marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
+          {['INFO', 'WARNING', 'HIGH', 'CRITICAL'].map(s => (
+            <button key={s}
+                    className={`btn sm ${filters.min_severity === s ? 'primary' : ''}`}
+                    onClick={() => setSev(s)}>
+              {SEV_ICON[s]} {s} <span className="num">{fa(counters[s] || 0)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="panel panel-pad row" style={{ marginBottom: 12 }}>
-        <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 جست‌وجو در عمل/هدف…"
+        <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 جست‌وجو در عمل/عامل/هدف…"
                value={q2} onChange={e => { setQ2(e.target.value); setSkip(0); }} />
         <select className="inp" value={filters.category}
                 onChange={e => { setFilters(f => ({ ...f, category: e.target.value })); setSkip(0); }}>
@@ -62,28 +126,83 @@ export default function Audit() {
           <option value="CRITICAL">فقط CRITICAL</option>
         </select>
       </div>
-      {!rows ? <Loading /> : (
-        <>
-          <DataTable columns={cols} rows={rows} rowKey={(r) => r.id || r._id || Math.random()}
-                     onRow={setDetail} colToggle
-                     pager={{ page: skip / LIMIT + 1, pages: rows.length < LIMIT ? skip / LIMIT + 1 : 99,
-                              total: '', onPage: p => setSkip((p - 1) * LIMIT) }} />
-        </>
+
+      {!rows ? <Loading /> : rows.length === 0 ? (
+        <Empty icon="🧾" text="رویدادی با این فیلترها نیست" />
+      ) : (
+        <DataTable columns={cols} rows={rows} rowKey={(r) => r.id || r._id}
+                   onRow={setDetail} colToggle
+                   pager={{ page: skip / LIMIT + 1, pages: Math.max(1, Math.ceil(total / LIMIT)),
+                            total: fa(total), onPage: p => setSkip((p - 1) * LIMIT) }} />
       )}
+
       {detail && (
-        <Drawer title="جزئیات رویداد" onClose={() => setDetail(null)} wide>
-          <dl className="kv">
-            {Object.entries({
-              'زمان': detail.at || detail.created_at, 'عامل': `${detail.actor_name || ''} (${detail.actor_id || ''})`,
-              'نقش': detail.actor_role, 'عمل': detail.action, 'ماژول': detail.module,
-              'هدف': `${detail.target_label || ''} ${detail.target_id || ''}`,
-              'نوع هدف': detail.target_type, 'شدت': detail.severity, 'دسته': detail.category,
-              'جزئیات': detail.details, 'Correlation': detail.correlation_id,
-              'تگ‌ها': (detail.tags || []).join('، '),
-            }).filter(([, v]) => v).map(([k, v]) => (
-              <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>
-            ))}
-          </dl>
+        <Drawer title="🔍 جزئیات و تغییرات رویداد" onClose={() => setDetail(null)} wide>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+            <b style={{ fontSize: 14 }}>{detail.action}</b>
+            <B kind={SEV[detail.severity] || ''}>{SEV_ICON[detail.severity] || ''} {detail.severity || 'INFO'}</B>
+            <B>{MOD_FA[detail.module] || detail.module || '—'}</B>
+            {detail.category && <B kind="purple">{CAT_FA[detail.category] || detail.category}</B>}
+          </div>
+
+          <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div className="ct3-kv"><span className="muted">زمان</span>
+              <span className="num">{atOf(detail).replace('T', ' ').slice(0, 16) || '—'}</span></div>
+            <div className="ct3-kv"><span className="muted">عامل</span>
+              <span>{actorName(detail)} <span className="muted">{actorRole(detail)}</span>{' '}
+                <span className="code">{actorId(detail)}</span></span></div>
+            <div className="ct3-kv"><span className="muted">هدف</span>
+              <span>{targetLabel(detail) || '—'} {targetType(detail) && <span className="muted">({targetType(detail)})</span>}</span></div>
+            <div className="ct3-kv"><span className="muted">شناسه‌ی هدف</span>
+              <span className="code" style={{ fontSize: 11 }}>{targetId(detail) || '—'}</span></div>
+          </div>
+
+          {/* ── Diff قبل/بعد ── */}
+          <div style={{ marginTop: 14 }}>
+            <b>🧬 تغییرات میدانی</b>
+            {(detail.changes || []).length === 0 ? (
+              <p className="muted" style={{ marginTop: 8 }}>
+                این رویداد تغییر میدانی (before/after) ندارد
+                {detail.details ? '' : ' — جزئیات در متن عمل ثبت شده است.'}
+              </p>
+            ) : (
+              <div className="diff-tbl" style={{ marginTop: 8 }}>
+                <div className="diff-head">
+                  <span>فیلد</span><span>قبل</span><span /><span>بعد</span>
+                </div>
+                {detail.changes.map((c, i) => {
+                  const b = valText(c.before), a = valText(c.after);
+                  return (
+                    <div key={i} className="diff-row">
+                      <span className="diff-f">{c.field}</span>
+                      <span className={`diff-v b ${b === '—' ? 'none' : ''}`} title={b}>{b}</span>
+                      <span className="diff-arrow">←</span>
+                      <span className={`diff-v a ${a === '—' ? 'none' : ''}`} title={a}>{a}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {detail.details && (
+            <div style={{ marginTop: 12 }}>
+              <b>📝 جزئیات</b>
+              <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 6, whiteSpace: 'pre-wrap', fontSize: 12.5 }}>
+                {detail.details}
+              </div>
+            </div>
+          )}
+          {(detail.tags || []).length > 0 && (
+            <div className="row" style={{ marginTop: 12, flexWrap: 'wrap', gap: 5 }}>
+              {(detail.tags || []).map(t => <B key={t}>#{t}</B>)}
+            </div>
+          )}
+          {detail.correlation_id && (
+            <div className="muted" style={{ marginTop: 10, fontSize: 11 }}>
+              Correlation: <span className="code">{detail.correlation_id}</span>
+            </div>
+          )}
         </Drawer>
       )}
     </>
