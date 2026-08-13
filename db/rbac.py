@@ -411,6 +411,8 @@ class DBRbac:
         ('ai.manage',            'مدیریت هوشیار',               'ai'),
         ('subscription.manage',  'مدیریت اشتراک‌ها',            'subscription'),
         ('stats.view',           'آمار و داشبورد مدیریتی',      'stats'),
+        # 🌊 موج Analytics-Filters — گیت دومرحله‌ای تحلیل بازه‌ای (bundle)
+        ('stats.deep',           'تحلیل عمیق بازه‌ای',           'stats'),
         ('prestige.manage',      'تنظیمات پرستیژ',              'prestige'),
         ('settings.manage',      'تنظیمات سیستم',               'settings'),
         ('backup.manage',        'بکاپ و بازیابی',              'backup'),
@@ -455,6 +457,16 @@ class DBRbac:
                     upsert=True,
                 )
             perms_seeded = len(self.PERMISSION_CATALOG)
+
+        # 🌊 موج Analytics-Filters — درج idempotent مجوز جدید حتی اگر بذرِ
+        # اولیه قبلاً اجرا شده ($setOnInsert ⇒ هیچ ویرایش دستی پاک نمی‌شود)
+        await self.perm_catalog.update_one(
+            {'_id': 'stats.deep'},
+            {'$setOnInsert': {'_id': 'stats.deep',
+                              'label': 'تحلیل عمیق بازه‌ای',
+                              'category': 'stats'}},
+            upsert=True,
+        )
 
         # ۲) نقش‌های سیستمی: upsertِ صرفاً-درج (ویرایش‌ها حفظ می‌شود)
         roles_before = await self.roles.count_documents({})
