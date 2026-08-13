@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, Switch, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, B, toast, Switch, NoPerm, Empty } from '../ui.jsx';
 
 const CATS = {
   general:  { icon: '⚙️', label: 'عمومی' },
@@ -14,6 +14,7 @@ const CATS = {
 export default function Settings() {
   const [cats, setCats] = useState(null);
   const [cat, setCat] = useState('general');
+  const [qs, setQs] = useState('');           // 🌊 موج Settings-Search
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [edited, setEdited] = useState({});   // key → value محلی
@@ -44,21 +45,40 @@ export default function Settings() {
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!cats) return <Loading rows={5} />;
 
+  // 🌊 جست‌وجوی سراسری: فیلتر همه‌ی دسته‌ها بر اساس عنوان/توضیح/کلید
+  const q = qs.trim();
+  const filteredCats = q
+    ? cats.map(c => ({
+        ...c,
+        items: c.items.filter(it =>
+          (it.label || '').includes(q) || (it.desc || '').includes(q) || it.key.includes(q)),
+      })).filter(c => c.items.length)
+    : null;
+
   return (
     <>
       <div className="h1">مرکز کنترل تنظیمات</div>
       <div className="sub">هر تغییر در audit ثبت می‌شود و با همان کلیدهای مشترک ربات/مینی‌اپ ذخیره می‌گردد</div>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input className="inp" style={{ flex: 1, maxWidth: 380 }}
+               placeholder="🔎 جست‌وجو در تنظیمات (عنوان/توضیح/کلید)…"
+               value={qs} onChange={e => setQs(e.target.value)} />
+        {q && <B kind="acc">{filteredCats.reduce((a, c) => a + c.items.length, 0).toLocaleString('fa')} نتیجه در {filteredCats.length.toLocaleString('fa')} دسته</B>}
+      </div>
       <div className="tabs">
         {cats.map(c => (
-          <button key={c.key} className={`tab ${cat === c.key ? 'on' : ''}`} onClick={() => setCat(c.key)}>
+          <button key={c.key} className={`tab ${cat === c.key && !q ? 'on' : ''}`} onClick={() => { setCat(c.key); setQs(''); }}>
             {CATS[c.key]?.icon} {CATS[c.key]?.label || c.key}
-            <span className="muted"> ({c.items.length})</span>
+            <span className="muted"> ({c.items.length.toLocaleString('fa')})</span>
           </button>
         ))}
       </div>
-      {!cur ? <Empty text="دسته‌ای نیست" /> : (
+      {(filteredCats || (cur ? [cur] : [])).length === 0 ? <Empty text={q ? 'تنظیمی با این جست‌وجو نیست' : 'دسته‌ای نیست'} /> : (
         <div className="grid" style={{ gap: 10 }}>
-          {cur.items.map(it => (
+          {(filteredCats || [cur]).map(cc => (
+          <React.Fragment key={cc.key}>
+          {q && <div className="h1" style={{ fontSize: 14, marginTop: 6 }}>{CATS[cc.key]?.icon} {CATS[cc.key]?.label || cc.key}</div>}
+          {cc.items.map(it => (
             <div key={it.key} className="panel panel-pad">
               <div className="row" style={{ alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 220 }}>
@@ -104,6 +124,8 @@ export default function Settings() {
                 </div>
               </div>
             </div>
+          ))}
+          </React.Fragment>
           ))}
         </div>
       )}
