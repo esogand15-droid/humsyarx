@@ -217,7 +217,8 @@ function UserDrawer({ row, go, onClose }) {
     return () => { on = false; };
   }, [row.id]);
 
-  const TABS = [['overview', '👤 نمای کلی'], ['actions', '⚙️ اقدامات'], ['sub', '💎 اشتراک'],
+  const TABS = [['overview', '👤 نمای کلی'], ['actions', '⚙️ اقدامات'], ['academic', '📊 تحصیلی'],
+                ['prestige', '🏆 افتخار'], ['ai', '🤖 هوشیار'], ['sub', '💎 اشتراک'],
                 ['tickets', '🎫 تیکت‌ها'], ['audit', '🧭 رویدادها']];
 
   return (
@@ -269,6 +270,54 @@ function UserDrawer({ row, go, onClose }) {
               {(d.perms || []).slice(0, 10).map(p => <B key={p} kind="acc">{p}</B>)}
               {d.perms.length > 10 && <B>+{d.perms.length - 10}</B>}
             </div>
+          )}
+        </>
+      )}
+      {/* 🌊 W-Admin — تب‌های جدید User 360 */}
+      {d && tab === 'academic' && (
+        <>
+          <div className="muted" style={{ marginBottom: 8 }}>نمرات ثبت‌شده: {Number(d.counts.grades || 0).toLocaleString('fa')}</div>
+          {(d.academic?.grades_recent || []).length === 0 &&
+            <div className="center-state">نمره‌ای ثبت نشده</div>}
+          {(d.academic?.grades_recent || []).map((g, i) => (
+            <div key={i} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
+              <span>📚</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ color: 'var(--txt)' }}>{g.lesson}</b>
+                <div className="muted">{g.exam_title} · {g.exam_date}</div>
+              </div>
+              <B kind={g.score >= 10 ? 'ok' : 'bad'}>{Number(g.score).toLocaleString('fa')}</B>
+            </div>
+          ))}
+        </>
+      )}
+      {d && tab === 'prestige' && (
+        <dl className="kv">
+          {Object.entries({
+            'رنک': d.prestige?.rank, 'دسته (Division)': d.prestige?.div,
+            'XP افتخار': d.prestige?.prestige_xp, 'XP مؤثر': d.prestige?.effective_xp,
+            'XP هفتگی': d.prestige?.weekly_xp, 'XP ماهانه': d.prestige?.monthly_xp,
+            'XP امروز': d.prestige?.daily_xp_amount,
+            '🔥 استریک فعلی': d.prestige?.streak_current, '🥇 بهترین استریک': d.prestige?.streak_best,
+          }).filter(([, v]) => v !== undefined && v !== '' && v !== null).map(([k, v]) => (
+            <React.Fragment key={k}><dt>{k}</dt>
+              <dd>{typeof v === 'number' ? Number(v).toLocaleString('fa') : String(v)}</dd></React.Fragment>
+          ))}
+        </dl>
+      )}
+      {d && tab === 'ai' && (
+        <>
+          <dl className="kv">
+            <dt>پرسش کل</dt><dd>{Number(d.ai?.total_usage || 0).toLocaleString('fa')}</dd>
+            <dt>پرسش امروز</dt><dd>{Number(d.ai?.today || 0).toLocaleString('fa')}</dd>
+            <dt>توکن مصرفی</dt><dd>{Number(d.ai?.total_tokens || 0).toLocaleString('fa')}</dd>
+            <dt>وضعیت دسترسی</dt>
+            <dd>{d.ai?.banned ? <B kind="bad">⛔ مسدود از هوشیار</B> : <B kind="ok">✅ آزاد</B>}</dd>
+            <dt>اعلان‌های خوانده‌نشده</dt>
+            <dd>{Number(d.notifs?.unread || 0).toLocaleString('fa')} از {Number(d.notifs?.total || 0).toLocaleString('fa')}</dd>
+          </dl>
+          {d.ai?.banned && (
+            <p className="muted">رفع مسدودیت از صفحه‌ی «هوشیار ← دسترسی» انجام می‌شود.</p>
           )}
         </>
       )}
