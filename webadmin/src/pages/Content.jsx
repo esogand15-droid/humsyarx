@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, Confirm, Modal, Drawer, Empty, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, B, toast, Confirm, Modal, Empty, NoPerm } from '../ui.jsx';
 
 const TERM_ICON = '📚';
 const KIND = {
@@ -10,10 +10,12 @@ const KIND = {
 };
 const CTYPE = { video: '🎬', ppt: '📽', pdf: '📕', note: '📝', test: '🧪', voice: '🎙' };
 const EXT_MAP = { pdf: 'pdf', ppt: 'ppt', pptx: 'ppt', mp4: 'video', mov: 'video', mkv: 'video', webm: 'video', mp3: 'voice', ogg: 'voice', wav: 'voice', m4a: 'voice' };
+const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
-// 📚🌊 WA2.1 — مرکز فرماندهی محتوا: درخت ترم→درس→جلسه، fork-aware،
-// آپلود چندفایلی با پیشنهاد نوع، کلون/انتقال/حذف گروهی — بدون ترک صفحه.
-// 🌊 WA3 — پوسته‌ی چندتبه: علوم پایه + رفرنس‌ها + کلاس‌ها + بانک سؤال + راهنما
+// 📚🌊 WA2.1 — مرکز فرماندهی محتوا · 🌊 موج Content-Split:
+// چیدمان سه‌ستونه‌ی دسکتاپ‌محور «درخت درس‌ها | جلسات | بازرس» روی همان APIهای
+// موجود (بدون هیچ تغییر بک‌اندی) — همه‌ی اکشن‌های قبلی (fork/کلون/انتقال/حذف
+// گروهی/reorder/آپلود چندفایلی/گزارش‌ها) حفظ شده‌اند.
 import { RefsTab, ScheduleTab, QbankTab, FaqTab } from './contentTabs.jsx';
 
 const CCONTENT_TABS = [
@@ -42,6 +44,7 @@ export default function Content() {
   );
 }
 
+/* ═══ تب علوم پایه — Split View سه‌ستونه ═══ */
 function BsTab() {
   const [intake, setIntake] = useState('');
   const [tree, setTree] = useState(null);
@@ -49,16 +52,16 @@ function BsTab() {
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [openTerms, setOpenTerms] = useState({});
-  const [openLes, setOpenLes] = useState({});
   const [q, setQ] = useState('');
-  const [sel, setSel] = useState([]);                 // session ids انتخاب‌شده
-  const [filesOf, setFilesOf] = useState(null);       // session برای drawer فایل‌ها
-  const [editSes, setEditSes] = useState(null);       // {lesson_id, session}
+  const [sel, setSel] = useState([]);            // session ids برای عملیات گروهی
+  const [lesId, setLesId] = useState(null);      // درس منتخب (ستون دوم)
+  const [sesId, setSesId] = useState(null);      // جلسه‌ی منتخب (بازرس)
+  const [editSes, setEditSes] = useState(null);  // {lesson_id, s}
   const [confirm, setConfirm] = useState(null);
-  const [moveTo, setMoveTo] = useState(null);
-  const [quick, setQuick] = useState(false);          // مودال آپلود سریع
-  const [addLes, setAddLes] = useState(null);         // term برای درس جدید
-  const [addSes, setAddSes] = useState(null);         // lesson برای جلسه جدید
+  const [moveTo, setMoveTo] = useState(null);    // {ids:[…]}
+  const [quick, setQuick] = useState(false);
+  const [addLes, setAddLes] = useState(null);    // term برای درس جدید
+  const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
   const [reports, setReports] = useState(null);
 
   const load = async () => {
@@ -72,18 +75,40 @@ function BsTab() {
       else setErr(errText(e));
     }
   };
-  useEffect(() => { setTree(null); setSel([]); load(); }, [intake]);
+  useEffect(() => { setTree(null); setSel([]); setLesId(null); setSesId(null); load(); }, [intake]);
   useEffect(() => {
     api.caReports('new').then(r => setReports(r.reports || [])).catch(() => setReports([]));
   }, []);
+
+  // انتخاب‌ها به‌صورت مشتق از درخت — بعد از هر reload همیشه تازه‌اند
+  const selLesson = useMemo(() => {
+    for (const t of (tree || [])) {
+      const l = t.lessons.find(x => x.id === lesId);
+      if (l) return { ...l, term: t.term, _tLessons: t.lessons };
+    }
+    return null;
+  }, [tree, lesId]);
+  const selSession = useMemo(
+    () => (selLesson ? (selLesson.sessions.find(s => s.id === sesId) || null) : null),
+    [selLesson, sesId]);
+  // اگر درس/جلسه‌ی منتخب بعد از reload دیگر وجود نداشت، انتخاب پاک شود
+  useEffect(() => { if (tree && lesId && !selLesson) { setLesId(null); setSesId(null); } }, [tree, lesId, selLesson]);
+  useEffect(() => { if (selLesson && sesId && !selSession) setSesId(null); }, [selLesson, sesId, selSession]);
 
   const flatLessons = useMemo(() => {
     const out = [];
     (tree || []).forEach(t => t.lessons.forEach(l => out.push({ ...l, term: t.term })));
     return out;
   }, [tree]);
+  const totals = useMemo(() => ({
+    lessons: flatLessons.length,
+    sessions: flatLessons.reduce((a, l) => a + (l.session_count || 0), 0),
+    files: flatLessons.reduce((a, l) => a + (l.content_count || 0), 0),
+  }), [flatLessons]);
 
-  const sessMatch = (s) => !q.trim() || (s.topic || '').includes(q.trim()) || String(s.number) === q.trim();
+  const intakeLabel = (code) => intakes.find(i => i.code === code)?.label || code;
+  const lesMatch = (l) => !q.trim() || (l.name || '').includes(q.trim()) || (l.teacher || '').includes(q.trim());
+  const sesMatch = (s) => !q.trim() || (s.topic || '').includes(q.trim()) || (s.teacher || '').includes(q.trim()) || String(s.number) === q.trim();
 
   const act = async (fn, okMsg = 'انجام شد') => {
     try { await fn(); toast(okMsg); load(); }
@@ -97,134 +122,229 @@ function BsTab() {
       toast(okMsg); load();
     } catch (e) { toast(errText(e), 'err'); }
   };
-  const bulk = async (body) => act(() => api.sessionsBulk(body).then(r => toast(`${r.done} مورد انجام شد`)));
+  const bulk = async (body) => act(() => api.sessionsBulk(body).then(r => toast(`${fa(r.done)} مورد انجام شد`)));
+  const toggleSel = (id) => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id]);
+
+  const delLesson = (l) => setConfirm({
+    text: `حذف درس «${l.name}» با همه‌ی جلسات و فایل‌هایش؟`,
+    run: () => act(() => api.caDelLesson(l.id), 'درس حذف شد'),
+  });
+  const delSession = (s) => setConfirm({
+    text: `حذف جلسه ${s.number} «${s.topic}» و فایل‌هایش؟`,
+    run: async () => { await act(() => api.caDelSession(s.id), 'جلسه حذف شد'); setSesId(null); },
+  });
 
   if (permErr) return <NoPerm text="مدیریت محتوا فقط برای مدیران محتوا (سراسری/ورودی) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
+
+  const visSessions = selLesson ? selLesson.sessions.filter(sesMatch) : [];
 
   return (
     <>
       <div className="row">
         <div>
           <div className="h1">مرکز فرماندهی محتوا</div>
-          <div className="sub">ترم → درس → جلسه → فایل · نمای مؤثر سراسری + Override ورودی</div>
+          <div className="sub">درس‌ها ← جلسات ← بازرس فایل · نمای مؤثر سراسری + Override ورودی</div>
         </div>
         <span className="spacer" />
+        <B>{fa(totals.lessons)} درس</B>
+        <B kind="acc">{fa(totals.sessions)} جلسه</B>
+        <B kind="ok">{fa(totals.files)} فایل</B>
         <button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button>
       </div>
 
-      <div className="panel panel-pad row" style={{ marginBottom: 12 }}>
-        <select className="inp" value={intake} onChange={e => setIntake(e.target.value)}>
-          <option value="">🌐 سراسری (پایه)</option>
-          {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
-        </select>
-        <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 فیلتر موضوع/شماره جلسه…"
-               value={q} onChange={e => setQ(e.target.value)} />
-        {sel.length > 0 && <>
-          <span className="badge acc">{sel.length} جلسه انتخاب شد</span>
-          <button className="btn sm" onClick={() => bulk({ action: 'duplicate', ids: sel }).then(() => setSel([]))}>📄 کلون</button>
-          <button className="btn sm" onClick={() => setMoveTo({ ids: sel })}>📦 انتقال</button>
-          <button className="btn sm danger" onClick={() => setConfirm({
-            text: `حذف ${sel.length} جلسه (به‌همراه فایل‌ها و نسخه‌های اختصاصی وابسته)؟`,
-            run: () => bulk({ action: 'delete', ids: sel }).then(() => setSel([])),
-          })}>🗑 حذف</button>
-        </>}
-      </div>
-
-      {!tree ? <Loading rows={5} /> : tree.map(t => (
-        <div key={t.term} className="panel" style={{ marginBottom: 10 }}>
-          <div className="tree-term" onClick={() => setOpenTerms(s => ({ ...s, [t.term]: !s[t.term] }))}>
-            <span>{TERM_ICON}</span><b>{t.term}</b>
-            <B>{t.lessons.length} درس</B>
-            <B kind="acc">{t.lessons.reduce((a, l) => a + l.content_count, 0)} فایل</B>
-            <span className="spacer" />
-            <button className="btn sm" onClick={e => { e.stopPropagation(); setAddLes(t.term); }}>➕ درس</button>
-            <span className="muted">{openTerms[t.term] ? '▾' : '◂'}</span>
-          </div>
-          {openTerms[t.term] && (
-            <div style={{ borderTop: '1px solid var(--line)' }}>
-              {t.lessons.length === 0 && <Empty icon="📭" text="درسی در این ترم نیست" />}
-              {t.lessons.map(l => (
-                <div key={l.id} className="lesson">
-                  <div className="tree-row les-row" onClick={() => setOpenLes(s => ({ ...s, [l.id]: !s[l.id] }))}>
-                    <span>{openLes[l.id] ? '📖' : '📘'}</span>
-                    <b style={{ color: 'var(--txt)' }}>{l.name}</b>
-                    {l.intake && <B kind="purple">🏷 {intakes.find(i => i.code === l.intake)?.label || l.intake}</B>}
-                    <span className="muted">{l.teacher || ''}</span>
-                    <B>{l.session_count} جلسه</B>
-                    <B kind="acc">{l.content_count} فایل</B>
+      {!tree ? <Loading rows={5} /> : (
+        <div className="ct3-grid">
+          {/* ── ستون ۱: درخت درس‌ها ─────────────────────── */}
+          <div className="ct3-pane">
+            <div className="ct3-ph">
+              <span className="ct3-pt">📚 درس‌ها</span>
+              <B>{fa(totals.lessons)}</B>
+            </div>
+            <select className="inp" value={intake} onChange={e => setIntake(e.target.value)}>
+              <option value="">🌐 سراسری (پایه)</option>
+              {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
+            </select>
+            <input className="inp" placeholder="🔎 نام درس/استاد/موضوع جلسه…"
+                   value={q} onChange={e => setQ(e.target.value)} />
+            {tree.map(t => {
+              const visLes = t.lessons.filter(lesMatch);
+              if (q.trim() && visLes.length === 0) return null;
+              return (
+                <div key={t.term} className="ct3-term">
+                  <div className="ct3-term-head" onClick={() => setOpenTerms(s => ({ ...s, [t.term]: !s[t.term] }))}>
+                    <span>{TERM_ICON}</span><b>{t.term}</b>
+                    <B>{fa(t.lessons.length)}</B>
                     <span className="spacer" />
-                    <button className="btn sm" title="جابه‌جایی بالا"
-                            disabled={t.lessons.findIndex(x => x.id === l.id) <= 0}
-                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
-                    <button className="btn sm" title="جابه‌جایی پایین"
-                            disabled={t.lessons.findIndex(x => x.id === l.id) >= t.lessons.length - 1}
-                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
-                    <button className="btn sm" onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕ جلسه</button>
-                    <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
-                      text: `حذف درس «${l.name}» با همه‌ی جلسات و فایل‌هایش؟`,
-                      run: () => act(() => api.caDelLesson(l.id), 'درس حذف شد'),
-                    }); }}>🗑</button>
+                    <button className="btn sm" title="افزودن درس به این ترم"
+                            onClick={e => { e.stopPropagation(); setAddLes(t.term); }}>➕</button>
+                    <span className="muted">{openTerms[t.term] === false ? '◂' : '▾'}</span>
                   </div>
-                  {openLes[l.id] && (
-                    <div className="sess-box">
-                      {l.sessions.filter(sessMatch).map(s => (
-                        <div key={s.id} className={`sess-row ${sel.includes(s.id) ? 'sel' : ''}`}>
-                          <input type="checkbox" checked={sel.includes(s.id)}
-                                 onChange={() => setSel(x => x.includes(s.id) ? x.filter(i => i !== s.id) : [...x, s.id])} />
-                          <span className="code">جلسه {s.number}</span>
-                          <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={() => setFilesOf(s)}>
-                            <div style={{ color: 'var(--txt)', fontSize: 12.5 }}>{s.topic || '—'}</div>
-                            <div className="muted">{s.teacher || ''}</div>
-                          </div>
-                          <B kind={KIND[s.kind].kind}>
-                            {KIND[s.kind].icon} {s.kind === 'global' ? 'سراسری' : (s.intake_label || s.intake)}
-                          </B>
-                          <span className="muted" style={{ minWidth: 76, textAlign: 'center' }}>
-                            {Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'}${v}`).join(' ') || '—'}
-                          </span>
-                          <div className="row" style={{ gap: 3 }}>
-                            <button className="btn sm" title="جابه‌جایی بالا"
-                                    disabled={l.sessions.findIndex(x => x.id === s.id) <= 0}
-                                    onClick={() => reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑')}>↑</button>
-                            <button className="btn sm" title="جابه‌جایی پایین"
-                                    disabled={l.sessions.findIndex(x => x.id === s.id) >= l.sessions.length - 1}
-                                    onClick={() => reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓')}>↓</button>
-                            <button className="btn sm" title="فایل‌ها" onClick={() => setFilesOf(s)}>📁 {s.content_count || ''}</button>
-                            {s.kind === 'global' && intake &&
-                              <button className="btn sm warn" title="ساخت نسخه اختصاصی برای این ورودی"
-                                      onClick={() => act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐')}>🍴</button>}
-                            {s.kind === 'fork' &&
-                              <button className="btn sm" title="حذف نسخه اختصاصی (بازگشت به سراسری)"
-                                      onClick={() => act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️')}>↩️</button>}
-                            <button className="btn sm" title="کلون"
-                                    onClick={() => act(() => api.dupSession(s.id), 'کلون ساخته شد 📄')}>📄</button>
-                            <button className="btn sm" title="ویرایش موضوع/استاد"
-                                    onClick={() => setEditSes({ lesson_id: l.id, s })}>✏️</button>
-                            <button className="btn sm danger" title="حذف"
-                                    onClick={() => setConfirm({
-                                      text: `حذف جلسه ${s.number} «${s.topic}» و فایل‌هایش؟`,
-                                      run: () => act(() => api.caDelSession(s.id), 'جلسه حذف شد'),
-                                    })}>🗑</button>
-                          </div>
-                        </div>
-                      ))}
-                      {l.sessions.filter(sessMatch).length === 0 &&
-                        <div className="muted" style={{ padding: '8px 14px' }}>جلسه‌ای نیست</div>}
-                    </div>
+                  {openTerms[t.term] !== false && (
+                    visLes.length === 0
+                      ? <div className="ct3-none muted">درسی نیست</div>
+                      : visLes.map(l => {
+                          const idx = t.lessons.findIndex(x => x.id === l.id);
+                          return (
+                            <div key={l.id} className={`ct3-les ${lesId === l.id ? 'on' : ''}`}
+                                 onClick={() => { setLesId(l.id); setSesId(null); setSel([]); }}>
+                              <div className="ct3-r1">
+                                <span className="ct3-ic">{lesId === l.id ? '📖' : '📘'}</span>
+                                <div className="ct3-main">
+                                  <div className="ct3-t1">{l.name}</div>
+                                  <div className="ct3-t2">{l.teacher || '—'}</div>
+                                </div>
+                                {l.intake && <B kind="purple">🏷 {intakeLabel(l.intake)}</B>}
+                              </div>
+                              <div className="ct3-r2">
+                                <B>{fa(l.session_count)} جلسه</B>
+                                <B kind="acc">{fa(l.content_count)} فایل</B>
+                                <span className="spacer" />
+                                <button className="btn sm" title="بالا" disabled={idx <= 0}
+                                        onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
+                                <button className="btn sm" title="پایین" disabled={idx >= t.lessons.length - 1}
+                                        onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
+                                <button className="btn sm" title="جلسه‌ی جدید"
+                                        onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕</button>
+                                <button className="btn sm danger" title="حذف درس"
+                                        onClick={e => { e.stopPropagation(); delLesson(l); }}>🗑</button>
+                              </div>
+                            </div>
+                          );
+                        })
                   )}
                 </div>
-              ))}
+              );
+            })}
+            {tree.length === 0 && (
+              <Empty icon="🌱" text="هنوز ساختار محتوایی نیست">
+                <span className="muted">با دکمه‌ی ➕ کنار هر ترم نخستین درس را بسازید</span>
+              </Empty>
+            )}
+          </div>
+
+          {/* ── ستون ۲: جلسات درس منتخب ─────────────────── */}
+          <div className="ct3-pane">
+            <div className="ct3-ph">
+              <span className="ct3-pt">🗂 جلسات</span>
+              {selLesson && <B kind="acc">{selLesson.name}</B>}
+              {selLesson && <B>{fa(selLesson.sessions.length)}</B>}
+              <span className="spacer" />
+              {selLesson && <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button>}
             </div>
-          )}
+            {sel.length > 0 && (
+              <div className="ct3-bulk">
+                <B kind="acc">{fa(sel.length)} انتخاب</B>
+                <button className="btn sm" onClick={() => bulk({ action: 'duplicate', ids: sel }).then(() => setSel([]))}>📄 کلون</button>
+                <button className="btn sm" onClick={() => setMoveTo({ ids: sel })}>📦 انتقال</button>
+                <button className="btn sm danger" onClick={() => setConfirm({
+                  text: `حذف ${fa(sel.length)} جلسه (به‌همراه فایل‌ها و نسخه‌های اختصاصی وابسته)؟`,
+                  run: () => bulk({ action: 'delete', ids: sel }).then(() => { setSel([]); setSesId(null); }),
+                })}>🗑 حذف</button>
+                <span className="spacer" />
+                <button className="btn sm" onClick={() => setSel([])}>لغو</button>
+              </div>
+            )}
+            {!selLesson ? (
+              <Empty icon="📚" text="نخست از ستون درس‌ها یک درس برگزینید" />
+            ) : visSessions.length === 0 ? (
+              <Empty icon="📭" text={q.trim() ? 'جلسه‌ای با این جست‌وجو نیست' : 'این درس هنوز جلسه‌ای ندارد'}>
+                {!q.trim() && <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button>}
+              </Empty>
+            ) : visSessions.map(s => {
+              const idx = selLesson.sessions.findIndex(x => x.id === s.id);
+              return (
+                <div key={s.id}
+                     className={`ct3-ses ${sesId === s.id ? 'on' : ''} ${sel.includes(s.id) ? 'sel' : ''}`}
+                     onClick={() => setSesId(s.id)}>
+                  <div className="ct3-r1">
+                    <input type="checkbox" checked={sel.includes(s.id)}
+                           onClick={e => e.stopPropagation()} onChange={() => toggleSel(s.id)}
+                           aria-label="انتخاب جلسه" />
+                    <span className="ct3-num">{fa(s.number)}</span>
+                    <div className="ct3-main">
+                      <div className="ct3-t1">{s.topic || '—'}</div>
+                      <div className="ct3-t2">{s.teacher || ''}</div>
+                    </div>
+                    <B kind={KIND[s.kind].kind}>
+                      {KIND[s.kind].icon} {s.kind === 'global' ? 'سراسری' : (s.intake_label || s.intake)}
+                    </B>
+                  </div>
+                  <div className="ct3-r2">
+                    <span className="muted">
+                      {Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'}${fa(v)}`).join(' ') || 'بدون فایل'}
+                    </span>
+                    <span className="spacer" />
+                    <button className="btn sm" title="بالا" disabled={idx <= 0}
+                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑'); }}>↑</button>
+                    <button className="btn sm" title="پایین" disabled={idx >= selLesson.sessions.length - 1}
+                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓'); }}>↓</button>
+                    {s.kind === 'global' && intake &&
+                      <button className="btn sm warn" title="ساخت نسخه اختصاصی برای این ورودی"
+                              onClick={e => { e.stopPropagation(); act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐'); }}>🍴</button>}
+                    {s.kind === 'fork' &&
+                      <button className="btn sm" title="حذف نسخه اختصاصی (بازگشت به سراسری)"
+                              onClick={e => { e.stopPropagation(); act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️'); }}>↩️</button>}
+                    <button className="btn sm" title="کلون"
+                            onClick={e => { e.stopPropagation(); act(() => api.dupSession(s.id), 'کلون ساخته شد 📄'); }}>📄</button>
+                    <button className="btn sm" title="ویرایش موضوع/استاد"
+                            onClick={e => { e.stopPropagation(); setEditSes({ lesson_id: selLesson.id, s }); }}>✏️</button>
+                    <button className="btn sm danger" title="حذف"
+                            onClick={e => { e.stopPropagation(); delSession(s); }}>🗑</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── ستون ۳: بازرس ──────────────────────────── */}
+          <div className="ct3-pane ct3-insp">
+            <div className="ct3-ph">
+              <span className="ct3-pt">🔎 بازرس</span>
+              {selSession && <B kind={KIND[selSession.kind].kind}>{KIND[selSession.kind].icon} {KIND[selSession.kind].label}</B>}
+            </div>
+            {!selLesson ? (
+              <Empty icon="🧭" text="برای بازبینی، نخست یک درس و سپس یک جلسه را برگزینید" />
+            ) : !selSession ? (
+              <>
+                <div className="ct3-kv"><span className="muted">درس</span><b>{selLesson.name}</b></div>
+                <div className="ct3-kv"><span className="muted">ترم</span><span>{selLesson.term}</span></div>
+                <div className="ct3-kv"><span className="muted">استاد</span><span>{selLesson.teacher || '—'}</span></div>
+                <div className="ct3-kv"><span className="muted">دامنه</span>
+                  {selLesson.intake ? <B kind="purple">🏷 {intakeLabel(selLesson.intake)}</B> : <B kind="acc">🌐 سراسری</B>}
+                </div>
+                <div className="ct3-stats">
+                  <div className="ct3-stat"><b>{fa(selLesson.session_count)}</b><span>جلسه</span></div>
+                  <div className="ct3-stat"><b>{fa(selLesson.content_count)}</b><span>فایل</span></div>
+                  <div className="ct3-stat"><b>
+                    {fa(selLesson.sessions.filter(s => s.kind !== 'global').length)}
+                  </b><span>نسخه‌ی خاص</span></div>
+                </div>
+                <div className="row">
+                  <button className="btn primary" style={{ flex: 1 }} onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
+                  <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
+                </div>
+                <p className="muted" style={{ margin: '4px 2px' }}>💡 برای دیدن و مدیریت فایل‌ها، از ستون میانی یک جلسه را برگزینید.</p>
+              </>
+            ) : (
+              <SessionInspector lesson={selLesson} session={selSession} intake={intake}
+                onTreeChanged={load}
+                onEdit={(s) => setEditSes({ lesson_id: selLesson.id, s })}
+                onFork={(s) => act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐')}
+                onUnfork={(s) => act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️')}
+                onClone={(s) => act(() => api.dupSession(s.id), 'کلون ساخته شد 📄')}
+                onMove={(s) => setMoveTo({ ids: [s.id] })}
+                onDelete={delSession} />
+            )}
+          </div>
         </div>
-      ))}
+      )}
 
       {/* 🚩 صف گزارش محتوا (WA2.7 needs-attention) */}
-      {reports !== null && (
+      {reports !== null && !permErr && !err && (
         <div className="panel panel-pad" style={{ marginTop: 14 }}>
           <div className="row"><b>🚩 گزارش‌های در انتظار محتوا/سؤال</b>
-            <span className="spacer" /><B kind={reports.length ? 'warn' : 'ok'}>{reports.length}</B></div>
+            <span className="spacer" /><B kind={reports.length ? 'warn' : 'ok'}>{fa(reports.length)}</B></div>
           {reports.length === 0 && <p className="muted" style={{ marginTop: 8 }}>موردی نیست 🎉</p>}
           {reports.slice(0, 8).map(r => (
             <div key={r.id} className="row" style={{ padding: '7px 0', borderBottom: '1px solid var(--line)' }}>
@@ -241,13 +361,19 @@ function BsTab() {
         </div>
       )}
 
-      {filesOf && <FilesDrawer session={filesOf} onClose={(ch) => { setFilesOf(null); if (ch) load(); }} />}
       {editSes && <EditSession {...editSes} onClose={(ch) => { setEditSes(null); if (ch) load(); }} />}
       {quick && <QuickUpload intakes={intakes} intake={intake} onClose={(ch) => { setQuick(false); if (ch) load(); }} />}
       {addLes && <AddLesson term={addLes} intake={intake} onClose={(ch) => { setAddLes(null); if (ch) load(); }} />}
-      {addSes && <AddSession lesson={addSes} onClose={(ch) => { setAddSes(null); if (ch) load(); }} />}
+      {addSes && <AddSession lesson={addSes} onClose={(ch) => { setAddSes(null); if (ch) { load(); setLesId(addSes.id); } }} />}
       {moveTo && <MoveSessions lessons={flatLessons} sel={moveTo.ids}
-                               onClose={(ch) => { setMoveTo(null); if (ch) { setSel([]); load(); } }} />}
+                               onClose={(ch) => {
+                                 setMoveTo(null);
+                                 if (ch) {
+                                   setSel([]);
+                                   setSesId(prev => (moveTo.ids.includes(prev) ? null : prev));
+                                   load();
+                                 }
+                               }} />}
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
@@ -255,23 +381,53 @@ function BsTab() {
   );
 }
 
-/* ── 📁 کشوی فایل‌های جلسه (آپلود/حذف/انتقال گروهی) ─────────── */
-function FilesDrawer({ session, onClose }) {
+/* ── 🔎 بازرس جلسه: مشخصات + اکشن‌ها + مدیریت کامل فایل‌ها ── */
+function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFork, onUnfork, onClone, onMove, onDelete }) {
+  return (
+    <>
+      <div className="ct3-kv"><span className="muted">جلسه</span><b className="num">{fa(session.number)}</b></div>
+      <div className="ct3-kv"><span className="muted">موضوع</span><span>{session.topic || '—'}</span></div>
+      <div className="ct3-kv"><span className="muted">درس</span><span>{lesson.name} <span className="muted">· {lesson.term}</span></span></div>
+      <div className="ct3-kv"><span className="muted">استاد</span><span>{session.teacher || lesson.teacher || '—'}</span></div>
+      <div className="ct3-kv"><span className="muted">وضعیت</span>
+        <B kind={KIND[session.kind].kind}>
+          {KIND[session.kind].icon} {session.kind === 'global' ? 'سراسری' : (session.intake_label || session.intake)}
+        </B>
+      </div>
+      <div className="ct3-acts">
+        <button className="btn sm" onClick={() => onEdit(session)}>✏️ ویرایش</button>
+        {session.kind === 'global' && intake &&
+          <button className="btn sm warn" onClick={() => onFork(session)}>🍴 نسخه‌ی اختصاصی</button>}
+        {session.kind === 'fork' &&
+          <button className="btn sm" onClick={() => onUnfork(session)}>↩️ بازگشت به سراسری</button>}
+        <button className="btn sm" onClick={() => onClone(session)}>📄 کلون</button>
+        <button className="btn sm" onClick={() => onMove(session)}>📦 انتقال</button>
+        <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
+      </div>
+      <SessionFiles session={session} onTreeChanged={onTreeChanged} />
+    </>
+  );
+}
+
+/* ── 📁 فایل‌های جلسه (داخل بازرس): لیست + آپلود + گروهی ── */
+function SessionFiles({ session, onTreeChanged }) {
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [showUp, setShowUp] = useState(false);
   const [form, setForm] = useState({ ctype: 'pdf', description: '', extra_info: '' });
   const [file, setFile] = useState(null);
   const [sel, setSel] = useState([]);
-  const [changed, setChanged] = useState(false);
   const fileRef = useRef(null);
 
   const load = async () => {
+    setErr('');
     try { setItems((await api.caSessionContent(session.id)).content || []); }
     catch (e) { setErr(errText(e)); }
   };
-  useEffect(() => { load(); }, [session.id]);
+  useEffect(() => { setItems(null); setSel([]); setShowUp(false); load(); }, [session.id]);
 
+  const changed = () => { load(); onTreeChanged(); };
   const upload = async () => {
     if (!file) return toast('ابتدا فایل را انتخاب کنید', 'err');
     setBusy(true);
@@ -284,97 +440,94 @@ function FilesDrawer({ session, onClose }) {
       await api.caAddContent(session.id, fd);
       toast('آپلود شد ✅'); setFile(null); setForm({ ctype: 'pdf', description: '', extra_info: '' });
       if (fileRef.current) fileRef.current.value = '';
-      setChanged(true); load();
+      setShowUp(false); changed();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
   const del = async (cid) => {
-    try { await api.caDelContent(cid); toast('حذف شد'); setChanged(true); load(); }
+    try { await api.caDelContent(cid); toast('حذف شد'); changed(); }
     catch (e) { toast(errText(e), 'err'); }
   };
-  const guess = (name) => {
-    const ext = (name.split('.').pop() || '').toLowerCase();
-    return EXT_MAP[ext] || 'pdf';
+  const reorderItem = async (cid, direction) => {
+    try {
+      const r = await api.waReorderItem(cid, direction);
+      if (r && r.ok === false) return toast('به ابتدا/انتهای لیست رسیده‌اید', 'err');
+      changed();
+    } catch (e) { toast(errText(e), 'err'); }
   };
+  const guess = (name) => EXT_MAP[(name.split('.').pop() || '').toLowerCase()] || 'pdf';
+  const toggleSel = (id) => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id]);
 
   return (
-    <Drawer wide title={`📁 فایل‌های جلسه ${session.number} — ${session.topic || ''}`}
-            onClose={() => onClose(changed)}>
-      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading /> : (
-        <>
-          <div className="grid" style={{ gap: 6 }}>
-            {items.length === 0 && <Empty icon="📭" text="فایلی نیست" />}
-            {items.map(c => (
-              <div key={c.id} className={`row file-row ${sel.includes(c.id) ? 'sel-row' : ''}`}>
-                <input type="checkbox" checked={sel.includes(c.id)}
-                       onChange={() => setSel(x => x.includes(c.id) ? x.filter(i => i !== c.id) : [...x, c.id])} />
-                <span style={{ fontSize: 17 }}>{CTYPE[c.type] || '📎'}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.description || '(بدون توضیح)'}</div>
-                  <div className="muted">{c.extra_info || ''}</div>
-                </div>
-                <B>{Number(c.downloads || 0).toLocaleString('fa')} DL</B>
-                <button className="btn sm" title="جابه‌جایی بالا"
-                        disabled={items.findIndex(x => x.id === c.id) <= 0}
-                        onClick={async () => {
-                          try {
-                            const r = await api.waReorderItem(c.id, 'up');
-                            if (r && r.ok === false) return toast('به ابتدای لیست رسیده‌اید', 'err');
-                            setChanged(true); load();
-                          } catch (e) { toast(errText(e), 'err'); }
-                        }}>↑</button>
-                <button className="btn sm" title="جابه‌جایی پایین"
-                        disabled={items.findIndex(x => x.id === c.id) >= items.length - 1}
-                        onClick={async () => {
-                          try {
-                            const r = await api.waReorderItem(c.id, 'down');
-                            if (r && r.ok === false) return toast('به انتهای لیست رسیده‌اید', 'err');
-                            setChanged(true); load();
-                          } catch (e) { toast(errText(e), 'err'); }
-                        }}>↓</button>
-                <button className="btn sm danger" onClick={() => del(c.id)}>🗑</button>
-              </div>
-            ))}
+    <div className="ct3-files">
+      <div className="ct3-ph" style={{ marginTop: 2 }}>
+        <b style={{ fontSize: 'var(--fs-card)' }}>📁 فایل‌ها</b>
+        {items && <B>{fa(items.length)}</B>}
+        <span className="spacer" />
+        <button className="btn sm primary" onClick={() => setShowUp(x => !x)}>{showUp ? '✕ بستن' : '➕ افزودن فایل'}</button>
+      </div>
+      {showUp && (
+        <div className="ct3-up">
+          <input ref={fileRef} type="file" className="inp"
+                 onChange={e => {
+                   const f = e.target.files[0] || null;
+                   setFile(f);
+                   if (f) setForm(x => ({ ...x, ctype: guess(f.name), description: x.description || f.name }));
+                 }} />
+          <div className="row">
+            <select className="inp" value={form.ctype} onChange={e => setForm({ ...form, ctype: e.target.value })}>
+              {Object.entries(CTYPE).map(([k, v]) => <option key={k} value={k}>{v} {k}</option>)}
+            </select>
+            <input className="inp" style={{ flex: 1 }} placeholder="توضیح (عنوان نمایشی)…"
+                   value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
           </div>
+          <input className="inp" placeholder="اطلاعات تکمیلی (اختیاری)…"
+                 value={form.extra_info} onChange={e => setForm({ ...form, extra_info: e.target.value })} />
+          <button className="btn primary" disabled={busy || !file} onClick={upload}>
+            {busy ? '⏳ در حال آپلود…' : '⬆️ آپلود (از مسیر تلگرام)'}</button>
+        </div>
+      )}
+      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading rows={3} /> : (
+        <>
           {sel.length > 0 && (
-            <div className="panel panel-pad row" style={{ marginTop: 10, background: 'var(--bg)' }}>
-              <span className="badge acc">{sel.length} فایل انتخاب شد</span>
+            <div className="ct3-bulk">
+              <B kind="acc">{fa(sel.length)} انتخاب</B>
               <button className="btn sm danger" onClick={async () => {
                 try {
                   const r = await api.itemsBulk({ action: 'delete', ids: sel });
-                  toast(`${r.done} فایل حذف شد`); setSel([]); setChanged(true); load();
+                  toast(`${fa(r.done)} فایل حذف شد`); setSel([]); changed();
                 } catch (e) { toast(errText(e), 'err'); }
               }}>🗑 حذف گروهی</button>
               <MoveItemsButton sel={sel} sessionId={session.id}
-                               onDone={() => { setSel([]); setChanged(true); load(); }} />
+                               onDone={() => { setSel([]); changed(); }} />
+              <span className="spacer" />
+              <button className="btn sm" onClick={() => setSel([])}>لغو</button>
             </div>
           )}
-          <div className="panel panel-pad" style={{ marginTop: 12, background: 'var(--bg)' }}>
-            <b>➕ آپلود فایل جدید</b>
-            <div className="grid" style={{ gap: 8, marginTop: 10 }}>
-              <div className="row">
-                <input ref={fileRef} type="file" className="inp" style={{ flex: 1 }}
-                       onChange={e => {
-                         const f = e.target.files[0] || null;
-                         setFile(f);
-                         if (f) setForm(x => ({ ...x, ctype: guess(f.name), description: x.description || f.name }));
-                       }} />
-                <select className="inp" value={form.ctype} onChange={e => setForm({ ...form, ctype: e.target.value })}>
-                  {Object.entries(CTYPE).map(([k, v]) => <option key={k} value={k}>{v} {k}</option>)}
-                </select>
+          {items.length === 0 && <Empty icon="📭" text="فایلی برای این جلسه نیست" />}
+          {items.map((c, i) => (
+            <div key={c.id} className={`ct3-file ${sel.includes(c.id) ? 'sel' : ''}`}>
+              <div className="ct3-r1">
+                <input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleSel(c.id)} aria-label="انتخاب فایل" />
+                <span style={{ fontSize: 16 }}>{CTYPE[c.type] || '📎'}</span>
+                <div className="ct3-main">
+                  <div className="ct3-t1">{c.description || '(بدون توضیح)'}</div>
+                  {c.extra_info && <div className="ct3-t2">{c.extra_info}</div>}
+                </div>
+                <B>{fa(c.downloads)} DL</B>
               </div>
-              <input className="inp" placeholder="توضیح (عنوان نمایشی)…"
-                     value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-              <input className="inp" placeholder="اطلاعات تکمیلی (اختیاری)…"
-                     value={form.extra_info} onChange={e => setForm({ ...form, extra_info: e.target.value })} />
-              <button className="btn primary" disabled={busy || !file} onClick={upload}>
-                {busy ? '⏳ در حال آپلود…' : '⬆️ آپلود (از مسیر تلگرام)'}</button>
+              <div className="ct3-r2">
+                <span className="muted">{c.type}</span>
+                <span className="spacer" />
+                <button className="btn sm" title="بالا" disabled={i <= 0} onClick={() => reorderItem(c.id, 'up')}>↑</button>
+                <button className="btn sm" title="پایین" disabled={i >= items.length - 1} onClick={() => reorderItem(c.id, 'down')}>↓</button>
+                <button className="btn sm danger" title="حذف فایل" onClick={() => del(c.id)}>🗑</button>
+              </div>
             </div>
-          </div>
+          ))}
         </>
       )}
-    </Drawer>
+    </div>
   );
 }
 
@@ -386,14 +539,14 @@ function MoveItemsButton({ sel, sessionId, onDone }) {
       <button className="btn sm" onClick={() => setOpen(true)}>📦 انتقال به جلسه…</button>
       {open && (
         <Modal title="انتقال فایل‌ها به جلسه‌ی دیگر" onClose={() => setOpen(false)}>
-          <p className="muted" style={{ marginBottom: 10 }}>شناسه‌ی جلسه‌ی مقصد را وارد کنید (از کشوی فایل‌ها/نشانی جلسه کپی کنید):</p>
+          <p className="muted" style={{ marginBottom: 10 }}>شناسه‌ی جلسه‌ی مقصد را وارد کنید (از نشانی/کارت جلسه کپی کنید):</p>
           <input className="inp" style={{ width: '100%', direction: 'ltr' }} placeholder="session id مقصد…"
                  value={target} onChange={e => setTarget(e.target.value)} />
           <div className="row" style={{ marginTop: 12 }}>
             <button className="btn primary" disabled={!target.trim()} onClick={async () => {
               try {
                 const r = await api.itemsBulk({ action: 'move', ids: sel, target_session: target.trim() });
-                toast(`${r.done} فایل منتقل شد`); setOpen(false); onDone();
+                toast(`${fa(r.done)} فایل منتقل شد`); setOpen(false); onDone();
               } catch (e) { toast(errText(e), 'err'); }
             }}>انتقال</button>
             <button className="btn" onClick={() => setOpen(false)}>انصراف</button>
@@ -410,7 +563,7 @@ function EditSession({ lesson_id, s, onClose }) {
   const [teacher, setTeacher] = useState(s.teacher || '');
   const [busy, setBusy] = useState(false);
   return (
-    <Modal title={`✏️ ویرایش جلسه ${s.number}`} onClose={() => onClose(false)}>
+    <Modal title={`✏️ ویرایش جلسه ${fa(s.number)}`} onClose={() => onClose(false)}>
       <div className="grid" style={{ gap: 10 }}>
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
@@ -484,12 +637,12 @@ function AddLesson({ term, intake, onClose }) {
   );
 }
 
-/* ── 📦 انتقال گروهی جلسات ───────────────────────────── */
+/* ── 📦 انتقال گروهی/تکی جلسات ─────────────────────── */
 function MoveSessions({ lessons, sel, onClose }) {
   const [target, setTarget] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <Modal title={`📦 انتقال ${sel.length} جلسه به درس دیگر`} onClose={() => onClose(false)}>
+    <Modal title={`📦 انتقال ${fa(sel.length)} جلسه به درس دیگر`} onClose={() => onClose(false)}>
       <select className="inp" style={{ width: '100%' }} value={target} onChange={e => setTarget(e.target.value)}>
         <option value="">انتخاب درس مقصد…</option>
         {lessons.map(l => <option key={l.id} value={l.id}>{l.term} — {l.name}</option>)}
@@ -499,7 +652,7 @@ function MoveSessions({ lessons, sel, onClose }) {
           setBusy(true);
           try {
             const r = await api.sessionsBulk({ action: 'move', ids: sel, target_lesson: target });
-            toast(`${r.done} جلسه منتقل شد`); onClose(true);
+            toast(`${fa(r.done)} جلسه منتقل شد`); onClose(true);
           } catch (e) { toast(errText(e), 'err'); }
           setBusy(false);
         }}>انتقال</button>
@@ -556,7 +709,7 @@ function QuickUpload({ intakes, intake, onClose }) {
       } catch (e) { toast(`خطا در ${it.file.name}: ${errText(e)}`, 'err'); }
       setProg(p => ({ ...p, done: (p.done || 0) + 1 }));
     }
-    toast(`${ok} از ${files.length} فایل آپلود شد ✅`);
+    toast(`${fa(ok)} از ${fa(files.length)} فایل آپلود شد ✅`);
     setProg(null); onClose(ok > 0);
   };
 
@@ -594,10 +747,10 @@ function QuickUpload({ intakes, intake, onClose }) {
             <button className="btn sm danger" onClick={() => setFiles(x => x.filter((_, j) => j !== i))}>✕</button>
           </div>
         ))}
-        {prog && <div className="muted">⏳ {prog.done}/{prog.total}</div>}
+        {prog && <div className="muted">⏳ {fa(prog.done)}/{fa(prog.total)}</div>}
         <div className="row">
           <button className="btn primary" disabled={!guess_ok || !!prog} onClick={run}>
-            ⬆️ آپلود {files.length ? `(${files.length} فایل)` : ''}
+            ⬆️ آپلود {files.length ? `(${fa(files.length)} فایل)` : ''}
           </button>
           <button className="btn" onClick={() => onClose(false)}>انصراف</button>
         </div>
