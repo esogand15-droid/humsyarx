@@ -63,7 +63,7 @@ export default function Audit() {
   };
   useEffect(() => { load(); }, [filters, skip]);
 
-  if (denied) return <NoPerm text="لاگ حسابرسی فقط برای مالک سامانه است" />;
+  if (denied) return <NoPerm text="مشاهده‌ی لاگ حسابرسی نیازمند مجوز audit.view است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const setSev = (s) => { setFilters(f => ({ ...f, min_severity: f.min_severity === s ? '' : s })); setSkip(0); };
