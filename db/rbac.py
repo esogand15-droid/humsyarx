@@ -719,6 +719,37 @@ class DBRbac:
         return counts
 
 
+    async def user_ids_by_role(self, role: str, limit: int = 1000) -> list:
+        """شناسه اعضای نقش از منبع RBAC، با mirrorهای میراثی.
+
+        این entry point برای مصرف مشترک Bot/API است تا routeها مستقیماً
+        کالکشن‌های نقش را نخوانند. خروجی deduplicate و به سقف محدود است.
+        """
+        role = (role or '').strip()
+        if not role:
+            return []
+        limit = max(1, min(int(limit), 5000))
+        ids = []
+        docs = await self.user_roles.find(
+            {'roles': role}, {'_id': 1}
+        ).to_list(limit)
+        ids.extend(int(d['_id']) for d in docs if d.get('_id') is not None)
+
+        # mirrorهای legacy برای داده‌هایی که هنوز migration نشده‌اند.
+        if role == 'content_admin':
+            legacy_users = await self.users.find(
+                {'role': 'content_admin'}, {'user_id': 1}
+            ).to_list(limit)
+            ids.extend(int(u['user_id']) for u in legacy_users
+                       if u.get('user_id') is not None)
+        legacy_roles = await self.admin_roles.find(
+            {'role': role}, {'_id': 1}
+        ).to_list(limit)
+        ids.extend(int(d['_id']) for d in legacy_roles
+                   if d.get('_id') is not None)
+        return list(dict.fromkeys(ids))[:limit]
+
+
     # ──────────────────────────────────────────────────
     #  تخصیص نقش به کاربر (چندنقشی — Union مجوزها)
     # ──────────────────────────────────────────────────
