@@ -1116,7 +1116,7 @@ async def audit_logs_admin(
     (تگ «پنل_وب») و اکشن‌های بات هر دو اینجا دیده می‌شوند.
     """
     query = {}
-    if category in ("admin", "content"):
+    if category in ("admin", "content", "user"):
         query["category"] = category
     if min_severity:
         order = ["INFO", "WARNING", "HIGH", "CRITICAL"]
@@ -1172,7 +1172,7 @@ async def audit_logs_admin(
 @router.get("/analytics")
 async def analytics_admin(
     admin=Depends(get_admin_user),
-    days: int = Query(14, ge=7, le=90),
+    days: int = Query(14, ge=1, le=90),
 ):
     """آمار روزانه بازه اخیر + کاربران فعال + توزیع عملیات و ساعات اوج.
 

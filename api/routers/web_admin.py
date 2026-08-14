@@ -18,6 +18,7 @@
   WA2.8 User 360               : /users/{uid}/360
   WA2.9 Hardening              : محدودسازی bulk کاربران به مجوز + audit همه‌ی اکشن‌ها
 """
+import asyncio
 import hashlib
 import re
 import secrets
@@ -397,33 +398,38 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
 
 @router.get("/attention")
 async def attention(user=Depends(_guard_any_admin)):
-    """⚠️ صف‌های نیازمند اقدام — هر آیتم مستقیم به صف کلیک می‌شود (Client-side)."""
-    pend_users = await db.users.count_documents({"approved": False, "suspended": {"$ne": True}})
-    pend_pays = len(await db.sub_payment_list_pending())
-    pend_qs = await db.questions.count_documents({"approved": False})
-    open_ticks = await db.tickets.count_documents({"status": "open"})
-    pend_reports = 0
-    try:
-        pend_reports = await db.content_reports.count_documents({"status": "new"}) \
-            + await db.content_reports.count_documents({"status": "pending"})
-    except Exception:
-        pass
-    last_backup = await db.get_setting("auto_backup_last_run", None)
-    items = [
-        {"key": "payments", "icon": "🧾", "label": "رسید پرداخت در انتظار بررسی",
-         "count": pend_pays, "go": "/subscriptions", "urgent": pend_pays > 0},
-        {"key": "tickets", "icon": "🎫", "label": "تیکت بدون پاسخ",
-         "count": open_ticks, "go": "/tickets", "urgent": open_ticks > 0},
-        {"key": "questions", "icon": "🧪", "label": "سؤال در انتظار بازبینی",
-         "count": pend_qs, "go": "/questions", "urgent": pend_qs > 0},
-        {"key": "users", "icon": "🧑‍🎓", "label": "کاربر در انتظار تأیید",
-         "count": pend_users, "go": "/users?status=pending", "urgent": pend_users > 0},
-        {"key": "reports", "icon": "🚩", "label": "گزارش محتوا/سؤال در انتظار",
-         "count": pend_reports, "go": "/content", "urgent": pend_reports > 0},
-    ]
-    return {"items": items,
-            "backup": {"last_run": last_backup,
-                       "enabled": bool(await db.get_setting("auto_backup_enabled", False))}}
+    """صف‌های اقدام permission-aware؛ شمارش خارج از دسترسی حتی برگردانده نمی‌شود."""
+    perms = await db.get_user_perms(user["id"])
+    allow = lambda *keys: user["id"] == ADMIN_ID or any(k in perms for k in keys)
+    jobs = {}
+    if allow("users.view", "users.manage"):
+        jobs["users"] = db.users.count_documents({"approved": False, "suspended": {"$ne": True}})
+    if allow("subscription.manage"):
+        jobs["payments"] = db.sub_payment_count_all("pending")
+    if allow("questions.review", "questions.review_scoped"):
+        jobs["questions"] = db.questions.count_documents({"approved": False})
+    if allow("tickets.reply", "tickets.manage"):
+        jobs["tickets"] = db.tickets.count_documents({"status": "open"})
+    if allow("reports.review"):
+        jobs["reports"] = db.content_reports.count_documents({"status": {"$in": ["new", "pending"]}})
+    keys = list(jobs)
+    values = await asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True)
+    counts = {k: (0 if isinstance(v, Exception) else int(v or 0)) for k, v in zip(keys, values)}
+    meta = {
+        "payments": ("🧾", "رسید پرداخت در انتظار بررسی", "/subscriptions"),
+        "tickets": ("🎫", "تیکت بدون پاسخ", "/tickets"),
+        "questions": ("🧪", "سؤال در انتظار بازبینی", "/questions"),
+        "users": ("🧑‍🎓", "کاربر در انتظار تأیید", "/users?status=pending"),
+        "reports": ("🚩", "گزارش محتوا/سؤال در انتظار", "/content"),
+    }
+    items = [{"key": k, "icon": meta[k][0], "label": meta[k][1],
+              "count": counts.get(k, 0), "go": meta[k][2],
+              "urgent": counts.get(k, 0) > 0} for k in meta if k in counts]
+    backup = None
+    if allow("backup.manage", "settings.manage"):
+        backup = {"last_run": await db.get_setting("auto_backup_last_run", None),
+                  "enabled": bool(await db.get_setting("auto_backup_enabled", False))}
+    return {"items": items, "backup": backup}
 
 
 @router.get("/activity")
@@ -451,6 +457,34 @@ async def activity(limit: int = Query(40, ge=1, le=100),
     return {"items": out}
 
 
+@router.get("/dashboard-bundle")
+async def dashboard_bundle(user=Depends(_guard_any_admin)):
+    """یک round-trip برای صفحه اصلی؛ بخش‌های اختیاری permission-aware هستند."""
+    uid = user["id"]
+    perms = await db.get_user_perms(uid)
+    base, attn = await asyncio.gather(overview(user=user), attention(user=user))
+    insights = None
+    feed = []
+    owner_stats = None
+    if uid == ADMIN_ID or "stats.view" in perms:
+        try:
+            insights = await db.admin_insights()
+        except Exception:
+            insights = None
+    if uid == ADMIN_ID or "audit.view" in perms:
+        try:
+            feed = (await activity(limit=30, user=user)).get("items", [])
+        except Exception:
+            feed = []
+    if uid == ADMIN_ID:
+        try:
+            owner_stats = await owner_api.stats(admin=user)
+        except Exception:
+            owner_stats = None
+    return {"overview": base, "attention": attn, "activity": feed,
+            "insights": insights, "stats": owner_stats}
+
+
 # ══════════════════════════════════════════════════════════════════
 # 🌊 WA2.5 — جست‌وجوی سراسری سریع (Command Palette)
 # ══════════════════════════════════════════════════════════════════
@@ -458,60 +492,86 @@ async def activity(limit: int = Query(40, ge=1, le=100),
 @router.get("/search")
 async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
                               user=Depends(_guard_any_admin)):
-    """🔎 یک جست‌وجوی واحد روی موجودیت‌های کلیدی سامانه (گروه‌بندی‌شده)."""
+    """جست‌وجوی سراسری permission-aware در موجودیت‌های واقعی سامانه."""
     query = " ".join(q.split())[:80]
     rx = {"$regex": re.escape(query), "$options": "i"}
-    res = {"users": [], "tickets": [], "questions": [], "content": [], "audit": []}
+    uid = user["id"]
+    perms = await db.get_user_perms(uid)
+    allow = lambda *keys: uid == ADMIN_ID or any(k in perms for k in keys)
+    res = {"users": [], "tickets": [], "questions": [], "content": [],
+           "exams": [], "payments": [], "subscriptions": [],
+           "notifications": [], "audit": []}
 
-    try:
-        filt = db.build_user_search_query(query)
-        us = await db.users.find(filt).sort("registered_at", -1).limit(6).to_list(6)
-        res["users"] = [{
-            "id": u.get("user_id"), "name": u.get("name", ""),
-            "student_id": u.get("student_id", ""), "intake": u.get("intake", ""),
-            "username": u.get("username", ""),
-        } for u in us]
-    except Exception:
-        pass
-
-    try:
-        ts = await db.tickets.find({"subject": rx}).sort("created_at", -1).limit(5).to_list(5)
-        res["tickets"] = [{
-            "id": t.get("ticket_id"), "subject": t.get("subject", ""),
-            "status": t.get("status", ""), "user_name": t.get("user_name", ""),
-        } for t in ts]
-    except Exception:
-        pass
-
-    try:
-        qs = await db.questions.find({"question": rx}).sort("created_at", -1).limit(5).to_list(5)
-        res["questions"] = [{
-            "id": str(x.get("_id", "")), "text": (x.get("question", "") or "")[:90],
-            "lesson": x.get("lesson", ""), "topic": x.get("topic", ""),
-            "approved": bool(x.get("approved")),
-        } for x in qs]
-    except Exception:
-        pass
-
-    try:
-        rs = await db.search_resources(query, intake=None)
-        res["content"] = [{
-            "title": r.get("title") or r.get("description") or "",
-            "type": r.get("type", ""), "path": r.get("path", ""),
-        } for r in (rs or [])[:5]]
-    except Exception:
-        pass
-
-    try:
-        al = await db.audit_logs.find({"$or": [{"action": rx}, {"actor.name": rx}]}) \
-                              .sort("timestamp", -1).limit(5).to_list(5)
-        res["audit"] = [{
-            "id": str(a.get("_id", "")), "action": a.get("action", ""),
-            "actor": (a.get("actor") or {}).get("name", ""),
-            "at": (a.get("timestamp") or "")[:16].replace("T", " "),
-        } for a in al]
-    except Exception:
-        pass
+    if allow("users.view", "users.manage"):
+        try:
+            us = await db.users.find(db.build_user_search_query(query)).sort("registered_at", -1).limit(6).to_list(6)
+            res["users"] = [{"id": u.get("user_id"), "name": u.get("name", ""),
+                "student_id": u.get("student_id", ""), "intake": u.get("intake", ""),
+                "username": u.get("username", "")} for u in us]
+        except Exception:
+            pass
+    if allow("tickets.reply", "tickets.manage"):
+        try:
+            ts = await db.tickets.find({"$or": [{"subject": rx}, {"user_name": rx}]}).sort("created_at", -1).limit(5).to_list(5)
+            res["tickets"] = [{"id": t.get("ticket_id"), "subject": t.get("subject", ""),
+                "status": t.get("status", ""), "user_name": t.get("user_name", "")} for t in ts]
+        except Exception:
+            pass
+    if allow("questions.review", "questions.review_scoped"):
+        try:
+            scope = await _question_scope_context(user)
+            qf = {"question": rx}
+            if scope.get("kind") == "scoped": qf["intake"] = scope.get("intake") or ""
+            qs = await db.questions.find(qf).sort("created_at", -1).limit(5).to_list(5)
+            res["questions"] = [{"id": str(x.get("_id", "")), "text": (x.get("question", "") or "")[:90],
+                "lesson": x.get("lesson", ""), "topic": x.get("topic", ""),
+                "approved": bool(x.get("approved"))} for x in qs]
+        except Exception:
+            pass
+    if allow("content.manage", "content.scoped"):
+        try:
+            scope = await db.get_content_scope(uid)
+            intake = scope.get("intake") if scope and scope.get("kind") == "scoped" else None
+            rs = await db.search_resources(query, intake=intake)
+            res["content"] = [{"title": r.get("title") or r.get("description") or "",
+                "type": r.get("type", ""), "path": r.get("path", "")} for r in (rs or [])[:5]]
+        except Exception:
+            pass
+    if allow("schedules.manage"):
+        try:
+            docs = await db.schedules.find({"type": "exam", "$or": [
+                {"lesson": rx}, {"teacher": rx}, {"location": rx}]}).sort("date", -1).limit(5).to_list(5)
+            res["exams"] = [{"id": str(x.get("_id", "")), "lesson": x.get("lesson", ""),
+                "date": x.get("date", ""), "group": db.normalize_group(x.get("group")) or "هر دو"} for x in docs]
+        except Exception:
+            pass
+    if allow("subscription.manage"):
+        try:
+            pays = await db.sub_payments.find({"$or": [{"plan_name": rx}, {"discount_code": rx}]}).sort("submitted_at", -1).limit(5).to_list(5)
+            res["payments"] = [{"id": str(x.get("_id", "")), "user_id": x.get("user_id"),
+                "plan": x.get("plan_name", ""), "status": x.get("status", ""),
+                "amount": x.get("final_price", x.get("price", 0))} for x in pays]
+            subs = await db.subscriptions.find({"plan_name": rx}).sort("end_date", -1).limit(5).to_list(5)
+            res["subscriptions"] = [{"user_id": x.get("_id"), "plan": x.get("plan_name", ""),
+                "status": x.get("status", ""), "end_date": x.get("end_date", "")} for x in subs]
+        except Exception:
+            pass
+    if allow("notifications.manage", "broadcast.send"):
+        try:
+            notes = await db.bot_notifs.find({"text": rx}).sort("created_at", -1).limit(5).to_list(5)
+            res["notifications"] = [{"id": str(x.get("_id", "")), "type": x.get("type", ""),
+                "text": (x.get("text", "") or "")[:90], "sent": bool(x.get("sent"))} for x in notes]
+        except Exception:
+            pass
+    if allow("audit.view"):
+        try:
+            al = await db.audit_logs.find({"$or": [{"action": rx}, {"actor.name": rx},
+                {"target.label": rx}]}).sort("timestamp", -1).limit(5).to_list(5)
+            res["audit"] = [{"id": str(a.get("_id", "")), "action": a.get("action", ""),
+                "actor": (a.get("actor") or {}).get("name", ""),
+                "at": (a.get("timestamp") or "")[:16].replace("T", " ")} for a in al]
+        except Exception:
+            pass
     return {"q": query, **res}
 
 
@@ -1173,6 +1233,43 @@ async def content_tree(intake: Optional[str] = Query(None),
             "intakes": [{"code": c, "label": l} for c, l in intake_labels.items()]}
 
 
+@router.get("/content/history")
+async def content_history(
+    target_id: str = Query(..., min_length=1, max_length=80),
+    target_type: str = Query(..., pattern="^(lesson|session|content_item|reference_subject|reference_book|reference_file|qbank_file)$"),
+    limit: int = Query(20, ge=1, le=50),
+    admin=Depends(get_content_admin_user),
+):
+    if target_type == "lesson":
+        item = await db.bs_get_lesson(target_id); item_intake = (item or {}).get("intake") or ""
+    elif target_type == "session":
+        item = await db.bs_get_session(target_id); item_intake = await db.session_intake(target_id)
+    elif target_type == "content_item":
+        item = await db.bs_get_content_item(target_id); item_intake = await db.content_intake(target_id)
+    elif target_type == "reference_subject":
+        item = await db.ref_get_subject(target_id); item_intake = (item or {}).get("intake") or ""
+    elif target_type == "reference_book":
+        item = await db.ref_get_book(target_id); item_intake = await db.ref_book_intake(target_id)
+    elif target_type == "reference_file":
+        item = await db.ref_get_file(target_id); item_intake = await db.ref_file_intake(target_id)
+    else:
+        item = await db.get_qbank_file(target_id); item_intake = (item or {}).get("intake") or ""
+    if not item:
+        raise HTTPException(404, "محتوا پیدا نشد")
+    scope = admin.get("_scope") or await db.get_content_scope(admin["id"])
+    if scope and scope.get("kind") == "scoped" and item_intake not in ("", scope.get("intake") or ""):
+        raise HTTPException(403, "intake_out_of_scope")
+    docs = await db.audit_logs.find({"$or": [
+        {"target.id": target_id}, {"target_id": target_id},
+    ]}).sort("timestamp", -1).limit(limit).to_list(limit)
+    return {"items": [{
+        "id": str(d.get("_id", "")), "title": d.get("action", ""),
+        "actor": (d.get("actor") or {}).get("name", ""),
+        "at": (d.get("timestamp") or "")[:16].replace("T", " "),
+        "description": d.get("details", ""), "severity": d.get("severity", "INFO"),
+    } for d in docs]}
+
+
 @router.post("/content/sessions/{sid}/duplicate")
 async def content_session_duplicate(sid: str,
                                     admin=Depends(get_content_global_user)):
@@ -1309,7 +1406,7 @@ async def content_items_bulk(body: ItemsBulk,
 
 @router.get("/wa-analytics")
 async def wa_analytics(user=Depends(_perm("stats.view")),
-                       days: int = Query(14, ge=7, le=90)):
+                       days: int = Query(14, ge=1, le=90)):
     """📈 متحد از داشبوردهای آماری واقعی db + شمارش‌های زنده — فقط خواندنی.
 
     🌊 موج Analytics-Filters: پارامتر days (۷ تا ۹۰ روز) برای متریکهای
@@ -2219,7 +2316,26 @@ async def wa_system_status(
         "system.manage", "backup.manage", "prestige.manage",
         "settings.manage", "notifications.manage")),
 ):
-    return await owner_api.bot_status(admin=user)
+    out = await owner_api.bot_status(admin=user)
+    perms = await db.get_user_perms(user["id"])
+    allow = lambda *keys: user["id"] == ADMIN_ID or any(k in perms for k in keys)
+    if allow("notifications.manage", "system.manage"):
+        try:
+            recent = await db.get_recent_notif_runs(limit=10)
+            out["notifications"] = {
+                "pending_queue": await db.bot_notifs.count_documents({"sent": False}),
+                "recent_failed_runs": sum(1 for r in recent if int(r.get("failed") or 0) > 0),
+                "last_run": (recent[0].get("started_at") if recent else None),
+            }
+        except Exception:
+            out["notifications"] = None
+    if allow("backup.manage", "system.manage"):
+        out["backup"] = {
+            "enabled": bool(await db.get_setting("auto_backup_enabled", False)),
+            "last_run": await db.get_setting("auto_backup_last_run", None),
+            "hour": int(await db.get_setting("auto_backup_hour", 3) or 3),
+        }
+    return out
 
 
 @router.get("/system/backup-settings")

@@ -1,9 +1,12 @@
 """🏥 هامزیار Mini App — FastAPI Backend v2.0"""
 import asyncio
+import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -51,6 +54,31 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+_api_logger = logging.getLogger("api")
+
+
+@app.middleware("http")
+async def request_context_and_safe_errors(request: Request, call_next):
+    """Request ID برای ردیابی و پاسخ انسانی برای exceptionهای کنترل‌نشده.
+
+    HTTPExceptionهای معتبر همچنان توسط FastAPI با status/detail اصلی مدیریت
+    می‌شوند؛ فقط crashهای واقعی از نمایش traceback/500 خام به کاربر جلوگیری می‌کنند.
+    """
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    try:
+        response = await call_next(request)
+    except Exception:
+        _api_logger.exception("unhandled API error request_id=%s path=%s",
+                              request_id, request.url.path)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "internal_error", "error_id": request_id},
+        )
+    response.headers["X-Request-ID"] = request_id
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
+
 
 WEBAPP_URL = os.getenv(
     "WEBAPP_URL",
