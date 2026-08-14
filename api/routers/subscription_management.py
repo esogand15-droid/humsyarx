@@ -57,6 +57,20 @@ class PlanBody(BaseModel):
     )
 
 
+class SubscriptionSettingsBody(BaseModel):
+    subscription_enforced: bool | None = None
+    protect_content_enabled: bool | None = None
+
+
+class BulkGrantBody(BaseModel):
+    mode: str = Field(pattern="^(list|role)$")
+    identifiers: list[str] = Field(default_factory=list, max_length=500)
+    role: str | None = None
+    days: int = Field(ge=1, le=3650)
+    plan_name: str = Field(default="اشتراک رایگان", min_length=2, max_length=100)
+    extend: bool = True
+
+
 class DecisionBody(BaseModel):
     approved: bool
 
@@ -304,6 +318,7 @@ async def overview(
             "—",
         )
     )
+    roles = await db.list_roles()
 
     # Fix-Foundation: KPIهای تکمیلی از داده‌ی واقعی؛ ساختار nested قدیمی
     # حفظ می‌شود و فقط کلیدهای افزوده به stats اضافه می‌شوند.
@@ -361,7 +376,63 @@ async def overview(
             "card_owner":
                 card_owner,
         },
+
+        "settings": {
+            "subscription_enforced": bool(await db.get_setting("subscription_enforced", False)),
+            "protect_content_enabled": bool(await db.get_setting("protect_content_enabled", True)),
+        },
+        "roles": [{
+            "key": r.get("_id"), "label": r.get("label", r.get("_id", "")),
+            "icon": r.get("icon", "🛡"), "active": r.get("active", True),
+        } for r in roles],
     }
+
+
+@router.patch("/settings")
+async def update_subscription_settings(
+    body: SubscriptionSettingsBody,
+    admin=Depends(get_admin_user),
+):
+    changed = []
+    before, after = {}, {}
+    for key in ("subscription_enforced", "protect_content_enabled"):
+        value = getattr(body, key)
+        if value is None:
+            continue
+        old = bool(await db.get_setting(key, key == "protect_content_enabled"))
+        if old != bool(value):
+            await db.set_setting(key, bool(value))
+            before[key] = old
+            after[key] = bool(value)
+            changed.append(key)
+    if changed:
+        await _audit(
+            admin, "به‌روزرسانی سیاست اشتراک", "Subscription", severity="HIGH",
+            before=before, after=after, tags=["اشتراک", "تنظیمات", "پنل_وب"],
+        )
+    return {"ok": True, "changed": changed}
+
+
+@router.put("/plans/{plan_id}")
+async def update_plan(
+    plan_id: str,
+    body: PlanBody,
+    admin=Depends(get_admin_user),
+):
+    old = await db.sub_plan_get(plan_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد")
+    patch = {"name": body.name.strip(), "days": body.days, "price": body.price}
+    ok = await db.sub_plan_update(plan_id, patch)
+    if not ok:
+        raise HTTPException(status_code=500, detail="ویرایش پلن انجام نشد")
+    await _audit(
+        admin, "ویرایش پلن اشتراک", "Subscription", severity="HIGH",
+        target_id=plan_id, target_type="plan", target_label=patch["name"],
+        before={k: old.get(k) for k in patch}, after=patch,
+        tags=["اشتراک", "پلن", "پنل_وب"],
+    )
+    return {"ok": True}
 
 
 @router.post("/plans")
@@ -380,6 +451,12 @@ async def add_plan(
         )
     )
 
+    await _audit(
+        admin, "ایجاد پلن اشتراک", "Subscription", severity="HIGH",
+        target_id=str(plan_id), target_type="plan", target_label=body.name.strip(),
+        after={"name": body.name.strip(), "days": body.days, "price": body.price},
+        tags=["اشتراک", "پلن", "پنل_وب"],
+    )
     return {
         "ok":
             True,
@@ -399,6 +476,7 @@ async def toggle_plan(
         get_admin_user
     ),
 ):
+    old = await db.sub_plan_get(plan_id)
     changed = (
         await db.sub_plan_toggle(
             plan_id
@@ -411,8 +489,17 @@ async def toggle_plan(
             detail="پلن پیدا نشد",
         )
 
+    new_state = not bool((old or {}).get("active", True))
+    await _audit(
+        admin, "تغییر وضعیت پلن اشتراک", "Subscription", severity="HIGH",
+        target_id=plan_id, target_type="plan",
+        target_label=(old or {}).get("name", plan_id),
+        before={"active": bool((old or {}).get("active", True))},
+        after={"active": new_state}, tags=["اشتراک", "پلن", "پنل_وب"],
+    )
     return {
         "ok": True,
+        "active": new_state,
     }
 
 
@@ -440,6 +527,12 @@ async def delete_plan(
 
     await db.sub_plan_delete(
         plan_id
+    )
+    await _audit(
+        admin, "حذف پلن اشتراک", "Subscription", severity="HIGH",
+        target_id=plan_id, target_type="plan", target_label=plan.get("name", plan_id),
+        before={"name": plan.get("name"), "days": plan.get("days"), "price": plan.get("price")},
+        tags=["اشتراک", "پلن", "پنل_وب"],
     )
 
     return {
@@ -861,6 +954,15 @@ async def decide_payment(
             .isoformat(),
     })
 
+    decision = "approved" if body.approved else "rejected"
+    await _audit(
+        admin, "بررسی رسید اشتراک", "Subscription", severity="HIGH",
+        target_id=payment_id, target_type="payment",
+        target_label=str(payment.get("user_id", "")),
+        before={"status": payment.get("status", "pending")},
+        after={"status": decision, "note": body.note.strip()},
+        tags=["اشتراک", "رسید", "تصمیم_مالی", "پنل_وب"],
+    )
 
     return {
         "ok": True,
@@ -925,6 +1027,13 @@ async def send_receipt(
             ),
         )
 
+    await _audit(
+        admin, "ارسال تصویر رسید به مدیر", "Subscription", severity="WARNING",
+        target_id=payment_id, target_type="payment",
+        target_label=str(payment.get("user_id", "")),
+        after={"recipient_admin_id": admin["id"]},
+        tags=["اشتراک", "رسید", "حریم_خصوصی", "پنل_وب"],
+    )
 
     return {
         "ok": True,
@@ -1084,6 +1193,53 @@ async def subscribers(
     }
 
 
+@router.get("/subscribers/{user_id}")
+async def subscriber_detail(
+    user_id: int,
+    admin=Depends(get_admin_user),
+):
+    user = await db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="کاربر پیدا نشد")
+    sub = await db.sub_get(user_id)
+    history = await db.sub_payment_history(user_id)
+    return {
+        "user": {
+            "id": user_id, "name": user.get("name", ""),
+            "student_id": user.get("student_id", ""),
+            "username": user.get("username", ""),
+            "intake": user.get("intake", ""), "group": user.get("group", ""),
+        },
+        "subscription": ({
+            "status": sub.get("status", ""), "plan_name": sub.get("plan_name", ""),
+            "start_date": str(sub.get("start_date", ""))[:10],
+            "end_date": str(sub.get("end_date", ""))[:10],
+            "days_left": await db.sub_days_left(user_id),
+            "source": sub.get("source", ""), "revoke_reason": sub.get("revoke_reason", ""),
+        } if sub else None),
+        "payments": [{
+            "id": str(p.get("_id", "")), "plan_name": p.get("plan_name", ""),
+            "price": p.get("price", 0),
+            "final_price": p.get("final_price", p.get("price", 0)),
+            "discount_code": p.get("discount_code", ""),
+            "status": p.get("status", ""),
+            "submitted_at": str(p.get("submitted_at", ""))[:16],
+            "reviewed_at": str(p.get("reviewed_at", ""))[:16],
+            "review_note": p.get("review_note", ""),
+        } for p in history],
+    }
+
+
+async def _notify_subscription_change(user_id: int, title: str, body: str, dm: str, ntype: str):
+    try:
+        await db.notify_user(
+            user_id, ntype, title=title, body=body,
+            link="/me/subscription", dm=dm,
+        )
+    except Exception as exc:
+        logger.warning("subscription notification failed for %s: %s", user_id, exc)
+
+
 @router.get(
     "/users/search"
 )
@@ -1195,13 +1351,100 @@ async def grant_subscription(
     )
 
 
+    end_text = str(end_date)[:10]
+    await _notify_subscription_change(
+        body.user_id,
+        "💎 اشتراک هامزیار فعال شد",
+        f"پلن {body.plan_name.strip()} تا {end_text} فعال است.",
+        (f"💎 <b>اشتراک هامزیار برای شما فعال شد</b>\n\n"
+         f"📦 پلن: {body.plan_name.strip()}\n📅 پایان: {end_text}"),
+        "sub_activated",
+    )
+    await _audit(
+        admin, "فعال‌سازی دستی اشتراک", "Subscription", severity="HIGH",
+        target_id=str(body.user_id), target_type="user", target_label=user.get("name", ""),
+        after={"days": body.days, "plan": body.plan_name.strip(),
+               "extend": body.extend, "end_date": end_text},
+        tags=["اشتراک", "اعطای_دستی", "پنل_وب"],
+    )
     return {
         "ok":
             True,
 
         "end_date":
-            str(end_date)[:10],
+            end_text,
     }
+
+
+@router.post("/subscribers/grant-bulk")
+async def grant_subscription_bulk(
+    body: BulkGrantBody,
+    admin=Depends(get_admin_user),
+):
+    target_ids: list[int] = []
+    unresolved: list[str] = []
+
+    if body.mode == "role":
+        role = (body.role or "").strip()
+        if not role:
+            raise HTTPException(status_code=422, detail="نقش هدف الزامی است")
+        target_ids.extend(await db.user_ids_by_role(role, limit=1000))
+    else:
+        for raw in body.identifiers[:500]:
+            ident = str(raw or "").strip()
+            if not ident:
+                continue
+            if ident.lstrip("+-").isdigit():
+                uid = int(ident)
+                if await db.get_user(uid):
+                    target_ids.append(uid)
+                else:
+                    unresolved.append(ident)
+                continue
+            matches = await db.search_users(ident, limit=20)
+            low = ident.lstrip("@").lower()
+            exact = [u for u in matches if
+                     str(u.get("username") or "").lower() == low or
+                     str(u.get("student_id") or "") == ident or
+                     str(u.get("name") or "").strip().lower() == ident.lower()]
+            chosen = exact[0] if len(exact) == 1 else (matches[0] if len(matches) == 1 else None)
+            if chosen and chosen.get("user_id") is not None:
+                target_ids.append(int(chosen["user_id"]))
+            else:
+                unresolved.append(ident)
+
+    target_ids = list(dict.fromkeys(target_ids))[:1000]
+    if not target_ids:
+        raise HTTPException(status_code=422, detail="هیچ کاربر معتبری برای اعطا پیدا نشد")
+
+    granted, failed = 0, []
+    for uid in target_ids:
+        try:
+            end_date = await db.sub_activate(
+                uid, body.days, body.plan_name.strip(), source="free_grant",
+                granted_by=admin["id"], extend=body.extend)
+            end_text = str(end_date)[:10]
+            await _notify_subscription_change(
+                uid, "🎁 اشتراک رایگان هامزیار",
+                f"{body.days} روز اشتراک تا {end_text} برای شما فعال شد.",
+                (f"🎁 <b>اشتراک رایگان هامزیار برای شما فعال شد</b>\n\n"
+                 f"⏳ مدت: {body.days} روز\n📅 پایان: {end_text}"),
+                "sub_activated",
+            )
+            granted += 1
+        except Exception as exc:
+            logger.warning("bulk subscription grant failed for %s: %s", uid, exc)
+            failed.append(uid)
+
+    await _audit(
+        admin, "اعطای دسته‌جمعی اشتراک رایگان", "Subscription", severity="HIGH",
+        target_type="subscription_batch", target_label=f"{granted} کاربر",
+        after={"mode": body.mode, "role": body.role, "days": body.days,
+               "granted": granted, "failed": len(failed), "unresolved": len(unresolved)},
+        tags=["اشتراک", "اعطای_دسته_جمعی", "پنل_وب"],
+    )
+    return {"ok": True, "granted": granted, "failed_ids": failed,
+            "unresolved": unresolved, "total_resolved": len(target_ids)}
 
 
 @router.post(
@@ -1216,6 +1459,7 @@ async def revoke_subscription(
         get_admin_user
     ),
 ):
+    user = await db.get_user(user_id)
     revoked = (
         await db.sub_revoke(
             user_id,
@@ -1236,6 +1480,20 @@ async def revoke_subscription(
             ),
         )
 
+    await _notify_subscription_change(
+        user_id,
+        "⛔ اشتراک هامزیار لغو شد",
+        body.reason.strip(),
+        f"⛔ <b>اشتراک هامزیار لغو شد</b>\n\n📝 دلیل: {body.reason.strip()}",
+        "sub_expired",
+    )
+    await _audit(
+        admin, "لغو اشتراک کاربر", "Subscription", severity="HIGH",
+        target_id=str(user_id), target_type="user",
+        target_label=(user or {}).get("name", str(user_id)),
+        after={"status": "revoked", "reason": body.reason.strip()},
+        tags=["اشتراک", "لغو", "پنل_وب"],
+    )
     return {
         "ok": True,
     }
@@ -1345,6 +1603,14 @@ async def add_discount(
             detail="کد تکراری است",
         )
 
+    await _audit(
+        admin, "ایجاد کد تخفیف", "Subscription", severity="HIGH",
+        target_id=body.code.upper(), target_type="discount", target_label=body.code.upper(),
+        after={"percent": body.percent, "max_uses": body.max_uses,
+               "expires_at": body.expires_at, "target_plan_ids": body.target_plan_ids or [],
+               "per_user_limit": body.per_user_limit},
+        tags=["اشتراک", "تخفیف", "پنل_وب"],
+    )
     return {
         "ok": True,
     }
@@ -1360,6 +1626,7 @@ async def toggle_discount(
         get_admin_user
     ),
 ):
+    old = await db.discount_get(code)
     changed = (
         await db.discount_toggle(
             code
@@ -1375,8 +1642,16 @@ async def toggle_discount(
             ),
         )
 
+    new_state = not bool((old or {}).get("active", True))
+    await _audit(
+        admin, "تغییر وضعیت کد تخفیف", "Subscription", severity="HIGH",
+        target_id=code.upper(), target_type="discount", target_label=code.upper(),
+        before={"active": bool((old or {}).get("active", True))},
+        after={"active": new_state}, tags=["اشتراک", "تخفیف", "پنل_وب"],
+    )
     return {
         "ok": True,
+        "active": new_state,
     }
 
 
@@ -1390,6 +1665,7 @@ async def delete_discount(
         get_admin_user
     ),
 ):
+    old = await db.discount_get(code)
     deleted = (
         await db.discount_delete(
             code
@@ -1405,6 +1681,14 @@ async def delete_discount(
             ),
         )
 
+    await _audit(
+        admin, "حذف کد تخفیف", "Subscription", severity="HIGH",
+        target_id=code.upper(), target_type="discount", target_label=code.upper(),
+        before={"percent": (old or {}).get("percent"),
+                "used_count": (old or {}).get("used_count"),
+                "max_uses": (old or {}).get("max_uses")},
+        tags=["اشتراک", "تخفیف", "پنل_وب"],
+    )
     return {
         "ok": True,
     }
@@ -1705,6 +1989,8 @@ async def update_card(
         get_admin_user
     ),
 ):
+    old_number = await db.get_setting("subscription_card_number", "")
+    old_owner = await db.get_setting("subscription_card_owner", "")
     await db.set_setting(
         "subscription_card_number",
 
@@ -1719,6 +2005,13 @@ async def update_card(
         .strip(),
     )
 
+    await _audit(
+        admin, "ویرایش اطلاعات کارت اشتراک", "Subscription", severity="HIGH",
+        target_type="settings", target_label="کارت پرداخت",
+        before={"card_number": old_number, "card_owner": old_owner},
+        after={"card_number": body.card_number.strip(), "card_owner": body.card_owner.strip()},
+        tags=["اشتراک", "کارت", "پنل_وب"],
+    )
     return {
         "ok": True,
     }

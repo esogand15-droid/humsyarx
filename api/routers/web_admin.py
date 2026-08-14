@@ -1776,7 +1776,7 @@ async def wa_notif_settings_update(
     return await owner_api.notif_settings_update(body=body, admin=user)
 
 
-# ── Subscription (سطح فعلی UI؛ CRUD کامل در موج بعد) ─────────────
+# ── Subscription Control Center (delegated via subscription.manage) ──
 
 @router.get("/subscription/overview")
 async def wa_subscription_overview(user=Depends(_perm("subscription.manage"))):
@@ -1801,18 +1801,8 @@ async def wa_subscription_decision(
     body: subscription_api.DecisionBody,
     user=Depends(_perm("subscription.manage")),
 ):
-    payment = await db.sub_payment_get(payment_id)
-    result = await subscription_api.decide_payment(
+    return await subscription_api.decide_payment(
         payment_id=payment_id, body=body, admin=user)
-    await _audit(
-        user["id"], "تأیید رسید اشتراک" if body.approved else "رد رسید اشتراک",
-        severity="HIGH", target_id=payment_id, target_type="payment",
-        target_label=(payment or {}).get("plan_name", ""),
-        before={"وضعیت": (payment or {}).get("status", "pending")},
-        after={"وضعیت": "approved" if body.approved else "rejected"},
-        tags=["اشتراک", "رسید", "پنل_وب"],
-    )
-    return result
 
 
 @router.get("/subscription/payments/{payment_id}/receipt")
@@ -1826,6 +1816,190 @@ async def wa_subscription_receipt(
 @router.get("/subscription/discounts")
 async def wa_subscription_discounts(user=Depends(_perm("subscription.manage"))):
     return await subscription_api.discounts(admin=user)
+
+
+@router.patch("/subscription/settings")
+async def wa_subscription_settings(
+    body: subscription_api.SubscriptionSettingsBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.update_subscription_settings(body=body, admin=user)
+
+
+@router.post("/subscription/plans")
+async def wa_subscription_plan_add(
+    body: subscription_api.PlanBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.add_plan(body=body, admin=user)
+
+
+@router.put("/subscription/plans/{plan_id}")
+async def wa_subscription_plan_update(
+    plan_id: str,
+    body: subscription_api.PlanBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.update_plan(plan_id=plan_id, body=body, admin=user)
+
+
+@router.post("/subscription/plans/{plan_id}/toggle")
+async def wa_subscription_plan_toggle(
+    plan_id: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.toggle_plan(plan_id=plan_id, admin=user)
+
+
+@router.delete("/subscription/plans/{plan_id}")
+async def wa_subscription_plan_delete(
+    plan_id: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.delete_plan(plan_id=plan_id, admin=user)
+
+
+@router.post("/subscription/payments/{payment_id}/send-receipt")
+async def wa_subscription_send_receipt(
+    payment_id: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.send_receipt(payment_id=payment_id, admin=user)
+
+
+@router.get("/subscription/subscribers")
+async def wa_subscription_subscribers(
+    status: str = Query("active"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.subscribers(
+        status=status, skip=skip, limit=limit, search=search, admin=user)
+
+
+@router.get("/subscription/subscribers/{user_id}")
+async def wa_subscription_subscriber_detail(
+    user_id: int,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.subscriber_detail(user_id=user_id, admin=user)
+
+
+@router.get("/subscription/users/search")
+async def wa_subscription_user_search(
+    q: str = Query("", max_length=80),
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.search_users_for_grant(q=q, admin=user)
+
+
+@router.post("/subscription/subscribers/grant")
+async def wa_subscription_grant(
+    body: subscription_api.GrantBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.grant_subscription(body=body, admin=user)
+
+
+@router.post("/subscription/subscribers/grant-bulk")
+async def wa_subscription_grant_bulk(
+    body: subscription_api.BulkGrantBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.grant_subscription_bulk(body=body, admin=user)
+
+
+@router.post("/subscription/subscribers/{user_id}/revoke")
+async def wa_subscription_revoke(
+    user_id: int,
+    body: subscription_api.RevokeBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.revoke_subscription(
+        user_id=user_id, body=body, admin=user)
+
+
+@router.post("/subscription/discounts")
+async def wa_subscription_discount_add(
+    body: subscription_api.DiscountBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.add_discount(body=body, admin=user)
+
+
+@router.post("/subscription/discounts/{code}/toggle")
+async def wa_subscription_discount_toggle(
+    code: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.toggle_discount(code=code, admin=user)
+
+
+@router.delete("/subscription/discounts/{code}")
+async def wa_subscription_discount_delete(
+    code: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.delete_discount(code=code, admin=user)
+
+
+@router.post("/subscription/discounts/{code}/preview")
+async def wa_subscription_discount_preview(
+    code: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.preview_discount_campaign(code=code, admin=user)
+
+
+@router.post("/subscription/discounts/{code}/broadcast")
+async def wa_subscription_discount_broadcast(
+    code: str,
+    body: subscription_api.DiscountBroadcastBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.start_discount_broadcast(code=code, body=body, admin=user)
+
+
+@router.get("/subscription/discounts/{code}/broadcast/{bid}")
+async def wa_subscription_discount_broadcast_status(
+    code: str, bid: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.discount_broadcast_status(code=code, bid=bid, admin=user)
+
+
+@router.post("/subscription/discounts/{code}/broadcast/{bid}/cancel")
+async def wa_subscription_discount_broadcast_cancel(
+    code: str, bid: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.cancel_discount_broadcast(code=code, bid=bid, admin=user)
+
+
+@router.get("/subscription/discounts/{code}/broadcasts")
+async def wa_subscription_discount_broadcasts(
+    code: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.discount_broadcasts_list(code=code, admin=user)
+
+
+@router.get("/subscription/discounts/{code}/stats")
+async def wa_subscription_discount_stats(
+    code: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.discount_stats(code=code, admin=user)
+
+
+@router.put("/subscription/card")
+async def wa_subscription_card(
+    body: subscription_api.CardBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.update_card(body=body, admin=user)
 
 
 # ── AI Admin ───────────────────────────────────────────────────────
