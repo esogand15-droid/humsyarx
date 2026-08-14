@@ -117,6 +117,109 @@ async def reject_question(qid: str, admin=Depends(get_content_admin_user)):
         except Exception: pass
     return {"ok":True}
 
+# ── 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit) ──
+class QuestionPatch(BaseModel):
+    question: Optional[str] = None
+    options: Optional[List[str]] = None
+    correct: Optional[int] = None                    # ایندکس گزینه‌ی صحیح (۰-مبنا)
+    explanation: Optional[str] = None
+    difficulty: Optional[str] = None                 # easy | medium | hard
+    lesson: Optional[str] = None
+    topic: Optional[str] = None
+
+@router.patch("/questions/{qid}")
+async def patch_question(qid: str, body: QuestionPatch,
+                         admin=Depends(get_content_admin_user)):
+    """ویرایش سؤالِ در انتظار بازبینی — دقیقاً همان scope گیت approve/reject."""
+    q = await db.get_question_by_id(qid)
+    if not q: raise HTTPException(404)
+    await _deny_intake(q.get("intake",""), admin)
+    if q.get("approved"):
+        raise HTTPException(422, "فقط سؤال‌های در انتظار بازبینی قابل ویرایش‌اند")
+
+    updates = {}
+    if body.question is not None:
+        t = body.question.strip()
+        if len(t) < 5: raise HTTPException(422, "متن سؤال خیلی کوتاه است")
+        updates["question"] = t[:1000]
+    if body.lesson is not None: updates["lesson"] = body.lesson.strip()[:80]
+    if body.topic is not None: updates["topic"] = body.topic.strip()[:80]
+    if body.explanation is not None:
+        updates["explanation"] = body.explanation.strip()[:2000]
+    if body.difficulty is not None:
+        if body.difficulty not in ("easy","medium","hard"):
+            raise HTTPException(422, "سختی نامعتبر است")
+        updates["difficulty"] = body.difficulty
+    if body.options is not None:
+        ops = [str(o).strip()[:300] for o in body.options]
+        ops = [o for o in ops if o]
+        if not (2 <= len(ops) <= 6): raise HTTPException(422, "گزینه‌ها باید بین ۲ تا ۶ باشند")
+        updates["options"] = ops
+        # سازگاری: اگر ایندکس صحیحِ قبلی از محدوده‌ی جدید بیرون افتاد، clamp
+        cur = q.get("correct_answer", 0)
+        if isinstance(cur, int) and cur >= len(ops) and body.correct is None:
+            updates["correct_answer"] = 0
+    if body.correct is not None:
+        final_ops = updates.get("options", q.get("options", []))
+        if not (0 <= body.correct < len(final_ops)):
+            raise HTTPException(422, "گزینه‌ی صحیح خارج از محدوده است")
+        updates["correct_answer"] = body.correct
+
+    if not updates: raise HTTPException(422, "چیزی برای ویرایش نیست")
+    ok = await db.update_question(qid, updates)
+    if not ok: raise HTTPException(500, "ویرایش انجام نشد")
+    try:
+        await db.log_action(
+            admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
+            await db.get_actor_role_label(admin["id"]),
+            "ویرایش سؤال در انتظار بازبینی", "Questions", "admin", "WARNING",
+            str(qid), "question", f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
+            None, {k: (v if not isinstance(v, list) else f"{len(v)} گزینه")
+                     for k, v in updates.items()},
+            "", ["ویرایش_سؤال", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "changed": list(updates.keys())}
+
+# ── 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware + audit) ──
+class QuestionImportItem(BaseModel):
+    lesson: str = ""
+    topic: str = ""
+    difficulty: str = ""
+    question: str = ""
+    options: List[str] = []
+    correct: int = 0
+    explanation: str = ""
+
+class QuestionImportBody(BaseModel):
+    items: List[QuestionImportItem] = Field(default_factory=list, max_length=200)
+    approve: bool = False           # درج مستقیمِ تأییدشده؟ (پیش‌فرض: به صف بازبینی)
+
+@router.post("/questions/bulk-import")
+async def bulk_import_questions(body: QuestionImportBody, intake: Optional[str] = Query(None),
+                                admin=Depends(get_content_admin_user)):
+    """درون‌ریزی گروهی — تا ۲۰۰ سؤال؛ همان scope گیت approve/reject. آیتم‌های
+    معیوب رد و با متن خطا گزارش می‌شوند؛ بقیه درج می‌شوند."""
+    iv = resolve_content_intake(admin, intake)
+    if not body.items:
+        raise HTTPException(422, "فهرست سؤال‌ها خالی است")
+    res = await db.add_questions_bulk(
+        [it.model_dump() for it in body.items],
+        creator=admin["id"], intake=iv, auto_approve=body.approve)
+    try:
+        await db.log_action(
+            admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
+            await db.get_actor_role_label(admin["id"]),
+            "درون‌ریزی گروهی سؤال", "Questions", "admin", "WARNING",
+            "", "question_bank", f"ورودی {iv or 'سراسری'}",
+            None, {"درج": res["inserted"], "ناموفق": len(res["failed"]),
+                   "حالت": "تأیید مستقیم" if body.approve else "صف بازبینی"},
+            "", ["درون‌ریزی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "inserted": res["inserted"], "failed": res["failed"],
+            "approve": body.approve, "intake": iv}
+
 @router.get("/schedule")
 async def schedule_list(admin=Depends(GLOBAL_USER), stype: Optional[str]=Query(None)):
     items=await db.get_schedules(stype=stype, upcoming=False)
