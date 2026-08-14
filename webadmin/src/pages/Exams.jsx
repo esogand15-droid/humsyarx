@@ -104,7 +104,7 @@ function ExamsTab() {
       {confirm && (
         <Confirm text={`حذف آزمون «${confirm.lesson}» (${confirm.date})؟`} danger
                  onYes={async () => {
-                   try { await api.examDelete(confirm.id); toast('حذف شد'); setConfirm(null); load(); }
+                   try { const r = await api.examDelete(confirm.id); toast(`آزمون لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); setConfirm(null); load(); }
                    catch (e) { toast(errText(e), 'err'); setConfirm(null); }
                  }}
                  onNo={() => setConfirm(null)} />
@@ -139,9 +139,8 @@ function ExamModal({ row, onClose }) {
   const submit = async () => {
     setBusy(true);
     try {
-      if (row) await api.examUpdate(row.id, f);
-      else await api.examCreate(f);
-      toast(row ? 'ویرایش شد ✅' : 'آزمون ساخته شد ✅ — اطلاع‌رسانی خودکار ۷/۳/۱ روز قبل فعال است'); onClose(true);
+      const r = row ? await api.examUpdate(row.id, f) : await api.examCreate(f);
+      toast(`${row ? 'ویرایش آزمون' : 'آزمون جدید'} ثبت و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد ✅`); onClose(true);
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -244,6 +243,8 @@ function GradesTab() {
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [editGrade, setEditGrade] = useState(null);
+  const [deleteGrade, setDeleteGrade] = useState(null);
   const LIMIT = 30;
 
   const load = async () => {
@@ -262,12 +263,16 @@ function GradesTab() {
   const cols = [
     { k: 'student_name', label: 'دانشجو', render: r => (
       <div><b style={{ color: 'var(--txt)' }}>{r.student_name || '—'}</b>
-        <div className="muted code">#{r.student_id}</div></div>) },
+        <div className="muted code">{r.student_number || `#${r.student_id}`}</div></div>) },
     { k: 'lesson', label: 'درس' },
     { k: 'exam_title', label: 'عنوان آزمون' },
     { k: 'exam_date', label: 'تاریخ', render: r => <span className="code">{r.exam_date}</span> },
     { k: 'score', label: 'نمره', render: r => (
       <B kind={r.score >= 10 ? 'ok' : 'bad'}>{Number(r.score).toLocaleString('fa')}</B>) },
+    { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
+      <button className="btn sm" onClick={() => setEditGrade(r)}>✏️ اصلاح</button>
+      <button className="btn sm danger" onClick={() => setDeleteGrade(r)}>🗑</button>
+    </div> },
   ];
   return (
     <>
@@ -292,8 +297,28 @@ function GradesTab() {
         </>
       )}
       {bulkOpen && <GradeBulkModal onClose={(ch) => { setBulkOpen(false); if (ch) { setSkip(0); load(); } }} />}
+      {editGrade && <GradeEditModal row={editGrade} onClose={(ok) => { setEditGrade(null); if (ok) load(); }} />}
+      {deleteGrade && <Confirm danger text={`حذف نمره ${deleteGrade.student_name} در «${deleteGrade.lesson} — ${deleteGrade.exam_title}»؟ به دانشجو اطلاع داده می‌شود.`}
+        onYes={async () => { const g = deleteGrade; setDeleteGrade(null); try { await api.gradeDelete(g.id); toast('نمره حذف و به دانشجو اطلاع داده شد'); load(); } catch (e) { toast(errText(e), 'err'); } }}
+        onNo={() => setDeleteGrade(null)} />}
     </>
   );
+}
+
+function GradeEditModal({ row, onClose }) {
+  const [score, setScore] = useState(row.score);
+  const [busy, setBusy] = useState(false);
+  return <Modal title={`✏️ اصلاح نمره — ${row.student_name}`} onClose={() => onClose(false)}>
+    <div className="grid" style={{ gap: 10 }}>
+      <div className="panel panel-pad"><b>{row.lesson}</b> — {row.exam_title}<div className="muted">نمره فعلی: {Number(row.score).toLocaleString('fa')}</div></div>
+      <label className="fld"><span>نمره جدید از ۲۰</span><input className="inp" type="number" min="0" max="20" step="0.25" value={score} onChange={e => setScore(e.target.value)} /></label>
+      <div className="muted">پس از ذخیره، اصلاح نمره در Inbox و پیام ربات دانشجو اعلام می‌شود.</div>
+      <div className="row"><button className="btn primary" disabled={busy || Number(score) < 0 || Number(score) > 20 || score === ''} onClick={async () => {
+        setBusy(true); try { await api.gradeUpdate(row.id, Number(score)); toast('نمره اصلاح و به دانشجو اطلاع داده شد ✅'); onClose(true); }
+        catch (e) { toast(errText(e), 'err'); setBusy(false); }
+      }}>ثبت اصلاح</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+    </div>
+  </Modal>;
 }
 
 function GradeBulkModal({ onClose }) {

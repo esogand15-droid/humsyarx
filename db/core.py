@@ -2223,6 +2223,34 @@ class DBCore:
         return await self.grades.find({'student_id': uid}).sort('exam_date', -1).to_list(200)
 
 
+    async def grade_get(self, grade_id: str):
+        try:
+            return await self.grades.find_one({'_id': ObjectId(grade_id)})
+        except Exception:
+            return None
+
+
+    async def grade_update_score(self, grade_id: str, score: float,
+                                 entered_by: int) -> bool:
+        try:
+            result = await self.grades.update_one(
+                {'_id': ObjectId(grade_id)},
+                {'$set': {'score': score, 'max_score': 20,
+                          'entered_by': entered_by,
+                          'updated_at': datetime.now().isoformat()}})
+            return bool(getattr(result, 'matched_count', 0))
+        except Exception:
+            return False
+
+
+    async def grade_delete(self, grade_id: str) -> bool:
+        try:
+            result = await self.grades.delete_one({'_id': ObjectId(grade_id)})
+            return bool(getattr(result, 'deleted_count', 0))
+        except Exception:
+            return False
+
+
     async def grade_list_recent(self, skip: int = 0, limit: int = 10, intake: str = None) -> list:
         """
         FIX جدید: مرور نمرات ثبت‌شده‌ی اخیر — اگه intake داده بشه (برای

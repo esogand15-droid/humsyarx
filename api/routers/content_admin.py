@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from api.auth import get_content_admin_user, get_content_global_user, resolve_content_intake
 from api.telegram_send import upload_and_get_file_id
+from api.routers.admin_panel import _audit
 from database import db
 
 router = APIRouter()
@@ -15,15 +16,34 @@ GLOBAL_USER = get_content_global_user  # بخش‌های بدون scope (schedul
 
 
 async def _deny_intake(item_intake: str, admin: dict):
-    """۴۰۳ اگر آیتم خارج از scope کاربر باشد (resolve مستقیم از DB)."""
+    """۴۰۳ اگر آیتم خارج از scope کاربر باشد.
+
+    wrapperهای permission-based می‌توانند scope حل‌شده را روی admin بگذارند؛
+    مسیرهای قدیمی بدون آن همچنان از منبع واحد db استفاده می‌کنند.
+    """
+    scope = admin.get("_scope")
+    if scope:
+        if scope.get("kind") == "global":
+            return
+        if (item_intake or "") == (scope.get("intake") or ""):
+            return
+        raise HTTPException(403, "intake_out_of_scope")
     if not await db.can_access_intake(admin["id"], item_intake or ''):
         raise HTTPException(403, "intake_out_of_scope")
 
 
 async def _read_intake(item_intake: str, admin: dict) -> bool:
-    """🌊 C1.5 — گیت «مشاهده» (§۲۲ spec: سراسری = read-only برای scoped).
-    خروجی: True = فقط‌خواندنی (scoped روی آیتم سراسری)؛ False = قابل‌نوشتن.
-    403 اگر آیتم خارج از scope دید کاربر (ورودی دیگر) باشد."""
+    """🌊 C1.5 — گیت مشاهده؛ سراسری برای scoped فقط‌خواندنی است."""
+    scope = admin.get("_scope")
+    if scope:
+        if scope.get("kind") == "global":
+            return False
+        own = scope.get("intake") or ""
+        if (item_intake or "") == own:
+            return False
+        if (item_intake or "") == "":
+            return True
+        raise HTTPException(403, "intake_out_of_scope")
     if await db.can_access_intake(admin["id"], item_intake or ''):
         return False
     scope = admin.get("_scope") or {}
@@ -93,13 +113,14 @@ async def approve_question(qid: str, admin=Depends(get_content_admin_user)):
     if not q: raise HTTPException(404)
     await _deny_intake(q.get("intake",""), admin)
     await db.approve_question(qid)
-    if q.get("source")=="webapp" and q.get("creator_id"):
-        try:
-            notif=db.client["medicalbot"]["bot_notifications"]
-            await notif.insert_one({"type":"question_approved","chat_id":q["creator_id"],
-                "text":f"✅ <b>سوال شما تأیید شد!</b>\n📚 {q.get('lesson','')} — {q.get('topic','')}",
-                "sent":False,"created_at":datetime.now().isoformat()})
-        except Exception: pass
+    await _audit(
+        admin, "تأیید سؤال پیشنهادی", "Questions", severity="INFO",
+        target_id=qid, target_type="question",
+        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
+        before={"approved": False}, after={"approved": True},
+        tags=["سؤال", "تأیید", "پنل_وب"],
+    )
+    # db.approve_question منبع واحد پاداش + Inbox + DM طراح است.
     return {"ok":True}
 
 @router.post("/questions/{qid}/reject")
@@ -108,13 +129,21 @@ async def reject_question(qid: str, admin=Depends(get_content_admin_user)):
     if not q: raise HTTPException(404)
     await _deny_intake(q.get("intake",""), admin)
     await db.delete_question(qid)
+    await _audit(
+        admin, "رد و حذف سؤال پیشنهادی", "Questions", severity="WARNING",
+        target_id=qid, target_type="question",
+        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
+        before={"approved": False, "question": q.get("question", "")[:300]},
+        after={"deleted": True}, tags=["سؤال", "رد", "پنل_وب"],
+    )
     if q.get("source")=="webapp" and q.get("creator_id"):
-        try:
-            notif=db.client["medicalbot"]["bot_notifications"]
-            await notif.insert_one({"type":"question_rejected","chat_id":q["creator_id"],
-                "text":f"❌ <b>سوال شما رد شد</b>\n📚 {q.get('lesson','')} — {q.get('topic','')}",
-                "sent":False,"created_at":datetime.now().isoformat()})
-        except Exception: pass
+        await db.notify_user(
+            q["creator_id"], "question_rejected", title="❌ سؤالت رد شد",
+            body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
+            link="/learn/my-questions", dm=(
+                f"❌ <b>سؤالت رد شد</b>\n\n"
+                f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
+        )
     return {"ok":True}
 
 # ── 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit) ──
@@ -234,26 +263,34 @@ class ScheduleCreate(BaseModel):
 
 @router.post("/schedule")
 async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
-    if body.type not in ("class","exam","makeup"): raise HTTPException(422)
-    if body.flex_type not in ("fixed","flexible"): raise HTTPException(422,"نوع زمان‌بندی نامعتبر")
-    try: datetime.strptime(body.date,"%Y-%m-%d")
-    except ValueError: raise HTTPException(422,"فرمت تاریخ YYYY-MM-DD")
-    group = db.normalize_group(body.group) or "هر دو"
-    await db.add_schedule(stype=body.type,lesson=body.lesson,teacher=body.teacher,
-        date=body.date,time=body.time,location=body.location,notes=body.note,
-        group=group,flex_type=body.flex_type)
+    if body.type not in ("class", "exam", "makeup"):
+        raise HTTPException(422, "نوع برنامه نامعتبر است")
+    if body.flex_type not in ("fixed", "flexible"):
+        raise HTTPException(422, "نوع زمان‌بندی نامعتبر")
     try:
-        notif_type = {"exam": "exam", "makeup": "makeup"}.get(body.type, "schedule")
-        users=await db.notif_users(notif_type, group=group)
-        notif=db.client["medicalbot"]["bot_notifications"]
-        icon={"class":"🏫","exam":"📝","makeup":"🔄"}.get(body.type,"📅")
-        type_fa={"class":"کلاس","exam":"امتحان","makeup":"جبرانی"}.get(body.type,"")
-        docs=[{"type":"schedule_notif","chat_id":u["user_id"],
-            "text":f"{icon} <b>{type_fa} جدید</b>\n📚 {body.lesson}" + (f"\n👨‍🏫 {body.teacher}" if body.teacher else "") + f"\n📅 {body.date}",
-            "sent":False,"created_at":datetime.now().isoformat()} for u in users]
-        if docs: await notif.insert_many(docs)
-    except Exception: pass
-    return {"ok":True}
+        datetime.strptime(body.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
+    group = db.normalize_group(body.group) or "هر دو"
+    sid = await db.add_schedule(
+        stype=body.type, lesson=body.lesson.strip(), teacher=body.teacher.strip(),
+        date=body.date, time=body.time, location=body.location.strip(),
+        notes=body.note.strip(), group=group, flex_type=body.flex_type)
+    item = await db.get_schedule_by_id(str(sid)) or {
+        "_id": sid, "type": body.type, "lesson": body.lesson.strip(),
+        "teacher": body.teacher.strip(), "date": body.date, "time": body.time,
+        "location": body.location.strip(), "notes": body.note.strip(), "group": group,
+    }
+    notice = await db.schedule_notify_event(item, "created")
+    await _audit(
+        admin, "ایجاد برنامه آموزشی", "Schedules", severity="INFO",
+        target_id=str(sid), target_type="schedule", target_label=body.lesson.strip(),
+        after={"type": body.type, "date": body.date, "time": body.time,
+               "group": group, "notified": notice.get("notified", 0)},
+        tags=["برنامه", body.type, "پنل_وب"],
+    )
+    return {"ok": True, "id": str(sid), "notified": notice.get("notified", 0)}
+
 
 class ScheduleUpdate(BaseModel):
     lesson: str; teacher: str=""; date: str; time: str=""; group: str="هر دو"
@@ -261,18 +298,55 @@ class ScheduleUpdate(BaseModel):
 
 @router.patch("/schedule/{sid}")
 async def edit_schedule(sid: str, body: ScheduleUpdate, admin=Depends(GLOBAL_USER)):
-    try: datetime.strptime(body.date,"%Y-%m-%d")
-    except ValueError: raise HTTPException(422,"فرمت تاریخ YYYY-MM-DD")
-    ok = await db.update_schedule_full(sid, body.lesson, body.teacher, body.date, body.time,
-        body.location, body.note, body.group, body.flex_type)
-    if not ok: raise HTTPException(404)
-    return {"ok":True}
+    try:
+        datetime.strptime(body.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
+    old = await db.get_schedule_by_id(sid)
+    if not old:
+        raise HTTPException(404, "برنامه پیدا نشد")
+    group = db.normalize_group(body.group) or "هر دو"
+    ok = await db.update_schedule_full(
+        sid, body.lesson.strip(), body.teacher.strip(), body.date, body.time,
+        body.location.strip(), body.note.strip(), group, body.flex_type)
+    if not ok:
+        raise HTTPException(404, "برنامه پیدا نشد")
+    item = await db.get_schedule_by_id(sid) or {
+        **old, "lesson": body.lesson.strip(), "teacher": body.teacher.strip(),
+        "date": body.date, "time": body.time, "location": body.location.strip(),
+        "notes": body.note.strip(), "group": group, "flex_type": body.flex_type,
+    }
+    notice = await db.schedule_notify_event(item, "updated")
+    await _audit(
+        admin, "ویرایش برنامه آموزشی", "Schedules", severity="WARNING",
+        target_id=sid, target_type="schedule", target_label=body.lesson.strip(),
+        before={"lesson": old.get("lesson"), "date": old.get("date"),
+                "time": old.get("time"), "group": old.get("group")},
+        after={"lesson": body.lesson.strip(), "date": body.date,
+               "time": body.time, "group": group,
+               "notified": notice.get("notified", 0)},
+        tags=["برنامه", old.get("type", ""), "پنل_وب"],
+    )
+    return {"ok": True, "notified": notice.get("notified", 0)}
+
 
 @router.delete("/schedule/{sid}")
 async def del_schedule(sid: str, admin=Depends(GLOBAL_USER)):
-    try: await db.delete_schedule(sid)
-    except Exception: raise HTTPException(404)
-    return {"ok":True}
+    old = await db.get_schedule_by_id(sid)
+    if not old:
+        raise HTTPException(404, "برنامه پیدا نشد")
+    await db.delete_schedule(sid)
+    notice = await db.schedule_notify_event(old, "cancelled")
+    await _audit(
+        admin, "حذف و لغو برنامه آموزشی", "Schedules", severity="HIGH",
+        target_id=sid, target_type="schedule", target_label=old.get("lesson", ""),
+        before={"type": old.get("type"), "date": old.get("date"),
+                "time": old.get("time"), "group": old.get("group")},
+        after={"deleted": True, "notified": notice.get("notified", 0)},
+        tags=["برنامه", "لغو", old.get("type", ""), "پنل_وب"],
+    )
+    return {"ok": True, "notified": notice.get("notified", 0)}
+
 
 # ── 🔄 اعلام تغییر زمان کلاس منعطف (flex) ──
 
@@ -288,25 +362,29 @@ class FlexChange(BaseModel):
 
 @router.post("/schedule/{sid}/flex-change")
 async def flex_change(sid: str, body: FlexChange, admin=Depends(GLOBAL_USER)):
-    try: datetime.strptime(body.date,"%Y-%m-%d")
-    except ValueError: raise HTTPException(422,"فرمت تاریخ YYYY-MM-DD")
-    sched = await db.get_schedule_by_id(sid)
-    if not sched: raise HTTPException(404)
-    ok = await db.update_schedule_time(sid, body.date, body.time, body.note)
-    if not ok: raise HTTPException(500)
     try:
-        users=await db.notif_users("schedule", group=sched.get("group","هر دو"))
-        notif=db.client["medicalbot"]["bot_notifications"]
-        text=(f"🔄 <b>تغییر زمان کلاس</b>\n\n📚 {sched.get('lesson','')}\n"
-              f"👨‍🏫 {sched.get('teacher','')}\n\n📅 <b>زمان جدید:</b> {body.date}  ⏰ {body.time}\n"
-              f"📍 {sched.get('location','')}" + (f"\n\n📝 {body.note}" if body.note else ""))
-        docs=[{"type":"schedule_flex_change","chat_id":u["user_id"],"text":text,
-            "sent":False,"created_at":datetime.now().isoformat()} for u in users]
-        if docs: await notif.insert_many(docs)
-        sent_count = len(docs)
-    except Exception:
-        sent_count = 0
-    return {"ok":True, "notified": sent_count}
+        datetime.strptime(body.date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
+    sched = await db.get_schedule_by_id(sid)
+    if not sched:
+        raise HTTPException(404, "برنامه پیدا نشد")
+    ok = await db.update_schedule_time(sid, body.date, body.time, body.note)
+    if not ok:
+        raise HTTPException(500, "تغییر زمان ذخیره نشد")
+    item = {**sched, "date": body.date, "time": body.time,
+            "flex_note": body.note}
+    notice = await db.schedule_notify_event(item, "time_changed")
+    await _audit(
+        admin, "اعلام تغییر زمان برنامه", "Schedules", severity="WARNING",
+        target_id=sid, target_type="schedule", target_label=sched.get("lesson", ""),
+        before={"date": sched.get("date"), "time": sched.get("time")},
+        after={"date": body.date, "time": body.time,
+               "notified": notice.get("notified", 0)},
+        tags=["برنامه", "تغییر_زمان", sched.get("type", ""), "پنل_وب"],
+    )
+    return {"ok": True, "notified": notice.get("notified", 0)}
+
 
 @router.get("/faq")
 async def faq_list(admin=Depends(get_content_admin_user)):
@@ -319,12 +397,21 @@ class FaqCreate(BaseModel):
 
 @router.post("/faq")
 async def add_faq(body: FaqCreate, admin=Depends(get_content_admin_user)):
-    await db.faq_add(body.question, body.answer, body.category); return {"ok":True}
+    fid = await db.faq_add(body.question, body.answer, body.category)
+    await _audit(admin, "ایجاد پرسش متداول", "Content", severity="INFO",
+        target_id=str(fid or ""), target_type="faq", target_label=body.question[:300],
+        after={"category": body.category}, tags=["FAQ", "ایجاد", "پنل_وب"])
+    return {"ok":True}
 
 @router.delete("/faq/{fid}")
 async def del_faq(fid: str, admin=Depends(get_content_admin_user)):
-    try: await db.faq_delete(fid)
-    except Exception: raise HTTPException(404)
+    old = await db.faq_get(fid)
+    if not old: raise HTTPException(404, "پرسش متداول پیدا نشد")
+    await db.faq_delete(fid)
+    await _audit(admin, "حذف پرسش متداول", "Content", severity="HIGH",
+        target_id=fid, target_type="faq", target_label=old.get("question", "")[:300],
+        before={"category": old.get("category")}, after={"deleted": True},
+        tags=["FAQ", "حذف", "پنل_وب"])
     return {"ok":True}
 
 class GradeBulk(BaseModel):
@@ -332,16 +419,17 @@ class GradeBulk(BaseModel):
 
 @router.post("/grades/bulk")
 async def bulk_grades(body: GradeBulk, admin=Depends(GLOBAL_USER)):
-    saved = await db.grade_bulk_upsert(entries=body.entries, lesson=body.lesson,
-        exam_title=body.exam_title, exam_date=body.exam_date, entered_by=admin["id"])
+    from api.routers import academic_admin as academic_api
     try:
-        notif = db.client["medicalbot"]["bot_notifications"]
-        docs = [{"type":"grade_notif","chat_id":e["student_id"],
-            "text":f"📊 <b>نمره‌ی جدید ثبت شد</b>\n📚 {body.lesson} — {body.exam_title}\n🎯 نمره: {e['score']}",
-            "sent":False,"created_at":datetime.now().isoformat()} for e in saved]
-        if docs: await notif.insert_many(docs)
-    except Exception: pass
-    return {"ok":True,"updated":len(saved)}
+        entries = [academic_api.GradeEntry(
+            user_id=e.get("user_id", e.get("student_id")), score=e.get("score"))
+            for e in body.entries]
+        payload = academic_api.GradeBulkCreate(
+            entries=entries, lesson=body.lesson,
+            exam_title=body.exam_title, exam_date=body.exam_date)
+    except Exception as exc:
+        raise HTTPException(422, f"داده نمرات نامعتبر است: {exc}")
+    return await academic_api.grades_bulk_create(body=payload, admin=admin)
 
 @router.get("/grades/recent")
 async def grades_recent(admin=Depends(GLOBAL_USER), skip: int=Query(0), limit: int=Query(30),
@@ -372,27 +460,19 @@ async def grades_find_student(name: str = Query(...), admin=Depends(GLOBAL_USER)
         "student_id":s.get("student_id",""),"group":s.get("group","")} for s in students]}
 
 class GradeUpdate(BaseModel):
-    score: float
+    score: float = Field(ge=0, le=20)
 
 @router.patch("/grades/{gid}")
 async def edit_grade(gid: str, body: GradeUpdate, admin=Depends(GLOBAL_USER)):
-    from bson import ObjectId
-    try:
-        r = await db.grades.update_one({"_id":ObjectId(gid)}, {"$set":{"score":body.score}})
-    except Exception:
-        raise HTTPException(422,"شناسه نامعتبر")
-    if r.matched_count == 0: raise HTTPException(404)
-    return {"ok":True}
+    # همان business entry point امنی که Web Admin مصرف می‌کند.
+    from api.routers import academic_admin as academic_api
+    return await academic_api.grade_update(
+        grade_id=gid, body=academic_api.GradeUpdate(score=body.score), admin=admin)
 
 @router.delete("/grades/{gid}")
 async def del_grade(gid: str, admin=Depends(GLOBAL_USER)):
-    from bson import ObjectId
-    try:
-        r = await db.grades.delete_one({"_id":ObjectId(gid)})
-    except Exception:
-        raise HTTPException(422,"شناسه نامعتبر")
-    if r.deleted_count == 0: raise HTTPException(404)
-    return {"ok":True}
+    from api.routers import academic_admin as academic_api
+    return await academic_api.grade_delete(grade_id=gid, admin=admin)
 
 # ══════════════════════════════════════════════
 # 🧬 علوم پایه — ترم‌ها / درس‌ها / جلسات / محتوا
@@ -423,18 +503,63 @@ async def bs_lessons(term: str = Query(...), admin=Depends(get_content_admin_use
 class BsLessonCreate(BaseModel):
     term: str; name: str = Field(min_length=1); teacher: str = ""; intake: str = ""
 
+
+class BsLessonUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    teacher: Optional[str] = Field(default=None, max_length=120)
+
+
 @router.post("/basic-science/lessons")
 async def bs_add_lesson_ep(body: BsLessonCreate, admin=Depends(get_content_admin_user)):
     if body.term not in TERMS: raise HTTPException(422, "ترم نامعتبر")
     iv = resolve_content_intake(admin, body.intake)
     r = await db.bs_add_lesson(body.term, body.name.strip(), body.teacher.strip(), intake=iv)
     if r is None: raise HTTPException(409, "این درس قبلاً در این ترم ثبت شده")
+    await _audit(admin, "ایجاد درس علوم پایه", "Content", severity="INFO",
+        target_id=str(r), target_type="lesson", target_label=body.name.strip(),
+        after={"term": body.term, "teacher": body.teacher.strip(), "intake": iv},
+        tags=["محتوا", "ایجاد_درس", "پنل_وب"])
     return {"ok":True, "id":str(r)}
+
+
+@router.patch("/basic-science/lessons/{lid}")
+async def bs_edit_lesson_ep(lid: str, body: BsLessonUpdate,
+                            admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_lesson(lid)
+    if not old:
+        raise HTTPException(404, "درس پیدا نشد")
+    await _deny_intake(old.get("intake", ""), admin)
+    updates = {}
+    if body.name is not None:
+        updates["name"] = body.name.strip()
+    if body.teacher is not None:
+        updates["teacher"] = body.teacher.strip()
+    if not updates:
+        raise HTTPException(422, "چیزی برای ویرایش نیست")
+    ok = await db.bs_update_lesson(lid, updates)
+    if not ok:
+        raise HTTPException(500, "ویرایش درس انجام نشد")
+    await _audit(
+        admin, "ویرایش درس علوم پایه", "Content", severity="WARNING",
+        target_id=lid, target_type="lesson", target_label=updates.get("name", old.get("name", "")),
+        before={k: old.get(k, "") for k in updates}, after=updates,
+        tags=["محتوا", "ویرایش_درس", "پنل_وب"],
+    )
+    return {"ok": True, "changed": list(updates)}
+
 
 @router.delete("/basic-science/lessons/{lid}")
 async def bs_del_lesson_ep(lid: str, admin=Depends(get_content_admin_user)):
-    await _deny_intake(await db.lesson_intake(lid), admin)
-    await db.bs_delete_lesson(lid); return {"ok":True}
+    old = await db.bs_get_lesson(lid)
+    if not old: raise HTTPException(404, "درس پیدا نشد")
+    await _deny_intake(old.get("intake", ""), admin)
+    await db.bs_delete_lesson(lid)
+    await _audit(admin, "حذف درس علوم پایه", "Content", severity="HIGH",
+        target_id=lid, target_type="lesson", target_label=old.get("name", ""),
+        before={"term": old.get("term"), "teacher": old.get("teacher"),
+                "intake": old.get("intake", "")}, after={"deleted": True},
+        tags=["محتوا", "حذف_درس", "پنل_وب"])
+    return {"ok":True}
 
 @router.get("/basic-science/lessons/{lid}/sessions")
 async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
@@ -454,22 +579,74 @@ async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
         "intake":s.get("intake") or "", "is_fork":bool(s.get("fork_of"))} for s in items]}
 
 class BsSessionCreate(BaseModel):
-    number: int; topic: str = Field(min_length=1); teacher: str = ""
+    number: int = Field(ge=1, le=10000)
+    topic: str = Field(min_length=1, max_length=200)
+    teacher: str = Field(default="", max_length=120)
+
+
+class BsSessionUpdate(BaseModel):
+    number: Optional[int] = Field(default=None, ge=1, le=10000)
+    topic: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    teacher: Optional[str] = Field(default=None, max_length=120)
+
 
 @router.post("/basic-science/lessons/{lid}/sessions")
 async def bs_add_session_ep(lid: str, body: BsSessionCreate, admin=Depends(get_content_admin_user)):
     await _deny_intake(await db.lesson_intake(lid), admin)
     sid = await db.bs_add_session(lid, body.number, body.topic.strip(), body.teacher.strip())
+    await _audit(admin, "ایجاد جلسه علوم پایه", "Content", severity="INFO",
+        target_id=str(sid), target_type="session",
+        target_label=f"جلسه {body.number} — {body.topic.strip()}",
+        after={"lesson_id": lid, "number": body.number, "teacher": body.teacher.strip()},
+        tags=["محتوا", "ایجاد_جلسه", "پنل_وب"])
     return {"ok":True, "id":sid}
+
+
+@router.patch("/basic-science/sessions/{sid}")
+async def bs_edit_session_ep(sid: str, body: BsSessionUpdate,
+                             admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_session(sid)
+    if not old:
+        raise HTTPException(404, "جلسه پیدا نشد")
+    await _deny_intake(await db.session_intake(sid), admin)
+    updates = {}
+    if body.number is not None:
+        updates["number"] = body.number
+    if body.topic is not None:
+        updates["topic"] = body.topic.strip()
+    if body.teacher is not None:
+        updates["teacher"] = body.teacher.strip()
+    if not updates:
+        raise HTTPException(422, "چیزی برای ویرایش نیست")
+    ok = await db.bs_update_session(sid, updates)
+    if not ok:
+        raise HTTPException(500, "ویرایش جلسه انجام نشد")
+    await _audit(
+        admin, "ویرایش جلسه علوم پایه", "Content", severity="WARNING",
+        target_id=sid, target_type="session",
+        target_label=f"جلسه {updates.get('number', old.get('number',''))} — {updates.get('topic', old.get('topic',''))}",
+        before={k: old.get(k, "") for k in updates}, after=updates,
+        tags=["محتوا", "ویرایش_جلسه", "پنل_وب"],
+    )
+    return {"ok": True, "changed": list(updates)}
+
 
 @router.delete("/basic-science/sessions/{sid}")
 async def bs_del_session_ep(sid: str, admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_session(sid)
+    if not old: raise HTTPException(404, "جلسه پیدا نشد")
     await _deny_intake(await db.session_intake(sid), admin)
     # 🍴 Q1 — حذف baseای که fork دارد ⇒ orphan؛ با 409 مسدود می‌شود
     if await db.bs_session_has_forks(sid):
         raise HTTPException(409,
             "این جلسه نسخه‌ی اختصاصی (fork) دارد؛ ابتدا نسخه‌ها را بازگردانید")
-    await db.bs_delete_session(sid); return {"ok":True}
+    await db.bs_delete_session(sid)
+    await _audit(admin, "حذف جلسه علوم پایه", "Content", severity="HIGH",
+        target_id=sid, target_type="session",
+        target_label=f"جلسه {old.get('number','')} — {old.get('topic','')}",
+        before={"lesson_id": old.get("lesson_id"), "teacher": old.get("teacher")},
+        after={"deleted": True}, tags=["محتوا", "حذف_جلسه", "پنل_وب"])
+    return {"ok":True}
 
 @router.get("/basic-science/sessions/{sid}/content")
 async def bs_content_ep(sid: str, admin=Depends(get_content_admin_user)):
@@ -494,12 +671,24 @@ async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str =
         file.content_type or "application/octet-stream")
     if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
     cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip())
+    await _audit(admin, "افزودن فایل جلسه", "Content", severity="INFO",
+        target_id=str(cid), target_type="content_item",
+        target_label=description.strip() or (file.filename or "file"),
+        after={"session_id": sid, "type": ctype, "extra_info": extra_info.strip()},
+        tags=["محتوا", "افزودن_فایل", "پنل_وب"])
     return {"ok":True, "id":str(cid)}
 
 @router.delete("/basic-science/content/{cid}")
 async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_content_item(cid)
+    if not old: raise HTTPException(404, "فایل پیدا نشد")
     await _deny_intake(await db.content_intake(cid), admin)
-    await db.bs_delete_content(cid); return {"ok":True}
+    await db.bs_delete_content(cid)
+    await _audit(admin, "حذف فایل جلسه", "Content", severity="HIGH",
+        target_id=cid, target_type="content_item", target_label=old.get("description", ""),
+        before={"session_id": old.get("session_id"), "type": old.get("type")},
+        after={"deleted": True}, tags=["محتوا", "حذف_فایل", "پنل_وب"])
+    return {"ok":True}
 
 # ══════════════════════════════════════════════
 # 📖 رفرنس‌ها — موضوع‌ها / کتاب‌ها / فایل‌ها
@@ -524,17 +713,76 @@ async def ref_subjects_ep(admin=Depends(get_content_admin_user),
 class RefSubjectCreate(BaseModel):
     name: str = Field(min_length=1); intake: str = ""
 
+
+class RefNameUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
+class ReorderBody(BaseModel):
+    direction: str = Field(pattern="^(up|down)$")
+
+
 @router.post("/references/subjects")
 async def ref_add_subject_ep(body: RefSubjectCreate, admin=Depends(get_content_admin_user)):
     iv = resolve_content_intake(admin, body.intake)
     r = await db.ref_add_subject(body.name.strip(), intake=iv)
     if r is None: raise HTTPException(409, "این موضوع قبلاً ثبت شده")
+    await _audit(admin, "ایجاد موضوع رفرنس", "Content", severity="INFO",
+        target_id=str(r), target_type="reference_subject", target_label=body.name.strip(),
+        after={"intake": iv}, tags=["رفرنس", "ایجاد", "پنل_وب"])
     return {"ok":True, "id":str(r)}
+
+
+@router.patch("/references/subjects/{sid}")
+async def ref_edit_subject_ep(sid: str, body: RefNameUpdate,
+                              admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_subject(sid)
+    if not old:
+        raise HTTPException(404, "موضوع رفرنس پیدا نشد")
+    await _deny_intake(old.get("intake", ""), admin)
+    name = body.name.strip()
+    ok = await db.ref_update_subject(sid, {"name": name})
+    if not ok:
+        raise HTTPException(500, "ویرایش موضوع انجام نشد")
+    await _audit(
+        admin, "ویرایش نام موضوع رفرنس", "Content", severity="WARNING",
+        target_id=sid, target_type="reference_subject", target_label=name,
+        before={"name": old.get("name", "")}, after={"name": name},
+        tags=["رفرنس", "ویرایش", "پنل_وب"],
+    )
+    return {"ok": True}
+
+
+@router.post("/references/subjects/{sid}/reorder")
+async def ref_reorder_subject_ep(sid: str, body: ReorderBody,
+                                 admin=Depends(get_content_admin_user)):
+    item = await db.ref_get_subject(sid)
+    if not item:
+        raise HTTPException(404, "موضوع رفرنس پیدا نشد")
+    await _deny_intake(item.get("intake", ""), admin)
+    fn = db.reorder_up if body.direction == "up" else db.reorder_down
+    ok = await fn("ref_subjects", sid, {"intake": item.get("intake") or ""})
+    if ok:
+        await _audit(
+            admin, "تغییر ترتیب موضوع رفرنس", "Content", severity="INFO",
+            target_id=sid, target_type="reference_subject",
+            target_label=item.get("name", ""), after={"direction": body.direction},
+            tags=["رفرنس", "ترتیب", "پنل_وب"],
+        )
+    return {"ok": bool(ok)}
+
 
 @router.delete("/references/subjects/{sid}")
 async def ref_del_subject_ep(sid: str, admin=Depends(get_content_admin_user)):
-    await _deny_intake(await db.ref_subject_intake(sid), admin)
-    await db.ref_delete_subject(sid); return {"ok":True}
+    old = await db.ref_get_subject(sid)
+    if not old: raise HTTPException(404, "موضوع رفرنس پیدا نشد")
+    await _deny_intake(old.get("intake", ""), admin)
+    await db.ref_delete_subject(sid)
+    await _audit(admin, "حذف موضوع رفرنس", "Content", severity="HIGH",
+        target_id=sid, target_type="reference_subject", target_label=old.get("name", ""),
+        before={"intake": old.get("intake", "")}, after={"deleted": True},
+        tags=["رفرنس", "حذف", "پنل_وب"])
+    return {"ok":True}
 
 @router.get("/references/subjects/{sid}/books")
 async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user)):
@@ -558,16 +806,74 @@ class RefBookCreate(BaseModel):
 async def ref_add_book_ep(sid: str, body: RefBookCreate, admin=Depends(get_content_admin_user)):
     await _deny_intake(await db.ref_subject_intake(sid), admin)
     r = await db.ref_add_book(sid, body.name.strip())
+    await _audit(admin, "ایجاد کتاب رفرنس", "Content", severity="INFO",
+        target_id=str(r), target_type="reference_book", target_label=body.name.strip(),
+        after={"subject_id": sid}, tags=["رفرنس", "ایجاد", "پنل_وب"])
     return {"ok":True, "id":str(r)}
+
+
+@router.patch("/references/books/{bid}")
+async def ref_edit_book_ep(bid: str, body: RefNameUpdate,
+                           admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_book(bid)
+    if not old:
+        raise HTTPException(404, "کتاب رفرنس پیدا نشد")
+    await _deny_intake(await db.ref_book_intake(bid), admin)
+    name = body.name.strip()
+    ok = await db.ref_update_book(bid, {"name": name})
+    if not ok:
+        raise HTTPException(500, "ویرایش کتاب انجام نشد")
+    await _audit(
+        admin, "ویرایش نام کتاب رفرنس", "Content", severity="WARNING",
+        target_id=bid, target_type="reference_book", target_label=name,
+        before={"name": old.get("name", "")}, after={"name": name},
+        tags=["رفرنس", "ویرایش", "پنل_وب"],
+    )
+    return {"ok": True}
+
+
+@router.post("/references/books/{bid}/reorder")
+async def ref_reorder_book_ep(bid: str, body: ReorderBody,
+                              admin=Depends(get_content_admin_user)):
+    item = await db.ref_get_book(bid)
+    if not item:
+        raise HTTPException(404, "کتاب رفرنس پیدا نشد")
+    await _deny_intake(await db.ref_book_intake(bid), admin)
+    fn = db.reorder_up if body.direction == "up" else db.reorder_down
+    query = {"subject_id": item.get("subject_id", "")}
+    if item.get("fork_of") or (item.get("intake") or ""):
+        query["intake"] = item.get("intake") or ""
+    else:
+        # کتاب پایه با fork ورودی دیگر در یک ترتیب مشترک swap نمی‌شود.
+        query["fork_of"] = {"$in": [None, ""]}
+        query["$or"] = [{"intake": ""}, {"intake": None},
+                        {"intake": {"$exists": False}}]
+    ok = await fn("ref_books", bid, query)
+    if ok:
+        await _audit(
+            admin, "تغییر ترتیب کتاب رفرنس", "Content", severity="INFO",
+            target_id=bid, target_type="reference_book",
+            target_label=item.get("name", ""), after={"direction": body.direction},
+            tags=["رفرنس", "ترتیب", "پنل_وب"],
+        )
+    return {"ok": bool(ok)}
+
 
 @router.delete("/references/books/{bid}")
 async def ref_del_book_ep(bid: str, admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_book(bid)
+    if not old: raise HTTPException(404, "کتاب رفرنس پیدا نشد")
     await _deny_intake(await db.ref_book_intake(bid), admin)
     # 🍴 Q1 — حذف کتابی که fork دارد ⇒ orphan؛ با 409 مسدود می‌شود
     if await db.ref_book_has_forks(bid):
         raise HTTPException(409,
             "این کتاب نسخه‌ی اختصاصی (fork) دارد؛ ابتدا نسخه‌ها را بازگردانید")
-    await db.ref_delete_book(bid); return {"ok":True}
+    await db.ref_delete_book(bid)
+    await _audit(admin, "حذف کتاب رفرنس", "Content", severity="HIGH",
+        target_id=bid, target_type="reference_book", target_label=old.get("name", ""),
+        before={"subject_id": old.get("subject_id")}, after={"deleted": True},
+        tags=["رفرنس", "حذف", "پنل_وب"])
+    return {"ok":True}
 
 @router.get("/references/books/{bid}/files")
 async def ref_files_ep(bid: str, admin=Depends(get_content_admin_user)):
@@ -592,12 +898,25 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
         file.content_type or "application/octet-stream")
     if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
     fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip())
+    await _audit(admin, "افزودن فایل رفرنس", "Content", severity="INFO",
+        target_id=str(fid), target_type="reference_file",
+        target_label=description.strip() or (file.filename or "file"),
+        after={"book_id": bid, "lang": lang, "volume": volume},
+        tags=["رفرنس", "افزودن_فایل", "پنل_وب"])
     return {"ok":True, "id":fid}
 
 @router.delete("/references/files/{fid}")
 async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_file(fid)
+    if not old: raise HTTPException(404, "فایل رفرنس پیدا نشد")
     await _deny_intake(await db.ref_file_intake(fid), admin)
-    await db.ref_delete_file(fid); return {"ok":True}
+    await db.ref_delete_file(fid)
+    await _audit(admin, "حذف فایل رفرنس", "Content", severity="HIGH",
+        target_id=fid, target_type="reference_file", target_label=old.get("description", ""),
+        before={"book_id": old.get("book_id"), "lang": old.get("lang"),
+                "volume": old.get("volume")}, after={"deleted": True},
+        tags=["رفرنس", "حذف_فایل", "پنل_وب"])
+    return {"ok":True}
 
 # ══════════════════════════════════════════════
 # 🍴 موج C2 — Fork/Unfork (سفارشی‌سازی سراسری برای یک ورودی)
@@ -802,13 +1121,26 @@ async def qbank_add_file_ep(lesson: str = Form(...), topic: str = Form(...),
         ctype or "application/octet-stream")
     if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
     fid = await db.add_qbank_file(lesson.strip(), topic.strip(), file_id, description.strip(), ftype, intake=iv)
+    await _audit(admin, "افزودن فایل بانک سؤال", "Content", severity="INFO",
+        target_id=str(fid), target_type="qbank_file",
+        target_label=description.strip() or f"{lesson.strip()} — {topic.strip()}",
+        after={"lesson": lesson.strip(), "topic": topic.strip(),
+               "file_type": ftype, "intake": iv},
+        tags=["بانک_سؤال", "افزودن_فایل", "پنل_وب"])
     return {"ok":True, "id":str(fid)}
 
 @router.delete("/qbank/files/{fid}")
 async def qbank_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
     item = await db.get_qbank_file(fid)
-    await _deny_intake((item or {}).get("intake",""), admin)
-    await db.delete_qbank_file(fid); return {"ok":True}
+    if not item: raise HTTPException(404, "فایل بانک سؤال پیدا نشد")
+    await _deny_intake(item.get("intake",""), admin)
+    await db.delete_qbank_file(fid)
+    await _audit(admin, "حذف فایل بانک سؤال", "Content", severity="HIGH",
+        target_id=fid, target_type="qbank_file",
+        target_label=item.get("description", "") or f"{item.get('lesson','')} — {item.get('topic','')}",
+        before={"file_type": item.get("file_type"), "intake": item.get("intake", "")},
+        after={"deleted": True}, tags=["بانک_سؤال", "حذف_فایل", "پنل_وب"])
+    return {"ok":True}
 
 # ══════════════════════════════════════════════
 # 🚩 گزارش‌های ایراد (سوال/جزوه)
@@ -819,14 +1151,22 @@ async def reports_stats_ep(admin=Depends(GLOBAL_USER)):
     return await db.content_reports_stats()
 
 @router.get("/reports")
-async def reports_list_ep(status: Optional[str]=Query(None), admin=Depends(GLOBAL_USER)):
-    items = await db.get_content_reports(status=status)
+async def reports_list_ep(
+    status: Optional[str] = Query(None), skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=100), admin=Depends(GLOBAL_USER),
+):
+    if status and status not in ("new", "reviewing", "resolved", "rejected"):
+        raise HTTPException(422, "وضعیت نامعتبر")
+    items = await db.get_content_reports(status=status, skip=skip, limit=limit)
+    total = await db.content_reports_count(status=status)
     REASON_FA = {'wrong_answer':'پاسخ اشتباه','unclear':'گنگ/نامفهوم','duplicate':'تکراری',
         'broken_file':'فایل خراب','outdated':'محتوای قدیمی','other':'سایر'}
-    return {"reports":[{"id":r.get("report_id"),"target_type":r.get("target_type",""),
+    return {"total": total, "skip": skip, "limit": limit,
+        "reports":[{"id":r.get("report_id"),"target_type":r.get("target_type",""),
         "target_id":r.get("target_id",""),"reporter_name":r.get("reporter_name",""),
         "reason":REASON_FA.get(r.get("reason",""), r.get("reason","")),"note":r.get("note",""),
-        "status":r.get("status","new"),"created_at":r.get("created_at","")[:10]} for r in items]}
+        "status":r.get("status","new"),"created_at":str(r.get("created_at", ""))[:16],
+        "resolved_at":str(r.get("resolved_at", "") or "")[:16]} for r in items]}
 
 class ReportStatusUpdate(BaseModel):
     status: str
@@ -836,5 +1176,13 @@ async def report_status_ep(rid: int, body: ReportStatusUpdate, admin=Depends(GLO
     if body.status not in ("new","reviewing","resolved","rejected"): raise HTTPException(422,"وضعیت نامعتبر")
     r = await db.get_content_report(rid)
     if not r: raise HTTPException(404)
+    old_status = r.get("status", "new")
     await db.update_report_status(rid, body.status, resolved_by=admin["id"])
+    await _audit(
+        admin, "تغییر وضعیت گزارش محتوا", "Reports", severity="WARNING",
+        target_id=str(rid), target_type="content_report",
+        target_label=f"{r.get('target_type','')} · {r.get('reason','')}"[:300],
+        before={"status": old_status}, after={"status": body.status},
+        tags=["گزارش_محتوا", "بازبینی", "پنل_وب"],
+    )
     return {"ok":True}

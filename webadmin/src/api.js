@@ -77,13 +77,16 @@ export const api = {
   caAddContent: (sid, form) => req(`/api/content/basic-science/sessions/${sid}/content`, { method: 'POST', form }),
   caDelContent: (cid) => req(`/api/content/basic-science/content/${cid}`, { method: 'DELETE' }),
   caAddSession: (lid, body) => req(`/api/content/basic-science/lessons/${lid}/sessions`, { method: 'POST', body }),
+  caEditSession: (sid, body) => req(`/api/content/basic-science/sessions/${sid}`, { method: 'PATCH', body }),
   caDelSession: (sid) => req(`/api/content/basic-science/sessions/${sid}`, { method: 'DELETE' }),
   caForkSession: (sid, intake) => req(`/api/content/basic-science/sessions/${sid}/fork?intake=${encodeURIComponent(intake)}`, { method: 'POST' }),
   caUnforkSession: (sid) => req(`/api/content/basic-science/sessions/${sid}/fork`, { method: 'DELETE' }),
   caAddLesson: (body) => req('/api/content/basic-science/lessons', { method: 'POST', body }),
+  caEditLesson: (lid, body) => req(`/api/content/basic-science/lessons/${lid}`, { method: 'PATCH', body }),
   caDelLesson: (lid) => req(`/api/content/basic-science/lessons/${lid}`, { method: 'DELETE' }),
-  caReports: (status) => req('/api/content/reports' + (status ? `?status=${status}` : '')),
-  caReportStatus: (rid, status) => req(`/api/content/reports/${rid}/status`, { method: 'POST', body: { status } }),
+  caReports: (p = {}) => req('/api/web-admin/content/reports?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== ''))),
+  caReportStats: () => req('/api/web-admin/content/reports/stats'),
+  caReportStatus: (rid, status) => req(`/api/web-admin/content/reports/${rid}/status`, { method: 'POST', body: { status } }),
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
   botStatus: () => req('/api/web-admin/system/status'),
@@ -173,14 +176,16 @@ export const api = {
   // ── content (scope-aware) ──
   caIntakes: () => req('/api/content/intakes'),
   caOverview: (intake) => req('/api/content/overview' + (intake ? `?intake=${intake}` : '')),
-  caQuestionsPending: () => req('/api/content/questions/pending'),
-  caQuestionApprove: (qid) => req(`/api/content/questions/${qid}/approve`, { method: 'POST' }),
-  caQuestionReject: (qid) => req(`/api/content/questions/${qid}/reject`, { method: 'POST' }),
+  questionIntakes: () => req('/api/web-admin/questions/intakes'),
+  caQuestionsPending: (intake) => req('/api/web-admin/questions/pending' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
+  caQuestionApprove: (qid) => req(`/api/web-admin/questions/${qid}/approve`, { method: 'POST' }),
+  caQuestionReject: (qid) => req(`/api/web-admin/questions/${qid}/reject`, { method: 'POST' }),
   // 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit)
-  caQuestionPatch: (qid, body) => req(`/api/content/questions/${qid}`, { method: 'PATCH', body }),
+  caQuestionPatch: (qid, body) => req(`/api/web-admin/questions/${qid}`, { method: 'PATCH', body }),
   // 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware)
-  caQuestionsImport: (items, approve) =>
-    req('/api/content/questions/bulk-import', { method: 'POST', body: { items, approve: !!approve } }),
+  caQuestionsImport: (items, approve, intake) =>
+    req('/api/web-admin/questions/bulk-import' + (intake ? `?intake=${encodeURIComponent(intake)}` : ''),
+      { method: 'POST', body: { items, approve: !!approve } }),
   // ── 🌊 WA3 — مدیریت کامل کاربر (permission-based، آینه‌ی دقیق ربات) ──
   waUserMessage: (uid, text) => req(`/api/web-admin/users/${uid}/message`, { method: 'POST', body: { text } }),
   waUserAction: (uid, action, reason = '') => req(`/api/web-admin/users/${uid}/action`, { method: 'POST', body: { action, reason } }),
@@ -204,9 +209,13 @@ export const api = {
   caQbankDel: (fid) => req(`/api/content/qbank/files/${fid}`, { method: 'DELETE' }),
   refSubjects: (intake) => req('/api/content/references/subjects' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
   refSubjectAdd: (body) => req('/api/content/references/subjects', { method: 'POST', body }),
+  refSubjectEdit: (sid, name) => req(`/api/content/references/subjects/${sid}`, { method: 'PATCH', body: { name } }),
+  refSubjectReorder: (sid, direction) => req(`/api/content/references/subjects/${sid}/reorder`, { method: 'POST', body: { direction } }),
   refSubjectDel: (sid) => req(`/api/content/references/subjects/${sid}`, { method: 'DELETE' }),
   refBooks: (sid) => req(`/api/content/references/subjects/${sid}/books`),
   refBookAdd: (sid, name) => req(`/api/content/references/subjects/${sid}/books`, { method: 'POST', body: { name } }),
+  refBookEdit: (bid, name) => req(`/api/content/references/books/${bid}`, { method: 'PATCH', body: { name } }),
+  refBookReorder: (bid, direction) => req(`/api/content/references/books/${bid}/reorder`, { method: 'POST', body: { direction } }),
   refBookDel: (bid) => req(`/api/content/references/books/${bid}`, { method: 'DELETE' }),
   refBookFork: (bid, intake) => req(`/api/content/references/books/${bid}/fork?intake=${encodeURIComponent(intake)}`, { method: 'POST' }),
   refBookUnfork: (bid) => req(`/api/content/references/books/${bid}/fork`, { method: 'DELETE' }),
@@ -219,6 +228,8 @@ export const api = {
   gradesBulk: (body) => req('/api/web-admin/grades/bulk', { method: 'POST', body: {
     ...body, entries: (body.entries || []).map(e => ({ user_id: e.user_id ?? e.student_id, score: e.score })),
   } }),
+  gradeUpdate: (gid, score) => req(`/api/web-admin/grades/${gid}`, { method: 'PATCH', body: { score } }),
+  gradeDelete: (gid) => req(`/api/web-admin/grades/${gid}`, { method: 'DELETE' }),
   // ── ai admin ──
   aiStats: () => req('/api/web-admin/ai/stats'),
   aiConfig: () => req('/api/web-admin/ai/config'),

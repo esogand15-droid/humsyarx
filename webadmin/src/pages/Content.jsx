@@ -16,7 +16,7 @@ const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 // چیدمان سه‌ستونه‌ی دسکتاپ‌محور «درخت درس‌ها | جلسات | بازرس» روی همان APIهای
 // موجود (بدون هیچ تغییر بک‌اندی) — همه‌ی اکشن‌های قبلی (fork/کلون/انتقال/حذف
 // گروهی/reorder/آپلود چندفایلی/گزارش‌ها) حفظ شده‌اند.
-import { RefsTab, ScheduleTab, QbankTab, FaqTab } from './contentTabs.jsx';
+import { RefsTab, ScheduleTab, QbankTab, FaqTab, ReportsTab } from './contentTabs.jsx';
 
 const CCONTENT_TABS = [
   ['bs', '📚 علوم پایه'],
@@ -24,6 +24,7 @@ const CCONTENT_TABS = [
   ['schedule', '🗓 کلاس‌ها/برنامه'],
   ['qbank', '🧪 بانک سؤال'],
   ['faq', '❓ راهنما/FAQ'],
+  ['reports', '🚩 گزارش‌ها'],
 ];
 
 export default function Content() {
@@ -40,6 +41,7 @@ export default function Content() {
       {tab === 'schedule' && <ScheduleTab />}
       {tab === 'qbank' && <QbankTab />}
       {tab === 'faq' && <FaqTab />}
+      {tab === 'reports' && <ReportsTab />}
     </>
   );
 }
@@ -47,6 +49,7 @@ export default function Content() {
 /* ═══ تب علوم پایه — Split View سه‌ستونه ═══ */
 function BsTab() {
   const [intake, setIntake] = useState('');
+  const [scopeKind, setScopeKind] = useState('global');
   const [tree, setTree] = useState(null);
   const [intakes, setIntakes] = useState([]);
   const [err, setErr] = useState('');
@@ -56,29 +59,27 @@ function BsTab() {
   const [sel, setSel] = useState([]);            // session ids برای عملیات گروهی
   const [lesId, setLesId] = useState(null);      // درس منتخب (ستون دوم)
   const [sesId, setSesId] = useState(null);      // جلسه‌ی منتخب (بازرس)
+  const [editLes, setEditLes] = useState(null);  // lesson
   const [editSes, setEditSes] = useState(null);  // {lesson_id, s}
   const [confirm, setConfirm] = useState(null);
   const [moveTo, setMoveTo] = useState(null);    // {ids:[…]}
   const [quick, setQuick] = useState(false);
   const [addLes, setAddLes] = useState(null);    // term برای درس جدید
   const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
-  const [reports, setReports] = useState(null);
 
   const load = async () => {
     setErr('');
     try {
       const r = await api.contentTree(intake || undefined);
       setTree(r.tree || []);
-      setIntakes(r.intakes || []);
+      setIntakes(r.intakes || []); setScopeKind(r.scope_kind || 'global');
+      if (!intake && r.intake) setIntake(r.intake);
     } catch (e) {
       if (e.status === 403) setPermErr(true);
       else setErr(errText(e));
     }
   };
   useEffect(() => { setTree(null); setSel([]); setLesId(null); setSesId(null); load(); }, [intake]);
-  useEffect(() => {
-    api.caReports('new').then(r => setReports(r.reports || [])).catch(() => setReports([]));
-  }, []);
 
   // انتخاب‌ها به‌صورت مشتق از درخت — بعد از هر reload همیشه تازه‌اند
   const selLesson = useMemo(() => {
@@ -161,8 +162,8 @@ function BsTab() {
               <span className="ct3-pt">📚 درس‌ها</span>
               <B>{fa(totals.lessons)}</B>
             </div>
-            <select className="inp" value={intake} onChange={e => setIntake(e.target.value)}>
-              <option value="">🌐 سراسری (پایه)</option>
+            <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)}>
+              {scopeKind === 'global' && <option value="">🌐 سراسری (پایه)</option>}
               {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
             </select>
             <input className="inp" placeholder="🔎 نام درس/استاد/موضوع جلسه…"
@@ -200,14 +201,18 @@ function BsTab() {
                                 <B>{fa(l.session_count)} جلسه</B>
                                 <B kind="acc">{fa(l.content_count)} فایل</B>
                                 <span className="spacer" />
-                                <button className="btn sm" title="بالا" disabled={idx <= 0}
-                                        onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
-                                <button className="btn sm" title="پایین" disabled={idx >= t.lessons.length - 1}
-                                        onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
-                                <button className="btn sm" title="جلسه‌ی جدید"
-                                        onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕</button>
-                                <button className="btn sm danger" title="حذف درس"
-                                        onClick={e => { e.stopPropagation(); delLesson(l); }}>🗑</button>
+                                {l.readonly ? <B>🔒 فقط‌خواندنی</B> : <>
+                                  <button className="btn sm" title="بالا" disabled={idx <= 0}
+                                          onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
+                                  <button className="btn sm" title="پایین" disabled={idx >= t.lessons.length - 1}
+                                          onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
+                                  <button className="btn sm" title="ویرایش نام و استاد"
+                                          onClick={e => { e.stopPropagation(); setEditLes(l); }}>✏️</button>
+                                  <button className="btn sm" title="جلسه‌ی جدید"
+                                          onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕</button>
+                                  <button className="btn sm danger" title="حذف درس"
+                                          onClick={e => { e.stopPropagation(); delLesson(l); }}>🗑</button>
+                                </>}
                               </div>
                             </div>
                           );
@@ -230,7 +235,7 @@ function BsTab() {
               {selLesson && <B kind="acc">{selLesson.name}</B>}
               {selLesson && <B>{fa(selLesson.sessions.length)}</B>}
               <span className="spacer" />
-              {selLesson && <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button>}
+              {selLesson && !selLesson.readonly && <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button>}
             </div>
             {sel.length > 0 && (
               <div className="ct3-bulk">
@@ -249,7 +254,7 @@ function BsTab() {
               <Empty icon="📚" text="نخست از ستون درس‌ها یک درس برگزینید" />
             ) : visSessions.length === 0 ? (
               <Empty icon="📭" text={q.trim() ? 'جلسه‌ای با این جست‌وجو نیست' : 'این درس هنوز جلسه‌ای ندارد'}>
-                {!q.trim() && <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button>}
+                {!q.trim() && !selLesson.readonly && <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button>}
               </Empty>
             ) : visSessions.map(s => {
               const idx = selLesson.sessions.findIndex(x => x.id === s.id);
@@ -258,9 +263,9 @@ function BsTab() {
                      className={`ct3-ses ${sesId === s.id ? 'on' : ''} ${sel.includes(s.id) ? 'sel' : ''}`}
                      onClick={() => setSesId(s.id)}>
                   <div className="ct3-r1">
-                    <input type="checkbox" checked={sel.includes(s.id)}
+                    {!s.readonly && <input type="checkbox" checked={sel.includes(s.id)}
                            onClick={e => e.stopPropagation()} onChange={() => toggleSel(s.id)}
-                           aria-label="انتخاب جلسه" />
+                           aria-label="انتخاب جلسه" />}
                     <span className="ct3-num">{fa(s.number)}</span>
                     <div className="ct3-main">
                       <div className="ct3-t1">{s.topic || '—'}</div>
@@ -275,22 +280,25 @@ function BsTab() {
                       {Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'}${fa(v)}`).join(' ') || 'بدون فایل'}
                     </span>
                     <span className="spacer" />
-                    <button className="btn sm" title="بالا" disabled={idx <= 0}
-                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑'); }}>↑</button>
-                    <button className="btn sm" title="پایین" disabled={idx >= selLesson.sessions.length - 1}
-                            onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓'); }}>↓</button>
+                    {s.readonly && <B>🔒 فقط‌خواندنی</B>}
                     {s.kind === 'global' && intake &&
                       <button className="btn sm warn" title="ساخت نسخه اختصاصی برای این ورودی"
                               onClick={e => { e.stopPropagation(); act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐'); }}>🍴</button>}
-                    {s.kind === 'fork' &&
-                      <button className="btn sm" title="حذف نسخه اختصاصی (بازگشت به سراسری)"
-                              onClick={e => { e.stopPropagation(); act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️'); }}>↩️</button>}
-                    <button className="btn sm" title="کلون"
-                            onClick={e => { e.stopPropagation(); act(() => api.dupSession(s.id), 'کلون ساخته شد 📄'); }}>📄</button>
-                    <button className="btn sm" title="ویرایش موضوع/استاد"
-                            onClick={e => { e.stopPropagation(); setEditSes({ lesson_id: selLesson.id, s }); }}>✏️</button>
-                    <button className="btn sm danger" title="حذف"
-                            onClick={e => { e.stopPropagation(); delSession(s); }}>🗑</button>
+                    {!s.readonly && <>
+                      <button className="btn sm" title="بالا" disabled={idx <= 0}
+                              onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑'); }}>↑</button>
+                      <button className="btn sm" title="پایین" disabled={idx >= selLesson.sessions.length - 1}
+                              onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓'); }}>↓</button>
+                      {s.kind === 'fork' &&
+                        <button className="btn sm" title="حذف نسخه اختصاصی (بازگشت به سراسری)"
+                                onClick={e => { e.stopPropagation(); act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️'); }}>↩️</button>}
+                      <button className="btn sm" title="کلون"
+                              onClick={e => { e.stopPropagation(); act(() => api.dupSession(s.id), 'کلون ساخته شد 📄'); }}>📄</button>
+                      <button className="btn sm" title="ویرایش شماره/موضوع/استاد"
+                              onClick={e => { e.stopPropagation(); setEditSes({ lesson_id: selLesson.id, s }); }}>✏️</button>
+                      <button className="btn sm danger" title="حذف"
+                              onClick={e => { e.stopPropagation(); delSession(s); }}>🗑</button>
+                    </>}
                   </div>
                 </div>
               );
@@ -321,8 +329,11 @@ function BsTab() {
                   </b><span>نسخه‌ی خاص</span></div>
                 </div>
                 <div className="row">
-                  <button className="btn primary" style={{ flex: 1 }} onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
-                  <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
+                  {selLesson.readonly ? <B>🔒 این درس سراسری برای scope شما فقط‌خواندنی است</B> : <>
+                    <button className="btn" onClick={() => setEditLes(selLesson)}>✏️ ویرایش درس</button>
+                    <button className="btn primary" style={{ flex: 1 }} onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
+                    <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
+                  </>}
                 </div>
                 <p className="muted" style={{ margin: '4px 2px' }}>💡 برای دیدن و مدیریت فایل‌ها، از ستون میانی یک جلسه را برگزینید.</p>
               </>
@@ -340,27 +351,7 @@ function BsTab() {
         </div>
       )}
 
-      {/* 🚩 صف گزارش محتوا (WA2.7 needs-attention) */}
-      {reports !== null && !permErr && !err && (
-        <div className="panel panel-pad" style={{ marginTop: 14 }}>
-          <div className="row"><b>🚩 گزارش‌های در انتظار محتوا/سؤال</b>
-            <span className="spacer" /><B kind={reports.length ? 'warn' : 'ok'}>{fa(reports.length)}</B></div>
-          {reports.length === 0 && <p className="muted" style={{ marginTop: 8 }}>موردی نیست 🎉</p>}
-          {reports.slice(0, 8).map(r => (
-            <div key={r.id} className="row" style={{ padding: '7px 0', borderBottom: '1px solid var(--line)' }}>
-              <B kind="warn">{r.reason}</B>
-              <span style={{ fontSize: 12.5 }}>{r.target_type === 'question' ? 'سؤال' : 'فایل'} <span className="code">{r.target_id?.slice?.(-6)}</span></span>
-              <span className="muted">{r.reporter_name} · {r.created_at}</span>
-              <span className="spacer" />
-              <button className="btn sm ok" onClick={() => act(() => api.caReportStatus(r.id, 'resolved').then(() =>
-                api.caReports('new').then(x => setReports(x.reports || [])), ''), 'حل‌شده ✅')}>✅</button>
-              <button className="btn sm danger" onClick={() => act(() => api.caReportStatus(r.id, 'rejected').then(() =>
-                api.caReports('new').then(x => setReports(x.reports || [])), ''), 'رد شد')}>✖</button>
-            </div>
-          ))}
-        </div>
-      )}
-
+      {editLes && <EditLesson lesson={editLes} onClose={(ch) => { setEditLes(null); if (ch) load(); }} />}
       {editSes && <EditSession {...editSes} onClose={(ch) => { setEditSes(null); if (ch) load(); }} />}
       {quick && <QuickUpload intakes={intakes} intake={intake} onClose={(ch) => { setQuick(false); if (ch) load(); }} />}
       {addLes && <AddLesson term={addLes} intake={intake} onClose={(ch) => { setAddLes(null); if (ch) load(); }} />}
@@ -395,14 +386,17 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
         </B>
       </div>
       <div className="ct3-acts">
-        <button className="btn sm" onClick={() => onEdit(session)}>✏️ ویرایش</button>
+        {session.readonly && <B>🔒 فقط‌خواندنی</B>}
         {session.kind === 'global' && intake &&
           <button className="btn sm warn" onClick={() => onFork(session)}>🍴 نسخه‌ی اختصاصی</button>}
-        {session.kind === 'fork' &&
-          <button className="btn sm" onClick={() => onUnfork(session)}>↩️ بازگشت به سراسری</button>}
-        <button className="btn sm" onClick={() => onClone(session)}>📄 کلون</button>
-        <button className="btn sm" onClick={() => onMove(session)}>📦 انتقال</button>
-        <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
+        {!session.readonly && <>
+          <button className="btn sm" onClick={() => onEdit(session)}>✏️ ویرایش</button>
+          {session.kind === 'fork' &&
+            <button className="btn sm" onClick={() => onUnfork(session)}>↩️ بازگشت به سراسری</button>}
+          <button className="btn sm" onClick={() => onClone(session)}>📄 کلون</button>
+          <button className="btn sm" onClick={() => onMove(session)}>📦 انتقال</button>
+          <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
+        </>}
       </div>
       <SessionFiles session={session} onTreeChanged={onTreeChanged} />
     </>
@@ -412,6 +406,7 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
 /* ── 📁 فایل‌های جلسه (داخل بازرس): لیست + آپلود + گروهی ── */
 function SessionFiles({ session, onTreeChanged }) {
   const [items, setItems] = useState(null);
+  const [readonly, setReadonly] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [showUp, setShowUp] = useState(false);
@@ -422,8 +417,10 @@ function SessionFiles({ session, onTreeChanged }) {
 
   const load = async () => {
     setErr('');
-    try { setItems((await api.caSessionContent(session.id)).content || []); }
-    catch (e) { setErr(errText(e)); }
+    try {
+      const r = await api.caSessionContent(session.id);
+      setItems(r.content || []); setReadonly(!!r.readonly);
+    } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { setItems(null); setSel([]); setShowUp(false); load(); }, [session.id]);
 
@@ -464,7 +461,8 @@ function SessionFiles({ session, onTreeChanged }) {
         <b style={{ fontSize: 'var(--fs-card)' }}>📁 فایل‌ها</b>
         {items && <B>{fa(items.length)}</B>}
         <span className="spacer" />
-        <button className="btn sm primary" onClick={() => setShowUp(x => !x)}>{showUp ? '✕ بستن' : '➕ افزودن فایل'}</button>
+        {readonly ? <B>🔒 فقط‌خواندنی</B> :
+          <button className="btn sm primary" onClick={() => setShowUp(x => !x)}>{showUp ? '✕ بستن' : '➕ افزودن فایل'}</button>}
       </div>
       {showUp && (
         <div className="ct3-up">
@@ -508,7 +506,7 @@ function SessionFiles({ session, onTreeChanged }) {
           {items.map((c, i) => (
             <div key={c.id} className={`ct3-file ${sel.includes(c.id) ? 'sel' : ''}`}>
               <div className="ct3-r1">
-                <input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleSel(c.id)} aria-label="انتخاب فایل" />
+                {!readonly && <input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleSel(c.id)} aria-label="انتخاب فایل" />}
                 <span style={{ fontSize: 16 }}>{CTYPE[c.type] || '📎'}</span>
                 <div className="ct3-main">
                   <div className="ct3-t1">{c.description || '(بدون توضیح)'}</div>
@@ -519,9 +517,11 @@ function SessionFiles({ session, onTreeChanged }) {
               <div className="ct3-r2">
                 <span className="muted">{c.type}</span>
                 <span className="spacer" />
-                <button className="btn sm" title="بالا" disabled={i <= 0} onClick={() => reorderItem(c.id, 'up')}>↑</button>
-                <button className="btn sm" title="پایین" disabled={i >= items.length - 1} onClick={() => reorderItem(c.id, 'down')}>↓</button>
-                <button className="btn sm danger" title="حذف فایل" onClick={() => del(c.id)}>🗑</button>
+                {!readonly && <>
+                  <button className="btn sm" title="بالا" disabled={i <= 0} onClick={() => reorderItem(c.id, 'up')}>↑</button>
+                  <button className="btn sm" title="پایین" disabled={i >= items.length - 1} onClick={() => reorderItem(c.id, 'down')}>↓</button>
+                  <button className="btn sm danger" title="حذف فایل" onClick={() => del(c.id)}>🗑</button>
+                </>}
               </div>
             </div>
           ))}
@@ -557,25 +557,43 @@ function MoveItemsButton({ sel, sessionId, onDone }) {
   );
 }
 
-/* ── ✏️ ویرایش/➕ جلسه ─────────────────────────────────── */
-function EditSession({ lesson_id, s, onClose }) {
+/* ── ✏️ ویرایش درس/جلسه ───────────────────────────────── */
+function EditLesson({ lesson, onClose }) {
+  const [name, setName] = useState(lesson.name || '');
+  const [teacher, setTeacher] = useState(lesson.teacher || '');
+  const [busy, setBusy] = useState(false);
+  return <Modal title={`✏️ ویرایش درس — ${lesson.name}`} onClose={() => onClose(false)}>
+    <div className="grid" style={{ gap: 10 }}>
+      <label className="fld"><span>نام درس</span><input className="inp" value={name} onChange={e => setName(e.target.value)} /></label>
+      <label className="fld"><span>استاد</span><input className="inp" value={teacher} onChange={e => setTeacher(e.target.value)} /></label>
+      <div className="row"><button className="btn primary" disabled={busy || !name.trim()} onClick={async () => {
+        setBusy(true);
+        try { await api.caEditLesson(lesson.id, { name: name.trim(), teacher: teacher.trim() }); toast('درس ویرایش شد ✅'); onClose(true); }
+        catch (e) { toast(errText(e), 'err'); setBusy(false); }
+      }}>ذخیره</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+    </div>
+  </Modal>;
+}
+
+
+function EditSession({ s, onClose }) {
+  const [number, setNumber] = useState(s.number || 1);
   const [topic, setTopic] = useState(s.topic || '');
   const [teacher, setTeacher] = useState(s.teacher || '');
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`✏️ ویرایش جلسه ${fa(s.number)}`} onClose={() => onClose(false)}>
       <div className="grid" style={{ gap: 10 }}>
+        <label className="fld"><span>شماره جلسه</span><input className="inp" type="number" min="1" value={number} onChange={e => setNumber(e.target.value)} /></label>
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
         <div className="row">
-          <button className="btn primary" disabled={busy || !topic.trim()} onClick={async () => {
+          <button className="btn primary" disabled={busy || Number(number) < 1 || !topic.trim()} onClick={async () => {
             setBusy(true);
             try {
-              // مسیر upsert موجود (همان number ⇒ به‌روزرسانی بدون رکورد جدید)
-              await api.caAddSession(lesson_id, { number: s.number, topic: topic.trim(), teacher: teacher.trim() });
-              toast('ذخیره شد'); onClose(true);
-            } catch (e) { toast(errText(e), 'err'); }
-            setBusy(false);
+              await api.caEditSession(s.id, { number: Number(number), topic: topic.trim(), teacher: teacher.trim() });
+              toast('شماره و اطلاعات جلسه ذخیره شد ✅'); onClose(true);
+            } catch (e) { toast(errText(e), 'err'); setBusy(false); }
           }}>ذخیره</button>
           <button className="btn" onClick={() => onClose(false)}>انصراف</button>
         </div>

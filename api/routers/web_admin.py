@@ -600,6 +600,77 @@ async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage")))
     return {"ok": True, "done": done}
 
 
+async def _question_scope_context(user: dict) -> dict:
+    """Scope مستقل مجوز بازبینی سؤال؛ به content.manage وابسته نیست."""
+    if await db.has_permission(user["id"], "questions.review"):
+        return {"kind": "global", "intake": None}
+    if await db.has_permission(user["id"], "questions.review_scoped"):
+        scope = await db.get_scoped_intake(user["id"])
+        if not scope:
+            info = await db.get_user_roles(user["id"])
+            scope = info.get("scope_intake")
+        if scope:
+            return {"kind": "scoped", "intake": scope}
+    raise HTTPException(403, "question_scope_missing")
+
+
+async def _question_admin(user: dict) -> dict:
+    ctx = dict(user)
+    ctx["_scope"] = await _question_scope_context(user)
+    return ctx
+
+
+@router.get("/questions/intakes")
+async def wa_question_intakes(
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.content_intakes(admin=await _question_admin(user))
+
+
+@router.get("/questions/pending")
+async def wa_questions_pending(
+    intake: Optional[str] = Query(None),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.pending_questions(
+        intake=intake, admin=await _question_admin(user))
+
+
+@router.post("/questions/{qid}/approve")
+async def wa_question_approve(
+    qid: str,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.approve_question(qid=qid, admin=await _question_admin(user))
+
+
+@router.post("/questions/{qid}/reject")
+async def wa_question_reject(
+    qid: str,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.reject_question(qid=qid, admin=await _question_admin(user))
+
+
+@router.patch("/questions/{qid}")
+async def wa_question_patch(
+    qid: str, body: content_api.QuestionPatch,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.patch_question(
+        qid=qid, body=body, admin=await _question_admin(user))
+
+
+@router.post("/questions/bulk-import")
+async def wa_questions_import(
+    body: content_api.QuestionImportBody,
+    intake: Optional[str] = Query(None),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    return await content_api.bulk_import_questions(
+        body=body, intake=intake, admin=await _question_admin(user))
+
+
 class QuestionsBulk(BaseModel):
     action: str           # approve | reject
     ids: list[str]
@@ -618,33 +689,34 @@ async def questions_bulk(
     if body.action not in ("approve", "reject"):
         raise HTTPException(400, "اکشن نامعتبر است")
     done = 0
-    notif = db.client["medicalbot"]["bot_notifications"]
+    scope = await _question_scope_context(user)
     for qid in ids:
         q = await db.get_question_by_id(qid)
         if not q or q.get("approved"):
             continue
-        # scope enforce همان مسیر تکی
-        if not await db.can_access_intake(user["id"], q.get("intake", "") or ""):
+        # scope مستقل permission سؤال؛ نقش سفارشی مجبور به content.manage نیست.
+        if (scope.get("kind") == "scoped"
+                and (q.get("intake") or "") != (scope.get("intake") or "")):
             continue
         if body.action == "approve":
+            # approve_question منبع واحد پاداش + اعلان طراح است.
             await db.approve_question(qid)
         else:
             await db.delete_question(qid)
+            if q.get("source") == "webapp" and q.get("creator_id"):
+                await db.notify_user(
+                    q["creator_id"], "question_rejected",
+                    title="❌ سؤالت رد شد",
+                    body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
+                    link="/learn/my-questions",
+                    dm=(f"❌ <b>سؤالت رد شد</b>\n\n"
+                        f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
+                )
         done += 1
-        if q.get("source") == "webapp" and q.get("creator_id"):
-            try:
-                ok = body.action == "approve"
-                await notif.insert_one({
-                    "type": "question_approved" if ok else "question_rejected",
-                    "chat_id": q["creator_id"],
-                    "text": (("✅ <b>سوال شما تأیید شد!</b>" if ok else "❌ <b>سوال شما رد شد</b>")
-                             + f"\n📚 {q.get('lesson','')} — {q.get('topic','')}"),
-                    "sent": False, "created_at": _now()})
-            except Exception:
-                pass
     fa = {"approve": "تأیید گروهی", "reject": "رد گروهی"}
     await _audit(user["id"], f"{fa[body.action]} سؤال‌ها ({done} مورد)",
-                 severity="INFO", target_label=f"{done} سؤال",
+                 severity="INFO", target_type="question_batch", target_label=f"{done} سؤال",
+                 after={"action": body.action, "requested": len(ids), "processed": done},
                  tags=["bulk_questions", "پنل_وب"])
     return {"ok": True, "done": done}
 
@@ -911,13 +983,23 @@ def _valid_exam_fields(body) -> tuple:
 async def exams_create(body: ExamIn, user=Depends(_perm("schedules.manage"))):
     """➕ ایجاد آزمون — دقیقاً با همان db.add_schedule(type='exam') مسیر ربات."""
     lesson, d, t, grp = _valid_exam_fields(body)
-    sid = await db.add_schedule("exam", lesson, (body.teacher or "").strip()[:80],
-                                d, t, (body.location or "").strip()[:80],
-                                notes=(body.notes or "").strip()[:300], group=grp)
+    teacher = (body.teacher or "").strip()[:80]
+    location = (body.location or "").strip()[:80]
+    notes = (body.notes or "").strip()[:300]
+    sid = await db.add_schedule("exam", lesson, teacher, d, t, location,
+                                notes=notes, group=grp)
+    item = await db.get_schedule_by_id(str(sid)) or {
+        "_id": sid, "type": "exam", "lesson": lesson, "teacher": teacher,
+        "date": d, "time": t, "location": location, "notes": notes, "group": grp,
+    }
+    notice = await db.schedule_notify_event(item, "created")
     await _audit(user["id"], "ایجاد آزمون جدید", severity="INFO",
                  target_id=str(sid), target_type="exam", target_label=lesson,
+                 after={"تاریخ": d, "گروه": grp,
+                        "اطلاع‌رسانی": notice.get("notified", 0)},
                  tags=["امتحان", "پنل_وب"])
-    return {"ok": True, "id": str(sid)}
+    return {"ok": True, "id": str(sid),
+            "notified": notice.get("notified", 0)}
 
 
 @router.patch("/exams/{sid}")
@@ -927,15 +1009,26 @@ async def exams_update(sid: str, body: ExamIn,
     old = await db.get_schedule_by_id(sid)
     if not old or old.get("type") != "exam":
         raise HTTPException(404, "آزمون یافت نشد")
-    ok = await db.update_schedule_full(sid, lesson, (body.teacher or "").strip()[:80],
-                                       d, t, (body.location or "").strip()[:80],
-                                       (body.notes or "").strip()[:300], grp)
+    teacher = (body.teacher or "").strip()[:80]
+    location = (body.location or "").strip()[:80]
+    notes = (body.notes or "").strip()[:300]
+    ok = await db.update_schedule_full(sid, lesson, teacher, d, t, location,
+                                       notes, grp)
     if not ok:
         raise HTTPException(500, "به‌روزرسانی ناموفق بود")
-    await _audit(user["id"], "ویرایش آزمون", severity="INFO",
+    item = await db.get_schedule_by_id(sid) or {
+        **old, "lesson": lesson, "teacher": teacher, "date": d, "time": t,
+        "location": location, "notes": notes, "group": grp,
+    }
+    notice = await db.schedule_notify_event(item, "updated")
+    await _audit(user["id"], "ویرایش آزمون", severity="WARNING",
                  target_id=sid, target_type="exam", target_label=lesson,
+                 before={"عنوان": old.get("lesson"), "تاریخ": old.get("date"),
+                         "گروه": old.get("group")},
+                 after={"عنوان": lesson, "تاریخ": d, "گروه": grp,
+                        "اطلاع‌رسانی": notice.get("notified", 0)},
                  tags=["امتحان", "پنل_وب"])
-    return {"ok": True}
+    return {"ok": True, "notified": notice.get("notified", 0)}
 
 
 @router.delete("/exams/{sid}")
@@ -944,10 +1037,14 @@ async def exams_delete(sid: str, user=Depends(_perm("schedules.manage"))):
     if not old or old.get("type") != "exam":
         raise HTTPException(404, "آزمون یافت نشد")
     await db.delete_schedule(sid)
+    notice = await db.schedule_notify_event(old, "cancelled")
     await _audit(user["id"], "حذف آزمون", severity="HIGH",
                  target_id=sid, target_type="exam",
-                 target_label=old.get("lesson", ""), tags=["امتحان", "پنل_وب"])
-    return {"ok": True}
+                 target_label=old.get("lesson", ""),
+                 before={"تاریخ": old.get("date"), "گروه": old.get("group")},
+                 after={"حذف": True, "اطلاع‌رسانی": notice.get("notified", 0)},
+                 tags=["امتحان", "لغو", "پنل_وب"])
+    return {"ok": True, "notified": notice.get("notified", 0)}
 
 
 @router.get("/exams/stats")
@@ -993,6 +1090,8 @@ async def content_tree(intake: Optional[str] = Query(None),
     """🌳 درخت مؤثر محتوا برای یک ورودی — ۳ کوئری ثابت (بدون N+1):
     پایه‌ی سراسری + overrideهای همان ورودی، با نشان 🌐/⭐/🏷 روی هر جلسه."""
     iv = resolve_content_intake(admin, intake)  # '' یا کد ورودی (scope-enforced)
+    actor_scope = admin.get("_scope") or {"kind": "global", "intake": None}
+    scoped_view = actor_scope.get("kind") == "scoped"
     scope_intakes = ["", iv] if iv else [""]
 
     # 🌊 WA3-fix — داکیومنت‌های پیش از موج C1 ممکن است فیلد intake نداشته
@@ -1029,6 +1128,8 @@ async def content_tree(intake: Optional[str] = Query(None),
                 intake_labels[i.get("code", "")] = i.get("label", "")
     except Exception:
         pass
+    if scoped_view:
+        intake_labels = {iv: intake_labels.get(iv, iv)} if iv else {}
 
     tree = []
     for term in TERMS:
@@ -1055,17 +1156,20 @@ async def content_tree(intake: Optional[str] = Query(None),
                     "kind": ("fork" if fork_of else
                              ("exclusive" if s_intake_effective else "global")),
                     "fork_of": fork_of,
+                    "readonly": bool(scoped_view and s_intake_effective != iv),
                     "content_count": counts.get(sid, {}).get("n", 0),
                     "types": counts.get(sid, {}).get("types", {}),
                 })
             trow["lessons"].append({
                 "id": lid, "name": l.get("name", ""), "teacher": l.get("teacher", ""),
                 "intake": l.get("intake") or "",
+                "readonly": bool(scoped_view and (l.get("intake") or "") != iv),
                 "sessions": srows, "session_count": len(srows),
                 "content_count": sum(r["content_count"] for r in srows),
             })
         tree.append(trow)
-    return {"intake": iv, "tree": tree,
+    return {"intake": iv, "scope_kind": actor_scope.get("kind", "global"),
+            "tree": tree,
             "intakes": [{"code": c, "label": l} for c, l in intake_labels.items()]}
 
 
@@ -1489,6 +1593,10 @@ async def content_lesson_reorder(lid: str, body: ReorderIn,
     q = {"term": lesson.get("term", ""), "intake": lesson.get("intake") or ""}
     fn = db.reorder_up if body.direction == "up" else db.reorder_down
     ok = await fn("bs_lessons", lid, q)
+    if ok:
+        await _audit(admin["id"], "تغییر ترتیب درس علوم پایه", severity="INFO",
+                     target_id=lid, target_type="lesson", target_label=lesson.get("name", ""),
+                     after={"جهت": body.direction}, tags=["محتوا", "ترتیب", "پنل_وب"])
     return {"ok": bool(ok)}
 
 
@@ -1501,6 +1609,13 @@ async def content_session_reorder(sid: str, body: ReorderIn,
     if not await db.can_access_intake(admin["id"], await db.session_intake(sid)):
         raise HTTPException(403, "intake_out_of_scope")
     q = {"lesson_id": ses.get("lesson_id", "")}
+    if ses.get("fork_of") or (ses.get("intake") or ""):
+        q["intake"] = ses.get("intake") or ""
+    else:
+        # baseها هرگز با fork ورودی دیگر swap نمی‌شوند.
+        q["fork_of"] = {"$in": [None, ""]}
+        q["$or"] = [{"intake": ""}, {"intake": None},
+                    {"intake": {"$exists": False}}]
     fn = db.reorder_up if body.direction == "up" else db.reorder_down
     ok = await fn("bs_sessions", sid, q)
     return {"ok": bool(ok)}
@@ -1629,7 +1744,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         out.setdefault("prestige", {})
     try:  # 🔔 اعلان‌ها — شمارش خوانده‌نشده/کل
         un = await db.user_notifs.count_documents({"user_id": uid, "read": {"$ne": True}})
-        tot = await db.user_notifs.count_documents({"user_id": uid})
+        tot = await db.useer_notifs.count_documents({"user_id": uid})
         out["notifs"] = {"unread": un, "total": tot}
     except Exception:
         out.setdefault("notifs", {})
@@ -2182,6 +2297,31 @@ async def wa_log_groups_test(
     return await owner_api.log_groups_test(admin=user)
 
 
+# ── Content reports: تاریخچه و workflow برای reports.review ───────
+
+@router.get("/content/reports")
+async def wa_content_reports(
+    status: Optional[str] = Query(None), skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("reports.review")),
+):
+    return await content_api.reports_list_ep(
+        status=status, skip=skip, limit=limit, admin=user)
+
+
+@router.get("/content/reports/stats")
+async def wa_content_report_stats(user=Depends(_perm("reports.review"))):
+    return await content_api.reports_stats_ep(admin=user)
+
+
+@router.post("/content/reports/{rid}/status")
+async def wa_content_report_status(
+    rid: int, body: content_api.ReportStatusUpdate,
+    user=Depends(_perm("reports.review")),
+):
+    return await content_api.report_status_ep(rid=rid, body=body, admin=user)
+
+
 # ── Schedule: کلاس/امتحان/جبرانی برای schedules.manage ────────────
 
 @router.get("/schedule")
@@ -2197,12 +2337,7 @@ async def wa_schedule_create(
     body: content_api.ScheduleCreate,
     user=Depends(_perm("schedules.manage")),
 ):
-    result = await content_api.add_schedule(body=body, admin=user)
-    await _audit(user["id"], "ایجاد برنامه کلاسی", severity="INFO",
-                 target_type="schedule", target_label=body.lesson,
-                 after={"نوع": body.type, "تاریخ": body.date, "گروه": db.normalize_group(body.group)},
-                 tags=["برنامه", "پنل_وب"])
-    return result
+    return await content_api.add_schedule(body=body, admin=user)
 
 
 @router.patch("/schedule/{sid}")
@@ -2211,14 +2346,7 @@ async def wa_schedule_update(
     body: content_api.ScheduleUpdate,
     user=Depends(_perm("schedules.manage")),
 ):
-    old = await db.get_schedule_by_id(sid) or {}
-    result = await content_api.edit_schedule(sid=sid, body=body, admin=user)
-    await _audit(user["id"], "ویرایش برنامه کلاسی", severity="WARNING",
-                 target_id=sid, target_type="schedule", target_label=body.lesson,
-                 before={"درس": old.get("lesson"), "تاریخ": old.get("date"), "گروه": old.get("group")},
-                 after={"درس": body.lesson, "تاریخ": body.date, "گروه": db.normalize_group(body.group)},
-                 tags=["برنامه", "پنل_وب"])
-    return result
+    return await content_api.edit_schedule(sid=sid, body=body, admin=user)
 
 
 @router.delete("/schedule/{sid}")
@@ -2226,12 +2354,7 @@ async def wa_schedule_delete(
     sid: str,
     user=Depends(_perm("schedules.manage")),
 ):
-    old = await db.get_schedule_by_id(sid) or {}
-    result = await content_api.del_schedule(sid=sid, admin=user)
-    await _audit(user["id"], "حذف برنامه کلاسی", severity="HIGH",
-                 target_id=sid, target_type="schedule",
-                 target_label=old.get("lesson", ""), tags=["برنامه", "پنل_وب"])
-    return result
+    return await content_api.del_schedule(sid=sid, admin=user)
 
 
 @router.post("/schedule/{sid}/flex-change")
@@ -2240,12 +2363,7 @@ async def wa_schedule_flex_change(
     body: content_api.FlexChange,
     user=Depends(_perm("schedules.manage")),
 ):
-    result = await content_api.flex_change(sid=sid, body=body, admin=user)
-    await _audit(user["id"], "اعلام زمان جدید کلاس منعطف", severity="WARNING",
-                 target_id=sid, target_type="schedule",
-                 after={"تاریخ": body.date, "ساعت": body.time},
-                 tags=["برنامه", "کلاس_منعطف", "پنل_وب"])
-    return result
+    return await content_api.flex_change(sid=sid, body=body, admin=user)
 
 
 # ── Grades: global/scoped permissions ──────────────────────────────
@@ -2303,10 +2421,35 @@ async def wa_grades_bulk(
             {"user_id": 1}).to_list(len(ids))
         if {u.get("user_id") for u in matched} != set(ids):
             raise HTTPException(403, "grade_intake_out_of_scope")
-    result = await academic_api.grades_bulk_create(body=body, admin=user)
-    await _audit(user["id"], "ثبت گروهی نمره", severity="WARNING",
-                 target_type="grades", target_label=f"{len(body.entries)} دانشجو",
-                 after={"درس": body.lesson, "آزمون": body.exam_title,
-                        "تعداد": result.get("updated", 0), "ورودی": intake or "همه"},
-                 tags=["نمرات", "پنل_وب"])
-    return result
+    return await academic_api.grades_bulk_create(body=body, admin=user)
+
+
+async def _grade_for_actor(grade_id: str, user: dict) -> dict:
+    grade = await db.grade_get(grade_id)
+    if not grade:
+        raise HTTPException(404, "نمره پیدا نشد")
+    intake = await _grade_intake_scope(user)
+    if intake is not None:
+        student = await db.get_user(grade.get("student_id"))
+        if not student or student.get("intake") != intake:
+            raise HTTPException(403, "grade_intake_out_of_scope")
+    return grade
+
+
+@router.patch("/grades/{grade_id}")
+async def wa_grade_update(
+    grade_id: str, body: academic_api.GradeUpdate,
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    await _grade_for_actor(grade_id, user)
+    return await academic_api.grade_update(
+        grade_id=grade_id, body=body, admin=user)
+
+
+@router.delete("/grades/{grade_id}")
+async def wa_grade_delete(
+    grade_id: str,
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    await _grade_for_actor(grade_id, user)
+    return await academic_api.grade_delete(grade_id=grade_id, admin=user)

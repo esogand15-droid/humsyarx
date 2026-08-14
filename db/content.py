@@ -9,6 +9,8 @@ import logging
 import asyncio
 import difflib
 from datetime import datetime, timedelta
+from html import escape
+from urllib.parse import quote
 from bson import ObjectId
 import motor.motor_asyncio
 
@@ -1298,6 +1300,74 @@ class DBContent:
         except Exception: pass
 
 
+    async def schedule_notify_event(self, item: dict, event: str) -> dict:
+        """صف واحد اعلان برنامه برای APIهای وب/مینی‌اپ.
+
+        targetها از ترجیح دقیق نوع رویداد (exam/makeup/schedule) و گروه
+        canonical می‌آیند. هم DM outbox و هم Inbox از همین payload ساخته
+        می‌شوند تا create/update/cancel/flex بین سطوح مدیریتی همسان بماند.
+        """
+        if event not in {'created', 'updated', 'cancelled', 'time_changed'}:
+            raise ValueError('schedule_event_invalid')
+        item = dict(item or {})
+        stype = item.get('type') or 'class'
+        pref = {'exam': 'exam', 'makeup': 'makeup'}.get(stype, 'schedule')
+        ntype = 'exam' if stype == 'exam' else ('makeup' if stype == 'makeup' else 'class')
+        icon = {'class': '🏫', 'exam': '📝', 'makeup': '🔄'}.get(stype, '📅')
+        label = {'class': 'کلاس', 'exam': 'امتحان', 'makeup': 'جبرانی'}.get(stype, 'برنامه')
+        event_label = {
+            'created': 'جدید', 'updated': 'به‌روزرسانی شد',
+            'cancelled': 'لغو شد', 'time_changed': 'تغییر زمان',
+        }[event]
+        prefix = '❌' if event == 'cancelled' else ('🔔' if event == 'updated' else icon)
+        title_plain = f'{prefix} {label} {event_label}'
+        lesson = str(item.get('lesson') or '').strip()
+        teacher = str(item.get('teacher') or '').strip()
+        date = str(item.get('date') or '').strip()
+        time = str(item.get('time') or '').strip()
+        location = str(item.get('location') or '').strip()
+        group = self.normalize_group(item.get('group')) or 'هر دو'
+        note = str(item.get('flex_note') or item.get('notes') or item.get('note') or '').strip()
+
+        html_lines = [f'{prefix} <b>{escape(label)} {escape(event_label)}</b>',
+                      f'📚 {escape(lesson)}']
+        plain_lines = [f'📚 {lesson}']
+        if teacher:
+            html_lines.append(f'👨‍🏫 {escape(teacher)}')
+            plain_lines.append(f'👨‍🏫 {teacher}')
+        when = f'📅 {escape(date)}' + (f'  ⏰ {escape(time)}' if time else '')
+        html_lines.append(when)
+        plain_lines.append(f'📅 {date}' + (f'  ⏰ {time}' if time else ''))
+        if location:
+            html_lines.append(f'📍 {escape(location)}')
+            plain_lines.append(f'📍 {location}')
+        if group != 'هر دو':
+            html_lines.append(f'👥 گروه {escape(group)}')
+            plain_lines.append(f'👥 گروه {group}')
+        if note and event == 'time_changed':
+            html_lines.append(f'📝 {escape(note)}')
+            plain_lines.append(f'📝 {note}')
+
+        try:
+            users = await self.notif_users(pref, group=group)
+            documents = [{
+                'type': f'schedule_{event}', 'chat_id': u['user_id'],
+                'text': '\n'.join(html_lines), 'sent': False,
+                'created_at': datetime.now().isoformat(),
+            } for u in users if u.get('user_id')]
+            if documents:
+                await self.bot_notifs.insert_many(documents)
+            await self.inbox_add_many([{
+                'user_id': u['user_id'], 'type': ntype,
+                'title': title_plain, 'body': '\n'.join(plain_lines),
+                'link': '/schedule?hl=' + quote(lesson),
+            } for u in users if u.get('user_id')])
+            return {'notified': len(documents), 'preference': pref, 'group': group}
+        except Exception as exc:
+            logger.warning('schedule notification failed (%s/%s): %s', stype, event, exc)
+            return {'notified': 0, 'preference': pref, 'group': group}
+
+
     async def upcoming_exams(self, days: int = 7, group: str = None):
         """Return near exams, optionally limited to a student's group.
 
@@ -1352,10 +1422,18 @@ class DBContent:
 
     async def faq_add(self, question: str, answer: str, category: str = 'عمومی'):
         count = await self.faq.count_documents({})
-        await self.faq.insert_one({
+        result = await self.faq.insert_one({
             'question': question, 'answer': answer, 'category': category,
             'order': count, 'created_at': datetime.now().isoformat(),
         })
+        return result.inserted_id
+
+
+    async def faq_get(self, fid: str):
+        try:
+            return await self.faq.find_one({'_id': ObjectId(fid)})
+        except Exception:
+            return None
 
 
     async def faq_delete(self, fid: str):
@@ -1673,9 +1751,16 @@ class DBContent:
         return await self.content_reports.find_one({'report_id': report_id})
 
 
-    async def get_content_reports(self, status: str = None, limit: int = 50) -> list:
+    async def get_content_reports(self, status: str = None, limit: int = 50,
+                                  skip: int = 0) -> list:
         q = {'status': status} if status else {}
-        return await self.content_reports.find(q).sort('created_at', -1).to_list(limit)
+        return await self.content_reports.find(q).sort('created_at', -1) \
+            .skip(max(0, int(skip))).limit(max(1, int(limit))).to_list(max(1, int(limit)))
+
+
+    async def content_reports_count(self, status: str = None) -> int:
+        q = {'status': status} if status else {}
+        return await self.content_reports.count_documents(q)
 
 
     async def update_report_status(self, report_id: int, status: str, resolved_by: int = None):

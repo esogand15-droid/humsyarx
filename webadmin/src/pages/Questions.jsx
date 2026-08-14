@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, toast, Drawer, Confirm, Empty, Switch } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
@@ -37,9 +37,14 @@ function parseImportText(text) {
 export default function Questions() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
+  const [permErr, setPermErr] = useState(false);
+  const [intakes, setIntakes] = useState([]);
+  const [scopeKind, setScopeKind] = useState('global');
+  const [intake, setIntake] = useState('');
   const [sel, setSel] = useState([]);
   const [confirm, setConfirm] = useState(null);
   const [detail, setDetail] = useState(null);        // ردیف باز در کشو
+  const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
   const [q, setQ] = useState('');
   const [fdiff, setFdiff] = useState('');
@@ -48,11 +53,17 @@ export default function Questions() {
   const load = async () => {
     setErr('');
     try {
-      const r = await api.caQuestionsPending();
+      const r = await api.caQuestionsPending(intake || undefined);
       setRows(r.questions || r.items || []);
-    } catch (e) { setErr(errText(e)); }
+    } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    api.questionIntakes().then(r => {
+      setIntakes(r.intakes || []); setScopeKind(r.scope_kind || 'global');
+      if (r.scope_kind === 'scoped') setIntake(r.scope_intake || r.intakes?.[0]?.code || '');
+    }).catch(e => { if (e.status === 403) setPermErr(true); else setErr(errText(e)); });
+  }, []);
+  useEffect(() => { setRows(null); setSel([]); load(); }, [intake]);
 
   const act = async (qid, kind) => {
     try {
@@ -80,6 +91,7 @@ export default function Questions() {
     return true;
   }), [rows, q, fdiff, fsrc]);
 
+  if (permErr) return <NoPerm text="بازبینی سؤال نیازمند مجوز questions.review یا questions.review_scoped است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const cols = [
@@ -111,6 +123,7 @@ export default function Questions() {
         <div><div className="h1">بازبینی سوالات</div>
           <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید — مشاهده/ویرایش، تک‌تک یا گروهی</div></div>
         <span className="spacer" />
+        <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
         <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
         {sel.length > 0 && <>
           <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
@@ -120,6 +133,10 @@ export default function Questions() {
       </div>
 
       <div className="panel panel-pad row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)}>
+          {scopeKind === 'global' && <option value="">🌐 سؤالات سراسری</option>}
+          {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
+        </select>
         <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 متن/درس/مبحث…"
                value={q} onChange={e => setQ(e.target.value)} />
         <select className="inp" value={fdiff} onChange={e => setFdiff(e.target.value)}>
@@ -128,7 +145,7 @@ export default function Questions() {
         </select>
         <select className="inp" value={fsrc} onChange={e => setFsrc(e.target.value)}>
           <option value="">همه‌ی منابع</option>
-          <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option>
+          <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
         {(q || fdiff || fsrc) && <B kind="acc">{fa(vis.length)} از {fa(rows?.length ?? 0)}</B>}
       </div>
@@ -153,17 +170,65 @@ export default function Questions() {
                  onNo={() => setConfirm(null)} />
       )}
 
+      {createOpen && <QuestionCreateModal intake={intake} onClose={(ok) => {
+        setCreateOpen(false); if (ok) load();
+      }} />}
       {importOpen && (
-        <ImportWizard onClose={() => setImportOpen(false)}
-          onDone={(n) => { setImportOpen(false); toast(`📥 ${fa(n)} سؤال در صف بازبینی درج شد`); load(); }} />
+        <ImportWizard intake={intake} onClose={() => setImportOpen(false)}
+          onDone={(n) => { setImportOpen(false); toast(`📥 ${fa(n)} سؤال درج شد`); load(); }} />
       )}
     </>
   );
 }
 
+/* ── ➕ فرم مستقل ساخت یک سؤال ─────────────────────────── */
+function QuestionCreateModal({ intake, onClose }) {
+  const [f, setF] = useState({
+    lesson: '', topic: '', difficulty: 'medium', question: '',
+    options: ['', '', '', ''], correct: 0, explanation: '',
+  });
+  const [approve, setApprove] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const setOpt = (i, v) => setF(x => ({ ...x, options: x.options.map((o, j) => j === i ? v : o) }));
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const kept = f.options.map((x, i) => ({ text: x.trim(), i })).filter(x => x.text);
+      const correct = kept.findIndex(x => x.i === f.correct);
+      if (correct < 0) throw new Error('گزینه صحیح نباید خالی باشد');
+      const r = await api.caQuestionsImport([{ ...f, options: kept.map(x => x.text), correct }], approve, intake);
+      if (!r.inserted) throw new Error(r.failed?.[0]?.error || 'سؤال درج نشد');
+      toast(approve ? 'سؤال ساخته و منتشر شد ✅' : 'سؤال در صف بازبینی ثبت شد ✅'); onClose(true);
+    } catch (e) { toast(errText(e), 'err'); setBusy(false); }
+  };
+  return <Modal title="➕ ساخت سؤال جدید" onClose={() => onClose(false)}>
+    <div className="grid" style={{ gap: 10 }}>
+      <div className="row"><B kind={intake ? 'purple' : 'acc'}>{intake ? `🏷 ورودی ${intake}` : '🌐 سراسری'}</B>
+        <span className="spacer" /><label className="row"><Switch on={approve} onChange={setApprove} /><span>انتشار مستقیم</span></label></div>
+      <div className="row"><input className="inp" style={{ flex: 1 }} placeholder="درس *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
+        <input className="inp" style={{ flex: 1 }} placeholder="مبحث" value={f.topic} onChange={e => set('topic', e.target.value)} />
+        <select className="inp" value={f.difficulty} onChange={e => set('difficulty', e.target.value)}><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select></div>
+      <textarea className="inp" rows={3} placeholder="متن سؤال *" value={f.question} onChange={e => set('question', e.target.value)} />
+      <b>گزینه‌ها <span className="muted">— گزینه صحیح را علامت بزنید</span></b>
+      {f.options.map((o, i) => <div key={i} className="row">
+        <input type="radio" name="new-q-correct" checked={f.correct === i} onChange={() => set('correct', i)} />
+        <input className="inp" style={{ flex: 1 }} placeholder={`گزینه ${fa(i + 1)}`} value={o} onChange={e => setOpt(i, e.target.value)} />
+        <button className="btn sm danger" disabled={f.options.length <= 2} onClick={() => setF(x => ({ ...x,
+          options: x.options.filter((_, j) => j !== i), correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct) }))}>✕</button>
+      </div>)}
+      {f.options.length < 6 && <button className="btn sm" onClick={() => set('options', [...f.options, ''])}>➕ گزینه</button>}
+      <textarea className="inp" rows={2} placeholder="توضیح پاسخ (اختیاری)" value={f.explanation} onChange={e => set('explanation', e.target.value)} />
+      <div className="row"><button className="btn primary" disabled={busy || !f.lesson.trim() || f.question.trim().length < 5 || f.options.filter(x => x.trim()).length < 2} onClick={submit}>{busy ? '⏳…' : 'ثبت سؤال'}</button>
+        <button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+    </div>
+  </Modal>;
+}
+
+
 /* ── 📥🌊 ویزارد درون‌ریزی گروهی (موج Q-Import) — ۳ گام: متن ← بازبینی ← ثبت ── */
 const IM_STEPS = ['ورود متن', 'بازبینی', 'ثبت'];
-function ImportWizard({ onClose, onDone }) {
+function ImportWizard({ intake, onClose, onDone }) {
   const [step, setStep] = useState(0);
   const [text, setText] = useState('');
   const [approve, setApprove] = useState(false);
@@ -176,7 +241,7 @@ function ImportWizard({ onClose, onDone }) {
   const submit = async () => {
     setBusy(true);
     try {
-      const r = await api.caQuestionsImport(okRows.map(r => r.item), approve);
+      const r = await api.caQuestionsImport(okRows.map(r => r.item), approve, intake);
       setResult(r);
       setStep(2);
     } catch (e) { toast(errText(e), 'err'); }
@@ -185,6 +250,7 @@ function ImportWizard({ onClose, onDone }) {
 
   return (
     <Drawer title="📥 درون‌ریزی گروهی سؤال" onClose={onClose} wide>
+      <div style={{ marginBottom: 8 }}><B kind={intake ? 'purple' : 'acc'}>{intake ? `🏷 ورودی ${intake}` : '🌐 سراسری'}</B></div>
       <div className="wiz-steps" style={{ marginBottom: 14 }}>
         {IM_STEPS.map((l, i) => (
           <div key={l} className={`wiz-step ${step === i ? 'on' : ''} ${step > i ? 'done' : ''}`}>
@@ -229,7 +295,7 @@ function ImportWizard({ onClose, onDone }) {
           { k: 'topic', label: 'مبحث', render: r => r.item.topic },
           { k: 'diff', label: 'سختی', render: r => { const [l, kk] = DIFF[r.item.difficulty] || ['—', '']; return <B kind={kk}>{l}</B>; } },
           { k: 'ops', label: 'گزینه/صحیح', render: r => `${fa(r.item.options.length)} / ${fa(r.item.correct + 1)}` },
-        ]} rows={okRows.slice(0, 60)} rowKey={r => String(r.li)}
+        ]} rows={okRows.slice(0, 60)} rowKey="li"
           empty={<Empty icon="🗂" text="سؤال معتبری نیست" />} />
         {okRows.length > 60 && <div className="muted" style={{ marginTop: 4 }}>… و {fa(okRows.length - 60)} مورد دیگر</div>}
         {badRows.length > 0 && (

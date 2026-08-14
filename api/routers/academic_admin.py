@@ -6,7 +6,6 @@ from datetime import datetime
 from html import escape
 from typing import Literal
 
-from bson import ObjectId
 from fastapi import (
     APIRouter,
     Depends,
@@ -16,6 +15,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from api.auth import get_content_admin_user
+from api.routers.admin_panel import _audit
 from database import db
 from grade_utils import normalize_grade
 
@@ -284,249 +284,88 @@ async def schedule_list(
 @router.post("/schedule")
 async def schedule_create(
     body: ScheduleCreate,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
+    admin=Depends(get_content_admin_user),
 ):
-    date = _valid_date(
-        body.date
-    )
-
-    time = _valid_time(
-        body.time
-    )
-
-    lesson = _clean(
-        body.lesson,
-        100,
-    )
-
-    teacher = _clean(
-        body.teacher,
-        100,
-    )
-
-    location = _clean(
-        body.location,
-        100,
-    )
-
-    note = str(
-        body.note or ""
-    ).strip()[:500]
-
+    date = _valid_date(body.date)
+    time = _valid_time(body.time)
+    lesson = _clean(body.lesson, 100)
+    teacher = _clean(body.teacher, 100)
+    location = _clean(body.location, 100)
+    note = str(body.note or "").strip()[:500]
+    group = db.normalize_group(body.group) or "هر دو"
     schedule_id = await db.add_schedule(
-        stype=body.type,
-        lesson=lesson,
-        teacher=teacher,
-        date=date,
-        time=time,
-        location=location,
-        notes=note,
-        group=body.group,
-        flex_type=body.flex_type,
-    )
-
-    notified = 0
-
-    try:
-        users = await db.notif_users(
-            "schedule",
-            group=body.group,
-        )
-
-        collection = (
-            db.client["medicalbot"]
-            ["bot_notifications"]
-        )
-
-        icon = {
-            "class": "🏫",
-            "exam": "📝",
-            "makeup": "🔄",
-        }[body.type]
-
-        type_label = {
-            "class": "کلاس",
-            "exam": "امتحان",
-            "makeup": "جبرانی",
-        }[body.type]
-
-        text = (
-            f"{icon} "
-            f"<b>{type_label} جدید</b>"
-            f"\n📚 {escape(lesson)}"
-            f"\n📅 {date}"
-        )
-
-        if time:
-            text += f"  ⏰ {time}"
-
-        if teacher:
-            text += (
-                f"\n👨‍🏫 "
-                f"{escape(teacher)}"
-            )
-
-        if location:
-            text += (
-                f"\n📍 "
-                f"{escape(location)}"
-            )
-
-        documents = [
-            {
-                "type":
-                    "schedule_notif",
-
-                "chat_id":
-                    user["user_id"],
-
-                "text":
-                    text,
-
-                "sent":
-                    False,
-
-                "created_at":
-                    datetime.now()
-                    .isoformat(),
-            }
-            for user in users
-            if user.get("user_id")
-        ]
-
-        if documents:
-            await collection.insert_many(
-                documents
-            )
-
-        notified = len(documents)
-
-        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به تب «برنامه»)
-        _inbox_body = f"📚 {lesson}\n📅 {date}"
-        if time: _inbox_body += f"  ⏰ {time}"
-        if teacher: _inbox_body += f"\n👨‍🏫 {teacher}"
-        from urllib.parse import quote as _qq
-        await db.inbox_add_many([
-            {'user_id': user['user_id'], 'type': body.type,
-             'title': f"{icon} {type_label} جدید",
-             'body': _inbox_body,
-             'link': '/schedule?hl=' + _qq(str(lesson or ''))}
-            for user in users if user.get('user_id')
-        ])
-
-    except Exception:
-        notified = 0
-
-    return {
-        "ok": True,
-        "id": str(schedule_id),
-        "notified": notified,
+        stype=body.type, lesson=lesson, teacher=teacher, date=date, time=time,
+        location=location, notes=note, group=group, flex_type=body.flex_type)
+    item = await db.get_schedule_by_id(str(schedule_id)) or {
+        "_id": schedule_id, "type": body.type, "lesson": lesson,
+        "teacher": teacher, "date": date, "time": time,
+        "location": location, "notes": note, "group": group,
     }
+    notice = await db.schedule_notify_event(item, "created")
+    await _audit(
+        admin, "ایجاد برنامه آموزشی", "Schedules", severity="INFO",
+        target_id=str(schedule_id), target_type="schedule", target_label=lesson,
+        after={"type": body.type, "date": date, "group": group,
+               "notified": notice.get("notified", 0)},
+        tags=["برنامه", body.type, "پنل_وب"],
+    )
+    return {"ok": True, "id": str(schedule_id),
+            "notified": notice.get("notified", 0)}
 
 
-@router.patch(
-    "/schedule/{schedule_id}"
-)
+@router.patch("/schedule/{schedule_id}")
 async def schedule_update(
-    schedule_id: str,
-    body: ScheduleUpdate,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
+    schedule_id: str, body: ScheduleUpdate,
+    admin=Depends(get_content_admin_user),
 ):
-    date = _valid_date(
-        body.date
-    )
-
-    time = _valid_time(
-        body.time
-    )
-
+    date = _valid_date(body.date)
+    time = _valid_time(body.time)
+    old = await db.get_schedule_by_id(schedule_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
+    group = db.normalize_group(body.group) or "هر دو"
     ok = await db.update_schedule_full(
-        schedule_id,
-
-        _clean(
-            body.lesson,
-            100,
-        ),
-
-        _clean(
-            body.teacher,
-            100,
-        ),
-
-        date,
-        time,
-
-        _clean(
-            body.location,
-            100,
-        ),
-
-        str(
-            body.note or ""
-        ).strip()[:500],
-
-        body.group,
-        body.flex_type,
-    )
-
+        schedule_id, _clean(body.lesson, 100), _clean(body.teacher, 100),
+        date, time, _clean(body.location, 100),
+        str(body.note or "").strip()[:500], group, body.flex_type)
     if not ok:
-        raise HTTPException(
-            status_code=404,
-            detail="برنامه پیدا نشد",
-        )
-
-    return {
-        "ok": True,
+        raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
+    item = await db.get_schedule_by_id(schedule_id) or {
+        **old, "lesson": _clean(body.lesson, 100),
+        "teacher": _clean(body.teacher, 100), "date": date, "time": time,
+        "location": _clean(body.location, 100), "notes": str(body.note or "").strip()[:500],
+        "group": group, "flex_type": body.flex_type,
     }
-
-
-@router.delete(
-    "/schedule/{schedule_id}"
-)
-async def schedule_delete(
-    schedule_id: str,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
-):
-    try:
-        object_id = ObjectId(
-            schedule_id
-        )
-
-    except Exception:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "شناسه برنامه "
-                "نامعتبر است"
-            ),
-        )
-
-    result = await (
-        db.schedules.delete_one(
-            {
-                "_id": object_id,
-            }
-        )
+    notice = await db.schedule_notify_event(item, "updated")
+    await _audit(
+        admin, "ویرایش برنامه آموزشی", "Schedules", severity="WARNING",
+        target_id=schedule_id, target_type="schedule", target_label=item.get("lesson", ""),
+        before={"lesson": old.get("lesson"), "date": old.get("date"),
+                "time": old.get("time"), "group": old.get("group")},
+        after={"lesson": item.get("lesson"), "date": date, "time": time,
+               "group": group, "notified": notice.get("notified", 0)},
+        tags=["برنامه", old.get("type", ""), "پنل_وب"],
     )
+    return {"ok": True, "notified": notice.get("notified", 0)}
 
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=404,
-            detail="برنامه پیدا نشد",
-        )
 
-    return {
-        "ok": True,
-    }
+@router.delete("/schedule/{schedule_id}")
+async def schedule_delete(
+    schedule_id: str, admin=Depends(get_content_admin_user),
+):
+    old = await db.get_schedule_by_id(schedule_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
+    await db.delete_schedule(schedule_id)
+    notice = await db.schedule_notify_event(old, "cancelled")
+    await _audit(
+        admin, "حذف و لغو برنامه آموزشی", "Schedules", severity="HIGH",
+        target_id=schedule_id, target_type="schedule", target_label=old.get("lesson", ""),
+        before={"type": old.get("type"), "date": old.get("date"), "group": old.get("group")},
+        after={"deleted": True, "notified": notice.get("notified", 0)},
+        tags=["برنامه", "لغو", old.get("type", ""), "پنل_وب"],
+    )
+    return {"ok": True, "notified": notice.get("notified", 0)}
 
 
 @router.get(
@@ -558,151 +397,34 @@ async def flexible_schedule_list(
     }
 
 
-@router.post(
-    "/schedule/{schedule_id}"
-    "/flex-change"
-)
+@router.post("/schedule/{schedule_id}/flex-change")
 async def flexible_schedule_change(
-    schedule_id: str,
-    body: FlexChange,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
+    schedule_id: str, body: FlexChange,
+    admin=Depends(get_content_admin_user),
 ):
-    date = _valid_date(
-        body.date
-    )
-
-    time = _valid_time(
-        body.time
-    )
-
-    schedule = (
-        await db.get_schedule_by_id(
-            schedule_id
-        )
-    )
-
+    date = _valid_date(body.date)
+    time = _valid_time(body.time)
+    schedule = await db.get_schedule_by_id(schedule_id)
     if not schedule:
-        raise HTTPException(
-            status_code=404,
-            detail="برنامه پیدا نشد",
-        )
-
-    if (
-        schedule.get("flex_type")
-        != "flexible"
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "این کلاس منعطف نیست"
-            ),
-        )
-
-    note = str(
-        body.note or ""
-    ).strip()[:500]
-
-    ok = await db.update_schedule_time(
-        schedule_id,
-        date,
-        time,
-        note,
-    )
-
+        raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
+    if schedule.get("flex_type") != "flexible":
+        raise HTTPException(status_code=422, detail="این برنامه منعطف نیست")
+    ok = await db.update_schedule_time(schedule_id, date, time,
+                                       str(body.note or "").strip()[:500])
     if not ok:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "زمان کلاس "
-                "به‌روزرسانی نشد"
-            ),
-        )
-
-    notified = 0
-
-    try:
-        users = await db.notif_users(
-            "schedule",
-
-            group=schedule.get(
-                "group",
-                "هر دو",
-            ),
-        )
-
-        collection = (
-            db.client["medicalbot"]
-            ["bot_notifications"]
-        )
-
-        text = (
-            "🔄 <b>تغییر زمان کلاس</b>"
-            f"\n📚 "
-            f"{escape(str(schedule.get('lesson', '')))}"
-            f"\n📅 {date}  ⏰ {time}"
-        )
-
-        if schedule.get("location"):
-            text += (
-                f"\n📍 "
-                f"{escape(str(schedule['location']))}"
-            )
-
-        if note:
-            text += (
-                f"\n📝 {escape(note)}"
-            )
-
-        documents = [
-            {
-                "type":
-                    "schedule_flex_change",
-
-                "chat_id":
-                    user["user_id"],
-
-                "text":
-                    text,
-
-                "sent":
-                    False,
-
-                "created_at":
-                    datetime.now()
-                    .isoformat(),
-            }
-            for user in users
-            if user.get("user_id")
-        ]
-
-        if documents:
-            await collection.insert_many(
-                documents
-            )
-
-        notified = len(documents)
-
-        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (تغییر زمان کلاس)
-        from urllib.parse import quote as _qq2
-        await db.inbox_add_many([
-            {'user_id': user['user_id'], 'type': 'schedule_change',
-             'title': "🔄 تغییر زمان کلاس",
-             'body': (f"📚 {schedule.get('lesson', '')}\n"
-                      f"📅 {date}  ⏰ {time}"),
-             'link': '/schedule?hl=' + _qq2(str(schedule.get('lesson', '') or ''))}
-            for user in users if user.get('user_id')
-        ])
-
-    except Exception:
-        notified = 0
-
-    return {
-        "ok": True,
-        "notified": notified,
-    }
+        raise HTTPException(status_code=500, detail="تغییر زمان ذخیره نشد")
+    item = {**schedule, "date": date, "time": time,
+            "flex_note": str(body.note or "").strip()[:500]}
+    notice = await db.schedule_notify_event(item, "time_changed")
+    await _audit(
+        admin, "اعلام تغییر زمان برنامه", "Schedules", severity="WARNING",
+        target_id=schedule_id, target_type="schedule", target_label=schedule.get("lesson", ""),
+        before={"date": schedule.get("date"), "time": schedule.get("time")},
+        after={"date": date, "time": time,
+               "notified": notice.get("notified", 0)},
+        tags=["برنامه", "تغییر_زمان", schedule.get("type", ""), "پنل_وب"],
+    )
+    return {"ok": True, "notified": notice.get("notified", 0)}
 
 
 class GradeEntry(BaseModel):
@@ -900,6 +622,13 @@ async def grades_bulk_create(
     except Exception:
         notified = 0
 
+    await _audit(
+        admin, "ثبت گروهی نمره", "Grades", severity="WARNING",
+        target_type="grades", target_label=f"{len(saved)} دانشجو",
+        after={"lesson": lesson, "exam_title": exam_title,
+               "updated": len(saved), "notified": notified},
+        tags=["نمرات", "ثبت_گروهی", "پنل_وب"],
+    )
     return {
         "ok": True,
         "updated": len(saved),
@@ -1078,104 +807,61 @@ async def grades_find_student(
     }
 
 
-@router.patch(
-    "/grades/{grade_id}"
-)
+@router.patch("/grades/{grade_id}")
 async def grade_update(
-    grade_id: str,
-    body: GradeUpdate,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
+    grade_id: str, body: GradeUpdate,
+    admin=Depends(get_content_admin_user),
 ):
-    try:
-        object_id = ObjectId(
-            grade_id
+    old = await db.grade_get(grade_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="نمره پیدا نشد")
+    ok = await db.grade_update_score(grade_id, body.score, admin["id"])
+    if not ok:
+        raise HTTPException(status_code=500, detail="اصلاح نمره انجام نشد")
+    uid = old.get("student_id")
+    if uid:
+        await db.notify_user(
+            uid, "grade", title="📊 نمره‌ات اصلاح شد",
+            body=(f"📚 {old.get('lesson','')} — {old.get('exam_title','')}\n"
+                  f"🎯 نمره جدید: {body.score}/20"),
+            link="/grades", dm=(
+                f"📊 <b>نمره‌ات اصلاح شد</b>\n\n"
+                f"📚 {old.get('lesson','')} — {old.get('exam_title','')}\n"
+                f"🎯 نمره جدید: <b>{body.score}/20</b>"),
         )
-
-    except Exception:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "شناسه نمره "
-                "نامعتبر است"
-            ),
-        )
-
-    result = await db.grades.update_one(
-        {
-            "_id": object_id,
-        },
-
-        {
-            "$set": {
-                "score":
-                    body.score,
-
-                "max_score":
-                    20,
-
-                "entered_by":
-                    admin["id"],
-
-                "updated_at":
-                    datetime.now()
-                    .isoformat(),
-            }
-        },
+    await _audit(
+        admin, "اصلاح نمره دانشجو", "Grades", severity="HIGH",
+        target_id=grade_id, target_type="grade", target_label=str(uid or ""),
+        before={"score": old.get("score")}, after={"score": body.score},
+        tags=["نمرات", "اصلاح", "پنل_وب"],
     )
-
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=404,
-            detail="نمره پیدا نشد",
-        )
-
-    return {
-        "ok": True,
-        "score": body.score,
-    }
+    return {"ok": True, "score": body.score}
 
 
-@router.delete(
-    "/grades/{grade_id}"
-)
+@router.delete("/grades/{grade_id}")
 async def grade_delete(
-    grade_id: str,
-
-    admin=Depends(
-        get_content_admin_user
-    ),
+    grade_id: str, admin=Depends(get_content_admin_user),
 ):
-    try:
-        object_id = ObjectId(
-            grade_id
+    old = await db.grade_get(grade_id)
+    if not old:
+        raise HTTPException(status_code=404, detail="نمره پیدا نشد")
+    ok = await db.grade_delete(grade_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="حذف نمره انجام نشد")
+    uid = old.get("student_id")
+    if uid:
+        await db.notify_user(
+            uid, "grade", title="📊 یک نمره از کارنامه حذف شد",
+            body=f"📚 {old.get('lesson','')} — {old.get('exam_title','')}",
+            link="/grades", dm=(
+                f"📊 <b>یک نمره از کارنامه‌ات حذف شد</b>\n\n"
+                f"📚 {old.get('lesson','')} — {old.get('exam_title','')}"),
         )
-
-    except Exception:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "شناسه نمره "
-                "نامعتبر است"
-            ),
-        )
-
-    result = (
-        await db.grades.delete_one(
-            {
-                "_id": object_id,
-            }
-        )
+    await _audit(
+        admin, "حذف نمره دانشجو", "Grades", severity="HIGH",
+        target_id=grade_id, target_type="grade", target_label=str(uid or ""),
+        before={"lesson": old.get("lesson"), "exam_title": old.get("exam_title"),
+                "score": old.get("score")}, after={"deleted": True},
+        tags=["نمرات", "حذف", "پنل_وب"],
     )
-
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=404,
-            detail="نمره پیدا نشد",
-        )
-
-    return {
-        "ok": True,
-    }
+    return {"ok": True}

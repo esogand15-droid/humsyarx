@@ -1,21 +1,21 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, Empty, B, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
 
 // ════════════════════════════════════════════════════════════════════
 // 🌊 WA3 — تب‌های پریتی «مرکز فرماندهی محتوا» (همه روی API موجود، scope-aware)
 // ════════════════════════════════════════════════════════════════════
 
 export function useIntakes() {
-  const [intakes, setIntakes] = useState([]);
-  useEffect(() => { api.caIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
-  return intakes;
+  const [meta, setMeta] = useState({ intakes: [], scope_kind: 'global', scope_intake: '' });
+  useEffect(() => { api.caIntakes().then(r => setMeta({ intakes: r.intakes || [], scope_kind: r.scope_kind || 'global', scope_intake: r.scope_intake || '' })).catch(() => {}); }, []);
+  return meta;
 }
 
-function IntakeSelect({ intakes, value, onChange }) {
+function IntakeSelect({ intakes, value, onChange, scopeKind = 'global' }) {
   return (
-    <select className="inp" value={value} onChange={e => onChange(e.target.value)}>
-      <option value="">🌐 سراسری (پایه)</option>
+    <select className="inp" value={value} disabled={scopeKind === 'scoped'} onChange={e => onChange(e.target.value)}>
+      {scopeKind === 'global' && <option value="">🌐 سراسری (پایه)</option>}
       {intakes.map(i => <option key={i.code || i} value={i.code || i}>🏷 {i.label || i.code || i}</option>)}
     </select>
   );
@@ -23,35 +23,48 @@ function IntakeSelect({ intakes, value, onChange }) {
 
 // ── 📖 رفرنس‌ها: موضوع → کتاب → فایل (سه‌ستونه‌ی فرماندهی) ──────────
 export function RefsTab() {
-  const intakes = useIntakes();
+  const intakeMeta = useIntakes();
+  const intakes = intakeMeta.intakes;
   const [intake, setIntake] = useState('');
   const [subjects, setSubjects] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [sub, setSub] = useState(null);
   const [books, setBooks] = useState(null);
+  const [booksReadonly, setBooksReadonly] = useState(false);
   const [book, setBook] = useState(null);
   const [files, setFiles] = useState(null);
+  const [filesReadonly, setFilesReadonly] = useState(false);
   const [addModal, setAddModal] = useState(null);   // {kind:'subject'|'book'|'file'}
+  const [editModal, setEditModal] = useState(null); // {kind,item}
   const [confirm, setConfirm] = useState(null);     // {text, run}
+  useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
   const loadSubjects = async () => {
     setErr('');
-    try { setSubjects((await api.refSubjects(intake || undefined)).subjects || []); }
-    catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
+    try {
+      const r = await api.refSubjects(intake || undefined);
+      setSubjects(r.subjects || []);
+      if (!intake && r.intake) setIntake(r.intake);
+    } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => { setSub(null); setBook(null); loadSubjects(); }, [intake]);
   const loadBooks = async (s) => {
     setSub(s); setBook(null); setBooks(null);
-    try { setBooks((await api.refBooks(s.id)).books || []); } catch (e) { toast(errText(e), 'err'); }
+    try { const r = await api.refBooks(s.id); setBooks(r.books || []); setBooksReadonly(!!r.readonly); }
+    catch (e) { toast(errText(e), 'err'); }
   };
   const loadFiles = async (b) => {
     setBook(b); setFiles(null);
-    try { setFiles((await api.refFiles(b.id)).files || []); } catch (e) { toast(errText(e), 'err'); }
-  };
-  const after = (fn, okMsg) => async () => {
-    try { await fn(); toast(okMsg || 'انجام شد'); }
+    try { const r = await api.refFiles(b.id); setFiles(r.files || []); setFilesReadonly(!!r.readonly); }
     catch (e) { toast(errText(e), 'err'); }
+  };
+  const reorderRef = async (fn, reload) => {
+    try {
+      const r = await fn();
+      if (r?.ok === false) return toast('به ابتدا/انتهای فهرست رسیده‌اید', 'err');
+      toast('ترتیب ذخیره شد ✅'); await reload();
+    } catch (e) { toast(errText(e), 'err'); }
   };
 
   if (permErr) return <NoPerm text="مدیریت رفرنس‌ها فقط برای مدیر محتواست" />;
@@ -60,7 +73,7 @@ export function RefsTab() {
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
-        <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} />
+        <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} scopeKind={intakeMeta.scope_kind} />
         <span className="spacer" />
         <button className="btn sm primary" onClick={() => setAddModal({ kind: 'subject' })}>➕ موضوع</button>
       </div>
@@ -69,17 +82,21 @@ export function RefsTab() {
         <div className="panel" style={{ maxHeight: '72vh', overflowY: 'auto' }}>
           {!subjects ? <div className="panel-pad"><Loading /></div> :
            subjects.length === 0 ? <Empty icon="📖" text="موضوعی نیست" /> :
-           subjects.map(s => (
+           subjects.map((s, i) => (
             <div key={s.id} className={`tree-row ${sub?.id === s.id ? 'on' : ''}`} style={{ cursor: 'pointer' }}
                  onClick={() => loadBooks(s)}>
               <span>📖</span>
               <span style={{ flex: 1, color: 'var(--txt)' }}>{s.name}</span>
               {s.readonly && <B>🔒</B>}
-              {!s.readonly && (
+              {!s.readonly && <>
+                <button className="btn sm" disabled={i === 0} title="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'up'), loadSubjects); }}>↑</button>
+                <button className="btn sm" disabled={i === subjects.length - 1} title="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'down'), loadSubjects); }}>↓</button>
+                <button className="btn sm" title="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'subject', item: s }); }}>✏️</button>
                 <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
                   text: `حذف موضوع «${s.name}» با همه‌ی کتاب‌ها و فایل‌هایش؟`,
                   run: async () => { await api.refSubjectDel(s.id); toast('حذف شد'); setSub(null); loadSubjects(); },
-                }); }}>🗑</button>)}
+                }); }}>🗑</button>
+              </>}
             </div>
           ))}
         </div>
@@ -94,7 +111,7 @@ export function RefsTab() {
                 {!sub.readonly && <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })}>➕</button>}
               </div>
               {books.length === 0 && <Empty icon="📕" text="کتابی نیست" />}
-              {books.map(b => (
+              {books.map((b, i) => (
                 <div key={b.id} className={`tree-row ${book?.id === b.id ? 'on' : ''}`} style={{ cursor: 'pointer' }}
                      onClick={() => loadFiles(b)}>
                   <span>{b.is_fork ? '⭐' : b.intake ? '🏷' : '📕'}</span>
@@ -105,16 +122,20 @@ export function RefsTab() {
                               try { await api.refBookFork(b.id, intake); toast('Fork ساخته شد ⭐'); loadBooks(sub); }
                               catch (err) { toast(errText(err), 'err'); }
                             })(); }}>🍴</button>}
-                  {b.is_fork &&
-                    <button className="btn sm" title="بازگشت به نسخه‌ی سراسری"
+                  {( !booksReadonly || b.is_fork || b.intake === intake) ? <>
+                    <button className="btn sm" disabled={i === 0} title="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'up'), () => loadBooks(sub)); }}>↑</button>
+                    <button className="btn sm" disabled={i === books.length - 1} title="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'down'), () => loadBooks(sub)); }}>↓</button>
+                    <button className="btn sm" title="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'book', item: b }); }}>✏️</button>
+                    {b.is_fork && <button className="btn sm" title="بازگشت به نسخه‌ی سراسری"
                             onClick={(e) => { e.stopPropagation(); (async () => {
                               try { await api.refBookUnfork(b.id); toast('↩️ بازگشت به نسخه‌ی سراسری'); loadBooks(sub); }
                               catch (err) { toast(errText(err), 'err'); }
                             })(); }}>↩️</button>}
-                  <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
-                    text: `حذف کتاب «${b.name}» و فایل‌هایش؟`,
-                    run: async () => { await api.refBookDel(b.id); toast('حذف شد'); setBook(null); loadBooks(sub); },
-                  }); }}>🗑</button>
+                    <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
+                      text: `حذف کتاب «${b.name}» و فایل‌هایش؟`,
+                      run: async () => { await api.refBookDel(b.id); toast('حذف شد'); setBook(null); loadBooks(sub); },
+                    }); }}>🗑</button>
+                  </> : <B>🔒</B>}
                 </div>
               ))}
             </>
@@ -128,7 +149,8 @@ export function RefsTab() {
             <>
               <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 12px' }}>
                 <b style={{ fontSize: 12.5 }}>📁 {book.name}</b><span className="spacer" />
-                <button className="btn sm primary" onClick={() => setAddModal({ kind: 'file' })}>⬆️ آپلود فایل</button>
+                {filesReadonly ? <B>🔒 فقط‌خواندنی</B> :
+                  <button className="btn sm primary" onClick={() => setAddModal({ kind: 'file' })}>⬆️ آپلود فایل</button>}
               </div>
               {files.length === 0 && <Empty icon="📭" text="فایلی نیست" />}
               {files.map(f => (
@@ -139,10 +161,10 @@ export function RefsTab() {
                     <div className="muted">جلد {f.volume}</div>
                   </div>
                   <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
-                  <button className="btn sm danger" onClick={() => setConfirm({
+                  {!filesReadonly && <button className="btn sm danger" onClick={() => setConfirm({
                     text: 'حذف این فایل؟',
                     run: async () => { await api.refFileDel(f.id); toast('حذف شد'); loadFiles(book); },
-                  })}>🗑</button>
+                  })}>🗑</button>}
                 </div>
               ))}
             </>
@@ -157,11 +179,31 @@ export function RefsTab() {
                        if (ok) { if (addModal.kind === 'subject') loadSubjects(); else if (addModal.kind === 'book') loadBooks(sub); else loadFiles(book); }
                      }} />
       )}
+      {editModal && <RefNameModal kind={editModal.kind} item={editModal.item}
+        onClose={(ok) => { const kind = editModal.kind; setEditModal(null); if (ok) kind === 'subject' ? loadSubjects() : loadBooks(sub); }} />}
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
     </>
   );
+}
+
+function RefNameModal({ kind, item, onClose }) {
+  const [name, setName] = useState(item.name || '');
+  const [busy, setBusy] = useState(false);
+  return <Modal title={kind === 'subject' ? '✏️ ویرایش موضوع رفرنس' : '✏️ ویرایش نام کتاب'} onClose={() => onClose(false)}>
+    <div className="grid" style={{ gap: 10 }}>
+      <input className="inp" value={name} onChange={e => setName(e.target.value)} autoFocus />
+      <div className="row"><button className="btn primary" disabled={busy || !name.trim()} onClick={async () => {
+        setBusy(true);
+        try {
+          if (kind === 'subject') await api.refSubjectEdit(item.id, name.trim());
+          else await api.refBookEdit(item.id, name.trim());
+          toast('نام ذخیره شد ✅'); onClose(true);
+        } catch (e) { toast(errText(e), 'err'); setBusy(false); }
+      }}>ذخیره</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+    </div>
+  </Modal>;
 }
 
 function RefAddModal({ kind, sub, book, intake, onClose }) {
@@ -271,7 +313,7 @@ export function ScheduleTab() {
               <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })}>✏️</button>
               <button className="btn sm danger" onClick={() => setConfirm({
                 text: `حذف «${s.lesson}» (${s.date})؟`,
-                run: async () => { await api.caScheduleDel(s.id); toast('حذف شد'); load(); },
+                run: async () => { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); load(); },
               })}>🗑</button>
             </div>
           ))}
@@ -325,9 +367,10 @@ function ScheduleModal({ row, preset, onClose }) {
             setBusy(true);
             try {
               const body = { ...f };
-              if (row) { delete body.type; await api.caScheduleEdit(row.id, body); }
-              else await api.caScheduleCreate(body);
-              toast('ثبت شد ✅'); onClose(true);
+              let r;
+              if (row) { delete body.type; r = await api.caScheduleEdit(row.id, body); }
+              else r = await api.caScheduleCreate(body);
+              toast(`ثبت شد و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد ✅`); onClose(true);
             } catch (e) { toast(errText(e), 'err'); }
             setBusy(false);
           }}>{row ? 'ذخیره' : 'ایجاد + اطلاع‌رسانی'}</button>
@@ -369,7 +412,8 @@ function FlexModal({ row, onClose }) {
 
 // ── 🗂 بانک سؤال (فایل‌های PDF/ویدیو/ویس مباحث) ─────────────────────
 export function QbankTab() {
-  const intakes = useIntakes();
+  const intakeMeta = useIntakes();
+  const intakes = intakeMeta.intakes;
   const [intake, setIntake] = useState('');
   const [lesson, setLesson] = useState('');
   const [topic, setTopic] = useState('');
@@ -378,6 +422,7 @@ export function QbankTab() {
   const [permErr, setPermErr] = useState(false);
   const [addModal, setAddModal] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
   const load = async () => {
     setErr('');
@@ -393,7 +438,7 @@ export function QbankTab() {
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
-        <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} />
+        <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} scopeKind={intakeMeta.scope_kind} />
         <input className="inp" placeholder="درس…" value={lesson} onChange={e => setLesson(e.target.value)} />
         <input className="inp" placeholder="مبحث…" value={topic} onChange={e => setTopic(e.target.value)} />
         <button className="btn sm" onClick={() => { setFiles(null); load(); }}>🔎 اعمال فیلتر</button>
@@ -423,7 +468,7 @@ export function QbankTab() {
           ))}
         </div>
       )}
-      {addModal && <QbankAddModal intakes={intakes} defaultIntake={intake}
+      {addModal && <QbankAddModal intakes={intakes} scopeKind={intakeMeta.scope_kind} defaultIntake={intake}
                                   onClose={(ok) => { setAddModal(false); if (ok) load(); }} />}
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
@@ -432,7 +477,7 @@ export function QbankTab() {
   );
 }
 
-function QbankAddModal({ intakes, defaultIntake, onClose }) {
+function QbankAddModal({ intakes, scopeKind, defaultIntake, onClose }) {
   const [f, setF] = useState({ lesson: '', topic: '', description: '', intake: defaultIntake || '' });
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -445,7 +490,7 @@ function QbankAddModal({ intakes, defaultIntake, onClose }) {
           <input className="inp" style={{ flex: 1 }} placeholder="مبحث *" value={f.topic}
                  onChange={e => setF(x => ({ ...x, topic: e.target.value }))} />
         </div>
-        <IntakeSelect intakes={intakes} value={f.intake} onChange={v => setF(x => ({ ...x, intake: v }))} />
+        <IntakeSelect intakes={intakes} value={f.intake} scopeKind={scopeKind} onChange={v => setF(x => ({ ...x, intake: v }))} />
         <input className="inp" placeholder="توضیح…" value={f.description}
                onChange={e => setF(x => ({ ...x, description: e.target.value }))} />
         <input type="file" className="inp" onChange={e => setFile(e.target.files[0] || null)} />
@@ -551,4 +596,66 @@ function FaqAddModal({ onClose }) {
       </div>
     </Modal>
   );
+}
+
+
+// ── 🚩 صف و تاریخچه گزارش‌های محتوا/سؤال ────────────────────────
+export function ReportsTab() {
+  const [status, setStatus] = useState('new');
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [err, setErr] = useState('');
+  const [permErr, setPermErr] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+  const LIMIT = 30;
+  const load = async () => {
+    setErr(''); setData(null);
+    try {
+      const [rows, counts] = await Promise.all([
+        api.caReports({ status: status || undefined, skip: (page - 1) * LIMIT, limit: LIMIT }),
+        api.caReportStats(),
+      ]);
+      setData(rows); setStats(counts);
+    } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, [status, page]);
+  const change = async () => {
+    const c = confirm; setConfirm(null);
+    try { await api.caReportStatus(c.row.id, c.status); toast('وضعیت گزارش ذخیره شد ✅'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  if (permErr) return <NoPerm text="بررسی گزارش‌های محتوا نیازمند مجوز reports.review است" />;
+  if (err) return <ErrorState error={err} onRetry={load} />;
+  const total = data?.total || 0;
+  const cols = [
+    { k: 'reason', label: 'دلیل', render: r => <B kind="warn">{r.reason || '—'}</B> },
+    { k: 'target_type', label: 'هدف', render: r => <div><b>{r.target_type === 'question' ? 'سؤال' : 'محتوا'}</b><div className="muted code">{r.target_id || '—'}</div></div> },
+    { k: 'note', label: 'توضیح', render: r => <span style={{ whiteSpace: 'pre-wrap' }}>{r.note || '—'}</span> },
+    { k: 'reporter_name', label: 'گزارش‌دهنده' },
+    { k: 'created_at', label: 'ثبت' },
+    { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'resolved' ? 'ok' : r.status === 'rejected' ? 'bad' : r.status === 'reviewing' ? 'acc' : 'warn'}>{r.status}</B> },
+    { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
+      {r.status !== 'reviewing' && <button className="btn sm" onClick={() => setConfirm({ row: r, status: 'reviewing' })}>👁 بررسی</button>}
+      {r.status !== 'resolved' && <button className="btn sm ok" onClick={() => setConfirm({ row: r, status: 'resolved' })}>✅ حل</button>}
+      {r.status !== 'rejected' && <button className="btn sm danger" onClick={() => setConfirm({ row: r, status: 'rejected' })}>✖ رد</button>}
+    </div> },
+  ];
+  return <>
+    <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+      <div><div className="h1">گزارش‌های محتوا و سؤال</div><div className="sub">صف بررسی، وضعیت جاری و تاریخچه کامل گزارش‌های دانشجویان</div></div>
+      <span className="spacer" />
+      {stats && <><B kind="warn">جدید: {Number(stats.new || 0).toLocaleString('fa')}</B><B kind="acc">در بررسی: {Number(stats.reviewing || 0).toLocaleString('fa')}</B><B kind="ok">حل: {Number(stats.resolved || 0).toLocaleString('fa')}</B></>}
+    </div>
+    <div className="tabs" style={{ marginBottom: 10 }}>
+      {[['new', 'جدید'], ['reviewing', 'در بررسی'], ['resolved', 'حل‌شده'], ['rejected', 'ردشده'], ['', 'همه تاریخچه']].map(([k, l]) =>
+        <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+    </div>
+    {!data ? <Loading rows={6} /> : <DataTable columns={cols} rows={data.reports || []} rowKey="id" colToggle
+      pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}
+      empty={<Empty icon="🚩" text="گزارشی در این وضعیت نیست" />} />}
+    {confirm && <Confirm danger={confirm.status === 'rejected'}
+      text={`تغییر وضعیت گزارش #${confirm.row.id} به «${confirm.status}»؟`}
+      onYes={change} onNo={() => setConfirm(null)} />}
+  </>;
 }
