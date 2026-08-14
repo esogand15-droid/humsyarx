@@ -66,8 +66,10 @@ export default function System() {
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!bs) return <Loading rows={4} />;
 
-  const health = v => v ? ['🟢', 'ok', 'سالم'] : ['🔴', 'bad', 'مشکل'];
-  const bot = !!bs.bot_ok ?? !!bs.online ?? true;
+  const health = v => v === true ? ['🟢', 'ok', 'سالم'] : ['🔴', 'bad', 'مشکل'];
+  const botOk = bs.bot_ok === true;
+  const dbOk = bs.db_ok === true;
+  const apiOk = bs.api_ok === true;
   const auto = st || {};
   const lastRun = (auto.auto_backup_last_run || '').slice(0, 16).replace('T', ' ');
 
@@ -77,16 +79,19 @@ export default function System() {
       <div className="sub">وضعیت زنده از endpointهای موجود — هیچ متریک ساختگی نمایش داده نمی‌شود</div>
       <div className="grid g4">
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>{health(bot)[0]}</div>
-          <div><div className="v"><B kind={health(bot)[1]}>{health(bot)[2]}</B></div><div className="l">ربات تلگرام</div></div>
+          <div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>{health(botOk)[0]}</div>
+          <div><div className="v"><B kind={health(botOk)[1]}>{health(botOk)[2]}</B></div>
+            <div className="l">process ربات تلگرام{bs.bot_pid ? ` · PID ${bs.bot_pid}` : ''}</div></div>
         </div>
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(56,182,255,.1)' }}>🗄️</div>
-          <div><div className="v"><B kind="ok">متصل</B></div><div className="l">پایگاه‌داده (پاسخ‌گو)</div></div>
+          <div className="ic" style={{ background: 'rgba(56,182,255,.1)' }}>{health(dbOk)[0]}</div>
+          <div><div className="v"><B kind={health(dbOk)[1]}>{health(dbOk)[2]}</B></div>
+            <div className="l">پایگاه‌داده{bs.db_ping_ms != null ? ` · ${fa(bs.db_ping_ms)}ms` : ''}</div></div>
         </div>
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(167,139,250,.1)' }}>⚙️</div>
-          <div><div className="v"><B kind="ok">فعال</B></div><div className="l">API</div></div>
+          <div className="ic" style={{ background: 'rgba(167,139,250,.1)' }}>{health(apiOk)[0]}</div>
+          <div><div className="v"><B kind={health(apiOk)[1]}>{health(apiOk)[2]}</B></div>
+            <div className="l">API{bs.sys?.uptime ? ` · ${bs.sys.uptime}` : ''}</div></div>
         </div>
       </div>
 
