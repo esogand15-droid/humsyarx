@@ -1,14 +1,49 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, toast, Modal, Confirm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, toast, Drawer, Confirm, Empty, Switch } from '../ui.jsx';
+
+const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
+const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
+const SRC = { bot: '🤖 ربات', webapp: '📱 مینی‌اپ', user: '👤 کاربر', web_import: '📥 درون‌ریزی وب' };
+
+// 🌊 موج Q-Import — پارس خطی (هر خط = یک سؤال):
+// درس | مبحث | سختی | متن سؤال | گزینه۱ ;; گزینه۲ ;; … | شماره گزینه صحیح | توضیح
+const DIFF_ALIASES = { 'آسان': 'easy', 'easy': 'easy', 'متوسط': 'medium', 'medium': 'medium', 'سخت': 'hard', 'hard': 'hard' };
+function parseImportText(text) {
+  const rows = [];
+  String(text || '').split('\n').forEach((ln, li) => {
+    const t = ln.trim();
+    if (!t || t.startsWith('#')) return;                    // خط خالی/کامنت
+    const p = t.split('|').map(s => s.trim());
+    const err = (m) => rows.push({ li: li + 1, ok: false, error: m, raw: t.slice(0, 60) });
+    if (p.length < 6) return err('حداقل ۶ بخش با | لازم است');
+    const [lesson, topic, diffRaw, question, opsRaw, corRaw, ...exRest] = p;
+    const difficulty = DIFF_ALIASES[diffRaw] || '';
+    const options = opsRaw.split(';;').map(s => s.trim()).filter(Boolean);
+    const correct = parseInt(corRaw, 10) - 1;               // ورودی انسانی ۱-مبنا
+    if (!lesson) return err('درس خالی است');
+    if (!difficulty) return err('سختی نامعتبر (آسان/متوسط/سخت)');
+    if (question.length < 5) return err('متن سؤال خیلی کوتاه است');
+    if (options.length < 2 || options.length > 6) return err('گزینه‌ها باید ۲ تا ۶ باشند (با ;; جدا کنید)');
+    if (!(correct >= 0 && correct < options.length)) return err('شماره گزینه صحیح خارج از محدوده است');
+    rows.push({ li: li + 1, ok: true,
+      item: { lesson, topic, difficulty, question, options, correct, explanation: exRest.join(' | ') } });
+  });
+  return rows;
+}
 
 // 🧪 صف بازبینی سوالات (scope-aware) + ⚡ WA2.4 تأیید/رد گروهی
+// 🌊 موج Q-Editor — کشوی جزئیات کامل + ویرایش پیش از تأیید (PATCH واقعی) + فیلترها
 export default function Questions() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
-  const [view, setView] = useState(null);
   const [sel, setSel] = useState([]);
   const [confirm, setConfirm] = useState(null);
+  const [detail, setDetail] = useState(null);        // ردیف باز در کشو
+  const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
+  const [q, setQ] = useState('');
+  const [fdiff, setFdiff] = useState('');
+  const [fsrc, setFsrc] = useState('');
 
   const load = async () => {
     setErr('');
@@ -23,6 +58,7 @@ export default function Questions() {
     try {
       await (kind === 'approve' ? api.caQuestionApprove(qid) : api.caQuestionReject(qid));
       toast(kind === 'approve' ? 'تأیید شد ✅' : 'رد شد');
+      setDetail(null);
       load();
     } catch (e) { toast(errText(e), 'err'); }
   };
@@ -31,29 +67,40 @@ export default function Questions() {
     if (!sel.length) return;
     try {
       const r = await api.questionsBulk(action, sel);
-      toast(`${r.done} سؤال ${action === 'approve' ? 'تأیید' : 'رد'} شد`);
+      toast(`${fa(r.done)} سؤال ${action === 'approve' ? 'تأیید' : 'رد'} شد`);
       setSel([]); load();
     } catch (e) { toast(errText(e), 'err'); }
   };
+
+  const vis = useMemo(() => (rows || []).filter(r => {
+    if (fdiff && r.difficulty !== fdiff) return false;
+    if (fsrc && (r.source || 'bot') !== fsrc) return false;
+    const s = q.trim();
+    if (s && !((r.question || '').includes(s) || (r.lesson || '').includes(s) || (r.topic || '').includes(s))) return false;
+    return true;
+  }), [rows, q, fdiff, fsrc]);
 
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const cols = [
     { k: 'question', label: 'سؤال', render: r => (
-      <div style={{ maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <div style={{ maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {r.question || r.text}</div>) },
     { k: 'lesson', label: 'درس' },
     { k: 'topic', label: 'مبحث' },
-    { k: 'difficulty', label: 'سختی', render: r => <B kind={r.difficulty === 'hard' ? 'bad' : r.difficulty === 'medium' ? 'warn' : 'ok'}>
-      {r.difficulty === 'hard' ? 'سخت' : r.difficulty === 'medium' ? 'متوسط' : 'آسان'}</B> },
+    { k: 'difficulty', label: 'سختی', sortable: true, sortVal: r => r.difficulty || '',
+      render: r => { const [l, kk] = DIFF[r.difficulty] || [r.difficulty || '—', '']; return <B kind={kk}>{l}</B>; } },
+    { k: 'creator', label: 'طراح', render: r => (
+      <div style={{ fontSize: 12 }}>{r.creator_name || '—'}
+        <div className="muted">{SRC[r.source] || r.source || ''}</div></div>) },
     { k: 'intake', label: 'ورودی', render: r => r.intake || <B>سراسری</B> },
     { k: 'ops', label: '', stop: true, render: r => {
       const id = r.id || r._id;
       return (
         <div className="row" style={{ gap: 4 }}>
-          <button className="btn sm" onClick={() => setView(r)}>👁</button>
-          <button className="btn sm ok" onClick={() => act(id, 'approve')}>✅</button>
-          <button className="btn sm danger" onClick={() => act(id, 'reject')}>❌</button>
+          <button className="btn sm" title="مشاهده/ویرایش" onClick={() => setDetail(r)}>👁</button>
+          <button className="btn sm ok" title="تأیید" onClick={() => act(id, 'approve')}>✅</button>
+          <button className="btn sm danger" title="رد" onClick={() => act(id, 'reject')}>❌</button>
         </div>);
     } },
   ];
@@ -62,37 +109,285 @@ export default function Questions() {
     <>
       <div className="row">
         <div><div className="h1">بازبینی سوالات</div>
-          <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید — تک‌تک یا گروهی</div></div>
+          <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید — مشاهده/ویرایش، تک‌تک یا گروهی</div></div>
         <span className="spacer" />
+        <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
         {sel.length > 0 && <>
-          <span className="badge acc">{sel.length} انتخاب‌شده</span>
+          <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
           <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
         </>}
       </div>
-      {!rows ? <Loading /> : <DataTable columns={cols} rows={rows} rowKey="id"
-        selectable onSelect={setSel}
-        empty={<div className="center-state">🎉 صف بازبینی خالی است</div>} />}
-      {view && (
-        <Modal title="مشاهده سؤال" onClose={() => setView(null)}>
-          <p style={{ lineHeight: 2, marginBottom: 12 }}>{view.question || view.text}</p>
-          <div className="grid" style={{ gap: 6 }}>
-            {(view.options || []).map((o, i) => (
-              <div key={i} className="badge" style={{ justifyContent: 'flex-start',
-                borderColor: i === (view.correct ?? view.answer) ? 'rgba(52,211,153,.6)' : undefined }}>
-                {i === (view.correct ?? view.answer) ? '✅' : '▫️'} {o}
-              </div>
-            ))}
-          </div>
-          {view.explanation && <p className="muted" style={{ marginTop: 10 }}>💡 {view.explanation}</p>}
-        </Modal>
+
+      <div className="panel panel-pad row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+        <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 متن/درس/مبحث…"
+               value={q} onChange={e => setQ(e.target.value)} />
+        <select className="inp" value={fdiff} onChange={e => setFdiff(e.target.value)}>
+          <option value="">همه‌ی سختی‌ها</option>
+          <option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option>
+        </select>
+        <select className="inp" value={fsrc} onChange={e => setFsrc(e.target.value)}>
+          <option value="">همه‌ی منابع</option>
+          <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option>
+        </select>
+        {(q || fdiff || fsrc) && <B kind="acc">{fa(vis.length)} از {fa(rows?.length ?? 0)}</B>}
+      </div>
+
+      {!rows ? <Loading /> : (
+        <DataTable columns={cols} rows={vis} rowKey="id"
+          selectable onSelect={setSel} onRow={setDetail}
+          empty={<Empty icon="🎉" text="صف بازبینی خالی است" />} />
       )}
+
+      {detail && (
+        <QuestionDrawer row={detail}
+          onClose={() => setDetail(null)}
+          onAction={(kind) => act(detail.id || detail._id, kind)}
+          onSaved={() => { load(); }} />
+      )}
+
       {confirm && (
-        <Confirm text={`${confirm.action === 'approve' ? 'تأیید' : 'رد'} ${confirm.n} سؤال انتخاب‌شده؟ (فقط موارد داخل scope شما پردازش می‌شوند)`}
+        <Confirm text={`${confirm.action === 'approve' ? 'تأیید' : 'رد'} ${fa(confirm.n)} سؤال انتخاب‌شده؟ (فقط موارد داخل scope شما پردازش می‌شوند)`}
                  danger={confirm.action === 'reject'}
                  onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
                  onNo={() => setConfirm(null)} />
       )}
+
+      {importOpen && (
+        <ImportWizard onClose={() => setImportOpen(false)}
+          onDone={(n) => { setImportOpen(false); toast(`📥 ${fa(n)} سؤال در صف بازبینی درج شد`); load(); }} />
+      )}
     </>
+  );
+}
+
+/* ── 📥🌊 ویزارد درون‌ریزی گروهی (موج Q-Import) — ۳ گام: متن ← بازبینی ← ثبت ── */
+const IM_STEPS = ['ورود متن', 'بازبینی', 'ثبت'];
+function ImportWizard({ onClose, onDone }) {
+  const [step, setStep] = useState(0);
+  const [text, setText] = useState('');
+  const [approve, setApprove] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const parsed = useMemo(() => parseImportText(text), [text]);
+  const okRows = parsed.filter(r => r.ok);
+  const badRows = parsed.filter(r => !r.ok);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const r = await api.caQuestionsImport(okRows.map(r => r.item), approve);
+      setResult(r);
+      setStep(2);
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  return (
+    <Drawer title="📥 درون‌ریزی گروهی سؤال" onClose={onClose} wide>
+      <div className="wiz-steps" style={{ marginBottom: 14 }}>
+        {IM_STEPS.map((l, i) => (
+          <div key={l} className={`wiz-step ${step === i ? 'on' : ''} ${step > i ? 'done' : ''}`}>
+            <span className="wiz-n">{fa(i + 1)}</span><span className="wiz-l">{l}</span>
+          </div>
+        ))}
+      </div>
+
+      {step === 0 && (<>
+        <div className="muted" style={{ marginBottom: 8 }}>
+          هر خط یک سؤال — قالب:
+          <div className="code" dir="ltr" style={{ marginTop: 6, padding: 8, fontSize: 11 }}>
+            درس | مبحث | سختی | متن سؤال | گزینه۱ ;; گزینه۲ ;; گزینه۳ | شماره صحیح | توضیح
+          </div>
+          <div style={{ marginTop: 6 }}>سختی: آسان/متوسط/سخت · شماره صحیح از ۱ · خط‌های خالی یا شروع‌شده با # نادیده گرفته می‌شوند</div>
+        </div>
+        <textarea className="inp" rows={10} dir="auto" style={{ fontFamily: 'inherit', lineHeight: 1.9 }}
+          placeholder={'کالبدآنالیز | قلب | متوسط | بزرگ‌ترین لایه دیواره قلب؟ | اندوکارد ;; میوکارد ;; اپیکارد ;; پریکارد | 2 | میوکارد لایه عضلانی است.\n# خط دوم…'}
+          value={text} onChange={e => setText(e.target.value)} />
+        <label className="row" style={{ gap: 6, marginTop: 10 }}>
+          <Switch on={approve} onChange={setApprove} />
+          <span>تأیید مستقیم (بدون ورود به صف بازبینی)</span>
+        </label>
+        <div className="row" style={{ marginTop: 12 }}>
+          <span className="spacer" />
+          <span className="muted">{fa(okRows.length)} معتبر {badRows.length > 0 && `· ${fa(badRows.length)} معیوب`}</span>
+          <button className="btn primary" disabled={!okRows.length || okRows.length > 200}
+                  onClick={() => setStep(1)}>بازبینی ←</button>
+        </div>
+        {okRows.length > 200 && <div className="badge bad" style={{ marginTop: 8 }}>حداکثر ۲۰۰ سؤال در هر بار</div>}
+      </>)}
+
+      {step === 1 && (<>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+          <B kind="ok">{fa(okRows.length)} سؤال معتبر</B>
+          {badRows.length > 0 && <B kind="bad">{fa(badRows.length)} خط معیوب (درج نمی‌شوند)</B>}
+          <B kind={approve ? 'warn' : 'acc'}>{approve ? 'تأیید مستقیم' : 'صف بازبینی'}</B>
+        </div>
+        <DataTable columns={[
+          { k: 'q', label: 'سؤال', render: r => <div style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.item.question}</div> },
+          { k: 'lesson', label: 'درس', render: r => r.item.lesson },
+          { k: 'topic', label: 'مبحث', render: r => r.item.topic },
+          { k: 'diff', label: 'سختی', render: r => { const [l, kk] = DIFF[r.item.difficulty] || ['—', '']; return <B kind={kk}>{l}</B>; } },
+          { k: 'ops', label: 'گزینه/صحیح', render: r => `${fa(r.item.options.length)} / ${fa(r.item.correct + 1)}` },
+        ]} rows={okRows.slice(0, 60)} rowKey={r => String(r.li)}
+          empty={<Empty icon="🗂" text="سؤال معتبری نیست" />} />
+        {okRows.length > 60 && <div className="muted" style={{ marginTop: 4 }}>… و {fa(okRows.length - 60)} مورد دیگر</div>}
+        {badRows.length > 0 && (
+          <div className="panel panel-pad" style={{ marginTop: 10, background: 'var(--bg)' }}>
+            <b className="badge bad">خطاهای نادیده‌گرفته‌شده</b>
+            {badRows.slice(0, 10).map(r => (
+              <div key={r.li} className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                خط {fa(r.li)}: {r.error} <span className="code">{r.raw}</span>
+              </div>))}
+          </div>
+        )}
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn" onClick={() => setStep(0)}>→ ویرایش متن</button>
+          <span className="spacer" />
+          <button className="btn primary" disabled={busy || !okRows.length} onClick={submit}>
+            {busy ? '⏳ در حال درج…' : `ثبت ${fa(okRows.length)} سؤال`}
+          </button>
+        </div>
+      </>)}
+
+      {step === 2 && result && (<>
+        <div className="grid g3" style={{ marginTop: 4 }}>
+          <div className="panel stat"><div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>✅</div>
+            <div><div className="v">{fa(result.inserted)}</div><div className="l">درج‌شده ({result.approve ? 'تأیید مستقیم' : 'صف بازبینی'})</div></div></div>
+          <div className="panel stat"><div className="ic" style={{ background: 'rgba(248,113,113,.1)' }}>❌</div>
+            <div><div className="v">{fa((result.failed || []).length)}</div><div className="l">ردشده توسط سرور</div></div></div>
+        </div>
+        {(result.failed || []).length > 0 && (
+          <div className="panel panel-pad" style={{ marginTop: 10, background: 'var(--bg)' }}>
+            {result.failed.slice(0, 12).map((f2, i) => (
+              <div key={i} className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                ردیف {fa(f2.i + 1)}: {f2.error}
+              </div>))}
+          </div>
+        )}
+        <div className="row" style={{ marginTop: 14 }}>
+          <span className="spacer" />
+          <button className="btn primary" onClick={() => onDone(result.inserted)}>پایان</button>
+        </div>
+      </>)}
+    </Drawer>
+  );
+}
+
+/* ── 👁✏️ کشوی جزئیات سؤال — مشاهده کامل + ویرایش پیش از تأیید ── */
+function QuestionDrawer({ row, onClose, onAction, onSaved }) {
+  const [edit, setEdit] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [f, setF] = useState(() => ({
+    question: row.question || '',
+    lesson: row.lesson || '',
+    topic: row.topic || '',
+    difficulty: row.difficulty || 'medium',
+    explanation: row.explanation || '',
+    options: [...(row.options || [])],
+    correct: row.correct ?? row.answer ?? 0,
+  }));
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const setOpt = (i, v) => setF(x => ({ ...x, options: x.options.map((o, j) => j === i ? v : o) }));
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.caQuestionPatch(row.id || row._id, {
+        question: f.question, lesson: f.lesson, topic: f.topic,
+        difficulty: f.difficulty, explanation: f.explanation,
+        options: f.options, correct: f.correct,
+      });
+      toast('ویرایش ذخیره شد ✅');
+      setEdit(false);
+      onSaved();
+      // داده‌ی محلی کشو را هم تازه نگه دار
+      Object.assign(row, { ...f, correct: f.correct });
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const [dl, dk] = DIFF[row.difficulty] || [row.difficulty || '—', ''];
+  return (
+    <Drawer wide title={`🧪 سؤال در انتظار بازبینی — ${row.lesson || ''}`} onClose={onClose}>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        <B kind={dk}>{dl}</B>
+        <B>{SRC[row.source] || row.source || '—'}</B>
+        {row.intake ? <B kind="purple">🏷 {row.intake}</B> : <B kind="acc">🌐 سراسری</B>}
+        <span className="spacer" />
+        <span className="muted">👤 {row.creator_name || '—'} · {row.created_at || ''}</span>
+      </div>
+
+      {!edit ? (
+        <>
+          <div className="panel panel-pad" style={{ background: 'var(--bg)', lineHeight: 2 }}>{f.question}</div>
+          <div className="grid" style={{ gap: 6, marginTop: 10 }}>
+            {f.options.map((o, i) => (
+              <div key={i} className="badge" style={{ justifyContent: 'flex-start', padding: '8px 10px',
+                borderColor: i === f.correct ? 'rgba(58,210,155,.6)' : undefined,
+                background: i === f.correct ? 'rgba(58,210,155,.07)' : undefined }}>
+                {i === f.correct ? '✅' : '▫️'} {o}
+              </div>
+            ))}
+          </div>
+          <div className="ct3-kv" style={{ marginTop: 10 }}><span className="muted">درس</span><span>{f.lesson || '—'}</span></div>
+          <div className="ct3-kv" style={{ marginTop: 6 }}><span className="muted">مبحث</span><span>{f.topic || '—'}</span></div>
+          {f.explanation && (
+            <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
+              <b>💡 راهنما/توضیح</b>
+              <div style={{ marginTop: 6, lineHeight: 1.9, color: 'var(--txt2)' }}>{f.explanation}</div>
+            </div>
+          )}
+          <div className="row" style={{ marginTop: 14, flexWrap: 'wrap', gap: 6 }}>
+            <button className="btn ok" onClick={() => onAction('approve')}>✅ تأیید و انتشار</button>
+            <button className="btn danger" onClick={() => onAction('reject')}>❌ رد</button>
+            <span className="spacer" />
+            <button className="btn" onClick={() => setEdit(true)}>✏️ ویرایش پیش از تأیید</button>
+          </div>
+        </>
+      ) : (
+        <div className="grid" style={{ gap: 10 }}>
+          <label className="muted" style={{ fontSize: 11 }}>متن سؤال
+            <textarea className="inp" rows={4} value={f.question} onChange={e => set('question', e.target.value)} />
+          </label>
+          <div className="row">
+            <input className="inp" placeholder="درس…" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
+            <input className="inp" placeholder="مبحث…" value={f.topic} onChange={e => set('topic', e.target.value)} />
+            <select className="inp" value={f.difficulty} onChange={e => set('difficulty', e.target.value)}>
+              <option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option>
+            </select>
+          </div>
+          <b style={{ marginTop: 4 }}>گزینه‌ها <span className="muted">(تیک = گزینه‌ی صحیح)</span></b>
+          {f.options.map((o, i) => (
+            <div key={i} className="row">
+              <input type="radio" name="q-correct" checked={f.correct === i}
+                     onChange={() => set('correct', i)} aria-label="گزینه‌ی صحیح"
+                     style={{ accentColor: 'var(--ok)' }} />
+              <input className="inp" style={{ flex: 1 }} value={o} onChange={e => setOpt(i, e.target.value)} />
+              <button className="btn sm danger" title="حذف گزینه" disabled={f.options.length <= 2}
+                      onClick={() => setF(x => ({
+                        ...x,
+                        options: x.options.filter((_, j) => j !== i),
+                        correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct),
+                      }))}>✕</button>
+            </div>
+          ))}
+          {f.options.length < 6 && (
+            <button className="btn sm" onClick={() => set('options', [...f.options, ''])}>➕ افزودن گزینه</button>
+          )}
+          <label className="muted" style={{ fontSize: 11 }}>راهنما/توضیح (اختیاری)
+            <textarea className="inp" rows={2} value={f.explanation} onChange={e => set('explanation', e.target.value)} />
+          </label>
+          <div className="row">
+            <button className="btn" onClick={() => setEdit(false)}>انصراف</button>
+            <button className="btn primary" style={{ flex: 1 }}
+                    disabled={busy || f.question.trim().length < 5 || f.options.filter(o => o.trim()).length < 2}
+                    onClick={save}>
+              {busy ? '⏳ …' : '💾 ذخیره‌ی ویرایش'}
+            </button>
+          </div>
+        </div>
+      )}
+    </Drawer>
   );
 }
