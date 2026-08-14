@@ -216,19 +216,30 @@ async def assign_roles(uid: int, body: AssignBody, user=_users_guard):
     for key in body.add:
         if key not in known:
             _err(422, f"نقش ناشناخته: {key}")
-    before = (await db.get_user_roles(uid))["keys"]
+    before_info = await db.get_user_roles(uid)
+    before = before_info["keys"]
     for key in body.add:
         await db._add_role_key(uid, key, body.scope_intake)
     for key in body.remove:
         await db._remove_role_key(uid, key)
+    # RBAC-Execution: scope باید حتی بدون add/remove هم قابل ویرایش باشد.
+    # رشته‌ی خالی یعنی پاک‌کردن scope؛ Noneِ ارسال‌نشده یعنی دست‌نخوردن.
+    if "scope_intake" in body.model_fields_set:
+        await db.user_roles.update_one(
+            {"_id": uid},
+            {"$set": {"scope_intake": body.scope_intake or None}},
+            upsert=True,
+        )
+        await db._sync_admin_role_projection(uid)
     # §۵ Sync: آینه‌ی users.role هم همیشه یکدست می‌ماند
     await db.sync_legacy_role_mirror(uid)
-    after = (await db.get_user_roles(uid))["keys"]
+    after_info = await db.get_user_roles(uid)
+    after = after_info["keys"]
     await _audit_rbac(
         user, "تغییر نقش‌های کاربر",
         target.get("name", str(uid)),
-        before={"roles": sorted(before)},
-        after={"roles": sorted(after)},
+        before={"roles": sorted(before), "scope_intake": before_info.get("scope_intake")},
+        after={"roles": sorted(after), "scope_intake": after_info.get("scope_intake")},
         target_id=str(uid),
     )
     return await _user_rbac_view(uid)
