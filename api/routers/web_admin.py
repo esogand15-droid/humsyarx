@@ -1230,6 +1230,16 @@ async def wa_analytics(user=Depends(_perm("stats.view")),
     return out
 
 
+# 🌊 موج Parity-Final — مرکز هوش ربات در وب: منطق rule-based واحدِ
+# db.admin_insights() (همان صفحه‌ی admin:insights ربات) بدون هیچ کپی‌خوانی.
+@router.get("/wa-insights")
+async def wa_insights(user=Depends(_perm("stats.view"))):
+    try:
+        return await db.admin_insights()
+    except Exception as e:
+        raise HTTPException(500, f"محاسبه‌ی هشدارها ناموفق بود: {str(e)[:120]}")
+
+
 # ══════════════════════════════════════════════════════════════════
 # 🌊 WA2.7 — مدیریت اعلان‌ها: اجراها + تلاش مجدد (مشابه admin_panel ولی با مجوز)
 # ══════════════════════════════════════════════════════════════════
