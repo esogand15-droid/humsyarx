@@ -448,7 +448,13 @@ function UserActions({ row, d, onChanged, onClose }) {
             <input className="inp" style={{ direction: 'ltr' }} value={form.student_id}
                    onChange={e => setForm({ ...form, student_id: e.target.value })} /></label>
           <label className="fld"><span>گروه</span>
-            <input className="inp" value={form.group} onChange={e => setForm({ ...form, group: e.target.value })} /></label>
+            <select className="inp" value={form.group} onChange={e => setForm({ ...form, group: e.target.value })}>
+              <option value="">(بدون گروه)</option>
+              <option value="1">گروه ۱</option>
+              <option value="2">گروه ۲</option>
+              {!['', '1', '2'].includes(String(form.group)) &&
+                <option value={form.group}>مقدار قدیمی: {form.group}</option>}
+            </select></label>
           <label className="fld"><span>ورودی</span>
             <select className="inp" value={form.intake} onChange={e => setForm({ ...form, intake: e.target.value })}>
               <option value="">(بدون ورودی)</option>
