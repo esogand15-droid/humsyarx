@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, Stat, B, toast, Confirm, Drawer, Empty } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, Stat, B, toast, Confirm, Drawer, Empty, NoPerm } from '../ui.jsx';
 
 // 💎 اشتراک‌ها + رسیدهای کارت‌به‌کارت + تخفیف‌ها
 export default function Subscriptions() {
@@ -10,6 +10,7 @@ export default function Subscriptions() {
   const [status, setStatus] = useState('pending');
   const [discs, setDiscs] = useState(null);
   const [err, setErr] = useState('');
+  const [denied, setDenied] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [rcpt, setRcpt] = useState(null);          // 🌊 W-Design — دراور بازبینی رسید
 
@@ -22,7 +23,7 @@ export default function Subscriptions() {
         api.discounts(),
       ]);
       setOv(o); setPays(p.payments || p.items || []); setDiscs(d.discounts || d.items || []);
-    } catch (e) { setErr(errText(e)); }
+    } catch (e) { if (e.status === 403) setDenied(true); else setErr(errText(e)); }
   };
   useEffect(() => { load(); }, [status]);
 
@@ -37,6 +38,7 @@ export default function Subscriptions() {
     },
   });
 
+  if (denied) return <NoPerm text="مدیریت اشتراک نیازمند مجوز subscription.manage است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const ovStats = ov?.stats || ov || {};
