@@ -86,43 +86,43 @@ export const api = {
   caReportStatus: (rid, status) => req(`/api/content/reports/${rid}/status`, { method: 'POST', body: { status } }),
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
-  botStatus: () => req('/api/admin/bot-status'),
-  // 🛠 Fix-Foundation — عملیات owner که در System فراخوانی می‌شوند
-  prestigeBackfill: () => req('/api/admin/prestige/backfill', { method: 'POST' }),
-  forceResNotif: () => req('/api/admin/notifications/force-send', { method: 'POST' }),
-  logGroupsTest: () => req('/api/admin/log-groups/test', { method: 'POST' }),
+  botStatus: () => req('/api/web-admin/system/status'),
+  // 🛡 RBAC-Execution — عملیات System با مجوز دانه‌ای
+  prestigeBackfill: () => req('/api/web-admin/system/prestige/backfill', { method: 'POST' }),
+  prestigeConfig: () => req('/api/web-admin/system/prestige-config'),
+  prestigeConfigUpdate: (values) => req('/api/web-admin/system/prestige-config', { method: 'PUT', body: { values } }),
+  forceResNotif: () => req('/api/web-admin/system/notifications/force-send', { method: 'POST' }),
+  logGroupsTest: () => req('/api/web-admin/system/log-groups/test', { method: 'POST' }),
   analytics: (days) => req('/api/admin/analytics' + (days ? `?days=${days}` : '')),
-  tickets: (status) => req('/api/admin/tickets' + (status ? `?status=${status}` : '')),
-  ticket: (tid) => req(`/api/admin/tickets/${tid}`),
-  ticketReply: (tid, text) => req(`/api/admin/tickets/${tid}/reply`, { method: 'POST', body: { message: text } }),
-  ticketClose: (tid) => req(`/api/admin/tickets/${tid}/close`, { method: 'POST' }),
-  ticketReopen: (tid) => req(`/api/admin/tickets/${tid}/reopen`, { method: 'POST' }),
-  broadcast: (body) => req('/api/admin/broadcast', { method: 'POST', body }),
-  broadcastPreview: (body) => req('/api/admin/broadcast/preview', { method: 'POST', body }),
-  broadcastHistory: () => req('/api/admin/broadcast/history'),
-  // 🌊 موج Notif-Scheduled — مدیریت ارسال‌های زمان‌دارِ در انتظار (سطح مالک)
-  broadcastScheduled: () => req('/api/admin/broadcast/scheduled'),
+  // 🛡 RBAC-Execution — مسیرهای permission-based (owner routeهای قدیمی دست‌نخورده)
+  tickets: (status) => req('/api/web-admin/tickets' + (status ? `?status=${status}` : '')),
+  ticket: (tid) => req(`/api/web-admin/tickets/${tid}`),
+  ticketReply: (tid, text) => req(`/api/web-admin/tickets/${tid}/reply`, { method: 'POST', body: { message: text } }),
+  ticketClose: (tid) => req(`/api/web-admin/tickets/${tid}/close`, { method: 'POST' }),
+  ticketReopen: (tid) => req(`/api/web-admin/tickets/${tid}/reopen`, { method: 'POST' }),
+  broadcast: (body) => req('/api/web-admin/broadcast', { method: 'POST', body }),
+  broadcastPreview: (body) => req('/api/web-admin/broadcast/preview', { method: 'POST', body }),
+  broadcastHistory: () => req('/api/web-admin/broadcast/history'),
+  broadcastScheduled: () => req('/api/web-admin/broadcast/scheduled'),
   broadcastCancel: (text, created_at) =>
-    req('/api/admin/broadcast/cancel', { method: 'POST', body: { text, created_at } }),
-  // 🌊 موج Poll-Notif — نظرسنجی کانال + فاصله‌ی اعلان منابع (سطح مالک؛ endpointهای موجود)
-  pollStatus: () => req('/api/admin/poll/status'),
-  pollSetChannel: (channel_id) => req('/api/admin/poll/channel', { method: 'POST', body: { channel_id } }),
+    req('/api/web-admin/broadcast/cancel', { method: 'POST', body: { text, created_at } }),
+  waIntakes: () => req('/api/web-admin/intakes-picker'),
+  pollStatus: () => req('/api/web-admin/poll/status'),
+  pollSetChannel: (channel_id) => req('/api/web-admin/poll/channel', { method: 'POST', body: { channel_id } }),
   pollCreate: (question, options, anonymous) =>
-    req('/api/admin/poll', { method: 'POST', body: { question, options, anonymous } }),
-  notifSettings: () => req('/api/admin/notifications/settings'),
+    req('/api/web-admin/poll', { method: 'POST', body: { question, options, anonymous } }),
+  notifSettings: () => req('/api/web-admin/notifications/settings'),
   notifSetInterval: (interval_hours) =>
-    req('/api/admin/notifications/settings', { method: 'POST', body: { interval_hours } }),
+    req('/api/web-admin/notifications/settings', { method: 'POST', body: { interval_hours } }),
   // 🌊 موج ChannelLock — قفل اجباری عضویت کانال (سطح مالک)
   channelLock: () => req('/api/admin/channel-lock'),
   channelLockAdd: (body) => req('/api/admin/channel-lock', { method: 'POST', body }),
   channelLockDel: (id) => req(`/api/admin/channel-lock/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  auditLogs: (p) => req('/api/admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
-  settings: () => req('/api/admin/settings'),
-  patchSettings: (body) => req('/api/admin/settings', { method: 'PATCH', body }),
-  // 🌊 موج Backup-Mgmt — بخش‌بندی پشتیبان (همان بخش‌های منوی ربات)
-  backup: (section) => req('/api/admin/backup', { method: 'POST', body: section ? { section } : {} }),
-  // 🌊 موج Export — درخواست خروجی اکسل کامل (ربات فایل را در گفت‌وگوی ادمین می‌فرستد)
-  exportExcel: () => req('/api/admin/export/excel', { method: 'POST' }),
+  auditLogs: (p) => req('/api/web-admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
+  settings: () => req('/api/web-admin/system/backup-settings'),
+  patchSettings: (body) => req('/api/web-admin/system/backup-settings', { method: 'PATCH', body }),
+  backup: (section) => req('/api/web-admin/system/backup', { method: 'POST', body: { section: section || 'all' } }),
+  exportExcel: () => req('/api/web-admin/system/export/excel', { method: 'POST' }),
   intakes: () => req('/api/admin/intakes'),
   // 🌊 موج Intakes-CA — مدیریت ورودی‌ها + ادمین‌های محتوا (سطح مالک؛ endpointهای موجود)
   intakeAdd: (code, label) => req('/api/admin/intakes', { method: 'POST', body: { code, label } }),
@@ -139,14 +139,15 @@ export const api = {
   patchRole: (k, body) => req(`/api/admin/rbac/roles/${k}`, { method: 'PATCH', body }),
   deleteRole: (k) => req(`/api/admin/rbac/roles/${k}`, { method: 'DELETE' }),
   roleOf: (uid) => req(`/api/admin/rbac/users/${uid}`),
+  assignRoles: (uid, body) => req(`/api/admin/rbac/users/${uid}/roles`, { method: 'POST', body }),
+  rbacIntakes: () => req('/api/web-admin/rbac/intakes'),
   // ── subscription admin ──
-  subOverview: () => req('/api/subscription-admin/overview'),
-  subPayments: (p) => req('/api/subscription-admin/payments?' + new URLSearchParams(p || {})),
+  subOverview: () => req('/api/web-admin/subscription/overview'),
+  subPayments: (p) => req('/api/web-admin/subscription/payments?' + new URLSearchParams(p || {})),
   subPaymentDecision: (pid, approved, note = '') =>
-    req(`/api/subscription-admin/payments/${pid}/decision`, { method: 'POST', body: { approved, note } }),
-  // 🌊 W-Design — منبع تصویر رسید (سشن HttpOnly خودش ضمیمه‌ی درخواست img می‌شود)
-  subReceiptSrc: (pid) => `/api/subscription-admin/payments/${pid}/receipt`,
-  discounts: () => req('/api/subscription-admin/discounts'),
+    req(`/api/web-admin/subscription/payments/${pid}/decision`, { method: 'POST', body: { approved, note } }),
+  subReceiptSrc: (pid) => `/api/web-admin/subscription/payments/${pid}/receipt`,
+  discounts: () => req('/api/web-admin/subscription/discounts'),
   // ── content (scope-aware) ──
   caIntakes: () => req('/api/content/intakes'),
   caOverview: (intake) => req('/api/content/overview' + (intake ? `?intake=${intake}` : '')),
@@ -168,11 +169,11 @@ export const api = {
   waReorderSession: (sid, direction) => req(`/api/web-admin/content/sessions/${sid}/reorder`, { method: 'POST', body: { direction } }),
   waReorderItem: (cid, direction) => req(`/api/web-admin/content/items/${cid}/reorder`, { method: 'POST', body: { direction } }),
   // ── 🌊 WA3 — تب‌های پریتی محتوا (همان API موجود content_admin) ──
-  caSchedule: (stype) => req('/api/content/schedule' + (stype ? `?stype=${stype}` : '')),
-  caScheduleCreate: (body) => req('/api/content/schedule', { method: 'POST', body }),
-  caScheduleEdit: (sid, body) => req(`/api/content/schedule/${sid}`, { method: 'PATCH', body }),
-  caScheduleDel: (sid) => req(`/api/content/schedule/${sid}`, { method: 'DELETE' }),
-  caFlexChange: (sid, body) => req(`/api/content/schedule/${sid}/flex-change`, { method: 'POST', body }),
+  caSchedule: (stype) => req('/api/web-admin/schedule' + (stype ? `?stype=${stype}` : '')),
+  caScheduleCreate: (body) => req('/api/web-admin/schedule', { method: 'POST', body }),
+  caScheduleEdit: (sid, body) => req(`/api/web-admin/schedule/${sid}`, { method: 'PATCH', body }),
+  caScheduleDel: (sid) => req(`/api/web-admin/schedule/${sid}`, { method: 'DELETE' }),
+  caFlexChange: (sid, body) => req(`/api/web-admin/schedule/${sid}/flex-change`, { method: 'POST', body }),
   caFaq: () => req('/api/content/faq'),
   caFaqAdd: (body) => req('/api/content/faq', { method: 'POST', body }),
   caFaqDel: (fid) => req(`/api/content/faq/${fid}`, { method: 'DELETE' }),
@@ -191,19 +192,20 @@ export const api = {
   refFileAdd: (bid, form) => req(`/api/content/references/books/${bid}/files`, { method: 'POST', form }),
   refFileDel: (fid) => req(`/api/content/references/files/${fid}`, { method: 'DELETE' }),
   // ── 🌊 WA3 — نمرات (grades/recent + find-student + bulk) — همان ادمین ربات ──
-  gradesRecent: (skip = 0, limit = 30) => req(`/api/content/grades/recent?skip=${skip}&limit=${limit}`),
-  gradesFind: (name) => req(`/api/content/grades/find-student?name=${encodeURIComponent(name)}`),
-  gradesBulk: (body) => req('/api/content/grades/bulk', { method: 'POST', body }),
+  gradesRecent: (skip = 0, limit = 30) => req(`/api/web-admin/grades/recent?skip=${skip}&limit=${limit}`),
+  gradesFind: (name) => req(`/api/web-admin/grades/find-student?q=${encodeURIComponent(name)}`),
+  gradesBulk: (body) => req('/api/web-admin/grades/bulk', { method: 'POST', body: {
+    ...body, entries: (body.entries || []).map(e => ({ user_id: e.user_id ?? e.student_id, score: e.score })),
+  } }),
   // ── ai admin ──
-  aiStats: () => req('/api/ai-admin/stats'),
-  aiConfig: () => req('/api/ai-admin/config'),
-  // 🌊 W-Admin — صفحه‌ی کامل هوشیار
-  aiConfigUpdate: (body) => req('/api/ai-admin/config', { method: 'PUT', body }),
-  aiReports: () => req('/api/ai-admin/reports'),
-  aiBanned: () => req('/api/ai-admin/banned'),
-  aiUsers: (q) => req('/api/ai-admin/users?q=' + encodeURIComponent(q)),
-  aiBan: (uid) => req('/api/ai-admin/users/ban', { method: 'POST', body: { user_id: uid } }),
-  aiResetQuota: (uid) => req('/api/ai-admin/users/reset-quota', { method: 'POST', body: { user_id: uid } }),
+  aiStats: () => req('/api/web-admin/ai/stats'),
+  aiConfig: () => req('/api/web-admin/ai/config'),
+  aiConfigUpdate: (body) => req('/api/web-admin/ai/config', { method: 'PUT', body }),
+  aiReports: () => req('/api/web-admin/ai/reports'),
+  aiBanned: () => req('/api/web-admin/ai/banned'),
+  aiUsers: (q) => req('/api/web-admin/ai/users?q=' + encodeURIComponent(q)),
+  aiBan: (uid) => req('/api/web-admin/ai/users/ban', { method: 'POST', body: { user_id: uid } }),
+  aiResetQuota: (uid) => req('/api/web-admin/ai/users/reset-quota', { method: 'POST', body: { user_id: uid } }),
 };
 
 export function errText(e) {
