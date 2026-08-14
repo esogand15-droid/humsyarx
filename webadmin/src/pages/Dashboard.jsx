@@ -7,16 +7,30 @@ import { Stat, Loading, ErrorState, B, toast } from '../ui.jsx';
 const WKEY = 'wa_dash_widgets';
 const WIDGETS = [
   ['attn', '⚠️ نیازمند اقدام'],
+  ['insights', '🧠 مرکز هوش'],
   ['kpis', '📊 کارت‌های عملیات'],
   ['sys', '📈 شاخص‌های سامانه'],
   ['feed', '🕓 جریان فعالیت'],
 ];
+
+// 🌊 موج Parity-Final — نگاشت اکشن‌های هشدار ربات به مسیرهای SPA
+const ALERT_GO = {
+  'admin:pending': '/users?status=pending',
+  'ticket:manage': '/tickets',
+  'admin:stats_questions': '/analytics',
+  'admin:stats_users': '/analytics',
+  'admin:cat_users': '/users',
+  'admin:cat_content': '/content',
+  'report:manage:all': '/content',
+};
+const faW = ['این هفته', '۱ هفته پیش', '۲ هفته پیش', '۳ هفته پیش'];
 
 export default function Dashboard({ me, go }) {
   const [ov, setOv] = useState(null);
   const [stats, setStats] = useState(null);
   const [attn, setAttn] = useState(null);
   const [feed, setFeed] = useState(null);
+  const [ins, setIns] = useState(null);        // 🌊 مرکز هوش (مرکز rule-based واقعی db)
   const [err, setErr] = useState('');
   const [prefsOpen, setPrefsOpen] = useState(false);
   const prefsRef = useRef(null);
@@ -73,6 +87,7 @@ export default function Dashboard({ me, go }) {
     try { setStats(await api.stats()); } catch { /* owner-only */ }
     try { setAttn(await api.attention()); } catch { setAttn(null); }
     try { setFeed((await api.activity(30)).items || []); } catch { setFeed([]); }
+    try { setIns(await api.waInsights()); } catch { setIns(null); }   // بدون مجوز ⇒ پنهان
   };
   useEffect(() => { load(); }, []);
 
@@ -142,6 +157,57 @@ export default function Dashboard({ me, go }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 🧠🌊 موج Parity-Final — مرکز هوش ربات (داده‌ی واقعی db.admin_insights؛ همان صفحه‌ی ربات) */}
+      {ins && won('insights') && (
+        <div className="panel panel-pad" style={{ marginBottom: 14 }}>
+          <div className="row"><b>🧠 مرکز هوش ربات</b><span className="spacer" />
+            {ins.forecast_next_week != null && (
+              <B kind="acc">🔮 پیش‌بینی هفته‌ی آینده: ~{Number(ins.forecast_next_week).toLocaleString('fa-IR')} ثبت‌نام</B>)}
+          </div>
+          <div className="sub" style={{ marginTop: 2 }}>هشدارهای rule-based روی داده‌ی واقعی — کلیک روی هر هشدار می‌برد به محل رسیدگی</div>
+          <div className="grid g2" style={{ marginTop: 10 }}>
+            <div>
+              {(ins.alerts || []).length === 0
+                ? <span className="muted">✅ هیچ هشدار فعالی نیست — همه‌چیز مرتب است.</span>
+                : (ins.alerts || []).map((a, i) => (
+                    <div key={i} className="insight-alert" title="رسیدگی"
+                         onClick={() => ALERT_GO[a.action] && go(ALERT_GO[a.action])}>
+                      <span>{a.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <b style={{ fontSize: 12.5 }}>{a.title}</b>
+                        {a.detail && <div className="muted" style={{ fontSize: 11 }}>{a.detail}</div>}
+                      </div>
+                      <span className="muted">‹</span>
+                    </div>
+                  ))}
+            </div>
+            <div>
+              <div className="muted" style={{ marginBottom: 6 }}>📈 روند ثبت‌نام ۴ هفته‌ی اخیر</div>
+              {(ins.week_counts || []).map((c, i) => (
+                <div key={i} className="minibar-row">
+                  <span className="muted" style={{ minWidth: 76 }}>{faW[i]}</span>
+                  <div className="minibar-track">
+                    <div className="minibar-fill" style={{
+                      width: `${Math.round(c * 100 / Math.max(1, ...(ins.week_counts || [1])))}%` }} />
+                  </div>
+                  <B kind="acc">{Number(c).toLocaleString('fa-IR')}</B>
+                </div>
+              ))}
+              {(ins.top_admins || []).length > 0 && (<>
+                <div className="muted" style={{ margin: '10px 0 6px' }}>👑 پرکارترین ادمین‌های فرعی (۷ روز)</div>
+                {ins.top_admins.slice(0, 5).map((a, i) => (
+                  <div key={i} className="row" style={{ fontSize: 12, padding: '2px 0' }}>
+                    <span>{['🥇','🥈','🥉','4️⃣','5️⃣'][i]}</span>
+                    <span style={{ flex: 1 }}>{a.name} {a.role ? <span className="muted">({a.role})</span> : ''}</span>
+                    <B>{Number(a.count).toLocaleString('fa-IR')} کنش</B>
+                  </div>
+                ))}
+              </>)}
+            </div>
+          </div>
         </div>
       )}
 
