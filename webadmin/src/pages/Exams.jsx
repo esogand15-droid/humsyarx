@@ -113,41 +113,122 @@ function ExamsTab() {
   );
 }
 
+// 🌊 موج Exams-Builder — سازنده‌ی مرحله‌ای: مشخصات ← زمان/مکان ← بازبینی و ثبت
+// (همان payload قبلی؛ فقط UX گام‌به‌گام با اعتبارسنجی هر گام)
+const EX_STEPS = [['مشخصات', '📚'], ['زمان و مکان', '🗓'], ['بازبینی و ثبت', '✅']];
+
 function ExamModal({ row, onClose }) {
   const [f, setF] = useState({
     lesson: row?.lesson || '', date: row?.date || '', time: row?.time || '',
     teacher: row?.teacher || '', location: row?.location || '',
     notes: row?.notes || '', group: row?.group || 'هر دو',
   });
+  const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  const faDate = (() => {
+    if (!f.date) return '—';
+    try { return new Date(f.date + 'T00:00:00').toLocaleDateString('fa-IR', { dateStyle: 'full' }); }
+    catch { return f.date; }
+  })();
+  const okStep1 = !!f.lesson.trim();
+  const okStep2 = !!f.date;
+  const todayIso = new Date().toLocaleDateString('en-CA');
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      if (row) await api.examUpdate(row.id, f);
+      else await api.examCreate(f);
+      toast(row ? 'ویرایش شد ✅' : 'آزمون ساخته شد ✅ — اطلاع‌رسانی خودکار ۷/۳/۱ روز قبل فعال است'); onClose(true);
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
   return (
-    <Modal title={row ? `✏️ ویرایش آزمون — ${row.lesson}` : '➕ آزمون جدید'} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
-        <input className="inp" placeholder="درس / عنوان آزمون *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
-        <div className="row">
-          <input className="inp" type="date" value={f.date} onChange={e => set('date', e.target.value)} />
-          <input className="inp" type="time" value={f.time} onChange={e => set('time', e.target.value)} />
-          <select className="inp" value={f.group} onChange={e => set('group', e.target.value)}>
-            {['هر دو', 'الف', 'ب'].map(g => <option key={g}>{g}</option>)}
-          </select>
-        </div>
-        <input className="inp" placeholder="استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} />
-        <input className="inp" placeholder="مکان (سایت امتحانات/سالن)…" value={f.location} onChange={e => set('location', e.target.value)} />
-        <textarea className="inp" rows={2} placeholder="یادداشت…" value={f.notes} onChange={e => set('notes', e.target.value)} />
-        <div className="row">
-          <button className="btn primary" disabled={busy || !f.lesson.trim() || !f.date} onClick={async () => {
-            setBusy(true);
-            try {
-              if (row) await api.examUpdate(row.id, f);
-              else await api.examCreate(f);
-              toast(row ? 'ویرایش شد ✅' : 'آزمون ساخته شد ✅'); onClose(true);
-            } catch (e) { toast(errText(e), 'err'); }
-            setBusy(false);
-          }}>{row ? 'ذخیره' : 'ایجاد'}</button>
-          <button className="btn" onClick={() => onClose(false)}>انصراف</button>
-        </div>
+    <Modal title={row ? `✏️ ویرایش آزمون — ${row.lesson}` : '📝 سازنده‌ی آزمون جدید'} onClose={() => onClose(false)}>
+      <div className="wiz-steps" style={{ marginBottom: 14 }}>
+        {EX_STEPS.map(([label, icon], i) => (
+          <div key={label} className={`wiz-step ${step === i + 1 ? 'on' : ''} ${step > i + 1 ? 'done' : ''}`}
+               onClick={() => { if (step > i + 1) setStep(i + 1); }}>
+            <span className="wiz-n">{step > i + 1 ? '✓' : Number(i + 1).toLocaleString('fa')}</span>
+            <span className="wiz-l">{icon} {label}</span>
+          </div>
+        ))}
       </div>
+
+      {step === 1 && (
+        <div className="grid" style={{ gap: 10 }}>
+          <label className="muted" style={{ fontSize: 11 }}>درس / عنوان آزمون *
+            <input className="inp" placeholder="مثلاً فیزیولوژی — آزمون میانترم قلب" value={f.lesson}
+                   onChange={e => set('lesson', e.target.value)} autoFocus /></label>
+          <label className="muted" style={{ fontSize: 11 }}>استاد
+            <input className="inp" placeholder="نام استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} /></label>
+          <label className="muted" style={{ fontSize: 11 }}>گروه هدف
+            <div className="row">
+              {['هر دو', 'الف', 'ب'].map(g => (
+                <label key={g} className={`pick ${f.group === g ? 'on' : ''}`} style={{ flex: 1 }}>
+                  <input type="radio" checked={f.group === g} onChange={() => set('group', g)} />
+                  <b>{g === 'هر دو' ? '👥 هر دو گروه' : g === 'الف' ? '1️⃣ الف' : '2️⃣ ب'}</b>
+                </label>
+              ))}
+            </div>
+          </label>
+          <button className="btn primary" disabled={!okStep1} onClick={() => setStep(2)}>ادامه ←</button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="grid" style={{ gap: 10 }}>
+          <div className="row">
+            <label className="muted" style={{ fontSize: 11, flex: 1 }}>تاریخ *
+              <input className="inp" type="date" style={{ direction: 'ltr' }} value={f.date}
+                     onChange={e => set('date', e.target.value)} /></label>
+            <label className="muted" style={{ fontSize: 11, width: 130 }}>ساعت
+              <input className="inp" type="time" style={{ direction: 'ltr' }} value={f.time}
+                     onChange={e => set('time', e.target.value)} /></label>
+          </div>
+          {f.date && (
+            <div className="ct3-kv"><span className="muted">نمایش به دانشجو</span>
+              <B kind={f.date < todayIso ? 'warn' : 'acc'}>{faDate}{f.time ? ` · ساعت ${f.time}` : ''}</B>
+            </div>
+          )}
+          {f.date && f.date < todayIso && !row && (
+            <span className="muted" style={{ color: 'var(--c-warn)', fontSize: 11 }}>
+              ⚠️ تاریخ در گذشته است — آزمون «برگزارشده» ثبت می‌شود و اطلاع‌رسانی نخواهد داشت.</span>
+          )}
+          <label className="muted" style={{ fontSize: 11 }}>مکان
+            <input className="inp" placeholder="سایت امتحانات / سالن…" value={f.location} onChange={e => set('location', e.target.value)} /></label>
+          <label className="muted" style={{ fontSize: 11 }}>یادداشت (اختیاری)
+            <textarea className="inp" rows={2} placeholder="نکته‌ی تکمیلی برای دانشجویان…" value={f.notes}
+                      onChange={e => set('notes', e.target.value)} /></label>
+          <div className="row">
+            <button className="btn" onClick={() => setStep(1)}>→ بازگشت</button>
+            <button className="btn primary" disabled={!okStep2} onClick={() => setStep(3)}>ادامه ←</button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="grid" style={{ gap: 8 }}>
+          <div className="ct3-kv"><span className="muted">عنوان</span><b>{f.lesson}</b></div>
+          <div className="ct3-kv"><span className="muted">استاد</span><span>{f.teacher || '—'}</span></div>
+          <div className="ct3-kv"><span className="muted">گروه</span><B>{f.group}</B></div>
+          <div className="ct3-kv"><span className="muted">زمان</span><span>{faDate}{f.time ? ` · ${f.time}` : ''}</span></div>
+          <div className="ct3-kv"><span className="muted">مکان</span><span>{f.location || '—'}</span></div>
+          {f.notes && <div className="ct3-kv"><span className="muted">یادداشت</span><span>{f.notes}</span></div>}
+          <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 12 }}>
+            🤖 پس از ثبت، ربات <b>۷، ۳ و ۱ روز قبل</b> به دانشجویانِ {f.group === 'هر دو' ? 'هر دو گروه' : `گروه ${f.group}`} خودکار یادآوری می‌کند.
+          </div>
+          <div className="row">
+            <button className="btn" onClick={() => setStep(2)}>→ بازگشت</button>
+            <button className="btn primary" style={{ flex: 1 }} disabled={busy} onClick={submit}>
+              {busy ? '⏳ …' : row ? '💾 ذخیره‌ی تغییرات' : '📝 ثبت آزمون'}
+            </button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
