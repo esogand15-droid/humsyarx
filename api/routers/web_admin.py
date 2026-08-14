@@ -35,6 +35,11 @@ from api.auth import (
     resolve_web_session, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
 from database import db
+from api.routers import admin_panel as owner_api
+from api.routers import subscription_management as subscription_api
+from api.routers import ai_management as ai_admin_api
+from api.routers import content_admin as content_api
+from api.routers import academic_admin as academic_api
 
 router = APIRouter()
 
@@ -109,6 +114,21 @@ def _perm(permission: str):
             pass
         raise HTTPException(status_code=403, detail="forbidden")
     _guard.__name__ = f"wa_perm_{permission.replace('.', '_')}"
+    return _guard
+
+
+def _perm_any(*permissions: str):
+    """عبور با داشتن حداقل یکی از مجوزها؛ owner bypass داخل DB باقی می‌ماند."""
+    async def _guard(user=Depends(get_current_user)) -> dict:
+        for permission in permissions:
+            try:
+                if await db.has_permission(user["id"], permission):
+                    return user
+            except Exception:
+                continue
+        raise HTTPException(status_code=403, detail="forbidden")
+    _guard.__name__ = "wa_perm_any_" + "_or_".join(
+        p.replace('.', '_') for p in permissions)
     return _guard
 
 
@@ -284,7 +304,7 @@ async def users_table(
     intake: str | None = Query(None),
     group: str | None = Query(None),
     status: str | None = Query(None),   # pending | suspended | active
-    user=Depends(_guard_any_admin),
+    user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """جدول سرورساید کاربران — pagination واقعی (تا ۱۰۰ در صفحه)."""
     filt = db.build_user_search_query(q) if q else {}
@@ -586,7 +606,10 @@ class QuestionsBulk(BaseModel):
 
 
 @router.post("/questions/bulk")
-async def questions_bulk(body: QuestionsBulk, user=Depends(_perm("questions.review"))):
+async def questions_bulk(
+    body: QuestionsBulk,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
     """⚡ تأیید/رد گروهی سؤال‌های پیشنهادی — معناشناسی دقیقاً مثل مسیر تکی:
     approve → db.approve_question ؛ reject → db.delete_question + اطلاع به طراح (outbox)."""
     ids = [str(i) for i in (body.ids or [])][:100]
@@ -674,7 +697,9 @@ _SETTINGS_CATALOG = [
 
 
 @router.get("/settings/center")
-async def settings_center(user=Depends(_perm("settings.manage"))):
+async def settings_center(
+    user=Depends(_perm_any("settings.manage", "notifications.manage", "backup.manage")),
+):
     """⚙️ نمای دسته‌بندی‌شده‌ی تنظیمات + متا (آخرین تغییردهنده/زمان)."""
     meta_docs = await db.settings_meta.find({}).to_list(200)
     meta = {str(m.get("_id")): m for m in meta_docs}
@@ -684,6 +709,8 @@ async def settings_center(user=Depends(_perm("settings.manage"))):
     for cat_key, rows in _SETTINGS_CATALOG:
         items = []
         for key, label, desc, typ, perm, sev in rows:
+            if not await db.has_permission(user["id"], perm):
+                continue
             val = await db.get_setting(key, None)
             m = meta.get(key) or {}
             items.append({
@@ -691,7 +718,8 @@ async def settings_center(user=Depends(_perm("settings.manage"))):
                 "value": val,
                 "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
             })
-        cats.append({"key": cat_key, "items": items})
+        if items:
+            cats.append({"key": cat_key, "items": items})
 
     # 🔔 پیش‌فرض اعلان‌ها — همان کلیدهای get_notif_defaults (بدون توقف ربات)
     notif_items = []
@@ -701,15 +729,16 @@ async def settings_center(user=Depends(_perm("settings.manage"))):
             notif_labels[row[0]] = row[1]
     except Exception:
         pass
-    for k in sorted(notif_defaults.keys()):
-        m = meta.get(f"notif_default:{k}") or {}
-        notif_items.append({
-            "key": f"notif_default:{k}", "label": notif_labels.get(k, k),
-            "desc": "پیش‌فرض این دسته اعلان برای کاربران جدید",
-            "type": "bool", "value": bool(notif_defaults.get(k)),
-            "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
-        })
-    cats.append({"key": "notif", "items": notif_items})
+    if await db.has_permission(user["id"], "notifications.manage"):
+        for k in sorted(notif_defaults.keys()):
+            m = meta.get(f"notif_default:{k}") or {}
+            notif_items.append({
+                "key": f"notif_default:{k}", "label": notif_labels.get(k, k),
+                "desc": "پیش‌فرض این دسته اعلان برای کاربران جدید",
+                "type": "bool", "value": bool(notif_defaults.get(k)),
+                "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
+            })
+        cats.append({"key": "notif", "items": notif_items})
     return {"categories": cats}
 
 
@@ -1605,3 +1634,505 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
     except Exception:
         out.setdefault("notifs", {})
     return out
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🛡 موج RBAC-Execution — مسیرهای permission-based برای Web Admin
+# routeهای owner قدیمی دست‌نخورده‌اند؛ این wrapperها همان business logic
+# موجود را با guard دانه‌ای فراخوانی می‌کنند.
+# ══════════════════════════════════════════════════════════════════
+
+# ── RBAC helpers ──────────────────────────────────────────────────
+
+@router.get("/rbac/intakes")
+async def wa_rbac_intakes(user=Depends(_perm("users.manage"))):
+    items = await db.get_all_intakes()
+    return {"intakes": [
+        {"code": i.get("code", ""), "label": i.get("label", i.get("code", "")),
+         "active": i.get("active", True)}
+        for i in items
+    ]}
+
+
+# ── Tickets ───────────────────────────────────────────────────────
+
+@router.get("/tickets")
+async def wa_tickets_list(
+    status: Optional[str] = Query(None),
+    user=Depends(_perm_any("tickets.reply", "tickets.manage")),
+):
+    return await owner_api.all_tickets(status=status, admin=user)
+
+
+@router.get("/tickets/{tid}")
+async def wa_ticket_detail(
+    tid: int,
+    user=Depends(_perm_any("tickets.reply", "tickets.manage")),
+):
+    return await owner_api.ticket_detail(tid=tid, admin=user)
+
+
+@router.post("/tickets/{tid}/reply")
+async def wa_ticket_reply(
+    tid: int,
+    body: owner_api.AdminReply,
+    user=Depends(_perm("tickets.reply")),
+):
+    return await owner_api.admin_reply(tid=tid, body=body, admin=user)
+
+
+@router.post("/tickets/{tid}/close")
+async def wa_ticket_close(tid: int, user=Depends(_perm("tickets.manage"))):
+    return await owner_api.close_ticket(tid=tid, admin=user)
+
+
+@router.post("/tickets/{tid}/reopen")
+async def wa_ticket_reopen(tid: int, user=Depends(_perm("tickets.manage"))):
+    return await owner_api.reopen_ticket(tid=tid, admin=user)
+
+
+# ── Broadcast / Poll / notification settings ──────────────────────
+
+@router.get("/intakes-picker")
+async def wa_intakes_picker(user=Depends(_perm("broadcast.send"))):
+    items = await db.get_all_intakes()
+    return {"intakes": [
+        {"code": i.get("code", ""), "label": i.get("label", i.get("code", "")),
+         "active": i.get("active", True)}
+        for i in items
+    ]}
+
+
+@router.post("/broadcast/preview")
+async def wa_broadcast_preview(
+    body: owner_api.BroadcastPreview,
+    user=Depends(_perm("broadcast.send")),
+):
+    return await owner_api.broadcast_preview(body=body, admin=user)
+
+
+@router.post("/broadcast")
+async def wa_broadcast_send(
+    body: owner_api.BroadcastSend,
+    user=Depends(_perm("broadcast.send")),
+):
+    return await owner_api.broadcast(body=body, admin=user)
+
+
+@router.get("/broadcast/history")
+async def wa_broadcast_history(user=Depends(_perm("broadcast.send"))):
+    return await owner_api.broadcast_history(admin=user, limit=20)
+
+
+@router.get("/broadcast/scheduled")
+async def wa_broadcast_scheduled(user=Depends(_perm("broadcast.send"))):
+    return await owner_api.broadcast_scheduled(admin=user, limit=10)
+
+
+@router.post("/broadcast/cancel")
+async def wa_broadcast_cancel(
+    body: owner_api.BroadcastCancel,
+    user=Depends(_perm("broadcast.send")),
+):
+    return await owner_api.broadcast_cancel(body=body, admin=user)
+
+
+@router.get("/poll/status")
+async def wa_poll_status(user=Depends(_perm("notifications.manage"))):
+    return await owner_api.poll_status(admin=user)
+
+
+@router.post("/poll/channel")
+async def wa_poll_channel(
+    body: owner_api.PollChannelSet,
+    user=Depends(_perm("notifications.manage")),
+):
+    old = await db.get_setting("poll_channel_id", None)
+    result = await owner_api.poll_channel_set(body=body, admin=user)
+    await _audit(user["id"], "تغییر کانال نظرسنجی", severity="WARNING",
+                 before={"کانال": old}, after={"کانال": body.channel_id.strip()},
+                 tags=["نظرسنجی", "پنل_وب"])
+    return result
+
+
+@router.post("/poll")
+async def wa_poll_create(
+    body: owner_api.PollCreate,
+    user=Depends(_perm("notifications.manage")),
+):
+    return await owner_api.poll_create(body=body, admin=user)
+
+
+@router.get("/notifications/settings")
+async def wa_notif_settings(user=Depends(_perm("notifications.manage"))):
+    return await owner_api.notif_settings(admin=user)
+
+
+@router.post("/notifications/settings")
+async def wa_notif_settings_update(
+    body: owner_api.NotifSettingsUpdate,
+    user=Depends(_perm("notifications.manage")),
+):
+    return await owner_api.notif_settings_update(body=body, admin=user)
+
+
+# ── Subscription (سطح فعلی UI؛ CRUD کامل در موج بعد) ─────────────
+
+@router.get("/subscription/overview")
+async def wa_subscription_overview(user=Depends(_perm("subscription.manage"))):
+    return await subscription_api.overview(admin=user)
+
+
+@router.get("/subscription/payments")
+async def wa_subscription_payments(
+    status: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.payments(
+        status=status, skip=skip, limit=limit, search=search, admin=user)
+
+
+@router.post("/subscription/payments/{payment_id}/decision")
+async def wa_subscription_decision(
+    payment_id: str,
+    body: subscription_api.DecisionBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    payment = await db.sub_payment_get(payment_id)
+    result = await subscription_api.decide_payment(
+        payment_id=payment_id, body=body, admin=user)
+    await _audit(
+        user["id"], "تأیید رسید اشتراک" if body.approved else "رد رسید اشتراک",
+        severity="HIGH", target_id=payment_id, target_type="payment",
+        target_label=(payment or {}).get("plan_name", ""),
+        before={"وضعیت": (payment or {}).get("status", "pending")},
+        after={"وضعیت": "approved" if body.approved else "rejected"},
+        tags=["اشتراک", "رسید", "پنل_وب"],
+    )
+    return result
+
+
+@router.get("/subscription/payments/{payment_id}/receipt")
+async def wa_subscription_receipt(
+    payment_id: str,
+    user=Depends(_perm("subscription.manage")),
+):
+    return await subscription_api.payment_receipt(payment_id=payment_id, admin=user)
+
+
+@router.get("/subscription/discounts")
+async def wa_subscription_discounts(user=Depends(_perm("subscription.manage"))):
+    return await subscription_api.discounts(admin=user)
+
+
+# ── AI Admin ───────────────────────────────────────────────────────
+
+@router.get("/ai/config")
+async def wa_ai_config(user=Depends(_perm("ai.manage"))):
+    return await ai_admin_api.config(admin=user)
+
+
+@router.put("/ai/config")
+async def wa_ai_config_update(
+    body: ai_admin_api.ConfigUpdate,
+    user=Depends(_perm("ai.manage")),
+):
+    before = await ai_admin_api.config(admin=user)
+    result = await ai_admin_api.update_config(body=body, admin=user)
+    after = await ai_admin_api.config(admin=user)
+    await _audit(user["id"], "به‌روزرسانی تنظیمات هوشیار", severity="HIGH",
+                 before={k: before.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking")},
+                 after={k: after.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking")},
+                 tags=["هوشیار", "پیکربندی", "پنل_وب"])
+    return result
+
+
+@router.get("/ai/stats")
+async def wa_ai_stats(user=Depends(_perm("ai.manage"))):
+    return await ai_admin_api.stats(admin=user)
+
+
+@router.get("/ai/reports")
+async def wa_ai_reports(
+    limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("ai.manage")),
+):
+    return await ai_admin_api.reports(limit=limit, admin=user)
+
+
+@router.get("/ai/banned")
+async def wa_ai_banned(user=Depends(_perm("ai.manage"))):
+    return await ai_admin_api.banned(admin=user)
+
+
+@router.get("/ai/users")
+async def wa_ai_users(
+    q: str = Query(..., min_length=2, max_length=100),
+    user=Depends(_perm("ai.manage")),
+):
+    return await ai_admin_api.users(q=q, admin=user)
+
+
+@router.post("/ai/users/ban")
+async def wa_ai_ban(
+    body: ai_admin_api.UserAction,
+    user=Depends(_perm("ai.manage")),
+):
+    target = await db.get_user(body.user_id)
+    result = await ai_admin_api.toggle_ban(body=body, admin=user)
+    await _audit(user["id"], "تغییر دسترسی کاربر به هوشیار", severity="HIGH",
+                 target_id=body.user_id, target_type="user",
+                 target_label=(target or {}).get("name", str(body.user_id)),
+                 before={"مسدود": bool((target or {}).get("ai_banned"))},
+                 after={"مسدود": bool(result.get("banned"))},
+                 tags=["هوشیار", "دسترسی", "پنل_وب"])
+    return result
+
+
+@router.post("/ai/users/reset-quota")
+async def wa_ai_reset_quota(
+    body: ai_admin_api.UserAction,
+    user=Depends(_perm("ai.manage")),
+):
+    target = await db.get_user(body.user_id)
+    result = await ai_admin_api.reset_quota(body=body, admin=user)
+    await _audit(user["id"], "صفرکردن سهمیه روزانه هوشیار", severity="WARNING",
+                 target_id=body.user_id, target_type="user",
+                 target_label=(target or {}).get("name", str(body.user_id)),
+                 tags=["هوشیار", "سهمیه", "پنل_وب"])
+    return result
+
+
+# ── Audit ──────────────────────────────────────────────────────────
+
+@router.get("/audit-logs")
+async def wa_audit_logs(
+    category: Optional[str] = Query(None),
+    min_severity: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
+    user=Depends(_perm("audit.view")),
+):
+    return await owner_api.audit_logs_admin(
+        admin=user, category=category, min_severity=min_severity,
+        q=q, skip=skip, limit=limit)
+
+
+# ── System / Backup / Prestige ─────────────────────────────────────
+
+@router.get("/system/status")
+async def wa_system_status(
+    user=Depends(_perm_any(
+        "system.manage", "backup.manage", "prestige.manage",
+        "settings.manage", "notifications.manage")),
+):
+    return await owner_api.bot_status(admin=user)
+
+
+@router.get("/system/backup-settings")
+async def wa_backup_settings(user=Depends(_perm("backup.manage"))):
+    return {
+        "auto_backup_enabled": bool(await db.get_setting("auto_backup_enabled", False)),
+        "auto_backup_hour": int(await db.get_setting("auto_backup_hour", 3) or 0),
+        "auto_backup_last_run": await db.get_setting("auto_backup_last_run", None),
+    }
+
+
+class WaBackupSettingsPatch(BaseModel):
+    auto_backup_enabled: Optional[bool] = None
+    auto_backup_hour: Optional[int] = None
+
+
+@router.patch("/system/backup-settings")
+async def wa_backup_settings_patch(
+    body: WaBackupSettingsPatch,
+    user=Depends(_perm("backup.manage")),
+):
+    owner_body = owner_api.BotSettingsPatch(
+        auto_backup_enabled=body.auto_backup_enabled,
+        auto_backup_hour=body.auto_backup_hour,
+    )
+    return await owner_api.bot_settings_patch(body=owner_body, admin=user)
+
+
+@router.post("/system/backup")
+async def wa_backup_request(
+    body: owner_api.BackupRequestBody,
+    user=Depends(_perm("backup.manage")),
+):
+    return await owner_api.request_backup(body=body, admin=user)
+
+
+@router.post("/system/export/excel")
+async def wa_export_excel(user=Depends(_perm("backup.manage"))):
+    await db.bot_notifs.insert_one({
+        "type": "excel_export_request", "chat_id": user["id"],
+        "text": "__EXCEL_EXPORT__", "sent": False, "created_at": _now(),
+    })
+    await _audit(user["id"], "درخواست خروجی اکسل کامل", severity="HIGH",
+                 tags=["اکسل", "خروجی", "پنل_وب"])
+    return {"ok": True, "message": "📊 فایل اکسل از طریق ربات برای شما ارسال می‌شود."}
+
+
+@router.post("/system/prestige/backfill")
+async def wa_prestige_backfill(user=Depends(_perm("prestige.manage"))):
+    return await owner_api.prestige_backfill(admin=user)
+
+
+@router.get("/system/prestige-config")
+async def wa_prestige_config(user=Depends(_perm("prestige.manage"))):
+    return await owner_api.prestige_config_get(admin=user)
+
+
+@router.put("/system/prestige-config")
+async def wa_prestige_config_update(
+    body: owner_api.PrestigeConfigPut,
+    user=Depends(_perm("prestige.manage")),
+):
+    return await owner_api.prestige_config_put(body=body, admin=user)
+
+
+@router.post("/system/notifications/force-send")
+async def wa_force_resources(user=Depends(_perm("notifications.manage"))):
+    return await owner_api.notifications_force_send(admin=user)
+
+
+@router.post("/system/log-groups/test")
+async def wa_log_groups_test(
+    user=Depends(_perm_any("settings.manage", "system.manage")),
+):
+    return await owner_api.log_groups_test(admin=user)
+
+
+# ── Schedule: کلاس/امتحان/جبرانی برای schedules.manage ────────────
+
+@router.get("/schedule")
+async def wa_schedule_list(
+    stype: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await content_api.schedule_list(admin=user, stype=stype)
+
+
+@router.post("/schedule")
+async def wa_schedule_create(
+    body: content_api.ScheduleCreate,
+    user=Depends(_perm("schedules.manage")),
+):
+    result = await content_api.add_schedule(body=body, admin=user)
+    await _audit(user["id"], "ایجاد برنامه کلاسی", severity="INFO",
+                 target_type="schedule", target_label=body.lesson,
+                 after={"نوع": body.type, "تاریخ": body.date, "گروه": db.normalize_group(body.group)},
+                 tags=["برنامه", "پنل_وب"])
+    return result
+
+
+@router.patch("/schedule/{sid}")
+async def wa_schedule_update(
+    sid: str,
+    body: content_api.ScheduleUpdate,
+    user=Depends(_perm("schedules.manage")),
+):
+    old = await db.get_schedule_by_id(sid) or {}
+    result = await content_api.edit_schedule(sid=sid, body=body, admin=user)
+    await _audit(user["id"], "ویرایش برنامه کلاسی", severity="WARNING",
+                 target_id=sid, target_type="schedule", target_label=body.lesson,
+                 before={"درس": old.get("lesson"), "تاریخ": old.get("date"), "گروه": old.get("group")},
+                 after={"درس": body.lesson, "تاریخ": body.date, "گروه": db.normalize_group(body.group)},
+                 tags=["برنامه", "پنل_وب"])
+    return result
+
+
+@router.delete("/schedule/{sid}")
+async def wa_schedule_delete(
+    sid: str,
+    user=Depends(_perm("schedules.manage")),
+):
+    old = await db.get_schedule_by_id(sid) or {}
+    result = await content_api.del_schedule(sid=sid, admin=user)
+    await _audit(user["id"], "حذف برنامه کلاسی", severity="HIGH",
+                 target_id=sid, target_type="schedule",
+                 target_label=old.get("lesson", ""), tags=["برنامه", "پنل_وب"])
+    return result
+
+
+@router.post("/schedule/{sid}/flex-change")
+async def wa_schedule_flex_change(
+    sid: str,
+    body: content_api.FlexChange,
+    user=Depends(_perm("schedules.manage")),
+):
+    result = await content_api.flex_change(sid=sid, body=body, admin=user)
+    await _audit(user["id"], "اعلام زمان جدید کلاس منعطف", severity="WARNING",
+                 target_id=sid, target_type="schedule",
+                 after={"تاریخ": body.date, "ساعت": body.time},
+                 tags=["برنامه", "کلاس_منعطف", "پنل_وب"])
+    return result
+
+
+# ── Grades: global/scoped permissions ──────────────────────────────
+
+async def _grade_intake_scope(user: dict) -> Optional[str]:
+    if await db.has_permission(user["id"], "grades.manage"):
+        return None
+    if await db.has_permission(user["id"], "grades.scoped"):
+        scope = await db.get_scoped_intake(user["id"])
+        if scope:
+            return scope
+        info = await db.get_user_roles(user["id"])
+        if info.get("scope_intake"):
+            return info["scope_intake"]
+    raise HTTPException(403, "grade_scope_missing")
+
+
+@router.get("/grades/recent")
+async def wa_grades_recent(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    intake = await _grade_intake_scope(user)
+    return await academic_api.grades_recent(
+        skip=skip, limit=limit, intake=intake, admin=user)
+
+
+@router.get("/grades/find-student")
+async def wa_grades_find_student(
+    q: str = Query(..., min_length=2, max_length=100),
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    intake = await _grade_intake_scope(user)
+    users = await db.search_users(q.strip())
+    return {"students": [
+        {"id": s.get("user_id"), "name": s.get("name", ""),
+         "student_id": s.get("student_id", ""), "group": s.get("group", ""),
+         "intake": s.get("intake", "")}
+        for s in users
+        if s.get("approved") and (intake is None or s.get("intake") == intake)
+    ]}
+
+
+@router.post("/grades/bulk")
+async def wa_grades_bulk(
+    body: academic_api.GradeBulkCreate,
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    intake = await _grade_intake_scope(user)
+    if intake is not None:
+        ids = [e.user_id for e in body.entries]
+        matched = await db.users.find(
+            {"user_id": {"$in": ids}, "approved": True, "intake": intake},
+            {"user_id": 1}).to_list(len(ids))
+        if {u.get("user_id") for u in matched} != set(ids):
+            raise HTTPException(403, "grade_intake_out_of_scope")
+    result = await academic_api.grades_bulk_create(body=body, admin=user)
+    await _audit(user["id"], "ثبت گروهی نمره", severity="WARNING",
+                 target_type="grades", target_label=f"{len(body.entries)} دانشجو",
+                 after={"درس": body.lesson, "آزمون": body.exam_title,
+                        "تعداد": result.get("updated", 0), "ورودی": intake or "همه"},
+                 tags=["نمرات", "پنل_وب"])
+    return result
