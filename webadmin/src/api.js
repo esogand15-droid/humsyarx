@@ -99,13 +99,33 @@ export const api = {
   broadcastScheduled: () => req('/api/admin/broadcast/scheduled'),
   broadcastCancel: (text, created_at) =>
     req('/api/admin/broadcast/cancel', { method: 'POST', body: { text, created_at } }),
+  // 🌊 موج Poll-Notif — نظرسنجی کانال + فاصله‌ی اعلان منابع (سطح مالک؛ endpointهای موجود)
+  pollStatus: () => req('/api/admin/poll/status'),
+  pollSetChannel: (channel_id) => req('/api/admin/poll/channel', { method: 'POST', body: { channel_id } }),
+  pollCreate: (question, options, anonymous) =>
+    req('/api/admin/poll', { method: 'POST', body: { question, options, anonymous } }),
+  notifSettings: () => req('/api/admin/notifications/settings'),
+  notifSetInterval: (interval_hours) =>
+    req('/api/admin/notifications/settings', { method: 'POST', body: { interval_hours } }),
+  // 🌊 موج ChannelLock — قفل اجباری عضویت کانال (سطح مالک)
+  channelLock: () => req('/api/admin/channel-lock'),
+  channelLockAdd: (body) => req('/api/admin/channel-lock', { method: 'POST', body }),
+  channelLockDel: (id) => req(`/api/admin/channel-lock/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   auditLogs: (p) => req('/api/admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
   settings: () => req('/api/admin/settings'),
   patchSettings: (body) => req('/api/admin/settings', { method: 'PATCH', body }),
-  backup: () => req('/api/admin/backup', { method: 'POST' }),
+  // 🌊 موج Backup-Mgmt — بخش‌بندی پشتیبان (همان بخش‌های منوی ربات)
+  backup: (section) => req('/api/admin/backup', { method: 'POST', body: section ? { section } : {} }),
   // 🌊 موج Export — درخواست خروجی اکسل کامل (ربات فایل را در گفت‌وگوی ادمین می‌فرستد)
   exportExcel: () => req('/api/admin/export/excel', { method: 'POST' }),
   intakes: () => req('/api/admin/intakes'),
+  // 🌊 موج Intakes-CA — مدیریت ورودی‌ها + ادمین‌های محتوا (سطح مالک؛ endpointهای موجود)
+  intakeAdd: (code, label) => req('/api/admin/intakes', { method: 'POST', body: { code, label } }),
+  intakeToggle: (code) => req(`/api/admin/intakes/${encodeURIComponent(code)}/toggle`, { method: 'POST' }),
+  intakeDel: (code) => req(`/api/admin/intakes/${encodeURIComponent(code)}`, { method: 'DELETE' }),
+  contentAdmins: () => req('/api/admin/content-admins'),
+  contentAdminAdd: (uid) => req(`/api/admin/content-admins/${uid}`, { method: 'POST' }),
+  contentAdminDel: (uid) => req(`/api/admin/content-admins/${uid}`, { method: 'DELETE' }),
   pendingUsers: () => req('/api/admin/users/pending'),
   // ── rbAC ──
   roles: () => req('/api/admin/rbac/roles'),
@@ -128,6 +148,11 @@ export const api = {
   caQuestionsPending: () => req('/api/content/questions/pending'),
   caQuestionApprove: (qid) => req(`/api/content/questions/${qid}/approve`, { method: 'POST' }),
   caQuestionReject: (qid) => req(`/api/content/questions/${qid}/reject`, { method: 'POST' }),
+  // 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit)
+  caQuestionPatch: (qid, body) => req(`/api/content/questions/${qid}`, { method: 'PATCH', body }),
+  // 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware)
+  caQuestionsImport: (items, approve) =>
+    req('/api/content/questions/bulk-import', { method: 'POST', body: { items, approve: !!approve } }),
   // ── 🌊 WA3 — مدیریت کامل کاربر (permission-based، آینه‌ی دقیق ربات) ──
   waUserMessage: (uid, text) => req(`/api/web-admin/users/${uid}/message`, { method: 'POST', body: { text } }),
   waUserAction: (uid, action, reason = '') => req(`/api/web-admin/users/${uid}/action`, { method: 'POST', body: { action, reason } }),
