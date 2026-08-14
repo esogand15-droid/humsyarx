@@ -65,6 +65,7 @@ export const api = {
   examStats: () => req('/api/web-admin/exams/stats'),
   // 🌊 موج Analytics-Filters — بازه‌ی روزانه (۷ تا ۹۰)
   waAnalytics: (days) => req('/api/web-admin/wa-analytics' + (days ? `?days=${days}` : '')),
+  waInsights: () => req('/api/web-admin/wa-insights'),
   notifRuns: (job) => req('/api/web-admin/notif/runs' + (job ? `?job_name=${job}` : '')),
   notifRetry: (id) => req(`/api/web-admin/notif/runs/${id}/retry`, { method: 'POST' }),
   // ── 🌊 WA2.1 Content Command Center ──
@@ -86,6 +87,10 @@ export const api = {
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
   botStatus: () => req('/api/admin/bot-status'),
+  // 🛠 Fix-Foundation — عملیات owner که در System فراخوانی می‌شوند
+  prestigeBackfill: () => req('/api/admin/prestige/backfill', { method: 'POST' }),
+  forceResNotif: () => req('/api/admin/notifications/force-send', { method: 'POST' }),
+  logGroupsTest: () => req('/api/admin/log-groups/test', { method: 'POST' }),
   analytics: (days) => req('/api/admin/analytics' + (days ? `?days=${days}` : '')),
   tickets: (status) => req('/api/admin/tickets' + (status ? `?status=${status}` : '')),
   ticket: (tid) => req(`/api/admin/tickets/${tid}`),
