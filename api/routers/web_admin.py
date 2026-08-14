@@ -827,7 +827,7 @@ def _exam_row(doc: dict) -> dict:
         "lesson": doc.get("lesson", ""), "teacher": doc.get("teacher", ""),
         "date": doc.get("date", ""), "time": doc.get("time", ""),
         "location": doc.get("location", ""), "notes": doc.get("notes", ""),
-        "group": doc.get("group", "هر دو"),
+        "group": db.normalize_group(doc.get("group", "هر دو")) or "هر دو",
         "status": st, "status_fa": _STATUS_FA[st],
         "reminded": doc.get("notified_days") or [],
     }
@@ -872,8 +872,8 @@ def _valid_exam_fields(body) -> tuple:
             datetime.strptime(t, "%H:%M")
         except (TypeError, ValueError):
             raise HTTPException(422, "ساعت باید به فرمت HH:MM باشد")
-    grp = (body.group or "هر دو").strip()
-    if grp not in ("هر دو", "الف", "ب"):
+    grp = db.normalize_group(body.group or "هر دو") or "هر دو"
+    if grp not in ("هر دو", "1", "2"):
         grp = "هر دو"
     return lesson, d, t, grp
 
@@ -1404,7 +1404,7 @@ async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.m
     if body.name is not None:
         updates["name"] = body.name.strip()[:80]
     if body.group is not None:
-        updates["group"] = body.group
+        updates["group"] = db.normalize_group(body.group)
     if body.intake is not None:
         updates["intake"] = body.intake
     if body.student_id is not None:
