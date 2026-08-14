@@ -74,9 +74,8 @@ async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
         pass
 
 
-@router.get("/stats")
 def _rp_mini(u: dict) -> dict:
-    """👑 P3 — مینی-چیپ پرستیژ از فیلدهای ذخیره‌شده (بدون کوئری اضافه)"""
+    """👑 P3 — مینی-چیپ پرستیژ از فیلدهای ذخیره‌شده (بدون کوئری اضافه)."""
     ranks = {r[0]: r for r in db.PRESTIGE_RANKS}
     r = ranks.get(u.get("prestige_rank") or "rookie", ranks["rookie"])
     try:
@@ -88,36 +87,117 @@ def _rp_mini(u: dict) -> dict:
             "stars": db.DIV_STARS.get(dv, "⭐")}
 
 
+@router.get("/stats")
 async def stats(admin=Depends(get_admin_user)):
+    """نمای فشرده‌ی واقعی داشبورد مالک.
+
+    کلیدهای flat برای Web Admin فعلی نگه داشته می‌شوند و آبجکت‌های nested
+    نیز برای مصرف‌کننده‌های قدیمی باقی می‌مانند. هیچ مقدار placeholder یا
+    عدد ساختگی در پاسخ وجود ندارد.
+    """
+    from utils import today_start_utc_str
+
+    today_start = today_start_utc_str()
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    (users_total, users_pending, questions_approved, questions_pending,
+     tickets_open, reports_open, subscriptions, active_today, active_week,
+     new_today, total_answers) = await asyncio.gather(
+        db.users.count_documents({"approved": True}),
+        db.users.count_documents({"approved": False}),
+        db.questions.count_documents({"approved": True}),
+        db.questions.count_documents({"approved": False}),
+        db.tickets.count_documents({"status": "open"}),
+        db.content_reports.count_documents({"status": "new"}),
+        db.sub_stats(),
+        db.count_active_users_today(),
+        db.users.count_documents({"last_active": {"$gte": week_ago}}),
+        db.users.count_documents({"registered_at": {"$gte": today_start}}),
+        db.answers.count_documents({}),
+    )
     return {
-        "users":{"total":await db.users.count_documents({"approved":True}),"pending":await db.users.count_documents({"approved":False})},
-        "questions":{"approved":await db.questions.count_documents({"approved":True}),"pending":await db.questions.count_documents({"approved":False})},
-        "tickets":{"open":await db.tickets.count_documents({"status":"open"})},
-        "reports":{"open":await db.content_reports.count_documents({"status":"new"})},
-        "subscriptions":{"active":0},
+        "active_today": active_today,
+        "active_week": active_week,
+        "new_today": new_today,
+        "total_answers": total_answers,
+        "users": {"total": users_total, "pending": users_pending},
+        "questions": {"approved": questions_approved, "pending": questions_pending},
+        "tickets": {"open": tickets_open},
+        "reports": {"open": reports_open},
+        "subscriptions": subscriptions or {},
     }
 
 @router.get("/bot-status")
 async def bot_status(admin=Depends(get_admin_user)):
+    """سلامت واقعی DB/API و حضور process ربات در همان container.
+
+    این endpoint heartbeat تلگرام را جعل نمی‌کند: ``bot_ok`` فقط می‌گوید
+    process مربوط به ``bot.py`` زنده دیده شده است. جزئیات خطا نیز جداگانه
+    برگردانده می‌شود تا UI حالت نامشخص را با «سالم» اشتباه نگیرد.
+    """
     import time
-    db_ping="—"; db_status="❌"
+
+    db_ping = None
+    db_error = ""
+    db_ok = False
     try:
-        t0=time.monotonic(); await db.client.admin.command("ping")
-        db_ping=f"{int((time.monotonic()-t0)*1000)} ms"; db_status="✅ متصل"
-    except Exception as e: db_status=f"❌ {str(e)[:40]}"
-    sys_info={}
+        t0 = time.monotonic()
+        await db.client.admin.command("ping")
+        db_ping = int((time.monotonic() - t0) * 1000)
+        db_ok = True
+    except Exception as e:
+        db_error = str(e)[:160]
+
+    bot_ok = False
+    bot_pid = None
+    bot_error = ""
+    sys_info = {}
     try:
-        import psutil, os as _os
-        proc=psutil.Process(_os.getpid()); mem=proc.memory_info().rss/1024/1024
-        # 🚀 موج ۴.۶۰ — interval=0.2 قبلاً حلقه‌ی رویداد را ۲۰۰ms
-        # بلاک می‌کرد (همه‌ی درخواست‌های هم‌زمان صبر می‌کردند).
-        # interval=None غیربلاک‌کننده است: درصد از آخرین اندازه‌گیری.
-        vm=psutil.virtual_memory(); cpu=psutil.cpu_percent(interval=None)
-        up=time.time()-proc.create_time(); h,r=divmod(int(up),3600); m,s=divmod(r,60)
-        sys_info={"bot_ram_mb":round(mem,1),"total_ram_mb":round(vm.total/1024/1024),
-            "used_ram_pct":vm.percent,"cpu_pct":cpu,"uptime":f"{h}h {m}m" if h else f"{m}m {s}s"}
-    except Exception: pass
-    return {"db_status":db_status,"db_ping":db_ping,"sys":sys_info}
+        import psutil
+        import os as _os
+
+        current_pid = _os.getpid()
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                args = p.info.get("cmdline") or []
+                proc_name = (p.info.get("name") or "").lower()
+                executable = _os.path.basename(args[0]).lower() if args else ""
+                has_bot_arg = any(_os.path.basename(str(arg)) == "bot.py" for arg in args[1:])
+                is_python = "python" in proc_name or executable.startswith("python")
+                if p.info.get("pid") != current_pid and is_python and has_bot_arg:
+                    bot_ok = True
+                    bot_pid = p.info.get("pid")
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        proc = psutil.Process(current_pid)
+        mem = proc.memory_info().rss / 1024 / 1024
+        vm = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=None)
+        up = time.time() - proc.create_time()
+        h, r = divmod(int(up), 3600)
+        m, s = divmod(r, 60)
+        sys_info = {
+            "api_ram_mb": round(mem, 1),
+            "total_ram_mb": round(vm.total / 1024 / 1024),
+            "used_ram_pct": vm.percent,
+            "cpu_pct": cpu,
+            "uptime": f"{h}h {m}m" if h else f"{m}m {s}s",
+        }
+    except Exception as e:
+        bot_error = str(e)[:160]
+
+    return {
+        "api_ok": True,
+        "bot_ok": bot_ok,
+        "bot_pid": bot_pid,
+        "bot_error": bot_error,
+        "db_ok": db_ok,
+        "db_ping_ms": db_ping,
+        "db_error": db_error,
+        "checked_at": datetime.now().isoformat(),
+        "sys": sys_info,
+    }
 
 # ══════════════════════════════════════════════
 # 👥 کاربران
@@ -346,7 +426,7 @@ class UserPatch(BaseModel):
 async def edit_user(uid: int, body: UserPatch, admin=Depends(get_admin_user)):
     updates={}
     if body.name       is not None: updates["name"]=body.name.strip()
-    if body.group      is not None: updates["group"]=body.group
+    if body.group      is not None: updates["group"]=db.normalize_group(body.group)
     if body.intake     is not None: updates["intake"]=body.intake
     if body.student_id is not None: updates["student_id"]=body.student_id.strip()
     if body.role       is not None:
@@ -928,6 +1008,94 @@ async def test_log_group(body: LogGroupTestBody, admin=Depends(get_admin_user)):
         severity="INFO", target_id=str(chat_id), target_type="group",
         tags=["گروه_لاگ", "پنل_وب"])
     return {"ok": True, "message": "پیام تست از طریق ربات ارسال می‌شود (ظرف چند ثانیه در گروه می‌رسد)."}
+
+
+# ══════════════════════════════════════════════
+# 🛠 Fix-Foundation — عملیات نهایی مالک (Parity-Final)
+# endpointهای owner موجود آزاد نشده‌اند؛ این routeها صرفاً افزودنی‌اند.
+# ══════════════════════════════════════════════
+
+@router.post("/prestige/backfill")
+async def prestige_backfill(admin=Depends(get_admin_user)):
+    raw = await db.prestige_backfill()
+    firsts = raw.get("firsts") or []
+    report = {
+        "scanned": int(raw.get("scanned") or 0),
+        "migrated": int(raw.get("migrated") or 0),
+        "founders": int(raw.get("founders") or 0),
+        "firsts": len(firsts) if isinstance(firsts, list) else int(firsts or 0),
+        "first_items": firsts[:10] if isinstance(firsts, list) else [],
+        "errors": int(raw.get("errors") or 0),
+        "fatal": raw.get("fatal") or "",
+    }
+    await _audit(admin, "اجرای Backfill Prestige", "Prestige",
+                 severity="HIGH", after=report,
+                 tags=["پرستیژ", "backfill", "پنل_وب"])
+    return {"ok": not bool(report["fatal"]), "report": report}
+
+
+@router.post("/notifications/force-send")
+async def notifications_force_send(admin=Depends(get_admin_user)):
+    """ثبت سیگنال؛ اجرای واقعی با bot instance در outbox job انجام می‌شود."""
+    await _notify(admin["id"], "__FORCE_RES_NOTIF__", "force_resources_notification")
+    await _audit(admin, "درخواست ارسال فوری اعلان منابع", "Notifications",
+                 severity="HIGH", tags=["اعلان_منابع", "ارسال_فوری", "پنل_وب"])
+    return {
+        "ok": True,
+        "message": "📨 درخواست ثبت شد؛ نتیجه‌ی اجرای واقعی در گفت‌وگوی ربات ارسال می‌شود.",
+    }
+
+
+@router.post("/log-groups/test")
+async def log_groups_test(admin=Depends(get_admin_user)):
+    """تست واقعی هر دو گروه از مسیر Bot API، بدون افشای token به مرورگر."""
+    import time
+    import httpx
+    from api.telegram_send import API_BASE, BOT_TOKEN
+
+    specs = [
+        ("admin", "log_group_admin", "🛡 لاگ مدیریت"),
+        ("content", "log_group_content", "🎓 لاگ محتوا"),
+    ]
+    results = []
+    for kind, key, label in specs:
+        chat_id = await db.get_setting(key, None)
+        if not chat_id:
+            results.append({"key": kind, "label": label, "status": "unset", "ms": None, "error": ""})
+            continue
+        if not BOT_TOKEN:
+            results.append({"key": kind, "label": label, "status": "error", "ms": None,
+                            "error": "TELEGRAM_TOKEN تنظیم نشده است"})
+            continue
+        started = time.monotonic()
+        status = "error"
+        error = ""
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(f"{API_BASE}/sendMessage", json={
+                    "chat_id": int(chat_id),
+                    "text": (f"🧪 <b>تست اتصال {label}</b>\n\n"
+                             "ارسال مستقیم از Web Admin با موفقیت انجام شد. ✅"),
+                    "parse_mode": "HTML",
+                })
+            payload = resp.json() if resp.content else {}
+            if resp.status_code == 200 and payload.get("ok"):
+                status = "sent"
+            else:
+                error = str(payload.get("description") or f"HTTP {resp.status_code}")[:160]
+        except Exception as e:
+            error = str(e)[:160]
+        results.append({
+            "key": kind, "label": label, "status": status,
+            "ms": int((time.monotonic() - started) * 1000), "error": error,
+        })
+
+    await _audit(admin, "تست اتصال گروه‌های لاگ", "Settings",
+                 severity="INFO", after={r["key"]: r["status"] for r in results},
+                 tags=["گروه_لاگ", "تست_اتصال", "پنل_وب"])
+    return {"ok": all(r["status"] in ("sent", "unset") for r in results),
+            "results": results}
+
 
 # ══════════════════════════════════════════════
 # 🛡 لاگ فعالیت مدیران (نمایش در پنل وب)
