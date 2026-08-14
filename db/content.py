@@ -1188,6 +1188,7 @@ class DBContent:
         FIX جدید: flex_type — 'fixed' (ثابت) یا 'flexible' (منعطف).
         برای کلاس منعطف، flex_note آخرین زمان اعلام‌شده را نگه می‌دارد.
         """
+        group = self.normalize_group(group) or 'هر دو'
         r = await self.schedules.insert_one({
             'type': stype, 'lesson': lesson, 'teacher': teacher,
             'date': date, 'time': time, 'location': location,
@@ -1234,6 +1235,8 @@ class DBContent:
         allowed_fields = {'date', 'time', 'location', 'teacher', 'lesson', 'notes', 'group'}
         if field not in allowed_fields:
             return False
+        if field == 'group':
+            value = self.normalize_group(value) or 'هر دو'
         try:
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
@@ -1255,6 +1258,7 @@ class DBContent:
         ID برنامه دست‌نخورده باقی می‌ماند.
         """
         try:
+            group = self.normalize_group(group) or 'هر دو'
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
                 {'$set': {
@@ -1276,9 +1280,11 @@ class DBContent:
         if stype:    q['type'] = stype
         if upcoming: q['date'] = {'$gte': now_tehran().strftime('%Y-%m-%d')}
         if group:
+            aliases = self.group_aliases(group)
             q['$or'] = [
-                {'group': group},
+                {'group': {'$in': aliases}},
                 {'group': 'هر دو'},
+                {'group': 'هردو'},
                 {'group': ''},
                 {'group': None},
                 {'group': {'$exists': False}},
@@ -1306,11 +1312,12 @@ class DBContent:
             'type': 'exam',
             'date': {'$gte': today, '$lte': future},
         }
-        normalized_group = str(group or '').strip()
+        normalized_group = self.normalize_group(group)
         if normalized_group:
             query['$or'] = [
-                {'group': normalized_group},
+                {'group': {'$in': self.group_aliases(normalized_group)}},
                 {'group': 'هر دو'},
+                {'group': 'هردو'},
                 {'group': ''},
                 {'group': None},
                 {'group': {'$exists': False}},
