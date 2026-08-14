@@ -17,9 +17,9 @@ export default function Subscriptions() {
     setErr('');
     try {
       const [o, p, d] = await Promise.all([
-        api.subOverview().catch(() => null),
-        api.subPayments({ status }).catch(() => ({ payments: [] })),
-        api.discounts().catch(() => ({ discounts: [] })),
+        api.subOverview(),
+        api.subPayments({ status }),
+        api.discounts(),
       ]);
       setOv(o); setPays(p.payments || p.items || []); setDiscs(d.discounts || d.items || []);
     } catch (e) { setErr(errText(e)); }
@@ -39,12 +39,13 @@ export default function Subscriptions() {
 
   if (err) return <ErrorState error={err} onRetry={load} />;
 
+  const ovStats = ov?.stats || ov || {};
   const payCols = [
     { k: 'id', label: 'شناسه', render: r => <span className="code">{r.id || r._id}</span> },
     { k: 'user_name', label: 'دانشجو', render: r => r.user_name || r.name || r.user_id },
     { k: 'plan', label: 'پلن', render: r => r.plan_name || r.plan },
-    { k: 'amount', label: 'مبلغ', render: r => r.final_amount != null
-        ? `${Number(r.final_amount).toLocaleString('fa')} تومان` : (r.amount || '—') },
+    { k: 'amount', label: 'مبلغ', render: r => (r.final_price ?? r.final_amount ?? r.amount) != null
+        ? `${Number(r.final_price ?? r.final_amount ?? r.amount).toLocaleString('fa')} تومان` : '—' },
     { k: 'discount', label: 'تخفیف', render: r => r.discount_code ? <B kind="purple">{r.discount_code}</B> : '—' },
     { k: 'receipt', label: 'رسید', render: r => r.has_receipt ? <B kind="acc">🖼 دارد</B> : <span className="muted">—</span> },
     { k: 'created_at', label: 'تاریخ', render: r => (r.submitted_at || r.created_at || '').slice(0, 10) },
@@ -59,7 +60,7 @@ export default function Subscriptions() {
   const discCols = [
     { k: 'code', label: 'کد', render: r => <span className="code purple">{r.code}</span> },
     { k: 'percent', label: 'درصد', render: r => `٪${r.percent ?? r.discount_percent ?? '—'}` },
-    { k: 'uses', label: 'استفاده', render: r => Number(r.uses ?? r.used ?? 0).toLocaleString('fa') },
+    { k: 'uses', label: 'استفاده', render: r => Number(r.used_count ?? r.uses ?? r.used ?? 0).toLocaleString('fa') },
     { k: 'active', label: 'وضعیت', render: r => r.active === false ? <B kind="bad">غیرفعال</B> : <B kind="ok">فعال</B> },
   ];
 
@@ -69,10 +70,10 @@ export default function Subscriptions() {
       <div className="sub">بررسی رسیدهای کارت‌به‌کارت و سلامت اشتراک‌ها</div>
       {ov && (
         <div className="grid g4" style={{ marginBottom: 14 }}>
-          <Stat icon="💎" label="اشتراک فعال" value={Number(ov.active ?? 0).toLocaleString('fa')} tint="var(--teal)" />
-          <Stat icon="🧾" label="رسید در انتظار" value={Number(ov.pending_payments ?? 0).toLocaleString('fa')} tint="var(--warn)" />
-          <Stat icon="⏳" label="نزدیک به پایان" value={Number(ov.expiring ?? 0).toLocaleString('fa')} tint="var(--acc)" />
-          <Stat icon="🎁" label="کدهای تخفیف" value={Number(ov.discounts ?? 0).toLocaleString('fa')} tint="var(--purple)" />
+          <Stat icon="💎" label="اشتراک فعال" value={Number(ovStats.active ?? 0).toLocaleString('fa')} tint="var(--teal)" />
+          <Stat icon="🧾" label="رسید در انتظار" value={Number(ovStats.pending ?? 0).toLocaleString('fa')} tint="var(--warn)" />
+          <Stat icon="⏳" label="نزدیک به پایان (۷ روز)" value={Number(ovStats.expiring ?? 0).toLocaleString('fa')} tint="var(--acc)" />
+          <Stat icon="🎁" label="کدهای تخفیف" value={Number(ovStats.discounts ?? discs?.length ?? 0).toLocaleString('fa')} tint="var(--purple)" />
         </div>
       )}
       <div className="tabs">
@@ -90,7 +91,7 @@ export default function Subscriptions() {
           {!pays ? <Loading /> : (
             <DataTable columns={payCols} rows={pays} rowKey="id" colToggle
                        onRow={r => setRcpt(r)} />
-          )}}
+          )}
         </>
       )}
       {tab === 'discounts' && (!discs ? <Loading /> : <DataTable columns={discCols} rows={discs} rowKey="code" />)}
