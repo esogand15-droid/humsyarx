@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, NoPerm, Empty, Confirm } from '../ui.jsx';
+import { Loading, ErrorState, B, toast, NoPerm, Empty, Confirm, Switch } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const STEPS = [
@@ -367,6 +367,10 @@ export default function Notify() {
           )}
         </div>
 
+        {/* 🌊 موج Poll-Notif — نظرسنجی کانال + فاصله‌ی اعلان منابع (سطح مالک) */}
+        <PollPanel />
+        <NotifIntervalPanel />
+
         {/* 🌊 WA2.7 — اجراهای جاب‌های اعلان + تلاش مجدد */}
         <div className="panel panel-pad">
           <div className="row"><b>🔔 اجراهای اخیر اعلان‌ها</b><span className="spacer" />
@@ -393,6 +397,128 @@ export default function Notify() {
                  text={`لغو ارسال زمان‌دار برای ${fa(cancelOf.total)} گیرنده؟ پیام‌ها از صف حذف می‌شوند و این عمل در حسابرسی (HIGH) ثبت می‌شود.`}
                  onYes={cancelBatch}
                  onNo={() => setCancelOf(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ── 📊🌊 پنل نظرسنجی کانال (موج Poll-Notif) — همان admin:poll_main ربات ── */
+export function PollPanel() {
+  const [st, setSt] = useState(null);               // {channel_id, configured}
+  const [editing, setEditing] = useState(false);
+  const [ch, setCh] = useState('');
+  const [q, setQ] = useState('');
+  const [opts, setOpts] = useState(['', '']);
+  const [anon, setAnon] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const load = async () => {
+    try { const r = await api.pollStatus(); setSt(r); setCh(r.channel_id || ''); }
+    catch { setSt(null); }
+  };
+  useEffect(() => { load(); }, []);
+  if (!st) return null;
+  const saveCh = async () => {
+    setBusy(true);
+    try { await api.pollSetChannel(ch.trim()); toast('کانال نظرسنجی ذخیره شد 📊'); setEditing(false); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const validOpts = opts.map(o => o.trim()).filter(Boolean);
+  const send = async () => {
+    setConfirm(false); setBusy(true);
+    try {
+      await api.pollCreate(q.trim(), validOpts, anon);
+      toast('نظرسنجی در کانال منتشر شد 🗳'); setQ(''); setOpts(['', '']); setAnon(false);
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return (
+    <div className="panel panel-pad">
+      <div className="row"><b>📊 نظرسنجی کانال</b><span className="spacer" />
+        {st.configured
+          ? <B kind="ok">کانال: <span className="code">{st.channel_id}</span></B>
+          : <B kind="warn">کانال تنظیم نشده</B>}
+        <button className="btn sm" onClick={() => setEditing(e => !e)}>{editing ? 'انصراف' : '✏️ تغییر کانال'}</button>
+      </div>
+      {editing && (
+        <div className="row" style={{ marginTop: 10, gap: 6 }}>
+          <input className="inp" style={{ flex: 1 }} dir="ltr" placeholder="@channel یا -100…"
+                 value={ch} onChange={e => setCh(e.target.value)} />
+          <button className="btn primary sm" disabled={busy || !ch.trim()} onClick={saveCh}>{busy ? '⏳' : 'ذخیره'}</button>
+        </div>
+      )}
+      {st.configured && !editing && (<>
+        <input className="inp" style={{ width: '100%', marginTop: 10 }} placeholder="سؤال نظرسنجی…"
+               value={q} onChange={e => setQ(e.target.value)} maxLength={300} />
+        <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+          {opts.map((o, i) => (
+            <div key={i} className="row" style={{ gap: 6 }}>
+              <input className="inp" style={{ flex: 1 }} placeholder={`گزینه‌ی ${fa(i + 1)}`} maxLength={100}
+                     value={o}
+                     onChange={e => setOpts(s => s.map((x, j) => j === i ? e.target.value : x))} />
+              {opts.length > 2 && (
+                <button className="btn sm danger" title="حذف گزینه"
+                        onClick={() => setOpts(s => s.filter((_, j) => j !== i))}>🗑</button>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 8, flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn sm" disabled={opts.length >= 10}
+                  onClick={() => setOpts(s => [...s, ''])}>➕ گزینه</button>
+          <label className="row" style={{ gap: 6 }}>
+            <Switch on={anon} onChange={setAnon} /><span className="muted">ناشناس</span>
+          </label>
+          <span className="spacer" />
+          <button className="btn primary sm" disabled={busy || q.trim().length < 3 || validOpts.length < 2}
+                  onClick={() => setConfirm(true)}>{busy ? '⏳' : '🗳 انتشار در کانال'}</button>
+        </div>
+      </>)}
+      {confirm && (
+        <Confirm text={`انتشار نظرسنجی «${q.trim().slice(0, 60)}» با ${fa(validOpts.length)} گزینه در کانال؟ (بلافاصله ارسال می‌شود)`}
+                 onYes={send} onNo={() => setConfirm(false)} />
+      )}
+    </div>
+  );
+}
+
+/* ── ⏱🌊 پنل فاصله‌ی اعلان منابع (موج Poll-Notif) — همان admin:notif_manage ربات ── */
+export function NotifIntervalPanel() {
+  const [st, setSt] = useState(null);
+  const [hours, setHours] = useState(24);
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    try { const r = await api.notifSettings(); setSt(r); setHours(r.interval_hours ?? 24); }
+    catch { setSt(null); }
+  };
+  useEffect(() => { load(); }, []);
+  if (!st) return null;
+  const save = async () => {
+    setBusy(true);
+    try { await api.notifSetInterval(Number(hours)); toast('فاصله‌ی اعلان ذخیره شد ⏱'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return (
+    <div className="panel panel-pad">
+      <b>⏱ اعلان خودکار منابع جدید</b>
+      <div className="row" style={{ marginTop: 10, gap: 6 }}>
+        <span className="muted">هر</span>
+        {[24, 48, 72].map(h => (
+          <button key={h} className={`btn sm ${Number(hours) === h ? 'primary' : ''}`}
+                  onClick={() => setHours(h)}>{fa(h)} ساعت</button>
+        ))}
+        <button className="btn primary sm" disabled={busy}
+                onClick={save}>{busy ? '⏳' : 'ذخیره'}</button>
+      </div>
+      <div className="muted" style={{ marginTop: 8 }}>
+        🕐 آخرین ارسال: <span className="code">{(st.last_sent || '—').slice(0, 16).replace('T', ' ') || '—'}</span>
+      </div>
+      {st.last_error && (
+        <div className="badge bad" style={{ marginTop: 6 }} title={st.last_error}>
+          خطای آخرین اجرا: {st.last_error.slice(0, 60)}…
+        </div>
       )}
     </div>
   );
