@@ -308,16 +308,10 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             intakes = await db.get_all_intakes()
             if not any(i['code'] == code for i in intakes):
                 await query.answer("❌ ورودی نامعتبر است!", show_alert=True); return
-        prev = context.user_data.get('ca_intake')
+        # تغییر ورودی فقط عوض‌کردن context نمایشی پنل است و هیچ داده‌ای
+        # در DB تغییر نمی‌دهد؛ بنا به سیاست لاگ، برای این navigation ساده
+        # نه در audit و نه در گروه لاگ محتوا پیام ارسال نمی‌شود.
         context.user_data['ca_intake'] = code
-        if prev != code:
-            try:
-                await _audit(context, uid, "تغییر متن مدیریت محتوا",
-                    severity='INFO',
-                    details=f"🏷 ورودی: {await _intake_label(code)}",
-                    tags=['تغییر_ورودی'])
-            except Exception:
-                pass
         await query.answer(f"📅 {await _intake_label(code)}")
         await _show_main(query, uid, context)
         return ConversationHandler.END
