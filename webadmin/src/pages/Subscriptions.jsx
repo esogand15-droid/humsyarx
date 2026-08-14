@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import {
-  DataTable, Loading, ErrorState, Stat, B, toast, Confirm, Drawer,
+  DataTable, Loading, ErrorState, Stat, B, PageHeader, Tabs, toast, Confirm, Drawer,
   Empty, NoPerm, Modal, Switch,
 } from '../ui.jsx';
 
@@ -14,8 +14,10 @@ const TABS = [
   ['discounts', '🎁 تخفیف و کمپین'],
 ];
 
-export default function Subscriptions() {
-  const [tab, setTab] = useState('control');
+export default function Subscriptions({ route = '' }) {
+  const requested = new URLSearchParams(route.split('?')[1] || '').get('tab');
+  const [tab, setTab] = useState(TABS.some(([k]) => k === requested) ? requested : 'control');
+  useEffect(() => { if (TABS.some(([k]) => k === requested)) setTab(requested); }, [requested]);
   const [ov, setOv] = useState(null);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
@@ -34,19 +36,9 @@ export default function Subscriptions() {
   const stats = ov.stats || {};
   return (
     <>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
-        <div>
-          <div className="h1">مرکز کنترل اشتراک هامزیار</div>
-          <div className="sub">پلن‌ها، رسیدها، مشترکین، اعطای دستی، تخفیف و کمپین — یک منبع داده</div>
-        </div>
-        <span className="spacer" />
-        <B kind={ov.settings?.subscription_enforced ? 'warn' : 'ok'}>
-          {ov.settings?.subscription_enforced ? '🔒 اشتراک اجباری' : '🔓 دسترسی عمومی'}
-        </B>
-        <B kind={ov.settings?.protect_content_enabled ? 'ok' : 'warn'}>
-          {ov.settings?.protect_content_enabled ? '🛡 محافظت محتوا روشن' : '⚠️ محافظت محتوا خاموش'}
-        </B>
-      </div>
+      <PageHeader title="مرکز کنترل اشتراک هامزیار" description="پلن‌ها، رسیدها، مشترکین، اعطای دستی، تخفیف و کمپین با یک منبع داده"
+        actions={<><B kind={ov.settings?.subscription_enforced ? 'warn' : 'ok'}>{ov.settings?.subscription_enforced ? '🔒 اشتراک اجباری' : '🔓 دسترسی عمومی'}</B>
+          <B kind={ov.settings?.protect_content_enabled ? 'ok' : 'warn'}>{ov.settings?.protect_content_enabled ? '🛡 محافظت محتوا روشن' : '⚠️ محافظت محتوا خاموش'}</B></>} />
 
       <div className="grid g4" style={{ marginBottom: 14 }}>
         <Stat icon="💎" label="اشتراک فعال" value={fa(stats.active)} tint="var(--teal)" />
@@ -55,10 +47,7 @@ export default function Subscriptions() {
         <Stat icon="💰" label="درآمد ماه" value={money(stats.revenue_month)} tint="var(--purple)" />
       </div>
 
-      <div className="tabs" style={{ marginBottom: 14 }}>
-        {TABS.map(([k, label]) => <button key={k} className={`tab ${tab === k ? 'on' : ''}`}
-          onClick={() => setTab(k)}>{label}</button>)}
-      </div>
+      <Tabs items={TABS} value={tab} onChange={setTab} label="بخش‌های اشتراک" />
 
       {tab === 'control' && <ControlPanel ov={ov} refresh={loadOverview} />}
       {tab === 'payments' && <PaymentsPanel />}
@@ -123,7 +112,7 @@ function ControlPanel({ ov, refresh }) {
             <div className="row" style={{ marginTop: 10, gap: 5 }}>
               <button className="btn sm" onClick={() => setPlanEdit(p)}>✏️ ویرایش</button>
               <button className="btn sm" onClick={() => planToggle(p)}>{p.active ? '⏸ غیرفعال' : '▶ فعال'}</button>
-              <button className="btn sm danger" onClick={() => setDeletePlan(p)}>🗑</button>
+              <button className="btn sm danger" onClick={() => setDeletePlan(p)} aria-label={`حذف پلن ${p.name}`}>🗑</button>
             </div>
           </div>)}
           {!(ov.plans || []).length && <Empty text="هنوز پلنی تعریف نشده" />}
@@ -219,16 +208,16 @@ function PaymentsPanel() {
     { k: 'submitted_at', label: 'ثبت' },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => r.status === 'pending' && <div className="row" style={{ gap: 4 }}>
-      <button className="btn sm ok" onClick={() => decide(r, true)}>✅</button>
-      <button className="btn sm danger" onClick={() => decide(r, false)}>❌</button></div> },
+      <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
+      <button className="btn sm danger" onClick={() => decide(r, false)} aria-label="رد رسید پرداخت">❌</button></div> },
   ];
   if (err) return <ErrorState error={err} onRetry={load} />;
   const total = data?.total || 0;
   return <>
     <div className="panel panel-pad row" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
-      <div className="tabs" style={{ border: 0, margin: 0 }}>
+      <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="وضعیت پرداخت‌ها">
         {[['pending', 'در انتظار'], ['approved', 'تأیید'], ['rejected', 'رد'], ['', 'همه']].map(([k, l]) =>
-          <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+          <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
       </div>
       <span className="spacer" />
       <input className="inp" style={{ minWidth: 250 }} value={q} onChange={e => setQ(e.target.value)}
@@ -302,13 +291,13 @@ function SubscribersPanel({ ov, refreshOverview }) {
   ];
   return <>
     <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
-      <div className="tabs" style={{ border: 0, margin: 0 }}>
+      <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="وضعیت اشتراک‌ها">
         {[['active', 'فعال'], ['expired', 'منقضی'], ['revoked', 'لغوشده']].map(([k, l]) =>
-          <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+          <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
       </div>
       <input className="inp" style={{ minWidth: 230 }} value={q} onChange={e => setQ(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && (setSearch(q.trim()), setPage(1))} placeholder="دانشجو، پلن یا آیدی…" />
-      <button className="btn sm" onClick={() => { setSearch(q.trim()); setPage(1); }}>🔎</button>
+      <button className="btn sm" onClick={() => { setSearch(q.trim()); setPage(1); }} aria-label="جست‌وجوی مشترک‌ها">🔎</button>
       <span className="spacer" />
       <button className="btn" onClick={() => setGrantOpen(true)}>👤 اعطای دستی</button>
       <button className="btn primary" onClick={() => setBulkOpen(true)}>🎁 اعطای دسته‌جمعی</button>
@@ -344,7 +333,7 @@ function ManualGrantModal({ plans, onClose, onDone }) {
   };
   return <Modal title="👤 اعطای دستی اشتراک" onClose={onClose}>
     {!user ? <><div className="row"><input className="inp" style={{ flex: 1 }} value={q} onChange={e => setQ(e.target.value)}
-      onKeyDown={e => e.key === 'Enter' && search()} placeholder="نام، یوزرنیم، شماره یا آیدی…" /><button className="btn" onClick={search}>🔎</button></div>
+      onKeyDown={e => e.key === 'Enter' && search()} placeholder="نام، یوزرنیم، شماره یا آیدی…" /><button className="btn" onClick={search} aria-label="جست‌وجوی کاربر">🔎</button></div>
       <div className="grid" style={{ gap: 6, marginTop: 8 }}>{(hits || []).map(u => <button key={u.id} className="pick" onClick={() => setUser(u)}>
         <b>{u.name}</b><span className="muted">{u.student_id || `#${u.id}`}</span></button>)}</div></> : <div className="grid" style={{ gap: 10 }}>
       <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><b>{user.name}</b> <span className="code">#{user.id}</span></div>
@@ -380,8 +369,8 @@ function BulkGrantModal({ roles, onClose, onDone }) {
     setBusy(false);
   };
   return <Modal title="🎁 اعطای رایگان دسته‌جمعی" onClose={onClose}>
-    <div className="tabs"><button className={`tab ${mode === 'list' ? 'on' : ''}`} onClick={() => setMode('list')}>فهرست کاربران</button>
-      <button className={`tab ${mode === 'role' ? 'on' : ''}`} onClick={() => setMode('role')}>براساس نقش</button></div>
+    <div className="tabs" role="tablist" aria-label="روش اعطای دسته‌جمعی"><button type="button" role="tab" aria-selected={mode === 'list'} className={`tab ${mode === 'list' ? 'on' : ''}`} onClick={() => setMode('list')}>فهرست کاربران</button>
+      <button type="button" role="tab" aria-selected={mode === 'role'} className={`tab ${mode === 'role' ? 'on' : ''}`} onClick={() => setMode('role')}>براساس نقش</button></div>
     <div className="grid" style={{ gap: 10 }}>
       {mode === 'list' ? <textarea className="inp" rows={7} value={ids} onChange={e => setIds(e.target.value)}
         placeholder={'هر خط: آیدی عددی، @username، شماره دانشجویی یا نام دقیق'} /> :
@@ -467,7 +456,7 @@ function DiscountsPanel({ plans, refreshOverview }) {
         <B>هر کاربر: {c.per_user_limit ? fa(c.per_user_limit) : '∞'}</B><B>{c.expires_at || 'بدون انقضا'}</B></div>
       <div className="muted" style={{ marginTop: 7 }}>پلن‌ها: {(c.target_plan_ids || []).length ? c.target_plan_ids.map(id => planMap[String(id)] || id).join('، ') : 'همه‌ی پلن‌ها'}</div>
       <div className="row" style={{ marginTop: 10 }}><button className="btn sm" onClick={() => setDetail(c)}>📊 آمار و کمپین</button>
-        <button className="btn sm" onClick={() => toggle(c)}>{c.active ? '⏸' : '▶'}</button><button className="btn sm danger" onClick={() => setDel(c)}>🗑</button></div>
+        <button className="btn sm" onClick={() => toggle(c)} aria-label={`${c.active ? 'غیرفعال‌کردن' : 'فعال‌کردن'} کد ${c.code}`}>{c.active ? '⏸' : '▶'}</button><button className="btn sm danger" onClick={() => setDel(c)} aria-label={`حذف کد ${c.code}`}>🗑</button></div>
     </div>)}{!items.length && <Empty text="کد تخفیفی نیست" />}</div>}
     {addOpen && <DiscountAddModal plans={plans} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); refreshOverview(); }} />}
     {detail && <DiscountDrawer item={detail} onClose={() => setDetail(null)} />}

@@ -89,10 +89,10 @@ export function RefsTab() {
               <span style={{ flex: 1, color: 'var(--txt)' }}>{s.name}</span>
               {s.readonly && <B>🔒</B>}
               {!s.readonly && <>
-                <button className="btn sm" disabled={i === 0} title="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'up'), loadSubjects); }}>↑</button>
-                <button className="btn sm" disabled={i === subjects.length - 1} title="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'down'), loadSubjects); }}>↓</button>
-                <button className="btn sm" title="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'subject', item: s }); }}>✏️</button>
-                <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
+                <button className="btn sm" disabled={i === 0} title="بالا" aria-label="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'up'), loadSubjects); }}>↑</button>
+                <button className="btn sm" disabled={i === subjects.length - 1} title="پایین" aria-label="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'down'), loadSubjects); }}>↓</button>
+                <button className="btn sm" title="ویرایش نام" aria-label="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'subject', item: s }); }}>✏️</button>
+                <button className="btn sm danger" aria-label={`حذف موضوع ${s.name}`} onClick={e => { e.stopPropagation(); setConfirm({
                   text: `حذف موضوع «${s.name}» با همه‌ی کتاب‌ها و فایل‌هایش؟`,
                   run: async () => { await api.refSubjectDel(s.id); toast('حذف شد'); setSub(null); loadSubjects(); },
                 }); }}>🗑</button>
@@ -108,7 +108,7 @@ export function RefsTab() {
             <>
               <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 12px' }}>
                 <b style={{ fontSize: 12.5 }}>{sub.name}</b><span className="spacer" />
-                {!sub.readonly && <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })}>➕</button>}
+                {!sub.readonly && <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })} aria-label={`افزودن کتاب به ${sub.name}`}>➕</button>}
               </div>
               {books.length === 0 && <Empty icon="📕" text="کتابی نیست" />}
               {books.map((b, i) => (
@@ -117,21 +117,21 @@ export function RefsTab() {
                   <span>{b.is_fork ? '⭐' : b.intake ? '🏷' : '📕'}</span>
                   <span style={{ flex: 1, color: 'var(--txt)' }}>{b.name}</span>
                   {!b.is_fork && !b.intake && intake &&
-                    <button className="btn sm warn" title="نسخه‌ی اختصاصی برای این ورودی"
+                    <button className="btn sm warn" title="نسخه‌ی اختصاصی برای این ورودی" aria-label="نسخه‌ی اختصاصی برای این ورودی"
                             onClick={(e) => { e.stopPropagation(); (async () => {
                               try { await api.refBookFork(b.id, intake); toast('Fork ساخته شد ⭐'); loadBooks(sub); }
                               catch (err) { toast(errText(err), 'err'); }
                             })(); }}>🍴</button>}
                   {( !booksReadonly || b.is_fork || b.intake === intake) ? <>
-                    <button className="btn sm" disabled={i === 0} title="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'up'), () => loadBooks(sub)); }}>↑</button>
-                    <button className="btn sm" disabled={i === books.length - 1} title="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'down'), () => loadBooks(sub)); }}>↓</button>
-                    <button className="btn sm" title="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'book', item: b }); }}>✏️</button>
-                    {b.is_fork && <button className="btn sm" title="بازگشت به نسخه‌ی سراسری"
+                    <button className="btn sm" disabled={i === 0} title="بالا" aria-label="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'up'), () => loadBooks(sub)); }}>↑</button>
+                    <button className="btn sm" disabled={i === books.length - 1} title="پایین" aria-label="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'down'), () => loadBooks(sub)); }}>↓</button>
+                    <button className="btn sm" title="ویرایش نام" aria-label="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'book', item: b }); }}>✏️</button>
+                    {b.is_fork && <button className="btn sm" title="بازگشت به نسخه‌ی سراسری" aria-label="بازگشت به نسخه‌ی سراسری"
                             onClick={(e) => { e.stopPropagation(); (async () => {
                               try { await api.refBookUnfork(b.id); toast('↩️ بازگشت به نسخه‌ی سراسری'); loadBooks(sub); }
                               catch (err) { toast(errText(err), 'err'); }
                             })(); }}>↩️</button>}
-                    <button className="btn sm danger" onClick={e => { e.stopPropagation(); setConfirm({
+                    <button className="btn sm danger" aria-label={`حذف کتاب ${b.name}`} onClick={e => { e.stopPropagation(); setConfirm({
                       text: `حذف کتاب «${b.name}» و فایل‌هایش؟`,
                       run: async () => { await api.refBookDel(b.id); toast('حذف شد'); setBook(null); loadBooks(sub); },
                     }); }}>🗑</button>
@@ -161,7 +161,7 @@ export function RefsTab() {
                     <div className="muted">جلد {f.volume}</div>
                   </div>
                   <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
-                  {!filesReadonly && <button className="btn sm danger" onClick={() => setConfirm({
+                  {!filesReadonly && <button className="btn sm danger" aria-label={`حذف فایل ${f.description || 'بدون عنوان'}`} onClick={() => setConfirm({
                     text: 'حذف این فایل؟',
                     run: async () => { await api.refFileDel(f.id); toast('حذف شد'); loadFiles(book); },
                   })}>🗑</button>}
@@ -285,9 +285,9 @@ export function ScheduleTab() {
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
-        <div className="tabs" style={{ marginBottom: 0, borderBottom: 'none' }}>
+        <div className="tabs" style={{ marginBottom: 0, borderBottom: 'none' }} role="tablist" aria-label="نوع برنامه">
           {SCHED_TYPES.map(([k, v]) => (
-            <button key={k} className={`tab ${stype === k ? 'on' : ''}`} onClick={() => setStype(k)}>{v}</button>
+            <button key={k} type="button" role="tab" aria-selected={stype === k} className={`tab ${stype === k ? 'on' : ''}`} onClick={() => setStype(k)}>{v}</button>
           ))}
         </div>
         <span className="spacer" />
@@ -310,8 +310,8 @@ export function ScheduleTab() {
               <B>{TYPE_FA[s.type] || s.type}</B>
               {s.flex_type === 'flexible' &&
                 <button className="btn sm" title="اعلام زمان جدید کلاس منعطف" onClick={() => setFlex(s)}>🔄 زمان جدید</button>}
-              <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })}>✏️</button>
-              <button className="btn sm danger" onClick={() => setConfirm({
+              <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })} aria-label={`ویرایش برنامه ${s.lesson}`}>✏️</button>
+              <button className="btn sm danger" aria-label={`حذف برنامه ${s.lesson}`} onClick={() => setConfirm({
                 text: `حذف «${s.lesson}» (${s.date})؟`,
                 run: async () => { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); load(); },
               })}>🗑</button>
@@ -460,7 +460,7 @@ export function QbankTab() {
               <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
               <span className="muted">{f.upload_date}</span>
               {!f.readonly && (
-                <button className="btn sm danger" onClick={() => setConfirm({
+                <button className="btn sm danger" aria-label={`حذف فایل ${f.description || f.topic}`} onClick={() => setConfirm({
                   text: `حذف فایل «${f.description || f.topic}»؟`,
                   run: async () => { await api.caQbankDel(f.id); toast('حذف شد'); load(); },
                 })}>🗑</button>)}
@@ -554,7 +554,7 @@ export function FaqTab() {
                   <div style={{ color: 'var(--txt)', fontSize: 12.5 }}>{open[f.id] ? '▾' : '▸'} {f.question}</div>
                   {open[f.id] && <div className="muted" style={{ marginTop: 6, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>{f.answer}</div>}
                 </div>
-                <button className="btn sm danger" onClick={() => setConfirm({
+                <button className="btn sm danger" aria-label={`حذف پرسش ${f.question.slice(0, 40)}`} onClick={() => setConfirm({
                   text: `حذف پرسش «${f.question.slice(0, 40)}…»؟`,
                   run: async () => { await api.caFaqDel(f.id); toast('حذف شد'); load(); },
                 })}>🗑</button>
@@ -647,9 +647,9 @@ export function ReportsTab() {
       <span className="spacer" />
       {stats && <><B kind="warn">جدید: {Number(stats.new || 0).toLocaleString('fa')}</B><B kind="acc">در بررسی: {Number(stats.reviewing || 0).toLocaleString('fa')}</B><B kind="ok">حل: {Number(stats.resolved || 0).toLocaleString('fa')}</B></>}
     </div>
-    <div className="tabs" style={{ marginBottom: 10 }}>
+    <div className="tabs" style={{ marginBottom: 10 }} role="tablist" aria-label="وضعیت گزارش‌ها">
       {[['new', 'جدید'], ['reviewing', 'در بررسی'], ['resolved', 'حل‌شده'], ['rejected', 'ردشده'], ['', 'همه تاریخچه']].map(([k, l]) =>
-        <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+        <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
     </div>
     {!data ? <Loading rows={6} /> : <DataTable columns={cols} rows={data.reports || []} rowKey="id" colToggle
       pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
+import { Loading, ErrorState, B, FilterBar, PageHeader, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
 
 const faN = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -63,22 +63,23 @@ export default function Settings() {
 
   return (
     <>
-      <div className="h1">مرکز کنترل تنظیمات</div>
-      <div className="sub">هر تغییر در audit ثبت می‌شود و با همان کلیدهای مشترک ربات/مینی‌اپ ذخیره می‌گردد</div>
-      <div className="row" style={{ marginBottom: 10 }}>
+      <PageHeader title="مرکز کنترل تنظیمات" description="تنظیمات مشترک ربات، مینی‌اپ و Web Admin با متادیتای تغییر و حسابرسی" />
+      <FilterBar>
         <input className="inp" style={{ flex: 1, maxWidth: 380 }}
                placeholder="🔎 جست‌وجو در تنظیمات (عنوان/توضیح/کلید)…"
                value={qs} onChange={e => setQs(e.target.value)} />
         {q && <B kind="acc">{filteredCats.reduce((a, c) => a + c.items.length, 0).toLocaleString('fa')} نتیجه در {filteredCats.length.toLocaleString('fa')} دسته</B>}
-      </div>
-      <div className="tabs">
+      </FilterBar>
+      <div className="settings-layout">
+      <aside className="settings-nav" aria-label="دسته‌های تنظیمات">
         {cats.map(c => (
           <button key={c.key} className={`tab ${cat === c.key && !q ? 'on' : ''}`} onClick={() => { setCat(c.key); setQs(''); }}>
             {CATS[c.key]?.icon} {CATS[c.key]?.label || c.key}
             <span className="muted"> ({c.items.length.toLocaleString('fa')})</span>
           </button>
         ))}
-      </div>
+      </aside>
+      <div className="settings-main">
       {(filteredCats || (cur ? [cur] : [])).length === 0 ? <Empty text={q ? 'تنظیمی با این جست‌وجو نیست' : 'دسته‌ای نیست'} /> : (
         <div className="grid" style={{ gap: 10 }}>
           {(filteredCats || [cur]).map(cc => (
@@ -135,6 +136,8 @@ export default function Settings() {
           ))}
         </div>
       )}
+      </div>
+      </div>
 
       {/* 🔒🌊 موج ChannelLock — قفل اجباری عضویت کانال (سطح مالک؛ معادل admin:channel_lock ربات) */}
       <ChannelLockPanel />

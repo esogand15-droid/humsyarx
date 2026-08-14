@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
-import { DataTable, Drawer, Loading, ErrorState, B, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
+import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -106,10 +106,10 @@ export default function Users({ go }) {
       ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B> },
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
-        {!r.approved && !r.suspended && <button className="btn sm ok" onClick={() => act(r.id, 'approve')}>✅</button>}
+        {!r.approved && !r.suspended && <button className="btn sm ok" onClick={() => act(r.id, 'approve')} aria-label="تأیید کاربر">✅</button>}
         {r.suspended
-          ? <button className="btn sm ok" title="رفع تعلیق" onClick={() => act(r.id, 'unsuspend')}>🔓</button>
-          : <button className="btn sm danger" onClick={() => act(r.id, 'suspend')}>⏸</button>}
+          ? <button className="btn sm ok" title="رفع تعلیق" aria-label="رفع تعلیق کاربر" onClick={() => act(r.id, 'unsuspend')}>🔓</button>
+          : <button className="btn sm danger" onClick={() => act(r.id, 'suspend')} aria-label="تعلیق کاربر">⏸</button>}
       </div>) },
   ];
 
@@ -122,10 +122,7 @@ export default function Users({ go }) {
 
   return (
     <>
-      <div className="row">
-        <div><div className="h1">مدیریت کاربران</div>
-          <div className="sub">جست‌وجو، فیلتر ذخیره‌شده، pagination سرورساید و اکشن گروهی</div></div>
-        <span className="spacer" />
+      <PageHeader title="مدیریت کاربران" description="جست‌وجو، فیلتر ذخیره‌شده، صفحه‌بندی سرورساید و عملیات گروهی" actions={<>
         <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>
         <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>
         <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
@@ -137,9 +134,9 @@ export default function Users({ go }) {
           <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>
           <button className="btn sm" onClick={exportSel}>📥 CSV</button>
         </>}
-      </div>
+      </>} />
 
-      <div className="panel panel-pad row" style={{ marginBottom: 12 }}>
+      <FilterBar>
         <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، شماره دانشجویی، آیدی…"
                value={q2} onChange={e => { setQ2(e.target.value); setPage(1); }} />
         <select className="inp" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
@@ -153,7 +150,7 @@ export default function Users({ go }) {
           {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n} در صفحه</option>)}
         </select>
         <button className="btn sm" title="ذخیره‌ی فیلتر فعلی" onClick={() => setSaveModal(true)}>💾 ذخیره فیلتر</button>
-      </div>
+      </FilterBar>
 
       {/* ⏱ WA2.4 — فیلترهای ذخیره‌شده */}
       {filters && filters.length > 0 && (
@@ -162,7 +159,7 @@ export default function Users({ go }) {
           {filters.map(f => (
             <span key={f.id} className="chip">
               <a onClick={() => applyFilter(f)}>{f.name}</a>
-              <button className="chip-x" onClick={() => removeFilter(f.id)}>✕</button>
+              <button className="chip-x" onClick={() => removeFilter(f.id)} aria-label={`حذف فیلتر ذخیره‌شده ${f.name}`}>✕</button>
             </span>
           ))}
         </div>
@@ -230,9 +227,9 @@ function UserDrawer({ row, go, onClose }) {
 
   return (
     <Drawer wide title={`👤 ${row.display_name || row.name} · #${row.id}`} onClose={onClose}>
-      <div className="tabs" style={{ marginBottom: 10 }}>
+      <div className="tabs" style={{ marginBottom: 10 }} role="tablist" aria-label="بخش‌های پرونده کاربر">
         {TABS.map(([k, v]) => (
-          <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
+          <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
         ))}
       </div>
       {failed && (
@@ -384,6 +381,7 @@ function UserActions({ row, d, onChanged, onClose }) {
     group: u.group || '', intake: u.intake || '', nickname: u.nickname || '',
   });
   const [confirm, setConfirm] = useState(null);   // {action,text,danger}
+  const [pendingPatch, setPendingPatch] = useState(null);
   const [blockModal, setBlockModal] = useState(false);
   const [reason, setReason] = useState('');
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
@@ -395,17 +393,19 @@ function UserActions({ row, d, onChanged, onClose }) {
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
-  const save = async () => {
-    setBusy(true);
+  const proposeSave = () => {
+    const body = {};
+    ['name', 'student_id', 'group', 'intake', 'nickname'].forEach(k => {
+      if (String(form[k] || '') !== String(u[k] || '')) body[k] = form[k];
+    });
+    if (!Object.keys(body).length) return toast('تغییری اعمال نشده است', 'err');
+    setPendingPatch(body);
+  };
+  const applySave = async () => {
+    const body = pendingPatch; setPendingPatch(null); setBusy(true);
     try {
-      const body = {};
-      ['name', 'student_id', 'group', 'intake', 'nickname'].forEach(k => {
-        if (String(form[k] || '') !== String(u[k] || '')) body[k] = form[k];
-      });
-      if (!Object.keys(body).length) { toast('تغییری اعمال نشده است', 'err'); return; }
       const r = await api.waUserPatch(row.id, body);
-      toast(`ذخیره شد ✅ (${(r.changed || []).length} فیلد)`);
-      onChanged();
+      toast(`ذخیره شد ✅ (${(r.changed || []).length} فیلد)`); onChanged();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -462,7 +462,7 @@ function UserActions({ row, d, onChanged, onClose }) {
             </select></label>
         </div>
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn primary sm" disabled={busy} onClick={save}>💾 ذخیره تغییرات</button>
+          <button className="btn primary sm" disabled={busy} onClick={proposeSave}>بازبینی و ذخیره تغییرات</button>
           <span className="muted">تاریخچه‌ی تغییر نام‌نما در پروفایل کاربر ثبت می‌شود</span>
         </div>
       </div>
@@ -490,6 +490,14 @@ function UserActions({ row, d, onChanged, onClose }) {
         </div>
       </div>
 
+      {pendingPatch && <Modal title="بازبینی تغییرات کاربر" onClose={() => setPendingPatch(null)}>
+        <p className="muted" style={{ marginBottom: 10 }}>مقادیر زیر پس از تأیید ذخیره و در حسابرسی ثبت می‌شوند.</p>
+        <DiffViewer
+          before={Object.fromEntries(Object.keys(pendingPatch).map(k => [k, u[k] ?? '']))}
+          after={Object.fromEntries(Object.keys(pendingPatch).map(k => [k, pendingPatch[k]]))} />
+        <div className="row" style={{ marginTop: 12 }}><button className="btn primary" onClick={applySave}>تأیید و ذخیره</button>
+          <button className="btn" onClick={() => setPendingPatch(null)}>بازگشت</button></div>
+      </Modal>}
       {confirm && (
         <Confirm text={confirm.text} danger={confirm.danger}
                  onYes={async () => { await runAction(confirm.action); setConfirm(null); }}
@@ -598,7 +606,7 @@ function IntakesModal({ onClose }) {
                 <Switch on={i.active !== false} onChange={() => toggle(i.code)} />
                 <span className="muted" style={{ fontSize: 11 }}>{i.active !== false ? 'فعال' : 'متوقف'}</span>
               </label>
-              <button className="btn sm danger" onClick={() => setDelCode(i.code)}>🗑</button>
+              <button className="btn sm danger" onClick={() => setDelCode(i.code)} aria-label={`حذف ورودی ${i.label || i.code}`}>🗑</button>
             </div>
           ))}
         </div>

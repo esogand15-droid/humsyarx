@@ -1,8 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Stat, B, toast, Confirm, Switch } from '../ui.jsx';
+import { Loading, ErrorState, Stat, B, DiffViewer, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
+const DETAIL_LABELS = {
+  checked_at: 'زمان بررسی', bot_pid: 'شناسه فرایند ربات', bot_error: 'خطای ربات',
+  db_ping_ms: 'تأخیر MongoDB (ms)', db_error: 'خطای پایگاه‌داده',
+};
 
 // 🖥 سلامت سامانه + 💾 مدیریت پشتیبان‌گیری (🌊 موج Backup-Mgmt)
 // همان بخش‌های منوی «پشتیبان‌گیری» ربات + وضعیت/کنترل بکاپ خودکار —
@@ -81,8 +85,8 @@ export default function System({ me }) {
 
   return (
     <>
-      <div className="h1">سلامت سامانه</div>
-      <div className="sub">وضعیت زنده از endpointهای موجود — هیچ متریک ساختگی نمایش داده نمی‌شود</div>
+      <PageHeader title="سلامت سامانه" description="وضعیت زنده Bot، API، MongoDB، صف اعلان و پشتیبان‌گیری؛ بدون متریک ساختگی"
+        actions={<StatusBadge status={botOk && dbOk && apiOk ? 'healthy' : 'critical'} label={botOk && dbOk && apiOk ? 'سامانه سالم' : 'نیازمند بررسی'} />} />
       <div className="grid g4">
         <div className="panel stat">
           <div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>{health(botOk)[0]}</div>
@@ -99,13 +103,17 @@ export default function System({ me }) {
           <div><div className="v"><B kind={health(apiOk)[1]}>{health(apiOk)[2]}</B></div>
             <div className="l">API{bs.sys?.uptime ? ` · ${bs.sys.uptime}` : ''}</div></div>
         </div>
+        {bs.notifications && <Stat icon="🔔" label="پیام در صف ارسال" value={fa(bs.notifications.pending_queue)}
+          hint={`${fa(bs.notifications.recent_failed_runs)} اجرای اخیر دارای خطا`} tint={bs.notifications.recent_failed_runs ? 'var(--warn)' : 'var(--ok)'} />}
+        {bs.backup && <Stat icon="💾" label="پشتیبان‌گیری خودکار" value={bs.backup.enabled ? 'فعال' : 'غیرفعال'}
+          hint={bs.backup.last_run ? `آخرین: ${String(bs.backup.last_run).slice(0, 16).replace('T', ' ')}` : 'هنوز اجرا نشده'} tint={bs.backup.enabled ? 'var(--ok)' : 'var(--warn)'} />}
       </div>
 
       <div className="panel panel-pad" style={{ marginTop: 14 }}>
-        <b>جزئیات bot-status</b>
+        <b>جزئیات فنی سلامت</b>
         <dl className="kv" style={{ marginTop: 8 }}>
-          {Object.entries(bs).filter(([, v]) => typeof v !== 'object').slice(0, 14).map(([k, v]) => (
-            <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>
+          {Object.entries(bs).filter(([k, v]) => typeof v !== 'object' && DETAIL_LABELS[k] && v !== '' && v != null).map(([k, v]) => (
+            <React.Fragment key={k}><dt>{DETAIL_LABELS[k]}</dt><dd className={k.includes('pid') ? 'code' : ''}>{String(v)}</dd></React.Fragment>
           ))}
         </dl>
       </div>
@@ -169,6 +177,8 @@ export default function System({ me }) {
         </div>
       </div>}
 
+      {canPrestige && <PrestigeConfigPanel />}
+
       {/* 🛠 عملیات حساس با نمایش مبتنی بر permission */}
       <OwnerOpsPanel canPrestige={canPrestige} canForce={canForce} canLogTest={canLogTest} />
 
@@ -179,6 +189,51 @@ export default function System({ me }) {
       )}
     </>
   );
+}
+
+function PrestigeConfigPanel() {
+  const [data, setData] = useState(null);
+  const [values, setValues] = useState({});
+  const [err, setErr] = useState('');
+  const [confirmSave, setConfirmSave] = useState(false);
+  const load = async () => {
+    setErr('');
+    try { const r = await api.prestigeConfig(); setData(r); setValues(r.effective || {}); }
+    catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+  if (err) return <div className="panel panel-pad" style={{ marginTop: 14 }}><ErrorState title="تنظیمات Prestige بارگذاری نشد" error={err} onRetry={load} /></div>;
+  if (!data) return <div className="panel panel-pad" style={{ marginTop: 14 }}><Loading rows={4} /></div>;
+  const changed = Object.keys(values).filter(k => Number(values[k]) !== Number(data.effective?.[k]));
+  const save = async () => {
+    setConfirmSave(false);
+    const overrides = Object.fromEntries(Object.entries(values).filter(([k, v]) => Number(v) !== Number(data.defaults?.[k])));
+    try { await api.prestigeConfigUpdate(overrides); toast('تنظیمات Prestige ذخیره شد ✅'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const cs = data.challenge_stats || {};
+  return <section className="panel panel-pad" style={{ marginTop: 14 }}>
+    <div className="row"><div><b>🏅 تعادل زنده Prestige</b><div className="muted">اوررایدهای معتبر بدون redeploy؛ آستانه‌های Design Lock تغییر نمی‌کنند</div></div>
+      <span className="spacer" />{data.updated_at && <B>آخرین تغییر: {String(data.updated_at).slice(0, 16).replace('T', ' ')}</B>}
+      <button className="btn primary sm" disabled={!changed.length} onClick={() => setConfirmSave(true)}>بازبینی {fa(changed.length)} تغییر</button></div>
+    {Object.keys(cs).length > 0 && <div className="row" style={{ marginTop: 10 }}>
+      {cs.active != null && <B kind="acc">چالش فعال: {fa(cs.active)}</B>}
+      {cs.completed != null && <B kind="ok">تکمیل‌شده: {fa(cs.completed)}</B>}
+      {cs.failed != null && <B kind={cs.failed ? 'warn' : 'ok'}>ناموفق: {fa(cs.failed)}</B>}
+    </div>}
+    <div className="form-grid" style={{ marginTop: 12 }}>
+      {Object.entries(data.meta || {}).map(([key, meta]) => <label className="fld" key={key}>
+        <span>{meta.label}</span><input className="inp" type="number" min={meta.min} max={meta.max}
+          value={values[key] ?? ''} onChange={e => setValues(v => ({ ...v, [key]: Number(e.target.value) }))} />
+        <small className="field-help">بازه {fa(meta.min)} تا {fa(meta.max)} · پیش‌فرض {fa(data.defaults?.[key])}</small>
+      </label>)}
+    </div>
+    {confirmSave && <Confirm onNo={() => setConfirmSave(false)} onYes={save}>
+      <p className="muted" style={{ marginBottom: 10 }}>فقط اختلاف‌های زیر به‌عنوان override ذخیره می‌شوند.</p>
+      <DiffViewer before={Object.fromEntries(changed.map(k => [data.meta[k]?.label || k, data.effective[k]]))}
+        after={Object.fromEntries(changed.map(k => [data.meta[k]?.label || k, values[k]]))} />
+    </Confirm>}
+  </section>;
 }
 
 /* ── 🛠 عملیات مالک — همان دکمه‌های پراکنده‌ی پنل ربات (admin:prestige_backfill / notif_force_send / test_log_groups) ── */

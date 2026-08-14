@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, Drawer, NoPerm, Empty } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -86,14 +86,8 @@ export default function Audit() {
 
   return (
     <>
-      <div className="row">
-        <div>
-          <div className="h1">لاگ حسابرسی</div>
-          <div className="sub">ردیابی کامل اعمال حساس — عامل، هدف، شدت، قبل/بعد</div>
-        </div>
-        <span className="spacer" />
-        {rows && <B>{fa(total)} رویداد</B>}
-      </div>
+      <PageHeader title="لاگ حسابرسی" description="ردیابی اعمال حساس با عامل، هدف، شدت و تغییرات قبل/بعد"
+        actions={rows ? <B>{fa(total)} رویداد</B> : null} />
 
       {/* شمارنده‌ی سطوح (کلیک ⇒ فیلتر سریع) */}
       {counters && (
@@ -108,7 +102,7 @@ export default function Audit() {
         </div>
       )}
 
-      <div className="panel panel-pad row" style={{ marginBottom: 12 }}>
+      <FilterBar>
         <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 جست‌وجو در عمل/عامل/هدف…"
                value={q2} onChange={e => { setQ2(e.target.value); setSkip(0); }} />
         <select className="inp" value={filters.category}
@@ -125,7 +119,7 @@ export default function Audit() {
           <option value="HIGH">از HIGH</option>
           <option value="CRITICAL">فقط CRITICAL</option>
         </select>
-      </div>
+      </FilterBar>
 
       {!rows ? <Loading /> : rows.length === 0 ? (
         <Empty icon="🧾" text="رویدادی با این فیلترها نیست" />
@@ -133,7 +127,7 @@ export default function Audit() {
         <DataTable columns={cols} rows={rows} rowKey={(r) => r.id || r._id}
                    onRow={setDetail} colToggle
                    pager={{ page: skip / LIMIT + 1, pages: Math.max(1, Math.ceil(total / LIMIT)),
-                            total: fa(total), onPage: p => setSkip((p - 1) * LIMIT) }} />
+                            total, onPage: p => setSkip((p - 1) * LIMIT) }} />
       )}
 
       {detail && (

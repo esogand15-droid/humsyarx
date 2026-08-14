@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, PageHeader, Tabs, DiffViewer, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
 
 const ST = [
   ['', 'همه'],
@@ -11,28 +11,28 @@ const ST = [
 
 // 📝🌊 WA2.2 — مدیریت آزمون‌ها: CRUD روی schedules type=exam + آمار آزمون‌های تمرینی
 // 🌊 WA3 — تب دوم «نمرات»: recent + جستجوی دانشجو + ثبت گروهی (معادل ربات)
-export default function Exams() {
-  const [tab, setTab] = useState('exams');
+export default function Exams({ route = '' }) {
+  const params = new URLSearchParams(route.split('?')[1] || '');
+  const requested = params.get('tab');
+  const [tab, setTab] = useState(requested === 'grades' ? 'grades' : 'exams');
+  useEffect(() => { setTab(requested === 'grades' ? 'grades' : 'exams'); }, [requested]);
   return (
     <>
-      <div className="tabs" style={{ marginBottom: 14 }}>
-        {[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']].map(([k, v]) => (
-          <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
-        ))}
-      </div>
-      {tab === 'exams' ? <ExamsTab /> : <GradesTab />}
+      <Tabs items={[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']]} value={tab} onChange={setTab} label="آزمون و نمرات" />
+      {tab === 'exams' ? <ExamsTab autoCreate={params.get('new') === 'exam'} /> : <GradesTab autoCreate={params.get('new') === 'grade'} />}
     </>
   );
 }
 
-function ExamsTab() {
+function ExamsTab({ autoCreate = false }) {
   const [status, setStatus] = useState('');
   const [data, setData] = useState(null);
   const [stats, setStats] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
-  const [edit, setEdit] = useState(null);       // null | {} new | {row}
+  const [edit, setEdit] = useState(autoCreate ? {} : null);       // null | {} new | {row}
   const [confirm, setConfirm] = useState(null);
+  useEffect(() => { if (autoCreate) setEdit({}); }, [autoCreate]);
 
   const load = async () => {
     setErr('');
@@ -64,19 +64,15 @@ function ExamsTab() {
       ? <B kind="purple">{(r.reminded || []).join(' ')}</B> : <span className="muted">—</span> },
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
-        <button className="btn sm" onClick={() => setEdit(r)}>✏️</button>
-        <button className="btn sm danger" onClick={() => setConfirm(r)}>🗑</button>
+        <button className="btn sm" onClick={() => setEdit(r)} aria-label={`ویرایش آزمون ${r.lesson}`}>✏️</button>
+        <button className="btn sm danger" onClick={() => setConfirm(r)} aria-label={`حذف آزمون ${r.lesson}`}>🗑</button>
       </div>) },
   ];
 
   return (
     <>
-      <div className="row">
-        <div><div className="h1">مدیریت آزمون‌ها</div>
-          <div className="sub">آزمون‌های رسمی (اطلاع‌رسانی خودکار ۷/۳/۱ روز قبل توسط ربات)</div></div>
-        <span className="spacer" />
-        <button className="btn primary" onClick={() => setEdit({})}>➕ آزمون جدید</button>
-      </div>
+      <PageHeader title="مدیریت آزمون‌ها" description="آزمون‌های رسمی با اطلاع‌رسانی خودکار ۷، ۳ و ۱ روز قبل"
+        actions={<button className="btn primary" onClick={() => setEdit({})}>➕ آزمون جدید</button>} />
 
       {stats && (
         <div className="grid g4" style={{ marginBottom: 14 }}>
@@ -87,9 +83,9 @@ function ExamsTab() {
         </div>
       )}
 
-      <div className="tabs">
+      <div className="tabs" role="tablist" aria-label="وضعیت آزمون‌ها">
         {ST.map(([k, v]) => (
-          <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>
+          <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>
             {v}{k && counts[k] != null ? ` (${Number(counts[k]).toLocaleString('fa')})` : ''}
           </button>
         ))}
@@ -237,14 +233,15 @@ function ExamModal({ row, onClose }) {
 }
 
 /* ── 📊🌊 WA3 — تب نمرات: لیست اخیر + ثبت گروهی (همان grades ربات) ───── */
-function GradesTab() {
+function GradesTab({ autoCreate = false }) {
   const [skip, setSkip] = useState(0);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
-  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(autoCreate);
   const [editGrade, setEditGrade] = useState(null);
   const [deleteGrade, setDeleteGrade] = useState(null);
+  useEffect(() => { if (autoCreate) setBulkOpen(true); }, [autoCreate]);
   const LIMIT = 30;
 
   const load = async () => {
@@ -271,7 +268,7 @@ function GradesTab() {
       <B kind={r.score >= 10 ? 'ok' : 'bad'}>{Number(r.score).toLocaleString('fa')}</B>) },
     { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
       <button className="btn sm" onClick={() => setEditGrade(r)}>✏️ اصلاح</button>
-      <button className="btn sm danger" onClick={() => setDeleteGrade(r)}>🗑</button>
+      <button className="btn sm danger" onClick={() => setDeleteGrade(r)} aria-label={`حذف نمره ${r.student_name}`}>🗑</button>
     </div> },
   ];
   return (
@@ -312,6 +309,7 @@ function GradeEditModal({ row, onClose }) {
     <div className="grid" style={{ gap: 10 }}>
       <div className="panel panel-pad"><b>{row.lesson}</b> — {row.exam_title}<div className="muted">نمره فعلی: {Number(row.score).toLocaleString('fa')}</div></div>
       <label className="fld"><span>نمره جدید از ۲۰</span><input className="inp" type="number" min="0" max="20" step="0.25" value={score} onChange={e => setScore(e.target.value)} /></label>
+      <DiffViewer before={{ نمره: row.score }} after={{ نمره: score === '' ? '—' : Number(score) }} />
       <div className="muted">پس از ذخیره، اصلاح نمره در Inbox و پیام ربات دانشجو اعلام می‌شود.</div>
       <div className="row"><button className="btn primary" disabled={busy || Number(score) < 0 || Number(score) > 20 || score === ''} onClick={async () => {
         setBusy(true); try { await api.gradeUpdate(row.id, Number(score)); toast('نمره اصلاح و به دانشجو اطلاع داده شد ✅'); onClose(true); }
@@ -364,11 +362,11 @@ function GradeBulkModal({ onClose }) {
               <input className="inp" style={{ flex: 1 }} placeholder="نام/شماره دانشجویی/یوزرنیم…"
                      value={r.q} onChange={e => setRow(i, { q: e.target.value, hits: null, picked: null })}
                      onKeyDown={e => e.key === 'Enter' && find(i)} />
-              <button className="btn sm" onClick={() => find(i)}>🔎</button>
+              <button className="btn sm" onClick={() => find(i)} aria-label={`جست‌وجوی کاربر ردیف ${i + 1}`}>🔎</button>
               <input className="inp" type="number" step="0.25" min="0" max="20" style={{ width: 90 }}
                      placeholder="نمره" value={r.score} onChange={e => setRow(i, { score: e.target.value })} />
               <button className="btn sm danger" disabled={rows.length === 1}
-                      onClick={() => setRows(rs => rs.filter((_, j) => j !== i))}>✕</button>
+                      onClick={() => setRows(rs => rs.filter((_, j) => j !== i))} aria-label={`حذف ردیف ${i + 1}`}>✕</button>
             </div>
             {r.hits && !r.picked && (
               <div style={{ marginTop: 6 }}>

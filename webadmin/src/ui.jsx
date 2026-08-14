@@ -1,353 +1,421 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 
-// ── Toast ─────────────────────────────────────────────
+// ── Toast ─────────────────────────────────────────────────────────
 let _push;
+let _toastSeq = 0;
 export function toast(msg, kind = 'ok') { _push && _push(msg, kind); }
 
 export function ToastHost() {
   const [items, setItems] = useState([]);
   useEffect(() => {
     _push = (msg, kind) => {
-      const id = Math.random().toString(36).slice(2);
-      setItems(s => [...s, { id, msg, kind }]);
-      setTimeout(() => setItems(s => s.filter(t => t.id !== id)), 3400);
+      const id = `toast-${++_toastSeq}`;
+      setItems(s => [...s.slice(-3), { id, msg: String(msg || ''), kind }]);
+      window.setTimeout(() => setItems(s => s.filter(t => t.id !== id)), 3400);
     };
+    return () => { _push = undefined; };
   }, []);
   return (
-    <div className="toast-box">
-      {items.map(t => <div key={t.id} className={`toast ${t.kind}`}>{t.msg}</div>)}
+    <div className="toast-box" aria-live="polite" aria-atomic="false">
+      {items.map(t => <div key={t.id} className={`toast ${t.kind}`} role="status">{t.msg}</div>)}
     </div>
   );
 }
 
-// ── Data states ───────────────────────────────────────
-export function Loading({ rows = 4 }) {
-  return <div className="grid" style={{ gap: 8 }}>{Array.from({ length: rows }).map((_, i) =>
-    <div key={i} className="skel" style={{ height: 42 }} />)}</div>;
-}
-export function Empty({ icon = '🗂', text = 'موردی یافت نشد', children }) {
+// ── Page / section primitives ─────────────────────────────────────
+export function PageHeader({ title, description, eyebrow, actions, children }) {
   return (
-    <div className="center-state">
-      <div style={{ fontSize: 30 }} role="img">{icon}</div>
-      <div>{text}</div>
-      {children && <div style={{ marginTop: 12 }}>{children}</div>}
-    </div>
-  );
-}
-// 🌊 W-Admin §58 — خطای دوست‌داشتنی: عنوان انسانی + جزئیات + تلاش مجدد
-export function ErrorState({ error, onRetry, title }) {
-  return (
-    <div className="center-state" role="alert">
-      <div style={{ fontSize: 28 }}>⚠️</div>
-      <div style={{ fontWeight: 700, color: 'var(--txt2)', marginBottom: 4 }}>
-        {title || 'در بارگذاری اطلاعات مشکلی پیش آمد'}
+    <header className="page-header">
+      <div className="page-header-main">
+        {eyebrow && <div className="muted">{eyebrow}</div>}
+        <h1 className="page-title">{title}</h1>
+        {description && <div className="page-description">{description}</div>}
+        {children}
       </div>
-      <div className="muted" style={{ marginBottom: 12, direction: 'auto' }}>{error}</div>
-      {onRetry && <button className="btn" onClick={onRetry}>🔄 تلاش مجدد</button>}
+      {actions && <div className="page-actions">{actions}</div>}
+    </header>
+  );
+}
+
+export function SectionHeader({ title, description, actions }) {
+  return (
+    <div className="section-header">
+      <div><div className="section-title">{title}</div>{description && <div className="section-description">{description}</div>}</div>
+      <span className="spacer" />
+      {actions && <div className="page-actions">{actions}</div>}
     </div>
   );
 }
-export function NoPerm({ text = 'دسترسی لازم برای این بخش را ندارید' }) {
-  return <div className="center-state"><div style={{ fontSize: 28 }}>🔒</div><div>{text}</div></div>;
+
+export function FilterBar({ children, className = '' }) {
+  return <div className={`filter-bar ${className}`.trim()}>{children}</div>;
 }
 
-// ── Badge ─────────────────────────────────────────────
-export function B({ kind = '', children }) { return <span className={`badge ${kind}`}>{children}</span>; }
-
-// ── Switch (WA2.3) ────────────────────────────────────
-export function Switch({ on, onChange, disabled }) {
-  return (
-    <button type="button" className={`switch ${on ? 'on' : ''}`} disabled={disabled}
-            onClick={() => onChange && onChange(!on)} aria-pressed={on}>
-      <span className="knob" />
-    </button>
-  );
+export function Field({ label, hint, error, children, className = '' }) {
+  return <label className={`fld ${className}`.trim()}>
+    {label && <span>{label}</span>}{children}
+    {error ? <small className="field-error">{error}</small> : hint ? <small className="field-help">{hint}</small> : null}
+  </label>;
 }
 
-// ── DataTable v2 (سرورساید + قابلیت‌های اختیاری دسکتاپی) ──────
-// props: columns[{k,label,render,width,sortable,sortVal}], rows, rowKey,
-// selectable, onSelect(ids), pager:{page,pages,total,onPage}, loading,
-// onRow(row), empty, colToggle(bool → منوی نمایش/پنهان ستون‌ها)
-// 🌊 W-Design 3 — sortable کلاینت‌ساید opt-in + نمایش ستون‌ها؛ رفتار قبلی دست‌نخورده
-export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
-  pager, loading, onRow, empty, colToggle }) {
-  const [sel, setSel] = useState(new Set());
-  const [sort, setSort] = useState(null);               // {k, dir: 'asc'|'desc'}
-  const [hidden, setHidden] = useState(new Set());      // کلید ستون‌های پنهان
-  const [colMenu, setColMenu] = useState(false);
-  const toggle = (id) => {
-    const s = new Set(sel); s.has(id) ? s.delete(id) : s.add(id);
-    setSel(s); onSelect && onSelect([...s]);
+export function FormSection({ title, description, actions, children }) {
+  return <section className="form-section">
+    {(title || actions) && <SectionHeader title={title} description={description} actions={actions} />}
+    {children}
+  </section>;
+}
+
+export function Tabs({ items, value, onChange, label = 'بخش‌ها' }) {
+  return <div className="tabs" role="tablist" aria-label={label}>
+    {items.map(item => {
+      const [key, text] = Array.isArray(item) ? item : [item.key, item.label];
+      return <button key={key} type="button" role="tab" aria-selected={value === key}
+        className={`tab ${value === key ? 'on' : ''}`} onClick={() => onChange(key)}>{text}</button>;
+    })}
+  </div>;
+}
+
+export function SegmentedControl({ items, value, onChange, label = 'انتخاب' }) {
+  return <div className="segmented" role="group" aria-label={label}>
+    {items.map(([key, text]) => <button type="button" key={key} className={value === key ? 'on' : ''}
+      aria-pressed={value === key} onClick={() => onChange(key)}>{text}</button>)}
+  </div>;
+}
+
+// ── Data states ───────────────────────────────────────────────────
+export function Loading({ rows = 4, variant = 'rows', label = 'در حال بارگذاری' }) {
+  const cls = {
+    rows: 'skeleton-row', kpi: 'skeleton-kpi', chart: 'skeleton-chart',
+    tree: 'skeleton-tree', chat: 'skeleton-chat',
+  }[variant] || 'skeleton-row';
+  return <div className="skeleton-list" role="status" aria-label={label} aria-busy="true">
+    <span className="sr-only">{label}</span>
+    {Array.from({ length: rows }).map((_, i) => <div key={i} className={`skel ${cls}`} />)}
+  </div>;
+}
+
+export function Empty({ icon = '🗂', text = 'موردی یافت نشد', title, description, children, action }) {
+  return <div className="state-shell">
+    <div className="state-content">
+      <div className="state-icon" role="img" aria-hidden="true">{icon}</div>
+      <div className="state-title">{title || text}</div>
+      {description && <div className="state-description">{description}</div>}
+      {(children || action) && <div className="state-actions">{children || action}</div>}
+    </div>
+  </div>;
+}
+
+function errorInfo(error) {
+  if (!error) return { message: 'خطای ناشناخته', technical: '', id: '' };
+  if (typeof error === 'string') return { message: error, technical: '', id: '' };
+  return {
+    message: error.friendly || error.message || 'خطای ناشناخته',
+    technical: error.technical || error.detail || '',
+    id: error.errorId || error.error_id || '',
   };
-  const allIds = (rows || []).map(r => r[rowKey]);
+}
+
+export function ErrorState({ error, onRetry, title, description }) {
+  const info = errorInfo(error);
+  return <div className="state-shell" role="alert">
+    <div className="state-content">
+      <div className="state-icon" aria-hidden="true">⚠️</div>
+      <div className="state-title">{title || 'در بارگذاری اطلاعات مشکلی پیش آمد'}</div>
+      <div className="state-description">{description || info.message}</div>
+      {info.id && <div className="error-id">Error ID: {info.id}</div>}
+      {info.technical && info.technical !== info.message && <details className="error-details">
+        <summary>جزئیات فنی</summary><pre>{info.technical}</pre>
+      </details>}
+      {onRetry && <div className="state-actions"><button className="btn" onClick={onRetry}>↻ تلاش مجدد</button></div>}
+    </div>
+  </div>;
+}
+
+export function NoPerm({ text = 'دسترسی لازم برای این بخش را ندارید' }) {
+  return <div className="state-shell" role="alert"><div className="state-content">
+    <div className="state-icon" aria-hidden="true">🔒</div>
+    <div className="state-title">دسترسی محدود است</div><div className="state-description">{text}</div>
+  </div></div>;
+}
+
+// ── Badges / status ───────────────────────────────────────────────
+export function B({ kind = '', children, className = '', ...rest }) {
+  return <span className={`badge ${kind} ${className}`.trim()} {...rest}>{children}</span>;
+}
+
+export function StatusBadge({ status, label }) {
+  const key = String(status || '').toLowerCase();
+  const kind = ['active', 'approved', 'done', 'completed', 'healthy', 'ok'].includes(key) ? 'ok'
+    : ['pending', 'warning', 'scheduled', 'reviewing', 'degraded'].includes(key) ? 'warn'
+    : ['failed', 'rejected', 'critical', 'blocked', 'suspended', 'error'].includes(key) ? 'bad' : '';
+  return <B kind={kind} className="status-badge"><span className="status-dot" />{label || status || '—'}</B>;
+}
+
+export function ScopeBadge({ scope, label }) {
+  const key = scope === 'global' || !scope ? 'global' : scope === 'fork' || scope === 'override' ? 'override' : 'intake';
+  const icon = key === 'global' ? '🌐' : key === 'override' ? '⭐' : '🏷';
+  return <B className={`scope-badge ${key}`}>{icon} {label || (key === 'global' ? 'سراسری' : key === 'override' ? 'Override' : scope)}</B>;
+}
+
+export function Switch({ on, onChange, disabled, label }) {
+  return <button type="button" className={`switch ${on ? 'on' : ''}`} disabled={disabled}
+    onClick={() => onChange && onChange(!on)} aria-pressed={!!on} aria-label={label || (on ? 'روشن' : 'خاموش')}>
+    <span className="knob" />
+  </button>;
+}
+
+// ── DataTable v3 ──────────────────────────────────────────────────
+export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
+  pager, loading, onRow, empty, colToggle, caption, density = 'compact' }) {
+  const [sel, setSel] = useState(new Set());
+  const [sort, setSort] = useState(null);
+  const [hidden, setHidden] = useState(new Set());
+  const [colMenu, setColMenu] = useState(false);
+  const keyOf = (r, i) => typeof rowKey === 'function' ? rowKey(r, i) : r?.[rowKey];
+  const rowList = rows || [];
+  const rowSignature = rowList.map((r, i) => String(keyOf(r, i))).join('|');
+
+  useEffect(() => {
+    setSel(new Set());
+    onSelect && onSelect([]);
+  }, [rowSignature, pager?.page]);
+
+  const toggle = (id) => {
+    const next = new Set(sel); next.has(id) ? next.delete(id) : next.add(id);
+    setSel(next); onSelect && onSelect([...next]);
+  };
+  const allIds = rowList.map(keyOf).filter(v => v !== undefined && v !== null);
   const allOn = allIds.length > 0 && allIds.every(id => sel.has(id));
   const toggleAll = () => {
-    const s = allOn ? new Set() : new Set([...sel, ...allIds]);
-    setSel(s); onSelect && onSelect([...s]);
+    const next = allOn ? new Set() : new Set(allIds);
+    setSel(next); onSelect && onSelect([...next]);
   };
-
   const visCols = columns.filter(c => !hidden.has(c.k));
   const sorted = useMemo(() => {
-    if (!sort) return rows || [];
+    if (!sort) return rowList;
     const col = columns.find(c => c.k === sort.k);
-    if (!col || !col.sortable) return rows || [];
-    const val = (r) => col.sortVal ? col.sortVal(r) : r[col.k];
-    return [...(rows || [])].sort((a, b) => {
-      const va = val(a); const vb = val(b);
-      const na = Number(va); const nb = Number(vb);
-      let cmp;
-      if (va !== '' && vb !== '' && !isNaN(na) && !isNaN(nb)) cmp = na - nb;
-      else cmp = String(va ?? '').localeCompare(String(vb ?? ''), 'fa');
+    if (!col?.sortable) return rowList;
+    const val = r => col.sortVal ? col.sortVal(r) : r[col.k];
+    return [...rowList].sort((a, b) => {
+      const va = val(a); const vb = val(b); const na = Number(va); const nb = Number(vb);
+      const cmp = va !== '' && vb !== '' && Number.isFinite(na) && Number.isFinite(nb)
+        ? na - nb : String(va ?? '').localeCompare(String(vb ?? ''), 'fa');
       return sort.dir === 'asc' ? cmp : -cmp;
     });
   }, [rows, sort, columns]);
-
-  const clickSort = (c) => {
+  const clickSort = c => {
     if (!c.sortable) return;
     setSort(s => !s || s.k !== c.k ? { k: c.k, dir: 'asc' }
       : s.dir === 'asc' ? { k: c.k, dir: 'desc' } : null);
   };
 
-  return (
-    <div className="panel tbl-wrap">
-      {colToggle && (
-        <div className="tbl-tools">
-          <button className="btn sm" onClick={() => setColMenu(v => !v)}
-                  aria-expanded={colMenu} aria-label="نمایش ستون‌ها">☰ ستون‌ها</button>
-          {colMenu && (
-            <div className="colmenu" role="menu">
-              {columns.map(c => (
-                <label key={c.k} className="colmenu-item">
-                  <input type="checkbox" checked={!hidden.has(c.k)}
-                         onChange={() => setHidden(h => {
-                           const s = new Set(h);
-                           s.has(c.k) ? s.delete(c.k) : s.add(c.k);
-                           return s;
-                         })} />
-                  <span>{c.label || c.k}</span>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      <table className="tbl">
-        <thead>
-          <tr>
-            {selectable && <th style={{ width: 30 }}>
-              <input type="checkbox" checked={allOn} onChange={toggleAll}
-                     aria-label="انتخاب همه" /></th>}
-            {visCols.map(c => (
-              <th key={c.k} style={{ ...(c.width ? { width: c.width } : {}),
-                    ...(c.sortable ? { cursor: 'pointer', userSelect: 'none' } : {}) }}
-                  onClick={() => clickSort(c)}
-                  aria-sort={sort?.k === c.k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}
-                  title={c.sortable ? 'مرتب‌سازی' : undefined}>
-                {c.label}{c.sortable && (
-                  <span className="sort-ic">{sort?.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅'}</span>)}
-              </th>
-            ))}
-          </tr>
-        </thead>
+  return <div className="panel tbl-wrap" aria-busy={!!loading}>
+    {colToggle && <div className="tbl-tools">
+      <button className="btn sm" onClick={() => setColMenu(v => !v)} aria-expanded={colMenu}
+        aria-haspopup="menu" aria-label="انتخاب ستون‌های جدول">☰ ستون‌ها</button>
+      {colMenu && <div className="colmenu" role="menu">
+        {columns.map(c => <label key={c.k} className="colmenu-item">
+          <input type="checkbox" checked={!hidden.has(c.k)} onChange={() => setHidden(h => {
+            const next = new Set(h); next.has(c.k) ? next.delete(c.k) : next.add(c.k); return next;
+          })} /><span>{c.label || c.k}</span>
+        </label>)}
+      </div>}
+    </div>}
+    <div className="tbl-scroll">
+      <table className={`tbl ${density}`}>
+        {caption && <caption className="sr-only">{caption}</caption>}
+        <thead><tr>
+          {selectable && <th className="tbl-check"><input type="checkbox" checked={allOn} onChange={toggleAll} aria-label="انتخاب همه ردیف‌های صفحه" /></th>}
+          {visCols.map(c => <th key={c.k} style={c.width ? { width: c.width } : undefined}
+            onClick={() => clickSort(c)} aria-sort={sort?.k === c.k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+            {c.sortable ? <button type="button" className="th-sort" onClick={e => { e.stopPropagation(); clickSort(c); }}>
+              {c.label}<span className="sort-ic">{sort?.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅'}</span>
+            </button> : c.label}
+          </th>)}
+        </tr></thead>
         <tbody>
-          {loading && <tr><td colSpan={visCols.length + 1}><Loading rows={3} /></td></tr>}
-          {!loading && (!sorted || !sorted.length) &&
-            <tr><td colSpan={visCols.length + 1}>{empty || <Empty />}</td></tr>}
-          {!loading && (sorted || []).map(r => (
-            <tr key={r[rowKey]} className={sel.has(r[rowKey]) ? 'sel' : ''}
-                aria-selected={sel.has(r[rowKey]) || undefined}
-                onClick={() => onRow && onRow(r)} style={onRow ? { cursor: 'pointer' } : {}}>
-              {selectable && <td onClick={e => e.stopPropagation()}>
-                <input type="checkbox" checked={sel.has(r[rowKey])} onChange={() => toggle(r[rowKey])}
-                       aria-label="انتخاب ردیف" />
-              </td>}
-              {visCols.map(c => (
-                <td key={c.k} onClick={c.stop ? e => e.stopPropagation() : undefined}>
-                  {c.render ? c.render(r) : (r[c.k] ?? '—')}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {loading && <tr><td colSpan={visCols.length + (selectable ? 1 : 0)}><Loading rows={4} /></td></tr>}
+          {!loading && !sorted.length && <tr><td colSpan={visCols.length + (selectable ? 1 : 0)}>{empty || <Empty />}</td></tr>}
+          {!loading && sorted.map((r, i) => {
+            const id = keyOf(r, i) ?? `row-${i}`;
+            return <tr key={id} className={sel.has(id) ? 'sel' : ''} aria-selected={sel.has(id) || undefined}
+              tabIndex={onRow ? 0 : undefined} onClick={() => onRow && onRow(r)}
+              onKeyDown={e => { if (onRow && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onRow(r); } }}>
+              {selectable && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={sel.has(id)}
+                onChange={() => toggle(id)} aria-label={`انتخاب ردیف ${i + 1}`} /></td>}
+              {visCols.map(c => <td key={c.k} onClick={c.stop ? e => e.stopPropagation() : undefined}>
+                {c.render ? c.render(r) : (r[c.k] ?? '—')}
+              </td>)}
+            </tr>;
+          })}
         </tbody>
       </table>
-      {pager && (
-        <div className="pager">
-          <span>{Number(pager.total || 0).toLocaleString('fa')} مورد</span>
-          <button className="btn sm" disabled={pager.page <= 1}
-                  onClick={() => pager.onPage(pager.page - 1)}>‹ قبلی</button>
-          <span>صفحه {pager.page} از {pager.pages || 1}</span>
-          <button className="btn sm" disabled={pager.page >= pager.pages}
-                  onClick={() => pager.onPage(pager.page + 1)}>بعدی ›</button>
-        </div>
-      )}
     </div>
-  );
+    {pager && <Pagination {...pager} />}
+  </div>;
 }
 
-// ── Drawer / Modal ────────────────────────────────────
-export function Drawer({ title, onClose, children, wide }) {
+export function Pagination({ page, pages, total, onPage }) {
+  const safePages = Math.max(1, Number(pages || 1));
+  return <nav className="pager" aria-label="صفحه‌بندی">
+    <span>{Number(total || 0).toLocaleString('fa')} مورد</span>
+    <button className="btn sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>‹ قبلی</button>
+    <span>صفحه {Number(page).toLocaleString('fa')} از {safePages.toLocaleString('fa')}</span>
+    <button className="btn sm" disabled={page >= safePages} onClick={() => onPage(page + 1)}>بعدی ›</button>
+  </nav>;
+}
+
+// ── Dialogs ───────────────────────────────────────────────────────
+function useDialog(onClose) {
+  const ref = useRef(null);
+  const previous = useRef(null);
   useEffect(() => {
-    const h = e => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
+    previous.current = document.activeElement;
+    document.body.classList.add('overlay-open');
+    const root = ref.current;
+    const focusables = () => [...(root?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
+    window.setTimeout(() => (focusables()[0] || root)?.focus(), 0);
+    const key = e => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      if (e.key === 'Tab') {
+        const list = focusables(); if (!list.length) return;
+        const first = list[0]; const last = list[list.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('keydown', key);
+      document.body.classList.remove('overlay-open');
+      previous.current?.focus?.();
+    };
   }, [onClose]);
-  return (
-    <>
-      <div className="scrim" onClick={onClose} />
-      <div className="drawer" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'پانل'}
-           style={wide ? { width: 'min(660px,96vw)' } : {}}>
-        <div className="row" style={{ marginBottom: 12 }}>
-          <b style={{ fontSize: 15 }}>{title}</b>
-          <span className="spacer" />
-          <button className="btn sm" onClick={onClose} aria-label="بستن (Esc)">✕ بستن (Esc)</button>
-        </div>
-        {children}
-      </div>
-    </>
-  );
-}
-export function Modal({ title, onClose, children }) {
-  return (
-    <>
-      <div className="scrim" onClick={onClose} />
-      <div className="modal" role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : 'مودال'}>
-        <div className="row" style={{ marginBottom: 12 }}>
-          <b style={{ fontSize: 15 }}>{title}</b>
-          <span className="spacer" />
-          <button className="btn sm" onClick={onClose} aria-label="بستن">✕</button>
-        </div>
-        {children}
-      </div>
-    </>
-  );
-}
-export function Confirm({ text, onYes, onNo, danger }) {
-  return (
-    <Modal title="تأیید عملیات" onClose={onNo}>
-      <p style={{ color: 'var(--txt2)', marginBottom: 16, lineHeight: 1.8 }}>{text}</p>
-      <div className="row">
-        <button className={`btn ${danger ? 'danger' : 'primary'}`} onClick={onYes}>تأیید</button>
-        <button className="btn" onClick={onNo}>انصراف</button>
-      </div>
-    </Modal>
-  );
+  return ref;
 }
 
-// ── Command Palette 2.0 (Ctrl+K) — WA2.5: جست‌وجوی سراسری اختیاری ──
-// props: open, onClose(bool), commands, search?(q)→[{group,icon,label,hint,go}], go?(path)
+function DialogHeader({ title, onClose, titleId }) {
+  return <div className="dialog-head"><b className="dialog-title" id={titleId}>{title}</b>
+    <button className="btn sm dialog-close" onClick={onClose} aria-label="بستن پنجره">✕</button></div>;
+}
+
+export function Drawer({ title, onClose, children, wide }) {
+  const id = useId(); const ref = useDialog(onClose);
+  return <><div className="scrim" onMouseDown={onClose} aria-hidden="true" />
+    <aside ref={ref} className={`drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
+      <DialogHeader title={title} onClose={onClose} titleId={id} />{children}
+    </aside></>;
+}
+
+export function Modal({ title, onClose, children, wide }) {
+  const id = useId(); const ref = useDialog(onClose);
+  return <><div className="scrim" onMouseDown={onClose} aria-hidden="true" />
+    <div ref={ref} className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
+      <DialogHeader title={title} onClose={onClose} titleId={id} />{children}
+    </div></>;
+}
+
+export function Confirm({ text, onYes, onNo, danger, children }) {
+  return <Modal title="تأیید عملیات" onClose={onNo}>
+    {children || <p className="state-description">{text}</p>}
+    <div className="row" style={{ marginTop: 16 }}>
+      <button className={`btn ${danger ? 'danger' : 'primary'}`} onClick={onYes}>تأیید</button>
+      <button className="btn" onClick={onNo}>انصراف</button>
+    </div>
+  </Modal>;
+}
+
+export function DiffViewer({ before = {}, after = {} }) {
+  const keys = [...new Set([...Object.keys(before || {}), ...Object.keys(after || {})])];
+  if (!keys.length) return <Empty icon="Δ" text="تغییری ثبت نشده" />;
+  return <div className="diff-tbl">
+    <div className="diff-head"><span>فیلد</span><span>قبل</span><span>←</span><span>بعد</span></div>
+    {keys.map(k => <div className="diff-row" key={k}>
+      <span className="diff-f">{k}</span><span className="diff-v b">{displayValue(before?.[k])}</span>
+      <span className="diff-arrow">←</span><span className="diff-v a">{displayValue(after?.[k])}</span>
+    </div>)}
+  </div>;
+}
+const displayValue = v => v === undefined || v === null || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+
+export function Timeline({ items = [], empty = 'رویدادی ثبت نشده' }) {
+  if (!items.length) return <Empty icon="🕓" text={empty} />;
+  return <div className="timeline">{items.map((it, i) => <div className="timeline-item" key={it.id || i}>
+    <div className="timeline-rail"><span className="timeline-dot" /></div>
+    <div><div>{it.title || it.action || 'رویداد'}</div>{it.description && <div className="muted">{it.description}</div>}
+      <div className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</div></div>
+  </div>)}</div>;
+}
+
+export function ChartCard({ title, question, children, empty, actions }) {
+  return <section className="panel panel-pad chart-card"><SectionHeader title={title} description={question} actions={actions} />
+    {empty ? <div className="chart-empty">داده‌ی کافی برای این نمودار وجود ندارد</div> : children}
+  </section>;
+}
+
+// ── Command Palette ───────────────────────────────────────────────
 export function Palette({ open, onClose, commands, search, go }) {
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
-  const [results, setResults] = useState(null);   // نتایج جست‌وجوی سراسری
+  const [results, setResults] = useState(null);
   const [searching, setSearching] = useState(false);
-  const ref = useRef(null);
-  const debRef = useRef(null);
-
-  useEffect(() => { if (open) { setQ(''); setIdx(0); setResults(null); setTimeout(() => ref.current && ref.current.focus(), 30); } }, [open]);
+  const inputRef = useRef(null);
+  const debounce = useRef(null);
+  const close = () => onClose(false);
+  useEffect(() => { if (open) { setQ(''); setIdx(0); setResults(null); window.setTimeout(() => inputRef.current?.focus(), 20); } }, [open]);
   useEffect(() => {
     const h = e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); onClose(!open); }
-      if (e.key === 'Escape' && open) onClose(false);
+      if (e.key === 'Escape' && open) close();
     };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
   }, [open, onClose]);
-
-  // WA2.5 — جست‌وجوی سراسری با debounce
   useEffect(() => {
     if (!search) return;
-    clearTimeout(debRef.current);
+    window.clearTimeout(debounce.current);
     if (q.trim().length < 2) { setResults(null); setSearching(false); return; }
     setSearching(true);
-    debRef.current = setTimeout(async () => {
-      try { setResults(await search(q.trim())); }
-      catch { setResults([]); }
+    debounce.current = window.setTimeout(async () => {
+      try { setResults(await search(q.trim())); } catch { setResults([]); }
       setSearching(false);
-    }, 300);
-    return () => clearTimeout(debRef.current);
+    }, 280);
+    return () => window.clearTimeout(debounce.current);
   }, [q, search]);
-
   if (!open) return null;
-
-  const list = commands.filter(c => !q || c.label.includes(q) || (c.hint || '').includes(q));
-  const flat = results || [];
-  const total = q.trim().length >= 2 && results ? flat.length : list.length;
-  const runAt = (i) => {
-    if (q.trim().length >= 2 && results) {
-      const it = flat[i];
-      if (it) { it.run ? it.run() : (it.go && go && go(it.go)); onClose(false); }
-    } else if (list[i]) { list[i].run(); onClose(false); }
+  const local = commands.filter(c => !q || c.label.includes(q) || (c.hint || '').includes(q));
+  const list = q.trim().length >= 2 && results ? results : local;
+  const runAt = i => {
+    const it = list[i]; if (!it) return;
+    if (it.run) it.run(); else if (it.go && go) go(it.go);
+    close();
   };
-
-  return (
-    <>
-      <div className="scrim" onClick={() => onClose(false)} />
-      <div className="palette">
-        <input ref={ref} placeholder="جست‌وجو در همه‌چیز… (کاربر، تیکت، سؤال، محتوا، لاگ)"
-               value={q}
-               onChange={e => { setQ(e.target.value); setIdx(0); }}
-               onKeyDown={e => {
-                 if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, total - 1)); }
-                 if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
-                 if (e.key === 'Enter') runAt(idx);
-               }} />
-        <div style={{ maxHeight: 340, overflowY: 'auto' }}>
-          {!(q.trim().length >= 2 && results) && list.map((c, i) => (
-            <div key={c.label} className={`opt ${i === idx ? 'on' : ''}`}
-                 onMouseEnter={() => setIdx(i)}
-                 onClick={() => { c.run(); onClose(false); }}>
-              <span>{c.icon}</span><span>{c.label}</span>
-              <span className="spacer" /><span className="muted">{c.hint}</span>
-            </div>
-          ))}
-          {q.trim().length >= 2 && results && flat.length === 0 && !searching &&
-            <div className="center-state">نتیجه‌ای برای «{q}» نیست</div>}
-          {q.trim().length >= 2 && results && (() => {
-            const groups = [];
-            let lastGroup = null;
-            return flat.map((it, i) => {
-              const head = it.group !== lastGroup
-                ? <div key={'g' + i} className="pal-sec">{it.group}</div> : null;
-              lastGroup = it.group;
-              return (
-                <React.Fragment key={i}>
-                  {head}
-                  <div className={`opt ${i === idx ? 'on' : ''}`}
-                       onMouseEnter={() => setIdx(i)}
-                       onClick={() => runAt(i)}>
-                    <span>{it.icon}</span>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
-                    <span className="spacer" /><span className="muted">{it.hint}</span>
-                  </div>
-                </React.Fragment>
-              );
-            });
-          })()}
-          {q.trim().length >= 2 && searching && <div className="center-state" style={{ padding: 18 }}>… در حال جست‌وجو</div>}
-          {!list.length && !(q.trim().length >= 2) && <div className="center-state">نتیجه‌ای نیست</div>}
-        </div>
+  return <><div className="scrim" onMouseDown={close} aria-hidden="true" />
+    <div className="palette" role="dialog" aria-modal="true" aria-label="جست‌وجو و فرمان">
+      <input ref={inputRef} placeholder="جست‌وجو در کاربران، محتوا، سؤال، آزمون، تیکت، پرداخت و لاگ…"
+        value={q} onChange={e => { setQ(e.target.value); setIdx(0); }}
+        onKeyDown={e => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, Math.max(0, list.length - 1))); }
+          if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
+          if (e.key === 'Enter') runAt(idx);
+        }} />
+      <div className="palette-results">
+        {searching && <Loading rows={3} />}
+        {!searching && !list.length && <Empty icon="🔎" text={q ? `نتیجه‌ای برای «${q}» نیست` : 'فرمانی در دسترس نیست'} />}
+        {!searching && list.map((it, i) => <React.Fragment key={`${it.group || 'local'}-${it.id || it.label}-${i}`}>
+          {it.group && (i === 0 || list[i - 1]?.group !== it.group) && <div className="pal-sec">{it.group}</div>}
+          <button type="button" className={`opt ${i === idx ? 'on' : ''}`} onMouseEnter={() => setIdx(i)} onClick={() => runAt(i)}>
+            <span>{it.icon}</span><span className="text-truncate">{it.label}</span><span className="spacer" /><span className="muted">{it.hint}</span>
+          </button>
+        </React.Fragment>)}
       </div>
-    </>
-  );
+    </div></>;
 }
 
-// 🌊 W-Design 4 — delta اختیاری: ترند vs دوره‌ی قبل (▲/▼ خواب‌دار)
 export function Stat({ icon, label, value, tint = 'var(--acc)', delta, hint }) {
-  return (
-    <div className="panel stat">
-      <div className="ic" style={{ background: `${tint}1c`, border: `1px solid ${tint}44` }}>{icon}</div>
-      <div style={{ minWidth: 0 }}>
-        <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
-          <div className="v">{value ?? '—'}</div>
-          {delta != null && (
-            <span className={`trend ${delta >= 0 ? 'up' : 'down'}`}>
-              {delta >= 0 ? '▲' : '▼'} {Number(Math.abs(delta)).toLocaleString('fa')}٪
-            </span>
-          )}
-        </div>
-        <div className="l">{label}</div>
-        {hint && <div className="l" style={{ color: 'var(--txt3)', fontSize: 'var(--fs-caption)' }}>{hint}</div>}
-      </div>
-    </div>
-  );
+  return <div className="panel stat">
+    <div className="ic" style={{ background: `color-mix(in srgb, ${tint} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${tint} 28%, transparent)` }}>{icon}</div>
+    <div className="text-truncate"><div className="row stat-value-row"><div className="v">{value ?? '—'}</div>
+      {delta != null && <span className={`trend ${delta >= 0 ? 'up' : 'down'}`}>{delta >= 0 ? '▲' : '▼'} {Number(Math.abs(delta)).toLocaleString('fa')}٪</span>}
+    </div><div className="l">{label}</div>{hint && <div className="l stat-hint">{hint}</div>}</div>
+  </div>;
 }

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, toast, Modal } from '../ui.jsx';
+import { Loading, ErrorState, Empty, B, PageHeader, Confirm, toast, Modal } from '../ui.jsx';
 
 // 🛡 مرکز کنترل RBAC — نقش‌ها + ماتریس مجوزها (require_perm واقعی بک‌اند)
 export default function Rbac({ me }) {
@@ -10,6 +10,7 @@ export default function Rbac({ me }) {
   const [create, setCreate] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [editRole, setEditRole] = useState(null);
+  const [deleteRole, setDeleteRole] = useState(null);
   const canAssign = !!me?.is_owner || (me?.perms || []).includes('users.manage');
 
   const load = async () => {
@@ -33,14 +34,10 @@ export default function Rbac({ me }) {
 
   return (
     <>
-      <div className="row">
-        <div><div className="h1">نقش‌ها و مجوزها</div>
-          <div className="sub">تک‌منبع حقیقت RBAC — تغییرات هم‌زمان لاگ می‌شوند</div></div>
-        <span className="spacer" />
-        <MatrixPreview roles={roles} perms={perms} />
-        {canAssign && <button className="btn" onClick={() => setAssignOpen(true)}>👤 تخصیص نقش به کاربر</button>}
-        <button className="btn primary" onClick={() => setCreate(true)}>➕ نقش جدید</button>
-      </div>
+      <PageHeader title="نقش‌ها و مجوزها" description="تک‌منبع حقیقت RBAC با گروه‌بندی مجوزها و حسابرسی تغییرات"
+        actions={<><MatrixPreview roles={roles} perms={perms} />
+          {canAssign && <button className="btn" onClick={() => setAssignOpen(true)}>👤 تخصیص نقش به کاربر</button>}
+          <button className="btn primary" onClick={() => setCreate(true)}>➕ نقش جدید</button></>} />
 
       <div className="grid g2">
         {roles.map(r => (
@@ -52,14 +49,10 @@ export default function Rbac({ me }) {
               {r.system && <B kind="acc">سیستمی</B>}
               {r.users_count != null && <B>{Number(r.users_count).toLocaleString('fa')} کاربر</B>}
               <span className="spacer" />
-              <button className="btn sm" title="ویرایش مشخصات نقش" onClick={() => setEditRole(r)}>✏️</button>
+              <button className="btn sm" title="ویرایش مشخصات نقش" aria-label="ویرایش مشخصات نقش" onClick={() => setEditRole(r)}>✏️</button>
               {!r.system && (
-                <button className="btn sm danger"
-                        onClick={async () => {
-                          if (!confirm(`حذف نقش «${r.label || r.key}»؟`)) return;
-                          try { await api.deleteRole(r.key); toast('حذف شد'); load(); }
-                          catch (e) { toast(errText(e), 'err'); }
-                        }}>🗑</button>
+                <button className="btn sm danger" aria-label={`حذف نقش ${r.label || r.key}`}
+                        onClick={() => setDeleteRole(r)}>🗑</button>
               )}
             </div>
             {r.desc && <p className="muted" style={{ margin: '8px 0' }}>{r.desc}</p>}
@@ -74,6 +67,9 @@ export default function Rbac({ me }) {
       {editRole && <EditRole role={editRole} onClose={() => setEditRole(null)}
                              onDone={() => { setEditRole(null); load(); }} />}
       {assignOpen && <AssignRoles roles={roles} onClose={() => setAssignOpen(false)} />}
+      {deleteRole && <Confirm danger text={`حذف نقش «${deleteRole.label || deleteRole.key}»؟ این عملیات فقط برای نقش بدون کاربر مجاز است.`}
+        onNo={() => setDeleteRole(null)} onYes={async () => { const role = deleteRole; setDeleteRole(null);
+          try { await api.deleteRole(role.key); toast('نقش حذف شد'); load(); } catch (e) { toast(errText(e), 'err'); } }} />}
     </>
   );
 }

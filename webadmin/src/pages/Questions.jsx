@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
@@ -34,7 +34,7 @@ function parseImportText(text) {
 
 // 🧪 صف بازبینی سوالات (scope-aware) + ⚡ WA2.4 تأیید/رد گروهی
 // 🌊 موج Q-Editor — کشوی جزئیات کامل + ویرایش پیش از تأیید (PATCH واقعی) + فیلترها
-export default function Questions() {
+export default function Questions({ route = '' }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
@@ -44,11 +44,13 @@ export default function Questions() {
   const [sel, setSel] = useState([]);
   const [confirm, setConfirm] = useState(null);
   const [detail, setDetail] = useState(null);        // ردیف باز در کشو
-  const [createOpen, setCreateOpen] = useState(false);
+  const wantsCreate = new URLSearchParams(route.split('?')[1] || '').get('create') === '1';
+  const [createOpen, setCreateOpen] = useState(wantsCreate);
   const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
   const [q, setQ] = useState('');
   const [fdiff, setFdiff] = useState('');
   const [fsrc, setFsrc] = useState('');
+  useEffect(() => { if (wantsCreate) setCreateOpen(true); }, [wantsCreate]);
 
   const load = async () => {
     setErr('');
@@ -110,19 +112,16 @@ export default function Questions() {
       const id = r.id || r._id;
       return (
         <div className="row" style={{ gap: 4 }}>
-          <button className="btn sm" title="مشاهده/ویرایش" onClick={() => setDetail(r)}>👁</button>
-          <button className="btn sm ok" title="تأیید" onClick={() => act(id, 'approve')}>✅</button>
-          <button className="btn sm danger" title="رد" onClick={() => act(id, 'reject')}>❌</button>
+          <button className="btn sm" title="مشاهده/ویرایش" aria-label="مشاهده و ویرایش سؤال" onClick={() => setDetail(r)}>👁</button>
+          <button className="btn sm ok" title="تأیید" aria-label="تأیید سؤال" onClick={() => act(id, 'approve')}>✅</button>
+          <button className="btn sm danger" title="رد" aria-label="رد سؤال" onClick={() => act(id, 'reject')}>❌</button>
         </div>);
     } },
   ];
 
   return (
     <>
-      <div className="row">
-        <div><div className="h1">بازبینی سوالات</div>
-          <div className="sub">سوالات طراحی‌شده توسط دانشجویان در انتظار تأیید — مشاهده/ویرایش، تک‌تک یا گروهی</div></div>
-        <span className="spacer" />
+      <PageHeader title="بازبینی سؤال‌ها" description="بازبینی، ویرایش، تأیید و رد تکی یا گروهی با حفظ محدوده ورودی" actions={<>
         <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
         <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
         {sel.length > 0 && <>
@@ -130,9 +129,9 @@ export default function Questions() {
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
           <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
         </>}
-      </div>
+      </>} />
 
-      <div className="panel panel-pad row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+      <FilterBar>
         <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)}>
           {scopeKind === 'global' && <option value="">🌐 سؤالات سراسری</option>}
           {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
@@ -148,7 +147,7 @@ export default function Questions() {
           <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
         {(q || fdiff || fsrc) && <B kind="acc">{fa(vis.length)} از {fa(rows?.length ?? 0)}</B>}
-      </div>
+      </FilterBar>
 
       {!rows ? <Loading /> : (
         <DataTable columns={cols} rows={vis} rowKey="id"
@@ -215,7 +214,7 @@ function QuestionCreateModal({ intake, onClose }) {
         <input type="radio" name="new-q-correct" checked={f.correct === i} onChange={() => set('correct', i)} />
         <input className="inp" style={{ flex: 1 }} placeholder={`گزینه ${fa(i + 1)}`} value={o} onChange={e => setOpt(i, e.target.value)} />
         <button className="btn sm danger" disabled={f.options.length <= 2} onClick={() => setF(x => ({ ...x,
-          options: x.options.filter((_, j) => j !== i), correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct) }))}>✕</button>
+          options: x.options.filter((_, j) => j !== i), correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct) }))} aria-label={`حذف گزینه ${i + 1}`}>✕</button>
       </div>)}
       {f.options.length < 6 && <button className="btn sm" onClick={() => set('options', [...f.options, ''])}>➕ گزینه</button>}
       <textarea className="inp" rows={2} placeholder="توضیح پاسخ (اختیاری)" value={f.explanation} onChange={e => set('explanation', e.target.value)} />
@@ -379,7 +378,7 @@ function QuestionDrawer({ row, onClose, onAction, onSaved }) {
       <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
         <B kind={dk}>{dl}</B>
         <B>{SRC[row.source] || row.source || '—'}</B>
-        {row.intake ? <B kind="purple">🏷 {row.intake}</B> : <B kind="acc">🌐 سراسری</B>}
+        <ScopeBadge scope={row.intake || 'global'} label={row.intake || 'سراسری'} />
         <span className="spacer" />
         <span className="muted">👤 {row.creator_name || '—'} · {row.created_at || ''}</span>
       </div>
@@ -430,7 +429,7 @@ function QuestionDrawer({ row, onClose, onAction, onSaved }) {
                      onChange={() => set('correct', i)} aria-label="گزینه‌ی صحیح"
                      style={{ accentColor: 'var(--ok)' }} />
               <input className="inp" style={{ flex: 1 }} value={o} onChange={e => setOpt(i, e.target.value)} />
-              <button className="btn sm danger" title="حذف گزینه" disabled={f.options.length <= 2}
+              <button className="btn sm danger" title="حذف گزینه" aria-label={`حذف گزینه ${i + 1}`} disabled={f.options.length <= 2}
                       onClick={() => setF(x => ({
                         ...x,
                         options: x.options.filter((_, j) => j !== i),

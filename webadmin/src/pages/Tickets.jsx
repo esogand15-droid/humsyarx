@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, toast, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, Empty, B, FilterBar, PageHeader, toast, NoPerm } from '../ui.jsx';
 
 // 🎫🌊 W-Admin — Support Command Center سه‌ستونه: صف | گفت‌وگو | کانتکست کاربر
 // (اصلاح باگ: فیلد پاسخ = message — قبلاً text می‌رفت و 422 می‌شد؛ حباب support راست‌چین شد)
@@ -66,30 +66,20 @@ export default function Tickets({ go, me }) {
 
   return (
     <>
-      <div className="row">
-        <div>
-          <div className="h1">کنسول پشتیبانی</div>
-          <div className="sub">صف ⬅ گفت‌وگو ⬅ کانتکست کاربر — بدون ترک صفحه</div>
-        </div>
-        <span className="spacer" />
-        {canManage && sel.length > 0 && (
-          <>
-            <span className="badge acc">{sel.length} انتخاب‌شده</span>
-            <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
-            <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button>
-          </>
-        )}
-      </div>
+      <PageHeader title="کنسول پشتیبانی" description="صف، گفت‌وگو و کانتکست کاربر بدون ترک صفحه"
+        actions={canManage && sel.length > 0 ? <><B kind="acc">{sel.length} انتخاب‌شده</B>
+          <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
+          <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button></> : null} />
 
-      <div className="row" style={{ alignItems: 'flex-end', marginBottom: 10 }}>
-        <div className="tabs" style={{ flex: 1, marginBottom: 0 }}>
+      <FilterBar>
+        <div className="tabs" style={{ flex: 1, marginBottom: 0 }} role="tablist" aria-label="وضعیت تیکت‌ها">
           {[['open', '🟠 باز'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
-            <button key={k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
+            <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
           ))}
         </div>
         <input className="inp" style={{ width: 220 }} placeholder="🔎 موضوع/نام…"
                value={q} onChange={e => setQ(e.target.value)} />
-      </div>
+      </FilterBar>
 
       <div className="tk-grid">
         {/* ستون ۱ — صف */}
@@ -99,9 +89,10 @@ export default function Tickets({ go, me }) {
           {items.map(t => {
             const id = t.id ?? t.tid;
             return (
-              <div key={id} className={`tree-row ${cur === id ? 'on' : ''}`}
+              <div key={id} className={`tree-row ${cur === id ? 'on' : ''}`} role="button" tabIndex={0}
                    style={{ cursor: 'pointer', borderBottom: '1px solid var(--line)', alignItems: 'flex-start',
                             background: cur === id ? 'var(--panel2)' : '' }}
+                   onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(t); } }}
                    onClick={() => open(t)}>
                 {canManage && <input type="checkbox" checked={sel.includes(id)} aria-label="انتخاب تیکت"
                        onClick={e => e.stopPropagation()}

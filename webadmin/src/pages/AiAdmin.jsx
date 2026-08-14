@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, Stat, B, Switch, toast, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, Empty, Stat, B, PageHeader, Tabs, Switch, toast, NoPerm } from '../ui.jsx';
 
 // 🤖🌊 W-Admin — مرکز فرماندهی هوشیار: KPI ساخت‌یافته + برترین‌ها + گزارش‌ها + دسترسی + پیکربندی
 // (رفع نقص قبلی: داده‌ی خام tuple/comma دیگر به UI تخلیه نمی‌شود — سریالایزر سمت API)
@@ -59,21 +59,9 @@ export default function AiAdmin() {
 
   return (
     <>
-      <div className="row">
-        <div>
-          <div className="h1">مرکز فرماندهی هوشیار</div>
-          <div className="sub">مصرف، سلامت سرویس، گزارش‌های کاربران، دسترسی و پیکربندی مدل</div>
-        </div>
-        <span className="spacer" />
-        {cfg && <B kind={cfg.enabled ? 'ok' : 'bad'}>{cfg.enabled ? '🟢 سرویس فعال' : '🔴 سرویس غیرفعال'}</B>}
-        {cfg && <B>{cfg.provider} · {cfg.model}</B>}
-      </div>
-
-      <div className="tabs" style={{ marginBottom: 14 }}>
-        {AI_TABS.map(([k, v]) => (
-          <button key={k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
-        ))}
-      </div>
+      <PageHeader title="مرکز فرماندهی هوشیار" description="مصرف، سلامت سرویس، گزارش کاربران، دسترسی و پیکربندی مدل"
+        actions={cfg ? <><B kind={cfg.enabled ? 'ok' : 'bad'}>{cfg.enabled ? '● سرویس فعال' : '● سرویس غیرفعال'}</B><B>{cfg.provider} · {cfg.model}</B></> : null} />
+      <Tabs items={AI_TABS} value={tab} onChange={setTab} label="بخش‌های هوشیار" />
 
       {tab === 'overview' && (
         <>

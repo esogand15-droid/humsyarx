@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Stat, B, NoPerm, Empty, toast } from '../ui.jsx';
+import { Loading, ErrorState, Stat, B, NoPerm, Empty, PageHeader } from '../ui.jsx';
 
 // 📈🌊 WA2.6 + موج Analytics-Filters — تحلیل پیشرفته با فیلتر بازه‌ی زمانی واقعی
 // (days به بک‌اند می‌رود) + بخش «تحلیل عمیق» با گیت جداگانه‌ی stats.deep.
 // هر چارت به یک سؤال مدیریتی پاسخ می‌دهد؛ هیچ متریک ساختگی نیست.
 const TINTS = ['var(--acc)', 'var(--ok)', 'var(--warn)', 'var(--purple)', 'var(--teal)', 'var(--bad)'];
-const RANGES = [7, 14, 30, 90];
+const RANGES = [[1, 'امروز'], [7, '۷ روز'], [30, '۳۰ روز'], [90, '۹۰ روز']];
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
 function MiniBars({ obj, limit = 10 }) {
@@ -92,7 +92,8 @@ function QuestionDeepPanel({ obj }) {
 
 export default function Analytics() {
   const [an, setAn] = useState(null);
-  const [days, setDays] = useState(14);
+  const [days, setDays] = useState(7);
+  const [customDays, setCustomDays] = useState(14);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
@@ -127,12 +128,13 @@ export default function Analytics() {
   const bundle = an.bundle || (an.kpis ? an : null);   // fallback مسیر مالک هم همان bundle است
   const rangeChip = (
     <div className="row" style={{ gap: 5 }}>
-      {RANGES.map(d => (
-        <button key={d} className={`btn sm ${days === d ? 'primary' : ''}`} onClick={() => setDays(d)}>
-          {fa(d)} روز
-        </button>
+      {RANGES.map(([d, label]) => (
+        <button key={d} className={`btn sm ${days === d ? 'primary' : ''}`} onClick={() => setDays(d)}>{label}</button>
       ))}
-      <button className="btn sm" title="تازه‌سازی" onClick={() => load()}>🔄</button>
+      <label className="row"><span className="muted">سفارشی</span><input className="inp" type="number" min="1" max="90" value={customDays}
+        onChange={e => setCustomDays(Math.max(1, Math.min(90, Number(e.target.value) || 1)))} style={{ width: 72 }} />
+        <button className={`btn sm ${days === customDays && !RANGES.some(([d]) => d === days) ? 'primary' : ''}`} onClick={() => setDays(customDays)}>اعمال</button></label>
+      <button className="btn sm" title="تازه‌سازی" aria-label="تازه‌سازی تحلیل‌ها" onClick={() => load()}>↻</button>
       {loading && <span className="muted">⏳</span>}
     </div>
   );
@@ -143,9 +145,7 @@ export default function Analytics() {
     const nested = Object.entries(an).filter(([, v]) => typeof v === 'object' && v !== null);
     return (
       <>
-        <div className="row"><div><div className="h1">تحلیل‌های سامانه</div>
-          <div className="sub">متحد از داده‌های واقعی answers/downloads/subscriptions</div></div>
-          <span className="spacer" />{rangeChip}</div>
+        <PageHeader title="تحلیل‌های سامانه" description="نمای سازگار داده‌های واقعی answers، downloads و subscriptions" actions={rangeChip} />
         <div className="grid g4" style={{ marginTop: 12 }}>
           {flat.map(([k, v]) => <Stat key={k} icon="📊" label={k} value={fa(v)} tint="var(--acc)" />)}
         </div>
@@ -160,14 +160,8 @@ export default function Analytics() {
 
   return (
     <>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
-        <div>
-          <div className="h1">تحلیل‌های سامانه</div>
-          <div className="sub">داده‌های واقعی داشبوردهای آماری db · فیلتر بازه مستقیم به بک‌اند می‌رود</div>
-        </div>
-        <span className="spacer" />
-        {rangeChip}
-      </div>
+      <PageHeader title="تحلیل‌های سامانه" description="شاخص‌های واقعی کاربران، آموزش، محتوا، سؤال، تیکت، اعلان و اشتراک"
+        actions={rangeChip} />
 
       {/* ── تحلیل عمیق بازه‌ای (گیت stats.deep / مسیر مالک) ── */}
       {bundle && (

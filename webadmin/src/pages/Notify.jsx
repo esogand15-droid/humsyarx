@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, NoPerm, Empty, Confirm, Switch } from '../ui.jsx';
+import { Loading, ErrorState, B, PageHeader, toast, NoPerm, Empty, Confirm, Switch } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const STEPS = [
@@ -31,6 +31,7 @@ export default function Notify() {
   const [runs, setRuns] = useState(null);
   const [sched, setSched] = useState(null);          // 🌊 ارسال‌های زمان‌دار در انتظار
   const [cancelOf, setCancelOf] = useState(null);
+  const [auxErr, setAuxErr] = useState('');
   const [denied, setDenied] = useState(false);       // سطح مالک
 
   useEffect(() => {
@@ -58,7 +59,8 @@ export default function Notify() {
     }
   };
   const loadRuns = async () => {
-    try { setRuns((await api.notifRuns()).runs || []); } catch { setRuns([]); }
+    try { setRuns((await api.notifRuns()).runs || []); }
+    catch (e) { if (e.status !== 403) setAuxErr(errText(e)); setRuns([]); }
   };
   const retry = async (id) => {
     try {
@@ -125,7 +127,10 @@ export default function Notify() {
   const canConfirm = mode === 'now' || (!!sendAt && new Date(sendAt).getTime() > Date.now());
 
   return (
-    <div className="grid" style={{ gridTemplateColumns: 'minmax(340px,460px) 1fr', alignItems: 'start' }}>
+    <>
+      <PageHeader title="مرکز اعلان‌ها و ارسال همگانی" description="طراحی، پیش‌نمایش، زمان‌بندی، ارسال و پایش اعلان‌ها" />
+      {auxErr && <div className="panel panel-pad" style={{ marginBottom: 12 }}><ErrorState title="بخشی از داده‌های اعلان بارگذاری نشد" error={auxErr} onRetry={() => { setAuxErr(''); loadHist(); loadRuns(); loadSched(); }} /></div>}
+      <div className="notify-layout">
       {/* ═══ جادوگر ═══ */}
       <div className="panel panel-pad">
         <div className="h1" style={{ fontSize: 16 }}>📢 جادوگر ارسال همگانی</div>
@@ -313,7 +318,7 @@ export default function Notify() {
           <div className="panel panel-pad">
             <div className="row"><b>🗓 ارسال‌های زمان‌دار در انتظار</b><span className="spacer" />
               <B kind={sched.length ? 'warn' : 'ok'}>{fa(sched.length)}</B>
-              <button className="btn sm" onClick={loadSched}>🔄</button></div>
+              <button className="btn sm" onClick={loadSched} aria-label="تازه‌سازی ارسال‌های زمان‌دار">🔄</button></div>
             {sched.length === 0 ? (
               <p className="muted" style={{ marginTop: 8 }}>ارسال زمان‌داری در صف نیست.</p>
             ) : (
@@ -336,7 +341,7 @@ export default function Notify() {
 
         <div className="panel panel-pad">
           <div className="row"><b>تاریخچه‌ی ارسال‌های همگانی</b><span className="spacer" />
-            <button className="btn sm" onClick={loadHist}>🔄</button></div>
+            <button className="btn sm" onClick={loadHist} aria-label="تازه‌سازی تاریخچه ارسال‌ها">🔄</button></div>
           {!history ? <Loading rows={3} /> : !history.length ? (
             <Empty icon="📭" text="ارسالی ثبت نشده است" />
           ) : (
@@ -374,7 +379,7 @@ export default function Notify() {
         {/* 🌊 WA2.7 — اجراهای جاب‌های اعلان + تلاش مجدد */}
         <div className="panel panel-pad">
           <div className="row"><b>🔔 اجراهای اخیر اعلان‌ها</b><span className="spacer" />
-            <button className="btn sm" onClick={loadRuns}>🔄</button></div>
+            <button className="btn sm" onClick={loadRuns} aria-label="تازه‌سازی اجراهای اعلان‌ها">🔄</button></div>
           {!runs ? <Loading rows={3} /> : !runs.length ? <p className="muted" style={{ marginTop: 10 }}>اجلاسی ثبت نشده — یا مجوز notifications.manage ندارید</p> : (
             <div className="grid" style={{ gap: 6, marginTop: 10 }}>
               {runs.map(r => (
@@ -398,7 +403,8 @@ export default function Notify() {
                  onYes={cancelBatch}
                  onNo={() => setCancelOf(null)} />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -458,7 +464,7 @@ export function PollPanel() {
                      value={o}
                      onChange={e => setOpts(s => s.map((x, j) => j === i ? e.target.value : x))} />
               {opts.length > 2 && (
-                <button className="btn sm danger" title="حذف گزینه"
+                <button className="btn sm danger" title="حذف گزینه" aria-label="حذف گزینه"
                         onClick={() => setOpts(s => s.filter((_, j) => j !== i))}>🗑</button>
               )}
             </div>

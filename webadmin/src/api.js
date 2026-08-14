@@ -1,25 +1,67 @@
 // 🖥️ کلاینت API وب‌ادمین — same-origin با کوکی HttpOnly (wa_session)
 // هیچ توکن در localStorage ذخیره نمی‌شود.
 
-async function req(path, { method = 'GET', body, form } = {}) {
-  const opt = { method, credentials: 'include', headers: {} };
+const _inflight = new Map();
+
+function friendlyStatus(status) {
+  if (status === 400) return 'درخواست قابل پردازش نیست؛ ورودی‌ها را بررسی کنید.';
+  if (status === 401) return 'نشست شما منقضی شده است؛ دوباره وارد شوید.';
+  if (status === 403) return 'مجوز لازم برای انجام این عملیات را ندارید.';
+  if (status === 404) return 'مورد درخواستی پیدا نشد یا دیگر در دسترس نیست.';
+  if (status === 409) return 'این عملیات با وضعیت فعلی داده سازگار نیست.';
+  if (status === 413) return 'حجم فایل از سقف مجاز بیشتر است.';
+  if (status === 422) return 'بعضی ورودی‌ها معتبر نیستند؛ فرم را بازبینی کنید.';
+  if (status === 429) return 'تعداد درخواست‌ها زیاد است؛ کمی بعد دوباره تلاش کنید.';
+  if (status >= 500) return 'سرویس موقتاً با مشکل روبه‌رو شده است. دوباره تلاش کنید.';
+  return 'در انجام درخواست مشکلی پیش آمد.';
+}
+
+async function _request(path, { method = 'GET', body, form } = {}) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 30000);
+  const opt = { method, credentials: 'include', headers: { Accept: 'application/json' }, signal: controller.signal };
   if (form) opt.body = form;
   else if (body !== undefined) {
     opt.headers['Content-Type'] = 'application/json';
     opt.body = JSON.stringify(body);
   }
-  const r = await fetch(path, opt);
-  if (r.status === 401 && !path.includes('/auth/')) {
-    window.dispatchEvent(new Event('wa:unauthorized'));
-  }
-  let data = null;
-  try { data = await r.json(); } catch { /* پاسخ خالی */ }
-  if (!r.ok) {
-    const e = new Error((data && data.detail) || `خطا (${r.status})`);
-    e.status = r.status;
+  try {
+    const r = await fetch(path, opt);
+    if (r.status === 401 && !path.includes('/auth/')) window.dispatchEvent(new Event('wa:unauthorized'));
+    let data = null;
+    try { data = await r.json(); } catch { /* پاسخ خالی/فایل */ }
+    if (!r.ok) {
+      const raw = data?.detail;
+      const technical = typeof raw === 'string' ? raw : raw ? JSON.stringify(raw) : `HTTP ${r.status}`;
+      const e = new Error(technical);
+      e.status = r.status;
+      e.technical = technical;
+      e.friendly = friendlyStatus(r.status);
+      e.errorId = data?.error_id || r.headers.get('x-request-id') || '';
+      throw e;
+    }
+    return data;
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      const timeout = new Error('request_timeout');
+      timeout.status = 408; timeout.friendly = 'پاسخ سرویس بیش از حد طول کشید؛ دوباره تلاش کنید.';
+      throw timeout;
+    }
     throw e;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return data;
+}
+
+async function req(path, options = {}) {
+  const method = options.method || 'GET';
+  const dedupe = method === 'GET' && !options.body && !options.form;
+  if (!dedupe) return _request(path, options);
+  const key = `${method}:${path}`;
+  if (_inflight.has(key)) return _inflight.get(key);
+  const promise = _request(path, options).finally(() => _inflight.delete(key));
+  _inflight.set(key, promise);
+  return promise;
 }
 
 export const api = {
@@ -29,6 +71,7 @@ export const api = {
   logout: () => req('/api/web-admin/auth/logout', { method: 'POST' }),
   me: () => req('/api/web-admin/me'),
   overview: () => req('/api/web-admin/overview'),
+  dashboardBundle: () => req('/api/web-admin/dashboard-bundle'),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
   // 🌊 موج Export — صفحه‌بندی خودکار برای خروجی کامل (سقف ۶۰ صفحه × ۱۰۰ = ۶هزار)
@@ -70,6 +113,7 @@ export const api = {
   notifRetry: (id) => req(`/api/web-admin/notif/runs/${id}/retry`, { method: 'POST' }),
   // ── 🌊 WA2.1 Content Command Center ──
   contentTree: (intake) => req('/api/web-admin/content/tree' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
+  contentHistory: (targetType, targetId) => req(`/api/web-admin/content/history?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
   dupSession: (sid) => req(`/api/web-admin/content/sessions/${sid}/duplicate`, { method: 'POST' }),
   sessionsBulk: (body) => req('/api/web-admin/content/sessions/bulk', { method: 'POST', body }),
   itemsBulk: (body) => req('/api/web-admin/content/items/bulk', { method: 'POST', body }),
@@ -242,16 +286,21 @@ export const api = {
 };
 
 export function errText(e) {
-  const d = e && e.message;
+  if (!e) return 'خطای ناشناخته';
+  if (e.friendly) return e.friendly;
+  const d = e.message || String(e);
   const map = {
-    forbidden: 'دسترسی ندارید (مجوز لازم نیست)',
-    admin_only: 'این بخش فقط برای مالک سامانه است',
-    not_registered: 'حساب یافت نشد',
-    missing_init_data: 'نشست منقضی شده — دوباره وارد شوید',
-    intake_out_of_scope: 'این مورد خارج از scope ورودی شماست',
-    content_admin_only: 'این بخش فقط برای مدیر محتواست',
+    forbidden: 'مجوز لازم برای این بخش را ندارید.',
+    admin_only: 'این بخش فقط برای مالک سامانه است.',
+    not_registered: 'حساب موردنظر پیدا نشد.',
+    missing_init_data: 'نشست منقضی شده است؛ دوباره وارد شوید.',
+    intake_out_of_scope: 'این مورد خارج از محدوده ورودی شماست.',
+    content_admin_only: 'این بخش فقط برای مدیر محتواست.',
+    request_timeout: 'پاسخ سرویس بیش از حد طول کشید؛ دوباره تلاش کنید.',
   };
-  return map[d] || d || 'خطای ناشناخته';
+  if (map[d]) return map[d];
+  if (e.status >= 500 || /^خطا\s*\(5\d\d\)/.test(d)) return friendlyStatus(e.status || 500);
+  return d || friendlyStatus(e.status || 0);
 }
 
 // 📥 خروجی CSV سمت کلاینت (بدون رفت‌وبرگشت سرور)

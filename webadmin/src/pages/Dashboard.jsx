@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, exportCSV } from '../api.js';
-import { Stat, Loading, ErrorState, B, toast } from '../ui.jsx';
+import { Stat, Loading, ErrorState, B, PageHeader, toast } from '../ui.jsx';
 
 // 📊 داشبورد عملیات + ⚠️ نیازمند اقدام (WA2.7) + 🕓 فید فعالیت واقعی (WA2.7)
 // 🌊 موج Dash-Personalize — نمایش/پنهان بخش‌ها (ترجیح محلی هر مرورگر، localStorage)
@@ -83,11 +83,14 @@ export default function Dashboard({ me, go }) {
 
   const load = async () => {
     setErr('');
-    try { setOv(await api.overview()); } catch (e) { setErr(e.message); }
-    try { setStats(await api.stats()); } catch { /* owner-only */ }
-    try { setAttn(await api.attention()); } catch { setAttn(null); }
-    try { setFeed((await api.activity(30)).items || []); } catch { setFeed([]); }
-    try { setIns(await api.waInsights()); } catch { setIns(null); }   // بدون مجوز ⇒ پنهان
+    try {
+      const bundle = await api.dashboardBundle();
+      setOv(bundle.overview || null);
+      setStats(bundle.stats || null);
+      setAttn(bundle.attention || { items: [], backup: null });
+      setFeed(bundle.activity || []);
+      setIns(bundle.insights || null);
+    } catch (e) { setErr(e); }
   };
   useEffect(() => { load(); }, []);
 
@@ -106,13 +109,8 @@ export default function Dashboard({ me, go }) {
   const attnItems = (attn?.items || []).filter(i => i.count > 0);
   return (
     <>
-      <div className="row">
-        <div>
-          <div className="h1">داشبورد عملیات</div>
-          <div className="sub">نمای زنده‌ی صف‌های عملیاتی سامانه</div>
-        </div>
-        <span className="spacer" />
-        <div className="tbl-tools" ref={prefsRef} style={{ border: 0, padding: 0 }}>
+      <PageHeader title="داشبورد عملیات" description="وضعیت سامانه، صف‌های نیازمند اقدام و رخدادهای امروز"
+        actions={<div className="tbl-tools" ref={prefsRef}>
           <button className="btn sm" title="سفارشی‌سازی ویجت‌ها" aria-label="سفارشی‌سازی داشبورد"
                   onClick={() => setPrefsOpen(x => !x)}>⚙️ ویجت‌ها</button>
           {prefsOpen && (
@@ -126,8 +124,7 @@ export default function Dashboard({ me, go }) {
               <div className="muted" style={{ padding: '4px 8px', fontSize: 10 }}>ترجیح فقط روی همین مرورگر ذخیره می‌شود</div>
             </div>
           )}
-        </div>
-      </div>
+        </div>} />
 
       {/* ⚠️ WA2.7 — نیازمند اقدام (کلیک → مستقیم به همان صف) */}
       {attn && won('attn') && (
@@ -146,14 +143,14 @@ export default function Dashboard({ me, go }) {
           {attnItems.length > 0 && (
             <div className="attn-grid" style={{ marginTop: 12 }}>
               {attnItems.map(i => (
-                <div key={i.key} className="attn-item" onClick={() => i.go && go(i.go)}>
+                <button type="button" key={i.key} className="attn-item" onClick={() => i.go && go(i.go)}>
                   <span style={{ fontSize: 20 }}>{i.icon}</span>
                   <div style={{ flex: 1 }}>
                     <b style={{ color: 'var(--txt)', fontSize: 15 }}>{Number(i.count).toLocaleString('fa')}</b>
                     <div className="muted">{i.label}</div>
                   </div>
                   <span className="muted">‹</span>
-                </div>
+                </button>
               ))}
             </div>
           )}
