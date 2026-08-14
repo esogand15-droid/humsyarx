@@ -492,6 +492,43 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
             # دکمه‌ی «📱 باز کردن در هامزیار» (web_app) می‌گیرد
             _dl_kb = webapp_kb(d.get("link")) if d.get("link") else None
 
+            # ── سیگنال ارسال فوری اعلان منابع از Web Admin ──
+            # اجرای واقعی باید در process ربات انجام شود چون bot instance
+            # فقط این‌جا در دسترس است. نتیجه همیشه مصرف و به درخواست‌کننده
+            # گزارش می‌شود تا سیگنال در چرخه‌ی retry بی‌نهایت نماند.
+            if text == "__FORCE_RES_NOTIF__":
+                try:
+                    result = await _run_new_resources_notif(context.bot, force=True)
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "sent_at": datetime.now().isoformat(),
+                        "result": result,
+                    }})
+                    if result.get("sent"):
+                        msg = (
+                            "✅ <b>ارسال فوری اعلان منابع انجام شد</b>\n\n"
+                            f"📚 منابع: {result.get('items', 0)}\n"
+                            f"👥 موفق: {result.get('users_sent', 0)}\n"
+                            f"❌ ناموفق: {result.get('users_failed', 0)}"
+                        )
+                    elif result.get("reason") == "no_items":
+                        msg = "ℹ️ منبع اعلام‌نشده‌ای در صف نبود."
+                    else:
+                        msg = ("❌ ارسال فوری انجام نشد.\n"
+                               f"<code>{html.escape(str(result.get('error') or result.get('reason') or 'نامشخص')[:300])}</code>")
+                    await safe_send(context.bot, d["chat_id"], msg, parse_mode="HTML")
+                except Exception as e:
+                    logger.error(f"__FORCE_RES_NOTIF__ failed: {e}")
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": True, "error": str(e)[:200],
+                        "sent_at": datetime.now().isoformat(),
+                    }})
+                    try:
+                        await safe_send(context.bot, d["chat_id"],
+                                        "❌ اجرای ارسال فوری اعلان منابع ناموفق بود.")
+                    except Exception:
+                        pass
+                continue
+
             # ── سیگنال درخواست خروجی اکسل از پنل وب ──
             # قبلاً همه پیام‌های __* به‌صورت skipped رد می‌شدند و
             # خروجی هرگز به ادمین نمی‌رسید (فیچر مرده). حالا مصرف می‌شود.
