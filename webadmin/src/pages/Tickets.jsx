@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, toast } from '../ui.jsx';
+import { Loading, ErrorState, Empty, B, toast, NoPerm } from '../ui.jsx';
 
 // 🎫🌊 W-Admin — Support Command Center سه‌ستونه: صف | گفت‌وگو | کانتکست کاربر
 // (اصلاح باگ: فیلد پاسخ = message — قبلاً text می‌رفت و 422 می‌شد؛ حباب support راست‌چین شد)
-export default function Tickets({ go }) {
+export default function Tickets({ go, me }) {
   const [status, setStatus] = useState('open');
   const [list, setList] = useState(null);
   const [err, setErr] = useState('');
+  const [denied, setDenied] = useState(false);
   const [cur, setCur] = useState(null);
   const [detail, setDetail] = useState(null);
   const [ctx, setCtx] = useState(null);          // user360-lite برای کانتکست
@@ -15,6 +16,8 @@ export default function Tickets({ go }) {
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState([]);
   const [q, setQ] = useState('');
+  const canManage = !!me?.is_owner || (me?.perms || []).includes('tickets.manage');
+  const canReply = !!me?.is_owner || (me?.perms || []).includes('tickets.reply');
 
   const bulk = async (action) => {
     if (!sel.length) return;
@@ -28,7 +31,7 @@ export default function Tickets({ go }) {
   const load = async () => {
     setErr('');
     try { setList(await api.tickets(status || undefined)); }
-    catch (e) { setErr(errText(e)); }
+    catch (e) { if (e.status === 403) setDenied(true); else setErr(errText(e)); }
   };
   useEffect(() => { load(); }, [status]);
 
@@ -54,6 +57,7 @@ export default function Tickets({ go }) {
     catch (e) { toast(errText(e), 'err'); }
   };
 
+  if (denied) return <NoPerm text="این بخش نیازمند tickets.reply یا tickets.manage است" />;
   if (err) return <ErrorState title="بارگذاری تیکت‌ها ناموفق بود" error={err} onRetry={load} />;
   const raw = (list && (list.tickets || list)) || [];
   const items = q.trim()
@@ -68,7 +72,7 @@ export default function Tickets({ go }) {
           <div className="sub">صف ⬅ گفت‌وگو ⬅ کانتکست کاربر — بدون ترک صفحه</div>
         </div>
         <span className="spacer" />
-        {sel.length > 0 && (
+        {canManage && sel.length > 0 && (
           <>
             <span className="badge acc">{sel.length} انتخاب‌شده</span>
             <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
@@ -99,9 +103,9 @@ export default function Tickets({ go }) {
                    style={{ cursor: 'pointer', borderBottom: '1px solid var(--line)', alignItems: 'flex-start',
                             background: cur === id ? 'var(--panel2)' : '' }}
                    onClick={() => open(t)}>
-                <input type="checkbox" checked={sel.includes(id)} aria-label="انتخاب تیکت"
+                {canManage && <input type="checkbox" checked={sel.includes(id)} aria-label="انتخاب تیکت"
                        onClick={e => e.stopPropagation()}
-                       onChange={() => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id])} />
+                       onChange={() => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id])} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.subject || `تیکت ${id}`}
@@ -151,18 +155,20 @@ export default function Tickets({ go }) {
               </div>
               {detail.status !== 'closed' ? (
                 <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)', flexWrap: 'nowrap' }}>
-                  <textarea className="inp" rows={1} style={{ flex: 1, resize: 'none' }}
-                            placeholder="پاسخ پشتیبانی… (Enter برای ارسال)"
-                            value={text} onChange={e => setText(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
-                  <button className="btn primary" disabled={busy || !text.trim()} onClick={send}>ارسال ➤</button>
-                  <button className="btn sm" onClick={() => act(api.ticketClose, 'تیکت بسته شد ✅')}>✅ بستن</button>
+                  {canReply ? <>
+                    <textarea className="inp" rows={1} style={{ flex: 1, resize: 'none' }}
+                              placeholder="پاسخ پشتیبانی… (Enter برای ارسال)"
+                              value={text} onChange={e => setText(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
+                    <button className="btn primary" disabled={busy || !text.trim()} onClick={send}>ارسال ➤</button>
+                  </> : <span className="muted">مجوز پاسخ‌گویی ندارید</span>}
+                  {canManage && <button className="btn sm" onClick={() => act(api.ticketClose, 'تیکت بسته شد ✅')}>✅ بستن</button>}
                 </div>
               ) : (
                 <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
                   <span className="muted">این تیکت بسته شده است.</span>
                   <span className="spacer" />
-                  <button className="btn sm" onClick={() => act(api.ticketReopen, 'بازگشایی شد 🔓')}>🔓 بازگشایی</button>
+                  {canManage && <button className="btn sm" onClick={() => act(api.ticketReopen, 'بازگشایی شد 🔓')}>🔓 بازگشایی</button>}
                 </div>
               )}
             </>
