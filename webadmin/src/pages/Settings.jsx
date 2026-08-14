@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, toast, Switch, NoPerm, Empty } from '../ui.jsx';
+import { Loading, ErrorState, B, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
+
+const faN = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
 const CATS = {
   general:  { icon: '⚙️', label: 'عمومی' },
@@ -129,6 +131,75 @@ export default function Settings() {
           ))}
         </div>
       )}
+
+      {/* 🔒🌊 موج ChannelLock — قفل اجباری عضویت کانال (سطح مالک؛ معادل admin:channel_lock ربات) */}
+      <ChannelLockPanel />
     </>
+  );
+}
+
+function ChannelLockPanel() {
+  const [chs, setChs] = useState(null);
+  const [cid, setCid] = useState('');
+  const [ctitle, setCtitle] = useState('');
+  const [clink, setClink] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [delId, setDelId] = useState(null);
+  const load = async () => {
+    try { setChs((await api.channelLock()).channels || []); }
+    catch { setChs(null); }                 // غیرمالک: پنل پنهان می‌ماند
+  };
+  useEffect(() => { load(); }, []);
+  if (chs === null) return null;
+  const add = async () => {
+    setBusy(true);
+    try {
+      await api.channelLockAdd({ id: cid.trim(), title: ctitle.trim(), invite_link: clink.trim() });
+      toast('کانال اجباری افزوده شد 🔒'); setCid(''); setCtitle(''); setClink(''); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const del = async (id) => {
+    try { await api.channelLockDel(id); toast('کانال حذف شد 🗑'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  return (
+    <div className="panel panel-pad" style={{ marginTop: 16 }}>
+      <div className="row"><b>🔒 قفل اجباری عضویت کانال</b><span className="spacer" />
+        {chs.length
+          ? <B kind="warn">{faN(chs.length)} کانال فعال — کاربران عادی باید عضو همه باشند</B>
+          : <B kind="ok">قفل غیرفعال است</B>}</div>
+      <div className="sub" style={{ marginTop: 4 }}>ربات باید ادمین کانال باشد تا عضویت را بررسی کند · حذف/افزودن در audit (WARNING) ثبت می‌شود</div>
+      <div className="grid" style={{ gap: 6, marginTop: 10 }}>
+        {chs.map(c => (
+          <div key={c.id} className="row" style={{ padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 10 }}>
+            <span>📣</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <b style={{ color: 'var(--txt)' }}>{c.title}</b>{' '}
+              <span className="code muted">{c.id}</span>
+              {c.invite_link && <div className="muted code" dir="ltr" style={{ fontSize: 11 }}>{c.invite_link}</div>}
+            </div>
+            <button className="btn sm danger" onClick={() => setDelId(c.id)}>🗑 حذف</button>
+          </div>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 12, flexWrap: 'wrap', gap: 6 }}>
+        <input className="inp" style={{ flex: 1, minWidth: 150 }} dir="ltr" placeholder="آیدی عددی کانال (با منفی) — مثل -1001234567890"
+               value={cid} onChange={e => setCid(e.target.value)} />
+        <input className="inp" style={{ flex: 1, minWidth: 120 }} placeholder="نام کانال"
+               value={ctitle} onChange={e => setCtitle(e.target.value)} />
+        <input className="inp" style={{ flex: 1, minWidth: 130 }} dir="ltr" placeholder="لینک دعوت (اختیاری)"
+               value={clink} onChange={e => setClink(e.target.value)} />
+        <button className="btn primary sm" disabled={busy || !cid.trim() || !ctitle.trim()} onClick={add}>
+          {busy ? '⏳' : '➕ افزودن کانال'}
+        </button>
+      </div>
+      {delId && (
+        <Confirm danger
+                 text={`حذف کانال «${chs.find(c => c.id === delId)?.title || delId}» از قفل اجباری؟ (کاربران دیگر موظف به عضویت در آن نیستند)`}
+                 onYes={async () => { const id = delId; setDelId(null); await del(id); }}
+                 onNo={() => setDelId(null)} />
+      )}
+    </div>
   );
 }
