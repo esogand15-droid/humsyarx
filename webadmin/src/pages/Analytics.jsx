@@ -54,6 +54,42 @@ function DailyBars({ data, tint = 'var(--acc)', question, note }) {
   );
 }
 
+// 🌊 موج Hardest-Analytics — رندر داده‌ی واقعی stats_dashboard_questions که
+// پیش‌تر در رندر ژنریک جا می‌ماند (آرایه‌ها): سخت‌ترین سؤال‌ها + پرسؤال‌ترین درس‌ها
+function QuestionDeepPanel({ obj }) {
+  const hardest = Array.isArray(obj.hardest_questions) ? obj.hardest_questions : [];
+  const topLessons = Array.isArray(obj.top_lessons) ? obj.top_lessons : [];
+  if (!hardest.length && !topLessons.length) return null;
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="chart-q">❔ کدام سؤال‌ها بیشترین نرخ خطا را دارند؟ (دوره/توضیح همان مبحث را تقویت کنید)</div>
+      {hardest.length ? (
+        <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+          {hardest.map((h, i) => (
+            <div key={i} className="hardest-row" title={`${h.lesson} — ${h.topic}`}>
+              <span className="hardest-q">{i + 1}. {h.question}…</span>
+              <span className="muted hardest-lesson">{h.lesson}{h.topic ? ` / ${h.topic}` : ''}</span>
+              <div className="minibar-track hardest-track">
+                <div className="minibar-fill hardest-fill" style={{ width: `${Math.min(100, h.wrong_rate)}%` }} />
+              </div>
+              <B kind={h.wrong_rate >= 60 ? 'bad' : h.wrong_rate >= 40 ? 'warn' : 'ok'}>
+                {fa(h.wrong_rate)}٪ خطا
+              </B>
+              <span className="muted">{fa(h.attempts)} تلاش</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="muted" style={{ marginTop: 6 }}>داده کافی نیست — هر سؤال حداقل ۵ تلاش لازم دارد.</div>
+      )}
+      {topLessons.length > 0 && (<>
+        <div className="chart-q" style={{ marginTop: 12 }}>❔ تمرکز منابع جدید روی کدام درس‌ها باشد؟</div>
+        <MiniBars obj={Object.fromEntries(topLessons.map(([l, c]) => [l, c]))} limit={5} />
+      </>)}
+    </div>
+  );
+}
+
 export default function Analytics() {
   const [an, setAn] = useState(null);
   const [days, setDays] = useState(14);
@@ -211,6 +247,7 @@ export default function Analytics() {
                       <MiniBars obj={vv} limit={8} />
                     </div>
                   ))}
+                  {k === 'questions' && <QuestionDeepPanel obj={obj} />}
                 </div>
               );
             })}
