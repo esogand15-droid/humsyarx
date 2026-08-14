@@ -3,7 +3,7 @@
 import logging
 import re
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,7 @@ from fastapi import (
     HTTPException,
     Query,
 )
+from fastapi.responses import Response
 
 from pydantic import (
     BaseModel,
@@ -25,6 +26,8 @@ from api.auth import (
 
 from api.telegram_send import (
     _send,
+    API_BASE,
+    BOT_TOKEN,
 )
 
 from api.routers.admin_panel import (
@@ -301,6 +304,16 @@ async def overview(
             "—",
         )
     )
+
+    # Fix-Foundation: KPIهای تکمیلی از داده‌ی واقعی؛ ساختار nested قدیمی
+    # حفظ می‌شود و فقط کلیدهای افزوده به stats اضافه می‌شوند.
+    stats = dict(stats or {})
+    now_iso = datetime.now().isoformat()
+    soon_iso = (datetime.now() + timedelta(days=7)).isoformat()
+    stats["expiring"] = await db.subscriptions.count_documents({
+        "status": "active", "end_date": {"$gte": now_iso, "$lte": soon_iso},
+    })
+    stats["discounts"] = await db.discount_codes.count_documents({})
 
     return {
         "stats":
@@ -593,11 +606,25 @@ async def payments(
                     ),
                 ),
 
+            # aliasهای افزودنی برای کلاینت‌های قدیمی/جدید؛ منبع هر سه
+            # دقیقاً snapshot مالی final_price است.
+            "final_amount":
+                item.get("final_price", item.get("price", 0)),
+
+            "amount":
+                item.get("final_price", item.get("price", 0)),
+
             "discount_code":
                 item.get(
                     "discount_code",
                     "",
                 ),
+
+            "discount_percent":
+                item.get("discount_percent"),
+
+            "has_receipt":
+                bool(item.get("screenshot_file_id")),
 
             "status":
                 item.get(
@@ -627,6 +654,56 @@ async def payments(
         "payments":
             result,
     }
+
+
+@router.get("/payments/{payment_id}/receipt")
+async def payment_receipt(
+    payment_id: str,
+    admin=Depends(get_admin_user),
+):
+    """پروکسی امن تصویر رسید از Telegram؛ token هرگز به مرورگر نمی‌رود."""
+    payment = await db.sub_payment_get(payment_id)
+    file_id = (payment or {}).get("screenshot_file_id")
+    if not file_id:
+        raise HTTPException(status_code=404, detail="تصویر رسید موجود نیست")
+    if not BOT_TOKEN:
+        raise HTTPException(status_code=503, detail="TELEGRAM_TOKEN تنظیم نشده است")
+
+    try:
+        import httpx
+        import mimetypes
+
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            meta_response = await client.get(
+                f"{API_BASE}/getFile", params={"file_id": file_id})
+            meta = meta_response.json() if meta_response.content else {}
+            if meta_response.status_code != 200 or not meta.get("ok"):
+                raise HTTPException(
+                    status_code=502,
+                    detail=str(meta.get("description") or "دریافت مسیر رسید ناموفق بود")[:200],
+                )
+            file_path = (meta.get("result") or {}).get("file_path")
+            if not file_path:
+                raise HTTPException(status_code=502, detail="مسیر فایل رسید خالی است")
+            raw_response = await client.get(
+                f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}")
+            if raw_response.status_code != 200:
+                raise HTTPException(status_code=502, detail="دریافت تصویر رسید ناموفق بود")
+            if len(raw_response.content) > 20 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="حجم تصویر رسید بیش از حد مجاز است")
+            media_type = (raw_response.headers.get("content-type")
+                          or mimetypes.guess_type(file_path)[0]
+                          or "application/octet-stream")
+            return Response(
+                content=raw_response.content,
+                media_type=media_type,
+                headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("receipt proxy failed: %s", exc)
+        raise HTTPException(status_code=502, detail="دریافت تصویر رسید ناموفق بود")
 
 
 @router.post(
