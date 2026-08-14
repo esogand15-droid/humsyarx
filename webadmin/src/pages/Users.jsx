@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
-import { DataTable, Drawer, Loading, ErrorState, B, toast, Confirm, Modal, Empty } from '../ui.jsx';
+import { DataTable, Drawer, Loading, ErrorState, B, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
+const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 // 🌊 WA3 — اکشن‌های تکی (دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات)
 const USER_ACTIONS = {
   approve:    { icon: '✅', label: 'تأیید حساب', perm: 'manage' },
@@ -35,6 +36,8 @@ export default function Users({ go }) {
   const [saveModal, setSaveModal] = useState(false);
   const [filterName, setFilterName] = useState('');
   const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
+  const [intOpen, setIntOpen] = useState(false);    // 🌊 WA4 — مدیریت ورودی‌ها
+  const [caOpen, setCaOpen] = useState(false);      // 🌊 WA4 — ادمین‌های محتوا
 
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
   useEffect(() => { api.savedFilters('users').then(r => setFilters(r.filters || [])).catch(() => setFilters([])); }, []);
@@ -123,6 +126,8 @@ export default function Users({ go }) {
         <div><div className="h1">مدیریت کاربران</div>
           <div className="sub">جست‌وجو، فیلتر ذخیره‌شده، pagination سرورساید و اکشن گروهی</div></div>
         <span className="spacer" />
+        <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>
+        <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>
         <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
         {sel.length > 0 && <>
           <span className="badge acc">{sel.length} انتخاب‌شده</span>
@@ -169,6 +174,8 @@ export default function Users({ go }) {
 
       {detail && <UserDrawer row={detail} go={go} onClose={() => { setDetail(null); load(); }} />}
       {blOpen && <BlacklistModal onClose={() => { setBlOpen(false); load(); }} />}
+      {intOpen && <IntakesModal onClose={(ch) => { setIntOpen(false); if (ch) api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }} />}
+      {caOpen && <ContentAdminsModal onClose={() => { setCaOpen(false); load(); }} />}
       {confirm && (
         <Confirm text={confirm.text} danger={confirm.action === 'suspend'}
                  onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
@@ -531,6 +538,138 @@ function BlacklistModal({ onClose }) {
             </div>
           ))}
         </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ── 📅🌊 مودال مدیریت ورودی‌ها (موج Intakes-CA) — همان امکانات admin:intakes ربات ── */
+function IntakesModal({ onClose }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState('');
+  const [code, setCode] = useState('');
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [delCode, setDelCode] = useState(null);
+  const load = async () => {
+    setErr('');
+    try { setItems((await api.intakes()).intakes || []); }
+    catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+  const add = async () => {
+    if (!code.trim() || !label.trim()) return;
+    setBusy(true);
+    try { await api.intakeAdd(code.trim(), label.trim()); toast('ورودی افزوده شد 📅'); setCode(''); setLabel(''); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const toggle = async (c) => {
+    try { const r = await api.intakeToggle(c); toast(r.active ? 'فعال شد ✅' : 'غیرفعال شد'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const del = async (c) => {
+    try { await api.intakeDel(c); toast('ورودی حذف شد 🗑'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  return (
+    <Modal title="📅 مدیریت ورودی‌ها" onClose={() => onClose(true)}>
+      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading /> : (<>
+        <div className="grid" style={{ gap: 6, maxHeight: '46vh', overflowY: 'auto' }}>
+          {items.length === 0 && <Empty icon="📅" text="هنوز ورودی‌ای تعریف نشده" />}
+          {items.map(i => (
+            <div key={i.code} className="intake-row">
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ color: 'var(--txt)' }}>{i.label || i.code}</b>{' '}
+                <span className="code muted">{i.code}</span>
+                <div className="muted">
+                  👥 {faNum(i.total ?? 0)} دانشجو
+                  {i.groups && Object.keys(i.groups).length > 0 &&
+                    ` · ${Object.entries(i.groups).map(([g, c]) => `گروه ${faNum(g)}: ${faNum(c)}`).join(' | ')}`}
+                </div>
+              </div>
+              <label className="row" style={{ gap: 5 }} title="پذیرش ورودی">
+                <Switch on={i.active !== false} onChange={() => toggle(i.code)} />
+                <span className="muted" style={{ fontSize: 11 }}>{i.active !== false ? 'فعال' : 'متوقف'}</span>
+              </label>
+              <button className="btn sm danger" onClick={() => setDelCode(i.code)}>🗑</button>
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 12, flexWrap: 'wrap', gap: 6 }}>
+          <input className="inp" style={{ flex: 1, minWidth: 110 }} dir="ltr" placeholder="کد (مثل mehr_1405)"
+                 value={code} onChange={e => setCode(e.target.value)} />
+          <input className="inp" style={{ flex: 1, minWidth: 110 }} placeholder="برچسب (مهر ۱۴۰۵)"
+                 value={label} onChange={e => setLabel(e.target.value)} />
+          <button className="btn primary sm" disabled={busy || !code.trim() || !label.trim()} onClick={add}>
+            {busy ? '⏳' : '➕ افزودن'}
+          </button>
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>غیرفعال‌سازی = توقف پذیرش جدید؛ داده‌های ورودی حفظ می‌شود.</div>
+      </>)}
+      {delCode && (
+        <Confirm text={`حذف ورودی «${delCode}»؟ (کاربرانش حذف نمی‌شوند ولی کد ورودی آزاد می‌شود)`} danger
+                 onYes={async () => { const c = delCode; setDelCode(null); await del(c); }}
+                 onNo={() => setDelCode(null)} />
+      )}
+    </Modal>
+  );
+}
+
+/* ── 🎓🌊 مودال ادمین‌های محتوا (موج Intakes-CA) — همان admin:content_admins ربات ── */
+function ContentAdminsModal({ onClose }) {
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState('');
+  const [uid, setUid] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [revoke, setRevoke] = useState(null);
+  const load = async () => {
+    setErr('');
+    try { setItems((await api.contentAdmins()).admins || []); }
+    catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+  const grant = async () => {
+    const id = parseInt(uid, 10);
+    if (!id) return;
+    setBusy(true);
+    try { await api.contentAdminAdd(id); toast('دسترسی ادمین محتوا داده شد 🎓'); setUid(''); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const doRevoke = async (id) => {
+    try { await api.contentAdminDel(id); toast('دسترسی لغو شد'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  return (
+    <Modal title="🎓 ادمین‌های محتوا (scope ورودی)" onClose={onClose}>
+      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading /> : (<>
+        <div className="grid" style={{ gap: 6, maxHeight: '46vh', overflowY: 'auto' }}>
+          {items.length === 0 && <Empty icon="🎓" text="هنوز ادمین محتوایی تعریف نشده" />}
+          {items.map(a => (
+            <div key={a.id} className="row" style={{ padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 10 }}>
+              <span>🎓</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ color: 'var(--txt)' }}>{a.name || `#${a.id}`}</b>{' '}
+                <span className="code muted">{a.id}</span>
+              </div>
+              <button className="btn sm danger" onClick={() => setRevoke(a)}>لغو دسترسی</button>
+            </div>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 12, gap: 6 }}>
+          <input className="inp" style={{ flex: 1 }} dir="ltr" inputMode="numeric"
+                 placeholder="Telegram ID کاربر (عددی)…" value={uid} onChange={e => setUid(e.target.value)} />
+          <button className="btn primary sm" disabled={busy || !/^\d+$/.test(uid.trim())} onClick={grant}>
+            {busy ? '⏳' : '➕ اعطای دسترسی'}
+          </button>
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>اعطا ⇒ نقش content_admin + اطلاع‌رسانی خودکار در ربات · لغو ⇒ بازگشت به دانشجو. هر دو در audit ثبت می‌شوند.</div>
+      </>)}
+      {revoke && (
+        <Confirm text={`لغو دسترسی ادمین محتوای «${revoke.name || revoke.id}»؟ (به نقش دانشجو برمی‌گردد)`} danger
+                 onYes={async () => { const a = revoke; setRevoke(null); await doRevoke(a.id); }}
+                 onNo={() => setRevoke(null)} />
       )}
     </Modal>
   );
