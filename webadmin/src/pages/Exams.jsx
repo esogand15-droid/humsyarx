@@ -167,10 +167,14 @@ function ExamModal({ row, onClose }) {
             <input className="inp" placeholder="نام استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} /></label>
           <label className="muted" style={{ fontSize: 11 }}>گروه هدف
             <div className="row">
-              {['هر دو', 'الف', 'ب'].map(g => (
+              {[
+                ['هر دو', '👥 هر دو گروه'],
+                ['1', '1️⃣ گروه ۱'],
+                ['2', '2️⃣ گروه ۲'],
+              ].map(([g, label]) => (
                 <label key={g} className={`pick ${f.group === g ? 'on' : ''}`} style={{ flex: 1 }}>
                   <input type="radio" checked={f.group === g} onChange={() => set('group', g)} />
-                  <b>{g === 'هر دو' ? '👥 هر دو گروه' : g === 'الف' ? '1️⃣ الف' : '2️⃣ ب'}</b>
+                  <b>{label}</b>
                 </label>
               ))}
             </div>
