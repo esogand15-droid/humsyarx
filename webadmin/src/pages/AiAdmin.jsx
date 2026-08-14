@@ -16,8 +16,8 @@ export default function AiAdmin() {
   const load = async () => {
     setErr('');
     try {
-      setStats(await api.aiStats().catch(() => null));
-      setCfg(await api.aiConfig().catch(() => null));
+      const [s, c] = await Promise.all([api.aiStats(), api.aiConfig()]);
+      setStats(s); setCfg(c);
     } catch (e) {
       if (e.status === 403) setPermErr(true); else setErr(errText(e));
     }
