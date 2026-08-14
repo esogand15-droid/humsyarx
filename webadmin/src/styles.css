@@ -679,3 +679,26 @@ select:focus-visible, textarea:focus-visible {
 }
 .dbar-col:hover .dbar { filter: brightness(1.25); transform: translateY(-1px); }
 @media (prefers-reduced-motion: reduce) { .dbar { transition: none; } }
+
+/* ── 23) 🌊 Backup-Mgmt + Hardest-Analytics — کارت‌های بخش بکاپ + ردیف سخت‌ترین سؤال‌ها ── */
+.bk-sec { transition: border-color var(--dur-fast) var(--ease); }
+.bk-sec:hover { border-color: var(--c-brd-acc); }
+.hardest-row { display: grid; grid-template-columns: minmax(160px,2fr) minmax(90px,1fr) minmax(60px,.8fr) auto auto;
+  align-items: center; gap: var(--sp2); font-size: 12px; }
+.hardest-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hardest-lesson { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hardest-track { flex: none; width: 100%; }
+.hardest-fill { background: linear-gradient(90deg, var(--c-warn), var(--c-bad)); }
+@media (max-width: 900px) {
+  .hardest-row { grid-template-columns: 1fr auto; grid-template-areas: "q badge" "lesson tries" "bar bar"; }
+  .hardest-q { grid-area: q; }
+  .hardest-row .badge { grid-area: badge; }
+  .hardest-lesson { grid-area: lesson; }
+  .hardest-track { grid-area: bar; }
+  .hardest-row > .muted:last-child { grid-area: tries; }
+}
+
+/* ── 24) 🌊 Intakes-CA — ردیف ورودی در مودال مدیریت ── */
+.intake-row { display: flex; align-items: center; gap: var(--sp2); padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px; }
+@media (max-width: 620px) { .intake-row { flex-wrap: wrap; } }
