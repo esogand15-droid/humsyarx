@@ -1040,6 +1040,66 @@ class DBContent:
         except Exception: pass
 
 
+    async def add_questions_bulk(self, items: list, creator: int,
+                                 intake: str = '', auto_approve: bool = False) -> dict:
+        """🌊 موج Q-Import — درج گروهی سؤال (مصرف: درون‌ریزی وب‌ادمین).
+        هر آیتم با همان اعتبارسنجی add_question تک‌تکی: متن ≥۵، گزینه‌ها ۲..۶،
+        ایندکس صحیح داخل محدوده، سختی easy|medium|hard. آیتم‌های معیوب رد و
+        گزارش می‌شوند و بقیه درج می‌شوند (تراکنش همه‌یا‌هیچ نیست — گزارش دقیق).
+        خروجی: {inserted, failed:[{i, error}]}"""
+        docs, failed = [], []
+        for i, it in enumerate(items or []):
+            try:
+                q   = (it.get('question') or '').strip()
+                ops = [str(o).strip()[:300] for o in (it.get('options') or [])]
+                ops = [o for o in ops if o]
+                cor = it.get('correct', 0)
+                dif = (it.get('difficulty') or '').strip()
+                if len(q) < 5: raise ValueError('متن سؤال خیلی کوتاه است')
+                if not (2 <= len(ops) <= 6): raise ValueError('گزینه‌ها باید بین ۲ تا ۶ باشند')
+                if not isinstance(cor, int) or not (0 <= cor < len(ops)):
+                    raise ValueError('گزینه‌ی صحیح خارج از محدوده است')
+                if dif not in ('easy', 'medium', 'hard'):
+                    raise ValueError('سختی نامعتبر است (easy|medium|hard)')
+                docs.append({
+                    'lesson': (it.get('lesson') or '').strip()[:80],
+                    'topic': (it.get('topic') or '').strip()[:80],
+                    'difficulty': dif, 'chapter': '', 'tags': [],
+                    'question': q[:1000], 'options': ops, 'correct_answer': cor,
+                    'explanation': (it.get('explanation') or '').strip()[:2000],
+                    'creator_id': creator,
+                    'question_image': None, 'answer_image': None,
+                    'intake': intake or '', 'source': 'web_import',
+                    'approved': bool(auto_approve),
+                    'created_at': datetime.now().isoformat(),
+                    'attempt_count': 0, 'correct_count': 0,
+                })
+            except Exception as e:
+                failed.append({'i': i, 'error': str(e)})
+        inserted = 0
+        if docs:
+            r = await self.questions.insert_many(docs)
+            inserted = len(getattr(r, 'inserted_ids', docs))
+        return {'inserted': inserted, 'failed': failed}
+
+
+    async def update_question(self, qid: str, updates: dict) -> bool:
+        """🌊 موج Q-Editor — ویرایش whitelistی سؤال (افزودنی؛ مصرف: وب‌ادمین
+        «ویرایش پیش از تأیید»). فقط فیلدهای محتوایی قابل تغییرند — هویت
+        سازنده/وضعیت تأیید/intake از این مسیر دست‌نخورده می‌ماند."""
+        allowed = {'question', 'options', 'correct_answer', 'explanation',
+                   'difficulty', 'lesson', 'topic'}
+        safe = {k: v for k, v in (updates or {}).items() if k in allowed}
+        if not safe:
+            return False
+        try:
+            r = await self.questions.update_one({'_id': ObjectId(qid)},
+                                                {'$set': safe})
+            return getattr(r, 'modified_count', 0) > 0 or True
+        except Exception:
+            return False
+
+
     async def save_answer(self, uid: int, qid: str, selected: int, is_correct: bool):
         await self.answers.insert_one({
             'user_id': uid, 'question_id': qid,
