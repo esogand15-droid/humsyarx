@@ -18,7 +18,7 @@ const SECTIONS = [
   ['access',       '🔐', 'دسترسی‌ها و تنظیمات', 'نقش‌ها، بلک‌لیست، ورودی‌ها'],
 ];
 
-export default function System() {
+export default function System({ me }) {
   const [bs, setBs] = useState(null);
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [err, setErr] = useState('');
@@ -27,10 +27,16 @@ export default function System() {
   const [autoBusy, setAutoBusy] = useState(false);
   const [excelBusy, setExcelBusy] = useState(false);
 
+  const has = (p) => !!me?.is_owner || (me?.perms || []).includes(p);
+  const canBackup = has('backup.manage');
+  const canPrestige = has('prestige.manage');
+  const canForce = has('notifications.manage');
+  const canLogTest = has('settings.manage') || has('system.manage');
+
   const load = async () => {
     setErr('');
     try {
-      const [b, s] = await Promise.all([api.botStatus(), api.settings().catch(() => null)]);
+      const [b, s] = await Promise.all([api.botStatus(), canBackup ? api.settings() : Promise.resolve(null)]);
       setBs(b); setSt(s);
     } catch (e) { setErr(errText(e)); }
   };
@@ -135,7 +141,7 @@ export default function System() {
       )}
 
       {/* ── 💾 پشتیبان دستی بخش‌بندی‌شده — دقیقاً همان بخش‌های منوی ربات ── */}
-      <div className="panel panel-pad" style={{ marginTop: 14 }}>
+      {canBackup && <div className="panel panel-pad" style={{ marginTop: 14 }}>
         <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
           <div><b>💾 پشتیبان‌گیری دستی</b>
             <div className="muted" style={{ marginTop: 4 }}>بخش موردنظر را انتخاب کنید — فایل JSON از طریق ربات در گفت‌وگوی شما می‌آید (در audit ثبت می‌شود).</div>
@@ -161,10 +167,10 @@ export default function System() {
             </div>
           ))}
         </div>
-      </div>
+      </div>}
 
-      {/* 🛠🌊 موج Parity-Final — عملیات مالک: prestige/force-send/تست گروه‌های لاگ */}
-      <OwnerOpsPanel />
+      {/* 🛠 عملیات حساس با نمایش مبتنی بر permission */}
+      <OwnerOpsPanel canPrestige={canPrestige} canForce={canForce} canLogTest={canLogTest} />
 
       {confirm && (
         <Confirm text={`ساخت پشتیبان «${SECTIONS.find(s => s[0] === confirm)?.[2]}»؟ (عملیات حساس — فایل در گفت‌وگوی ربات می‌آید و در audit ثبت می‌شود)`}
@@ -176,7 +182,7 @@ export default function System() {
 }
 
 /* ── 🛠 عملیات مالک — همان دکمه‌های پراکنده‌ی پنل ربات (admin:prestige_backfill / notif_force_send / test_log_groups) ── */
-function OwnerOpsPanel() {
+function OwnerOpsPanel({ canPrestige, canForce, canLogTest }) {
   const [confirm, setConfirm] = useState(null);   // 'prestige' | 'force'
   const [busy, setBusy] = useState('');
   const [prestigeRep, setPrestigeRep] = useState(null);
@@ -210,20 +216,21 @@ function OwnerOpsPanel() {
   };
   const LOG_ST = { sent: ['ok', '✅ ارسال شد'], unset: ['', '⬜ تنظیم نشده'], error: ['bad', '❌ خطا'] };
 
+  if (!canPrestige && !canForce && !canLogTest) return null;
   return (
     <div className="panel panel-pad" style={{ marginTop: 14 }}>
       <b>🛠 عملیات مالک</b>
       <div className="muted" style={{ marginTop: 4 }}>همان اکشن‌های پراکنده‌ی پنل ربات — idempotent یا دارای Confirm؛ همه در audit ثبت می‌شوند.</div>
       <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
-        <button className="btn" disabled={!!busy} onClick={() => setConfirm('prestige')}>
+        {canPrestige && <button className="btn" disabled={!!busy} onClick={() => setConfirm('prestige')}>
           {busy === 'prestige' ? '⏳ در حال محاسبه…' : '🏅 محاسبه‌ی Prestige (Backfill)'}
-        </button>
-        <button className="btn" disabled={!!busy} onClick={() => setConfirm('force')}>
+        </button>}
+        {canForce && <button className="btn" disabled={!!busy} onClick={() => setConfirm('force')}>
           {busy === 'force' ? '⏳ …' : '📨 ارسال فوری اعلان منابع'}
-        </button>
-        <button className="btn" disabled={!!busy} onClick={runLogTest}>
+        </button>}
+        {canLogTest && <button className="btn" disabled={!!busy} onClick={runLogTest}>
           {busy === 'logtest' ? '⏳ …' : '🧪 تست اتصال گروه‌های لاگ'}
-        </button>
+        </button>}
       </div>
       {prestigeRep && (
         <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 6 }}>
