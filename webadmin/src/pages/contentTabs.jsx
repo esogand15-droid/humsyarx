@@ -307,7 +307,9 @@ function ScheduleModal({ row, preset, onClose }) {
             <option value="flexible">منعطف (اعلام بعدی)</option>
           </select>
           <select className="inp" value={f.group} onChange={e => set('group', e.target.value)}>
-            {['هر دو', 'الف', 'ب'].map(g => <option key={g}>{g}</option>)}
+            <option value="هر دو">👥 هر دو گروه</option>
+            <option value="1">1️⃣ گروه ۱</option>
+            <option value="2">2️⃣ گروه ۲</option>
           </select>
         </div>
         <input className="inp" placeholder="درس / عنوان *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
