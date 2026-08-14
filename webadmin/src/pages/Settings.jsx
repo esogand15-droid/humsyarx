@@ -23,7 +23,11 @@ export default function Settings() {
 
   const load = async () => {
     setErr('');
-    try { setCats((await api.settingsCenter()).categories || []); }
+    try {
+      const list = (await api.settingsCenter()).categories || [];
+      setCats(list);
+      if (list.length && !list.some(c => c.key === cat)) setCat(list[0].key);
+    }
     catch (e) {
       if (e.status === 403) setPermErr(true); else setErr(errText(e));
     }
