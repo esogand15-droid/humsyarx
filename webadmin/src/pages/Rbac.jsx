@@ -34,6 +34,7 @@ export default function Rbac() {
         <div><div className="h1">نقش‌ها و مجوزها</div>
           <div className="sub">تک‌منبع حقیقت RBAC — تغییرات هم‌زمان لاگ می‌شوند</div></div>
         <span className="spacer" />
+        <MatrixPreview roles={roles} perms={perms} />
         <button className="btn primary" onClick={() => setCreate(true)}>➕ نقش جدید</button>
       </div>
 
@@ -65,6 +66,58 @@ export default function Rbac() {
       </div>
 
       {create && <CreateRole onClose={() => setCreate(false)} onDone={() => { setCreate(false); load(); }} />}
+    </>
+  );
+}
+
+// 🌊 موج RBAC-Matrix — نمای سراسری ماتریس نقش × مجوز (فقط‌خواندنی، برای
+// پاسخ سریع به «کدام نقش چه دسترسی‌هایی دارد؟» بدون بازکردن تک‌تک کارت‌ها)
+function MatrixPreview({ roles, perms }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className="btn" onClick={() => setOpen(true)}>🧮 ماتریس سراسری</button>
+      {open && (
+        <Modal title="🧮 ماتریس سراسری نقش × مجوز (فقط‌خواندنی)" onClose={() => setOpen(false)}>
+          <div style={{ overflowX: 'auto', maxHeight: '62vh', overflowY: 'auto' }}>
+            <table className="tbl" style={{ minWidth: 90 + roles.length * 92 }}>
+              <thead>
+                <tr>
+                  <th style={{ position: 'sticky', right: 0, background: 'var(--bg2)', zIndex: 1 }}>مجوز</th>
+                  {roles.map(r => (
+                    <th key={r.key} style={{ textAlign: 'center', minWidth: 84 }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <span style={{ width: 9, height: 9, borderRadius: 3, background: r.color || 'var(--acc)' }} />
+                        {r.label || r.key}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {perms.map(p => (
+                  <tr key={p.key}>
+                    <td style={{ position: 'sticky', right: 0, background: 'var(--panel)', zIndex: 1 }}>
+                      <div style={{ fontSize: 12 }}>{p.label || p.key}</div>
+                      <div className="muted code" style={{ fontSize: 10 }}>{p.key}</div>
+                    </td>
+                    {roles.map(r => (
+                      <td key={r.key} style={{ textAlign: 'center' }}>
+                        {(r.perms || []).includes(p.key)
+                          ? <span style={{ color: 'var(--ok)', fontWeight: 800 }}>✓</span>
+                          : <span className="muted">·</span>}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="muted" style={{ marginTop: 10, fontSize: 11 }}>
+            💡 برای تغییر مجوزها، از کارت نقش مربوط در همین صفحه استفاده کنید؛ این جدول فقط نمای است.
+          </p>
+        </Modal>
+      )}
     </>
   );
 }
