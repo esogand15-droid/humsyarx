@@ -623,6 +623,48 @@ async def poll_create(body: PollCreate, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 # ══════════════════════════════════════════════
+# 🔒 قفل اجباری عضویت کانال — 🌊 موج ChannelLock
+# (معادل admin:channel_lock ربات؛ متدهای db موجود بودند
+# ولی API وب نداشتند — فقط افزودنی، سطح مالک)
+# ══════════════════════════════════════════════
+
+@router.get("/channel-lock")
+async def channel_lock_list(admin=Depends(get_admin_user)):
+    channels = await db.get_required_channels()
+    return {"channels": [
+        {"id": c.get("id", ""), "title": c.get("title", ""),
+         "invite_link": c.get("invite_link", "")} for c in channels]}
+
+class ChannelLockAdd(BaseModel):
+    id: str
+    title: str
+    invite_link: str = ""
+
+@router.post("/channel-lock")
+async def channel_lock_add(body: ChannelLockAdd, admin=Depends(get_admin_user)):
+    cid = body.id.strip(); title = body.title.strip()
+    if not cid or not title:
+        raise HTTPException(422, "آیدی و نام کانال الزامی است")
+    ok = await db.add_required_channel(cid, title, body.invite_link.strip())
+    if not ok:
+        raise HTTPException(409, "این کانال قبلاً اضافه شده است")
+    await _audit(admin, "افزودن کانال اجباری", "Settings", severity="WARNING",
+        target_id=cid, target_type="channel", target_label=title,
+        tags=["قفل_کانال", "پنل_وب"])
+    return {"ok": True}
+
+@router.delete("/channel-lock/{channel_id}")
+async def channel_lock_remove(channel_id: str, admin=Depends(get_admin_user)):
+    current = await db.get_required_channels()
+    if not any(c.get("id") == channel_id for c in current):
+        raise HTTPException(404, "کانال در لیست نیست")
+    await db.remove_required_channel(channel_id)
+    await _audit(admin, "حذف کانال اجباری", "Settings", severity="WARNING",
+        target_id=channel_id, target_type="channel",
+        tags=["قفل_کانال", "پنل_وب"])
+    return {"ok": True}
+
+# ══════════════════════════════════════════════
 # 🔔 مدیریت اعلان‌ها — فاصله زمانی / تاریخچه / retry
 # ══════════════════════════════════════════════
 
