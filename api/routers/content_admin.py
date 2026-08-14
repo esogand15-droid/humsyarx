@@ -225,7 +225,7 @@ async def schedule_list(admin=Depends(GLOBAL_USER), stype: Optional[str]=Query(N
     items=await db.get_schedules(stype=stype, upcoming=False)
     return {"schedule":[{"id":str(s["_id"]),"type":s.get("type",""),"lesson":s.get("lesson",""),
         "teacher":s.get("teacher",""),"date":s.get("date",""),"time":s.get("time",""),
-        "location":s.get("location",""),"group":s.get("group","هر دو"),"note":s.get("notes",""),
+        "location":s.get("location",""),"group":db.normalize_group(s.get("group","هر دو")) or "هر دو","note":s.get("notes",""),
         "flex_type":s.get("flex_type","fixed"),"flex_note":s.get("flex_note","")} for s in items]}
 
 class ScheduleCreate(BaseModel):
@@ -238,11 +238,13 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
     if body.flex_type not in ("fixed","flexible"): raise HTTPException(422,"نوع زمان‌بندی نامعتبر")
     try: datetime.strptime(body.date,"%Y-%m-%d")
     except ValueError: raise HTTPException(422,"فرمت تاریخ YYYY-MM-DD")
+    group = db.normalize_group(body.group) or "هر دو"
     await db.add_schedule(stype=body.type,lesson=body.lesson,teacher=body.teacher,
         date=body.date,time=body.time,location=body.location,notes=body.note,
-        group=body.group,flex_type=body.flex_type)
+        group=group,flex_type=body.flex_type)
     try:
-        users=await db.notif_users("schedule", group=body.group)
+        notif_type = {"exam": "exam", "makeup": "makeup"}.get(body.type, "schedule")
+        users=await db.notif_users(notif_type, group=group)
         notif=db.client["medicalbot"]["bot_notifications"]
         icon={"class":"🏫","exam":"📝","makeup":"🔄"}.get(body.type,"📅")
         type_fa={"class":"کلاس","exam":"امتحان","makeup":"جبرانی"}.get(body.type,"")
