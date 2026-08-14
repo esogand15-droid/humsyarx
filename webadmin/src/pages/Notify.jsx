@@ -34,7 +34,7 @@ export default function Notify() {
   const [denied, setDenied] = useState(false);       // سطح مالک
 
   useEffect(() => {
-    api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {});
+    api.waIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {});
     loadHist(); loadRuns(); loadSched();
   }, []);
   const loadSched = async () => {
@@ -132,7 +132,7 @@ export default function Notify() {
         <div className="sub">از مسیر صف outbox ربات · ثبت در تاریخچه و مرکز اعلان مینی‌اپ</div>
 
         {denied ? (
-          <NoPerm text="ارسال همگانی فقط برای مالک سامانه است" />
+          <NoPerm text="ارسال همگانی نیازمند مجوز broadcast.send است" />
         ) : sent ? (
           <div className="grid" style={{ gap: 12, marginTop: 14, textAlign: 'center', padding: '10px 0' }}>
             <div style={{ fontSize: 42 }}>{sent.scheduled ? '🗓' : '✅'}</div>
