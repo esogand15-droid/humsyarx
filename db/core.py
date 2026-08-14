@@ -197,6 +197,37 @@ class DBCore:
 
 
     # ══════════════════════════════════════════════════
+    #  قرارداد مرکزی گروه درسی
+    # ══════════════════════════════════════════════════
+
+    @staticmethod
+    def normalize_group(value) -> str:
+        """تمام نمایش‌های legacy را به مقدار ذخیره‌سازی canonical تبدیل می‌کند.
+
+        قرارداد پایدار پروژه برای گروه‌های دانشجویی ``1`` و ``2`` است.
+        «الف/ب» فقط alias نمایشی قدیمی محسوب می‌شود؛ مقدار ناشناخته برای
+        سازگاری عقب‌رو دست‌نخورده می‌ماند.
+        """
+        raw = str(value or "").strip()
+        aliases = {
+            "۱": "1", "الف": "1", "گروه ۱": "1", "گروه 1": "1",
+            "۲": "2", "ب": "2", "گروه ۲": "2", "گروه 2": "2",
+            "هردو": "هر دو", "all": "هر دو",
+        }
+        return aliases.get(raw, raw)
+
+    @classmethod
+    def group_aliases(cls, value) -> list:
+        """مقادیر هم‌معنا برای خواندن اسناد legacy بدون مهاجرت مخرب."""
+        canonical = cls.normalize_group(value)
+        if canonical == "1":
+            return ["1", "۱", "الف", "گروه 1", "گروه ۱"]
+        if canonical == "2":
+            return ["2", "۲", "ب", "گروه 2", "گروه ۲"]
+        return [canonical] if canonical else []
+
+
+    # ══════════════════════════════════════════════════
     #  کاربران
     # ══════════════════════════════════════════════════
 
@@ -316,8 +347,9 @@ class DBCore:
         query = {'approved': True,
                  f'notification_settings.{canon}': {'$ne': False},
                  f'notification_settings.{ntype}': {'$ne': False}}
-        if group and str(group).strip() not in ('', 'هر دو', 'هردو', 'all'):
-            query['group'] = str(group)
+        normalized_group = self.normalize_group(group)
+        if normalized_group and normalized_group != 'هر دو':
+            query['group'] = {'$in': self.group_aliases(normalized_group)}
         return await self.users.find(query).to_list(length=None)
 
 
