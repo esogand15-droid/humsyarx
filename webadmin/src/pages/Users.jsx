@@ -108,13 +108,13 @@ export default function Users({ go }) {
       <div className="row" style={{ gap: 4 }}>
         {!r.approved && !r.suspended && <button className="btn sm ok" onClick={() => act(r.id, 'approve')}>✅</button>}
         {r.suspended
-          ? <button className="btn sm ok" title="رفع تعلیق" onClick={() => act(r.id, 'suspend')}>🔓</button>
+          ? <button className="btn sm ok" title="رفع تعلیق" onClick={() => act(r.id, 'unsuspend')}>🔓</button>
           : <button className="btn sm danger" onClick={() => act(r.id, 'suspend')}>⏸</button>}
       </div>) },
   ];
 
   const act = async (uid, action) => {
-    try { await api.userAction(uid, action); toast('انجام شد'); load(); }
+    try { await api.waUserAction(uid, action); toast('انجام شد'); load(); }
     catch (e) { toast(errText(e), 'err'); }
   };
 
