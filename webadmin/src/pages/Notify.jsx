@@ -27,6 +27,9 @@ export default function Notify({ route = '', go }) {
   const [subscriptionStatus, setSubscriptionStatus] = useState(initial.get('subscription') || 'active');
   const [audienceOptions, setAudienceOptions] = useState({ roles: [], subscription_statuses: [] });
   const [text, setText] = useState('');
+  const [messageType, setMessageType] = useState('text');
+  const [media, setMedia] = useState(null); const [fileId, setFileId] = useState(''); const [caption, setCaption] = useState('');
+  const [uploading, setUploading] = useState(false); const [aiOpen, setAiOpen] = useState(false); const [aiNotes, setAiNotes] = useState('');
   const [count, setCount] = useState(null);
   const [mode, setMode] = useState('now');           // now | later
   const [sendAt, setSendAt] = useState('');
@@ -35,6 +38,7 @@ export default function Notify({ route = '', go }) {
   const [history, setHistory] = useState(null);
   const [runs, setRuns] = useState(null);
   const [runDetail, setRunDetail] = useState(null);
+  const [campaignDetail, setCampaignDetail] = useState(null);
   const [sched, setSched] = useState(null);          // 🌊 ارسال‌های زمان‌دار در انتظار
   const [cancelOf, setCancelOf] = useState(null);
   const [auxErr, setAuxErr] = useState('');
@@ -69,7 +73,7 @@ export default function Notify({ route = '', go }) {
     const it = cancelOf;
     setCancelOf(null);
     try {
-      const r = await api.broadcastCancel(it.text, it.created_at);
+      const r = await api.broadcastCancel(it.campaign_id);
       toast(`ارسال زمان‌دار برای ${fa(r.cancelled)} گیرنده لغو شد 🗑`);
       loadSched(); loadHist();
     } catch (e) { toast(errText(e), 'err'); loadSched(); }
@@ -111,6 +115,18 @@ export default function Notify({ route = '', go }) {
     return audienceOptions.subscription_statuses.find(x => x.key === subscriptionStatus)?.label || 'وضعیت اشتراک';
   }, [scope, intake, group, role, subscriptionStatus, audienceOptions, intakes]);
 
+  const uploadMedia = async () => {
+    if (!media || messageType === 'text') return;
+    setUploading(true);
+    try { const fd = new FormData(); fd.append('media_type', messageType); fd.append('file', media); const r = await api.broadcastUpload(fd); setFileId(r.file_id); toast('رسانه در تلگرام آماده شد ✅'); }
+    catch (e) { toast(errText(e), 'err'); setFileId(''); }
+    setUploading(false);
+  };
+  const payloadBody = () => ({ text: messageType === 'text' ? text.trim() : '', message_type: messageType,
+    file_id: messageType === 'text' ? '' : fileId, caption: messageType === 'text' ? '' : caption.trim(), target, send_at: null });
+  const testSend = async () => { try { await api.broadcastTest(payloadBody()); toast('پیام آزمایشی به تلگرام شما ارسال شد ✅'); } catch (e) { toast(errText(e), 'err'); } };
+  const generateDraft = async () => { try { const r = await api.aiBroadcastDraft(aiNotes.trim()); setText(r.draft || ''); setMessageType('text'); setAiOpen(false); toast('پیش‌نویس هوشیار آماده شد'); } catch (e) { toast(`${errText(e)} — نوشتن دستی همچنان فعال است`, 'err'); } };
+
   const preview = async () => {
     setBusy(true);
     try {
@@ -125,7 +141,8 @@ export default function Notify({ route = '', go }) {
   const send = async () => {
     setBusy(true);
     try {
-      const body = { text: text.trim(), target, send_at: null };
+      const body = { text: messageType === 'text' ? text.trim() : '', message_type: messageType,
+        file_id: messageType === 'text' ? '' : fileId, caption: messageType === 'text' ? '' : caption.trim(), target, send_at: null };
       if (mode === 'later') body.send_at = new Date(sendAt).toISOString();
       const r = await api.broadcast(body);
       setSent({ queued: r.queued || 0, scheduled: !!r.scheduled });
@@ -135,6 +152,7 @@ export default function Notify({ route = '', go }) {
   };
   const reset = () => {
     setStep(1); setScope('all'); setIntake(''); setGroup('1'); setRole(''); setSubscriptionStatus('active'); setText('');
+    setMessageType('text'); setMedia(null); setFileId(''); setCaption('');
     setCount(null); setMode('now'); setSendAt(''); setSent(null);
   };
   const saveCurrent = async () => {
@@ -142,7 +160,7 @@ export default function Notify({ route = '', go }) {
     const isDraft = saveOpen === 'draft';
     try {
       await api.saveFilter({ name: saveName.trim(), scope: isDraft ? 'broadcast_draft' : 'broadcast_segment', shared: saveShared,
-        filters: isDraft ? { scope, intake, group, role, subscriptionStatus, text, mode, sendAt } : { scope, intake, group, role, subscriptionStatus } });
+        filters: isDraft ? { scope, intake, group, role, subscriptionStatus, text, messageType, fileId, caption, mode, sendAt } : { scope, intake, group, role, subscriptionStatus } });
       toast(isDraft ? 'پیش‌نویس ذخیره شد' : 'Segment مخاطبان ذخیره شد');
       setSaveOpen(null); setSaveName(''); setSaveShared(false); loadSaved();
     } catch (e) { toast(errText(e), 'err'); }
@@ -151,7 +169,7 @@ export default function Notify({ route = '', go }) {
     const f = item.filters || {};
     setScope(f.scope || 'all'); setIntake(f.intake || ''); setGroup(f.group || '1');
     setRole(f.role || ''); setSubscriptionStatus(f.subscriptionStatus || 'active');
-    if (isDraft) { setText(f.text || ''); setMode(f.mode || 'now'); setSendAt(f.sendAt || ''); }
+    if (isDraft) { setText(f.text || ''); setMessageType(f.messageType || 'text'); setFileId(f.fileId || ''); setCaption(f.caption || ''); setMode(f.mode || 'now'); setSendAt(f.sendAt || ''); }
     setCount(null); setSent(null); setStep(isDraft && f.text ? 2 : 1);
     toast(`«${item.name}» بارگذاری شد`);
   };
@@ -165,6 +183,8 @@ export default function Notify({ route = '', go }) {
     d.setSeconds(0, 0);
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   }, [step]);
+  const mediaUrl = useMemo(() => media ? URL.createObjectURL(media) : '', [media]);
+  useEffect(() => () => { if (mediaUrl) URL.revokeObjectURL(mediaUrl); }, [mediaUrl]);
   const sendAtFa = useMemo(() => {
     if (!sendAt) return '';
     try { return new Date(sendAt).toLocaleString('fa-IR', { dateStyle: 'full', timeStyle: 'short' }); }
@@ -173,7 +193,7 @@ export default function Notify({ route = '', go }) {
 
   const canNext1 = scope === 'all' || ((scope === 'intake' || scope === 'intake_group') && !!intake)
     || (scope === 'role' && !!role) || (scope === 'subscription' && !!subscriptionStatus);
-  const canPreview = text.trim().length >= 5 && !busy;
+  const canPreview = (messageType === 'text' ? text.trim().length >= 5 : !!fileId) && !busy;
   const canConfirm = mode === 'now' || (!!sendAt && new Date(sendAt).getTime() > Date.now());
 
   return (
@@ -268,17 +288,20 @@ export default function Notify({ route = '', go }) {
             {step === 2 && (
               <div className="grid" style={{ gap: 10 }}>
                 <div className="row" style={{ alignItems: 'center' }}>
-                  <b>متن پیام</b><span className="spacer" />
+                  <b>محتوای کمپین</b><span className="spacer" />
+                  <button className="btn sm" onClick={() => { setAiNotes(''); setAiOpen(true); }}>🤖 نوشتن با هوشیار</button>
                   <B kind={audienceLabel.startsWith('همه') ? 'acc' : 'purple'}>🎯 {audienceLabel}</B>
                 </div>
-                <textarea className="inp" rows={8} placeholder="متن اعلان… (حداقل ۵ نویسه)"
-                          value={text} onChange={e => setText(e.target.value)} />
+                <div className="row" style={{ flexWrap: 'wrap' }}>{[['text','📝 متن'],['photo','🖼 عکس'],['video','🎥 ویدیو'],['document','📎 فایل'],['voice','🎙 ویس'],['audio','🎵 صدا']].map(([k,l]) => <button key={k} className={`btn sm ${messageType === k ? 'primary' : ''}`} onClick={() => { setMessageType(k); setFileId(''); setMedia(null); }}>{l}</button>)}</div>
+                {messageType === 'text' ? <textarea className="inp" rows={8} placeholder="متن اعلان… (حداقل ۵ نویسه)" value={text} onChange={e => setText(e.target.value)} /> : <>
+                  <input className="inp" type="file" onChange={e => { setMedia(e.target.files?.[0] || null); setFileId(''); }} />
+                  <textarea className="inp" rows={4} maxLength={1024} placeholder="Caption اختیاری…" value={caption} onChange={e => setCaption(e.target.value)} />
+                  <div className="row"><button className="btn primary sm" disabled={!media || uploading} onClick={uploadMedia}>{uploading ? '⏳ آپلود…' : '⬆️ آپلود به تلگرام'}</button>{fileId && <B kind="ok">رسانه آماده است</B>}</div>
+                </>}
                 <div className="row">
-                  <span className="muted" style={{ fontSize: 11 }}>
-                    {fa(text.trim().length)} نویسه · تگ‌های ساده‌ی HTML مثل &lt;b&gt; در تلگرام نمایش داده می‌شوند
-                  </span>
+                  <span className="muted" style={{ fontSize: 11 }}>{messageType === 'text' ? `${fa(text.trim().length)} نویسه · HTML ساده پشتیبانی می‌شود` : `${fa(caption.length)} / ۱٬۰۲۴ نویسه Caption`}</span>
                   <span className="spacer" />
-                  {text.trim().length > 0 && text.trim().length < 5 && <B kind="bad">خیلی کوتاه</B>}
+                  {messageType === 'text' && text.trim().length > 0 && text.trim().length < 5 && <B kind="bad">خیلی کوتاه</B>}
                 </div>
                 <div className="row">
                   <button className="btn" onClick={() => setStep(1)}>→ بازگشت</button>
@@ -296,9 +319,14 @@ export default function Notify({ route = '', go }) {
                   <B kind={count ? 'acc' : 'bad'}>{count == null ? '…' : `${fa(count)} نفر`}</B>
                 </div>
                 <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
-                  <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>پیش‌نمایش پیام در گفت‌وگوی کاربر:</div>
-                  <div className="bubble user" style={{ maxWidth: '100%', whiteSpace: 'pre-wrap' }}>{text.trim()}</div>
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>پیش‌نمایش همان فایل و payload ارسالی:</div>
+                  {messageType === 'photo' && mediaUrl && <img src={mediaUrl} alt="پیش‌نمایش عکس کمپین" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 10 }} />}
+                  {messageType === 'video' && mediaUrl && <video src={mediaUrl} controls style={{ maxWidth: '100%', maxHeight: 260 }} />}
+                  {(messageType === 'audio' || messageType === 'voice') && mediaUrl && <audio src={mediaUrl} controls style={{ width: '100%' }} />}
+                  {messageType === 'document' && media && <div className="surface-inset">📎 {media.name} · {fa(Math.round(media.size / 1024))} KB</div>}
+                  <div className="bubble user" style={{ maxWidth: '100%', whiteSpace: 'pre-wrap' }}>{messageType === 'text' ? text.trim() : `${{photo:'🖼 عکس',video:'🎥 ویدیو',document:'📎 فایل',voice:'🎙 ویس',audio:'🎵 صدا'}[messageType]}\n${caption.trim()}`}</div>
                 </div>
+                <button className="btn" onClick={testSend}>🧪 ارسال آزمایشی به تلگرام من</button>
                 <p className="muted" style={{ fontSize: 11, margin: 0 }}>
                   📱 علاوه بر پیام تلگرام، در «مرکز اعلان» مینی‌اپ هم به‌عنوان اطلاعیه‌ی مدیریت ثبت می‌شود.
                 </p>
@@ -354,7 +382,7 @@ export default function Notify({ route = '', go }) {
                   {mode === 'now' ? <B kind="ok">⚡ فوری</B> : <B kind="warn">🗓 {sendAtFa}</B>}
                 </div>
                 <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 12.5, color: 'var(--txt2)', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
-                  {text.trim()}
+                  {messageType === 'text' ? text.trim() : `${messageType.toUpperCase()} · ${caption.trim() || 'بدون caption'}`}
                 </div>
                 <p className="muted" style={{ fontSize: 11, margin: 0 }}>
                   ⚠️ این عمل در تاریخچه و حسابرسی (severity: HIGH) ثبت می‌شود و قابل بازگشت نیست.
@@ -404,7 +432,7 @@ export default function Notify({ route = '', go }) {
                       <span className="spacer" />
                       <button className="btn sm danger" onClick={() => setCancelOf(it)}>🗑 لغو ارسال</button>
                     </div>
-                    <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>{it.text}</div>
+                    <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>{it.payload?.text || it.payload?.caption || `[${it.message_type}]`}</div>
                   </div>
                 ))}
               </div>
@@ -420,17 +448,21 @@ export default function Notify({ route = '', go }) {
           ) : (
             <div className="grid" style={{ gap: 8, marginTop: 10 }}>
               {history.map((h, i) => {
-                const pending = Math.max(0, (h.total || 0) - (h.sent || 0) - (h.failed || 0));
-                const pct = h.total ? Math.round((h.sent / h.total) * 100) : 0;
+                const pending = Math.max(0, (h.total || 0) - (h.success || 0) - (h.failed || 0) - (h.skipped || 0));
+                const pct = h.total ? Math.round(((h.success || 0) / h.total) * 100) : 0;
                 return (
                   <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
                     <div className="row" style={{ flexWrap: 'wrap', gap: 5 }}>
                       <B kind="acc">{fa(h.total)} نفر</B>
-                      <B kind="ok">✔ {fa(h.sent)}</B>
+                      <B kind="ok">✔ {fa(h.success)}</B>
                       {h.failed > 0 && <B kind="bad">✖ {fa(h.failed)}</B>}
+                      {h.skipped > 0 && <B>⏭ {fa(h.skipped)}</B>}
                       {pending > 0 && <B kind="warn">⏳ {fa(pending)}</B>}
+                      <B>{h.source === 'bot' ? 'Bot' : 'Web'}</B>
                       <span className="spacer" />
-                      <button className="btn sm" onClick={() => { const a = h.audience || { scope: 'all' }; reset(); setScope(a.scope || 'all'); setIntake(a.intake || ''); setGroup(a.group || '1'); setRole(a.role || ''); setSubscriptionStatus(a.subscription_status || 'active'); setText(h.text || ''); setStep(2); }}>📄 تکثیر Campaign</button>
+                      <button className="btn sm" onClick={() => { const a = h.audience || { scope: 'all' }; const p = h.payload || {}; reset(); setScope(a.scope || 'all'); setIntake(a.intake || ''); setGroup(a.group || '1'); setRole(a.role || ''); setSubscriptionStatus(a.subscription_status || 'active'); setMessageType(p.type || 'text'); setText(p.text || ''); setFileId(p.file_id || ''); setCaption(p.caption || ''); setStep(2); }}>📄 تکثیر Campaign</button>
+                      <button className="btn sm" onClick={() => setCampaignDetail(h.campaign_id)}>جزئیات</button>
+                      {h.failed > 0 && <button className="btn sm" onClick={async () => { try { const r = await api.broadcastRetryFailed(h.campaign_id); toast(`${fa(r.requeued)} گیرنده دوباره در صف قرار گرفت`); loadHist(); } catch (e) { toast(errText(e), 'err'); } }}>🔁 Retry Failed</button>}
                       {h.correlation_id && <button className="btn sm" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(h.correlation_id)}`)}>🧬 ردیابی</button>}
                       <span className="muted">{(h.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                     </div>
@@ -438,7 +470,7 @@ export default function Notify({ route = '', go }) {
                       <div className="minibar-fill" style={{ width: `${pct}%` }} />
                     </div>
                     <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>
-                      {(h.text || '').slice(0, 120)}{(h.text || '').length > 120 ? '…' : ''}
+                      {(h.payload?.text || h.payload?.caption || `[${h.message_type}]`).slice(0, 120)}
                     </div>
                   </div>
                 );
@@ -474,6 +506,7 @@ export default function Notify({ route = '', go }) {
       </div>
 
       {runDetail && <NotificationRunDetail id={runDetail} go={go} onClose={() => setRunDetail(null)} onRetry={retry} />}
+      {campaignDetail && <CampaignDetail id={campaignDetail} go={go} onClose={() => setCampaignDetail(null)} onRefresh={() => { loadHist(); loadSched(); }} />}
       {saveOpen && <Modal title={saveOpen === 'draft' ? 'ذخیره پیش‌نویس ارسال' : 'ذخیره Segment مخاطبان'} onClose={() => setSaveOpen(null)}>
         <p className="muted" style={{ marginBottom: 8 }}>{saveOpen === 'draft' ? 'مخاطب، متن و زمان‌بندی فعلی ذخیره می‌شود.' : `مخاطب فعلی: ${audienceLabel}`}</p>
         <input className="inp" style={{ width: '100%' }} placeholder="نام قابل تشخیص…" value={saveName} onChange={e => setSaveName(e.target.value)} />
@@ -481,6 +514,7 @@ export default function Notify({ route = '', go }) {
         <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!saveName.trim()} onClick={saveCurrent}>ذخیره</button>
           <button className="btn" onClick={() => setSaveOpen(null)}>انصراف</button></div>
       </Modal>}
+      {aiOpen && <Modal title="🤖 نوشتن اطلاعیه با هوشیار" onClose={() => setAiOpen(false)}><textarea className="inp" rows={6} style={{ width: '100%' }} placeholder="موضوع و نکات اصلی اطلاعیه…" value={aiNotes} onChange={e => setAiNotes(e.target.value)} /><div className="muted" style={{ marginTop: 8 }}>اگر AI ناموفق باشد، composer دستی بدون اختلال باقی می‌ماند.</div><div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={aiNotes.trim().length < 3} onClick={generateDraft}>ساخت پیش‌نویس</button><button className="btn" onClick={() => setAiOpen(false)}>انصراف</button></div></Modal>}
       {deleteSaved && <Confirm danger text={`«${deleteSaved.name}» برای همیشه حذف شود؟`} onNo={() => setDeleteSaved(null)} onYes={() => { const item = deleteSaved; setDeleteSaved(null); removeSaved(item); }} />}
       {cancelOf && (
         <Confirm danger
@@ -493,6 +527,18 @@ export default function Notify({ route = '', go }) {
   );
 }
 
+
+function CampaignDetail({ id, go, onClose, onRefresh }) {
+  const [data, setData] = useState(null); const [err, setErr] = useState('');
+  const load = () => { setData(null); setErr(''); api.broadcastCampaign(id).then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, [id]);
+  return <Modal wide title={`📢 Campaign · ${id}`} onClose={onClose}>{err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
+    <div className="grid g4"><div className="panel panel-pad"><b>{fa(data.campaign.total)}</b><div className="muted">Recipients</div></div><div className="panel panel-pad"><b className="ok-text">{fa(data.campaign.success)}</b><div className="muted">Success</div></div><div className="panel panel-pad"><b>{fa(data.campaign.skipped)}</b><div className="muted">Skipped</div></div><div className="panel panel-pad"><b className="bad-text">{fa(data.campaign.failed)}</b><div className="muted">Failed</div></div></div>
+    <dl className="kv"><dt>Status</dt><dd><B>{data.campaign.status}</B></dd><dt>Source</dt><dd>{data.campaign.source}</dd><dt>Type</dt><dd>{data.campaign.message_type}</dd><dt>Correlation ID</dt><dd className="code">{data.campaign.correlation_id || '—'}</dd><dt>Scheduled</dt><dd className="code">{data.campaign.send_at || '—'}</dd><dt>Finished</dt><dd className="code">{data.campaign.finished_at || '—'}</dd></dl>
+    {!!data.failures?.length && <div className="grid" style={{ gap: 5 }}><b>Failed recipients</b>{data.failures.map((x, i) => <div className="row" key={`${x.user_id}-${i}`}><span className="code">{x.user_id}</span><span className="muted">{x.error}</span></div>)}</div>}
+    <div className="row" style={{ marginTop: 12 }}>{data.campaign.failed > 0 && <button className="btn" onClick={async () => { try { const r = await api.broadcastRetryFailed(id); toast(`${fa(r.requeued)} گیرنده دوباره در صف قرار گرفت`); load(); onRefresh(); } catch (e) { toast(errText(e), 'err'); } }}>🔁 Retry Failed</button>}{data.campaign.correlation_id && <button className="btn primary" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(data.campaign.correlation_id)}`)}>🧬 Investigation Chain</button>}</div>
+  </>}</Modal>;
+}
 
 function NotificationRunDetail({ id, go, onClose, onRetry }) {
   const [data, setData] = useState(null); const [err, setErr] = useState('');

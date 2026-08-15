@@ -9,13 +9,13 @@ const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspende
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 // 🌊 WA3 — اکشن‌های تکی (دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات)
 const USER_ACTIONS = {
-  approve:    { icon: '✅', label: 'تأیید حساب', perm: 'manage' },
-  reject:     { icon: '✖️', label: 'رد و حذف درخواست', danger: true },
-  suspend:    { icon: '⏸', label: 'تعلیق', danger: true },
-  unsuspend:  { icon: '🔓', label: 'رفع تعلیق' },
-  block:      { icon: '⛔', label: 'مسدود (لیست سیاه)', danger: true },
-  unblock:    { icon: '🕊', label: 'رفع مسدودیت' },
-  delete:     { icon: '🗑', label: 'حذف کامل حساب', danger: true },
+  approve:    { icon: '✅', label: 'تأیید حساب', perm: 'users.manage' },
+  reject:     { icon: '✖️', label: 'رد و حذف درخواست', perm: 'users.manage', danger: true },
+  suspend:    { icon: '⏸', label: 'تعلیق', perm: 'users.suspend', danger: true },
+  unsuspend:  { icon: '🔓', label: 'رفع تعلیق', perm: 'users.suspend' },
+  block:      { icon: '⛔', label: 'مسدود (لیست سیاه)', perm: 'users.delete', danger: true },
+  unblock:    { icon: '🕊', label: 'رفع مسدودیت', perm: 'users.delete' },
+  delete:     { icon: '🗑', label: 'حذف کامل حساب', perm: 'users.delete', danger: true },
 };
 
 // 👥 WA2.4/2.8 — فیلتر ذخیره‌شده + bulk گسترده (تغییر ورودی/CSV) + دراور ۳۶۰ کاربر
@@ -150,10 +150,10 @@ export default function Users({ go, me, route = '' }) {
       ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B>}{r.has_open_ticket && <B kind="warn">🎫 باز</B>}</div> },
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
-        {!r.approved && !r.suspended && <button className="btn sm ok" onClick={() => act(r.id, 'approve')} aria-label="تأیید کاربر">✅</button>}
-        {r.suspended
-          ? <button className="btn sm ok" title="رفع تعلیق" aria-label="رفع تعلیق کاربر" onClick={() => act(r.id, 'unsuspend')}>🔓</button>
-          : <button className="btn sm danger" onClick={() => act(r.id, 'suspend')} aria-label="تعلیق کاربر">⏸</button>}
+        {has('users.manage') && !r.approved && !r.suspended && <button className="btn sm ok" onClick={() => setConfirm({ uid: r.id, action: 'approve', text: `تأیید حساب «${r.display_name || r.name}»؟ وضعیت: در انتظار ← فعال` })} aria-label="تأیید کاربر">✅</button>}
+        {has('users.suspend') && (r.suspended
+          ? <button className="btn sm ok" title="رفع تعلیق" aria-label="رفع تعلیق کاربر" onClick={() => setConfirm({ uid: r.id, action: 'unsuspend', text: `رفع تعلیق «${r.display_name || r.name}»؟ وضعیت: تعلیق ← فعال` })}>🔓</button>
+          : <button className="btn sm danger" onClick={() => setConfirm({ uid: r.id, action: 'suspend', text: `تعلیق «${r.display_name || r.name}»؟ وضعیت: فعال ← تعلیق` })} aria-label="تعلیق کاربر">⏸</button>)}
       </div>) },
   ];
 
@@ -167,9 +167,9 @@ export default function Users({ go, me, route = '' }) {
   return (
     <>
       <PageHeader title="مدیریت کاربران" description="جست‌وجو، فیلتر ذخیره‌شده، صفحه‌بندی سرورساید و عملیات گروهی" actions={<>
-        <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>
-        <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>
-        <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
+        {me?.is_owner && <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>}
+        {me?.is_owner && <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>}
+        {has('users.view') && <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>}
         <button className="btn sm" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
           accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
           smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
@@ -244,13 +244,17 @@ export default function Users({ go, me, route = '' }) {
                  onColumnsChange={setVisibleColumns}
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
-      {detail && <UserDrawer row={detail} go={go} onClose={() => { setDetail(null); load(); }} />}
-      {blOpen && <BlacklistModal onClose={() => { setBlOpen(false); load(); }} />}
+      {detail && <UserDrawer row={detail} me={me} go={go} onClose={() => { setDetail(null); load(); }} />}
+      {blOpen && <BlacklistModal me={me} onClose={() => { setBlOpen(false); load(); }} />}
       {intOpen && <IntakesModal onClose={(ch) => { setIntOpen(false); if (ch) api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }} />}
       {caOpen && <ContentAdminsModal onClose={() => { setCaOpen(false); load(); }} />}
       {confirm && (
-        <Confirm text={confirm.text} danger={confirm.action === 'suspend'}
-                 onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
+        <Confirm text={confirm.text} danger={!!USER_ACTIONS[confirm.action]?.danger || confirm.action === 'suspend'}
+                 onYes={async () => {
+                   const c = confirm; setConfirm(null);
+                   if (c.uid) { try { await api.waUserAction(c.uid, c.action); toast('انجام شد'); load(); } catch (e) { toast(errText(e), 'err'); } }
+                   else await bulk(c.action);
+                 }}
                  onNo={() => setConfirm(null)} />
       )}
       {intakeModal && (
@@ -342,10 +346,11 @@ function LargeBatchModal({ has, intakes, roles, onClose, onDone }) {
 }
 
 /* ── 👤 WA2.8 — User 360: کانتکست کامل بدون ترک صفحه ─────────── */
-function UserDrawer({ row, go, onClose }) {
+function UserDrawer({ row, me, go, onClose }) {
   const [d, setD] = useState(null);
   const [failed, setFailed] = useState(false);
   const [tab, setTab] = useState('overview');
+  const [relation, setRelation] = useState(null);
   const refetch = () => api.user360(row.id).then(r => setD(r)).catch(() => {});
   useEffect(() => {
     let on = true;
@@ -355,6 +360,11 @@ function UserDrawer({ row, go, onClose }) {
     return () => { on = false; };
   }, [row.id]);
 
+  const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
+  const canAct = ['users.manage', 'users.suspend', 'users.message', 'users.delete'].some(has);
+  const unavailable = section => d?.section_errors?.[section]
+    ? <div className="panel panel-pad"><B kind="warn">⚠️ اطلاعات فعلاً در دسترس نیست</B><button className="btn sm" onClick={refetch}>Retry</button></div>
+    : null;
   const TABS = [
     ['overview', '📊 نمای کلی'], ['identity', '👤 هویت'], ['academic', '📚 یادگیری و نمرات'],
     ['questions', '🧪 سؤال‌ها'], ['exams', '📝 آزمون‌ها'], ['ai', '🤖 هوشیار'],
@@ -366,7 +376,7 @@ function UserDrawer({ row, go, onClose }) {
   return (
     <Drawer wide title={`👤 ${row.display_name || row.name} · #${row.id}`} onClose={onClose}>
       <div className="tabs" style={{ marginBottom: 10 }} role="tablist" aria-label="بخش‌های پرونده کاربر">
-        {TABS.map(([k, v]) => (
+        {TABS.filter(([k]) => k !== 'actions' || canAct).map(([k, v]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
         ))}
       </div>
@@ -382,7 +392,7 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {!failed && !d && tab !== 'actions' && <Loading />}
       {tab === 'actions' && (
-        <UserActions row={row} d={d} onChanged={refetch} onClose={onClose} />
+        <UserActions row={row} d={d} me={me} onChanged={refetch} onClose={onClose} />
       )}
       {d && tab === 'overview' && (
         <>
@@ -419,7 +429,8 @@ function UserDrawer({ row, go, onClose }) {
       {/* 🌊 W-Admin — تب‌های جدید User 360 */}
       {d && tab === 'academic' && (
         <>
-          <div className="muted" style={{ marginBottom: 8 }}>نمرات ثبت‌شده: {Number(d.counts.grades || 0).toLocaleString('fa')}</div>
+          {unavailable('academic') || unavailable('academic_counts')}
+          <div className="row" style={{ marginBottom: 8 }}><span className="muted">نمرات ثبت‌شده: {Number(d.counts.grades || 0).toLocaleString('fa')}</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('grades')}>مشاهده همه</button></div>
           {(d.academic?.grades_recent || []).length === 0 &&
             <div className="center-state">نمره‌ای ثبت نشده</div>}
           {(d.academic?.grades_recent || []).map((g, i) => (
@@ -436,7 +447,8 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'questions' && (
         <>
-          <div className="muted" style={{ marginBottom: 8 }}>سؤال‌های طراحی‌شده: {faNum(d.counts.questions)}</div>
+          {unavailable('questions')}
+          <div className="row" style={{ marginBottom: 8 }}><span className="muted">سؤال‌های طراحی‌شده: {faNum(d.counts.questions)}</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('questions')}>مشاهده همه</button></div>
           {!(d.recent_questions || []).length && <Empty icon="🧪" text="سؤالی طراحی نکرده است" />}
           {(d.recent_questions || []).map(x => <div key={x.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
             <div className="row"><b className="text-truncate">{x.question || '—'}</b><span className="spacer" />
@@ -447,7 +459,8 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'exams' && (
         <>
-          <div className="muted" style={{ marginBottom: 8 }}>آزمون‌ها: {faNum(d.counts.exams)}</div>
+          {unavailable('exams')}
+          <div className="row" style={{ marginBottom: 8 }}><span className="muted">آزمون‌ها: {faNum(d.counts.exams)}</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('exams')}>مشاهده همه</button></div>
           {!(d.recent_exams || []).length && <Empty icon="📝" text="آزمونی ثبت نشده است" />}
           {(d.recent_exams || []).map(x => <div key={x.id} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
             <div style={{ flex: 1 }}><b>{x.lesson || 'آزمون سفارشی'}</b><div className="muted">{x.topic || 'همه مباحث'} · {x.started_at}</div></div>
@@ -456,7 +469,7 @@ function UserDrawer({ row, go, onClose }) {
         </>
       )}
       {d && tab === 'prestige' && (
-        <> <dl className="kv">
+        <> {unavailable('prestige') || unavailable('prestige_history')}<div className="row"><span className="spacer" /><button className="btn sm" onClick={() => setRelation('prestige')}>مشاهده تاریخچه کامل</button></div><dl className="kv">
           {Object.entries({
             'رنک': d.prestige?.rank, 'دسته (Division)': d.prestige?.div,
             'XP افتخار': d.prestige?.prestige_xp, 'XP مؤثر': d.prestige?.effective_xp,
@@ -476,6 +489,7 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'ai' && (
         <>
+          {unavailable('ai')}
           <dl className="kv">
             <dt>پرسش کل</dt><dd>{Number(d.ai?.total_usage || 0).toLocaleString('fa')}</dd>
             <dt>پرسش امروز</dt><dd>{Number(d.ai?.today || 0).toLocaleString('fa')}</dd>
@@ -492,7 +506,8 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'notifications' && (
         <>
-          <div className="row" style={{ marginBottom: 8 }}><B kind="warn">خوانده‌نشده: {faNum(d.notifs?.unread)}</B><B>کل: {faNum(d.notifs?.total)}</B></div>
+          {unavailable('notifications')}
+          <div className="row" style={{ marginBottom: 8 }}><B kind="warn">خوانده‌نشده: {faNum(d.notifs?.unread)}</B><B>کل: {faNum(d.notifs?.total)}</B><span className="spacer" /><button className="btn sm" onClick={() => setRelation('notifications')}>مشاهده همه</button></div>
           {!(d.recent_notifications || []).length && <Empty icon="🔔" text="اعلانی ثبت نشده است" />}
           {(d.recent_notifications || []).map(x => <div key={x.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
             <div className="row"><b>{x.title || x.type || 'اعلان'}</b><span className="spacer" />
@@ -503,6 +518,7 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'roles' && (
         <>
+          {unavailable('roles') || unavailable('permissions')}
           {!(d.roles || []).length && <Empty icon="🛡" text="نقش مدیریتی ندارد" />}
           {(d.roles || []).map(r => <div key={r.key} className="panel panel-pad" style={{ marginBottom: 6 }}>
             <div className="row"><b>{r.label || r.key}</b><span className="code">{r.key}</span><span className="spacer" />
@@ -512,19 +528,21 @@ function UserDrawer({ row, go, onClose }) {
             {d.perms.map(p => <B key={p} kind="acc">{p}</B>)}</div>}
         </>
       )}
-      {d && tab === 'sub' && (
-        d.subscription ? (
+      {d && tab === 'sub' && (<>
+        {unavailable('subscription')}
+        {d.subscription ? (
           <dl className="kv">
             <dt>وضعیت</dt><dd>{d.subscription.status === 'active' ? '✅ فعال' : d.subscription.status || '—'}</dd>
             <dt>پلن</dt><dd>{d.subscription.plan || '—'}</dd>
             <dt>پایان</dt><dd>{d.subscription.end_date || '—'}</dd>
             <dt>روزهای باقی</dt><dd>{d.subscription.days_left ?? '—'}</dd>
           </dl>
-        ) : <div className="center-state">اشتراک فعالی ندارد</div>
-      )}
+        ) : <div className="center-state">اشتراک فعالی ندارد</div>}
+      </>)}
       {d && tab === 'tickets' && (
         <>
-          <div className="muted" style={{ marginBottom: 8 }}>مجموع: {Number(d.counts.tickets || 0).toLocaleString('fa')} تیکت</div>
+          {unavailable('tickets')}
+          <div className="row" style={{ marginBottom: 8 }}><span className="muted">مجموع: {Number(d.counts.tickets || 0).toLocaleString('fa')} تیکت</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('tickets')}>مشاهده همه</button></div>
           {(d.recent_tickets || []).length === 0 && <div className="center-state">تیکتی نیست</div>}
           {(d.recent_tickets || []).map(t => (
             <div key={t.id} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)', cursor: 'pointer' }}
@@ -540,6 +558,7 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'activity' && (
         <>
+          {unavailable('answers')}
           {!(d.activity || []).length && <Empty icon="🕓" text="فعالیتی ثبت نشده است" />}
           {(d.activity || []).map(event => <button key={event.id} className="panel panel-pad row" style={{ width: '100%', marginBottom: 6, color: 'inherit', textAlign: 'right' }}
             onClick={() => event.go && go(event.go)}>
@@ -551,6 +570,7 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'audit' && (
         <>
+          {unavailable('audit')}<div className="row"><span className="spacer" /><button className="btn sm" onClick={() => setRelation('audit')}>مشاهده همه</button></div>
           {(d.recent_audit || []).length === 0 && <div className="center-state">رویدادی ثبت نشده</div>}
           {(d.recent_audit || []).map((l, i) => (
             <div key={i} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
@@ -564,15 +584,27 @@ function UserDrawer({ row, go, onClose }) {
           ))}
         </>
       )}
+      {relation && <UserRelationModal uid={row.id} section={relation} onClose={() => setRelation(null)} />}
     </Drawer>
   );
+}
+
+function UserRelationModal({ uid, section, onClose }) {
+  const [page, setPage] = useState(1); const [data, setData] = useState(null); const [err, setErr] = useState(''); const limit = 30;
+  const load = async () => { setData(null); setErr(''); try { setData(await api.userRelations(uid, section, { skip: (page - 1) * limit, limit })); } catch (e) { setErr(errText(e)); } };
+  useEffect(() => { load(); }, [page, section]);
+  return <Modal wide title={`تاریخچه کامل · ${section}`} onClose={onClose}>{err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={6} /> : <>
+    {!data.items?.length ? <Empty text="رکوردی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{data.items.map(x => <div key={x.id} className="panel panel-pad"><div className="row"><b className="text-wrap">{x.title || '—'}</b>{x.status && <B>{x.status}</B>}<span className="spacer" /><span className="muted code">{String(x.at || '').slice(0, 16).replace('T', ' ')}</span></div>{x.detail && <div className="muted text-wrap">{typeof x.detail === 'object' ? JSON.stringify(x.detail) : x.detail}</div>}{x.value !== undefined && <B kind="acc">{String(x.value)}</B>}</div>)}</div>}
+    <div className="row" style={{ justifyContent: 'center', marginTop: 10 }}><button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>قبلی</button><B>{page.toLocaleString('fa')}</B><button className="btn sm" disabled={page * limit >= (data.total || 0)} onClick={() => setPage(p => p + 1)}>بعدی</button></div>
+  </>}</Modal>;
 }
 
 /* ── ⚙️🌊 WA3 — تب اقدامات: DM + ویرایش پروفایل + اکشن‌های مدیریتی ─────
    دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات؛ همه از API /api/web-admin
    با guard سمت سرور و audit رد می‌شوند (سینک کامل با ربات/مینی‌اپ). */
-function UserActions({ row, d, onChanged, onClose }) {
+function UserActions({ row, d, me, onChanged, onClose }) {
   const u = d?.user || row;
+  const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [intakes, setIntakes] = useState([]);
@@ -624,7 +656,7 @@ function UserActions({ row, d, onChanged, onClose }) {
   return (
     <div className="grid" style={{ gap: 12 }}>
       {/* 📨 پیام مستقیم — همان ارسال پیام پنل ربات (outbox → ربات می‌فرستد) */}
-      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+      {has('users.message') && <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
         <b>📨 ارسال پیام مستقیم (از سمت ربات)</b>
         <textarea className="inp" rows={3} style={{ width: '100%', marginTop: 8, resize: 'vertical' }}
                   placeholder="متن پیام برای کاربر… (حداکثر ۱۵۰۰ کاراکتر)"
@@ -634,10 +666,10 @@ function UserActions({ row, d, onChanged, onClose }) {
           <span className="spacer" />
           <button className="btn primary sm" disabled={busy || !msg.trim()} onClick={sendDM}>ارسال 📨</button>
         </div>
-      </div>
+      </div>}
 
       {/* ✏️ ویرایش پروفایل */}
-      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+      {has('users.manage') && <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
         <b>✏️ ویرایش پروفایل</b>
         <div className="grid g2" style={{ gap: 8, marginTop: 10 }}>
           <label className="fld"><span>نام</span>
@@ -665,28 +697,28 @@ function UserActions({ row, d, onChanged, onClose }) {
           <button className="btn primary sm" disabled={busy} onClick={proposeSave}>بازبینی و ذخیره تغییرات</button>
           <span className="muted">تاریخچه‌ی تغییر نام‌نما در پروفایل کاربر ثبت می‌شود</span>
         </div>
-      </div>
+      </div>}
 
       {/* 🎛 اکشن‌های مدیریتی — همان دکمه‌های ربات */}
       <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
         <b>🎛 اکشن‌های مدیریتی</b>
         <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: 'wrap' }}>
-          {!u.approved && !u.suspended && <>
+          {has('users.manage') && !u.approved && !u.suspended && <>
             <button className="btn ok sm" disabled={busy}
                     onClick={() => ask('approve', `تأیید حساب «${u.name || row.id}»؟ به کاربر اطلاع‌رسانی می‌شود.`)}>✅ تأیید حساب</button>
             <button className="btn danger sm" disabled={busy}
                     onClick={() => ask('reject', `رد و حذف درخواست «${u.name || row.id}»؟`)}>✖️ رد درخواست</button>
           </>}
-          {u.suspended
+          {has('users.suspend') && (u.suspended
             ? <button className="btn ok sm" disabled={busy}
                       onClick={() => ask('unsuspend', `رفع تعلیق «${u.name || row.id}»؟`)}>🔓 رفع تعلیق</button>
             : <button className="btn danger sm" disabled={busy}
-                      onClick={() => ask('suspend', `تعلیق «${u.name || row.id}»؟ به کاربر اطلاع‌رسانی می‌شود.`)}>⏸ تعلیق</button>}
-          <button className="btn danger sm" disabled={busy} onClick={() => { setReason(''); setBlockModal(true); }}>⛔ مسدود</button>
-          <button className="btn sm" disabled={busy}
-                  onClick={() => ask('unblock', `رفع مسدودیت «${u.name || row.id}» از لیست سیاه؟`)}>🕊 رفع مسدودیت</button>
-          <button className="btn danger sm" disabled={busy}
-                  onClick={() => ask('delete', `حذف کامل حساب «${u.name || row.id}»؟ این عمل برگشت‌پذیر نیست.`)}>🗑 حذف حساب</button>
+                      onClick={() => ask('suspend', `تعلیق «${u.name || row.id}»؟ به کاربر اطلاع‌رسانی می‌شود.`)}>⏸ تعلیق</button>)}
+          {has('users.delete') && <button className="btn danger sm" disabled={busy} onClick={() => { setReason(''); setBlockModal(true); }}>⛔ مسدود</button>}
+          {has('users.delete') && <button className="btn sm" disabled={busy}
+                  onClick={() => ask('unblock', `رفع مسدودیت «${u.name || row.id}» از لیست سیاه؟`)}>🕊 رفع مسدودیت</button>}
+          {has('users.delete') && <button className="btn danger sm" disabled={busy}
+                  onClick={() => ask('delete', `حذف کامل حساب «${u.name || row.id}»؟ این عمل برگشت‌پذیر نیست.`)}>🗑 حذف حساب</button>}
         </div>
       </div>
 
@@ -722,7 +754,8 @@ function UserActions({ row, d, onChanged, onClose }) {
 }
 
 /* ── ⛔🌊 WA3 — لیست سیاه + رفع مسدودیت ─────────────────────── */
-function BlacklistModal({ onClose }) {
+function BlacklistModal({ me, onClose }) {
+  const canDelete = !!me?.is_owner || (me?.perms || []).includes('users.delete');
   const [items, setItems] = useState(null);
   const [err, setErr] = useState('');
   const load = async () => {
@@ -748,7 +781,7 @@ function BlacklistModal({ onClose }) {
                 <span className="code muted">{b.id}</span>
                 <div className="muted">{b.blocked_by_name ? `توسط ${b.blocked_by_name}` : ''} {b.blocked_at || ''}</div>
               </div>
-              <button className="btn sm ok" onClick={() => unblock(b.id)}>🕊 رفع مسدودیت</button>
+              {canDelete && <button className="btn sm ok" onClick={() => unblock(b.id)}>🕊 رفع مسدودیت</button>}
             </div>
           ))}
         </div>

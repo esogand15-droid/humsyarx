@@ -73,6 +73,7 @@ function BsTab({ initial = {} }) {
   const [addLes, setAddLes] = useState(null);    // term برای درس جدید
   const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
   const [studentPreview, setStudentPreview] = useState(false);
+  const [rootMove, setRootMove] = useState(null); // {kind,id,label,from}
   const firstLoad = useRef(true);
   const preserveSelection = useRef(false);
 
@@ -342,6 +343,7 @@ function BsTab({ initial = {} }) {
                 <div className="row">
                   {selLesson.readonly ? <B>🔒 این درس سراسری برای scope شما فقط‌خواندنی است</B> : <>
                     <button className="btn" onClick={() => setEditLes(selLesson)}>✏️ ویرایش درس</button>
+                    {scopeKind === 'global' && <button className="btn" onClick={() => setRootMove({ kind: 'lesson', id: selLesson.id, label: selLesson.name, from: selLesson.intake || '' })}>📦 انتقال سطل ورودی</button>}
                     <button className="btn primary" style={{ flex: 1 }} onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
                     <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
                   </>}
@@ -381,6 +383,7 @@ function BsTab({ initial = {} }) {
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
       {studentPreview && <StudentPreview onClose={() => setStudentPreview(false)} />}
+      {rootMove && <RootMoveModal item={rootMove} intakes={intakes} onClose={(changed) => { setRootMove(null); if (changed) load(); }} />}
     </>
   );
 }
@@ -635,6 +638,23 @@ function MoveItemsButton({ sel, sessionId, onDone }) {
       )}
     </>
   );
+}
+
+function RootMoveModal({ item, intakes, onClose }) {
+  const [to, setTo] = useState(item.from || ''); const [busy, setBusy] = useState(false);
+  const run = async () => { setBusy(true); try {
+    if (item.kind === 'lesson') await api.caMoveLessonRoot(item.id, to);
+    else if (item.kind === 'subject') await api.refSubjectMoveRoot(item.id, to);
+    else await api.caMoveQbankRoot(item.id, to);
+    toast('انتقال root با موفقیت انجام شد ✅'); onClose(true);
+  } catch (e) { let conflict = ''; if (e.status === 409) { try { const d = JSON.parse(e.technical || '{}'); conflict = `${d.reason || 'تعارض مقصد'}${d.existing_id ? ` · Existing: ${d.existing_id}` : ''}`; } catch {} } toast(conflict || errText(e), 'err'); setBusy(false); } };
+  const fromLabel = item.from ? (intakes.find(x => (x.code || x) === item.from)?.label || item.from) : 'سراسری';
+  const toLabel = to ? (intakes.find(x => (x.code || x) === to)?.label || to) : 'سراسری';
+  return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}>
+    <div className="panel panel-pad"><div className="row"><B>مبدأ: {fromLabel}</B><span>←</span><B kind="warn">مقصد: {toLabel}</B></div><div className="muted">این عملیات مالکیت root object را تغییر می‌دهد؛ overwrite ضمنی انجام نمی‌شود و تعارض همنام با 409 متوقف خواهد شد.</div></div>
+    <select className="inp" style={{ width: '100%', marginTop: 10 }} value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select>
+    <div className="row" style={{ marginTop: 12 }}><button className="btn danger" disabled={busy || to === item.from} onClick={run}>{busy ? '⏳' : 'تأیید انتقال'}</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+  </Modal>;
 }
 
 /* ── ✏️ ویرایش درس/جلسه ───────────────────────────────── */

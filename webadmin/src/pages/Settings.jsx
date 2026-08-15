@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, FilterBar, PageHeader, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
+import { Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
 
 const faN = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -20,6 +20,8 @@ export default function Settings() {
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [edited, setEdited] = useState({});   // key → value محلی
+  const [notifApply, setNotifApply] = useState({}); // key → new_only | all
+  const [pendingNotif, setPendingNotif] = useState(null);
 
   const load = async () => {
     setErr('');
@@ -37,14 +39,23 @@ export default function Settings() {
   const cur = useMemo(() => (cats || []).find(c => c.key === cat), [cats, cat]);
   const valueOf = (it) => (it.key in edited ? edited[it.key] : it.value);
 
-  const save = async (it) => {
+  const applySave = async (it, applyExisting = false) => {
     const v = valueOf(it);
     try {
-      await api.patchSetting(it.key, v);
-      toast(`«${it.label}» ذخیره شد ✅`);
+      const r = await api.patchSetting(it.key, v, applyExisting);
+      toast(applyExisting
+        ? `«${it.label}» ذخیره و روی ${faN(r.affected_users)} کاربر فعلی اعمال شد ✅`
+        : `«${it.label}» ذخیره شد ✅`);
       setEdited(x => { const y = { ...x }; delete y[it.key]; return y; });
       load();
     } catch (e) { toast(errText(e), 'err'); }
+  };
+  const save = (it) => {
+    if (it.key.startsWith('notif_default:')) {
+      setPendingNotif({ it, applyExisting: (notifApply[it.key] || 'new_only') === 'all' });
+      return;
+    }
+    applySave(it, false);
   };
 
   if (permErr) return <NoPerm text="تنظیمات سیستم نیازمند مجوز «تنظیمات سیستم» (settings.manage) است" />;
@@ -102,10 +113,21 @@ export default function Settings() {
                   )}
                 </div>
                 <div style={{ minWidth: 240, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-                  {it.type === 'bool' && (
+                  {it.type === 'bool' && (<>
                     <Switch on={!!valueOf(it)}
                             onChange={v => { setEdited(x => ({ ...x, [it.key]: v })); }} />
-                  )}
+                    {it.key.startsWith('notif_default:') && (
+                      <div className="grid" style={{ gap: 4, width: '100%' }}>
+                        <label className="row"><input type="radio" name={`scope-${it.key}`}
+                          checked={(notifApply[it.key] || 'new_only') === 'new_only'}
+                          onChange={() => setNotifApply(x => ({ ...x, [it.key]: 'new_only' }))} /> فقط کاربران جدید</label>
+                        <label className="row"><input type="radio" name={`scope-${it.key}`}
+                          checked={(notifApply[it.key] || 'new_only') === 'all'}
+                          onChange={() => setNotifApply(x => ({ ...x, [it.key]: 'all' }))} />
+                          کاربران جدید + {faN(it.existing_users)} کاربر فعلی</label>
+                      </div>
+                    )}
+                  </>)}
                   {it.type === 'text' && (
                     <textarea className="inp" rows={2} style={{ width: '100%' }}
                               value={valueOf(it) ?? ''}
@@ -139,10 +161,52 @@ export default function Settings() {
       </div>
       </div>
 
+      {pendingNotif && (
+        <Confirm danger={pendingNotif.applyExisting}
+          text={pendingNotif.applyExisting
+            ? `این تغییر روی ${faN(pendingNotif.it.existing_users)} کاربر فعلی نیز اعمال می‌شود. مقدار قبلی: ${pendingNotif.it.value ? 'فعال' : 'غیرفعال'}؛ مقدار جدید: ${valueOf(pendingNotif.it) ? 'فعال' : 'غیرفعال'}. ادامه می‌دهید؟`
+            : `این تغییر فقط default کاربران جدید را عوض می‌کند و کاربران فعلی دست‌نخورده می‌مانند. ادامه می‌دهید؟`}
+          onYes={async () => { const p = pendingNotif; setPendingNotif(null); await applySave(p.it, p.applyExisting); }}
+          onNo={() => setPendingNotif(null)} />
+      )}
+
+      <IdentityPolicyPanel />
       {/* 🔒🌊 موج ChannelLock — قفل اجباری عضویت کانال (سطح مالک؛ معادل admin:channel_lock ربات) */}
       <ChannelLockPanel />
     </>
   );
+}
+
+function IdentityPolicyPanel() {
+  const [base, setBase] = useState(null); const [f, setF] = useState(null);
+  const [err, setErr] = useState(''); const [confirm, setConfirm] = useState(false);
+  const load = async () => { try { const r = await api.identityPolicy(); setBase(r.policy); setF(r.policy); setErr(''); } catch (e) { if (e.status !== 403) setErr(errText(e)); } };
+  useEffect(() => { load(); }, []);
+  if (!f && !err) return null; // 403: panel owner/permission-aware hidden
+  if (err) return <div className="panel panel-pad" style={{ marginTop: 16 }}><ErrorState error={err} onRetry={load} /></div>;
+  const words = key => (f[key] || []).join('\n');
+  const setWords = (key, value) => setF(x => ({ ...x, [key]: value.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }));
+  const changed = JSON.stringify(base) !== JSON.stringify(f);
+  const valid = Number(f.min_length) <= Number(f.max_length);
+  const save = async () => { setConfirm(false); try { await api.identityPolicyUpdate(f); toast('سیاست نام‌نما ذخیره شد ✅'); load(); } catch (e) { toast(errText(e), 'err'); } };
+  return <section className="panel panel-pad" style={{ marginTop: 16 }}>
+    <div className="row"><div><b>🏷 سیاست نام‌نما و هویت</b><div className="muted">همان validator مشترک Bot، Mini App و Web؛ بدون rule موازی در مرورگر</div></div><span className="spacer" />
+      <button className="btn primary sm" disabled={!changed || !valid} onClick={() => setConfirm(true)}>بازبینی و ذخیره</button></div>
+    {!valid && <div className="muted" style={{ color: 'var(--bad)', marginTop: 8 }}>حداقل طول نمی‌تواند بیشتر از حداکثر باشد.</div>}
+    <div className="form-grid" style={{ marginTop: 12 }}>
+      <label className="fld"><span>حداقل طول</span><input className="inp" type="number" min="1" max="40" value={f.min_length} onChange={e => setF({ ...f, min_length: +e.target.value })} /></label>
+      <label className="fld"><span>حداکثر طول</span><input className="inp" type="number" min="2" max="80" value={f.max_length} onChange={e => setF({ ...f, max_length: +e.target.value })} /></label>
+      <label className="fld"><span>Cooldown تغییر (روز)</span><input className="inp" type="number" min="0" max="365" value={f.cooldown_days} onChange={e => setF({ ...f, cooldown_days: +e.target.value })} /></label>
+      <label className="fld"><span>اجازه ایموجی</span><Switch on={!!f.allow_emoji} onChange={v => setF({ ...f, allow_emoji: v })} /></label>
+      <label className="fld"><span>اجازه فاصله</span><Switch on={!!f.allow_spaces} onChange={v => setF({ ...f, allow_spaces: v })} /></label>
+      <label className="fld"><span>Blacklist — هر خط یک واژه</span><textarea className="inp" rows={4} value={words('blacklist')} onChange={e => setWords('blacklist', e.target.value)} /></label>
+      <label className="fld"><span>Reserved words — هر خط یک واژه</span><textarea className="inp" rows={4} value={words('reserved_words')} onChange={e => setWords('reserved_words', e.target.value)} /></label>
+    </div>
+    <div className="muted" style={{ marginTop: 8 }}>پیش‌نمایش قاعده: طول مجاز {faN(f.min_length)} تا {faN(f.max_length)}؛ ایموجی {f.allow_emoji ? 'مجاز' : 'غیرمجاز'}؛ فاصله {f.allow_spaces ? 'مجاز' : 'غیرمجاز'}.</div>
+    {confirm && <Confirm danger text="تغییر policy بلافاصله روی اعتبارسنجی نام‌نما در همه کلاینت‌ها اثر می‌گذارد. ادامه می‌دهید؟" onNo={() => setConfirm(false)} onYes={save}>
+      <DiffViewer before={base || {}} after={f} />
+    </Confirm>}
+  </section>;
 }
 
 function ChannelLockPanel() {

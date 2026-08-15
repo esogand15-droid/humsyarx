@@ -39,6 +39,7 @@ export function RefsTab() {
   const [addModal, setAddModal] = useState(null);   // {kind:'subject'|'book'|'file'}
   const [editModal, setEditModal] = useState(null); // {kind,item}
   const [confirm, setConfirm] = useState(null);     // {text, run}
+  const [rootMove, setRootMove] = useState(null);
   useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
   const loadSubjects = async () => {
@@ -93,6 +94,7 @@ export function RefsTab() {
                 <button className="btn sm" disabled={i === 0} title="بالا" aria-label="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'up'), loadSubjects); }}>↑</button>
                 <button className="btn sm" disabled={i === subjects.length - 1} title="پایین" aria-label="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'down'), loadSubjects); }}>↓</button>
                 <button className="btn sm" title="ویرایش نام" aria-label="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'subject', item: s }); }}>✏️</button>
+                {intakeMeta.scope_kind === 'global' && <button className="btn sm" title="انتقال root به ورودی دیگر" onClick={e => { e.stopPropagation(); setRootMove({ kind: 'subject', id: s.id, label: s.name, from: s.intake || '' }); }}>📦</button>}
                 <button className="btn sm danger" aria-label={`حذف موضوع ${s.name}`} onClick={e => { e.stopPropagation(); setConfirm({
                   text: `حذف موضوع «${s.name}» با همه‌ی کتاب‌ها و فایل‌هایش؟`,
                   run: async () => { await api.refSubjectDel(s.id); toast('حذف شد'); setSub(null); loadSubjects(); },
@@ -185,8 +187,19 @@ export function RefsTab() {
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
+      {rootMove && <RootMoveControl item={rootMove} intakes={intakes} onClose={(ok) => { setRootMove(null); if (ok) { setSub(null); loadSubjects(); } }} />}
     </>
   );
+}
+
+function RootMoveControl({ item, intakes, onClose }) {
+  const [to, setTo] = useState(item.from || ''); const [busy, setBusy] = useState(false);
+  const run = async () => { setBusy(true); try {
+    if (item.kind === 'subject') await api.refSubjectMoveRoot(item.id, to);
+    else await api.caMoveQbankRoot(item.id, to);
+    toast('انتقال root انجام شد ✅'); onClose(true);
+  } catch (e) { let conflict = ''; if (e.status === 409) { try { const d = JSON.parse(e.technical || '{}'); conflict = `${d.reason || 'تعارض مقصد'}${d.existing_id ? ` · Existing: ${d.existing_id}` : ''}`; } catch {} } toast(conflict || errText(e), 'err'); setBusy(false); } };
+  return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}><div className="muted">مبدأ: {item.from || 'سراسری'}؛ مقصد را انتخاب کنید. overwrite ضمنی انجام نمی‌شود.</div><select className="inp" style={{ width: '100%', marginTop: 10 }} value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select><div className="row" style={{ marginTop: 12 }}><button className="btn danger" disabled={busy || to === item.from} onClick={run}>تأیید انتقال</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div></Modal>;
 }
 
 function RefNameModal({ kind, item, onClose }) {
@@ -449,6 +462,7 @@ export function QbankTab() {
   const [permErr, setPermErr] = useState(false);
   const [addModal, setAddModal] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  const [rootMove, setRootMove] = useState(null);
   useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
   const load = async () => {
@@ -486,11 +500,12 @@ export function QbankTab() {
               <B kind="acc">{FT[f.file_type] || f.file_type}</B>
               <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
               <span className="muted">{f.upload_date}</span>
-              {!f.readonly && (
+              {!f.readonly && (<>
+                {intakeMeta.scope_kind === 'global' && <button className="btn sm" title="انتقال root فایل" onClick={() => setRootMove({ kind: 'qbank', id: f.id, label: f.description || `${f.lesson} / ${f.topic}`, from: f.intake || '' })}>📦</button>}
                 <button className="btn sm danger" aria-label={`حذف فایل ${f.description || f.topic}`} onClick={() => setConfirm({
                   text: `حذف فایل «${f.description || f.topic}»؟`,
                   run: async () => { await api.caQbankDel(f.id); toast('حذف شد'); load(); },
-                })}>🗑</button>)}
+                })}>🗑</button></>)}
             </div>
           ))}
         </div>
@@ -500,6 +515,7 @@ export function QbankTab() {
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
+      {rootMove && <RootMoveControl item={rootMove} intakes={intakes} onClose={(ok) => { setRootMove(null); if (ok) load(); }} />}
     </>
   );
 }

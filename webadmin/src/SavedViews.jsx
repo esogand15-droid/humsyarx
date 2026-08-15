@@ -3,7 +3,7 @@ import { api, errText } from './api.js';
 import { B, Modal, Confirm, toast } from './ui.jsx';
 
 /** Generic per-admin saved views. The backend owns identity/scope; pages own filters. */
-export default function SavedViews({ scope, filters, columns = [], sort = {}, onApply, label = 'نماهای ذخیره‌شده' }) {
+export default function SavedViews({ scope, filters, columns = [], sort = {}, density = '', onApply, label = 'نماهای ذخیره‌شده' }) {
   const [items, setItems] = useState(null);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
@@ -21,11 +21,11 @@ export default function SavedViews({ scope, filters, columns = [], sort = {}, on
     try {
       if (editing) {
         const body = { name: name.trim(), shared };
-        if (replaceState) Object.assign(body, { filters, columns, sort });
+        if (replaceState) Object.assign(body, { filters, columns, sort, density });
         await api.updateFilter(editing.id, body);
         toast('نمای ذخیره‌شده ویرایش شد');
       } else {
-        await api.saveFilter({ name: name.trim(), scope, filters, columns, sort, shared });
+        await api.saveFilter({ name: name.trim(), scope, filters, columns, sort, density, shared });
         toast(shared ? 'نمای اشتراکی ذخیره شد' : 'نمای شخصی ذخیره شد');
       }
       setName(''); setShared(false); setEditing(null); setReplaceState(false); setOpen(false); load();
@@ -38,8 +38,8 @@ export default function SavedViews({ scope, filters, columns = [], sort = {}, on
   return <>
     <div className="row saved-views" style={{ marginBottom: 10, gap: 6 }}>
       <span className="muted">⏱ {label}:</span>
-      {(items || []).map(item => <span className="chip" key={item.id} title={item.shared ? `اشتراکی · سازنده: ${item.owner_name || item.owner}` : `شخصی · به‌روزرسانی: ${item.updated_at || '—'}`}>
-        <button type="button" className="chip-link" onClick={() => onApply(item.filters || {}, item)}>{item.shared ? '👥 ' : '👤 '}{item.name}</button>
+      {(items || []).map(item => <span className="chip" key={item.id} title={`${item.shared ? `اشتراکی · سازنده: ${item.owner_name || item.owner}` : 'شخصی'} · به‌روزرسانی: ${item.updated_at || '—'} · آخرین استفاده: ${item.last_opened_at || '—'}`}>
+        <button type="button" className="chip-link" onClick={() => { api.touchFilter(item.id).catch(() => {}); onApply(item.filters || {}, item); }}>{item.shared ? '👥 ' : '👤 '}{item.name}</button>
         {item.editable !== false && <button className="chip-x" aria-label={`ویرایش نمای ${item.name}`} onClick={() => {
           setEditing(item); setName(item.name); setShared(!!item.shared); setReplaceState(false); setOpen(true);
         }}>✎</button>}
