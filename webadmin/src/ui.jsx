@@ -366,8 +366,10 @@ export function Timeline({ items = [], empty = 'رویدادی ثبت نشده' 
   if (!items.length) return <Empty icon="🕓" text={empty} />;
   return <div className="timeline">{items.map((it, i) => <div className="timeline-item" key={it.id || i}>
     <div className="timeline-rail"><span className="timeline-dot" /></div>
-    <div><div>{it.title || it.action || 'رویداد'}</div>{it.description && <div className="muted">{it.description}</div>}
-      <div className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</div></div>
+    {it.onClick ? <button type="button" className="timeline-content" onClick={it.onClick}><span>{it.title || it.action || 'رویداد'}</span>{it.description && <span className="muted">{it.description}</span>}
+      <span className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</span></button>
+      : <div><div>{it.title || it.action || 'رویداد'}</div>{it.description && <div className="muted">{it.description}</div>}
+        <div className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</div></div>}
   </div>)}</div>;
 }
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Stat, B, DiffViewer, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DETAIL_LABELS = {
@@ -26,6 +26,7 @@ export default function System({ me }) {
   const [bs, setBs] = useState(null);
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
+  const [observability, setObservability] = useState(null);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null); // section در انتظار تأیید
   const [busySec, setBusySec] = useState('');
@@ -41,15 +42,17 @@ export default function System({ me }) {
   const canPrestige = has('prestige.manage');
   const canForce = has('notifications.manage');
   const canLogTest = has('settings.manage') || has('system.manage');
+  const canObserve = has('system.manage');
 
   const load = async () => {
     setErr('');
     try {
-      const [b, s, j] = await Promise.all([
+      const [b, s, j, o] = await Promise.all([
         api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
         api.systemJobs().catch(() => ({ jobs: [] })),
+        canObserve ? api.systemObservability().catch(() => null) : Promise.resolve(null),
       ]);
-      setBs(b); setSt(s); setJobs(j.jobs || []);
+      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -159,6 +162,18 @@ export default function System({ me }) {
             {job.last_run && <div className="muted" style={{ marginTop: 7 }}>آخرین اجرا: <span className="code">{String(job.last_run).slice(0, 16).replace('T', ' ')}</span></div>}
           </div>)}
         </div>
+      </div>}
+
+      {observability && <div className="panel panel-pad" style={{ marginTop: 14 }}>
+        <div className="row"><div><b>📡 Observability پنل وب</b><div className="muted">متریک persisted و TTLدار از درخواست‌های واقعی ۲۴ ساعت اخیر</div></div><span className="spacer" /><B>{fa(observability.total)} درخواست</B><B kind={observability.errors ? 'bad' : 'ok'}>{fa(observability.errors)} خطا</B><B kind="acc">نرخ خطا: {observability.error_rate == null ? 'داده موجود نیست' : `${fa(observability.error_rate)}٪`}</B></div>
+        <div style={{ marginTop: 10 }}><DataTable columns={[
+          { k: 'route', label: 'Route', render: r => <span className="code">{r.route}</span> },
+          { k: 'requests', label: 'درخواست', render: r => fa(r.requests) },
+          { k: 'errors', label: 'خطا', render: r => <B kind={r.errors ? 'bad' : 'ok'}>{fa(r.errors)}</B> },
+          { k: 'avg_ms', label: 'میانگین ms', render: r => fa(r.avg_ms) },
+          { k: 'max_ms', label: 'بیشینه ms', render: r => fa(r.max_ms) },
+        ]} rows={observability.routes || []} rowKey="route" colToggle /></div>
+        {!!observability.recent_errors?.length && <details style={{ marginTop: 10 }}><summary>خطاهای اخیر و Request ID</summary><div className="grid">{observability.recent_errors.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
       </div>}
 
       {/* ── ⏰ بکاپ خودکار روزانه (داده واقعی settings؛ PATCH دارای audit) ── */}

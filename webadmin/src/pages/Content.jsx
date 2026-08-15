@@ -72,6 +72,7 @@ function BsTab({ initial = {} }) {
   const [quick, setQuick] = useState(false);
   const [addLes, setAddLes] = useState(null);    // term برای درس جدید
   const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
+  const [studentPreview, setStudentPreview] = useState(false);
   const firstLoad = useRef(true);
   const preserveSelection = useRef(false);
 
@@ -139,14 +140,16 @@ function BsTab({ initial = {} }) {
   const bulk = async (body) => act(() => api.sessionsBulk(body).then(r => toast(`${fa(r.done)} مورد انجام شد`)));
   const toggleSel = (id) => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id]);
 
-  const delLesson = (l) => setConfirm({
-    text: `حذف درس «${l.name}» با همه‌ی جلسات و فایل‌هایش؟`,
-    run: () => act(() => api.caDelLesson(l.id), 'درس حذف شد'),
-  });
-  const delSession = (s) => setConfirm({
-    text: `حذف جلسه ${s.number} «${s.topic}» و فایل‌هایش؟`,
-    run: async () => { await act(() => api.caDelSession(s.id), 'جلسه حذف شد'); setSesId(null); },
-  });
+  const delLesson = async (l) => {
+    let impact = null; try { impact = await api.contentImpact('lesson', l.id); } catch {}
+    setConfirm({ text: `حذف درس «${l.name}» با همه‌ی جلسات و فایل‌هایش؟${impact ? ` اثر بالقوه: ${fa(impact.affected_users)} کاربر، ${fa(impact.affected_sessions)} جلسه و ${fa(impact.affected_files)} فایل.` : ''}`,
+      run: () => act(() => api.caDelLesson(l.id), 'درس حذف شد') });
+  };
+  const delSession = async (s) => {
+    let impact = null; try { impact = await api.contentImpact('session', s.id); } catch {}
+    setConfirm({ text: `حذف جلسه ${s.number} «${s.topic}» و فایل‌هایش؟${impact ? ` اثر بالقوه: ${fa(impact.affected_users)} کاربر و ${fa(impact.affected_files)} فایل.` : ''}`,
+      run: async () => { await act(() => api.caDelSession(s.id), 'جلسه حذف شد'); setSesId(null); } });
+  };
 
   if (permErr) return <NoPerm text="مدیریت محتوا فقط برای مدیران محتوا (سراسری/ورودی) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -157,7 +160,7 @@ function BsTab({ initial = {} }) {
     <>
       <PageHeader title="مرکز فرماندهی محتوا" description="درس‌ها ← جلسات ← بازرس فایل · نمای مؤثر سراسری و Override ورودی"
         actions={<><B>{fa(totals.lessons)} درس</B><B kind="acc">{fa(totals.sessions)} جلسه</B>
-          <B kind="ok">{fa(totals.files)} فایل</B><button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button></>} />
+          <B kind="ok">{fa(totals.files)} فایل</B><button className="btn" onClick={() => setStudentPreview(true)}>👁 مشاهده به‌عنوان دانشجو</button><button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button></>} />
       <SavedViews scope="content" filters={{ intake, q, lesson: lesId || '', session: sesId || '' }} onApply={f => {
         preserveSelection.current = (f.intake || '') !== intake; setIntake(f.intake || ''); setQ(f.q || ''); setLesId(f.lesson || null); setSesId(f.session || null);
       }} label="نماهای محتوایی" />
@@ -377,6 +380,7 @@ function BsTab({ initial = {} }) {
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
+      {studentPreview && <StudentPreview onClose={() => setStudentPreview(false)} />}
     </>
   );
 }
@@ -392,6 +396,7 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
       <div className="ct3-kv"><span className="muted">وضعیت</span>
         <ScopeBadge scope={session.kind} label={session.kind === 'global' ? 'سراسری' : (session.intake_label || session.intake)} />
       </div>
+      <div className="ct3-kv"><span className="muted">مالکیت و ویرایش</span><span>{session.kind === 'global' ? 'مالک سراسری محتوا' : `ورودی ${session.intake_label || session.intake}`} · {session.readonly ? 'فقط مشاهده' : 'قابل ویرایش در scope فعلی'}</span></div>
       <div className="ct3-acts">
         {session.readonly && <B>🔒 فقط‌خواندنی</B>}
         {session.kind === 'global' && intake &&
@@ -405,10 +410,48 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
           <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
         </>}
       </div>
+      <ImpactPanel targetType="session" targetId={session.id} />
       <ContentHistory targetType="session" targetId={session.id} />
       <SessionFiles session={session} onTreeChanged={onTreeChanged} />
     </>
   );
+}
+
+function ImpactPanel({ targetType, targetId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => { let active = true; setData(null); api.contentImpact(targetType, targetId).then(r => active && setData(r)).catch(() => active && setData(false)); return () => { active = false; }; }, [targetType, targetId]);
+  if (data === false) return null;
+  return <div className="surface-inset" style={{ padding: 10 }}>
+    <div className="muted">🎯 تحلیل اثر واقعی</div>
+    {!data ? <Loading rows={1} variant="tree" /> : <><div className="row" style={{ marginTop: 6 }}>
+      <B kind="acc">{fa(data.affected_users)} کاربر بالقوه</B><B>{fa(data.affected_sessions)} جلسه</B><B>{fa(data.affected_files)} فایل</B>
+      <ScopeBadge scope={data.intake ? 'exclusive' : 'global'} label={data.intake || 'سراسری'} />
+    </div><div className="muted" style={{ marginTop: 5 }}>{data.explanation}</div></>}
+  </div>;
+}
+
+function StudentPreview({ onClose }) {
+  const [q, setQ] = useState(''); const [hits, setHits] = useState(null); const [student, setStudent] = useState(null);
+  const [root, setRoot] = useState(null); const [lessons, setLessons] = useState([]); const [sessions, setSessions] = useState([]); const [files, setFiles] = useState([]);
+  const [term, setTerm] = useState(''); const [lesson, setLesson] = useState(''); const [session, setSession] = useState(''); const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const search = async () => { if (q.trim().length < 2) return; setBusy(true); setErr(''); try { const r = await api.studentPreviewStudents(q.trim()); setHits(r.students || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
+  const choose = async user => { setBusy(true); setErr(''); try { const r = await api.studentPreview(user.id); setStudent(user); setRoot(r); setHits(null); } catch (e) { setErr(errText(e)); } setBusy(false); };
+  const chooseTerm = async value => { setTerm(value); setLesson(''); setSession(''); setSessions([]); setFiles([]); setBusy(true); try { setLessons((await api.studentPreviewLessons(student.id, value)).lessons || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
+  const chooseLesson = async value => { setLesson(value); setSession(''); setFiles([]); setBusy(true); try { setSessions((await api.studentPreviewSessions(student.id, value)).sessions || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
+  const chooseSession = async value => { setSession(value); setBusy(true); try { setFiles((await api.studentPreviewFiles(student.id, value)).files || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
+  return <Modal wide title="👁 مشاهده محتوا به‌عنوان دانشجو" onClose={onClose}>
+    <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><B kind="acc">Resolver مشترک Mini App</B><span className="muted" style={{ marginInlineStart: 8 }}>این نما مستقیماً همان توابع terms/lessons/sessions/files دانشجو را اجرا می‌کند.</span></div>
+    {!student ? <><div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="نام، شماره دانشجویی، یوزرنیم یا Telegram ID…" /><button className="btn" disabled={busy} onClick={search}>جست‌وجو</button></div>
+      <div className="grid" style={{ gap: 6, marginTop: 8 }}>{(hits || []).map(user => <button key={user.id} className="pick" onClick={() => choose(user)}><b>{user.display_name || user.name}</b><span className="muted">{user.student_id || `#${user.id}`} · {user.intake || 'بدون ورودی'}</span></button>)}</div></> : <>
+      <div className="row" style={{ marginTop: 10 }}><B kind="purple">{root?.student?.name}</B><B>{root?.student?.intake || 'بدون ورودی'}</B><B>گروه {root?.student?.group || '—'}</B><button className="btn sm" onClick={() => { setStudent(null); setRoot(null); }}>تغییر دانشجو</button></div>
+      <div className="student-preview-grid">
+        <div><b>ترم‌ها</b>{(root?.terms || []).map(item => <button key={item.name} className={`pick ${term === item.name ? 'on' : ''}`} onClick={() => chooseTerm(item.name)}>{item.name}<B>{fa(item.lesson_count)}</B></button>)}</div>
+        <div><b>درس‌ها</b>{lessons.map(item => <button key={item._id} className={`pick ${lesson === item._id ? 'on' : ''}`} onClick={() => chooseLesson(item._id)}>{item.name}<span className="muted">{item.teacher}</span></button>)}</div>
+        <div><b>جلسات</b>{sessions.map(item => <button key={item._id} className={`pick ${session === item._id ? 'on' : ''}`} onClick={() => chooseSession(item._id)}>جلسه {fa(item.number)} · {item.topic}<B>{fa(item.file_count)}</B></button>)}</div>
+        <div><b>فایل‌های قابل مشاهده</b>{files.map(item => <div className="panel panel-pad" key={item.id}><b>{item.name}</b><div className="muted">{item.type} · {fa(item.downloads)} دریافت</div></div>)}</div>
+      </div></>}
+    {busy && <Loading rows={2} />}{err && <ErrorState error={err} onRetry={() => setErr('')} />}
+  </Modal>;
 }
 
 function ContentHistory({ targetType, targetId }) {

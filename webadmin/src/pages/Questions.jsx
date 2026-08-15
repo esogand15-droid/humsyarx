@@ -48,6 +48,7 @@ export default function Questions({ route = '', go }) {
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [confirm, setConfirm] = useState(null);
   const [bulkResult, setBulkResult] = useState(null);
+  const [metadataBulk, setMetadataBulk] = useState(null);
   const [detail, setDetail] = useState(null);        // ردیف باز در کشو
   const wantsCreate = new URLSearchParams(route.split('?')[1] || '').get('create') === '1';
   const [createOpen, setCreateOpen] = useState(wantsCreate);
@@ -58,6 +59,8 @@ export default function Questions({ route = '', go }) {
   const [fdiff, setFdiff] = useState(initial.get('difficulty') || '');
   const [fsrc, setFsrc] = useState(initial.get('source') || '');
   const [author, setAuthor] = useState(initial.get('author') || '');
+  const [dateFrom, setDateFrom] = useState(initial.get('date_from') || '');
+  const [dateTo, setDateTo] = useState(initial.get('date_to') || '');
   const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'created_at');
   const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
   const [page, setPage] = useState(queryNumber(initial, 'page', 1));
@@ -69,7 +72,7 @@ export default function Questions({ route = '', go }) {
     setErr('');
     try {
       const r = await api.questions({
-        status, intake, q, difficulty: fdiff, source: fsrc, author,
+        status, intake, q, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo,
         sort_by: sortBy, sort_dir: sortDir, skip: (page - 1) * LIMIT, limit: LIMIT,
       });
       setRows(r.questions || []); setTotal(Number(r.total || 0));
@@ -83,11 +86,11 @@ export default function Questions({ route = '', go }) {
   }, []);
   useEffect(() => { const t = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [query]);
   useEffect(() => { writeHashQuery('/questions', { status: status !== 'pending' ? status : '', intake, q: query,
-    difficulty: fdiff, source: fsrc, author,
+    difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo,
     sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '',
     page: page > 1 ? page : '', create: createOpen ? 1 : '' });
-  }, [status, intake, query, fdiff, fsrc, author, sortBy, sortDir, page, createOpen]);
-  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, author, sortBy, sortDir, page]);
+  }, [status, intake, query, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page, createOpen]);
+  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
 
   const act = async (qid, kind) => {
     try {
@@ -98,11 +101,11 @@ export default function Questions({ route = '', go }) {
     } catch (e) { toast(errText(e), 'err'); }
   };
 
-  const bulk = async (action, ids = sel) => {
+  const bulk = async (action, ids = sel, patch = null) => {
     if (!ids.length) return;
     try {
-      const r = await api.questionsBulk(action, ids);
-      setBulkResult({ ...r, action });
+      const r = await api.questionsBulk(action, ids, patch);
+      setBulkResult({ ...r, action, patch });
       toast(`${fa(r.done)} موفق · ${fa(r.skipped?.length || 0)} ردشده · ${fa(r.failed?.length || 0)} ناموفق`, r.failed?.length ? 'err' : 'ok');
       setSel([]); load();
     } catch (e) { toast(errText(e), 'err'); }
@@ -145,11 +148,12 @@ export default function Questions({ route = '', go }) {
       <PageHeader title="بازبینی سؤال‌ها" description="بازبینی، ویرایش، تأیید و رد تکی یا گروهی با حفظ محدوده ورودی" actions={<>
         <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
         <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
-        <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV همین فیلترها</button>
+        <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV همین فیلترها</button>
         {status === 'pending' && sel.length > 0 && <>
           <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
           <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
+          <button className="btn sm" onClick={() => setMetadataBulk({ lesson: '', topic: '', difficulty: '' })}>✏️ metadata گروهی</button>
         </>}
       </>} />
 
@@ -172,14 +176,16 @@ export default function Questions({ route = '', go }) {
           <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
         <input className="inp" style={{ width: 150 }} placeholder="طراح یا ID…" value={author} onChange={e => { setAuthor(e.target.value); setPage(1); }} />
+        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} /></label>
+        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} /></label>
         <B kind="acc">{fa(total)} نتیجه</B>
       </FilterBar>
       <div className="muted" style={{ margin: '-4px 0 10px' }}>رد سؤال در domain فعلی به‌معنای حذف پیشنهاد و اطلاع به طراح است؛ آرشیو «ردشده»‌ی مستقلی در پایگاه داده وجود ندارد.</div>
 
-      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc, author, sortBy, sortDir }}
+      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sortBy, sortDir }}
         columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }} onApply={(f, item) => {
         setStatus(f.status || 'pending'); setIntake(f.intake || ''); setQuery(f.q || '');
-        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setAuthor(f.author || '');
+        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setAuthor(f.author || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || '');
         setSortBy(f.sortBy || item.sort?.key || 'created_at'); setSortDir(f.sortDir || item.sort?.dir || 'desc'); setVisibleColumns(item.columns || []); setPage(1);
       }} />
 
@@ -212,7 +218,12 @@ export default function Questions({ route = '', go }) {
         <div className="row"><B kind="ok">موفق: {fa(bulkResult.succeeded?.length || 0)}</B><B>ردشده: {fa(bulkResult.skipped?.length || 0)}</B><B kind="bad">ناموفق: {fa(bulkResult.failed?.length || 0)}</B></div>
         {[...(bulkResult.skipped || []).map(x => ({ ...x, message: x.reason })), ...(bulkResult.failed || []).map(x => ({ ...x, message: x.error }))].slice(0, 30)
           .map((x, i) => <div className="row" key={`${x.id}-${i}`}><span className="code">{x.id}</span><span className="muted">{x.message}</span></div>)}
-        {!!bulkResult.failed?.length && <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.failed.map(x => x.id))}>↻ تلاش مجدد ناموفق‌ها</button>}
+        {!!bulkResult.failed?.length && <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.failed.map(x => x.id), bulkResult.patch)}>↻ تلاش مجدد ناموفق‌ها</button>}
+      </Modal>}
+      {metadataBulk && <Modal title={`✏️ ویرایش metadata برای ${fa(sel.length)} سؤال`} onClose={() => setMetadataBulk(null)}>
+        <div className="muted">فقط فیلدهای پرشده تغییر می‌کنند؛ ویرایش هر سؤال از همان domain validation و audit تکی عبور می‌کند.</div>
+        <div className="grid" style={{ gap: 8, marginTop: 10 }}><input className="inp" placeholder="درس جدید (اختیاری)…" value={metadataBulk.lesson} onChange={e => setMetadataBulk({ ...metadataBulk, lesson: e.target.value })} /><input className="inp" placeholder="مبحث جدید (اختیاری)…" value={metadataBulk.topic} onChange={e => setMetadataBulk({ ...metadataBulk, topic: e.target.value })} /><select className="inp" value={metadataBulk.difficulty} onChange={e => setMetadataBulk({ ...metadataBulk, difficulty: e.target.value })}><option value="">سختی بدون تغییر</option><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select></div>
+        <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!metadataBulk.lesson.trim() && !metadataBulk.topic.trim() && !metadataBulk.difficulty} onClick={async () => { const patch = metadataBulk; setMetadataBulk(null); await bulk('metadata', sel, patch); }}>تأیید و اجرا</button><button className="btn" onClick={() => setMetadataBulk(null)}>انصراف</button></div>
       </Modal>}
 
       {createOpen && <QuestionCreateModal intake={intake} onClose={(ok) => {

@@ -18,10 +18,12 @@ const System = lazy(() => import('./pages/System.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const TransferCenter = lazy(() => import('./pages/TransferCenter.jsx'));
+const Operations = lazy(() => import('./pages/Operations.jsx'));
 
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
     { path: '/dashboard', icon: '📊', label: 'داشبورد' },
+    { path: '/operations', icon: '🎛', label: 'مرکز عملیات' },
   ] },
   { sec: 'افراد', items: [
     { path: '/users', icon: '👥', label: 'کاربران', any: ['users.view', 'users.manage'] },
@@ -60,7 +62,7 @@ const PAGES = {
   '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
   '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
-  '/transfer': TransferCenter,
+  '/transfer': TransferCenter, '/operations': Operations,
 };
 
 const routeBase = route => route.split('?')[0];
@@ -177,18 +179,23 @@ export default function App() {
     if (hasAny('schedules.manage')) list.push({ icon: '📝', label: 'آزمون جدید', hint: 'آموزش', run: () => go('/exams?new=exam') });
     if (hasAny('grades.manage', 'grades.scoped')) list.push({ icon: '📊', label: 'ثبت نمره جدید', hint: 'آموزش', run: () => go('/exams?tab=grades&new=grade') });
     if (hasAny('broadcast.send')) list.push({ icon: '📢', label: 'ارسال همگانی جدید', hint: 'ارتباطات', run: () => go('/notify?new=1') });
+    if (hasAny('users.manage', 'users.suspend', 'users.message')) list.push({ icon: '⚡', label: 'Batch کاربران با فهرست ID', hint: 'افراد', run: () => go('/users?batch=1') });
+    if (hasAny('system.manage')) list.push({ icon: '🧬', label: 'بررسی کیفیت داده', hint: 'عملیات', run: () => go('/operations?tab=quality') });
     list.push({ icon: '🚪', label: 'خروج از حساب', hint: 'logout', run: async () => { try { await api.logout(); } catch {} setMe(null); } });
     return list;
   }, [flatNav, go, hasAny]);
 
   const paletteSearch = useCallback(async q => {
     const r = await api.waSearch(q); const out = [];
-    (r.users || []).forEach(u => out.push({ id: `u-${u.id}`, group: 'کاربران', icon: '👤', label: `${u.name || '—'} · ${u.student_id || u.id}`, hint: u.intake || '', go: '/users' }));
-    (r.content || []).forEach(c => out.push({ id: `c-${c.path || c.title}`, group: 'محتوا', icon: '📚', label: c.title || '—', hint: c.type, go: '/content' }));
-    (r.questions || []).forEach(x => out.push({ id: `q-${x.id}`, group: 'سؤال‌ها', icon: '🧪', label: x.text, hint: `${x.lesson} · ${x.topic}`, go: '/questions' }));
+    (r.users || []).forEach(u => out.push({ id: `u-${u.id}`, group: 'کاربران', icon: '👤', label: `${u.name || '—'} · ${u.student_id || u.id}`, hint: u.intake || '', go: `/users?q=${u.id}` }));
+    (r.content || []).forEach(c => out.push({ id: `c-${c.path || c.title}`, group: 'محتوا', icon: '📚', label: c.title || '—', hint: c.type, go: `/content?q=${encodeURIComponent(c.title || '')}` }));
+    (r.questions || []).forEach(x => out.push({ id: `q-${x.id}`, group: 'سؤال‌ها', icon: '🧪', label: x.text, hint: `${x.lesson} · ${x.topic}`, go: `/questions?q=${x.id}` }));
     (r.exams || []).forEach(x => out.push({ id: `e-${x.id}`, group: 'آزمون‌ها', icon: '📝', label: x.lesson, hint: `${x.date} · گروه ${x.group}`, go: '/exams' }));
-    (r.tickets || []).forEach(t => out.push({ id: `t-${t.id}`, group: 'تیکت‌ها', icon: '🎫', label: `#${t.id} ${t.subject}`, hint: t.status, go: '/tickets' }));
-    (r.payments || []).forEach(p => out.push({ id: `p-${p.id}`, group: 'پرداخت‌ها', icon: '🧾', label: `${p.plan} · #${p.user_id}`, hint: p.status, go: '/subscriptions?tab=payments' }));
+    (r.tickets || []).forEach(t => out.push({ id: `t-${t.id}`, group: 'تیکت‌ها', icon: '🎫', label: `#${t.id} ${t.subject}`, hint: t.status, go: `/tickets?q=${t.id}` }));
+    (r.grades || []).forEach(g => out.push({ id: `g-${g.id}`, group: 'نمرات', icon: '📊', label: `${g.lesson} · ${g.exam_title}`, hint: `${g.score ?? '—'} · #${g.student_id}`, go: `/exams?tab=grades&q=${g.student_id}` }));
+    (r.roles || []).forEach(role => out.push({ id: `role-${role.id}`, group: 'نقش‌ها', icon: '🛡', label: role.label || role.id, hint: `${role.permissions} مجوز`, go: '/rbac' }));
+    (r.broadcasts || []).forEach(b => out.push({ id: `b-${b.id}`, group: 'Broadcast', icon: '📢', label: b.text, hint: b.created_at, go: b.correlation_id ? `/audit?correlation_id=${encodeURIComponent(b.correlation_id)}` : '/notify' }));
+    (r.payments || []).forEach(p => out.push({ id: `p-${p.id}`, group: 'پرداخت‌ها', icon: '🧾', label: `${p.plan} · #${p.user_id}`, hint: p.status, go: `/subscriptions?tab=payments&q=${p.id}` }));
     (r.subscriptions || []).forEach(s => out.push({ id: `s-${s.user_id}`, group: 'اشتراک‌ها', icon: '💎', label: `${s.plan} · #${s.user_id}`, hint: s.status, go: '/subscriptions?tab=subscribers' }));
     (r.notifications || []).forEach(n => out.push({ id: `n-${n.id}`, group: 'اعلان‌ها', icon: '🔔', label: n.text, hint: n.type, go: '/notify' }));
     (r.audit || []).forEach(a => out.push({ id: `a-${a.id}`, group: 'حسابرسی', icon: '🧭', label: `${a.actor} — ${a.action}`, hint: a.at, go: '/audit' }));

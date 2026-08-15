@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty, Timeline } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
+import ObjectInspector from '../ObjectInspector.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -51,6 +52,8 @@ export default function Audit({ go }) {
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [inspect, setInspect] = useState(null);
+  const [chain, setChain] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 25;
 
@@ -161,6 +164,8 @@ export default function Audit({ go }) {
                             total, onPage: p => setSkip((p - 1) * LIMIT) }} />
       )}
 
+      {inspect && <ObjectInspector type={inspect.type} id={inspect.id} go={go} onClose={() => setInspect(null)} />}
+      {chain && <CorrelationDrawer id={chain} onClose={() => setChain(null)} />}
       {detail && (
         <Drawer title="🔍 جزئیات و تغییرات رویداد" onClose={() => setDetail(null)} wide>
           <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
@@ -186,7 +191,8 @@ export default function Audit({ go }) {
           <div className="row" style={{ marginTop: 8 }}>
             {actorId(detail) && <button className="btn sm" onClick={() => go?.(`/users?q=${actorId(detail)}`)}>👤 پرونده عامل</button>}
             {objectRoute(targetType(detail), targetId(detail)) && <button className="btn sm primary" onClick={() => go?.(objectRoute(targetType(detail), targetId(detail)))}>بازکردن هدف ‹</button>}
-            {detail.correlation_id && <button className="btn sm" onClick={() => { setFilters(f => ({ ...f, correlation_id: detail.correlation_id })); setAdvanced(true); setDetail(null); setSkip(0); }}>🧬 زنجیره Correlation</button>}
+            {targetType(detail) && targetId(detail) && <button className="btn sm" onClick={() => { setInspect({ type: targetType(detail), id: targetId(detail) }); setDetail(null); }}>▤ Object Inspector</button>}
+            {detail.correlation_id && <button className="btn sm" onClick={() => { setChain(detail.correlation_id); setDetail(null); }}>🧬 زنجیره Correlation</button>}
           </div>
 
           {/* ── Diff قبل/بعد ── */}
@@ -239,4 +245,17 @@ export default function Audit({ go }) {
       )}
     </>
   );
+}
+
+function CorrelationDrawer({ id, onClose }) {
+  const [data, setData] = useState(null); const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.correlationChain(id).then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, [id]);
+  return <Drawer wide title="🧬 زنجیره Correlation" onClose={onClose}>
+    <div className="code" style={{ marginBottom: 10 }}>{id}</div>
+    {err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
+      <div className="row" style={{ marginBottom: 10 }}><B kind="acc">Audit: {fa(data.counts?.audit)}</B><B>Outbox: {fa(data.counts?.outbox)}</B></div>
+      <Timeline items={(data.events || []).map(event => ({ id: event.id, title: `${event.stage === 'audit' ? '🧭' : '📤'} ${event.title}`, description: `${event.status} · ${Object.entries(event.metadata || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}`, at: String(event.at || '').slice(0, 16).replace('T', ' ') }))} empty="رویدادی برای این Correlation ثبت نشده" />
+    </>}
+  </Drawer>;
 }

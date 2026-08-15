@@ -245,6 +245,7 @@ function AssignRoles({ roles, onClose }) {
   const [scope, setScope] = useState('');
   const [intakes, setIntakes] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [confirmAssign, setConfirmAssign] = useState(false);
 
   useEffect(() => { api.rbacIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
   const search = async () => {
@@ -267,6 +268,10 @@ function AssignRoles({ roles, onClose }) {
   });
   const selectedRoles = roles.filter(r => selected.has(r.key) && r.active !== false);
   const effectivePerms = [...new Set(selectedRoles.flatMap(r => r.perms || []))].sort();
+  const currentRoles = roles.filter(r => (current?.keys || []).includes(r.key) && r.active !== false);
+  const beforePerms = [...new Set(currentRoles.flatMap(r => r.perms || []))].sort();
+  const addedPerms = effectivePerms.filter(permission => !beforePerms.includes(permission));
+  const removedPerms = beforePerms.filter(permission => !effectivePerms.includes(permission));
   const needsScope = selectedRoles.some(r =>
     (r.key === 'content_scoped' || r.perms?.includes('content.scoped') || r.perms?.includes('grades.scoped')));
   const save = async () => {
@@ -318,15 +323,20 @@ function AssignRoles({ roles, onClose }) {
           {effectivePerms.length ? <div className="row" style={{ marginTop: 7, gap: 4 }}>{effectivePerms.map(p => <B key={p}>{p}</B>)}</div>
             : <div className="muted" style={{ marginTop: 7 }}>نقش انتخاب‌شده‌ای مجوز مؤثر نمی‌دهد.</div>}
         </div>
+        <div className="grid g2" style={{ marginTop: 8 }}>
+          <div className="surface-inset"><b className="ok-text">＋ مجوزهای افزوده</b><div className="row" style={{ marginTop: 6 }}>{addedPerms.length ? addedPerms.map(p => <B kind="ok" key={p}>{p}</B>) : <span className="muted">بدون تغییر</span>}</div></div>
+          <div className="surface-inset"><b className="bad-text">− مجوزهای حذف‌شده</b><div className="row" style={{ marginTop: 6 }}>{removedPerms.length ? removedPerms.map(p => <B kind="bad" key={p}>{p}</B>) : <span className="muted">بدون تغییر</span>}</div></div>
+        </div>
         {needsScope && <label className="fld" style={{ marginTop: 10 }}><span>ورودی مجاز *</span>
           <select className="inp" value={scope} onChange={e => setScope(e.target.value)}>
             <option value="">انتخاب ورودی…</option>
             {intakes.map(i => <option key={i.code} value={i.code}>{i.label || i.code}</option>)}
           </select></label>}
         <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn primary" disabled={busy} onClick={save}>{busy ? '⏳ …' : '💾 ذخیره تخصیص'}</button>
+          <button className="btn primary" disabled={busy} onClick={() => setConfirmAssign(true)}>{busy ? '⏳ …' : '💾 بازبینی و ذخیره'}</button>
           <button className="btn" onClick={onClose}>بستن</button>
         </div>
+        {confirmAssign && <Confirm danger={removedPerms.length > 0} text={`تخصیص نقش برای ${picked.display_name || picked.name} ذخیره شود؟ ${addedPerms.length} مجوز افزوده و ${removedPerms.length} مجوز حذف می‌شود.`} onNo={() => setConfirmAssign(false)} onYes={async () => { setConfirmAssign(false); await save(); }} />}
       </>)}
     </Modal>
   );

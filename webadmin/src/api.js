@@ -65,16 +65,11 @@ async function req(path, options = {}) {
 }
 
 async function downloadFile(path, filename) {
-  const response = await fetch(path, { credentials: 'same-origin', headers: { Accept: 'text/csv,application/octet-stream' } });
-  if (!response.ok) {
-    let payload = {}; try { payload = await response.json(); } catch {}
-    const error = new Error(typeof payload.detail === 'string' ? payload.detail : `download_failed_${response.status}`);
-    error.status = response.status; error.detail = payload.detail; throw error;
-  }
-  const blob = await response.blob(); const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename;
-  document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
-  return { ok: true };
+  // Browser-native navigation lets the response stream directly to disk; no full Blob/dataset hydration.
+  const anchor = document.createElement('a');
+  anchor.href = path; anchor.download = filename; anchor.rel = 'noopener'; anchor.style.display = 'none';
+  document.body.appendChild(anchor); anchor.click(); anchor.remove();
+  return { ok: true, streamed: true };
 }
 
 export const api = {
@@ -85,6 +80,10 @@ export const api = {
   me: () => req('/api/web-admin/me'),
   overview: () => req('/api/web-admin/overview'),
   dashboardBundle: () => req('/api/web-admin/dashboard-bundle'),
+  myWork: () => req('/api/web-admin/operations/my-work'),
+  operationAlerts: () => req('/api/web-admin/operations/alerts'),
+  dataQuality: () => req('/api/web-admin/operations/data-quality'),
+  dataQualityItems: (kind, p = {}) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}?` + new URLSearchParams(p)),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${new Date().toISOString().slice(0, 10)}.csv`),
@@ -102,10 +101,13 @@ export const api = {
   updateFilter: (id, body) => req(`/api/web-admin/saved-filters/${id}`, { method: 'PUT', body }),
   delFilter: (id) => req(`/api/web-admin/saved-filters/${id}`, { method: 'DELETE' }),
   user360: (uid) => req(`/api/web-admin/users/${uid}/360`),
+  objectSummary: (type, id) => req(`/api/web-admin/objects/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
+  objectHistory: (type, id, limit = 30) => req(`/api/web-admin/history/${encodeURIComponent(type)}/${encodeURIComponent(id)}?limit=${limit}`),
+  correlationChain: (id) => req(`/api/web-admin/audit/correlation/${encodeURIComponent(id)}`),
   ticketsBulk: (action, ids) => req('/api/web-admin/tickets/bulk', { method: 'POST', body: { action, ids } }),
   questions: (p = {}) => req('/api/web-admin/questions?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportQuestionsCsv: (p = {}) => downloadFile('/api/web-admin/exports/questions.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-questions-${new Date().toISOString().slice(0, 10)}.csv`),
-  questionsBulk: (action, ids) => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids } }),
+  questionsBulk: (action, ids, patch) => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids, patch } }),
   settingsCenter: () => req('/api/web-admin/settings/center'),
   patchSetting: (key, value) => req(`/api/web-admin/settings/center/${encodeURIComponent(key)}`, { method: 'PATCH', body: { value } }),
   exams: (status) => req('/api/web-admin/exams' + (status ? `?status=${status}` : '')),
@@ -117,11 +119,17 @@ export const api = {
   waAnalytics: (days) => req('/api/web-admin/wa-analytics' + (days ? `?days=${days}` : '')),
   waInsights: () => req('/api/web-admin/wa-insights'),
   notifRuns: (job) => req('/api/web-admin/notif/runs' + (job ? `?job_name=${job}` : '')),
+  notifRunDetail: (id) => req(`/api/web-admin/notif/runs/${encodeURIComponent(id)}`),
   notifRetry: (id) => req(`/api/web-admin/notif/runs/${id}/retry`, { method: 'POST' }),
   // ── 🌊 WA2.1 Content Command Center ──
   contentTree: (intake) => req('/api/web-admin/content/tree' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
+  studentPreviewStudents: (q) => req(`/api/web-admin/content/student-preview/students?q=${encodeURIComponent(q)}`),
+  studentPreview: (userId) => req(`/api/web-admin/content/student-preview?user_id=${encodeURIComponent(userId)}`),
+  studentPreviewLessons: (userId, term) => req(`/api/web-admin/content/student-preview/lessons?user_id=${encodeURIComponent(userId)}&term=${encodeURIComponent(term)}`),
+  studentPreviewSessions: (userId, lessonId) => req(`/api/web-admin/content/student-preview/sessions?user_id=${encodeURIComponent(userId)}&lesson_id=${encodeURIComponent(lessonId)}`),
+  studentPreviewFiles: (userId, sessionId) => req(`/api/web-admin/content/student-preview/files?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`),
+  contentImpact: (type, id) => req(`/api/web-admin/content/impact/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
   contentHistory: (targetType, targetId) => req(`/api/web-admin/content/history?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
-  objectHistory: (targetType, targetId) => req(`/api/web-admin/history/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}`),
   dupSession: (sid) => req(`/api/web-admin/content/sessions/${sid}/duplicate`, { method: 'POST' }),
   sessionsBulk: (body) => req('/api/web-admin/content/sessions/bulk', { method: 'POST', body }),
   itemsBulk: (body) => req('/api/web-admin/content/items/bulk', { method: 'POST', body }),
@@ -182,6 +190,7 @@ export const api = {
   auditLogs: (p) => req('/api/web-admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
   exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v)), `humsyar-audit-${new Date().toISOString().slice(0, 10)}.csv`),
   systemJobs: () => req('/api/web-admin/system/jobs'),
+  systemObservability: (hours = 24) => req(`/api/web-admin/system/observability?hours=${hours}`),
   settings: () => req('/api/web-admin/system/backup-settings'),
   patchSettings: (body) => req('/api/web-admin/system/backup-settings', { method: 'PATCH', body }),
   backup: (section) => req('/api/web-admin/system/backup', { method: 'POST', body: { section: section || 'all' } }),
@@ -285,6 +294,7 @@ export const api = {
   refFileAdd: (bid, form) => req(`/api/content/references/books/${bid}/files`, { method: 'POST', form }),
   refFileDel: (fid) => req(`/api/content/references/files/${fid}`, { method: 'DELETE' }),
   // ── 🌊 WA3 — نمرات (grades/recent + find-student + bulk) — همان ادمین ربات ──
+  gradeIntakes: () => req('/api/web-admin/grades/intakes'),
   gradesRecent: (skip = 0, limit = 30, filters = {}) => req('/api/web-admin/grades/recent?' + new URLSearchParams({ skip, limit, ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v !== null && v !== undefined)) })),
   gradesFind: (name) => req(`/api/web-admin/grades/find-student?q=${encodeURIComponent(name)}`),
   gradesBulk: (body) => req('/api/web-admin/grades/bulk', { method: 'POST', body: {
@@ -305,7 +315,6 @@ export const api = {
 
 export function errText(e) {
   if (!e) return 'خطای ناشناخته';
-  if (e.friendly) return e.friendly;
   const d = e.message || String(e);
   const map = {
     forbidden: 'مجوز لازم برای این بخش را ندارید.',
@@ -316,9 +325,9 @@ export function errText(e) {
     content_admin_only: 'این بخش فقط برای مدیر محتواست.',
     request_timeout: 'پاسخ سرویس بیش از حد طول کشید؛ دوباره تلاش کنید.',
   };
-  if (map[d]) return map[d];
-  if (e.status >= 500 || /^خطا\s*\(5\d\d\)/.test(d)) return friendlyStatus(e.status || 500);
-  return d || friendlyStatus(e.status || 0);
+  const message = e.friendly || map[d] || (e.status >= 500 || /^خطا\s*\(5\d\d\)/.test(d)
+    ? friendlyStatus(e.status || 500) : d || friendlyStatus(e.status || 0));
+  return e.errorId ? `${message} · شناسه پیگیری: ${e.errorId}` : message;
 }
 
 // 📥 خروجی CSV سمت کلاینت (بدون رفت‌وبرگشت سرور)

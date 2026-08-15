@@ -23,7 +23,7 @@ export default function Exams({ route = '' }) {
   return (
     <>
       <Tabs items={[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']]} value={tab} onChange={changeTab} label="آزمون و نمرات" />
-      {tab === 'exams' ? <ExamsTab autoCreate={params.get('new') === 'exam'} initialStatus={params.get('status') || ''} /> : <GradesTab autoCreate={params.get('new') === 'grade'} initial={{ q: params.get('q') || '', lesson: params.get('lesson') || '', group: params.get('group') || '', page: Number(params.get('page')) || 1 }} />}
+      {tab === 'exams' ? <ExamsTab autoCreate={params.get('new') === 'exam'} initialStatus={params.get('status') || ''} /> : <GradesTab autoCreate={params.get('new') === 'grade'} initial={{ q: params.get('q') || '', lesson: params.get('lesson') || '', group: params.get('group') || '', intake: params.get('intake') || '', dateFrom: params.get('date_from') || '', dateTo: params.get('date_to') || '', page: Number(params.get('page')) || 1 }} />}
     </>
   );
 }
@@ -248,6 +248,10 @@ function GradesTab({ autoCreate = false, initial = {} }) {
   const [search, setSearch] = useState(initial.q || '');
   const [lesson, setLesson] = useState(initial.lesson || '');
   const [group, setGroup] = useState(initial.group || '');
+  const [intake, setIntake] = useState(initial.intake || '');
+  const [dateFrom, setDateFrom] = useState(initial.dateFrom || '');
+  const [dateTo, setDateTo] = useState(initial.dateTo || '');
+  const [intakes, setIntakes] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -256,16 +260,17 @@ function GradesTab({ autoCreate = false, initial = {} }) {
   const [editGrade, setEditGrade] = useState(null);
   const [deleteGrade, setDeleteGrade] = useState(null);
   useEffect(() => { if (autoCreate) setBulkOpen(true); }, [autoCreate]);
+  useEffect(() => { api.gradeIntakes().then(r => setIntakes(r.intakes || [])).catch(() => setIntakes([])); }, []);
   const LIMIT = 30;
 
   const load = async () => {
     setErr('');
-    try { setData(await api.gradesRecent(skip, LIMIT, { q, lesson, group })); }
+    try { setData(await api.gradesRecent(skip, LIMIT, { q, lesson, group, intake, date_from: dateFrom, date_to: dateTo })); }
     catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setSkip(0); }, 350); return () => clearTimeout(t); }, [search]);
-  useEffect(() => { setData(null); load(); }, [skip, q, lesson, group]);
-  useEffect(() => { writeHashQuery('/exams', { tab: 'grades', q: search, lesson, group, page: skip ? Math.floor(skip / LIMIT) + 1 : '' }); }, [search, lesson, group, skip]);
+  useEffect(() => { setData(null); load(); }, [skip, q, lesson, group, intake, dateFrom, dateTo]);
+  useEffect(() => { writeHashQuery('/exams', { tab: 'grades', q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo, page: skip ? Math.floor(skip / LIMIT) + 1 : '' }); }, [search, lesson, group, intake, dateFrom, dateTo, skip]);
 
   if (permErr) return <NoPerm text="مدیریت نمرات نیازمند مجوز «مدیریت نمرات» (grades.manage) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -299,8 +304,11 @@ function GradesTab({ autoCreate = false, initial = {} }) {
         <input className="inp" style={{ flex: 1 }} placeholder="جست‌وجوی دانشجو، شماره، درس یا عنوان آزمون…" value={search} onChange={e => setSearch(e.target.value)} />
         <input className="inp" placeholder="فیلتر درس…" value={lesson} onChange={e => { setLesson(e.target.value); setSkip(0); }} />
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setSkip(0); }}><option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
+        <select className="inp" value={intake} onChange={e => { setIntake(e.target.value); setSkip(0); }}><option value="">همه ورودی‌ها</option>{intakes.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select>
+        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setSkip(0); }} /></label>
+        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setSkip(0); }} /></label>
       </div>
-      <SavedViews scope="grades" filters={{ q: search, lesson, group }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
+      <SavedViews scope="grades" filters={{ q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setIntake(f.intake || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
 
       {!data ? <Loading /> : (
         <>

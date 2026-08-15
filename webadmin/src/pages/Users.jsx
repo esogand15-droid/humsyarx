@@ -3,6 +3,7 @@ import { api, errText, exportCSV } from '../api.js';
 import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 import SavedViews from '../SavedViews.jsx';
+import SmartQueryBuilder from '../SmartQueryBuilder.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -18,7 +19,7 @@ const USER_ACTIONS = {
 };
 
 // 👥 WA2.4/2.8 — فیلتر ذخیره‌شده + bulk گسترده (تغییر ورودی/CSV) + دراور ۳۶۰ کاربر
-export default function Users({ go }) {
+export default function Users({ go, me, route = '' }) {
   const initial = readHashQuery();
   const [q, setQ] = useState(initial.get('q') || '');
   const [q2, setQ2] = useState(initial.get('q') || '');
@@ -32,6 +33,8 @@ export default function Users({ go }) {
   const [accuracyMax, setAccuracyMax] = useState(initial.get('accuracy_max') || '');
   const [subDays, setSubDays] = useState(initial.get('sub_expiring_days') || '');
   const [openTicket, setOpenTicket] = useState(initial.get('has_open_ticket') || '');
+  const [smart, setSmart] = useState(() => { try { return initial.get('smart') ? JSON.parse(initial.get('smart')) : null; } catch { return null; } });
+  const [smartOpen, setSmartOpen] = useState(false);
   const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'registered_at');
   const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
   const [advanced, setAdvanced] = useState([...initial.keys()].some(k => !['q', 'status', 'intake', 'page', 'per_page'].includes(k)));
@@ -48,10 +51,13 @@ export default function Users({ go }) {
   const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message
   const [bulkValue, setBulkValue] = useState('');
   const [bulkResult, setBulkResult] = useState(null);
+  const [largeBatch, setLargeBatch] = useState(new URLSearchParams(route.split('?')[1] || '').get('batch') === '1');
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
   const [intOpen, setIntOpen] = useState(false);    // 🌊 WA4 — مدیریت ورودی‌ها
   const [caOpen, setCaOpen] = useState(false);      // 🌊 WA4 — ادمین‌های محتوا
+  const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
+  const canAnyBatch = ['users.manage', 'users.suspend', 'users.message', 'users.delete'].some(has);
 
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
   useEffect(() => { api.rolesPicker().then(r => setRoles(r.roles || [])).catch(() => setRoles([])); }, []);
@@ -59,10 +65,11 @@ export default function Users({ go }) {
   useEffect(() => {
     writeHashQuery('/users', { q: q2, status, intake, group, role, activity,
       accuracy_max: accuracyMax, sub_expiring_days: subDays,
-      has_open_ticket: openTicket, sort_by: sortBy !== 'registered_at' ? sortBy : '',
+      has_open_ticket: openTicket, smart: smart ? JSON.stringify(smart) : '',
+      sort_by: sortBy !== 'registered_at' ? sortBy : '',
       sort_dir: sortDir !== 'desc' ? sortDir : '', page: page > 1 ? page : '',
       per_page: perPage !== 25 ? perPage : '' });
-  }, [q2, status, intake, group, role, activity, accuracyMax, subDays, openTicket, sortBy, sortDir, page, perPage]);
+  }, [q2, status, intake, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir, page, perPage]);
 
   const load = async () => {
     setLoading(true); setErr('');
@@ -70,13 +77,14 @@ export default function Users({ go }) {
       setData(await api.users({
         page, per_page: perPage, q, intake, status, group, role, activity,
         accuracy_max: accuracyMax, sub_expiring_days: subDays,
-        has_open_ticket: openTicket, sort_by: sortBy, sort_dir: sortDir,
+        has_open_ticket: openTicket, smart: smart ? JSON.stringify(smart) : '',
+        sort_by: sortBy, sort_dir: sortDir,
       }));
     } catch (e) { setErr(errText(e)); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, sortBy, sortDir]);
-  useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket]);
+  useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir]);
+  useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart]);
 
   const bulk = async (action, value, ids = sel) => {
     if (!ids.length) return toast('ابتدا کاربران را انتخاب کنید', 'err');
@@ -95,8 +103,8 @@ export default function Users({ go }) {
     setStatus(flt.status || ''); setIntake(flt.intake || ''); setGroup(flt.group || '');
     setRole(flt.role || ''); setActivity(flt.activity || '');
     setAccuracyMax(flt.accuracyMax ?? ''); setSubDays(flt.subDays ?? '');
-    setOpenTicket(flt.openTicket || ''); setSortBy(flt.sortBy || 'registered_at');
-    setSortDir(flt.sortDir || 'desc'); setAdvanced(!!(flt.group || flt.role || flt.activity || flt.accuracyMax !== undefined || flt.subDays || flt.openTicket));
+    setOpenTicket(flt.openTicket || ''); setSmart(flt.smart || null); setSortBy(flt.sortBy || 'registered_at');
+    setSortDir(flt.sortDir || 'desc'); setAdvanced(!!(flt.group || flt.role || flt.activity || flt.accuracyMax !== undefined || flt.subDays || flt.openTicket || flt.smart));
     setPage(1);
     toast(`نمای «${f.name}» اعمال شد ⏱`);
   };
@@ -164,18 +172,19 @@ export default function Users({ go }) {
         <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
         <button className="btn sm" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
           accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
-          sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
+          smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
+        {canAnyBatch && <button className="btn sm" onClick={() => setLargeBatch(true)}>⚡ Batch با فهرست ID</button>}
         {sel.length > 0 && <>
           <span className="badge acc">{sel.length} انتخاب‌شده</span>
-          <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>
-          <button className="btn sm danger" onClick={() => setConfirm({ action: 'suspend', text: `تعلیق ${sel.length} کاربر؟` })}>⏸ تعلیق</button>
-          <button className="btn sm" onClick={() => setConfirm({ action: 'unsuspend', text: `رفع تعلیق ${sel.length} کاربر؟` })}>🔓 رفع تعلیق</button>
-          <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>
-          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>
-          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>
-          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>
-          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>
-          <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>
+          {has('users.manage') && <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>}
+          {has('users.suspend') && <button className="btn sm danger" onClick={() => setConfirm({ action: 'suspend', text: `تعلیق ${sel.length} کاربر؟` })}>⏸ تعلیق</button>}
+          {has('users.suspend') && <button className="btn sm" onClick={() => setConfirm({ action: 'unsuspend', text: `رفع تعلیق ${sel.length} کاربر؟` })}>🔓 رفع تعلیق</button>}
+          {has('users.manage') && <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>}
+          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>}
+          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>}
+          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>}
+          {has('users.message') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>}
+          {has('users.delete') && <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>}
           <button className="btn sm" onClick={exportSel}>📥 CSV انتخاب</button>
         </>}
       </>} />
@@ -190,7 +199,8 @@ export default function Users({ go }) {
           <option value="">همه‌ی ورودی‌ها</option>
           {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
         </select>
-        <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ فیلتر هوشمند</button>
+        <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ فیلترهای سریع</button>
+        <button className={`btn sm ${smart ? 'primary' : ''}`} onClick={() => setSmartOpen(true)}>🧠 Query Builder{smart ? ' · فعال' : ''}</button>
       </FilterBar>
       {advanced && <FilterBar className="advanced-filter-bar">
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setPage(1); }}>
@@ -224,8 +234,9 @@ export default function Users({ go }) {
         <button className="btn sm" onClick={() => { setGroup(''); setRole(''); setActivity(''); setAccuracyMax(''); setSubDays(''); setOpenTicket(''); setSortBy('registered_at'); setSortDir('desc'); setPage(1); }}>پاک‌کردن پیشرفته</button>
       </FilterBar>}
 
+      {smart && <div className="row" style={{ marginBottom: 8 }}><B kind="acc">🧠 Query ترکیبی فعال</B><button className="btn sm" onClick={() => { setSmart(null); setPage(1); }}>حذف Query</button></div>}
       <SavedViews scope="users" filters={{ q, status, intake, group, role, activity, accuracyMax,
-        subDays, openTicket, sortBy, sortDir }} columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }}
+        subDays, openTicket, smart, sortBy, sortDir }} columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }}
         onApply={(flt, item) => { applyFilter({ ...item, filters: flt }); setVisibleColumns(item.columns || []); }} label="نماهای کاربران" />
 
       <DataTable columns={cols} rows={data.users} selectable onSelect={setSel}
@@ -273,6 +284,8 @@ export default function Users({ go }) {
           </div>
         </Modal>
       )}
+      {largeBatch && <LargeBatchModal has={has} intakes={intakes} roles={roles} onClose={() => setLargeBatch(false)} onDone={result => { setLargeBatch(false); setBulkResult(result); load(); }} />}
+      {smartOpen && <SmartQueryBuilder value={smart} onClose={() => setSmartOpen(false)} onApply={value => { setSmart(value); setSmartOpen(false); setPage(1); }} />}
       {bulkResult && (
         <Modal title="گزارش عملیات گروهی" onClose={() => setBulkResult(null)}>
           <div className="grid g3">
@@ -289,6 +302,43 @@ export default function Users({ go }) {
       )}
     </>
   );
+}
+
+
+function LargeBatchModal({ has, intakes, roles, onClose, onDone }) {
+  const actions = [
+    ['approve', 'تأیید', 'users.manage'], ['suspend', 'تعلیق', 'users.suspend'], ['unsuspend', 'رفع تعلیق', 'users.suspend'],
+    ['set_intake', 'تغییر ورودی', 'users.manage'], ['set_group', 'تغییر گروه', 'users.manage'],
+    ['add_role', 'افزودن نقش', 'users.manage'], ['remove_role', 'حذف نقش', 'users.manage'],
+    ['message', 'ارسال اعلان', 'users.message'], ['block', 'مسدودسازی', 'users.delete'],
+  ].filter(([, , permission]) => has(permission));
+  const [text, setText] = useState(''); const [action, setAction] = useState(actions[0]?.[0] || ''); const [value, setValue] = useState('');
+  const [confirmed, setConfirmed] = useState(false); const [busy, setBusy] = useState(false); const [progress, setProgress] = useState(0);
+  const ids = useMemo(() => [...new Set(text.split(/[\s,،;]+/).map(x => x.trim()).filter(x => /^\d+$/.test(x)).map(Number))].slice(0, 2000), [text]);
+  const needsValue = ['set_intake', 'set_group', 'add_role', 'remove_role', 'message', 'block'].includes(action);
+  const run = async () => {
+    if (!ids.length || (needsValue && !value.trim()) || !confirmed) return;
+    setBusy(true); const result = { action, value, succeeded: [], skipped: [], failed: [], done: 0 };
+    const chunks = Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => ids.slice(index * 100, index * 100 + 100));
+    for (let index = 0; index < chunks.length; index += 1) {
+      try { const response = await api.usersBulk(action, chunks[index], value); result.succeeded.push(...(response.succeeded || [])); result.skipped.push(...(response.skipped || [])); result.failed.push(...(response.failed || [])); }
+      catch (e) { result.failed.push(...chunks[index].map(id => ({ id, error: errText(e) }))); }
+      setProgress(index + 1);
+    }
+    result.done = result.succeeded.length; result.ok = !result.failed.length; setBusy(false); onDone(result);
+  };
+  return <Modal wide title="⚡ Batch Engine کاربران" onClose={busy ? () => {} : onClose}>
+    <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><b>اجرای chunked روی domain API موجود</b><div className="muted">حداکثر ۲۰۰۰ ID؛ هر chunk حداکثر ۱۰۰ رکورد، با audit و نتیجه per-record. این UI mutation مستقیم یا background job جعلی نمی‌سازد.</div></div>
+    <textarea className="inp" rows={7} style={{ width: '100%', marginTop: 10 }} placeholder="Telegram IDها؛ هر خط یا با ویرگول…" value={text} onChange={e => { setText(e.target.value); setConfirmed(false); }} />
+    <div className="row"><B kind={ids.length ? 'acc' : 'warn'}>{faNum(ids.length)} ID معتبر</B><B>{faNum(Math.ceil(ids.length / 100))} chunk</B>{text.trim() && !ids.length && <B kind="bad">ID معتبری تشخیص داده نشد</B>}</div>
+    <div className="row" style={{ marginTop: 10 }}><select className="inp" value={action} onChange={e => { setAction(e.target.value); setValue(''); setConfirmed(false); }}>{actions.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+      {action === 'set_intake' ? <select className="inp" value={value} onChange={e => setValue(e.target.value)}><option value="">انتخاب ورودی…</option>{intakes.map(item => <option key={item.code || item} value={item.code || item}>{item.label || item.code || item}</option>)}</select>
+        : ['add_role', 'remove_role'].includes(action) ? <select className="inp" value={value} onChange={e => setValue(e.target.value)}><option value="">انتخاب نقش…</option>{roles.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select>
+        : needsValue && <input className="inp" style={{ flex: 1 }} value={value} onChange={e => setValue(e.target.value)} placeholder={action === 'message' ? 'متن اعلان…' : action === 'block' ? 'دلیل مسدودسازی…' : 'مقدار…'} />}</div>
+    <label className="row" style={{ marginTop: 12 }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /><span>پیش‌نمایش تعداد و عملیات را بررسی کردم و اجرای {faNum(ids.length)} رکورد را تأیید می‌کنم.</span></label>
+    {busy && <div style={{ marginTop: 10 }}><progress max={Math.max(1, Math.ceil(ids.length / 100))} value={progress} style={{ width: '100%' }} /><div className="muted">chunk {faNum(progress)} از {faNum(Math.ceil(ids.length / 100))}</div></div>}
+    <div className="row" style={{ marginTop: 12 }}><button className={`btn ${['block', 'suspend', 'remove_role'].includes(action) ? 'danger' : 'primary'}`} disabled={busy || !ids.length || !confirmed || (needsValue && !value.trim())} onClick={run}>اجرای Batch</button><button className="btn" disabled={busy} onClick={onClose}>انصراف</button></div>
+  </Modal>;
 }
 
 /* ── 👤 WA2.8 — User 360: کانتکست کامل بدون ترک صفحه ─────────── */

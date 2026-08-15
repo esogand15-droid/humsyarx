@@ -34,6 +34,7 @@ export default function Notify({ route = '', go }) {
   const [sent, setSent] = useState(null);            // {queued, scheduled}
   const [history, setHistory] = useState(null);
   const [runs, setRuns] = useState(null);
+  const [runDetail, setRunDetail] = useState(null);
   const [sched, setSched] = useState(null);          // 🌊 ارسال‌های زمان‌دار در انتظار
   const [cancelOf, setCancelOf] = useState(null);
   const [auxErr, setAuxErr] = useState('');
@@ -429,7 +430,7 @@ export default function Notify({ route = '', go }) {
                       {h.failed > 0 && <B kind="bad">✖ {fa(h.failed)}</B>}
                       {pending > 0 && <B kind="warn">⏳ {fa(pending)}</B>}
                       <span className="spacer" />
-                      <button className="btn sm" onClick={() => { reset(); setText(h.text || ''); setStep(2); }}>📄 استفاده مجدد</button>
+                      <button className="btn sm" onClick={() => { const a = h.audience || { scope: 'all' }; reset(); setScope(a.scope || 'all'); setIntake(a.intake || ''); setGroup(a.group || '1'); setRole(a.role || ''); setSubscriptionStatus(a.subscription_status || 'active'); setText(h.text || ''); setStep(2); }}>📄 تکثیر Campaign</button>
                       {h.correlation_id && <button className="btn sm" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(h.correlation_id)}`)}>🧬 ردیابی</button>}
                       <span className="muted">{(h.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                     </div>
@@ -463,6 +464,7 @@ export default function Notify({ route = '', go }) {
                   <span className="muted">✔{fa(r.sent)} · ✖{fa(r.failed)} · {fa(r.total)}</span>
                   <span className="spacer" />
                   <span className="muted">{r.started_at}</span>
+                  <button className="btn sm" onClick={() => setRunDetail(r.id)}>جزئیات ‹</button>
                   {r.failed > 0 && <button className="btn sm" onClick={() => retry(r.id)}>🔁 تلاش مجدد</button>}
                 </div>
               ))}
@@ -471,6 +473,7 @@ export default function Notify({ route = '', go }) {
         </div>
       </div>
 
+      {runDetail && <NotificationRunDetail id={runDetail} go={go} onClose={() => setRunDetail(null)} onRetry={retry} />}
       {saveOpen && <Modal title={saveOpen === 'draft' ? 'ذخیره پیش‌نویس ارسال' : 'ذخیره Segment مخاطبان'} onClose={() => setSaveOpen(null)}>
         <p className="muted" style={{ marginBottom: 8 }}>{saveOpen === 'draft' ? 'مخاطب، متن و زمان‌بندی فعلی ذخیره می‌شود.' : `مخاطب فعلی: ${audienceLabel}`}</p>
         <input className="inp" style={{ width: '100%' }} placeholder="نام قابل تشخیص…" value={saveName} onChange={e => setSaveName(e.target.value)} />
@@ -488,6 +491,23 @@ export default function Notify({ route = '', go }) {
       </div>
     </>
   );
+}
+
+
+function NotificationRunDetail({ id, go, onClose, onRetry }) {
+  const [data, setData] = useState(null); const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.notifRunDetail(id).then(r => setData(r.run)).catch(e => setErr(errText(e))); };
+  useEffect(load, [id]);
+  return <Modal wide title="🔔 جزئیات اجرای اعلان" onClose={onClose}>
+    {err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
+      <div className="grid g4"><div className="panel panel-pad"><b>{fa(data.total)}</b><div className="muted">کل</div></div><div className="panel panel-pad"><b className="ok-text">{fa(data.sent)}</b><div className="muted">موفق</div></div><div className="panel panel-pad"><b>{fa(data.skipped)}</b><div className="muted">ردشده</div></div><div className="panel panel-pad"><b className="bad-text">{fa(data.failed)}</b><div className="muted">ناموفق</div></div></div>
+      <dl className="kv"><dt>Job</dt><dd>{data.job_name}</dd><dt>وضعیت</dt><dd><B kind={data.status === 'completed' ? 'ok' : data.status === 'failed' ? 'bad' : 'warn'}>{data.status}</B></dd><dt>شروع</dt><dd className="code">{data.started_at || '—'}</dd><dt>پایان</dt><dd className="code">{data.finished_at || '—'}</dd><dt>Correlation ID</dt><dd className="code">{data.correlation_id || '—'}</dd></dl>
+      {data.message_preview && <div className="surface-inset"><div className="muted">پیش‌نمایش پیام ذخیره‌شده</div><div style={{ whiteSpace: 'pre-wrap' }}>{data.message_preview}</div></div>}
+      {data.error && <div className="badge bad" style={{ marginTop: 8 }}>{data.error}</div>}
+      {!!data.failed_targets?.length && <div style={{ marginTop: 10 }}><b>گیرندگان ناموفق</b><div className="grid" style={{ gap: 4 }}>{data.failed_targets.map((target, index) => <div className="row" key={`${target.user_id}-${index}`}><span className="code">{target.user_id}</span><span className="muted">{target.error}</span></div>)}</div>{data.failed_targets_truncated && <div className="muted">فهرست به ۱۰۰ مورد محدود شده است.</div>}</div>}
+      <div className="row" style={{ marginTop: 12 }}>{data.failed > 0 && <button className="btn" onClick={() => onRetry(id)}>🔁 تلاش مجدد ناموفق‌ها</button>}{data.correlation_id && <button className="btn primary" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(data.correlation_id)}`)}>🧬 ردیابی Correlation</button>}</div>
+    </>}
+  </Modal>;
 }
 
 /* ── 📊🌊 پنل نظرسنجی کانال (موج Poll-Notif) — همان admin:poll_main ربات ── */
