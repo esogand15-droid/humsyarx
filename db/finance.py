@@ -272,17 +272,17 @@ class DBFinance:
     async def discount_payment_stats(self, code: str) -> dict:
         """آمار استفاده‌ی واقعی یک کد — از اسناد sub_payments (snapshot مالی)."""
         code_u = code.strip().upper()
-        approved = await self.sub_payments.find(
-            {'discount_code': code_u, 'status': 'approved'}
-        ).to_list(length=None)
-        return {
-            'usage_approved': len(approved),
-            'revenue': sum(int(p.get('final_price', 0) or 0) for p in approved),
-            'discount_given': sum(
-                max(0, int(p.get('price', 0) or 0) - int(p.get('final_price', 0) or 0))
-                for p in approved
-            ),
-        }
+        rows = await self.sub_payments.aggregate([
+            {'$match': {'discount_code': code_u, 'status': 'approved'}},
+            {'$group': {'_id': None, 'usage_approved': {'$sum': 1},
+                        'revenue': {'$sum': {'$ifNull': ['$final_price', 0]}},
+                        'discount_given': {'$sum': {'$max': [0, {'$subtract': [
+                            {'$ifNull': ['$price', 0]}, {'$ifNull': ['$final_price', 0]}]}]}}}},
+        ]).to_list(1)
+        row = rows[0] if rows else {}
+        return {'usage_approved': int(row.get('usage_approved') or 0),
+                'revenue': int(row.get('revenue') or 0),
+                'discount_given': int(row.get('discount_given') or 0)}
 
 
     async def discount_bcast_create(self, code: str, target: str, created_by: int,

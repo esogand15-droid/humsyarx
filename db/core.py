@@ -90,6 +90,7 @@ class DBCore:
         # 🖥️🌊 موج WA2 — افزایشی: فیلترهای ذخیره‌شده‌ی وب‌ادمین (per-admin)
         # و متای آخرین تغییر تنظیمات (Last-Modified-By/At) برای Settings Center.
         self.wa_saved_filters  = _db['wa_saved_filters']
+        self.wa_api_metrics    = _db['wa_api_metrics']
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # FIX جدید: سیستم اشتراک — پلن‌ها، وضعیت هر کاربر، رسیدهای
@@ -164,8 +165,12 @@ class DBCore:
                 self.audit_logs.create_index([('target.type', 1), ('target.id', 1), ('timestamp', -1)], background=True),
                 self.grades.create_index([('student_id', 1), ('created_at', -1)], background=True),
                 self.grades.create_index([('lesson', 1), ('created_at', -1)], background=True),
+                self.grades.create_index([('exam_date', -1), ('lesson', 1)], background=True),
                 self.wa_saved_filters.create_index([('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
                 self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
+                self.wa_api_metrics.create_index([('at', 1)], expireAfterSeconds=2592000, background=True),
+                self.wa_api_metrics.create_index([('route', 1), ('at', -1)], background=True),
+                self.wa_api_metrics.create_index([('status', 1), ('at', -1)], background=True),
                 self.qbank_files.create_index([('lesson', 1), ('topic', 1)], background=True),
                 self.intakes.create_index('code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
@@ -698,10 +703,13 @@ class DBCore:
         today_start  = today_start_utc_str()
         week_ago     = (now - timedelta(days=7)).isoformat()
         month_ago    = (now - timedelta(days=30)).isoformat()
+        inactive_14 = (now - timedelta(days=14)).isoformat()
+        inactive_30 = (now - timedelta(days=30)).isoformat()
 
         (total_approved, total_pending, new_today, new_week, new_month,
          g1, g2, active_today, active_week, blocked_bot, content_admins,
-         all_approved_users, all_intakes, all_roles) = await asyncio.gather(
+         inactive_14d, inactive_30d, growth_rows, intake_rows,
+         all_intakes, all_roles) = await asyncio.gather(
             self.users.count_documents({'approved': True}),
             self.users.count_documents({'approved': False}),
             self.users.count_documents({'registered_at': {'$gte': today_start}}),
@@ -713,42 +721,35 @@ class DBCore:
             self.users.count_documents({'last_active': {'$gte': week_ago}}),
             self.users.count_documents({'blocked_bot': True}),
             self.users.count_documents({'role': 'content_admin'}),
-            self.users.find({'approved': True}).to_list(length=None),
+            self.users.count_documents({'approved': True, '$or': [
+                {'last_active': {'$lt': inactive_14}}, {'last_active': {'$exists': False}},
+                {'last_active': None}, {'last_active': ''}]}),
+            self.users.count_documents({'approved': True, '$or': [
+                {'last_active': {'$lt': inactive_30}}, {'last_active': {'$exists': False}},
+                {'last_active': None}, {'last_active': ''}]}),
+            self.users.aggregate([
+                {'$match': {'approved': True, 'registered_at': {'$gte': week_ago}}},
+                {'$group': {'_id': {'$substrBytes': ['$registered_at', 0, 10]}, 'count': {'$sum': 1}}},
+            ]).to_list(10),
+            self.users.aggregate([
+                {'$match': {'approved': True}},
+                {'$group': {'_id': {'$ifNull': ['$intake', '']}, 'count': {'$sum': 1}}},
+                {'$sort': {'count': -1}},
+            ]).to_list(500),
             self.get_all_intakes(),
             self.get_all_admin_roles(),
         )
 
-        inactive_14 = (now - timedelta(days=14)).isoformat()
-        inactive_30 = (now - timedelta(days=30)).isoformat()
-        inactive_14d = sum(
-            1 for u in all_approved_users
-            if not u.get('last_active') or u['last_active'] < inactive_14
-        )
-        inactive_30d = sum(
-            1 for u in all_approved_users
-            if not u.get('last_active') or u['last_active'] < inactive_30
-        )
-
-        # روند رشد ثبت‌نام ۷ روز اخیر
+        growth_map = {row.get('_id'): int(row.get('count') or 0) for row in growth_rows}
         growth_7d = []
         for i in range(6, -1, -1):
             day = now - timedelta(days=i)
-            d0  = day.strftime('%Y-%m-%dT00:00:00')
-            d1  = day.strftime('%Y-%m-%dT23:59:59')
-            cnt = sum(1 for u in all_approved_users if d0 <= (u.get('registered_at') or '') <= d1)
-            growth_7d.append((day.strftime('%m/%d'), cnt))
+            growth_7d.append((day.strftime('%m/%d'), growth_map.get(day.strftime('%Y-%m-%d'), 0)))
 
-        # تفکیک بر اساس ورودی
+        # تفکیک ورودی با aggregation؛ بدون hydration کاربران.
         intake_label = {i['code']: i['label'] for i in all_intakes}
-        intake_counts: dict = {}
-        for u in all_approved_users:
-            key = u.get('intake') or ''
-            intake_counts[key] = intake_counts.get(key, 0) + 1
-        by_intake = sorted(
-            [(intake_label.get(code, code) if code else 'بدون ورودی', cnt)
-             for code, cnt in intake_counts.items()],
-            key=lambda x: -x[1]
-        )
+        by_intake = [(intake_label.get(row.get('_id') or '', row.get('_id') or 'بدون ورودی'),
+                      int(row.get('count') or 0)) for row in intake_rows]
 
         role_counts: dict = {}
         for r in all_roles:
@@ -1492,12 +1493,12 @@ class DBCore:
 
         # کاربرانی که بیش از ۱۴ روز فعالیت نداشتند (احتمال غیرفعال شدن)
         inactive_cutoff = (datetime.now() - timedelta(days=14)).isoformat()
-        all_appr = await self.users.find({'approved': True}).to_list(length=None)
-        inactive_count = 0
-        for u in all_appr:
-            last = u.get('last_active', u.get('registered_at', ''))
-            if last < inactive_cutoff:
-                inactive_count += 1
+        inactive_count = await self.users.count_documents({'approved': True, '$or': [
+            {'last_active': {'$lt': inactive_cutoff}},
+            {'last_active': {'$exists': False}, 'registered_at': {'$lt': inactive_cutoff}},
+            {'last_active': None, 'registered_at': {'$lt': inactive_cutoff}},
+            {'last_active': '', 'registered_at': {'$lt': inactive_cutoff}},
+        ]})
 
         return {
             'new_users':          new_users,
@@ -1926,6 +1927,7 @@ class DBCore:
             'failed':    0,
             'total':     0,
             'finished_at': None,
+            'correlation_id': current_request_id.get(),
         })
         return str(r.inserted_id)
 
@@ -2274,7 +2276,8 @@ class DBCore:
 
 
     async def _grade_admin_query(self, intake: str = None, group: str = None,
-                                 q: str = None, lesson: str = None) -> dict:
+                                 q: str = None, lesson: str = None,
+                                 date_from: str = None, date_to: str = None) -> dict:
         """فیلتر مشترک Bot/Web برای فهرست نمره؛ join کاربر با distinct و بدون N+1."""
         clauses = []
         user_filter = {}
@@ -2288,6 +2291,11 @@ class DBCore:
             clauses.append({'student_id': {'$in': allowed_ids}})
         if lesson:
             clauses.append({'lesson': {'$regex': re.escape(lesson.strip()), '$options': 'i'}})
+        if date_from or date_to:
+            dates = {}
+            if date_from: dates['$gte'] = date_from[:10]
+            if date_to: dates['$lte'] = date_to[:10]
+            clauses.append({'exam_date': dates})
         if q and q.strip():
             search_ids = await self.users.distinct('user_id', self.build_user_search_query(q.strip()))
             if allowed_ids is not None:
@@ -2304,14 +2312,18 @@ class DBCore:
 
     async def grade_list_recent(self, skip: int = 0, limit: int = 10,
                                 intake: str = None, group: str = None,
-                                q: str = None, lesson: str = None) -> list:
-        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson)
+                                q: str = None, lesson: str = None,
+                                date_from: str = None, date_to: str = None) -> list:
+        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson,
+                                              date_from=date_from, date_to=date_to)
         return await self.grades.find(query).sort('created_at', -1).skip(skip).limit(limit).to_list(limit)
 
 
     async def grade_count_recent(self, intake: str = None, group: str = None,
-                                 q: str = None, lesson: str = None) -> int:
-        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson)
+                                 q: str = None, lesson: str = None,
+                                 date_from: str = None, date_to: str = None) -> int:
+        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson,
+                                              date_from=date_from, date_to=date_to)
         return await self.grades.count_documents(query)
 
 
@@ -2328,46 +2340,44 @@ class DBCore:
         ai_tokens_today هم در ai_inc_tokens. اینجا فقط جمع‌بندی‌شان می‌کنیم.
         """
         today = datetime.now().strftime('%Y-%m-%d')
-        rows = await self.users.find(
-            {'$or': [{'ai_total_usage': {'$gt': 0}}, {'ai_usage_date': today}]},
-            {
-                'user_id': 1, 'name': 1, 'ai_usage_count': 1, 'ai_usage_date': 1,
-                'ai_total_usage': 1, 'ai_total_tokens': 1, 'ai_tokens_today': 1,
-            },
-        ).to_list(length=None)
-
-        total_today = users_today = total_alltime = users_alltime = 0
-        tokens_today = tokens_alltime = 0
-        today_list, alltime_list = [], []
-
-        for u in rows:
-            alltime = u.get('ai_total_usage', 0) or 0
-            tokens_alltime += u.get('ai_total_tokens', 0) or 0
-            if alltime > 0:
-                total_alltime += alltime
-                users_alltime += 1
-                alltime_list.append((u.get('name') or '—', u.get('user_id'), alltime))
-
-            if u.get('ai_usage_date') == today:
-                today_count = u.get('ai_usage_count', 0) or 0
-                tokens_today += u.get('ai_tokens_today', 0) or 0
-                if today_count > 0:
-                    total_today += today_count
-                    users_today += 1
-                    today_list.append((u.get('name') or '—', u.get('user_id'), today_count))
-
-        today_list.sort(key=lambda x: x[2], reverse=True)
-        alltime_list.sort(key=lambda x: x[2], reverse=True)
-
+        # تمام sum/topها داخل MongoDB؛ هیچ full-user hydration برای Analytics.
+        rows = await self.users.aggregate([
+            {'$match': {'$or': [{'ai_total_usage': {'$gt': 0}}, {'ai_usage_date': today}]}},
+            {'$facet': {
+                'summary': [{'$group': {
+                    '_id': None,
+                    'total_alltime': {'$sum': {'$ifNull': ['$ai_total_usage', 0]}},
+                    'users_alltime': {'$sum': {'$cond': [{'$gt': [{'$ifNull': ['$ai_total_usage', 0]}, 0]}, 1, 0]}},
+                    'tokens_alltime': {'$sum': {'$ifNull': ['$ai_total_tokens', 0]}},
+                    'total_today': {'$sum': {'$cond': [{'$eq': ['$ai_usage_date', today]}, {'$ifNull': ['$ai_usage_count', 0]}, 0]}},
+                    'users_today': {'$sum': {'$cond': [{'$and': [{'$eq': ['$ai_usage_date', today]}, {'$gt': [{'$ifNull': ['$ai_usage_count', 0]}, 0]}]}, 1, 0]}},
+                    'tokens_today': {'$sum': {'$cond': [{'$eq': ['$ai_usage_date', today]}, {'$ifNull': ['$ai_tokens_today', 0]}, 0]}},
+                }}],
+                'top_today': [
+                    {'$match': {'ai_usage_date': today, 'ai_usage_count': {'$gt': 0}}},
+                    {'$sort': {'ai_usage_count': -1}}, {'$limit': max(1, min(int(top_n), 50))},
+                    {'$project': {'_id': 0, 'name': {'$ifNull': ['$name', '—']}, 'user_id': 1, 'value': '$ai_usage_count'}},
+                ],
+                'top_alltime': [
+                    {'$match': {'ai_total_usage': {'$gt': 0}}},
+                    {'$sort': {'ai_total_usage': -1}}, {'$limit': max(1, min(int(top_n), 50))},
+                    {'$project': {'_id': 0, 'name': {'$ifNull': ['$name', '—']}, 'user_id': 1, 'value': '$ai_total_usage'}},
+                ],
+            }},
+        ]).to_list(1)
+        facet = rows[0] if rows else {}
+        summary = (facet.get('summary') or [{}])[0]
+        tuple_rows = lambda key: [(row.get('name') or '—', row.get('user_id'), row.get('value', 0))
+                                  for row in facet.get(key, [])]
         return {
-            'total_today':   total_today,
-            'users_today':   users_today,
-            'total_alltime': total_alltime,
-            'users_alltime': users_alltime,
-            'tokens_today':   tokens_today,
-            'tokens_alltime': tokens_alltime,
-            'top_today':     today_list[:top_n],
-            'top_alltime':   alltime_list[:top_n],
+            'total_today': int(summary.get('total_today') or 0),
+            'users_today': int(summary.get('users_today') or 0),
+            'total_alltime': int(summary.get('total_alltime') or 0),
+            'users_alltime': int(summary.get('users_alltime') or 0),
+            'tokens_today': int(summary.get('tokens_today') or 0),
+            'tokens_alltime': int(summary.get('tokens_alltime') or 0),
+            'top_today': tuple_rows('top_today'),
+            'top_alltime': tuple_rows('top_alltime'),
         }
 
 
