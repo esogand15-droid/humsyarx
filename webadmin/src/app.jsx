@@ -2,6 +2,7 @@ import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useStat
 import { api, errText } from './api.js';
 import { ErrorState, Loading, Palette, ToastHost, toast } from './ui.jsx';
 import Login from './pages/Login.jsx';
+import { formatFaDate, formatFaDateTime } from './time.js';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
@@ -190,11 +191,11 @@ export default function App() {
     (r.users || []).forEach(u => out.push({ id: `u-${u.id}`, group: 'کاربران', icon: '👤', label: `${u.name || '—'} · ${u.student_id || u.id}`, hint: u.intake || '', go: `/users?q=${u.id}` }));
     (r.content || []).forEach(c => out.push({ id: `c-${c.path || c.title}`, group: 'محتوا', icon: '📚', label: c.title || '—', hint: c.type, go: `/content?q=${encodeURIComponent(c.title || '')}` }));
     (r.questions || []).forEach(x => out.push({ id: `q-${x.id}`, group: 'سؤال‌ها', icon: '🧪', label: x.text, hint: `${x.lesson} · ${x.topic}`, go: `/questions?q=${x.id}` }));
-    (r.exams || []).forEach(x => out.push({ id: `e-${x.id}`, group: 'آزمون‌ها', icon: '📝', label: x.lesson, hint: `${x.date} · گروه ${x.group}`, go: '/exams' }));
+    (r.exams || []).forEach(x => out.push({ id: `e-${x.id}`, group: 'آزمون‌ها', icon: '📝', label: x.lesson, hint: `${formatFaDate(x.date)} · گروه ${x.group}`, go: '/exams' }));
     (r.tickets || []).forEach(t => out.push({ id: `t-${t.id}`, group: 'تیکت‌ها', icon: '🎫', label: `#${t.id} ${t.subject}`, hint: t.status, go: `/tickets?q=${t.id}` }));
     (r.grades || []).forEach(g => out.push({ id: `g-${g.id}`, group: 'نمرات', icon: '📊', label: `${g.lesson} · ${g.exam_title}`, hint: `${g.score ?? '—'} · #${g.student_id}`, go: `/exams?tab=grades&q=${g.student_id}` }));
     (r.roles || []).forEach(role => out.push({ id: `role-${role.id}`, group: 'نقش‌ها', icon: '🛡', label: role.label || role.id, hint: `${role.permissions} مجوز`, go: '/rbac' }));
-    (r.broadcasts || []).forEach(b => out.push({ id: `b-${b.id}`, group: 'Broadcast', icon: '📢', label: b.text, hint: b.created_at, go: b.correlation_id ? `/audit?correlation_id=${encodeURIComponent(b.correlation_id)}` : '/notify' }));
+    (r.broadcasts || []).forEach(b => out.push({ id: `b-${b.id}`, group: 'Broadcast', icon: '📢', label: b.text, hint: formatFaDateTime(b.created_at), go: b.correlation_id ? `/audit?correlation_id=${encodeURIComponent(b.correlation_id)}` : '/notify' }));
     (r.payments || []).forEach(p => out.push({ id: `p-${p.id}`, group: 'پرداخت‌ها', icon: '🧾', label: `${p.plan} · #${p.user_id}`, hint: p.status, go: `/subscriptions?tab=payments&q=${p.id}` }));
     (r.subscriptions || []).forEach(s => out.push({ id: `s-${s.user_id}`, group: 'اشتراک‌ها', icon: '💎', label: `${s.plan} · #${s.user_id}`, hint: s.status, go: '/subscriptions?tab=subscribers' }));
     (r.notifications || []).forEach(n => out.push({ id: `n-${n.id}`, group: 'اعلان‌ها', icon: '🔔', label: n.text, hint: n.type, go: '/notify' }));

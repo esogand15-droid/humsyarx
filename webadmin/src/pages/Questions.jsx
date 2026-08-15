@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -131,7 +132,7 @@ export default function Questions({ route = '', go }) {
     { k: 'approved', label: 'وضعیت', render: r => <B kind={r.approved ? 'ok' : 'warn'}>{r.approved ? 'تأییدشده' : 'در انتظار'}</B> },
     { k: 'attempts', label: 'تلاش/دقت', sortable: true, render: r => <span>{fa(r.attempts)} · <B kind={r.accuracy >= 70 ? 'ok' : r.attempts ? 'warn' : ''}>{fa(r.accuracy)}٪</B></span> },
     { k: 'reports', label: 'گزارش', render: r => r.reports ? <B kind="bad">{fa(r.reports)}</B> : '—' },
-    { k: 'created_at', label: 'ایجاد', sortable: true, render: r => <span className="code muted">{r.created_at || '—'}</span> },
+    { k: 'created_at', label: 'ایجاد', sortable: true, render: r => <FaDateTime value={r.created_at} /> },
     { k: 'ops', label: '', stop: true, render: r => {
       const id = r.id || r._id;
       return (
@@ -176,8 +177,8 @@ export default function Questions({ route = '', go }) {
           <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
         <input className="inp" style={{ width: 150 }} placeholder="طراح یا ID…" value={author} onChange={e => { setAuthor(e.target.value); setPage(1); }} />
-        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} /></label>
-        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} /></label>
+        <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setPage(1); }} placeholder="تاریخ شمسی" /></label>
+        <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setPage(1); }} placeholder="تاریخ شمسی" /></label>
         <B kind="acc">{fa(total)} نتیجه</B>
       </FilterBar>
       <div className="muted" style={{ margin: '-4px 0 10px' }}>رد سؤال در domain فعلی به‌معنای حذف پیشنهاد و اطلاع به طراح است؛ آرشیو «ردشده»‌ی مستقلی در پایگاه داده وجود ندارد.</div>
@@ -437,7 +438,7 @@ function QuestionDrawer({ row, readonly = false, onClose, onAction, onSaved }) {
         <B>{SRC[row.source] || row.source || '—'}</B>
         <ScopeBadge scope={row.intake || 'global'} label={row.intake || 'سراسری'} />
         <span className="spacer" />
-        <span className="muted">👤 {row.creator_name || '—'} · {row.created_at || ''}</span>
+        <span className="muted">👤 {row.creator_name || '—'} · <FaDateTime value={row.created_at} fallback="" /></span>
       </div>
 
       {!edit ? (

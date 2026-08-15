@@ -750,6 +750,16 @@ select:focus-visible, textarea:focus-visible {
   clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important;
 }
 .ltr, [dir="ltr"] { direction: ltr; unicode-bidi: isolate; }
+.fa-time { direction: rtl; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+.fa-picker, .rmdp-container { width: 100%; }
+.fa-date-input { width: 100%; direction: rtl; text-align: right; font-variant-numeric: tabular-nums; }
+.rmdp-wrapper { direction: rtl; color: var(--c-txt); background: var(--c-bg2); border: 1px solid var(--c-line2); box-shadow: var(--sh-3); }
+.rmdp-calendar, .rmdp-header-values, .rmdp-week { direction: rtl; }
+.rmdp-day span { color: var(--c-txt2); }
+.rmdp-day.rmdp-today span { background: color-mix(in srgb, var(--c-acc) 32%, transparent); }
+.rmdp-day.rmdp-selected span:not(.highlight) { background: var(--c-acc); color: var(--c-bg); box-shadow: none; }
+.rmdp-arrow { border-color: var(--c-acc); }
+.rmdp-time-picker div input { color: var(--c-txt); background: var(--c-bg); border-color: var(--c-line); }
 .isolate { unicode-bidi: isolate; }
 .text-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stack { display: flex; flex-direction: column; gap: var(--sp3); }

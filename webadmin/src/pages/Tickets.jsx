@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, FilterBar, PageHeader, toast, NoPerm, Modal, Confirm } from '../ui.jsx';
+import { Loading, ErrorState, Empty, B, FaDateTime, FilterBar, PageHeader, toast, NoPerm, Modal, Confirm } from '../ui.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import SavedViews from '../SavedViews.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
@@ -141,8 +142,8 @@ export default function Tickets({ go, me }) {
       </FilterBar>
       {advanced && <FilterBar className="advanced-filter-bar">
         <label className="row"><input type="checkbox" checked={unanswered === 'true'} onChange={e => { setUnanswered(e.target.checked ? 'true' : ''); setPage(1); }} />بدون پاسخ پشتیبان</label>
-        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} /></label>
-        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} /></label>
+        <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setPage(1); }} ariaLabel="از تاریخ شمسی تیکت" /></label>
+        <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setPage(1); }} ariaLabel="تا تاریخ شمسی تیکت" /></label>
         <select className="inp" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="created_at">مرتب‌سازی ثبت</option><option value="last_reply_at">آخرین پاسخ</option></select>
         <select className="inp" value={sortDir} onChange={e => setSortDir(e.target.value)}><option value="desc">نزولی</option><option value="asc">صعودی</option></select>
         <button className="btn sm" onClick={() => { setUnanswered(''); setDateFrom(''); setDateTo(''); setSortBy('created_at'); setSortDir('desc'); setPage(1); }}>پاک‌کردن</button>
@@ -177,7 +178,7 @@ export default function Tickets({ go, me }) {
                     {t.subject || `تیکت ${id}`}
                   </div>
                   <div className="muted">
-                    {t.user_name || ''} · {t.created_at || ''}
+                    {t.user_name || ''} · <FaDateTime value={t.created_at} fallback="" />
                     {t.reply_count ? ` · 💬 ${Number(t.reply_count).toLocaleString('fa')}` : ''}
                   </div>
                 </div>
@@ -204,7 +205,7 @@ export default function Tickets({ go, me }) {
             <>
               <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 14px' }}>
                 <b style={{ color: 'var(--txt)', fontSize: 13 }}>{detail.subject || `تیکت ${detail.id}`}</b>
-                <span className="muted">#{detail.id} · {detail.created_at}</span>
+                <span className="muted">#{detail.id} · <FaDateTime value={detail.created_at} /></span>
                 <span className="spacer" />
                 <B kind={detail.status === 'open' ? 'bad' : detail.status === 'answered' ? 'warn' : 'ok'}>
                   {detail.status === 'open' ? 'باز' : detail.status === 'answered' ? 'پاسخ‌داده‌شده' : 'بسته'}
@@ -214,14 +215,14 @@ export default function Tickets({ go, me }) {
                 {detail.message && (
                   <div className="bubble user">
                     {detail.message}
-                    <div className="muted" style={{ marginTop: 4 }}>{detail.created_at || ''}</div>
+                    <div className="muted" style={{ marginTop: 4 }}><FaDateTime value={detail.created_at} fallback="" /></div>
                   </div>
                 )}
                 {(detail.replies || []).map((m, i) => (
                   <div key={i} className={`bubble ${(m.sender || m.by) === 'support' || (m.sender || m.by) === 'admin' ? 'admin' : 'user'}`}>
                     {m.text || m.message}
                     <div className="muted" style={{ marginTop: 4 }}>
-                      {(m.sender || m.by) === 'support' || (m.sender || m.by) === 'admin' ? '🛟 پشتیبانی · ' : ''}{m.at || m.created_at || ''}
+                      {(m.sender || m.by) === 'support' || (m.sender || m.by) === 'admin' ? '🛟 پشتیبانی · ' : ''}<FaDateTime value={m.at || m.created_at} fallback="" />
                     </div>
                   </div>
                 ))}
@@ -295,7 +296,7 @@ export default function Tickets({ go, me }) {
                 <div className="row"><input className="inp" style={{ flex: 1 }} placeholder="برچسب‌ها با ویرگول…" value={tags} onChange={e => setTags(e.target.value)} />
                   <button className="btn sm" onClick={() => patchMeta({ tags: tags.split(/[،,]/).map(x => x.trim()).filter(Boolean) })}>ذخیره برچسب</button></div>
                 {!!(detail.internal_notes || []).length && <div className="grid" style={{ gap: 5 }}>
-                  {detail.internal_notes.map(n => <div key={n.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}><div>{n.text}</div><div className="muted">فقط ادمین · {n.actor_name} · {n.at}</div></div>)}
+                  {detail.internal_notes.map(n => <div key={n.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}><div>{n.text}</div><div className="muted">فقط ادمین · {n.actor_name} · <FaDateTime value={n.at} /></div></div>)}
                 </div>}
                 <textarea className="inp" rows={2} maxLength={1500} placeholder="یادداشت داخلی — برای دانشجو ارسال نمی‌شود…" value={note} onChange={e => setNote(e.target.value)} />
                 <button className="btn sm" disabled={!note.trim()} onClick={addNote}>افزودن یادداشت داخلی</button>

@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, PageHeader, toast, NoPerm, Empty, Confirm, Switch, Modal } from '../ui.jsx';
+import { Loading, ErrorState, B, FaDateTime, PageHeader, toast, NoPerm, Empty, Confirm, Switch, Modal } from '../ui.jsx';
+import { PersianDateTimePicker } from '../PersianDatePicker.jsx';
+import { formatFaDateTime, isFutureInstant } from '../time.js';
 import { writeHashQuery } from '../urlState.js';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -143,7 +145,7 @@ export default function Notify({ route = '', go }) {
     try {
       const body = { text: messageType === 'text' ? text.trim() : '', message_type: messageType,
         file_id: messageType === 'text' ? '' : fileId, caption: messageType === 'text' ? '' : caption.trim(), target, send_at: null };
-      if (mode === 'later') body.send_at = new Date(sendAt).toISOString();
+      if (mode === 'later') body.send_at = sendAt;
       const r = await api.broadcast(body);
       setSent({ queued: r.queued || 0, scheduled: !!r.scheduled });
       loadHist(); loadSched();
@@ -178,23 +180,14 @@ export default function Notify({ route = '', go }) {
     catch (e) { toast(errText(e), 'err'); }
   };
 
-  const minAt = useMemo(() => {
-    const d = new Date(Date.now() + 5 * 60000);
-    d.setSeconds(0, 0);
-    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  }, [step]);
   const mediaUrl = useMemo(() => media ? URL.createObjectURL(media) : '', [media]);
   useEffect(() => () => { if (mediaUrl) URL.revokeObjectURL(mediaUrl); }, [mediaUrl]);
-  const sendAtFa = useMemo(() => {
-    if (!sendAt) return '';
-    try { return new Date(sendAt).toLocaleString('fa-IR', { dateStyle: 'full', timeStyle: 'short' }); }
-    catch { return sendAt; }
-  }, [sendAt]);
+  const sendAtFa = useMemo(() => sendAt ? formatFaDateTime(sendAt, { long: true }) : '', [sendAt]);
 
   const canNext1 = scope === 'all' || ((scope === 'intake' || scope === 'intake_group') && !!intake)
     || (scope === 'role' && !!role) || (scope === 'subscription' && !!subscriptionStatus);
   const canPreview = (messageType === 'text' ? text.trim().length >= 5 : !!fileId) && !busy;
-  const canConfirm = mode === 'now' || (!!sendAt && new Date(sendAt).getTime() > Date.now());
+  const canConfirm = mode === 'now' || (!!sendAt && isFutureInstant(sendAt));
 
   return (
     <>
@@ -357,14 +350,13 @@ export default function Notify({ route = '', go }) {
                 </label>
                 {mode === 'later' && (
                   <>
-                    <input type="datetime-local" className="inp" style={{ direction: 'ltr', textAlign: 'left' }}
-                           min={minAt} value={sendAt} onChange={e => setSendAt(e.target.value)} />
+                    <PersianDateTimePicker value={sendAt} onChange={setSendAt} ariaLabel="زمان ارسال شمسی به وقت تهران" />
                     {sendAt && (
                       <div className="ct3-kv"><span className="muted">زمان ارسال</span>
-                        <B kind={new Date(sendAt).getTime() > Date.now() ? 'warn' : 'bad'}>{sendAtFa}</B>
+                        <B kind={isFutureInstant(sendAt) ? 'warn' : 'bad'}>{sendAtFa}</B>
                       </div>
                     )}
-                    {sendAt && new Date(sendAt).getTime() <= Date.now() &&
+                    {sendAt && !isFutureInstant(sendAt) &&
                       <span className="muted" style={{ color: 'var(--c-bad)', fontSize: 11 }}>زمان انتخابی در گذشته است — زمان آینده برگزینید.</span>}
                   </>
                 )}
@@ -427,7 +419,7 @@ export default function Notify({ route = '', go }) {
                 {sched.map((it, i) => (
                   <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
                     <div className="row" style={{ flexWrap: 'wrap', gap: 5 }}>
-                      <B kind="warn">🗓 {(it.send_at || '').slice(0, 16).replace('T', ' ')}</B>
+                      <B kind="warn">🗓 <FaDateTime value={it.send_at} /></B>
                       <B kind="acc">{fa(it.total)} گیرنده</B>
                       <span className="spacer" />
                       <button className="btn sm danger" onClick={() => setCancelOf(it)}>🗑 لغو ارسال</button>
@@ -464,7 +456,7 @@ export default function Notify({ route = '', go }) {
                       <button className="btn sm" onClick={() => setCampaignDetail(h.campaign_id)}>جزئیات</button>
                       {h.failed > 0 && <button className="btn sm" onClick={async () => { try { const r = await api.broadcastRetryFailed(h.campaign_id); toast(`${fa(r.requeued)} گیرنده دوباره در صف قرار گرفت`); loadHist(); } catch (e) { toast(errText(e), 'err'); } }}>🔁 Retry Failed</button>}
                       {h.correlation_id && <button className="btn sm" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(h.correlation_id)}`)}>🧬 ردیابی</button>}
-                      <span className="muted">{(h.created_at || '').slice(0, 16).replace('T', ' ')}</span>
+                      <FaDateTime value={h.created_at} />
                     </div>
                     <div className="minibar-track" style={{ marginTop: 7 }}>
                       <div className="minibar-fill" style={{ width: `${pct}%` }} />
@@ -495,7 +487,7 @@ export default function Notify({ route = '', go }) {
                   <span style={{ minWidth: 130 }}>{r.job_name}</span>
                   <span className="muted">✔{fa(r.sent)} · ✖{fa(r.failed)} · {fa(r.total)}</span>
                   <span className="spacer" />
-                  <span className="muted">{r.started_at}</span>
+                  <FaDateTime value={r.started_at} />
                   <button className="btn sm" onClick={() => setRunDetail(r.id)}>جزئیات ‹</button>
                   {r.failed > 0 && <button className="btn sm" onClick={() => retry(r.id)}>🔁 تلاش مجدد</button>}
                 </div>
@@ -534,7 +526,7 @@ function CampaignDetail({ id, go, onClose, onRefresh }) {
   useEffect(load, [id]);
   return <Modal wide title={`📢 Campaign · ${id}`} onClose={onClose}>{err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
     <div className="grid g4"><div className="panel panel-pad"><b>{fa(data.campaign.total)}</b><div className="muted">Recipients</div></div><div className="panel panel-pad"><b className="ok-text">{fa(data.campaign.success)}</b><div className="muted">Success</div></div><div className="panel panel-pad"><b>{fa(data.campaign.skipped)}</b><div className="muted">Skipped</div></div><div className="panel panel-pad"><b className="bad-text">{fa(data.campaign.failed)}</b><div className="muted">Failed</div></div></div>
-    <dl className="kv"><dt>Status</dt><dd><B>{data.campaign.status}</B></dd><dt>Source</dt><dd>{data.campaign.source}</dd><dt>Type</dt><dd>{data.campaign.message_type}</dd><dt>Correlation ID</dt><dd className="code">{data.campaign.correlation_id || '—'}</dd><dt>Scheduled</dt><dd className="code">{data.campaign.send_at || '—'}</dd><dt>Finished</dt><dd className="code">{data.campaign.finished_at || '—'}</dd></dl>
+    <dl className="kv"><dt>Status</dt><dd><B>{data.campaign.status}</B></dd><dt>Source</dt><dd>{data.campaign.source}</dd><dt>Type</dt><dd>{data.campaign.message_type}</dd><dt>Correlation ID</dt><dd className="code">{data.campaign.correlation_id || '—'}</dd><dt>زمان‌بندی تهران</dt><dd><FaDateTime value={data.campaign.send_at} /></dd><dt>پایان</dt><dd><FaDateTime value={data.campaign.finished_at} /></dd></dl>
     {!!data.failures?.length && <div className="grid" style={{ gap: 5 }}><b>Failed recipients</b>{data.failures.map((x, i) => <div className="row" key={`${x.user_id}-${i}`}><span className="code">{x.user_id}</span><span className="muted">{x.error}</span></div>)}</div>}
     <div className="row" style={{ marginTop: 12 }}>{data.campaign.failed > 0 && <button className="btn" onClick={async () => { try { const r = await api.broadcastRetryFailed(id); toast(`${fa(r.requeued)} گیرنده دوباره در صف قرار گرفت`); load(); onRefresh(); } catch (e) { toast(errText(e), 'err'); } }}>🔁 Retry Failed</button>}{data.campaign.correlation_id && <button className="btn primary" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(data.campaign.correlation_id)}`)}>🧬 Investigation Chain</button>}</div>
   </>}</Modal>;
@@ -547,7 +539,7 @@ function NotificationRunDetail({ id, go, onClose, onRetry }) {
   return <Modal wide title="🔔 جزئیات اجرای اعلان" onClose={onClose}>
     {err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
       <div className="grid g4"><div className="panel panel-pad"><b>{fa(data.total)}</b><div className="muted">کل</div></div><div className="panel panel-pad"><b className="ok-text">{fa(data.sent)}</b><div className="muted">موفق</div></div><div className="panel panel-pad"><b>{fa(data.skipped)}</b><div className="muted">ردشده</div></div><div className="panel panel-pad"><b className="bad-text">{fa(data.failed)}</b><div className="muted">ناموفق</div></div></div>
-      <dl className="kv"><dt>Job</dt><dd>{data.job_name}</dd><dt>وضعیت</dt><dd><B kind={data.status === 'completed' ? 'ok' : data.status === 'failed' ? 'bad' : 'warn'}>{data.status}</B></dd><dt>شروع</dt><dd className="code">{data.started_at || '—'}</dd><dt>پایان</dt><dd className="code">{data.finished_at || '—'}</dd><dt>Correlation ID</dt><dd className="code">{data.correlation_id || '—'}</dd></dl>
+      <dl className="kv"><dt>Job</dt><dd>{data.job_name}</dd><dt>وضعیت</dt><dd><B kind={data.status === 'completed' ? 'ok' : data.status === 'failed' ? 'bad' : 'warn'}>{data.status}</B></dd><dt>شروع</dt><dd><FaDateTime value={data.started_at} /></dd><dt>پایان</dt><dd><FaDateTime value={data.finished_at} /></dd><dt>Correlation ID</dt><dd className="code">{data.correlation_id || '—'}</dd></dl>
       {data.message_preview && <div className="surface-inset"><div className="muted">پیش‌نمایش پیام ذخیره‌شده</div><div style={{ whiteSpace: 'pre-wrap' }}>{data.message_preview}</div></div>}
       {data.error && <div className="badge bad" style={{ marginTop: 8 }}>{data.error}</div>}
       {!!data.failed_targets?.length && <div style={{ marginTop: 10 }}><b>گیرندگان ناموفق</b><div className="grid" style={{ gap: 4 }}>{data.failed_targets.map((target, index) => <div className="row" key={`${target.user_id}-${index}`}><span className="code">{target.user_id}</span><span className="muted">{target.error}</span></div>)}</div>{data.failed_targets_truncated && <div className="muted">فهرست به ۱۰۰ مورد محدود شده است.</div>}</div>}
@@ -667,7 +659,7 @@ export function NotifIntervalPanel() {
                 onClick={save}>{busy ? '⏳' : 'ذخیره'}</button>
       </div>
       <div className="muted" style={{ marginTop: 8 }}>
-        🕐 آخرین ارسال: <span className="code">{(st.last_sent || '—').slice(0, 16).replace('T', ' ') || '—'}</span>
+        🕐 آخرین ارسال: <FaDateTime value={st.last_sent} />
       </div>
       {st.last_error && (
         <div className="badge bad" style={{ marginTop: 6 }} title={st.last_error}>

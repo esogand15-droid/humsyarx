@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
+import { Loading, ErrorState, B, DiffViewer, FaDateTime, FilterBar, PageHeader, toast, Switch, NoPerm, Empty, Confirm } from '../ui.jsx';
 
 const faN = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -10,6 +10,7 @@ const CATS = {
   donation: { icon: '💙', label: 'حمایت مالی' },
   backup:   { icon: '💾', label: 'بکاپ' },
   notif:    { icon: '🔔', label: 'پیش‌فرض اعلان‌ها' },
+  time:     { icon: '🕰', label: 'زمان و تاریخ سیستم' },
 };
 
 // ⚙️🌊 WA2.3 — مرکز کنترل تنظیمات: مقدار فعلی + توضیح + آخرین تغییردهنده/زمان + ذخیره + audit
@@ -107,7 +108,7 @@ export default function Settings() {
                   <div className="muted" style={{ marginTop: 4, lineHeight: 1.7 }}>{it.desc}</div>
                   {(it.updated_by || it.updated_at) && (
                     <div className="muted" style={{ marginTop: 6 }}>
-                      🕓 آخرین تغییر: {it.updated_by || '—'} · {it.updated_at || '—'}
+                      🕓 آخرین تغییر: {it.updated_by || '—'} · <FaDateTime value={it.updated_at} />
                       <B kind="acc" >🧭 در audit ثبت شده</B>
                     </div>
                   )}
@@ -145,9 +146,11 @@ export default function Settings() {
                            onChange={e => setEdited(x => ({ ...x, [it.key]: e.target.value }))} />
                   )}
                   {it.type === 'readonly' && (
-                    <B kind="acc">{it.value ? String(it.value).slice(0, 16).replace('T', ' ') : 'هنوز اجرا نشده'}</B>
+                    <B kind="acc">{it.value ? <FaDateTime value={it.value} /> : 'هنوز اجرا نشده'}</B>
                   )}
-                  {it.type !== 'readonly' && (it.key in edited) && JSON.stringify(edited[it.key]) !== JSON.stringify(it.value) && (
+                  {it.type === 'technical_time' && <span className="code ltr">{it.value || '—'}</span>}
+                  {it.type === 'info' && <B kind="acc">{it.value || '—'}</B>}
+                  {!['readonly', 'technical_time', 'info'].includes(it.type) && (it.key in edited) && JSON.stringify(edited[it.key]) !== JSON.stringify(it.value) && (
                     <button className="btn primary sm" onClick={() => save(it)}>💾 ذخیره</button>
                   )}
                 </div>

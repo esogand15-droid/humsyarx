@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
-import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
+import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FaDate, FaDateTime, RelativeTime, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 import SavedViews from '../SavedViews.jsx';
 import SmartQueryBuilder from '../SmartQueryBuilder.jsx';
+import { fileDateStamp } from '../time.js';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -96,7 +97,7 @@ export default function Users({ go, me, route = '' }) {
   const rememberUser360 = useCallback((uid, snapshot) => {
     const cache = user360Cache.current;
     cache.delete(uid);
-    cache.set(uid, { data: snapshot, at: Date.now() });
+    cache.set(uid, { data: snapshot, at: performance.now() });
     while (cache.size > USER360_CACHE_LIMIT) cache.delete(cache.keys().next().value);
   }, []);
   const updateUserFromSnapshot = useCallback((uid, snapshot) => {
@@ -170,7 +171,7 @@ export default function Users({ go, me, route = '' }) {
   };
   const exportSel = () => {
     const rows = (data.users || []).filter(u => sel.includes(u.id));
-    exportCSV(`users-${Date.now()}.csv`, [
+    exportCSV(`users-${fileDateStamp()}.csv`, [
       { label: 'id', v: 'id' }, { label: 'name', v: 'name' },
       { label: 'username', v: 'username' }, { label: 'student_id', v: 'student_id' },
       { label: 'intake', v: 'intake' }, { label: 'group', v: 'group' },
@@ -204,8 +205,8 @@ export default function Users({ go, me, route = '' }) {
     { k: 'ai_usage', label: 'هوشیار', render: r => faNum(r.ai_usage) },
     { k: 'streak', label: 'استریک', render: r => r.streak ? `🔥 ${faNum(r.streak)}` : '—' },
     { k: 'rank', label: 'رنک', render: r => r.rank ? <B kind="purple">{r.rank}{r.div ? ` / ${r.div}` : ''}</B> : '—' },
-    { k: 'last_active', label: 'آخرین فعالیت', render: r => <span className="muted code">{r.last_active || '—'}</span> },
-    { k: 'registered_at', label: 'ثبت‌نام', render: r => <span className="muted code">{r.registered_at || '—'}</span> },
+    { k: 'last_active', label: 'آخرین فعالیت', render: r => <RelativeTime value={r.last_active} /> },
+    { k: 'registered_at', label: 'ثبت‌نام', render: r => <FaDateTime value={r.registered_at} /> },
     { k: 'st', label: 'وضعیت', render: r => <div className="row" style={{ gap: 3 }}>{r.suspended
       ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B>}{r.has_open_ticket && <B kind="warn">🎫 باز</B>}</div> },
     { k: 'ops', label: '', stop: true, render: r => (
@@ -315,7 +316,7 @@ export default function Users({ go, me, route = '' }) {
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
       {detail && <UserDrawer row={detail} me={me} go={go} onClose={closeUserDrawer}
-        initialData={(() => { const cached = user360Cache.current.get(detail.id); return cached && Date.now() - cached.at < USER360_STALE_MS ? cached.data : null; })()}
+        initialData={(() => { const cached = user360Cache.current.get(detail.id); return cached && performance.now() - cached.at < USER360_STALE_MS ? cached.data : null; })()}
         onSnapshot={updateUserFromSnapshot}
         onRemoved={removeUserLocally} />}
       {blOpen && <BlacklistModal me={me} onClose={() => { setBlOpen(false); load(); }} />}
@@ -502,7 +503,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           <div className="grid g2" style={{ marginTop: 10 }}>
             <div className="panel panel-pad"><b>وضعیت حساب</b><div style={{ marginTop: 6 }}>
               {d.user.suspended ? <B kind="bad">تعلیق‌شده</B> : d.user.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار تأیید</B>}
-              <span className="muted"> · آخرین فعالیت: </span><span className="code">{d.user.last_active || 'ثبت نشده'}</span>
+              <span className="muted"> · آخرین فعالیت: </span><RelativeTime value={d.user.last_active} fallback="ثبت نشده" />
             </div></div>
             <div className="panel panel-pad"><b>اشتراک هامزیار</b><div style={{ marginTop: 6 }}>
               {d.subscription?.status === 'active' ? <><B kind="ok">{d.subscription.plan}</B><span className="muted"> {faNum(d.subscription.days_left)} روز باقی</span></> : <span className="muted">اشتراک فعال ندارد</span>}
@@ -519,7 +520,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
             'ورودی': d.user.intake, 'گروه': d.user.group, 'نقش قدیمی': d.user.role,
             'ثبت‌نام': d.user.registered_at, 'آخرین فعالیت': d.user.last_active,
           }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => (
-            <React.Fragment key={k}><dt>{k}</dt><dd className={k === 'Telegram ID' || k === 'یوزرنیم' ? 'code' : ''}>{String(v)}</dd></React.Fragment>
+            <React.Fragment key={k}><dt>{k}</dt><dd className={k === 'Telegram ID' || k === 'یوزرنیم' ? 'code' : ''}>{k === 'ثبت‌نام' || k === 'آخرین فعالیت' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>
           ))}
         </dl>
       )}
@@ -535,7 +536,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
               <span>📚</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <b style={{ color: 'var(--txt)' }}>{g.lesson}</b>
-                <div className="muted">{g.exam_title} · {g.exam_date}</div>
+                <div className="muted">{g.exam_title} · <FaDate value={g.exam_date} /></div>
               </div>
               <B kind={g.score >= 10 ? 'ok' : 'bad'}>{Number(g.score).toLocaleString('fa')}</B>
             </div>
@@ -560,7 +561,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           <div className="row" style={{ marginBottom: 8 }}><span className="muted">آزمون‌ها: {faNum(d.counts.exams)}</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('exams')}>مشاهده همه</button></div>
           {!(d.recent_exams || []).length && <Empty icon="📝" text="آزمونی ثبت نشده است" />}
           {(d.recent_exams || []).map(x => <div key={x.id} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
-            <div style={{ flex: 1 }}><b>{x.lesson || 'آزمون سفارشی'}</b><div className="muted">{x.topic || 'همه مباحث'} · {x.started_at}</div></div>
+            <div style={{ flex: 1 }}><b>{x.lesson || 'آزمون سفارشی'}</b><div className="muted">{x.topic || 'همه مباحث'} · <FaDateTime value={x.started_at} /></div></div>
             <B kind={x.status === 'finished' ? 'ok' : 'warn'}>{x.status}</B><B kind="acc">{faNum(x.percentage)}٪</B>
           </div>)}
         </>
@@ -580,7 +581,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
         </dl>
         {!!(d.prestige_history || []).length && <div style={{ marginTop: 12 }}><b>تاریخچه Prestige</b>
           {(d.prestige_history || []).map(x => <div key={x.id} className="row" style={{ padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
-            <span style={{ flex: 1 }}>{x.title || x.kind || 'رویداد'}</span><B kind={x.xp >= 0 ? 'ok' : 'warn'}>{x.xp >= 0 ? '+' : ''}{faNum(x.xp)} XP</B><span className="muted">{x.at}</span>
+            <span style={{ flex: 1 }}>{x.title || x.kind || 'رویداد'}</span><B kind={x.xp >= 0 ? 'ok' : 'warn'}>{x.xp >= 0 ? '+' : ''}{faNum(x.xp)} XP</B><FaDateTime value={x.at} />
           </div>)}</div>}
         </>
       )}
@@ -609,7 +610,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           {(d.recent_notifications || []).map(x => <div key={x.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
             <div className="row"><b>{x.title || x.type || 'اعلان'}</b><span className="spacer" />
               <B kind={x.read ? '' : 'acc'}>{x.read ? 'خوانده‌شده' : 'جدید'}</B></div>
-            {x.body && <div className="muted">{x.body}</div>}<div className="muted">{x.at}</div>
+            {x.body && <div className="muted">{x.body}</div>}<div className="muted"><FaDateTime value={x.at} /></div>
           </div>)}
         </>
       )}
@@ -631,7 +632,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           <dl className="kv">
             <dt>وضعیت</dt><dd>{d.subscription.status === 'active' ? '✅ فعال' : d.subscription.status || '—'}</dd>
             <dt>پلن</dt><dd>{d.subscription.plan || '—'}</dd>
-            <dt>پایان</dt><dd>{d.subscription.end_date || '—'}</dd>
+            <dt>پایان</dt><dd><FaDateTime value={d.subscription.end_date} /></dd>
             <dt>روزهای باقی</dt><dd>{d.subscription.days_left ?? '—'}</dd>
           </dl>
         ) : <div className="center-state">اشتراک فعالی ندارد</div>}
@@ -648,7 +649,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
               <span style={{ flex: 1 }}>{t.subject}</span>
               <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
                 {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}</B>
-              <span className="muted">{t.at}</span>
+              <FaDateTime value={t.at} />
             </div>
           ))}
         </>
@@ -661,7 +662,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
             onClick={() => event.go && go(event.go)}>
             <span style={{ fontSize: 18 }}>{event.icon || '•'}</span>
             <span style={{ flex: 1 }}><b>{event.title}</b>{event.description && <span className="muted" style={{ display: 'block' }}>{event.description}</span>}</span>
-            <span className="muted code">{event.at || '—'}</span><span className="muted">‹</span>
+            <FaDateTime value={event.at} /><span className="muted">‹</span>
           </button>)}
         </>
       )}
@@ -676,7 +677,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
               {!!l.changes?.length && <B kind="acc">Δ {faNum(l.changes.length)}</B>}
               <B>{l.module}</B>
               {l.correlation_id && <span className="code">{l.correlation_id}</span>}
-              <span className="muted">{l.at}</span>
+              <FaDateTime value={l.at} />
             </div>
           ))}
         </>
@@ -691,7 +692,7 @@ function UserRelationModal({ uid, section, onClose }) {
   const load = async () => { setData(null); setErr(''); try { setData(await api.userRelations(uid, section, { skip: (page - 1) * limit, limit })); } catch (e) { setErr(errText(e)); } };
   useEffect(() => { load(); }, [page, section]);
   return <Modal wide title={`تاریخچه کامل · ${section}`} onClose={onClose}>{err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={6} /> : <>
-    {!data.items?.length ? <Empty text="رکوردی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{data.items.map(x => <div key={x.id} className="panel panel-pad"><div className="row"><b className="text-wrap">{x.title || '—'}</b>{x.status && <B>{x.status}</B>}<span className="spacer" /><span className="muted code">{String(x.at || '').slice(0, 16).replace('T', ' ')}</span></div>{x.detail && <div className="muted text-wrap">{typeof x.detail === 'object' ? JSON.stringify(x.detail) : x.detail}</div>}{x.value !== undefined && <B kind="acc">{String(x.value)}</B>}</div>)}</div>}
+    {!data.items?.length ? <Empty text="رکوردی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{data.items.map(x => <div key={x.id} className="panel panel-pad"><div className="row"><b className="text-wrap">{x.title || '—'}</b>{x.status && <B>{x.status}</B>}<span className="spacer" /><FaDateTime value={x.at} /></div>{x.detail && <div className="muted text-wrap">{typeof x.detail === 'object' ? JSON.stringify(x.detail) : x.detail}</div>}{x.value !== undefined && <B kind="acc">{String(x.value)}</B>}</div>)}</div>}
     <div className="row" style={{ justifyContent: 'center', marginTop: 10 }}><button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>قبلی</button><B>{page.toLocaleString('fa')}</B><button className="btn sm" disabled={page * limit >= (data.total || 0)} onClick={() => setPage(p => p + 1)}>بعدی</button></div>
   </>}</Modal>;
 }

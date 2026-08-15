@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Stat, Loading, ErrorState, B, PageHeader, toast } from '../ui.jsx';
+import { Stat, Loading, ErrorState, B, FaDateTime, RelativeTime, PageHeader, toast } from '../ui.jsx';
 
 // 📊 داشبورد عملیات + ⚠️ نیازمند اقدام (WA2.7) + 🕓 فید فعالیت واقعی (WA2.7)
 // 🌊 موج Dash-Personalize — نمایش/پنهان بخش‌ها (ترجیح محلی هر مرورگر، localStorage)
@@ -114,7 +114,7 @@ export default function Dashboard({ me, go }) {
             {attn.backup && (
               <B kind={attn.backup.enabled ? 'ok' : 'warn'}>
                 💾 بکاپ خودکار {attn.backup.enabled ? 'فعال' : 'غیرفعال'}
-                {attn.backup.last_run ? ` · آخرین: ${String(attn.backup.last_run).slice(0, 16).replace('T', ' ')}` : ''}
+                {attn.backup.last_run ? <> · آخرین: <FaDateTime value={attn.backup.last_run} /></> : null}
               </B>
             )}
             {!attnItems.length && <B kind="ok">همه‌ی صف‌ها خالی‌اند 🎉</B>}
@@ -128,7 +128,7 @@ export default function Dashboard({ me, go }) {
                     <div className="row"><b style={{ color: 'var(--txt)', fontSize: 15 }}>{Number(i.count).toLocaleString('fa')}</b>
                       {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
                     <div className="muted">{i.label}</div>
-                    {i.timestamp && <div className="muted code" style={{ marginTop: 3 }}>{String(i.timestamp).slice(0, 16).replace('T', ' ')}</div>}
+                    {i.timestamp && <div className="muted" style={{ marginTop: 3 }}><FaDateTime value={i.timestamp} /></div>}
                   </div>
                   <span className="muted">‹</span>
                 </button>
@@ -226,7 +226,7 @@ export default function Dashboard({ me, go }) {
             {feed.length === 0 && <div className="center-state">رویدادی نیست</div>}
             {feed.slice(0, 14).map(f => (
               <div key={f.id} className="feed-row">
-                <span className="muted" style={{ minWidth: 104, direction: 'ltr', textAlign: 'right' }}>{f.at}</span>
+                <span className="muted" style={{ minWidth: 132 }}><RelativeTime value={f.at} /></span>
                 <span className={`sev ${(f.severity || '').toLowerCase()}`} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ color: 'var(--txt)' }}>{f.actor_name}</span>

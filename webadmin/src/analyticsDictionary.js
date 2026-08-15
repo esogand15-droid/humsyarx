@@ -58,7 +58,7 @@ export const ANALYTICS_DICTIONARY = {
     approved_total: { label: 'رسیدهای تأییدشده', unit: 'رسید', range: 'تجمعی', source: 'sub_payments.status', calculation: 'تعداد رسیدهای با status=approved' },
     rejected_total: { label: 'رسیدهای ردشده', unit: 'رسید', range: 'تجمعی', source: 'sub_payments.status', calculation: 'تعداد رسیدهای با status=rejected' },
     revenue: { label: 'درآمد ثبت‌شده', unit: 'تومان', range: 'تجمعی رسیدهای تأییدشده', source: 'sub_payments.final_price', calculation: 'جمع final_price یا price رسیدهای تأییدشده' },
-    revenue_month: { label: 'درآمد ماه جاری', unit: 'تومان', range: 'ماه جاری سرور', source: 'sub_payments.final_price/reviewed_at', calculation: 'جمع مبلغ رسیدهای تأییدشده با reviewed_at از آغاز ماه' },
+    revenue_month: { label: 'درآمد ماه جاری', unit: 'تومان', range: 'ماه جاری به وقت تهران', source: 'sub_payments.final_price/reviewed_at', calculation: 'جمع مبلغ رسیدهای تأییدشده با reviewed_at از آغاز ماه' },
     conv_rate: { label: 'نرخ تأیید رسیدهای بررسی‌شده', unit: 'درصد', range: 'تجمعی', source: 'sub_payments.status', calculation: 'تأییدشده تقسیم بر مجموع تأییدشده و ردشده × ۱۰۰' },
     top_plan: { label: 'پرتکرارترین پلن اشتراک', unit: 'نام پلن', range: 'رسیدهای تأییدشده تجمعی', source: 'sub_payments.plan_name', calculation: 'پلن با بیشترین تعداد رسید تأییدشده' },
   },

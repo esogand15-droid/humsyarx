@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, PageHeader, Tabs, DiffViewer, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FaDate, PageHeader, Tabs, DiffViewer, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { fileDateStamp, formatFaDate, formatFaTime } from '../time.js';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 
@@ -106,7 +108,7 @@ function ExamsTab({ autoCreate = false, initialStatus = '' }) {
 
       {edit && <ExamModal row={edit.id ? edit : null} seed={edit.clone || null} onClose={(ch) => { setEdit(null); if (ch) load(); }} />}
       {confirm && (
-        <Confirm text={`حذف آزمون «${confirm.lesson}» (${confirm.date})؟`} danger
+        <Confirm text={`حذف آزمون «${confirm.lesson}» (${formatFaDate(confirm.date)})؟`} danger
                  onYes={async () => {
                    try { const r = await api.examDelete(confirm.id); toast(`آزمون لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); setConfirm(null); load(); }
                    catch (e) { toast(errText(e), 'err'); setConfirm(null); }
@@ -132,14 +134,10 @@ function ExamModal({ row, seed, onClose }) {
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
 
-  const faDate = (() => {
-    if (!f.date) return '—';
-    try { return new Date(f.date + 'T00:00:00').toLocaleDateString('fa-IR', { dateStyle: 'full' }); }
-    catch { return f.date; }
-  })();
+  const faDate = f.date ? formatFaDate(f.date, { long: true }) : '—';
   const okStep1 = !!f.lesson.trim();
   const okStep2 = !!f.date;
-  const todayIso = new Date().toLocaleDateString('en-CA');
+  const todayIso = fileDateStamp();
 
   const submit = async () => {
     setBusy(true);
@@ -190,16 +188,15 @@ function ExamModal({ row, seed, onClose }) {
       {step === 2 && (
         <div className="grid" style={{ gap: 10 }}>
           <div className="row">
-            <label className="muted" style={{ fontSize: 11, flex: 1 }}>تاریخ *
-              <input className="inp" type="date" style={{ direction: 'ltr' }} value={f.date}
-                     onChange={e => set('date', e.target.value)} /></label>
+            <label className="muted" style={{ fontSize: 11, flex: 1 }}>تاریخ شمسی *
+              <PersianDatePicker value={f.date} onChange={value => set('date', value)} ariaLabel="تاریخ شمسی آزمون" /></label>
             <label className="muted" style={{ fontSize: 11, width: 130 }}>ساعت
               <input className="inp" type="time" style={{ direction: 'ltr' }} value={f.time}
                      onChange={e => set('time', e.target.value)} /></label>
           </div>
           {f.date && (
             <div className="ct3-kv"><span className="muted">نمایش به دانشجو</span>
-              <B kind={f.date < todayIso ? 'warn' : 'acc'}>{faDate}{f.time ? ` · ساعت ${f.time}` : ''}</B>
+              <B kind={f.date < todayIso ? 'warn' : 'acc'}>{faDate}{f.time ? ` · ساعت ${formatFaTime(f.time)}` : ''}</B>
             </div>
           )}
           {f.date && f.date < todayIso && !row && (
@@ -223,7 +220,7 @@ function ExamModal({ row, seed, onClose }) {
           <div className="ct3-kv"><span className="muted">عنوان</span><b>{f.lesson}</b></div>
           <div className="ct3-kv"><span className="muted">استاد</span><span>{f.teacher || '—'}</span></div>
           <div className="ct3-kv"><span className="muted">گروه</span><B>{f.group}</B></div>
-          <div className="ct3-kv"><span className="muted">زمان</span><span>{faDate}{f.time ? ` · ${f.time}` : ''}</span></div>
+          <div className="ct3-kv"><span className="muted">زمان</span><span>{faDate}{f.time ? ` · ${formatFaTime(f.time)}` : ''}</span></div>
           <div className="ct3-kv"><span className="muted">مکان</span><span>{f.location || '—'}</span></div>
           {f.notes && <div className="ct3-kv"><span className="muted">یادداشت</span><span>{f.notes}</span></div>}
           <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 12 }}>
@@ -284,7 +281,7 @@ function GradesTab({ autoCreate = false, initial = {} }) {
         <div className="muted code">{r.student_number || `#${r.student_id}`}</div></div>) },
     { k: 'lesson', label: 'درس' },
     { k: 'exam_title', label: 'عنوان آزمون' },
-    { k: 'exam_date', label: 'تاریخ', render: r => <span className="code">{r.exam_date}</span> },
+    { k: 'exam_date', label: 'تاریخ', render: r => <FaDate value={r.exam_date} /> },
     { k: 'score', label: 'نمره', render: r => (
       <B kind={r.score >= 10 ? 'ok' : 'bad'}>{Number(r.score).toLocaleString('fa')}</B>) },
     { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
@@ -305,8 +302,8 @@ function GradesTab({ autoCreate = false, initial = {} }) {
         <input className="inp" placeholder="فیلتر درس…" value={lesson} onChange={e => { setLesson(e.target.value); setSkip(0); }} />
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setSkip(0); }}><option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
         <select className="inp" value={intake} onChange={e => { setIntake(e.target.value); setSkip(0); }}><option value="">همه ورودی‌ها</option>{intakes.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select>
-        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setSkip(0); }} /></label>
-        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setSkip(0); }} /></label>
+        <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setSkip(0); }} ariaLabel="از تاریخ شمسی" /></label>
+        <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setSkip(0); }} ariaLabel="تا تاریخ شمسی" /></label>
       </div>
       <SavedViews scope="grades" filters={{ q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setIntake(f.intake || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
 
@@ -402,8 +399,7 @@ function GradeBulkModal({ onClose }) {
                  onChange={e => setMeta({ ...meta, lesson: e.target.value })} />
           <input className="inp" placeholder="عنوان آزمون *" value={meta.exam_title}
                  onChange={e => setMeta({ ...meta, exam_title: e.target.value })} />
-          <input className="inp" type="date" title="تاریخ آزمون" value={meta.exam_date}
-                 onChange={e => setMeta({ ...meta, exam_date: e.target.value })} />
+          <PersianDatePicker value={meta.exam_date} onChange={value => setMeta({ ...meta, exam_date: value })} ariaLabel="تاریخ شمسی نمره" />
         </div>
         <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
           <div className="row"><div><b>درون‌ریزی CSV</b><div className="muted">دو ستون: Telegram ID و نمره؛ جداشده با comma، semicolon یا tab</div></div>

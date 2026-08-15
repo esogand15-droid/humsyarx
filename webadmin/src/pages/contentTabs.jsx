@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, Empty, B, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, Empty, B, FaDateTime, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { faDigits, formatFaDate, formatFaTime, jalaliDateParts, jalaliMonthLengthFor } from '../time.js';
 import {
   ContentActionGroup, ContentBreadcrumb, ContentDensityToggle, ContentEmptyState,
   ContentErrorState, ContentIconButton, ContentItem, ContentKV, ContentMetric, ContentMoreActions,
@@ -303,8 +305,10 @@ export function ScheduleTab() {
 
   const TYPE_FA = { class: 'کلاس', exam: 'امتحان', makeup: 'جبرانی' };
   const byDate = (items || []).reduce((acc, item) => { (acc[item.date || 'بدون تاریخ'] ||= []).push(item); return acc; }, {});
-  const monthKey = Object.keys(byDate).find(x => /^\d{4}-\d{2}-\d{2}$/.test(x))?.slice(0, 7) || '';
-  const monthItems = monthKey ? (items || []).filter(x => (x.date || '').startsWith(monthKey)) : [];
+  const datedItems = (items || []).map(item => ({ item, parts: jalaliDateParts(item.date) })).filter(x => x.parts);
+  const monthKey = datedItems[0]?.parts.monthKey || '';
+  const monthItems = monthKey ? datedItems.filter(x => x.parts.monthKey === monthKey) : [];
+  const monthLength = monthItems.length ? jalaliMonthLengthFor(monthItems[0].item.date) : 0;
   return (
     <>
       <div className="row content-tab-toolbar">
@@ -328,7 +332,7 @@ export function ScheduleTab() {
                 <b className="content-strong">{s.lesson}</b>
                 <span className="muted"> {s.teacher || ''}</span>
                 <div className="muted content-meta-top">
-                  📅 <span className="code">{s.date}</span> {s.time || ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
+                  📅 {formatFaDate(s.date)} {s.time ? formatFaTime(s.time) : ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
                 </div>
                 {s.flex_note && <div className="muted content-meta-top">🔄 آخرین اعلان: {s.flex_note}</div>}
               </div>
@@ -339,7 +343,7 @@ export function ScheduleTab() {
               <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })} aria-label={`ویرایش برنامه ${s.lesson}`}>✏️</button>
               <button className="btn sm" onClick={() => setEdit({ ...s, id: null, lesson: `${s.lesson} — کپی`, note: s.note || '' })} aria-label={`کپی برنامه ${s.lesson}`}>📄</button>
               <button className="btn sm danger" aria-label={`حذف برنامه ${s.lesson}`} onClick={() => setConfirm({
-                text: `حذف «${s.lesson}» (${s.date})؟`,
+                text: `حذف «${s.lesson}» (${formatFaDate(s.date)})؟`,
                 run: async () => { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); load(); },
               })}>🗑</button>
             </div>
@@ -347,18 +351,18 @@ export function ScheduleTab() {
         </div>
         {view === 'week' && <div className="schedule-agenda">
           {Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).slice(0, 7).map(([day, rows]) => <section key={day} className="panel panel-pad">
-            <div className="section-title"><span className="code">{day}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>
+            <div className="section-title"><span>{formatFaDate(day)}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>
             <div className="grid content-grid-tight">{rows.map(s => <button key={s.id} className="schedule-agenda-item" onClick={() => setEdit({ ...s, note: s.note || '' })}>
-              <span>{s.time || '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
+              <span>{s.time ? formatFaTime(s.time) : '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
             </button>)}</div>
           </section>)}
         </div>}
         {view === 'month' && <div className="schedule-month">
-          <div className="schedule-month-head"><b>{monthKey || 'ماه داده‌های موجود'}</b><span className="muted">نمای ماه بر اساس تاریخ‌های واقعی ثبت‌شده</span></div>
-          <div className="schedule-month-grid">{Array.from({ length: 31 }, (_, i) => i + 1).map(day => {
-            const rows = monthItems.filter(x => Number((x.date || '').slice(8, 10)) === day);
+          <div className="schedule-month-head"><b>{monthKey ? faDigits(monthKey) : 'ماه داده‌های موجود'}</b><span className="muted">نمای ماه شمسی بر اساس تاریخ‌های واقعی ثبت‌شده</span></div>
+          <div className="schedule-month-grid">{Array.from({ length: monthLength }, (_, i) => i + 1).map(day => {
+            const rows = monthItems.filter(x => x.parts.day === day).map(x => x.item);
             return <div key={day} className={`schedule-day ${rows.length ? 'has' : ''}`}><span className="muted">{day.toLocaleString('fa')}</span>
-              {rows.slice(0, 3).map(s => <button key={s.id} onClick={() => setEdit({ ...s, note: s.note || '' })} title={`${s.lesson} · ${s.time || ''}`}>{s.time || '•'} {s.lesson}</button>)}
+              {rows.slice(0, 3).map(s => <button key={s.id} onClick={() => setEdit({ ...s, note: s.note || '' })} title={`${s.lesson} · ${s.time ? formatFaTime(s.time) : ''}`}>{s.time ? formatFaTime(s.time) : '•'} {s.lesson}</button>)}
               {rows.length > 3 && <B>+{(rows.length - 3).toLocaleString('fa')}</B>}
             </div>;
           })}</div>
@@ -401,7 +405,7 @@ function ScheduleModal({ row, preset, onClose }) {
         </div>
         <input className="inp" placeholder="درس / عنوان *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
         <div className="row">
-          <input className="inp" type="date" value={f.date} onChange={e => set('date', e.target.value)} />
+          <PersianDatePicker value={f.date} onChange={value => set('date', value)} placeholder="تاریخ شمسی" />
           <input className="inp" type="time" value={f.time} onChange={e => set('time', e.target.value)} />
         </div>
         <input className="inp" placeholder="استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} />
@@ -434,7 +438,7 @@ function FlexModal({ row, onClose }) {
       <div className="grid content-modal-grid">
         <p className="muted">این اکشن زمان جدید را ثبت و برای دانشجویان این گروه اطلاع‌رسانی می‌کند.</p>
         <div className="row">
-          <input className="inp" type="date" value={f.date} onChange={e => setF(x => ({ ...x, date: e.target.value }))} />
+          <PersianDatePicker value={f.date} onChange={value => setF(x => ({ ...x, date: value }))} placeholder="تاریخ شمسی" />
           <input className="inp" type="time" value={f.time} onChange={e => setF(x => ({ ...x, time: e.target.value }))} />
         </div>
         <input className="inp" placeholder="یادداشت (اختیاری)…" value={f.note} onChange={e => setF(x => ({ ...x, note: e.target.value }))} />
@@ -514,7 +518,7 @@ export function QbankTab() {
                   title={`${file.lesson} — ${file.topic}`} meta={file.description || 'بدون توضیح'}
                   active={selectedFile?.id === file.id} readonly={file.readonly}
                   scope={scopeFor(file)} scopeLabel={file.intake || 'سراسری'} onClick={() => setSelectedFile(file)}
-                  metrics={<><ContentMetric icon="⬇" value={Number(file.downloads || 0).toLocaleString('fa')} label="دریافت" /><span className="content-date" dir="ltr">{file.upload_date}</span></>}
+                  metrics={<><ContentMetric icon="⬇" value={Number(file.downloads || 0).toLocaleString('fa')} label="دریافت" /><span className="content-date"><FaDateTime value={file.upload_date} /></span></>}
                   actions={!file.readonly ? <ContentMoreActions label="عملیات فایل">
                     {intakeMeta.scope_kind === 'global' && <ContentIconButton icon="📦" label="انتقال فایل به دامنه دیگر" onClick={() => setRootMove({ kind: 'qbank', id: file.id, label: file.description || `${file.lesson} / ${file.topic}`, from: file.intake || '' })} />}
                     <ContentIconButton icon="🗑" label={`حذف فایل ${file.description || file.topic}`} kind="danger" onClick={() => setConfirm({
@@ -712,7 +716,7 @@ export function ReportsTab() {
     { k: 'target_type', label: 'هدف', render: r => <div><b>{r.target_type === 'question' ? 'سؤال' : 'محتوا'}</b><div className="muted code">{r.target_id || '—'}</div></div> },
     { k: 'note', label: 'توضیح', render: r => <span className="content-pre-wrap">{r.note || '—'}</span> },
     { k: 'reporter_name', label: 'گزارش‌دهنده' },
-    { k: 'created_at', label: 'ثبت' },
+    { k: 'created_at', label: 'ثبت', render: r => <FaDateTime value={r.created_at} /> },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'resolved' ? 'ok' : r.status === 'rejected' ? 'bad' : r.status === 'reviewing' ? 'acc' : 'warn'}>{r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => <div className="row content-actions-tight">
       {r.status !== 'reviewing' && <button className="btn sm" onClick={() => setConfirm({ row: r, status: 'reviewing' })}>👁 بررسی</button>}

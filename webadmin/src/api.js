@@ -1,3 +1,5 @@
+import { fileDateStamp } from './time.js';
+
 // 🖥️ کلاینت API وب‌ادمین — same-origin با کوکی HttpOnly (wa_session)
 // هیچ توکن در localStorage ذخیره نمی‌شود.
 
@@ -86,7 +88,7 @@ export const api = {
   dataQualityItems: (kind, p = {}) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}?` + new URLSearchParams(p)),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
-  exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${new Date().toISOString().slice(0, 10)}.csv`),
+  exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${fileDateStamp()}.csv`),
   usersBulk: (action, ids, value) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
@@ -108,7 +110,7 @@ export const api = {
   correlationChain: (id) => req(`/api/web-admin/audit/correlation/${encodeURIComponent(id)}`),
   ticketsBulk: (action, ids) => req('/api/web-admin/tickets/bulk', { method: 'POST', body: { action, ids } }),
   questions: (p = {}) => req('/api/web-admin/questions?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
-  exportQuestionsCsv: (p = {}) => downloadFile('/api/web-admin/exports/questions.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-questions-${new Date().toISOString().slice(0, 10)}.csv`),
+  exportQuestionsCsv: (p = {}) => downloadFile('/api/web-admin/exports/questions.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-questions-${fileDateStamp()}.csv`),
   questionsBulk: (action, ids, patch) => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids, patch } }),
   settingsCenter: () => req('/api/web-admin/settings/center'),
   patchSetting: (key, value, applyToExisting = false) => req(`/api/web-admin/settings/center/${encodeURIComponent(key)}`, { method: 'PATCH', body: { value, apply_to_existing: applyToExisting } }),
@@ -164,7 +166,7 @@ export const api = {
   analytics: (days) => req('/api/admin/analytics' + (days ? `?days=${days}` : '')),
   // 🛡 RBAC-Execution — مسیرهای permission-based (owner routeهای قدیمی دست‌نخورده)
   tickets: (p = {}) => req('/api/web-admin/tickets?' + new URLSearchParams(Object.entries(typeof p === 'string' ? { status: p } : p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
-  exportTicketsCsv: (p = {}) => downloadFile('/api/web-admin/exports/tickets.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-tickets-${new Date().toISOString().slice(0, 10)}.csv`),
+  exportTicketsCsv: (p = {}) => downloadFile('/api/web-admin/exports/tickets.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-tickets-${fileDateStamp()}.csv`),
   ticket: (tid) => req(`/api/web-admin/tickets/${tid}`),
   ticketAssignees: () => req('/api/web-admin/tickets/assignees'),
   ticketAnalytics: () => req('/api/web-admin/tickets/analytics/summary'),
@@ -196,8 +198,9 @@ export const api = {
   channelLockAdd: (body) => req('/api/admin/channel-lock', { method: 'POST', body }),
   channelLockDel: (id) => req(`/api/admin/channel-lock/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   auditLogs: (p) => req('/api/web-admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
-  exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v)), `humsyar-audit-${new Date().toISOString().slice(0, 10)}.csv`),
+  exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v)), `humsyar-audit-${fileDateStamp()}.csv`),
   systemJobs: () => req('/api/web-admin/system/jobs'),
+  systemTimeStandard: () => req('/api/web-admin/system/time-standard'),
   systemObservability: (hours = 24) => req(`/api/web-admin/system/observability?hours=${hours}`),
   securitySessions: (page = 1, limit = 30) => req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),
   revokeSecuritySession: (id, reason) => req(`/api/web-admin/system/security/sessions/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: { reason } }),
@@ -328,7 +331,7 @@ export const api = {
   aiPersonaDelete: (name) => req(`/api/web-admin/ai/personas/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   aiBroadcastDraft: (notes) => req('/api/web-admin/ai/broadcast-draft', { method: 'POST', body: { notes } }),
   aiReports: (p = {}) => req('/api/web-admin/ai/reports?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
-  exportAiReports: (p = {}) => downloadFile('/api/web-admin/exports/ai-reports.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-ai-reports-${new Date().toISOString().slice(0, 10)}.csv`),
+  exportAiReports: (p = {}) => downloadFile('/api/web-admin/exports/ai-reports.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-ai-reports-${fileDateStamp()}.csv`),
   aiBanned: (p = {}) => req('/api/web-admin/ai/banned?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   aiUsers: (q) => req('/api/web-admin/ai/users?q=' + encodeURIComponent(q)),
   aiBan: (uid) => req('/api/web-admin/ai/users/ban', { method: 'POST', body: { user_id: uid } }),

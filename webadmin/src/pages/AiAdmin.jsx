@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, Stat, B, PageHeader, Tabs, Switch, toast, NoPerm, Confirm, Modal, DiffViewer } from '../ui.jsx';
+import { Loading, ErrorState, Empty, Stat, B, FaDateTime, PageHeader, Tabs, Switch, toast, NoPerm, Confirm, Modal, DiffViewer } from '../ui.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
 
 // 🤖🌊 W-Admin — مرکز فرماندهی هوشیار: KPI ساخت‌یافته + برترین‌ها + گزارش‌ها + دسترسی + پیکربندی
 // (رفع نقص قبلی: داده‌ی خام tuple/comma دیگر به UI تخلیه نمی‌شود — سریالایزر سمت API)
@@ -102,14 +103,14 @@ function AiReports() {
     <div className="panel panel-pad row" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
       <input className="inp" placeholder="جست‌وجو در نام، پرسش و پاسخ…" value={q} onChange={e => { setQ(e.target.value); setPage(1); }} />
       <input className="inp" dir="ltr" placeholder="User ID" value={userId} onChange={e => { setUserId(e.target.value.replace(/\D/g, '')); setPage(1); }} />
-      <input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} />
-      <input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} />
+      <PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setPage(1); }} placeholder="از تاریخ شمسی" />
+      <PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setPage(1); }} placeholder="تا تاریخ شمسی" />
       <button className="btn sm" onClick={() => api.exportAiReports(params)}>📤 CSV</button>
       {data && <B>{Number(data.total || 0).toLocaleString('fa')} گزارش</B>}
     </div>
     {!data ? <Loading rows={3} /> : !items.length ? <Empty icon="🎉" text="گزارشی با این فیلترها ثبت نشده" /> : <div className="grid" style={{ gap: 8 }}>
       {items.map(r => <div key={r.id} className="panel panel-pad">
-        <div className="row"><b>{r.name || '—'}</b><span className="code muted">#{r.user_id}</span><span className="spacer" /><span className="muted">{String(r.created_at || '').replace('T', ' ')}</span></div>
+        <div className="row"><b>{r.name || '—'}</b><span className="code muted">#{r.user_id}</span><span className="spacer" /><FaDateTime value={r.created_at} /></div>
         <div style={{ marginTop: 8 }}><div className="muted">❓ پرسش</div><div>{r.question}</div></div>
         <div style={{ marginTop: 6 }}><div className="muted">🤖 پاسخ گزارش‌شده</div><div style={{ color: 'var(--txt2)' }}>{r.answer}</div></div>
       </div>)}
@@ -219,7 +220,7 @@ function AiPersonas() {
     {!items.length ? <Empty text="Persona ذخیره‌شده‌ای نیست" /> : <div className="grid g2">{items.map(p => <div className="panel panel-pad" key={p.name}>
       <div className="row"><b>{p.name}</b>{p.active && <B kind="ok">فعال</B>}<span className="spacer" /><button className="btn sm" disabled={p.active} onClick={() => setPending({ danger: true, text: `Persona «${p.name}» فعال شود؟ System Prompt فعلی با prompt این Persona جایگزین می‌شود.`, before: 'System Prompt فعلی', after: p.prompt, fn: () => api.aiPersonaActivate(p.name), ok: 'Persona فعال شد' })}>▶ فعال‌سازی</button><button className="btn sm danger" onClick={() => setPending({ danger: true, text: `Persona «${p.name}» حذف شود؟`, fn: () => api.aiPersonaDelete(p.name), ok: 'Persona حذف شد' })}>🗑</button></div>
       <div className="muted text-wrap" style={{ marginTop: 8 }}>{p.prompt}</div>
-      <div className="muted">{p.created_at ? `ساخته‌شده: ${String(p.created_at).slice(0, 16).replace('T', ' ')}` : 'متادیتای ساخت برای رکورد قدیمی موجود نیست'}</div>
+      <div className="muted">{p.created_at ? <>ساخته‌شده: <FaDateTime value={p.created_at} /></> : 'متادیتای ساخت برای رکورد قدیمی موجود نیست'}</div>
     </div>)}</div>}
     {create && <Modal title="ذخیره Persona" onClose={() => setCreate(false)}><input className="inp" style={{ width: '100%' }} placeholder="نام Persona" value={name} onChange={e => setName(e.target.value)} /><textarea className="inp" rows={8} style={{ width: '100%', marginTop: 8 }} placeholder="Prompt؛ خالی = System Prompt فعلی" value={prompt} onChange={e => setPrompt(e.target.value)} /><div className="row" style={{ marginTop: 10 }}><button className="btn primary" disabled={!name.trim() || (!!prompt && prompt.trim().length < 20)} onClick={async () => { try { await api.aiPersonaCreate({ name: name.trim(), prompt: prompt.trim() || null }); setCreate(false); toast('Persona ذخیره شد'); load(); } catch (e) { toast(errText(e), 'err'); } }}>ذخیره</button></div></Modal>}
     {pending && <Confirm danger={pending.danger} text={pending.text} onNo={() => setPending(null)} onYes={async () => { const p = pending; setPending(null); await execute(p); }}>{pending.after && <DiffViewer before={{ system_prompt: pending.before }} after={{ system_prompt: pending.after }} />}</Confirm>}

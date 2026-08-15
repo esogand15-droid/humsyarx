@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { B, DataTable, Drawer, Empty, ErrorState, Loading, PageHeader, Tabs } from '../ui.jsx';
+import { B, DataTable, Drawer, Empty, ErrorState, FaDateTime, Loading, PageHeader, Tabs } from '../ui.jsx';
 import { writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
@@ -33,7 +33,7 @@ function MyWork({ go }) {
   return <div className="grid g2 operations-grid">
     {tasks.map(item => <button key={item.key} className="panel panel-pad operation-card" onClick={() => go?.(item.go)}>
       <span className="operation-icon">{item.icon}</span>
-      <span className="operation-body"><b>{item.label}</b><span className="muted">{item.oldest_at ? `قدیمی‌ترین: ${String(item.oldest_at).slice(0, 16).replace('T', ' ')}` : item.empty ? 'صف خالی است' : 'زمان ثبت موجود نیست'}</span></span>
+      <span className="operation-body"><b>{item.label}</b><span className="muted">{item.oldest_at ? <>قدیمی‌ترین: <FaDateTime value={item.oldest_at} /></> : item.empty ? 'صف خالی است' : 'زمان ثبت موجود نیست'}</span></span>
       <B kind={item.count ? sevKind(item.urgency) : 'ok'}>{fa(item.count)}</B><span aria-hidden="true">‹</span>
     </button>)}
   </div>;
@@ -50,7 +50,7 @@ function Alerts({ go }) {
   return <div className="grid">
     {alerts.map(item => <button key={item.key} className={`panel panel-pad operation-card attention-${item.severity || 'warning'}`} onClick={() => go?.(item.go)}>
       <span className="operation-icon">{item.icon}</span><span className="operation-body"><b>{item.label}</b>
-        <span className="muted">{item.timestamp ? String(item.timestamp).slice(0, 16).replace('T', ' ') : 'زمان رویداد در منبع ثبت نشده'}</span></span>
+        <span className="muted">{item.timestamp ? <FaDateTime value={item.timestamp} /> : 'زمان رویداد در منبع ثبت نشده'}</span></span>
       <B kind={sevKind(item.severity)}>{fa(item.count)}</B><span>‹</span>
     </button>)}
   </div>;

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import {
-  DataTable, Loading, ErrorState, Stat, B, PageHeader, Tabs, toast, Confirm, Drawer,
+  DataTable, Loading, ErrorState, Stat, B, FaDate, FaDateTime, PageHeader, Tabs, toast, Confirm, Drawer,
   Empty, NoPerm, Modal, Switch,
 } from '../ui.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 
@@ -213,7 +214,7 @@ function PaymentsPanel({ initial = {} }) {
     { k: 'final_price', label: 'مبلغ', render: r => money(r.final_price) },
     { k: 'discount_code', label: 'تخفیف', render: r => r.discount_code ? <B kind="purple">{r.discount_code} {r.discount_percent ? `· ${fa(r.discount_percent)}٪` : ''}</B> : '—' },
     { k: 'has_receipt', label: 'رسید', render: r => r.has_receipt ? <B kind="acc">🖼 دارد</B> : '—' },
-    { k: 'submitted_at', label: 'ثبت' },
+    { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => r.status === 'pending' && <div className="row" style={{ gap: 4 }}>
       <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
@@ -258,7 +259,7 @@ function ReceiptDrawer({ pay: r, decide, onClose }) {
           'مبلغ پایه': money(r.price), 'مبلغ نهایی': money(r.final_price),
           'کد تخفیف': r.discount_code, 'درصد تخفیف': r.discount_percent != null ? `${r.discount_percent}٪` : '',
           'ثبت': r.submitted_at, 'یادداشت بررسی': r.review_note,
-        }).filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>)}</dl>
+        }).filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{k === 'ثبت' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>)}</dl>
         <button className="btn sm" onClick={sendToMe}>📨 ارسال تصویر به تلگرام من</button>
         {r.status === 'pending' && <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
           <input className="inp" style={{ width: '100%' }} placeholder="یادداشت بررسی…" value={note} onChange={e => setNote(e.target.value)} />
@@ -296,7 +297,7 @@ function SubscribersPanel({ ov, refreshOverview, initial = {} }) {
   const cols = [
     { k: 'name', label: 'دانشجو', render: r => <div><b>{r.name}</b><div className="muted">{r.student_id || `#${r.user_id}`}</div></div> },
     { k: 'plan_name', label: 'پلن' },
-    { k: 'end_date', label: 'پایان', render: r => <span className="code">{r.end_date || '—'}</span> },
+    { k: 'end_date', label: 'پایان', render: r => <FaDateTime value={r.end_date} /> },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'active' ? 'ok' : r.status === 'expired' ? 'warn' : 'bad'}>{r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => <button className="btn sm" onClick={() => setSelected(r.user_id)}>مدیریت ‹</button> },
   ];
@@ -426,7 +427,7 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
         <dl className="kv">{Object.entries({ 'شماره دانشجویی': data.user.student_id, 'ورودی': data.user.intake, 'گروه': data.user.group,
           'پلن فعلی': data.subscription?.plan_name, 'پایان': data.subscription?.end_date,
           'روز باقی': data.subscription?.days_left,
-        }).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>)}</dl></div>
+        }).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{k === 'پایان' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>)}</dl></div>
       <div className="panel panel-pad" style={{ marginTop: 12 }}><b>➕ فعال‌سازی / تمدید</b>
         <div className="row" style={{ marginTop: 8 }}>{[7, 30, 90].map(d => <button key={d} className={`btn sm ${Number(days) === d ? 'primary' : ''}`} onClick={() => setDays(d)}>{fa(d)} روز</button>)}
           <input className="inp" type="number" min="1" max="3650" style={{ width: 90 }} value={days} onChange={e => setDays(e.target.value)} />
@@ -439,7 +440,7 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
       <div className="h1" style={{ fontSize: 14, marginTop: 16 }}>📜 تاریخچه پرداخت</div>
       {!(data.payments || []).length ? <Empty text="پرداختی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>
         {data.payments.map(p => <div key={p.id} className="panel panel-pad row"><B kind={p.status === 'approved' ? 'ok' : p.status === 'rejected' ? 'bad' : 'warn'}>{p.status}</B>
-          <span style={{ flex: 1 }}>{p.plan_name}</span><span>{money(p.final_price)}</span><span className="muted">{p.submitted_at}</span></div>)}</div>}
+          <span style={{ flex: 1 }}>{p.plan_name}</span><span>{money(p.final_price)}</span><FaDateTime value={p.submitted_at} /></div>)}</div>}
     </>}
     {confirm && <Confirm danger text={`لغو اشتراک «${data?.user?.name}» با دلیل «${reason}»؟`} onYes={revoke} onNo={() => setConfirm(false)} />}
   </Drawer>;
@@ -466,7 +467,7 @@ function DiscountsPanel({ plans, refreshOverview }) {
       <div className="row"><span className="code" style={{ fontSize: 15, fontWeight: 800 }}>{c.code}</span><B kind="purple">{fa(c.percent)}٪</B>
         <span className="spacer" /><B kind={c.active ? 'ok' : 'bad'}>{c.active ? 'فعال' : 'غیرفعال'}</B></div>
       <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}><B>مصرف {fa(c.used_count)} / {c.max_uses ? fa(c.max_uses) : '∞'}</B>
-        <B>هر کاربر: {c.per_user_limit ? fa(c.per_user_limit) : '∞'}</B><B>{c.expires_at || 'بدون انقضا'}</B></div>
+        <B>هر کاربر: {c.per_user_limit ? fa(c.per_user_limit) : '∞'}</B><B>{c.expires_at ? <FaDateTime value={c.expires_at} /> : 'بدون انقضا'}</B></div>
       <div className="muted" style={{ marginTop: 7 }}>پلن‌ها: {(c.target_plan_ids || []).length ? c.target_plan_ids.map(id => planMap[String(id)] || id).join('، ') : 'همه‌ی پلن‌ها'}</div>
       <div className="row" style={{ marginTop: 10 }}><button className="btn sm" onClick={() => setDetail(c)}>📊 آمار و کمپین</button>
         <button className="btn sm" onClick={() => { setCloneSeed(c); setAddOpen(true); }}>📄 کپی</button>
@@ -496,7 +497,7 @@ function DiscountAddModal({ plans, seed, onClose, onDone }) {
       <label className="fld"><span>درصد</span><input className="inp" type="number" min="1" max="100" value={f.percent} onChange={e => setF({ ...f, percent: e.target.value })} /></label></div>
     <div className="row"><label className="fld"><span>ظرفیت کل (۰=نامحدود)</span><input className="inp" type="number" min="0" value={f.max_uses} onChange={e => setF({ ...f, max_uses: e.target.value })} /></label>
       <label className="fld"><span>سقف هر کاربر (۰=نامحدود)</span><input className="inp" type="number" min="0" value={f.per_user_limit} onChange={e => setF({ ...f, per_user_limit: e.target.value })} /></label>
-      <label className="fld"><span>انقضا</span><input className="inp" type="date" value={f.expires_at} onChange={e => setF({ ...f, expires_at: e.target.value })} /></label></div>
+      <label className="fld"><span>انقضا به وقت تهران</span><PersianDatePicker value={f.expires_at} onChange={value => setF({ ...f, expires_at: value })} ariaLabel="تاریخ انقضای شمسی" /></label></div>
     <div><div className="muted" style={{ marginBottom: 6 }}>پلن‌های هدف — خالی یعنی همه</div><div className="row">{plans.map(p => <label key={p.id} className={`badge ${f.target_plan_ids.includes(p.id) ? 'acc' : ''}`}>
       <input type="checkbox" checked={f.target_plan_ids.includes(p.id)} onChange={() => togglePlan(p.id)} /> {p.name}</label>)}</div></div>
     <div className="row"><button className="btn primary" disabled={busy || f.code.trim().length < 2 || Number(f.percent) < 1} onClick={save}>ساخت کد</button>
@@ -542,7 +543,7 @@ function DiscountDrawer({ item, onClose }) {
         <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی وضعیت</button></div>
       {!(runs || []).length ? <Empty text="انتشاری ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{runs.map(r => <div key={r.broadcast_id} className="panel panel-pad">
         <div className="row"><B kind={r.status === 'completed' ? 'ok' : r.status === 'sending' ? 'warn' : 'bad'}>{r.status}</B><B>{r.target}</B>
-          <span className="spacer" /><span className="muted">{r.created_at}</span>{r.status === 'sending' && <button className="btn sm danger" onClick={() => cancel(r.broadcast_id)}>توقف</button>}</div>
+          <span className="spacer" /><FaDateTime value={r.created_at} />{r.status === 'sending' && <button className="btn sm danger" onClick={() => cancel(r.broadcast_id)}>توقف</button>}</div>
         <div className="row" style={{ marginTop: 6 }}><span>کل {fa(r.total)}</span><span>✅ {fa(r.sent)}</span><span>❌ {fa(r.failed)}</span><span>🚫 {fa(r.blocked)}</span></div>
       </div>)}</div>}
     </>}

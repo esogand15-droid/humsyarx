@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
-import { B, Empty, ErrorState, Loading, NoPerm, PageHeader } from '../ui.jsx';
+import { B, Empty, ErrorState, FaDateTime, Loading, NoPerm, PageHeader } from '../ui.jsx';
+import { fileDateStamp } from '../time.js';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 import {
@@ -393,7 +394,7 @@ export default function Analytics({ route = '', me }) {
         rows.push({ domain, key, label: definition.label, value, unit: definition.unit, range: definition.range, source: definition.source, storage: definition.storage || 'محاسبه زنده روی داده‌های persisted', calculation: definition.calculation });
       }
     }
-    exportCSV(`humsyar-analytics-${new Date().toISOString().slice(0, 10)}.csv`, [
+    exportCSV(`humsyar-analytics-${fileDateStamp()}.csv`, [
       { label: 'دامنه', v: 'domain' }, { label: 'کلید فنی', v: 'key' }, { label: 'عنوان انسانی', v: 'label' },
       { label: 'مقدار', v: 'value' }, { label: 'واحد', v: 'unit' }, { label: 'بازه', v: 'range' },
       { label: 'منبع', v: 'source' }, { label: 'روش داده', v: 'storage' }, { label: 'محاسبه', v: 'calculation' },
@@ -410,7 +411,7 @@ export default function Analytics({ route = '', me }) {
 
   return <div className="analytics-center">
     <PageHeader title="مرکز تحلیل و هوش مدیریتی هامزیار" description="وضعیت کاربران، یادگیری، محتوا، پشتیبانی، اشتراک هامزیار، اعلان‌ها و عملکرد عملیاتی سیستم" actions={rangeControls} />
-    <div className="an-meta"><span>دامنه داده: {data?.scope?.label || 'کل سامانه'}</span><span>·</span><span>بازه انتخابی: {fa(days)} روز اخیر</span><span>·</span><span>{compare === 'previous' ? `مقایسه با ${fa(days)} روز قبل` : 'بدون مقایسه'}</span><span>·</span><span>آخرین بروزرسانی: {updatedAt ? new Date(updatedAt).toLocaleString('fa-IR') : loading ? 'در حال دریافت…' : 'زمان ثبت نشده'}</span></div>
+    <div className="an-meta"><span>دامنه داده: {data?.scope?.label || 'کل سامانه'}</span><span>·</span><span>بازه انتخابی: {fa(days)} روز اخیر</span><span>·</span><span>{compare === 'previous' ? `مقایسه با ${fa(days)} روز قبل` : 'بدون مقایسه'}</span><span>·</span><span>آخرین بروزرسانی: {updatedAt ? <FaDateTime value={updatedAt} /> : loading ? 'در حال دریافت…' : 'زمان ثبت نشده'}</span></div>
     <div className="an-range-note">بازه انتخابی روی روندها، مقایسه دوره‌ای و «منابع جدید در بازه» اعمال می‌شود؛ KPIهای snapshot یا تجمعی، بازه مستقل خود را روی کارت اعلام می‌کنند.</div>
     <SavedViews scope="analytics" filters={{ days, tab, mode, compare }} onApply={filters => { setDays(Number(filters.days) || 7); setTab(filters.tab || 'overview'); setMode(filters.mode || 'executive'); setCompare(filters.compare || 'previous'); }} label="نماهای تحلیلی" />
     <div className="an-nav-row"><div className="an-mode" role="group" aria-label="نوع نمای تحلیل"><button className={mode === 'executive' ? 'on' : ''} aria-pressed={mode === 'executive'} onClick={() => setMode('executive')}>نمای مدیریتی</button><button className={mode === 'operations' ? 'on' : ''} aria-pressed={mode === 'operations'} onClick={() => setMode('operations')}>نمای عملیاتی</button></div><div className="an-tabs" role="tablist" aria-label="دامنه‌های تحلیل">{TABS.map(([key, label, icon]) => <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'on' : ''} onClick={() => setTab(key)}><span aria-hidden="true">{icon}</span>{label}</button>)}</div></div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, FaDateTime, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DETAIL_LABELS = {
@@ -27,6 +27,7 @@ export default function System({ me }) {
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
   const [observability, setObservability] = useState(null);
+  const [timeStandard, setTimeStandard] = useState(null);
   const [sessions, setSessions] = useState(null);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null); // section در انتظار تأیید
@@ -48,13 +49,14 @@ export default function System({ me }) {
   const load = async () => {
     setErr('');
     try {
-      const [b, s, j, o, sec] = await Promise.all([
+      const [b, s, j, o, ts, sec] = await Promise.all([
         api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
         api.systemJobs().catch(() => ({ jobs: [] })),
         canObserve ? api.systemObservability().catch(() => null) : Promise.resolve(null),
+        canObserve ? api.systemTimeStandard().catch(() => null) : Promise.resolve(null),
         canObserve ? api.securitySessions().catch(() => null) : Promise.resolve(null),
       ]);
-      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setSessions(sec);
+      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setTimeStandard(ts); setSessions(sec);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -111,7 +113,7 @@ export default function System({ me }) {
   const dbOk = bs.db_ok === true;
   const apiOk = bs.api_ok === true;
   const auto = st || {};
-  const lastRun = (auto.auto_backup_last_run || '').slice(0, 16).replace('T', ' ');
+  const lastRun = auto.auto_backup_last_run || '';
 
   return (
     <>
@@ -136,17 +138,28 @@ export default function System({ me }) {
         {bs.notifications && <Stat icon="🔔" label="پیام در صف ارسال" value={fa(bs.notifications.pending_queue)}
           hint={`${fa(bs.notifications.recent_failed_runs)} اجرای اخیر دارای خطا`} tint={bs.notifications.recent_failed_runs ? 'var(--warn)' : 'var(--ok)'} />}
         {bs.backup && <Stat icon="💾" label="پشتیبان‌گیری خودکار" value={bs.backup.enabled ? 'فعال' : 'غیرفعال'}
-          hint={bs.backup.last_run ? `آخرین: ${String(bs.backup.last_run).slice(0, 16).replace('T', ' ')}` : 'هنوز اجرا نشده'} tint={bs.backup.enabled ? 'var(--ok)' : 'var(--warn)'} />}
+          hint={bs.backup.last_run ? <>آخرین: <FaDateTime value={bs.backup.last_run} /></> : 'هنوز اجرا نشده'} tint={bs.backup.enabled ? 'var(--ok)' : 'var(--warn)'} />}
       </div>
 
       <div className="panel panel-pad" style={{ marginTop: 14 }}>
         <b>جزئیات فنی سلامت</b>
         <dl className="kv" style={{ marginTop: 8 }}>
           {Object.entries(bs).filter(([k, v]) => typeof v !== 'object' && DETAIL_LABELS[k] && v !== '' && v != null).map(([k, v]) => (
-            <React.Fragment key={k}><dt>{DETAIL_LABELS[k]}</dt><dd className={k.includes('pid') ? 'code' : ''}>{String(v)}</dd></React.Fragment>
+            <React.Fragment key={k}><dt>{DETAIL_LABELS[k]}</dt><dd className={k.includes('pid') ? 'code' : ''}>{k === 'checked_at' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>
           ))}
         </dl>
       </div>
+
+      {timeStandard && <section className="panel panel-pad" style={{ marginTop: 14 }} aria-labelledby="time-standard-title">
+        <div className="row"><div><b id="time-standard-title">🕰 زمان و تاریخ سیستم</b><div className="muted">یک instant، نمایش تهران و تقویم رسمی شمسی</div></div><span className="spacer" /><B kind="acc">{timeStandard.timezone}</B><B>{timeStandard.calendar} · {timeStandard.locale}</B></div>
+        <div className="grid g4" style={{ marginTop: 10 }}>
+          <div className="panel panel-pad"><span className="muted">زمان UTC ماشین</span><div className="code ltr">{timeStandard.server_utc}</div></div>
+          <div className="panel panel-pad"><span className="muted">زمان فعلی تهران</span><div><FaDateTime value={timeStandard.server_utc} long /></div></div>
+          <div className="panel panel-pad"><span className="muted">امروز</span><div>{timeStandard.today_jalali}</div></div>
+          <div className="panel panel-pad"><span className="muted">Offset / Unix</span><div className="code ltr">{timeStandard.utc_offset} · {timeStandard.unix_timestamp}</div></div>
+        </div>
+        <div className="callout" style={{ marginTop: 10 }}>Storage: <span className="code ltr">{timeStandard.storage_contract}</span> · Display: {timeStandard.display_contract} · شروع هفته: {timeStandard.week_start}</div>
+      </section>}
 
       {!!jobs.length && <div className="panel panel-pad" style={{ marginTop: 14 }}>
         <div className="row"><div><b>⚙️ Job Center</b><div className="muted">آخرین اجرای جاب‌های اعلان، صف خروجی و بکاپ واقعی</div></div>
@@ -161,7 +174,7 @@ export default function System({ me }) {
               {job.failed != null && <B kind={job.failed ? 'bad' : ''}>خطا: {fa(job.failed)}</B>}
               {job.scheduled != null && <B>زمان‌دار: {fa(job.scheduled)}</B>}
             </div>
-            {job.last_run && <div className="muted" style={{ marginTop: 7 }}>آخرین اجرا: <span className="code">{String(job.last_run).slice(0, 16).replace('T', ' ')}</span></div>}
+            {job.last_run && <div className="muted" style={{ marginTop: 7 }}>آخرین اجرا: <FaDateTime value={job.last_run} /></div>}
           </div>)}
         </div>
       </div>}
@@ -192,7 +205,7 @@ export default function System({ me }) {
                   : 'غیرفعال — بکاپ کامل روزانه‌ی خودکار ساخته نمی‌شود.'}
               </div>
               <div className="muted" style={{ marginTop: 3 }}>
-                🕐 آخرین اجرا: <span className="code">{lastRun || 'هنوز اجرا نشده'}</span>
+                🕐 آخرین اجرا: {lastRun ? <FaDateTime value={lastRun} /> : 'هنوز اجرا نشده'}
               </div>
             </div>
             <span className="spacer" />
@@ -293,8 +306,8 @@ function SecuritySessionsPanel({ data, onReload }) {
     {!data ? <ErrorState title="فهرست نشست‌ها در دسترس نیست" error="داده امنیتی بارگذاری نشد" onRetry={onReload} /> :
       <div style={{ marginTop: 10 }}><DataTable columns={[
         { k: 'admin', label: 'مدیر', render: r => <div><b>{r.name}</b><div className="muted ltr">{r.username ? `@${r.username} · ` : ''}{r.uid}</div></div> },
-        { k: 'created_at', label: 'شروع', render: r => <span className="ltr">{String(r.created_at || '—').slice(0, 16).replace('T', ' ')}</span> },
-        { k: 'expires_at', label: 'انقضا', render: r => <span className="ltr">{String(r.expires_at || '—').slice(0, 16).replace('T', ' ')}</span> },
+        { k: 'created_at', label: 'شروع', render: r => <FaDateTime value={r.created_at} /> },
+        { k: 'expires_at', label: 'انقضا', render: r => <FaDateTime value={r.expires_at} /> },
         { k: 'peer_ip', label: 'IP مستقیم', render: r => <span className="code">{r.peer_ip || 'ثبت‌نشده'}</span> },
         { k: 'device', label: 'عامل کاربر', render: r => <span className="muted ltr" title={r.user_agent}>{r.user_agent ? r.user_agent.slice(0, 46) : 'legacy / ثبت‌نشده'}</span> },
         { k: 'status', label: 'وضعیت', render: r => r.current ? <B kind="ok">نشست جاری</B> : <B>فعال</B> },
@@ -331,7 +344,7 @@ function PrestigeConfigPanel() {
   const cs = data.challenge_stats || {};
   return <section className="panel panel-pad" style={{ marginTop: 14 }}>
     <div className="row"><div><b>🏅 تعادل زنده Prestige</b><div className="muted">اوررایدهای معتبر بدون redeploy؛ آستانه‌های Design Lock تغییر نمی‌کنند</div></div>
-      <span className="spacer" />{data.updated_at && <B>آخرین تغییر: {String(data.updated_at).slice(0, 16).replace('T', ' ')}</B>}
+      <span className="spacer" />{data.updated_at && <B>آخرین تغییر: <FaDateTime value={data.updated_at} /></B>}
       <button className="btn primary sm" disabled={!changed.length} onClick={() => setConfirmSave(true)}>بازبینی {fa(changed.length)} تغییر</button></div>
     {Object.keys(cs).length > 0 && <div className="row" style={{ marginTop: 10 }}>
       {cs.active != null && <B kind="acc">چالش فعال: {fa(cs.active)}</B>}

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty, Timeline } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, Drawer, NoPerm, Empty, Timeline } from '../ui.jsx';
+import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import SavedViews from '../SavedViews.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 import ObjectInspector from '../ObjectInspector.jsx';
@@ -84,7 +85,7 @@ export default function Audit({ go }) {
 
   const cols = [
     { k: 'at', label: 'زمان', sortable: true,
-      render: r => <span className="muted">{atOf(r).replace('T', ' ').slice(5, 16)}</span> },
+      render: r => <FaDateTime value={atOf(r)} /> },
     { k: 'actor', label: 'عامل', stop: true, render: r => (
       <button className="btn sm" disabled={!actorId(r)} onClick={() => actorId(r) && go?.(`/users?q=${actorId(r)}`)}>{actorName(r)}<span className="muted" style={{ display: 'block' }}>{actorRole(r)}</span></button>) },
     { k: 'action', label: 'عمل', render: r => <b style={{ color: 'var(--txt)' }}>{r.action}</b> },
@@ -146,8 +147,8 @@ export default function Audit({ go }) {
         <input className="inp" placeholder="عمل مشخص…" value={filters.action} onChange={e => { setFilters(f => ({ ...f, action: e.target.value })); setSkip(0); }} />
         <input className="inp" placeholder="نوع هدف…" value={filters.target_type} onChange={e => { setFilters(f => ({ ...f, target_type: e.target.value })); setSkip(0); }} />
         <input className="inp" placeholder="هدف/شناسه…" value={filters.target} onChange={e => { setFilters(f => ({ ...f, target: e.target.value })); setSkip(0); }} />
-        <label className="row"><span className="muted">از</span><input type="date" className="inp" value={filters.date_from} onChange={e => { setFilters(f => ({ ...f, date_from: e.target.value })); setSkip(0); }} /></label>
-        <label className="row"><span className="muted">تا</span><input type="date" className="inp" value={filters.date_to} onChange={e => { setFilters(f => ({ ...f, date_to: e.target.value })); setSkip(0); }} /></label>
+        <label className="row"><span className="muted">از</span><PersianDatePicker value={filters.date_from} onChange={value => { setFilters(f => ({ ...f, date_from: value })); setSkip(0); }} ariaLabel="از تاریخ شمسی حسابرسی" /></label>
+        <label className="row"><span className="muted">تا</span><PersianDatePicker value={filters.date_to} onChange={value => { setFilters(f => ({ ...f, date_to: value })); setSkip(0); }} ariaLabel="تا تاریخ شمسی حسابرسی" /></label>
         <input className="inp code" placeholder="Correlation ID…" value={filters.correlation_id} onChange={e => { setFilters(f => ({ ...f, correlation_id: e.target.value })); setSkip(0); }} />
         <button className="btn sm" onClick={() => { setFilters(f => ({ ...f, actor: '', actor_role: '', module: '', action: '', target_type: '', target: '', date_from: '', date_to: '', correlation_id: '' })); setSkip(0); }}>پاک‌کردن پیشرفته</button>
       </FilterBar>}
@@ -177,7 +178,7 @@ export default function Audit({ go }) {
 
           <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <div className="ct3-kv"><span className="muted">زمان</span>
-              <span className="num">{atOf(detail).replace('T', ' ').slice(0, 16) || '—'}</span></div>
+              <FaDateTime value={atOf(detail)} /></div>
             <div className="ct3-kv"><span className="muted">عامل</span>
               <span>{actorName(detail)} <span className="muted">{actorRole(detail)}</span>{' '}
                 <span className="code">{actorId(detail)}</span></span></div>
@@ -255,7 +256,7 @@ function CorrelationDrawer({ id, onClose }) {
     <div className="code" style={{ marginBottom: 10 }}>{id}</div>
     {err ? <ErrorState error={err} onRetry={load} /> : !data ? <Loading rows={5} /> : <>
       <div className="row" style={{ marginBottom: 10 }}><B kind="acc">Audit: {fa(data.counts?.audit)}</B><B>Outbox: {fa(data.counts?.outbox)}</B></div>
-      <Timeline items={(data.events || []).map(event => ({ id: event.id, title: `${event.stage === 'audit' ? '🧭' : '📤'} ${event.title}`, description: `${event.status} · ${Object.entries(event.metadata || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}`, at: String(event.at || '').slice(0, 16).replace('T', ' ') }))} empty="رویدادی برای این Correlation ثبت نشده" />
+      <Timeline items={(data.events || []).map(event => ({ id: event.id, title: `${event.stage === 'audit' ? '🧭' : '📤'} ${event.title}`, description: `${event.status} · ${Object.entries(event.metadata || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' · ')}`, at: event.at || '' }))} empty="رویدادی برای این Correlation ثبت نشده" />
     </>}
   </Drawer>;
 }

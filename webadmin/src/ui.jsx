@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { formatFaDate, formatFaDateTime, formatFaTime, formatFaTooltip, formatRelativeTime } from './time.js';
 
 // ── Toast ─────────────────────────────────────────────────────────
 let _push;
@@ -143,6 +144,19 @@ export function B({ kind = '', children, className = '', ...rest }) {
   return <span className={`badge ${kind} ${className}`.trim()} {...rest}>{children}</span>;
 }
 
+export function FaDate({ value, long = false, fallback = '—', className = '' }) {
+  return <time className={`fa-time ${className}`.trim()} dateTime={value || undefined} title={formatFaTooltip(value, fallback)}>{formatFaDate(value, { long, fallback })}</time>;
+}
+export function FaDateTime({ value, long = false, fallback = '—', className = '' }) {
+  return <time className={`fa-time ${className}`.trim()} dateTime={value || undefined} title={formatFaTooltip(value, fallback)}>{formatFaDateTime(value, { long, fallback })}</time>;
+}
+export function FaTime({ value, fallback = '—', className = '' }) {
+  return <time className={`fa-time ${className}`.trim()} dateTime={value || undefined} title={formatFaTooltip(value, fallback)}>{formatFaTime(value, fallback)}</time>;
+}
+export function RelativeTime({ value, fallback = '—', className = '' }) {
+  return <time className={`fa-time ${className}`.trim()} dateTime={value || undefined} title={formatFaTooltip(value, fallback)}>{value ? formatRelativeTime(value) : fallback}</time>;
+}
+
 export function StatusBadge({ status, label }) {
   const key = String(status || '').toLowerCase();
   const kind = ['active', 'approved', 'done', 'completed', 'healthy', 'ok'].includes(key) ? 'ok'
@@ -165,6 +179,16 @@ export function Switch({ on, onChange, disabled, label }) {
 }
 
 // ── DataTable v3 ──────────────────────────────────────────────────
+const DATE_ONLY_KEYS = new Set(['date', 'exam_date']);
+const isInstantKey = key => /(?:^timestamp$|_at$|^last_active$|^registered_at$|^last_run$|^end_date$|^start_date$)/.test(String(key || ''));
+function defaultTableCell(column, row) {
+  const value = row?.[column.k];
+  if (value == null || value === '') return '—';
+  if (DATE_ONLY_KEYS.has(column.k)) return <FaDate value={value} />;
+  if (isInstantKey(column.k)) return <FaDateTime value={value} />;
+  return value;
+}
+
 export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
   pager, loading, onRow, empty, colToggle, caption = 'جدول داده‌ها', density = 'compact',
   visibleColumns, onColumnsChange, sortState, onSort }) {
@@ -267,7 +291,7 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
               {selectable && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={sel.has(id)}
                 onChange={() => toggle(id)} aria-label={`انتخاب ردیف ${i + 1}`} /></td>}
               {visCols.map(c => <td key={c.k} onClick={c.stop ? e => e.stopPropagation() : undefined}>
-                {c.render ? c.render(r) : (r[c.k] ?? '—')}
+                {c.render ? c.render(r) : defaultTableCell(c, r)}
               </td>)}
             </tr>;
           })}
@@ -389,21 +413,29 @@ export function DiffViewer({ before = {}, after = {} }) {
   return <div className="diff-tbl">
     <div className="diff-head"><span>فیلد</span><span>قبل</span><span>←</span><span>بعد</span></div>
     {keys.map(k => <div className="diff-row" key={k}>
-      <span className="diff-f">{k}</span><span className="diff-v b">{displayValue(before?.[k])}</span>
-      <span className="diff-arrow">←</span><span className="diff-v a">{displayValue(after?.[k])}</span>
+      <span className="diff-f">{k}</span><span className="diff-v b">{displayValue(before?.[k], k)}</span>
+      <span className="diff-arrow">←</span><span className="diff-v a">{displayValue(after?.[k], k)}</span>
     </div>)}
   </div>;
 }
-const displayValue = v => v === undefined || v === null || v === '' ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+const displayValue = (v, key = '') => {
+  if (v === undefined || v === null || v === '') return '—';
+  if (typeof v === 'object') return JSON.stringify(v);
+  const text = String(v);
+  const temporalKey = /(?:^|_)(?:at|date|time)$|تاریخ|زمان|ثبت|پایان|انقضا|فعالیت/i.test(String(key));
+  if (temporalKey && /^\d{4}-\d{2}-\d{2}(?:[T ]|$)/.test(text))
+    return text.length === 10 ? <FaDate value={text} /> : <FaDateTime value={text} />;
+  return text;
+};
 
 export function Timeline({ items = [], empty = 'رویدادی ثبت نشده' }) {
   if (!items.length) return <Empty icon="🕓" text={empty} />;
   return <div className="timeline">{items.map((it, i) => <div className="timeline-item" key={it.id || i}>
     <div className="timeline-rail"><span className="timeline-dot" /></div>
     {it.onClick ? <button type="button" className="timeline-content" onClick={it.onClick}><span>{it.title || it.action || 'رویداد'}</span>{it.description && <span className="muted">{it.description}</span>}
-      <span className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</span></button>
+      <span className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}<FaDateTime value={it.at || it.time} fallback="" /></span></button>
       : <div><div>{it.title || it.action || 'رویداد'}</div>{it.description && <div className="muted">{it.description}</div>}
-        <div className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}{it.at || it.time || ''}</div></div>}
+        <div className="timeline-meta">{it.actor ? `${it.actor} · ` : ''}<FaDateTime value={it.at || it.time} fallback="" /></div></div>}
   </div>)}</div>;
 }
 

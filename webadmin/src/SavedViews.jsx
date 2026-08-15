@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from './api.js';
 import { B, Modal, Confirm, toast } from './ui.jsx';
+import { formatFaDateTime } from './time.js';
 
 /** Generic per-admin saved views. The backend owns identity/scope; pages own filters. */
 export default function SavedViews({ scope, filters, columns = [], sort = {}, density = '', onApply, label = 'نماهای ذخیره‌شده' }) {
@@ -38,7 +39,7 @@ export default function SavedViews({ scope, filters, columns = [], sort = {}, de
   return <>
     <div className="row saved-views" style={{ marginBottom: 10, gap: 6 }}>
       <span className="muted">⏱ {label}:</span>
-      {(items || []).map(item => <span className="chip" key={item.id} title={`${item.shared ? `اشتراکی · سازنده: ${item.owner_name || item.owner}` : 'شخصی'} · به‌روزرسانی: ${item.updated_at || '—'} · آخرین استفاده: ${item.last_opened_at || '—'}`}>
+      {(items || []).map(item => <span className="chip" key={item.id} title={`${item.shared ? `اشتراکی · سازنده: ${item.owner_name || item.owner}` : 'شخصی'} · به‌روزرسانی: ${formatFaDateTime(item.updated_at)} · آخرین استفاده: ${formatFaDateTime(item.last_opened_at)}`}>
         <button type="button" className="chip-link" onClick={() => { api.touchFilter(item.id).catch(() => {}); onApply(item.filters || {}, item); }}>{item.shared ? '👥 ' : '👤 '}{item.name}</button>
         {item.editable !== false && <button className="chip-x" aria-label={`ویرایش نمای ${item.name}`} onClick={() => {
           setEditing(item); setName(item.name); setShared(!!item.shared); setReplaceState(false); setOpen(true);
