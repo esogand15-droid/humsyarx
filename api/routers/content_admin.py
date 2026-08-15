@@ -704,11 +704,12 @@ async def ref_subjects_ep(admin=Depends(get_content_admin_user),
         items = await db.ref_get_subjects(intake=[iv, ''])
         return {"intake": iv,
             "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
+                         "intake": s.get("intake") or "",
                          "readonly": (s.get("intake") or '') != iv} for s in items]}
     items = await db.ref_get_subjects(intake=iv)
     return {"intake": iv,
         "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
-                     "readonly": False} for s in items]}
+                     "intake": s.get("intake") or "", "readonly": False} for s in items]}
 
 class RefSubjectCreate(BaseModel):
     name: str = Field(min_length=1); intake: str = ""
@@ -1034,18 +1035,24 @@ async def bs_move_lesson_ep(lid: str, body: MoveBody, admin=Depends(GLOBAL_USER)
     iv = body.intake or ''
     if iv and iv not in (await _intakes_active_codes()):
         raise HTTPException(422, "کد ورودی نامعتبر است")
+    source = await db.bs_get_lesson(lid)
     status, info = await db.bs_move_lesson_intake(lid, iv)
     if status == 'err':
         if info == 'not_found': raise HTTPException(404, "درس یافت نشد")
-        raise HTTPException(409, "درسی با همین نام در سطل مقصد موجود است")
+        duplicate = await db.bs_lessons.find_one({
+            'term': (source or {}).get('term', ''), 'name': (source or {}).get('name', ''),
+            'intake': iv, '_id': {'$ne': (source or {}).get('_id')}})
+        raise HTTPException(409, {"code": "duplicate_name", "object": (source or {}).get('name', ''),
+            "destination": iv or "global", "existing_id": str((duplicate or {}).get('_id', '')),
+            "reason": "درسی با همین نام در سطل مقصد موجود است"})
     try:
-        from api.routers.admin_panel import _audit
         await _audit(admin, "انتقال درس به سطل ورودی", "Content",
             severity="HIGH", target_id=str(lid), target_type="lesson",
             details=f"📦 Move Lesson: {info or 'سراسری'} → {iv or 'سراسری'}",
             tags=["فورک_محتوا"])
     except Exception:
-        pass
+        await db.bs_move_lesson_intake(lid, info or '')
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
     return {"ok":True, "from":info, "to":iv}
 
 @router.post("/references/subjects/{sid}/move")
@@ -1053,18 +1060,24 @@ async def ref_move_subject_ep(sid: str, body: MoveBody, admin=Depends(GLOBAL_USE
     iv = body.intake or ''
     if iv and iv not in (await _intakes_active_codes()):
         raise HTTPException(422, "کد ورودی نامعتبر است")
+    source = await db.ref_get_subject(sid)
     status, info = await db.ref_move_subject_intake(sid, iv)
     if status == 'err':
         if info == 'not_found': raise HTTPException(404, "موضوع یافت نشد")
-        raise HTTPException(409, "موضوعی با همین نام در سطل مقصد موجود است")
+        duplicate = await db.ref_subjects.find_one({
+            'name': (source or {}).get('name', ''), 'intake': iv,
+            '_id': {'$ne': (source or {}).get('_id')}})
+        raise HTTPException(409, {"code": "duplicate_name", "object": (source or {}).get('name', ''),
+            "destination": iv or "global", "existing_id": str((duplicate or {}).get('_id', '')),
+            "reason": "موضوعی با همین نام در سطل مقصد موجود است"})
     try:
-        from api.routers.admin_panel import _audit
         await _audit(admin, "انتقال موضوع به سطل ورودی", "Content",
             severity="HIGH", target_id=str(sid), target_type="subject",
             details=f"📦 Move Subject: {info or 'سراسری'} → {iv or 'سراسری'}",
             tags=["فورک_محتوا"])
     except Exception:
-        pass
+        await db.ref_move_subject_intake(sid, info or '')
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
     return {"ok":True, "from":info, "to":iv}
 
 @router.post("/qbank/files/{fid}/move")
@@ -1072,18 +1085,26 @@ async def qbank_move_file_ep(fid: str, body: MoveBody, admin=Depends(GLOBAL_USER
     iv = body.intake or ''
     if iv and iv not in (await _intakes_active_codes()):
         raise HTTPException(422, "کد ورودی نامعتبر است")
+    source = await db.get_qbank_file(fid)
     status, info = await db.qbank_move_file_intake(fid, iv)
     if status == 'err':
         if info == 'not_found': raise HTTPException(404, "فایل یافت نشد")
-        raise HTTPException(409, "فایلی با همین نام در سطل مقصد موجود است")
+        duplicate = await db.qbank_files.find_one({
+            'lesson': (source or {}).get('lesson', ''), 'topic': (source or {}).get('topic', ''),
+            'description': (source or {}).get('description', ''), 'intake': iv,
+            '_id': {'$ne': (source or {}).get('_id')}})
+        raise HTTPException(409, {"code": "duplicate_name",
+            "object": (source or {}).get('description') or f"{(source or {}).get('lesson','')} / {(source or {}).get('topic','')}",
+            "destination": iv or "global", "existing_id": str((duplicate or {}).get('_id', '')),
+            "reason": "فایل همسانی در سطل مقصد موجود است"})
     try:
-        from api.routers.admin_panel import _audit
         await _audit(admin, "انتقال فایل بانک سؤال به سطل ورودی", "Content",
             severity="HIGH", target_id=str(fid), target_type="qbank_file",
             details=f"📦 Move QBank File: {info or 'سراسری'} → {iv or 'سراسری'}",
             tags=["فورک_محتوا"])
     except Exception:
-        pass
+        await db.qbank_move_file_intake(fid, info or '')
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
     return {"ok":True, "from":info, "to":iv}
 
 # ══════════════════════════════════════════════
@@ -1104,6 +1125,7 @@ async def qbank_files_ep(lesson: Optional[str]=Query(None), topic: Optional[str]
     return {"intake": iv,
         "files":[{"id":str(f["_id"]),"lesson":f.get("lesson",""),"topic":f.get("topic",""),
         "description":f.get("description",""),"file_type":f.get("file_type","document"),
+        "intake": f.get("intake") or "",
         "readonly": (f.get("intake") or '') != iv if scope.get("kind") == "scoped" else False,
         "downloads":f.get("downloads",0),"upload_date":f.get("upload_date","")[:10]} for f in items]}
 

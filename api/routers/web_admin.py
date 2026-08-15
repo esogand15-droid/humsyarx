@@ -32,11 +32,11 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 
 from api.auth import (
-    ADMIN_ID, _hash_token, get_current_user, get_content_admin_user,
+    ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
     get_content_global_user, new_session_token, resolve_content_intake,
     resolve_web_session, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
@@ -49,6 +49,8 @@ from api.routers import academic_admin as academic_api
 from api.routers import rbac as rbac_api
 from api.routers import resources as resources_api
 import backup as backup_service
+import broadcast_service
+from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
 
 router = APIRouter()
@@ -1160,15 +1162,14 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
             pass
     if allow("broadcast.send"):
         try:
-            docs = await db.bot_notifs.find({"type": "broadcast", "text": rx}).sort("created_at", -1).limit(20).to_list(20)
-            seen = set()
-            for row in docs:
-                key = (row.get("text", ""), row.get("created_at", ""))
-                if key in seen: continue
-                seen.add(key)
-                res["broadcasts"].append({"id": str(row.get("_id", "")), "text": (row.get("text") or "")[:90],
-                                          "created_at": row.get("created_at", ""), "correlation_id": row.get("correlation_id")})
-                if len(res["broadcasts"]) >= 5: break
+            docs = await db.broadcast_campaigns.find({"$or": [
+                {"payload.text": rx}, {"payload.caption": rx}, {"created_by_name": rx},
+            ]}).sort("created_at", -1).limit(5).to_list(5)
+            res["broadcasts"] = [{"id": str(row.get("_id", "")),
+                "text": ((row.get("payload") or {}).get("text") or (row.get("payload") or {}).get("caption") or f"[{row.get('message_type','text')}]")[:90],
+                "status": row.get("status", ""), "source": row.get("source", ""),
+                "created_at": row.get("created_at", ""), "correlation_id": row.get("correlation_id")}
+                for row in docs]
         except Exception:
             pass
     if allow("subscription.manage"):
@@ -1235,6 +1236,7 @@ class SavedFilterIn(BaseModel):
     filters: dict = {}
     columns: list[str] = []
     sort: dict = {}
+    density: str = ""
     shared: bool = False
 
 
@@ -1243,6 +1245,7 @@ class SavedFilterPatch(BaseModel):
     filters: Optional[dict] = None
     columns: Optional[list[str]] = None
     sort: Optional[dict] = None
+    density: Optional[str] = None
     shared: Optional[bool] = None
 
 
@@ -1267,11 +1270,14 @@ async def saved_filters_list(scope: str | None = Query(None),
         "id": str(d.get("_id", "")), "name": d.get("name", ""),
         "scope": d.get("scope", ""), "filters": d.get("filters") or {},
         "columns": d.get("columns") or [], "sort": d.get("sort") or {},
-        "shared": bool(d.get("shared")), "owner": d.get("owner"),
+        "density": d.get("density") or "", "shared": bool(d.get("shared")), "owner": d.get("owner"),
         "owner_name": owner_map.get(d.get("owner"), ""),
         "editable": d.get("owner") == user["id"],
         "created_at": (d.get("created_at") or "")[:16],
         "updated_at": (d.get("updated_at") or d.get("created_at") or "")[:16],
+        "updated_by": d.get("updated_by") or d.get("owner"),
+        "last_opened_at": (d.get("last_opened_at") or "")[:16],
+        "last_opened_by": d.get("last_opened_by"),
     } for d in docs if d.get("owner") == user["id"] or d.get("shared")]}
 
 
@@ -1288,7 +1294,8 @@ async def saved_filters_add(body: SavedFilterIn, user=Depends(_guard_any_admin))
     now = _now()
     doc = {"owner": uid, "name": name, "scope": body.scope,
            "filters": body.filters or {}, "columns": list(dict.fromkeys(body.columns or []))[:80],
-           "sort": body.sort or {}, "shared": bool(body.shared),
+           "sort": body.sort or {}, "density": body.density if body.density in ("compact", "comfortable", "") else "",
+           "shared": bool(body.shared), "updated_by": uid,
            "created_at": now, "updated_at": now}
     r = await db.wa_saved_filters.insert_one(doc)
     return {"ok": True, "id": str(getattr(r, "inserted_id", "") or "")}
@@ -1312,11 +1319,28 @@ async def saved_filters_update(fid: str, body: SavedFilterPatch,
     if body.filters is not None: changes["filters"] = body.filters
     if body.columns is not None: changes["columns"] = list(dict.fromkeys(body.columns))[:80]
     if body.sort is not None: changes["sort"] = body.sort
+    if body.density is not None:
+        if body.density not in ("compact", "comfortable", ""):
+            raise HTTPException(422, "چگالی نما نامعتبر است")
+        changes["density"] = body.density
     if body.shared is not None: changes["shared"] = bool(body.shared)
     if not changes: raise HTTPException(422, "تغییری ارسال نشده است")
-    changes["updated_at"] = _now()
+    changes["updated_at"] = _now(); changes["updated_by"] = user["id"]
     await db.wa_saved_filters.update_one(query, {"$set": changes})
     return {"ok": True, "changed": list(changes)}
+
+
+@router.post("/saved-filters/{fid}/touch")
+async def saved_filter_touch(fid: str, user=Depends(_guard_any_admin)):
+    oid = _oid(fid)
+    query = {"_id": oid if oid else fid,
+             "$or": [{"owner": user["id"]}, {"shared": True}]}
+    doc = await db.wa_saved_filters.find_one(query)
+    if not doc or not await _saved_view_scope_allowed(user, doc.get("scope", "")):
+        raise HTTPException(404, "نمای ذخیره‌شده پیدا نشد")
+    await db.wa_saved_filters.update_one({"_id": doc["_id"]}, {"$set": {
+        "last_opened_at": _now(), "last_opened_by": user["id"]}})
+    return {"ok": True}
 
 
 @router.delete("/saved-filters/{fid}")
@@ -1397,6 +1421,19 @@ async def wa_object_summary(target_type: str, target_id: str, user=Depends(_guar
         metadata = {"description": doc.get("description") or doc.get("desc"), "permissions": doc.get("perms") or [], "system": bool(doc.get("system"))}
         relations = [{"type": "user", "label": "اعضای نقش", "count": len(await db.user_ids_by_role(target_id, limit=100000)), "go": f"/users?role={target_id}"}]
         actions = [] if doc.get("system") else ["edit", "clone", "toggle", "delete"]
+    elif target_type == "broadcast":
+        oid = _oid(target_id)
+        doc = await db.broadcast_campaigns.find_one({"_id": oid if oid else target_id})
+        if not doc: raise HTTPException(404, "کمپین پیدا نشد")
+        payload = doc.get("payload") or {}
+        identity = {"id": target_id,
+                    "label": (payload.get("text") or payload.get("caption") or f"[{doc.get('message_type','text')}]")[:120],
+                    "type": "broadcast"}
+        status = doc.get("status", "")
+        metadata = {key: doc.get(key) for key in ("source", "message_type", "audience", "send_at", "created_at", "started_at", "finished_at", "total", "success", "failed", "skipped", "correlation_id")}
+        relations = [{"type": "user", "label": "سازنده", "id": doc.get("created_by"),
+                      "go": f"/users?q={doc.get('created_by')}"}] if doc.get("created_by") else []
+        actions = ["cancel"] if status in ("queued", "scheduled") else ["retry_failed"] if doc.get("failed") else []
     elif target_type in ("payment", "subscription"):
         uid = int(target_id) if target_id.isdigit() else None
         if target_type == "payment":
@@ -1420,13 +1457,20 @@ async def wa_object_summary(target_type: str, target_id: str, user=Depends(_guar
 async def wa_correlation_chain(correlation_id: str, user=Depends(_perm("audit.view"))):
     correlation_id = correlation_id.strip()[:120]
     if not correlation_id: raise HTTPException(422, "Correlation ID الزامی است")
-    audits, outbox = await asyncio.gather(
+    audits, campaigns, outbox = await asyncio.gather(
         db.audit_logs.find({"correlation_id": correlation_id}).sort("timestamp", 1).limit(100).to_list(100),
+        db.broadcast_campaigns.find({"correlation_id": correlation_id}).sort("created_at", 1).limit(20).to_list(20),
         db.bot_notifs.find({"correlation_id": correlation_id}).sort("created_at", 1).limit(100).to_list(100),
     )
     events = [{"id": f"audit:{row.get('_id')}", "stage": "audit", "title": row.get("action") or "Audit",
                "status": row.get("severity", "INFO"), "at": row.get("timestamp"),
                "metadata": {"module": row.get("module"), "target": row.get("target") or {}}} for row in audits]
+    events.extend({"id": f"campaign:{row.get('_id')}", "stage": "campaign",
+                   "title": ((row.get("payload") or {}).get("text") or (row.get("payload") or {}).get("caption") or "Broadcast Campaign")[:100],
+                   "status": row.get("status", ""), "at": row.get("created_at"),
+                   "metadata": {"source": row.get("source"), "total": row.get("total"),
+                                "success": row.get("success"), "failed": row.get("failed")}}
+                  for row in campaigns)
     events.extend({"id": f"outbox:{row.get('_id')}", "stage": "outbox",
                    "title": row.get("type") or "Outbox",
                    "status": "failed" if row.get("failed") else "sent" if row.get("sent") else "scheduled" if row.get("send_at") else "queued",
@@ -1435,7 +1479,7 @@ async def wa_correlation_chain(correlation_id: str, user=Depends(_perm("audit.vi
                   for row in outbox)
     events.sort(key=lambda event: event.get("at") or "")
     return {"correlation_id": correlation_id, "events": events,
-            "counts": {"audit": len(audits), "outbox": len(outbox)},
+            "counts": {"audit": len(audits), "campaign": len(campaigns), "outbox": len(outbox)},
             "complete": bool(events)}
 
 
@@ -1859,12 +1903,14 @@ async def settings_center(
     except Exception:
         pass
     if await db.has_permission(user["id"], "notifications.manage"):
+        existing_users = await db.users.count_documents({})
         for k in sorted(notif_defaults.keys()):
             m = meta.get(f"notif_default:{k}") or {}
             notif_items.append({
                 "key": f"notif_default:{k}", "label": notif_labels.get(k, k),
-                "desc": "پیش‌فرض این دسته اعلان برای کاربران جدید",
+                "desc": "پیش‌فرض این دسته اعلان؛ هنگام ذخیره محدوده‌ی اعمال را انتخاب کنید",
                 "type": "bool", "value": bool(notif_defaults.get(k)),
+                "existing_users": existing_users,
                 "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
             })
         cats.append({"key": "notif", "items": notif_items})
@@ -1873,6 +1919,19 @@ async def settings_center(
 
 class SettingPatch(BaseModel):
     value: object = None
+    # فقط برای notif_default؛ False یعنی فقط default کاربران جدید.
+    apply_to_existing: bool = False
+
+
+class IdentityPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_length: int = Field(ge=1, le=40)
+    max_length: int = Field(ge=2, le=80)
+    cooldown_days: int = Field(ge=0, le=365)
+    allow_emoji: bool
+    allow_spaces: bool
+    blacklist: list[str] = Field(default_factory=list, max_length=100)
+    reserved_words: list[str] = Field(default_factory=list, max_length=100)
 
 
 @router.patch("/settings/center/{key}")
@@ -1895,6 +1954,7 @@ async def settings_center_patch(key: str, body: SettingPatch,
         raise HTTPException(403, "forbidden")
 
     val = body.value
+    affected_users = 0
     if is_notif:
         ntype = key.split(":", 1)[1]
         try:
@@ -1905,11 +1965,16 @@ async def settings_center_patch(key: str, body: SettingPatch,
             raise
         except Exception:
             pass
-        old = bool((await db.get_notif_defaults()).get(ntype))
-        await db.set_notif_default(ntype, bool(val))
+        try:
+            result = await db.update_notif_default(
+                ntype, bool(val), apply_existing=bool(body.apply_to_existing))
+        except ValueError:
+            raise HTTPException(404, "دسته‌ی اعلان ناشناخته")
+        old = result["before"]
         label = ntype
-        sev = "INFO"
-        before, after = old, bool(val)
+        sev = "WARNING" if result["apply_existing"] else "INFO"
+        before, after = old, result["after"]
+        affected_users = result["affected_users"]
     else:
         _, label, _desc, typ, _perm_key, sev = row
         old = await db.get_setting(key, None)
@@ -1945,16 +2010,70 @@ async def settings_center_patch(key: str, body: SettingPatch,
         await db.set_setting(key, val)
         before, after = old, val
 
-    # متا: آخرین تغییردهنده/زمان (Last Modified By/At)
+    audit_after = {label: after}
+    if is_notif:
+        audit_after.update({"اعمال روی کاربران فعلی": bool(body.apply_to_existing),
+                            "کاربران تغییرکرده": affected_users})
+    try:
+        await _audit(uid, f"تغییر تنظیم «{label}»", severity=sev,
+                     before={label: before}, after=audit_after,
+                     tags=["تنظیمات", "پنل_وب", f"setting:{key}"])
+    except Exception:
+        if is_notif:
+            await db.update_notif_default(ntype, before,
+                                          apply_existing=bool(body.apply_to_existing))
+        else:
+            await db.set_setting(key, before)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ تنظیم قبلی بازگردانده شد")
+    # متادیتا فقط بعد از audit موفق ثبت می‌شود.
     udb = user.get("_db") or {}
     await db.settings_meta.update_one(
         {"_id": key},
         {"$set": {"by": uid, "by_name": udb.get("name", str(uid)), "at": _now()}},
         upsert=True)
-    await _audit(uid, f"تغییر تنظیم «{label}»", severity=sev if not is_notif else "INFO",
-                 before={label: before}, after={label: after},
-                 tags=["تنظیمات", "پنل_وب", f"setting:{key}"])
-    return {"ok": True, "key": key, "before": before, "after": after}
+    return {"ok": True, "key": key, "before": before, "after": after,
+            "apply_to_existing": bool(is_notif and body.apply_to_existing),
+            "affected_users": affected_users}
+
+
+@router.get("/settings/identity-policy")
+async def identity_policy_get(user=Depends(_perm("settings.manage"))):
+    cfg = await db.get_identity_config()
+    return {"policy": cfg}
+
+
+@router.put("/settings/identity-policy")
+async def identity_policy_update(body: IdentityPolicyUpdate,
+                                 user=Depends(_perm("settings.manage"))):
+    if body.min_length > body.max_length:
+        raise HTTPException(422, "حداقل طول نمی‌تواند بیشتر از حداکثر باشد")
+
+    def clean_words(values):
+        out, seen = [], set()
+        for raw in values:
+            word = " ".join(str(raw or "").split()).strip()
+            canon = word.casefold()
+            if not word or canon in seen:
+                continue
+            if len(word) > 60:
+                raise HTTPException(422, "هر واژه حداکثر ۶۰ کاراکتر باشد")
+            seen.add(canon); out.append(word)
+        return out
+
+    clean = body.model_dump()
+    clean["blacklist"] = clean_words(body.blacklist)
+    clean["reserved_words"] = clean_words(body.reserved_words)
+    before = await db.get_identity_config()
+    after = await db.update_identity_config(clean, actor=user["id"])
+    try:
+        await _audit(user["id"], "به‌روزرسانی سیاست نام‌نما", severity="HIGH",
+                     target_type="identity_policy", target_label="nickname",
+                     before=before, after=after,
+                     tags=["هویت", "نام‌نما", "تنظیمات", "پنل_وب"])
+    except Exception:
+        await db.update_identity_config(before, actor=user["id"])
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ سیاست قبلی بازگردانده شد")
+    return {"ok": True, "policy": after}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2908,6 +3027,8 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
                    "exams": 0, "notifications": 0},
         "recent_tickets": [], "recent_audit": [], "recent_questions": [],
         "recent_exams": [], "recent_notifications": [], "prestige_history": [],
+        # Empty و Unavailable دو حالت جدا هستند؛ UI برای هر بخش Retry نشان می‌دهد.
+        "section_errors": {},
     }
     try:
         sub = await db.sub_get(uid)
@@ -2918,7 +3039,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
                 "days_left": await db.sub_days_left(uid),
             }
     except Exception:
-        pass
+        out["section_errors"]["subscription"] = "unavailable"
     try:
         ar = await db.get_admin_role(uid)
         if ar:
@@ -2929,11 +3050,11 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "active": r.get("active", True), "scope": role_info.get("scope_intake"),
         } for r in role_info.get("roles", [])]
     except Exception:
-        pass
+        out["section_errors"]["roles"] = "unavailable"
     try:
         out["perms"] = sorted(await db.get_user_perms(uid))
     except Exception:
-        pass
+        out["section_errors"]["permissions"] = "unavailable"
     try:
         out["counts"]["tickets"] = await db.tickets.count_documents({"user_id": uid})
         out["recent_tickets"] = [{
@@ -2942,14 +3063,14 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "at": (t.get("created_at", "") or "")[:10],
         } for t in await db.tickets.find({"user_id": uid}).sort("created_at", -1).limit(5).to_list(5)]
     except Exception:
-        pass
+        out["section_errors"]["tickets"] = "unavailable"
     try:
         out["counts"]["grades"] = await db.grades.count_documents({"student_id": uid})
         out["counts"]["answers"] = await db.answers.count_documents({"user_id": uid})
         out["counts"]["questions"] = await db.questions.count_documents({"creator_id": uid})
         out["counts"]["exams"] = await db.exam_sessions.count_documents({"user_id": uid})
     except Exception:
-        pass
+        out["section_errors"]["academic_counts"] = "unavailable"
     try:
         logs = await db.audit_logs.find({"$or": [
             {"actor.id": uid}, {"target.id": str(uid)}, {"target.id": uid},
@@ -2965,7 +3086,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "correlation_id": l.get("correlation_id"),
         } for l in logs]
     except Exception:
-        pass
+        out["section_errors"]["audit"] = "unavailable"
 
     # 🌊 W-Admin — بخش‌های جدید User 360 (افزودنی؛ هر بخش جدا ضدخطا)
     try:  # 📊 تحصیلی — آخرین نمرات
@@ -2976,6 +3097,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         } for g in gdocs]}
     except Exception:
         out.setdefault("academic", {"grades_recent": []})
+        out["section_errors"]["academic"] = "unavailable"
     try:  # 🤖 هوشیار — از روی سند کاربر (بدون کوئری اضافه)
         today = datetime.now().strftime("%Y-%m-%d")
         out["ai"] = {
@@ -2987,6 +3109,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         }
     except Exception:
         out.setdefault("ai", {})
+        out["section_errors"]["ai"] = "unavailable"
     try:  # 🏆 افتخار — رنک/XP/استریک از سند کاربر
         dx = target.get("daily_xp") or {}
         out["prestige"] = {
@@ -3001,6 +3124,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         }
     except Exception:
         out.setdefault("prestige", {})
+        out["section_errors"]["prestige"] = "unavailable"
     try:  # 🔔 اعلان‌ها — شمارش و آخرین آیتم‌ها
         un = await db.user_notifs.count_documents({"user_id": uid, "read": {"$ne": True}})
         tot = await db.user_notifs.count_documents({"user_id": uid})
@@ -3015,6 +3139,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         } for n in ndocs]
     except Exception:
         out.setdefault("notifs", {})
+        out["section_errors"]["notifications"] = "unavailable"
     try:
         qdocs = await db.questions.find({"creator_id": uid}).sort("created_at", -1).limit(8).to_list(8)
         out["recent_questions"] = [{
@@ -3028,7 +3153,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "at": (q.get("created_at") or "")[:10],
         } for q in qdocs]
     except Exception:
-        pass
+        out["section_errors"]["questions"] = "unavailable"
     try:
         edocs = await db.exam_sessions.find({"user_id": uid}).sort("started_at", -1).limit(8).to_list(8)
         out["recent_exams"] = [{
@@ -3042,7 +3167,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "started_at": (e.get("started_at") or "")[:16].replace("T", " "),
         } for e in edocs]
     except Exception:
-        pass
+        out["section_errors"]["exams"] = "unavailable"
     try:
         # منبع واحد domain: schema واقعی prestige_history با uid/type/detail/at.
         pdocs = await db.prestige_history_list(uid, limit=10)
@@ -3053,7 +3178,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "at": (p.get("at") or "")[:16].replace("T", " "),
         } for i, p in enumerate(pdocs)]
     except Exception:
-        pass
+        out["section_errors"]["prestige_history"] = "unavailable"
     # Timeline واحد از eventهای واقعی و قابل‌ردیابی؛ هیچ event مصنوعی ساخته نمی‌شود.
     activity = []
     if target.get("registered_at"):
@@ -3068,7 +3193,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
                          "at": (a.get("answered_at") or "")[:16].replace("T", " "), "go": f"/questions?q={a.get('question_id', '')}"}
                         for a in adocs)
     except Exception:
-        pass
+        out["section_errors"]["answers"] = "unavailable"
     activity.extend({"id": f"exam:{e['id']}", "kind": "exam", "icon": "📝",
                      "title": f"آزمون {e.get('lesson') or 'سفارشی'}", "description": f"نتیجه {e.get('percentage', 0)}٪",
                      "at": e.get("started_at", ""), "go": "/exams?tab=grades"} for e in out.get("recent_exams", []))
@@ -3085,6 +3210,52 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
                     for i, a in enumerate(out.get("recent_audit", [])))
     out["activity"] = sorted(activity, key=lambda event: event.get("at") or "", reverse=True)[:40]
     return out
+
+
+@router.get("/users/{uid}/relations/{section}")
+async def user_relation_list(
+    uid: int, section: str,
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("users.view")),
+):
+    if not await db.get_user(uid):
+        raise HTTPException(404, "کاربر یافت نشد")
+    specs = {
+        "tickets": (db.tickets, {"user_id": uid}, "created_at"),
+        "grades": (db.grades, {"student_id": uid}, "exam_date"),
+        "answers": (db.answers, {"user_id": uid}, "answered_at"),
+        "questions": (db.questions, {"creator_id": uid}, "created_at"),
+        "exams": (db.exam_sessions, {"user_id": uid}, "started_at"),
+        "notifications": (db.user_notifs, {"user_id": uid}, "created_at"),
+        "prestige": (db.prestige_history, {"uid": uid}, "at"),
+    }
+    if section == "audit":
+        col = db.audit_logs
+        filt = {"$or": [{"actor.id": uid}, {"target.id": str(uid)},
+                         {"target.id": uid}, {"target_id": str(uid)}, {"target_id": uid}]}
+        sort_key = "timestamp"
+    elif section in specs:
+        col, filt, sort_key = specs[section]
+    else:
+        raise HTTPException(404, "بخش تاریخچه ناشناخته است")
+    total, docs = await asyncio.gather(
+        col.count_documents(filt),
+        col.find(filt).sort(sort_key, -1).skip(skip).limit(limit).to_list(limit),
+    )
+
+    def row(doc):
+        base = {"id": str(doc.get("_id", ""))}
+        if section == "tickets": base.update({"title": doc.get("subject", ""), "status": doc.get("status", ""), "at": doc.get("created_at", "")})
+        elif section == "grades": base.update({"title": doc.get("lesson", ""), "detail": doc.get("exam_title", ""), "value": doc.get("score"), "at": doc.get("exam_date", "")})
+        elif section == "answers": base.update({"title": str(doc.get("question_id", "")), "status": "correct" if doc.get("is_correct") else "wrong", "at": doc.get("answered_at", "")})
+        elif section == "questions": base.update({"title": (doc.get("question") or "")[:220], "detail": f"{doc.get('lesson','')} · {doc.get('topic','')}", "status": "approved" if doc.get("approved") else "pending", "at": doc.get("created_at", "")})
+        elif section == "exams": base.update({"title": doc.get("lesson") or "آزمون سفارشی", "detail": doc.get("topic", ""), "status": doc.get("status", ""), "value": doc.get("correct", 0), "at": doc.get("started_at", "")})
+        elif section == "notifications": base.update({"title": doc.get("title", ""), "detail": doc.get("body", ""), "status": "read" if doc.get("read") else "unread", "at": doc.get("created_at", "")})
+        elif section == "prestige": base.update({"title": doc.get("title") or doc.get("type", ""), "detail": doc.get("detail") or {}, "at": doc.get("at", "")})
+        else: base.update({"title": doc.get("action", ""), "detail": doc.get("module", ""), "status": doc.get("severity", "INFO"), "at": doc.get("timestamp", "")})
+        return jsonable_encoder(base, custom_encoder={ObjectId: str})
+    return {"section": section, "items": [row(doc) for doc in docs],
+            "total": total, "skip": skip, "limit": limit}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3373,6 +3544,82 @@ async def wa_broadcast_send(
     user=Depends(_perm("broadcast.send")),
 ):
     return await owner_api.broadcast(body=body, admin=user)
+
+
+@router.post("/broadcast/media")
+async def wa_broadcast_media_upload(
+    media_type: str = Form(...), file: UploadFile = File(...),
+    user=Depends(_perm("broadcast.send")),
+):
+    if media_type not in {"photo", "video", "document", "voice", "audio"}:
+        raise HTTPException(422, "نوع رسانه پشتیبانی نمی‌شود")
+    raw = await file.read()
+    limits = {"photo": 10, "voice": 25, "audio": 45, "video": 45, "document": 45}
+    if not raw or len(raw) > limits[media_type] * 1024 * 1024:
+        raise HTTPException(413, f"حجم فایل برای {media_type} نامعتبر یا بیش از حد مجاز است")
+    try:
+        file_id = await broadcast_service.upload_media(
+            user["id"], media_type, file.filename or "broadcast-file", raw,
+            file.content_type or "application/octet-stream")
+    except Exception:
+        raise HTTPException(502, "آپلود رسانه به تلگرام ناموفق بود")
+    return {"ok": True, "media_type": media_type, "file_id": file_id,
+            "filename": file.filename or ""}
+
+
+@router.post("/broadcast/test")
+async def wa_broadcast_test(
+    body: owner_api.BroadcastSend,
+    user=Depends(_perm("broadcast.send")),
+):
+    try:
+        result = await broadcast_service.send_payload_http(user["id"], body.payload())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception:
+        raise HTTPException(502, "ارسال آزمایشی به تلگرام ناموفق بود")
+    await _audit(user["id"], "ارسال آزمایشی کمپین", severity="INFO",
+                 target_id=user["id"], target_type="broadcast_test",
+                 tags=["ارسال_همگانی", "test_send", "پنل_وب"])
+    return {**result, "request_id": current_request_id.get()}
+
+
+@router.get("/broadcast/campaigns/{campaign_id}")
+async def wa_broadcast_campaign_detail(campaign_id: str,
+                                       user=Depends(_perm("broadcast.send"))):
+    doc = await broadcast_service.refresh_campaign(campaign_id)
+    if not doc:
+        raise HTTPException(404, "کمپین پیدا نشد")
+    failed = await db.bot_notifs.find(
+        {"campaign_id": campaign_id, "failed": True},
+        {"chat_id": 1, "error": 1, "sent_at": 1}).limit(100).to_list(100)
+    return {"campaign": broadcast_service.campaign_row(doc),
+            "pending": int(doc.get("pending") or 0),
+            "failures": [{"user_id": row.get("chat_id"),
+                            "error": row.get("error") or "send_failed",
+                            "at": row.get("sent_at", "")} for row in failed],
+            "failures_truncated": int(doc.get("failed") or 0) > len(failed)}
+
+
+@router.post("/broadcast/campaigns/{campaign_id}/retry-failed")
+async def wa_broadcast_campaign_retry(campaign_id: str,
+                                      user=Depends(_perm("broadcast.send"))):
+    try: oid = ObjectId(campaign_id)
+    except Exception: raise HTTPException(422, "شناسه کمپین نامعتبر است")
+    campaign = await db.broadcast_campaigns.find_one({"_id": oid})
+    if not campaign:
+        raise HTTPException(404, "کمپین پیدا نشد")
+    failed = await db.bot_notifs.count_documents({"campaign_id": campaign_id, "failed": True})
+    if not failed:
+        raise HTTPException(404, "گیرنده ناموفقی برای تلاش مجدد نیست")
+    await db.bot_notifs.update_many({"campaign_id": campaign_id, "failed": True},
+        {"$set": {"sent": False, "failed": False}, "$unset": {"error": "", "sent_at": ""}})
+    await db.broadcast_campaigns.update_one({"_id": oid},
+        {"$inc": {"failed": -failed}, "$set": {"status": "queued", "finished_at": None, "updated_at": _now()}})
+    await _audit(user["id"], "تلاش مجدد گیرندگان ناموفق کمپین", severity="WARNING",
+                 target_id=campaign_id, target_type="broadcast_campaign",
+                 after={"requeued": failed}, tags=["ارسال_همگانی", "retry_failed", "پنل_وب"])
+    return {"ok": True, "requeued": failed}
 
 
 @router.get("/broadcast/options")
@@ -3673,6 +3920,34 @@ async def wa_subscription_card(
 
 # ── AI Admin ───────────────────────────────────────────────────────
 
+class WaAiConfigUpdate(BaseModel):
+    """پیکربندی غیرsecret؛ extra=forbid مانع عبور دستی api_key می‌شود."""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    provider: str = Field(pattern="^(gemini|openrouter)$")
+    model: str = Field(min_length=2, max_length=150)
+    daily_limit: int = Field(ge=0, le=1000)
+    thinking: str = Field(pattern="^(auto|high)$")
+    system_prompt: str = Field(min_length=20, max_length=20000)
+    disabled_message: str = Field(default="", max_length=1000)
+
+
+class WaAiKeyRotate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    api_key: str = Field(min_length=8, max_length=500)
+
+
+class WaAiPersonaCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=40)
+    prompt: Optional[str] = Field(default=None, min_length=20, max_length=20000)
+
+
+class WaAiDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    notes: str = Field(min_length=3, max_length=2000)
+
+
 @router.get("/ai/config")
 async def wa_ai_config(user=Depends(_perm("ai.manage"))):
     return await ai_admin_api.config(admin=user)
@@ -3680,17 +3955,191 @@ async def wa_ai_config(user=Depends(_perm("ai.manage"))):
 
 @router.put("/ai/config")
 async def wa_ai_config_update(
-    body: ai_admin_api.ConfigUpdate,
+    body: WaAiConfigUpdate,
     user=Depends(_perm("ai.manage")),
 ):
     before = await ai_admin_api.config(admin=user)
-    result = await ai_admin_api.update_config(body=body, admin=user)
+    safe_body = ai_admin_api.ConfigUpdate(**body.model_dump(), api_key=None)
+    result = await ai_admin_api.update_config(body=safe_body, admin=user)
     after = await ai_admin_api.config(admin=user)
-    await _audit(user["id"], "به‌روزرسانی تنظیمات هوشیار", severity="HIGH",
-                 before={k: before.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking")},
-                 after={k: after.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking")},
-                 tags=["هوشیار", "پیکربندی", "پنل_وب"])
+    try:
+        await _audit(user["id"], "به‌روزرسانی تنظیمات هوشیار", severity="HIGH",
+                     before={k: before.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking", "system_prompt", "disabled_message")},
+                     after={k: after.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking", "system_prompt", "disabled_message")},
+                     tags=["هوشیار", "پیکربندی", "پنل_وب"])
+    except Exception:
+        rollback = ai_admin_api.ConfigUpdate(
+            enabled=before["enabled"], provider=before["provider"], model=before["model"],
+            daily_limit=before["daily_limit"], thinking=before["thinking"],
+            system_prompt=before["system_prompt"],
+            disabled_message=before.get("disabled_message") or "", api_key=None)
+        await ai_admin_api.update_config(body=rollback, admin=user)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ پیکربندی قبلی بازگردانده شد")
     return result
+
+
+@router.post("/ai/api-key/rotate")
+async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
+                               user=Depends(get_admin_user)):
+    """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود."""
+    secret = body.api_key.strip()
+    if len(secret) < 8:
+        raise HTTPException(422, "کلید API معتبر نیست")
+    old_secret = (await ai_admin_api.get_ai_config()).get("api_key") or ""
+    before_configured = bool(old_secret)
+    await ai_admin_api.set_ai_setting("api_key", secret)
+    try:
+        await _audit(user["id"], "AI API key rotated", severity="CRITICAL",
+                     target_type="ai_secret", target_label="Houshyar API key",
+                     before={"configured": before_configured},
+                     after={"configured": True},
+                     tags=["هوشیار", "secret_rotation", "owner_only", "پنل_وب"])
+    except Exception:
+        await ai_admin_api.set_ai_setting("api_key", old_secret)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ کلید قبلی بازگردانده شد")
+    return {"ok": True, "has_api_key": True}
+
+
+@router.post("/ai/test")
+async def wa_ai_test(user=Depends(get_admin_user)):
+    started = time.perf_counter()
+    result = await ai_admin_api.test_connection(admin=user)
+    result["response_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    result["request_id"] = current_request_id.get()
+    await _audit(user["id"], "آزمایش اتصال هوشیار", severity="INFO",
+                 target_type="ai_provider", target_label="connection test",
+                 after={"ok": bool(result.get("ok")), "tokens": int(result.get("tokens") or 0)},
+                 tags=["هوشیار", "connection_test", "owner_only", "پنل_وب"])
+    return result
+
+
+@router.get("/ai/users/{user_id}/profile")
+async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
+    target = await db.get_user(user_id)
+    if not target:
+        raise HTTPException(404, "کاربر پیدا نشد")
+    notes = await db.ai_get_profile_notes(user_id)
+    return {"user": {"id": user_id, "name": target.get("name", "")},
+            "notes": [str(note)[:500] for note in notes[:50]],
+            "note_count": len(notes),
+            "legacy_memory_present": bool(target.get("ai_mem")),
+            "scope": "profile_notes_and_legacy_memory_only"}
+
+
+@router.delete("/ai/users/{user_id}/profile")
+async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
+    target = await db.get_user(user_id)
+    if not target:
+        raise HTTPException(404, "کاربر پیدا نشد")
+    before = {"profile_notes": len(target.get("ai_profile_notes") or []),
+              "legacy_memory_present": bool(target.get("ai_mem"))}
+    result = await ai_admin_api.clear_profile(user_id=user_id, admin=user)
+    try:
+        await _audit(user["id"], "پاک‌سازی پروفایل ماندگار هوشیار", severity="HIGH",
+                     target_id=user_id, target_type="user", target_label=target.get("name", ""),
+                     before=before,
+                     after={"profile_notes": 0, "legacy_memory_present": False},
+                     tags=["هوشیار", "privacy", "owner_only", "پنل_وب"])
+    except Exception:
+        restore = {k: target[k] for k in ("ai_profile_notes", "ai_mem", "ai_mem_at") if k in target}
+        if restore:
+            await db.users.update_one({"user_id": user_id}, {"$set": restore})
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ داده پاک‌شده بازگردانده شد")
+    return {**result, "cleared": "profile_notes_and_legacy_memory_only"}
+
+
+@router.get("/ai/personas")
+async def wa_ai_personas(user=Depends(get_admin_user)):
+    cfg = await ai_admin_api.get_ai_config()
+    meta_raw = await db.get_setting("ai_personas_meta", {})
+    meta = meta_raw if isinstance(meta_raw, dict) else {}
+    current = cfg.get("system_prompt") or ""
+    return {"personas": [{"name": str(name), "prompt": str(prompt),
+                           "active": str(prompt) == current,
+                           "created_by": (meta.get(name) or {}).get("created_by"),
+                           "created_at": (meta.get(name) or {}).get("created_at", "")}
+                          for name, prompt in (cfg.get("personas") or {}).items()]}
+
+
+@router.post("/ai/personas")
+async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_user)):
+    cfg = await ai_admin_api.get_ai_config()
+    name = body.name.strip()
+    prompt = (body.prompt or cfg.get("system_prompt") or "").strip()
+    if len(prompt) < 20:
+        raise HTTPException(422, "متن persona حداقل ۲۰ کاراکتر باشد")
+    old_prompt = (cfg.get("personas") or {}).get(name)
+    existed = old_prompt is not None
+    meta_raw = await db.get_setting("ai_personas_meta", {})
+    old_meta = dict(meta_raw) if isinstance(meta_raw, dict) else {}
+    await save_persona(name, prompt)
+    meta = dict(old_meta)
+    meta[name] = {"created_by": user["id"], "created_at": _now()}
+    await db.set_setting("ai_personas_meta", meta)
+    try:
+        await _audit(user["id"], "ذخیره persona هوشیار", severity="WARNING",
+                     target_type="ai_persona", target_label=name,
+                     before={"exists": existed}, after={"exists": True},
+                     tags=["هوشیار", "persona", "owner_only", "پنل_وب"])
+    except Exception:
+        if existed: await save_persona(name, old_prompt)
+        else: await delete_persona(name)
+        await db.set_setting("ai_personas_meta", old_meta)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ تغییر Persona بازگردانده شد")
+    return {"ok": True, "name": name}
+
+
+@router.post("/ai/personas/{name}/activate")
+async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
+    cfg = await ai_admin_api.get_ai_config()
+    prompt = (cfg.get("personas") or {}).get(name)
+    if not prompt:
+        raise HTTPException(404, "Persona پیدا نشد")
+    old = cfg.get("system_prompt") or ""
+    await ai_admin_api.set_ai_setting("system_prompt", prompt)
+    try:
+        await _audit(user["id"], "فعال‌سازی persona هوشیار", severity="HIGH",
+                     target_type="ai_persona", target_label=name,
+                     before={"system_prompt": old}, after={"system_prompt": prompt},
+                     tags=["هوشیار", "persona", "owner_only", "پنل_وب"])
+    except Exception:
+        await ai_admin_api.set_ai_setting("system_prompt", old)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ Persona قبلی فعال ماند")
+    return {"ok": True, "name": name}
+
+
+@router.delete("/ai/personas/{name}")
+async def wa_ai_persona_delete(name: str, user=Depends(get_admin_user)):
+    cfg = await ai_admin_api.get_ai_config()
+    old_prompt = (cfg.get("personas") or {}).get(name)
+    if old_prompt is None:
+        raise HTTPException(404, "Persona پیدا نشد")
+    meta_raw = await db.get_setting("ai_personas_meta", {})
+    old_meta = dict(meta_raw) if isinstance(meta_raw, dict) else {}
+    await delete_persona(name)
+    if name in old_meta:
+        meta = dict(old_meta); meta.pop(name, None)
+        await db.set_setting("ai_personas_meta", meta)
+    try:
+        await _audit(user["id"], "حذف persona هوشیار", severity="HIGH",
+                     target_type="ai_persona", target_label=name,
+                     before={"exists": True}, after={"deleted": True},
+                     tags=["هوشیار", "persona", "owner_only", "پنل_وب"])
+    except Exception:
+        await save_persona(name, old_prompt)
+        await db.set_setting("ai_personas_meta", old_meta)
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ Persona بازگردانده شد")
+    return {"ok": True}
+
+
+@router.post("/ai/broadcast-draft")
+async def wa_ai_broadcast_draft(body: WaAiDraft,
+                                user=Depends(_perm("broadcast.send"))):
+    try:
+        draft = await generate_broadcast_ai(body.notes.strip())
+    except Exception:
+        raise HTTPException(503, "هوشیار نتوانست پیش‌نویس بسازد؛ نوشتن دستی همچنان در دسترس است")
+    return {"draft": draft, "request_id": current_request_id.get()}
 
 
 @router.get("/ai/stats")
@@ -3698,17 +4147,93 @@ async def wa_ai_stats(user=Depends(_perm("ai.manage"))):
     return await ai_admin_api.stats(admin=user)
 
 
+def _ai_report_query(q: str | None = None, user_id: int | None = None,
+                     date_from: str | None = None, date_to: str | None = None) -> dict:
+    filt = {}
+    if q:
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        filt["$or"] = [{"name": rx}, {"question": rx}, {"answer": rx}]
+    if user_id is not None:
+        filt["user_id"] = user_id
+    created = {}
+    if date_from:
+        try: created["$gte"] = datetime.fromisoformat(date_from[:10])
+        except ValueError: raise HTTPException(422, "تاریخ شروع نامعتبر است")
+    if date_to:
+        try: created["$lte"] = datetime.fromisoformat(date_to[:10] + "T23:59:59.999999")
+        except ValueError: raise HTTPException(422, "تاریخ پایان نامعتبر است")
+    if created: filt["created_at"] = created
+    return filt
+
+
+def _ai_report_row(item: dict) -> dict:
+    at = item.get("created_at")
+    return {"id": str(item.get("_id", "")), "user_id": item.get("user_id"),
+            "name": str(item.get("name") or ""),
+            "question": str(item.get("question") or ""),
+            "answer": str(item.get("answer") or ""),
+            "created_at": at.isoformat() if isinstance(at, datetime) else str(at or "")[:19]}
+
+
 @router.get("/ai/reports")
 async def wa_ai_reports(
-    limit: int = Query(30, ge=1, le=100),
+    q: Optional[str] = Query(None, max_length=100), user_id: Optional[int] = Query(None),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
     user=Depends(_perm("ai.manage")),
 ):
-    return await ai_admin_api.reports(limit=limit, admin=user)
+    filt = _ai_report_query(q, user_id, date_from, date_to)
+    total, docs = await asyncio.gather(
+        db.ai_reports.count_documents(filt),
+        db.ai_reports.find(filt).sort("created_at", -1 if sort_dir == "desc" else 1)
+          .skip(skip).limit(limit).to_list(limit),
+    )
+    return {"reports": [_ai_report_row(item) for item in docs], "total": total,
+            "skip": skip, "limit": limit}
+
+
+@router.get("/exports/ai-reports.csv")
+async def wa_ai_reports_export(
+    q: Optional[str] = Query(None, max_length=100), user_id: Optional[int] = Query(None),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    user=Depends(_perm("ai.manage")),
+):
+    filt = _ai_report_query(q, user_id, date_from, date_to)
+    async def stream():
+        yield "\ufeffid,user_id,name,question,answer,created_at\r\n".encode("utf-8")
+        cursor = db.ai_reports.find(filt).sort("created_at", -1 if sort_dir == "desc" else 1)
+        async for item in cursor:
+            row = _ai_report_row(item); buf = io.StringIO(); writer = csv.writer(buf)
+            writer.writerow([row["id"], row["user_id"], row["name"], row["question"], row["answer"], row["created_at"]])
+            yield buf.getvalue().encode("utf-8")
+    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=humsyar-ai-reports.csv"})
 
 
 @router.get("/ai/banned")
-async def wa_ai_banned(user=Depends(_perm("ai.manage"))):
-    return await ai_admin_api.banned(admin=user)
+async def wa_ai_banned(
+    q: Optional[str] = Query(None, max_length=100),
+    sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("ai.manage")),
+):
+    filt = {"ai_banned": True}
+    if q:
+        search = db.build_user_search_query(q.strip())
+        filt = {"$and": [filt, search]}
+    total, docs = await asyncio.gather(
+        db.users.count_documents(filt),
+        db.users.find(filt, {"user_id": 1, "name": 1, "nickname": 1,
+                             "username": 1, "ai_total_usage": 1})
+          .sort("name", 1 if sort_dir == "asc" else -1).skip(skip).limit(limit).to_list(limit),
+    )
+    return {"users": [{"id": item.get("user_id"),
+                        "name": db.display_name_of(item),
+                        "username": item.get("username", ""),
+                        "usage_total": int(item.get("ai_total_usage") or 0)} for item in docs],
+            "total": total, "skip": skip, "limit": limit}
 
 
 @router.get("/ai/users")
@@ -3726,12 +4251,16 @@ async def wa_ai_ban(
 ):
     target = await db.get_user(body.user_id)
     result = await ai_admin_api.toggle_ban(body=body, admin=user)
-    await _audit(user["id"], "تغییر دسترسی کاربر به هوشیار", severity="HIGH",
-                 target_id=body.user_id, target_type="user",
-                 target_label=(target or {}).get("name", str(body.user_id)),
-                 before={"مسدود": bool((target or {}).get("ai_banned"))},
-                 after={"مسدود": bool(result.get("banned"))},
-                 tags=["هوشیار", "دسترسی", "پنل_وب"])
+    try:
+        await _audit(user["id"], "تغییر دسترسی کاربر به هوشیار", severity="HIGH",
+                     target_id=body.user_id, target_type="user",
+                     target_label=(target or {}).get("name", str(body.user_id)),
+                     before={"مسدود": bool((target or {}).get("ai_banned"))},
+                     after={"مسدود": bool(result.get("banned"))},
+                     tags=["هوشیار", "دسترسی", "پنل_وب"])
+    except Exception:
+        await db.ai_set_banned(body.user_id, bool((target or {}).get("ai_banned")))
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ دسترسی قبلی بازگردانده شد")
     return result
 
 
@@ -3742,10 +4271,19 @@ async def wa_ai_reset_quota(
 ):
     target = await db.get_user(body.user_id)
     result = await ai_admin_api.reset_quota(body=body, admin=user)
-    await _audit(user["id"], "صفرکردن سهمیه روزانه هوشیار", severity="WARNING",
-                 target_id=body.user_id, target_type="user",
-                 target_label=(target or {}).get("name", str(body.user_id)),
-                 tags=["هوشیار", "سهمیه", "پنل_وب"])
+    try:
+        await _audit(user["id"], "صفرکردن سهمیه روزانه هوشیار", severity="WARNING",
+                     target_id=body.user_id, target_type="user",
+                     target_label=(target or {}).get("name", str(body.user_id)),
+                     before={"usage": int((target or {}).get("ai_usage_count") or 0),
+                             "tokens": int((target or {}).get("ai_tokens_today") or 0)},
+                     after={"usage": 0, "tokens": 0},
+                     tags=["هوشیار", "سهمیه", "پنل_وب"])
+    except Exception:
+        await db.users.update_one({"user_id": body.user_id}, {"$set": {
+            "ai_usage_count": int((target or {}).get("ai_usage_count") or 0),
+            "ai_tokens_today": int((target or {}).get("ai_tokens_today") or 0)}})
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ سهمیه قبلی بازگردانده شد")
     return result
 
 

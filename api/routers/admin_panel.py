@@ -8,6 +8,7 @@ from typing import Optional, List
 from api.auth import get_admin_user
 from database import db
 from request_context import current_request_id
+import broadcast_service
 
 router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
@@ -617,105 +618,70 @@ async def reopen_ticket(tid: int, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 class BroadcastTarget(BaseModel):
-    scope: str = "all"                    # all | intake | intake_group | role | subscription
+    scope: str = "all"  # all|intake|group|intake_group|role|subscription|saved_segment
     intake: Optional[str] = None
-    group: Optional[str] = None           # "1" | "2"
+    group: Optional[str] = None
     role: Optional[str] = None
-    subscription_status: Optional[str] = None  # active | inactive | expiring_7
+    subscription_status: Optional[str] = None
+    saved_segment_id: Optional[str] = None
 
-async def _resolve_broadcast_users(target: BroadcastTarget):
-    """Audience resolver مشترک Bot/Web؛ هر segment به کاربران واقعی resolve می‌شود."""
-    users = await db.all_users(approved_only=True)
-    if target.scope == "intake" and not target.intake:
-        raise HTTPException(422, "ورودی مخاطبان الزامی است")
-    if target.scope == "intake_group" and (not target.intake or not target.group):
-        raise HTTPException(422, "ورودی و گروه مخاطبان الزامی است")
-    if target.scope == "role" and not target.role:
-        raise HTTPException(422, "نقش مخاطبان الزامی است")
-    if target.scope == "subscription" and not target.subscription_status:
-        raise HTTPException(422, "وضعیت اشتراک مخاطبان الزامی است")
-    if target.scope == "intake" and target.intake:
-        users = [u for u in users if u.get("intake") == target.intake]
-    elif target.scope == "intake_group" and target.intake and target.group:
-        users = [u for u in users if u.get("intake") == target.intake and db.normalize_group(u.get("group")) == db.normalize_group(target.group)]
-    elif target.scope == "role" and target.role:
-        allowed = set(await db.user_ids_by_role(target.role, limit=100000))
-        users = [u for u in users if u.get("user_id") in allowed]
-    elif target.scope == "subscription" and target.subscription_status:
-        now = datetime.now()
-        if target.subscription_status == "active":
-            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}})
-        elif target.subscription_status == "expiring_7":
-            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat(), "$lte": (now + timedelta(days=7)).isoformat()}})
-        elif target.subscription_status == "inactive":
-            active = set(await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}}))
-            ids = [u.get("user_id") for u in users if u.get("user_id") not in active]
-        else:
-            raise HTTPException(422, "وضعیت اشتراک مخاطب نامعتبر است")
-        allowed = set(ids)
-        users = [u for u in users if u.get("user_id") in allowed]
-    elif target.scope not in ("all", "intake", "intake_group", "role", "subscription"):
-        raise HTTPException(422, "نوع مخاطب نامعتبر است")
-    return [u for u in users if u.get("user_id") != ADMIN_ID]
+
+async def _resolve_broadcast_users(target: BroadcastTarget, actor_id: int = ADMIN_ID):
+    """Compatibility wrapper روی resolver واحد domain."""
+    try:
+        return await broadcast_service.resolve_recipients(target.model_dump(), actor_id, db)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 class BroadcastPreview(BaseModel):
     target: BroadcastTarget
 
 @router.post("/broadcast/preview")
 async def broadcast_preview(body: BroadcastPreview, admin=Depends(get_admin_user)):
-    users = await _resolve_broadcast_users(body.target)
-    return {"recipient_count": len(users)}
+    users = await _resolve_broadcast_users(body.target, admin["id"])
+    return {"recipient_count": len(users), "audience": body.target.model_dump()}
+
 
 class BroadcastSend(BaseModel):
-    text: str
+    text: str = ""                       # legacy text client
+    message_type: str = "text"
+    file_id: str = ""
+    caption: str = ""
     target: BroadcastTarget
-    send_at: Optional[str] = None   # ISO datetime — اگه خالی باشه فوری ارسال می‌شه
+    send_at: Optional[str] = None
+
+    def payload(self) -> dict:
+        return ({"type": "text", "text": self.text}
+                if self.message_type == "text" else
+                {"type": self.message_type, "file_id": self.file_id, "caption": self.caption})
+
 
 @router.post("/broadcast")
 async def broadcast(body: BroadcastSend, admin=Depends(get_admin_user)):
-    text = body.text.strip()
-    if len(text) < 5: raise HTTPException(422, "متن پیام خیلی کوتاهه")
-    if body.send_at:
-        try: datetime.fromisoformat(body.send_at)
-        except ValueError: raise HTTPException(422, "فرمت زمان نامعتبر است")
-    users = await _resolve_broadcast_users(body.target)
-    notif = db.client["medicalbot"]["bot_notifications"]
-    doc_base = {"type":"broadcast","text":text,"sent":False,"created_at":datetime.now().isoformat(),
-                "correlation_id": current_request_id.get(), "audience": body.target.model_dump()}
-    if body.send_at: doc_base["send_at"] = body.send_at
-    docs = [{**doc_base, "chat_id": u["user_id"]} for u in users]
-    if docs: await notif.insert_many(docs)
-    # 🔔 موج ۴.۹۰ — انعکاس اطلاعیه در مرکز اعلان مینی‌اپ (فوری و زمان‌دار)
-    import re as _re
-    await db.inbox_add_many([
-        {'user_id': u["user_id"], 'type': 'announcement',
-         'title': "📢 اطلاعیه‌ی مدیریت",
-         'body': _re.sub(r'<[^>]+>', '', text).strip() or 'پیام همگانی مدیریت',
-         'link': None}
-        for u in users if u.get("user_id")
-    ])
-    await _audit(admin, "ارسال همگانی" + (" (زمان‌دار)" if body.send_at else ""),
-        "Notifications", severity="HIGH",
-        target_type="broadcast", target_label=f"{len(docs)} گیرنده",
-        details=text[:300],
-        tags=["ارسال_همگانی","پنل_وب"])
-    return {"ok":True, "queued": len(docs), "scheduled": bool(body.send_at)}
+    try:
+        result = await broadcast_service.create_campaign(
+            payload=body.payload(), target=body.target.model_dump(),
+            created_by=admin["id"], created_by_name=(admin.get("_db") or {}).get("name", ""),
+            source="web", send_at=body.send_at, correlation_id=current_request_id.get(), enqueue=True)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    try:
+        await _audit(admin, "ایجاد کمپین همگانی" + (" زمان‌دار" if body.send_at else ""),
+            "Notifications", severity="HIGH", target_id=result["campaign_id"],
+            target_type="broadcast_campaign", target_label=f"{result['recipient_count']} گیرنده",
+            details=(body.text or body.caption)[:300],
+            tags=["ارسال_همگانی", "campaign", "پنل_وب"])
+    except Exception:
+        try: await broadcast_service.cancel(result["campaign_id"])
+        except Exception: pass
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ کمپین لغو شد")
+    return {"ok": True, "queued": result["recipient_count"],
+            "scheduled": bool(body.send_at), **result}
 
 @router.get("/broadcast/history")
-async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20)):
-    notif = db.client["medicalbot"]["bot_notifications"]
-    pipeline = [
-        {"$match": {"type": "broadcast"}},
-        {"$group": {"_id": {"text":"$text","created_at":"$created_at","correlation_id":"$correlation_id"},
-            "audience": {"$first": "$audience"},
-            "total": {"$sum": 1}, "sent": {"$sum": {"$cond": ["$sent", 1, 0]}},
-            "failed": {"$sum": {"$cond": [{"$eq": ["$failed", True]}, 1, 0]}}}},
-        {"$sort": {"_id.created_at": -1}}, {"$limit": limit},
-    ]
-    rows = await notif.aggregate(pipeline).to_list(limit)
-    return {"history":[{"text":r["_id"]["text"][:80],"created_at":r["_id"]["created_at"],
-        "correlation_id":r["_id"].get("correlation_id"), "audience":r.get("audience") or {"scope":"all"},
-        "total":r["total"],"sent":r["sent"],"failed":r["failed"]} for r in rows]}
+async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20, ge=1, le=100)):
+    docs = await db.broadcast_campaigns.find({}).sort("created_at", -1).limit(limit).to_list(limit)
+    return {"history": [broadcast_service.campaign_row(doc) for doc in docs]}
 
 # ── 🌊 موج Notif-Scheduled — مدیریت ارسال‌های همگانی زمان‌دارِ در انتظار ──
 # پاریت با ربات: تا لحظه‌ی send_at پیام‌ها sent=False می‌مانند؛ لغو = حذف همان
@@ -723,41 +689,37 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20))
 
 @router.get("/broadcast/scheduled")
 async def broadcast_scheduled(admin=Depends(get_admin_user), limit: int=Query(10, ge=1, le=50)):
-    """فهرست دسته‌های ارسال همگانی زمان‌دار که هنوز موعدشان نرسیده است."""
-    notif = db.client["medicalbot"]["bot_notifications"]
-    now_iso = datetime.now().isoformat()
-    docs = await notif.find(
-        {"type": "broadcast", "sent": False, "send_at": {"$gt": now_iso}}
-    ).sort("send_at", 1).limit(500).to_list(500)
-    groups = {}
-    for d in docs:
-        key = (d.get("text", ""), d.get("created_at", ""), d.get("send_at", ""), d.get("correlation_id"))
-        g = groups.setdefault(key, {"text": key[0], "created_at": key[1],
-                                    "send_at": key[2], "correlation_id": key[3], "total": 0})
-        g["total"] += 1
-    items = sorted(groups.values(), key=lambda x: x["send_at"])[:limit]
-    for it in items:
-        it["text"] = it["text"][:120]
-    return {"scheduled": items}
+    docs = await db.broadcast_campaigns.find(
+        {"status": "scheduled", "send_at": {"$gt": datetime.now().isoformat()}}
+    ).sort("send_at", 1).limit(limit).to_list(limit)
+    return {"scheduled": [broadcast_service.campaign_row(doc) for doc in docs]}
+
 
 class BroadcastCancel(BaseModel):
-    text: str
-    created_at: str
+    campaign_id: str = ""
+    # legacy fields فقط برای compatibility ورودی قدیمی؛ control plane جدید ID است.
+    text: str = ""
+    created_at: str = ""
+
 
 @router.post("/broadcast/cancel")
 async def broadcast_cancel(body: BroadcastCancel, admin=Depends(get_admin_user)):
-    """لغو یک دسته‌ی ارسال زمان‌دار — فقط پیام‌های هنوز ارسال‌نشده‌ی همان دسته."""
-    notif = db.client["medicalbot"]["bot_notifications"]
-    res = await notif.delete_many({"type": "broadcast", "sent": False,
-                                   "text": body.text, "created_at": body.created_at})
-    n = getattr(res, "deleted_count", 0)
-    if not n:
-        raise HTTPException(404, "دسته‌ی ارسالی یافت نشد (شاید قبلاً ارسال شده)")
-    await _audit(admin, "لغو ارسال همگانی زمان‌دار", "Notifications", severity="HIGH",
-        target_type="broadcast", target_label=f"{n} گیرنده",
-        details=body.text[:300],
-        tags=["ارسال_همگانی", "لغو", "پنل_وب"])
-    return {"ok": True, "cancelled": n}
+    if not body.campaign_id:
+        raise HTTPException(422, "شناسه کمپین الزامی است")
+    try:
+        cancelled = await broadcast_service.cancel(body.campaign_id)
+    except ValueError:
+        raise HTTPException(409, "کمپین پیدا نشد یا دیگر قابل لغو نیست")
+    n = cancelled["cancelled"]
+    try:
+        await _audit(admin, "لغو کمپین همگانی", "Notifications", severity="HIGH",
+            target_id=body.campaign_id, target_type="broadcast_campaign",
+            target_label=f"{n} گیرنده", tags=["ارسال_همگانی", "لغو", "پنل_وب"])
+    except Exception:
+        await broadcast_service.rollback_cancel(body.campaign_id,
+                                                cancelled["previous_status"])
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ لغو کمپین بازگردانده شد")
+    return {"ok": True, "cancelled": n, "campaign_id": body.campaign_id}
 
 # ══════════════════════════════════════════════
 # 📊 نظرسنجی کانال
