@@ -42,12 +42,6 @@ DIFF_LABELS = {
     'hard':   'سخت 🔴',
 }
 
-JALALI_MONTHS = [
-    'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
-    'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
-]
-JALALI_DAYS = ['دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه', 'جمعه', 'شنبه', 'یکشنبه']
-
 # ══════════════════════════════════════════════════
 #  کیبوردهای ReplyKeyboard
 # ══════════════════════════════════════════════════
@@ -201,49 +195,23 @@ def exam_countdown(days: int) -> str:
 
 
 # ══════════════════════════════════════════════════
-#  تبدیل تاریخ میلادی به شمسی
+#  قرارداد مرکزی زمان و تاریخ هامزیار
 # ══════════════════════════════════════════════════
-
-def _to_jalali(gy: int, gm: int, gd: int) -> tuple:
-    g_l = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-    gy2, gm2, gd2 = gy - 1600, gm - 1, gd - 1
-    g_day_no = (365 * gy2 + (gy2 + 3) // 4 - (gy2 + 99) // 100
-                + (gy2 + 399) // 400 + g_l[gm2]
-                + (1 if gm2 > 1 and ((gy2 % 4 == 0 and gy2 % 100 != 0) or gy2 % 400 == 0) else 0)
-                + gd2)
-    j_day_no = g_day_no - 79
-    j_np = j_day_no // 12053
-    j_day_no %= 12053
-    jy = 979 + 33 * j_np + 4 * (j_day_no // 1461)
-    j_day_no %= 1461
-    if j_day_no >= 366:
-        jy += (j_day_no - 1) // 365
-        j_day_no = (j_day_no - 1) % 365
-    j_mi = [31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
-    jm = 11
-    for i in range(11):
-        if j_day_no < j_mi[i]:
-            jm = i
-            break
-        j_day_no -= j_mi[i]
-    return jy, jm + 1, j_day_no + 1
+# این نام‌ها برای compatibility ماژول‌های قدیمی حفظ شده‌اند؛ تمام منطق
+# timezone/calendar در time_utils.py است و این فایل conversion مستقلی ندارد.
+from time_utils import (
+    TEHRAN, UTC, day_bounds_utc, format_date_fa, format_datetime_fa,
+    jalali_to_gregorian, now_tehran as _contract_now_tehran,
+    now_utc, parse_gregorian_date, today_tehran, utc_now_iso,
+)
 
 
 def jalali_weekday_index(date_str: str) -> int:
-    """
-    FIX جدید: index روز هفته با شنبه=۰ تا جمعه=۶ — برای ساخت
-    جدول هفتگی برنامه کلاسی (شنبه تا جمعه) لازم است.
-    پایتون weekday() دوشنبه=۰ می‌دهد؛ نگاشت به شنبه=۰:
-    دوشنبه=۰→۲, سه‌شنبه=۱→۳, چهارشنبه=۲→۴, پنج‌شنبه=۳→۵,
-    جمعه=۴→۶, شنبه=۵→۰, یکشنبه=۶→۱
-    """
+    """Persian calendar UX index: Saturday=0 ... Friday=6."""
     try:
-        from datetime import datetime
-        y, m, d = map(int, date_str.split('-'))
-        py_weekday = datetime(y, m, d).weekday()  # 0=دوشنبه ... 6=یکشنبه
-        mapping = {5: 0, 6: 1, 0: 2, 1: 3, 2: 4, 3: 5, 4: 6}
-        return mapping[py_weekday]
-    except Exception:
+        local_date = parse_gregorian_date(str(date_str)[:10])
+        return (local_date.weekday() - 5) % 7
+    except (TypeError, ValueError):
         return 0
 
 
@@ -251,91 +219,42 @@ JALALI_WEEK_SAT_FIRST = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌ش�
 
 
 def fmt_jalali(date_str: str) -> str:
-    """تبدیل YYYY-MM-DD به مثلاً: ۱۵ فروردین ۱۴۰۴ (شنبه)"""
-    try:
-        from datetime import datetime
-        y, m, d = map(int, date_str.split('-'))
-        jy, jm, jd = _to_jalali(y, m, d)
-        day_of_week = JALALI_DAYS[datetime(y, m, d).weekday()]
-        return f"{jd} {JALALI_MONTHS[jm - 1]} {jy} ({day_of_week})"
-    except Exception:
-        return date_str
+    """Display a Gregorian date-only value in Persian/Jalali (no timezone shift)."""
+    raw = str(date_str or '').strip()
+    if not raw:
+        return ''
+    return format_date_fa(raw[:10], long=True, weekday=True, date_only=True, fallback=raw)
 
 
-def now_tehran() -> 'datetime':
-    """
-    FIX جدید: سرور ربات (Railway) روی UTC اجرا می‌شود، نه وقت تهران.
-    هر جا که «همین الان» باید به وقت تهران باشد (نه محاسبات داخلی که
-    فقط با خودشان مقایسه می‌شوند)، به‌جای datetime.now() از این
-    استفاده شود.
-    """
-    from datetime import datetime, timezone, timedelta
-    return datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
+def now_tehran() -> datetime:
+    return _contract_now_tehran()
 
 
 def today_start_utc_str() -> str:
-    """
-    FIX جدید: فیلدهایی مثل last_active/registered_at با
-    datetime.now().isoformat() خام (UTC) ذخیره می‌شوند. برای پیدا کردن
-    «چه کسی از ابتدای امروز (به‌وقت تهران) فعالیت داشته»، باید مرز
-    نیمه‌شب تهران را دوباره به معادل UTC برگرداند تا با مقدار ذخیره‌شده
-    قابل مقایسه باشد — صرفاً گرفتن ساعت تهران کافی نیست چون خودِ
-    ذخیره هنوز UTC است.
-    """
-    from datetime import timedelta
-    tehran_midnight = now_tehran().replace(hour=0, minute=0, second=0, microsecond=0)
-    return (tehran_midnight - timedelta(hours=3, minutes=30)).strftime('%Y-%m-%dT%H:%M:%S')
+    start, _next = day_bounds_utc()
+    return start.isoformat(timespec='seconds')
 
 
 def now_tehran_str(with_time: bool = True) -> str:
-    """
-    FIX مهم: now_tehran() از قبل افست تهران را اعمال کرده است. در چند
-    جا اشتباهاً با fmt_jalali_dt(now_tehran().isoformat()) ترکیب شده
-    بود که باعث می‌شد افست ۳:۳۰ ساعت دوباره روی نتیجه‌ی already-shifted
-    اعمال شود (چون isoformat() یک +00:00 به رشته می‌چسباند و
-    fmt_jalali_dt آن را دوباره UTC خام فرض می‌کند) — یعنی ساعت نمایشی
-    ۷ ساعت جلوتر از UTC واقعی می‌شد، نه ۳:۳۰ ساعت درست. این تابع
-    مستقیماً از روی همان شیء already-shifted فرمت می‌دهد، بدون افست
-    دوباره — برای «همین الان» همیشه از این استفاده شود، نه ترکیب بالا.
-    """
-    nt = now_tehran()
-    date_part = fmt_jalali(nt.strftime('%Y-%m-%d'))
-    if with_time:
-        return f"{date_part} — ساعت {nt.strftime('%H:%M')}"
-    return date_part
+    current = now_utc()
+    return (format_datetime_fa(current, long=True)
+            if with_time else format_date_fa(current, long=True))
 
 
-def fmt_jalali_dt(iso_str: str, with_time: bool = True) -> str:
-    """
-    FIX جدید: برای timestampهای سرورساخته (created_at/registered_at/
-    submitted_at/...) که با datetime.now().isoformat() ذخیره شده‌اند —
-    یعنی خام UTC هستند، نه وقت تهران. برخلاف fmt_jalali (که برای
-    تاریخ خالصِ وارد‌شده توسط ادمین/دانشجو، مثل تاریخ امتحان، است و
-    نباید افست بخورد)، این تابع اول ۳:۳۰ ساعت افست تهران را اضافه
-    می‌کند، بعد به شمسی نمایش می‌دهد. در صورت هر خطایی (فرمت نامعتبر و
-    غیره)، بدون کرش به‌صورت امن به ۱۰ کاراکتر خام برمی‌گردد.
-    """
-    from datetime import datetime, timedelta
-    try:
-        raw = (iso_str or '').strip()
-        if not raw:
-            return ''
-        dt = datetime.fromisoformat(raw) + timedelta(hours=3, minutes=30)
-        date_part = fmt_jalali(dt.strftime('%Y-%m-%d'))
-        if with_time:
-            return f"{date_part} — ساعت {dt.strftime('%H:%M')}"
-        return date_part
-    except Exception:
-        return (iso_str or '')[:10]
+def fmt_jalali_dt(iso_str, with_time: bool = True) -> str:
+    """Display a canonical/legacy UTC machine timestamp as Tehran/Jalali."""
+    if iso_str in (None, ''):
+        return ''
+    return (format_datetime_fa(iso_str, long=True, fallback=str(iso_str))
+            if with_time else format_date_fa(iso_str, long=True, fallback=str(iso_str)[:10]))
 
 
 def days_until(date_str: str) -> int:
+    """Days between a Gregorian date-only business day and today in Tehran."""
     try:
-        from datetime import datetime
-        d = datetime.strptime(date_str, '%Y-%m-%d')
-        return (d.replace(hour=0, minute=0, second=0, microsecond=0) -
-                datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)).days
-    except Exception:
+        target = parse_gregorian_date(str(date_str)[:10])
+        return (target - today_tehran()).days
+    except (TypeError, ValueError):
         return 0
 
 

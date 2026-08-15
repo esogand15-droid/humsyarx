@@ -7,10 +7,10 @@ import os
 import asyncio
 import logging
 from html import escape
-from datetime import date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
+from time_utils import parse_gregorian_date
 from utils import progress_bar, get_rank, exam_countdown, now_tehran
 
 logger   = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ async def build_dashboard_text(uid: int) -> tuple:
     today = now_tehran().date()
     for e in (exams or [])[:2]:
         try:
-            exam_date = date.fromisoformat(str(e.get('date', '')))
+            exam_date = parse_gregorian_date(e.get('date'))
             days = max(0, (exam_date - today).days)
             exam_lines.append(
                 f"  📝 {e.get('lesson', '')} — {exam_countdown(days)}"

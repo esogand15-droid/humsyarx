@@ -12,6 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 from utils import fmt_jalali_dt, safe_send, send_audit_log
+from time_utils import today_tehran
 
 logger = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -169,7 +170,7 @@ async def _confirm_and_save(query, context):
         await query.answer("❌ چیزی برای ثبت نبود.", show_alert=True)
         return
 
-    exam_date = datetime.now().isoformat()
+    exam_date = today_tehran().isoformat()
     entries = [{'user_id': m['user_id'], 'score': m['score']} for m in matched]
     saved = await db.grade_bulk_upsert(entries, lesson, exam_title, exam_date, query.from_user.id)
 

@@ -26,6 +26,7 @@ from utils import (
     main_keyboard, content_admin_keyboard, safe_send,
     send_audit_log, get_keyboard_for_user, fmt_jalali_dt, now_tehran, now_tehran_str,
 )
+from time_utils import format_time_fa, now_utc, parse_machine_datetime
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -1453,7 +1454,7 @@ async def _broadcast_show_preview(query_or_msg, context, scheduled: bool = False
         h = delay_min // 60
         m = delay_min % 60
         t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
-        send_time = (datetime.now() + timedelta(minutes=delay_min)).strftime('%H:%M')
+        send_time = format_time_fa(now_utc() + timedelta(minutes=delay_min))
         schedule_line = f"\n⏰ ارسال در: <b>{t_str} دیگر</b> (حدوداً ساعت {send_time})"
 
     info_text = (
@@ -1553,8 +1554,8 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
         h = delay_min // 60
         m = delay_min % 60
         t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
-        due = datetime.now() + timedelta(minutes=delay_min)
-        send_time = due.strftime('%H:%M')
+        due = now_utc() + timedelta(minutes=delay_min)
+        send_time = format_time_fa(due)
         campaign = await create_broadcast_campaign(
             payload=msg_data, target=target, created_by=query.from_user.id,
             created_by_name=query.from_user.full_name or "مدیر", source="bot",
@@ -1853,7 +1854,7 @@ async def _show_bot_status(query, context):
         if context.application.job_queue:
             for job in context.application.job_queue.jobs():
                 nxt = job.next_t
-                nxt_str = nxt.strftime("%H:%M") if nxt else "—"
+                nxt_str = format_time_fa(nxt) if nxt else "—"
                 jobs_info.append(f"  ⏰ {job.name}  |  بعدی: {nxt_str}")
     except Exception:
         pass
@@ -2502,8 +2503,8 @@ async def _show_notif_manage(query):
     last_error    = await db.get_setting('resource_notif_last_error', None)
 
     if last_sent_str:
-        last_sent_dt = datetime.fromisoformat(last_sent_str)
-        elapsed_h = round((datetime.now() - last_sent_dt).total_seconds() / 3600, 1)
+        last_sent_dt = parse_machine_datetime(last_sent_str)
+        elapsed_h = round((now_utc() - last_sent_dt).total_seconds() / 3600, 1)
         remaining_h = round(interval - elapsed_h, 1)
         timing_line = (
             f"🕐 آخرین ارسال: {fmt_jalali_dt(last_sent_str)} ({elapsed_h} ساعت پیش)\n"
@@ -2605,7 +2606,7 @@ async def _show_notif_history(query, job_name: str = None):
         lines = [f"{job_label}\n━━━━━━━━━━━━━━━━"]
         keyboard = []
         for r in runs:
-            started = r.get('started_at', '')[:16].replace('T', ' ')
+            started = fmt_jalali_dt(r.get('started_at'))
             status  = r.get('status', 'running')
             icon    = {'completed': '✅', 'error': '❌', 'skipped': '⏭', 'running': '⏳'}.get(status, '❔')
             sent    = r.get('sent', 0)
@@ -2814,7 +2815,7 @@ async def _show_audit_log(query, category: str, min_severity: str = None, module
     else:
         lines = ["📋 <b>لاگ فعالیت</b>\n━━━━━━━━━━━━━━━━"]
         for log in logs:
-            ts = log.get('timestamp', '')[:16].replace('T', ' ')
+            ts = fmt_jalali_dt(log.get('timestamp'))
             icon = sev_icon.get(log.get('severity', 'INFO'), '🟢')
             module_en = log.get('module', '')
             module_fa = db.MODULE_LABELS_FA.get(module_en, module_en)

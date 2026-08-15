@@ -7,6 +7,7 @@
 import os, json, logging, io
 from datetime import datetime
 from utils import fmt_jalali_dt, now_tehran, now_tehran_str
+from time_utils import utc_now_iso
 from bson import ObjectId
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -237,7 +238,7 @@ async def build_full_backup_data() -> dict:
     integrity = {}
     data = {
         'backup_version': '3.0',
-        'created_at':     datetime.now().isoformat(),
+        'created_at':     utc_now_iso(),
         'restore_semantics': 'merge_upsert',
         'integrity': {
             'complete': True,
@@ -531,7 +532,7 @@ async def send_backup_to_bot_chat(bot, chat_id: int, data: dict, filename: str =
     json_str   = json.dumps(data, ensure_ascii=False, indent=2, cls=_Enc)
     file_bytes = json_str.encode('utf-8')
     file_obj   = io.BytesIO(file_bytes)
-    now_str    = datetime.now().strftime('%Y%m%d_%H%M')
+    now_str    = now_tehran().strftime('%Y%m%d_%H%M')
     fname      = f"{filename}_{now_str}.json"
     file_obj.name = fname
 
@@ -604,7 +605,7 @@ async def build_section_backup_data(section: str) -> dict:
     data = {
         'backup_version': '3.0',
         'section':        section,
-        'created_at':     datetime.now().isoformat(),
+        'created_at':     utc_now_iso(),
         'restore_semantics': 'merge_upsert',
         'integrity': {
             'complete': True, 'consistency': 'count-verified-best-effort',
@@ -730,7 +731,7 @@ async def _send_json_file(query, data: dict, filename: str):
     json_str  = json.dumps(data, ensure_ascii=False, indent=2, cls=_Enc)
     file_bytes= json_str.encode('utf-8')
     file_obj  = io.BytesIO(file_bytes)
-    now_str   = datetime.now().strftime('%Y%m%d_%H%M')
+    now_str   = now_tehran().strftime('%Y%m%d_%H%M')
     fname     = f"{filename}_{now_str}.json"
     file_obj.name = fname
 
@@ -837,7 +838,8 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         version = data.get('backup_version', '1.0')
-        created = data.get('created_at', 'نامشخص')[:19]
+        created_raw = data.get('created_at')
+        created = fmt_jalali_dt(created_raw) if created_raw else 'نامشخص'
         section = data.get('section', 'full')
 
         # ذخیره داده برای تأیید

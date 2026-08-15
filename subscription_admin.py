@@ -15,6 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 from utils import send_audit_log, safe_send
+from time_utils import format_datetime_fa, now_utc, utc_now_iso
 
 logger = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -556,7 +557,7 @@ async def handle_discount_add_text(update, context):
         code, percent = parts[0], int(parts[1])
         max_uses = int(parts[2]) if len(parts) > 2 else 0
         exp_days = int(parts[3]) if len(parts) > 3 else 0
-        expires_at = (datetime.now() + timedelta(days=exp_days)).isoformat() if exp_days > 0 else None
+        expires_at = (now_utc() + timedelta(days=exp_days)).isoformat() if exp_days > 0 else None
         ok = await db.discount_add(code, percent, max_uses, expires_at, update.effective_user.id)
         if ok:
             await update.message.reply_text(f"✅ کد <code>{code.upper()}</code> ساخته شد.", parse_mode='HTML')
@@ -762,7 +763,7 @@ async def _execute_discount_broadcast(query, context, code: str, segment: str):
         await db.discount_bcast_update(bid, {
             'status': 'cancelled' if cancelled else 'completed',
             'sent': sent, 'failed': failed,
-            'blocked': blocked, 'finished_at': __import__('datetime').datetime.now().isoformat(),
+            'blocked': blocked, 'finished_at': utc_now_iso(),
         })
         # اینباکس مینی‌اپ (اختیاری): برای کاربرانی که موفق گرفتند
         try:
@@ -838,7 +839,7 @@ async def _show_discount_stats(query, code: str):
         f"🎟 مصرف: {_fa(used)}/{_fa(mu) if mu else '∞'} — باقی: {_fa(remaining) if remaining != '∞' else '∞'}\n"
         f"📦 پلن‌های هدف: {plans_txt}\n"
         f"👥 سقف هر کاربر: {_fa(discount.get('per_user_limit') or 0) or 'نامحدود'}\n"
-        f"⏰ انقضا: {discount.get('expires_at','—')[:10] if discount.get('expires_at') else 'بدون انقضا'}\n"
+        f"⏰ انقضا: {format_datetime_fa(discount.get('expires_at'), long=True) if discount.get('expires_at') else 'بدون انقضا'}\n"
         f"────────────────────\n"
         f"💳 پرداخت‌های تأییدشده با این کد: {_fa(pay['usage_approved'])}\n"
         f"💰 مبلغ تخفیف‌داده‌شده: {_fmt_price(pay['discount_given'])}\n"

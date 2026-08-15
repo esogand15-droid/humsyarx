@@ -12,7 +12,7 @@ import html
 import re
 import logging
 import asyncio
-from datetime import datetime, time as dtime, timezone, timedelta
+from datetime import time as dtime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,7 +56,11 @@ from admin import (
     handle_admin_text, BROADCAST
 )
 from backup import backup_callback, backup_file_handler, backup_confirm_restore
-from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, CONTENT_ICONS, fmt_jalali, webapp_kb
+from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, CONTENT_ICONS, fmt_jalali, now_tehran_str, webapp_kb
+from time_utils import (
+    TEHRAN, format_time_fa, now_tehran, now_utc, parse_gregorian_date,
+    parse_machine_datetime, remaining_days, utc_now_iso, week_key_tehran,
+)
 from subscription import subscription_callback, screenshot_handler as sub_screenshot_handler
 from subscription_admin import subscription_admin_callback
 from grades import grades_callback
@@ -113,7 +117,7 @@ async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     f"🔔 <b>یادآوری امتحان</b>\n\n"
                     f"📚 <b>{exam.get('lesson', '')}</b>\n"
                     f"⏰ {label}\n"
-                    f"📅 تاریخ: {fmt_jalali(exam.get('date', ''))}  ساعت {exam.get('time', '')}\n"
+                    f"📅 تاریخ: {fmt_jalali(exam.get('date', ''))}  ساعت {format_time_fa(exam.get('time'), fallback='—')}\n"
                     f"📍 مکان: {exam.get('location', '')}\n"
                     f"👨‍🏫 استاد: {exam.get('teacher', '')}\n\n"
                     f"<i>⚙️ خاموش‌کردن: 🔔 اعلان‌ها ← یادآوری امتحان</i>"
@@ -134,7 +138,7 @@ async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     {'user_id': u['user_id'], 'type': 'exam_reminder',
                      'title': f"🔔 یادآوری امتحان — {label}",
                      'body': (f"📚 {exam.get('lesson', '')}\n"
-                              f"📅 {fmt_jalali(exam.get('date', ''))}  ساعت {exam.get('time', '')}\n"
+                              f"📅 {fmt_jalali(exam.get('date', ''))}  ساعت {format_time_fa(exam.get('time'), fallback='—')}\n"
                               f"📍 {exam.get('location', '')}"),
                      # 🧠 N2 — Deep Link: همان روز/درس+Anchor فلش در مینی‌اپ
                      'link': _ex_hl}
@@ -302,8 +306,8 @@ async def _run_new_resources_notif(bot, force: bool = False) -> dict:
         last_sent_str  = await db.get_setting('resource_notif_last_sent', None)
 
         if not force and last_sent_str:
-            last_sent = datetime.fromisoformat(last_sent_str)
-            elapsed_hours = (datetime.now() - last_sent).total_seconds() / 3600
+            last_sent = parse_machine_datetime(last_sent_str)
+            elapsed_hours = (now_utc() - last_sent.astimezone(timezone.utc)).total_seconds() / 3600
             if elapsed_hours < interval_hours:
                 return {'sent': False, 'reason': 'not_due', 'elapsed_hours': round(elapsed_hours, 1),
                         'interval_hours': interval_hours}
@@ -377,7 +381,7 @@ async def _run_new_resources_notif(bot, force: bool = False) -> dict:
         ref_ids = [item['_id'] for item in new_items if item.get('_source') == 'ref_files']
         await db.mark_resources_notified(bs_ids)
         await db.mark_ref_files_notified(ref_ids)
-        await db.set_setting('resource_notif_last_sent', datetime.now().isoformat())
+        await db.set_setting('resource_notif_last_sent', utc_now_iso())
         await db.set_setting('resource_notif_last_error', None)
         await db.notif_run_finish(run_id, sent, failed, total_recipients)
         if failed_ids:
@@ -389,7 +393,7 @@ async def _run_new_resources_notif(bot, force: bool = False) -> dict:
         try:
             from utils import now_tehran
             await db.set_setting('resource_notif_last_error',
-                                  f"{now_tehran().strftime('%Y-%m-%d %H:%M')} (تهران) | {e}")
+                                  f"{now_tehran_str()} | {e}")
         except Exception:
             pass
         return {'sent': False, 'reason': 'error', 'error': str(e)}
@@ -451,7 +455,7 @@ async def _discount_soldout_edit_task(bot, code: str):
                 await asyncio.sleep(0.05)  # گام‌بندی نرخ تلگرام
             await db.discount_bcast_update(bc['broadcast_id'], {
                 'soldout_marked': True,
-                'soldout_at': datetime.now().isoformat(),
+                'soldout_at': utc_now_iso(),
                 'soldout_edited': bc_edited,
             })
         logger.info(f"⛔ D2 soldout edit: {code} → ✅{edited} ⏭{skipped} (مجموع {total})")
@@ -480,7 +484,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
     """
     try:
         coll = db.client["medicalbot"]["bot_notifications"]
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
         cursor = coll.find({
             "sent": False,
             "$or": [{"send_at": {"$exists": False}}, {"send_at": None}, {"send_at": {"$lte": now_iso}}],
@@ -501,7 +505,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
                     result = await _run_new_resources_notif(context.bot, force=True)
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
-                        "sent": True, "sent_at": datetime.now().isoformat(),
+                        "sent": True, "sent_at": utc_now_iso(),
                         "result": result,
                     }})
                     if result.get("sent"):
@@ -521,7 +525,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"__FORCE_RES_NOTIF__ failed: {e}")
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
                         "sent": True, "failed": True, "error": str(e)[:200],
-                        "sent_at": datetime.now().isoformat(),
+                        "sent_at": utc_now_iso(),
                     }})
                     try:
                         await safe_send(context.bot, d["chat_id"],
@@ -543,7 +547,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                         filename=fname, caption=caption, parse_mode="HTML",
                     )
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
-                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                        "sent": True, "sent_at": utc_now_iso()}})
                 except Exception as e:
                     logger.error(f"__EXCEL_EXPORT__ failed: {e}")
                     # FIX باگ پنهان: قبلاً sent:False می‌ماند و پیام هر چرخه
@@ -552,7 +556,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
                         "sent": True, "failed": True,
                         "error": str(e)[:200],
-                        "sent_at": datetime.now().isoformat(),
+                        "sent_at": utc_now_iso(),
                     }})
                     try:
                         await safe_send(context.bot, d["chat_id"],
@@ -570,7 +574,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     total = await send_backup_from_web(
                         context.bot, d["chat_id"], section)
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
-                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                        "sent": True, "sent_at": utc_now_iso()}})
                     logger.info(
                         f"💾 web backup sent: section={section} records={total}")
                 except Exception as e:
@@ -578,7 +582,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
                         "sent": True, "failed": True,
                         "error": str(e)[:200],
-                        "sent_at": datetime.now().isoformat(),
+                        "sent_at": utc_now_iso(),
                     }})
                     try:
                         await safe_send(context.bot, d["chat_id"],
@@ -594,7 +598,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                 try:
                     _code = text.split(":", 1)[1] if ":" in text else ""
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
-                        "sent": True, "sent_at": datetime.now().isoformat()}})
+                        "sent": True, "sent_at": utc_now_iso()}})
                     if _code:
                         asyncio.create_task(
                             _discount_soldout_edit_task(context.bot, _code))
@@ -626,7 +630,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     logger.warning("broadcast campaign=%s uid=%s failed: %s",
                                    campaign, d.get("chat_id"), error)
                 await coll.update_one({"_id": d["_id"]}, {"$set": {
-                    "sent": True, "delivered": ok, "sent_at": datetime.now().isoformat(),
+                    "sent": True, "delivered": ok, "sent_at": utc_now_iso(),
                     "failed": not ok, "error": error,
                 }})
                 await record_delivery(campaign, success=ok, error=error)
@@ -636,7 +640,7 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                 ok = await safe_send(context.bot, d["chat_id"], text,
                                      parse_mode="HTML", reply_markup=_dl_kb)
                 await coll.update_one({"_id": d["_id"]}, {"$set": {
-                    "sent": ok, "sent_at": datetime.now().isoformat(), "failed": not ok,
+                    "sent": ok, "sent_at": utc_now_iso(), "failed": not ok,
                 }})
         if docs:
             logger.info(f"📤 mini_app_outbox: {len(docs)} پیام پردازش شد")
@@ -677,7 +681,7 @@ async def subscription_expiry_job(context: ContextTypes.DEFAULT_TYPE):
         for days_before, flag in ((3, 'reminder_3d_sent'), (1, 'reminder_1d_sent')):
             expiring = await db.sub_expiring_soon(days_before=days_before, flag_field=flag)
             for s in expiring:
-                days_left = max(0, (datetime.fromisoformat(s['end_date']) - datetime.now()).days)
+                days_left = remaining_days(s['end_date'])
                 icon = "🔴" if days_before == 1 else "⏳"
                 # 🔔 موج ۴.۹۰ — اینباکس (یادآوری پایان اشتراک)
                 await db.inbox_add(s['_id'], 'sub_expiring',
@@ -701,7 +705,7 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
     """
     FIX جدید: بکاپ خودکار روزانه. این job هر ساعت اجرا می‌شود و
     خودش تشخیص می‌دهد آیا الان همان ساعتی است که ادمین تنظیم کرده
-    (auto_backup_hour، به‌وقت تهران UTC+3:30) — تا بتوان از پنل
+    (auto_backup_hour، با timezone رسمی Asia/Tehran) — تا بتوان از پنل
     ادمین ساعت را آزادانه تغییر داد بدون نیاز به ری‌استارت ربات.
     """
     try:
@@ -710,22 +714,22 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             return
 
         target_hour = await db.get_setting('auto_backup_hour', 3)
-        now_tehran  = datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)
-        if now_tehran.hour != target_hour:
+        tehran_now = now_tehran()
+        if tehran_now.hour != target_hour:
             return
 
         # جلوگیری از اجرای تکراری در همان ساعت (چون job هر ساعت چک می‌شود)
         last_run = await db.get_setting('auto_backup_last_run', None)
         if last_run:
-            last_dt = datetime.fromisoformat(last_run)
-            if (datetime.now() - last_dt).total_seconds() < 3600 * 20:
+            last_dt = parse_machine_datetime(last_run)
+            if (now_utc() - last_dt.astimezone(timezone.utc)).total_seconds() < 3600 * 20:
                 return  # کمتر از ۲۰ ساعت از آخرین بکاپ گذشته — رد کن
 
         from backup import build_full_backup_data, send_backup_to_bot_chat
         from utils import send_audit_log
         data = await build_full_backup_data()
         await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
-        await db.set_setting('auto_backup_last_run', datetime.now().isoformat())
+        await db.set_setting('auto_backup_last_run', utc_now_iso())
         logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
         # FIX جدید طبق سند: بکاپ‌گیری باید لاگ شود — این یک job
         # سیستمی است (نه عمل یک ادمین خاص)، پس actor خود ربات است.
@@ -832,8 +836,7 @@ async def prestige_challenge_scan_job(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⚔️ اجرای job اسکن چالش آماده...")
     try:
         today = db._tehran_today()
-        iso_week = (f"{today[:4]}-W"
-                    f"{datetime.fromisoformat(today).isocalendar().week:02d}")
+        business_week = week_key_tehran(parse_gregorian_date(today))
         cursor = db.users.find({'approved': True,
                                 'effective_xp': {'$gte': 2400}})
         docs = await cursor.to_list(5000)
@@ -841,7 +844,7 @@ async def prestige_challenge_scan_job(context: ContextTypes.DEFAULT_TYPE):
         for u in docs:
             try:
                 uid = int(u.get('user_id') or 0)
-                if not uid or (u.get('challenge_notified_week') or '') == iso_week:
+                if not uid or (u.get('challenge_notified_week') or '') == business_week:
                     continue
                 st = await db.prestige_state(uid, lite=True)
                 ch = (st or {}).get('challenge') or {}
@@ -859,7 +862,7 @@ async def prestige_challenge_scan_job(context: ContextTypes.DEFAULT_TYPE):
                         'استخر ۲۰ سؤال، قبولی با ۸۰٪ و مهلت ۲۴ ساعت پس از شروع. '
                         'هر وقت آماده بودی شروعش کن! 💪'))
                 await db.users.update_one({'user_id': uid},
-                    {'$set': {'challenge_notified_week': iso_week}})
+                    {'$set': {'challenge_notified_week': business_week}})
                 sent += 1
             except Exception:
                 continue
@@ -1155,7 +1158,7 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
         from database import db
         await db.users.update_one(
             {'user_id': uid},
-            {'$set': {'last_active': datetime.now().isoformat()}}
+            {'$set': {'last_active': utc_now_iso()}}
         )
     except Exception:
         pass
@@ -1606,25 +1609,24 @@ async def post_init(application: Application):
 
     # FIX: گارد ایمن — اگر JobQueue نصب نباشد، ربات کرش نکند
     if application.job_queue is not None:
-        # یادآوری امتحان — ۰۸:۰۰ تهران (04:30 UTC)
+        # زمان‌های user-facing مستقیماً با IANA Asia/Tehran ثبت می‌شوند.
         application.job_queue.run_daily(
             exam_reminder_job,
-            time=dtime(hour=4, minute=30, tzinfo=timezone.utc),
+            time=dtime(hour=8, minute=0, tzinfo=TEHRAN),
             name='exam_reminder'
         )
 
-        # سوال روزانه — ۰۹:۰۰ تهران (05:30 UTC)
         application.job_queue.run_daily(
             daily_question_job,
-            time=dtime(hour=5, minute=30, tzinfo=timezone.utc),
+            time=dtime(hour=9, minute=0, tzinfo=TEHRAN),
             name='daily_question'
         )
 
-        # FIX جدید: گزارش هفتگی — یکشنبه‌ها ۰۹:۳۰ تهران (06:00 UTC)
+        # گزارش هفتگی — یکشنبه‌ها ۰۹:۳۰ تهران
         # نکته: در PTB days=(0,) یعنی یکشنبه (0=sunday...6=saturday)
         application.job_queue.run_daily(
             weekly_report_job,
-            time=dtime(hour=6, minute=0, tzinfo=timezone.utc),
+            time=dtime(hour=9, minute=30, tzinfo=TEHRAN),
             days=(0,),
             name='weekly_report'
         )
@@ -1655,26 +1657,25 @@ async def post_init(application: Application):
             name='auto_backup'
         )
 
-        # FIX جدید: چک روزانه‌ی انقضای اشتراک + یادآوری ۳ روز قبل —
-        # ۰۹:۱۵ تهران (05:45 UTC)
+        # چک روزانه‌ی انقضای اشتراک — ۰۹:۱۵ تهران
         application.job_queue.run_daily(
             subscription_expiry_job,
-            time=dtime(hour=5, minute=45, tzinfo=timezone.utc),
+            time=dtime(hour=9, minute=15, tzinfo=TEHRAN),
             name='subscription_expiry'
         )
 
-        # 👑 بستن هفته‌ی پرستیژ — دوشنبه ۰۰:۰۵ تهران (یکشنبه ۲۰:۳۵ UTC)
+        # بستن هفته‌ی Prestige — شنبه ۰۰:۰۵ تهران (PTB: شنبه=۶)
         application.job_queue.run_daily(
             prestige_weekly_close_job,
-            time=dtime(hour=20, minute=35, tzinfo=timezone.utc),
-            days=(0,),
+            time=dtime(hour=0, minute=5, tzinfo=TEHRAN),
+            days=(6,),
             name='prestige_weekly_close'
         )
 
-        # ⚔️ اسکن هفتگی چالش آماده — یکشنبه ۱۹:۴۰ تهران (۱۶:۱۰ UTC)
+        # اسکن هفتگی چالش آماده — یکشنبه ۱۹:۴۰ تهران
         application.job_queue.run_daily(
             prestige_challenge_scan_job,
-            time=dtime(hour=16, minute=10, tzinfo=timezone.utc),
+            time=dtime(hour=19, minute=40, tzinfo=TEHRAN),
             days=(0,),
             name='prestige_challenge_scan'
         )
@@ -1696,10 +1697,10 @@ async def post_init(application: Application):
             for key, rec in pending.items():
                 job_id = key[len('scheduled_broadcast_'):]
                 try:
-                    send_at = datetime.fromisoformat(rec['send_at'])
+                    send_at = parse_machine_datetime(rec['send_at'])
                 except Exception:
                     continue
-                remaining = (send_at - datetime.now()).total_seconds()
+                remaining = (send_at - now_utc()).total_seconds()
                 delay = max(remaining, 0)
                 application.job_queue.run_once(
                     _scheduled_broadcast_job,

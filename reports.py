@@ -10,7 +10,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
-from utils import send_audit_log
+from utils import fmt_jalali_dt, send_audit_log
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -340,7 +340,7 @@ async def _show_report_detail(query, report_id: int):
         f"❌ دلیل: {reason_fa}\n"
         + (f"📝 توضیح: {r.get('note','')}\n" if r.get('note') else "") +
         f"👤 گزارش‌دهنده: {r['reporter_name']}\n"
-        f"🕐 تاریخ: {r['created_at'][:16].replace('T',' ')}\n\n"
+        f"🕐 تاریخ: {fmt_jalali_dt(r.get('created_at'))}\n\n"
         f"📊 وضعیت: <b>{status_fa}</b>"
     )
     keyboard = []

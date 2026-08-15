@@ -12,6 +12,7 @@ from datetime import datetime
 
 from database import db
 from utils import fmt_jalali_dt
+from time_utils import now_tehran
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def build_database_excel():
     wb.save(buf)
     buf.seek(0)
 
-    fname = f"humsyar_export_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    fname = f"humsyar_export_{now_tehran().strftime('%Y%m%d_%H%M')}.xlsx"
     caption = (f"📥 <b>خروجی کامل دیتابیس</b>\n"
                f"👥 {len(users)} کاربر | 🎫 {len(tickets)} تیکت | "
                f"🧪 {len(questions)} سوال")

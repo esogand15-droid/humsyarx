@@ -48,11 +48,8 @@ def _draw_logo(c, cx, cy, r):
 
 
 def _today_jalali() -> str:
-    try:
-        from utils import fmt_jalali, now_tehran
-        return fmt_jalali(now_tehran().strftime('%Y-%m-%d'))
-    except Exception:
-        return datetime.now().strftime('%Y-%m-%d')
+    from time_utils import format_date_fa, now_utc
+    return format_date_fa(now_utc(), long=True)
 
 
 def _draw_header(c, group_label: str, student_name: str, count: int) -> float:

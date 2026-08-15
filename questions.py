@@ -15,6 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
 from utils import send_audit_log, fmt_jalali_dt
+from time_utils import now_tehran, utc_now_iso
 
 logger     = logging.getLogger(__name__)
 ADMIN_ID   = int(os.getenv('ADMIN_ID', '0'))
@@ -1135,7 +1136,7 @@ async def _generate_pdf_v2(query, context, uid, mode: str = 'practice'):
     t_label = f" — {topic}" if topic and topic != 'همه' else ''
     mode_label = "تمرین" if mode == 'practice' else "آزمون"
     file_obj = io.BytesIO(pdf_bytes)
-    fname = f"qbank_{lesson}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    fname = f"qbank_{lesson}_{now_tehran().strftime('%Y%m%d_%H%M')}.pdf"
     file_obj.name = fname
 
     try:
@@ -1458,7 +1459,7 @@ async def _do_insert_manual_question(update, context, q: dict, uid: int):
         'intake':         (context.user_data.get('ca_intake', '') if is_ca
                            else (creator_user.get('intake', '') or '')),
         'approved':       auto,
-        'created_at':     datetime.now().isoformat(),
+        'created_at':     utc_now_iso(),
         'attempt_count':  0,
         'correct_count':  0,
     })
@@ -1706,7 +1707,7 @@ async def _do_insert_ai_question(query, context):
         'by_bot':         False,
         'intake':         '',            # 🌊 C1 — سوالات هوشیار = سراسری
         'approved':       auto,
-        'created_at':     datetime.now().isoformat(),
+        'created_at':     utc_now_iso(),
         'attempt_count':  0,
         'correct_count':  0,
     })

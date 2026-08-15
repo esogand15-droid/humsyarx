@@ -9,18 +9,26 @@ import os
 import io
 import asyncio
 import logging
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes
 from database import db
 from bson import ObjectId
 from utils import (fmt_jalali, days_until, exam_countdown, ADMIN_ID,
                     jalali_weekday_index, JALALI_WEEK_SAT_FIRST, send_audit_log)
+from time_utils import (
+    TimeContractError, format_time_fa, now_tehran, parse_clock_time,
+    parse_gregorian_date,
+    start_of_week_tehran,
+)
 
 logger = logging.getLogger(__name__)
 
 TYPE_NAMES  = {'class': '📖 کلاس', 'exam': '📝 امتحان', 'makeup': '🔄 جبرانی'}
 GROUP_ICONS = {'1': '1️⃣', '2': '2️⃣', 'هر دو': '👥', '': '👥'}
+
+
+def _fa_time(value) -> str:
+    return format_time_fa(value, fallback=str(value or '—'))
 
 
 async def _notify_schedule_deleted(context, item: dict):
@@ -45,7 +53,7 @@ async def _notify_schedule_deleted(context, item: dict):
         f"❌ <b>{type_fa} لغو شد</b>\n\n"
         f"📚 {item.get('lesson','')}\n"
         f"👨‍🏫 {item.get('teacher','')}\n"
-        f"📅 {jalali_display}  ⏰ {item.get('time','')}\n"
+        f"📅 {jalali_display}  ⏰ {_fa_time(item.get('time'))}\n"
         f"📍 {item.get('location','')}{g_label}"
     )
     await broadcast_message(context.bot, users, notif_msg)
@@ -75,72 +83,32 @@ def _normalize_text(text: str) -> str:
 
 
 def _jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple:
-    """تبدیل شمسی به میلادی"""
-    jy -= 979
-    jm -= 1
-    jd -= 1
-    j_day_no = 365 * jy + (jy // 33) * 8 + (jy % 33 + 3) // 4
-    for i in range(jm):
-        j_day_no += [31,31,31,31,31,31,30,30,30,30,30,29][i]
-    j_day_no += jd
-    g_day_no = j_day_no + 79
-    gy = 1600 + 400 * (g_day_no // 146097)
-    g_day_no %= 146097
-    leap = True
-    if g_day_no >= 36525:
-        g_day_no -= 1
-        gy += 100 * (g_day_no // 36524)
-        g_day_no %= 36524
-        leap = g_day_no >= 365
-        if leap: g_day_no += 1
-    gy += 4 * (g_day_no // 1461)
-    g_day_no %= 1461
-    if g_day_no >= 366:
-        leap = False
-        g_day_no -= 1
-        gy += g_day_no // 365
-        g_day_no %= 365
-    g_l = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    gm = 0
-    for i, days_in_m in enumerate(g_l):
-        if g_day_no < days_in_m:
-            gm = i + 1
-            break
-        g_day_no -= days_in_m
-    return gy, gm, g_day_no + 1
+    """Compatibility wrapper; calendar conversion lives in time_utils."""
+    from time_utils import jalali_to_gregorian
+    converted = jalali_to_gregorian(jy, jm, jd)
+    return converted.year, converted.month, converted.day
 
 
 def _parse_jalali_date(date_str: str) -> str:
-    """
-    تبدیل تاریخ شمسی به میلادی برای ذخیره در دیتابیس
-    پشتیبانی از: 1404/01/15 یا 1404-01-15
-    """
-    date_str = date_str.strip().replace('/', '-').replace('\\', '-')
-    # حذف کاراکترهای نامرئی
-    date_str = ''.join(c for c in date_str if c.isprintable()).strip()
-    parts_d = date_str.split('-')
-    if len(parts_d) == 3:
-        try:
-            jy, jm, jd = int(parts_d[0]), int(parts_d[1]), int(parts_d[2])
-            if jy > 1400:  # قطعاً شمسی
-                gy, gm, gd = _jalali_to_gregorian(jy, jm, jd)
-                return f"{gy:04d}-{gm:02d}-{gd:02d}"
-            elif jy > 2000:  # قطعاً میلادی
-                return date_str
-        except ValueError:
-            pass
-    return date_str
+    """Parse Persian input to a Gregorian date-only machine value."""
+    from time_utils import en_digits, parse_gregorian_date, parse_jalali_date
+    raw = ''.join(c for c in en_digits(date_str or '') if c.isprintable()).strip()
+    normalized = raw.replace('/', '-').replace('\\', '-')
+    try:
+        year = int(normalized.split('-', 1)[0])
+        if 1200 <= year <= 1600:
+            return parse_jalali_date(normalized).isoformat()
+        return parse_gregorian_date(normalized).isoformat()
+    except (ValueError, TypeError):
+        return raw
 
 
 def _is_valid_time(time_str: str) -> bool:
-    """بررسی فرمت ساعت HH:MM"""
+    """بررسی مرکزی فرمت ساعت HH:MM."""
     try:
-        parts_t = time_str.strip().split(':')
-        if len(parts_t) != 2:
-            return False
-        h, m = int(parts_t[0]), int(parts_t[1])
-        return 0 <= h <= 23 and 0 <= m <= 59
-    except Exception:
+        parse_clock_time(time_str)
+        return True
+    except TimeContractError:
         return False
 
 
@@ -488,7 +456,7 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
     type_slug = stype or 'hame'
     type_label = TYPE_NAMES.get(stype, '📋 همه‌ی برنامه‌ها') if stype else '📋 همه‌ی برنامه‌ها'
     file_obj = io.BytesIO(pdf_bytes)
-    fname = f"barname_{type_slug}_{user_group or 'hamzyar'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+    fname = f"barname_{type_slug}_{user_group or 'hamzyar'}_{now_tehran().strftime('%Y%m%d')}.pdf"
     file_obj.name = fname
     await query.message.reply_document(
         document=file_obj,
@@ -504,16 +472,14 @@ async def _show_group_schedule(query, user_group: str):
     + برجسته‌سازی روز جاری + کلاس‌های منعطف مشخص + امتحانات مرتبط
     همان گروه، همه در یک صفحه. دیگر صفحه‌ی جدا «جدول هفتگی» وجود ندارد.
     """
-    from datetime import datetime, timedelta
-    today = datetime.now()
-    py_wd = today.weekday()  # 0=دوشنبه...6=یکشنبه
-    days_since_sat = {5: 0, 6: 1, 0: 2, 1: 3, 2: 4, 3: 5, 4: 6}[py_wd]
-    today_idx  = days_since_sat  # ایندکس امروز در هفته شنبه‌محور (۰=شنبه)
-    week_start = today - timedelta(days=days_since_sat)
-    week_end   = week_start + timedelta(days=6)
+    from datetime import timedelta
+    today = now_tehran().date()
+    week_start = start_of_week_tehran(today).date()
+    week_end = week_start + timedelta(days=6)
+    today_idx = (today.weekday() - 5) % 7
 
-    start_str = week_start.strftime('%Y-%m-%d')
-    end_str   = week_end.strftime('%Y-%m-%d')
+    start_str = week_start.isoformat()
+    end_str = week_end.isoformat()
 
     all_classes = await db.get_schedules(stype='class', upcoming=False, group=user_group or None)
     week_classes = [c for c in all_classes if start_str <= c.get('date', '') <= end_str]
@@ -543,11 +509,11 @@ async def _show_group_schedule(query, user_group: str):
         for c in items:
             flex = c.get('flex_type', 'fixed')
             if flex == 'flexible':
-                time_part = f"🔄 زمان متغیر — آخرین اعلام: {c.get('time', '')}"
+                time_part = f"🔄 زمان متغیر — آخرین اعلام: {_fa_time(c.get('time'))}"
                 if c.get('flex_note'):
                     time_part += f" ({c['flex_note']})"
             else:
-                time_part = f"⏰ {c.get('time', '')}"
+                time_part = f"⏰ {_fa_time(c.get('time'))}"
             lines.append(
                 f"   • <b>{c.get('lesson','')}</b>\n"
                 f"     {time_part}\n"
@@ -564,7 +530,7 @@ async def _show_group_schedule(query, user_group: str):
         lines.append("📝 <b>امتحانات نزدیک</b>")
         for e in group_exams[:5]:
             jalali = fmt_jalali(e.get('date', ''))
-            lines.append(f"   • {e.get('lesson','')} — {jalali} {e.get('time','')}")
+            lines.append(f"   • {e.get('lesson','')} — {jalali} {_fa_time(e.get('time'))}")
 
     text = '\n'.join(lines)
     if len(text) > 4000:
@@ -614,7 +580,7 @@ async def _show_schedule_list(query, items: list, title: str, stype: str = None,
         lines.append(
             f"{icon} <b>{s.get('lesson', '')}</b>  {g_icon}{weekly}\n"
             f"   📅 {jalali}  |  {d_label}\n"
-            f"   ⏰ {s.get('time', '')}  |  👨‍🏫 {s.get('teacher', '')}\n"
+            f"   ⏰ {_fa_time(s.get('time'))}  |  👨‍🏫 {s.get('teacher', '')}\n"
             f"   📍 {s.get('location', '')}\n"
             + (f"   📝 {s['notes']}\n" if s.get('notes') else '')
         )
@@ -666,7 +632,7 @@ async def _show_manage_list(query, stype: str):
     for s in items[:30]:
         sid = str(s['_id'])
         jd  = fmt_jalali(s.get('date', ''))
-        label = f"{s.get('lesson','')} | {jd} {s.get('time','')}"
+        label = f"{s.get('lesson','')} | {jd} {_fa_time(s.get('time'))}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f'schedule:item:{sid}')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:manage_types')])
     text = f"✏️ <b>{type_fa}</b>\n\nیک مورد را برای مشاهده/ویرایش/حذف انتخاب کنید:"
@@ -693,7 +659,7 @@ async def _show_item_detail(query, sid: str):
         f"📚 <b>درس:</b> {item.get('lesson','')}\n"
         f"👨‍🏫 <b>استاد:</b> {item.get('teacher','')}\n"
         f"📅 <b>تاریخ:</b> {jalali_display}\n"
-        f"⏰ <b>ساعت:</b> {item.get('time','')}\n"
+        f"⏰ <b>ساعت:</b> {_fa_time(item.get('time'))}\n"
         f"📍 <b>مکان:</b> {item.get('location','')}\n"
         f"👥 <b>گروه:</b> {g_label}\n"
         f"🔁 <b>نوع زمان‌بندی:</b> {flex_label}\n"
@@ -794,8 +760,8 @@ async def handle_edit_schedule_field_text(update: Update, context: ContextTypes.
     if field == 'date':
         parsed = _parse_jalali_date(_normalize_text(raw))
         try:
-            datetime.strptime(parsed, '%Y-%m-%d')
-        except ValueError:
+            parse_gregorian_date(parsed)
+        except (TimeContractError, ValueError):
             await update.message.reply_text(
                 "❌ تاریخ نامعتبر است. فرمت صحیح: <code>1404/MM/DD</code>",
                 parse_mode='HTML'
@@ -852,7 +818,7 @@ async def handle_edit_schedule_field_text(update: Update, context: ContextTypes.
         f"🔔 <b>{notif_text}</b>\n\n"
         f"📚 {item.get('lesson','')}\n"
         f"📅 {fmt_jalali(value) if field=='date' else fmt_jalali(item.get('date',''))}"
-        f"  ⏰ {value if field=='time' else item.get('time','')}\n"
+        f"  ⏰ {_fa_time(value if field=='time' else item.get('time'))}\n"
         f"📍 {value if field=='location' else item.get('location','')}"
     )
     sent, _ = await broadcast_message(context.bot, users, notif_msg)
@@ -908,7 +874,7 @@ async def _show_flex_list(query):
     for s in flex_items[:20]:
         sid = str(s['_id'])
         jd  = fmt_jalali(s.get('date', ''))
-        label = f"🔄 {s.get('lesson','')} | {jd} {s.get('time','')}"
+        label = f"🔄 {s.get('lesson','')} | {jd} {_fa_time(s.get('time'))}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f'schedule:flex_change:{sid}')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')])
     await query.edit_message_text(
@@ -951,8 +917,8 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
 
     new_date = _parse_jalali_date(new_date_raw)
     try:
-        datetime.strptime(new_date, '%Y-%m-%d')
-    except ValueError:
+        parse_gregorian_date(new_date)
+    except (TimeContractError, ValueError):
         await update.message.reply_text("❌ تاریخ نامعتبر است.")
         return
 
@@ -993,7 +959,7 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
         "تغییر زمان کلاس", module='Schedules', severity='WARNING',
         actor_role=actor_role,
         target_id=sid, target_type='schedule', target_label=lesson,
-        before={'زمان': f"{old_jalali} {schedule_doc.get('time','')}"},
+        before={'زمان': f"{old_jalali} {_fa_time(schedule_doc.get('time'))}"},
         after={'زمان': f"{jalali_display} {new_time}"},
         tags=['تغییر_زمان_کلاس']
     )
@@ -1089,7 +1055,7 @@ async def _show_schedule_preview(message_or_query, context, edit: bool = False):
         f"📚 <b>درس:</b> {p['lesson']}\n"
         f"👨‍🏫 <b>استاد:</b> {p['teacher']}\n"
         f"📅 <b>تاریخ:</b> {jalali_display}\n"
-        f"⏰ <b>ساعت:</b> {p['time']}\n"
+        f"⏰ <b>ساعت:</b> {_fa_time(p['time'])}\n"
         f"📍 <b>مکان:</b> {p['location']}\n"
         f"👥 <b>گروه هدف:</b> {g_label}\n"
         f"🔁 <b>نوع زمان‌بندی:</b> {flex_label}\n"
@@ -1165,7 +1131,7 @@ async def _finalize_schedule_add(update_or_query, context):
         f"{title_line}\n\n"
         f"📚 {p['lesson']}\n"
         f"👨‍🏫 {p['teacher']}\n"
-        f"📅 {jalali_display}  ⏰ {p['time']}\n"
+        f"📅 {jalali_display}  ⏰ {_fa_time(p['time'])}\n"
         f"📍 {p['location']}{g_label}"
     )
     sent, _ = await broadcast_message(context.bot, users, notif_msg)
@@ -1182,7 +1148,7 @@ async def _finalize_schedule_add(update_or_query, context):
         actor_role=actor_role,
         target_id=str(sid),
         target_type='schedule', target_label=p['lesson'],
-        details=f"{jalali_display} {p['time']}",
+        details=f"{jalali_display} {_fa_time(p['time'])}",
         tags=['ویرایش_برنامه'] if is_edit else ['ایجاد_برنامه']
     )
 
@@ -1194,7 +1160,7 @@ async def _finalize_schedule_add(update_or_query, context):
         f"{header}\n\n"
         f"📚 {p['lesson']}\n"
         f"👨‍🏫 {p['teacher']}\n"
-        f"📅 {jalali_display}  ⏰ {p['time']}\n"
+        f"📅 {jalali_display}  ⏰ {_fa_time(p['time'])}\n"
         f"📍 {p['location']}{g_label}\n\n"
         f"🔔 <b>{sent} نفر</b> مطلع شدند."
     )
@@ -1253,8 +1219,8 @@ async def handle_add_schedule_text(update: Update, context: ContextTypes.DEFAULT
 
         # اعتبارسنجی تاریخ میلادی تولیدشده
         try:
-            datetime.strptime(date, '%Y-%m-%d')
-        except ValueError:
+            parse_gregorian_date(date)
+        except (TimeContractError, ValueError):
             raise ValueError(f"تاریخ نامعتبر: {raw_date}")
 
         # بقیه فیلدها

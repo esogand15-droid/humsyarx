@@ -17,6 +17,7 @@ from telegram.ext import ContextTypes
 
 from database import db
 from utils import ADMIN_ID, send_audit_log
+from time_utils import format_datetime_fa, today_tehran
 from ai_solver import (
     get_ai_config, set_ai_setting, ask_ai, save_persona, delete_persona,
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
@@ -337,7 +338,7 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await db.update_user(target_uid, {
             'ai_usage_count': 0,
-            'ai_usage_date':  datetime.now().strftime('%Y-%m-%d'),
+            'ai_usage_date':  today_tehran().isoformat(),
         })
         await query.answer("✅ سهمیه‌ی امروزِ این کاربر ریست شد.", show_alert=True)
         await send_audit_log(
@@ -537,7 +538,7 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = ["🚩 <b>۱۰ گزارشِ اخیر</b>\n━━━━━━━━━━━━━━━━"]
             for r in reports:
                 when = r.get('created_at')
-                when_txt = when.strftime('%Y-%m-%d %H:%M') if when else '—'
+                when_txt = format_datetime_fa(when, long=True) if when else '—'
                 lines.append(
                     f"\n👤 {_esc(str(r.get('name')))} (<code>{r.get('user_id')}</code>) — {when_txt}\n"
                     f"❓ {_esc((r.get('question') or '')[:200])}\n"

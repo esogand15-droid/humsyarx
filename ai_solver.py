@@ -21,6 +21,10 @@ import logging
 from html import escape as _esc
 from collections import deque, OrderedDict
 from datetime import datetime
+from time_utils import (
+    format_date_fa, format_datetime_fa, format_time_fa,
+    now_utc, parse_machine_datetime, today_tehran,
+)
 
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -126,7 +130,7 @@ async def _get_history(uid: int) -> list:
     items, updated_at = await db.ai_get_memory(uid)
     if not items:
         return []
-    if updated_at and (datetime.now() - updated_at).total_seconds() > MEMORY_TTL_SECONDS:
+    if updated_at and (now_utc() - parse_machine_datetime(updated_at)).total_seconds() > MEMORY_TTL_SECONDS:
         return []   # قدیمیه؛ نادیده‌اش می‌گیریم (خودش با remember بعدی جایگزین می‌شه)
     return [{'role': it.get('r'), 'text': it.get('t', '')} for it in items]
 
@@ -423,7 +427,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 return 'هیچ برنامه‌ی آینده‌ای برای این دانشجو ثبت نشده.'
             lines = [
                 f"- {r.get('type','')}: {r.get('lesson','')} | استاد: {r.get('teacher','')} | "
-                f"{r.get('date','')} ساعت {r.get('time','')}"
+                f"{format_date_fa(r.get('date'), long=True, date_only=True)} ساعت {format_time_fa(r.get('time'))}"
                 for r in rows[:15]
             ]
             return "\n".join(lines)
@@ -449,7 +453,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 f"وضعیت: {'فعال ✅' if active else 'غیرفعال/منقضی ⌛'}\n"
                 f"پلن: {sub.get('plan_name','—')}\n"
                 f"روزهای باقی‌مانده: {days if active else 0}\n"
-                f"تاریخِ پایان: {sub.get('end_date','—')}"
+                f"تاریخِ پایان: {format_datetime_fa(sub.get('end_date'))}"
             )
 
         if name == 'get_my_tickets':
@@ -457,7 +461,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
             if not rows:
                 return 'این کاربر هیچ تیکتی ثبت نکرده.'
             lines = [
-                f"- #{t.get('ticket_id')} | موضوع: {t.get('subject','—')} | وضعیت: {t.get('status','—')} | {t.get('created_at','—')}"
+                f"- #{t.get('ticket_id')} | موضوع: {t.get('subject','—')} | وضعیت: {t.get('status','—')} | {format_datetime_fa(t.get('created_at'))}"
                 for t in rows
             ]
             return "\n".join(lines)
@@ -528,7 +532,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                     return 'تیکتی پیدا نشد.'
                 lines = [
                     f"- #{t.get('ticket_id')} | {t.get('user_name','—')} | موضوع: {t.get('subject','—')} | "
-                    f"وضعیت: {t.get('status','—')} | {t.get('created_at','—')}"
+                    f"وضعیت: {t.get('status','—')} | {format_datetime_fa(t.get('created_at'))}"
                     for t in rows[:15]
                 ]
                 return "\n".join(lines)
@@ -625,7 +629,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 replies_txt = "\n".join(f"  - {r}" for r in replies) if replies else "  (بدون پاسخ)"
                 return (
                     f"🎫 تیکت #{tid} | {t.get('user_name','—')} (آیدی: {t.get('user_id')})\n"
-                    f"موضوع: {t.get('subject','—')} | وضعیت: {t.get('status','—')} | {t.get('created_at','—')}\n"
+                    f"موضوع: {t.get('subject','—')} | وضعیت: {t.get('status','—')} | {format_datetime_fa(t.get('created_at'))}\n"
                     f"متن: {t.get('message','—')}\n"
                     f"پاسخ‌ها:\n{replies_txt}"
                 )
@@ -636,7 +640,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                     return 'هیچ برنامه‌ی آینده‌ای برای هیچ گروهی ثبت نشده.'
                 lines = [
                     f"- [{r.get('group','—')}] {r.get('type','')}: {r.get('lesson','')} | "
-                    f"{r.get('date','')} ساعت {r.get('time','')}"
+                    f"{format_date_fa(r.get('date'), long=True, date_only=True)} ساعت {format_time_fa(r.get('time'))}"
                     for r in rows[:20]
                 ]
                 return "\n".join(lines)
@@ -991,7 +995,7 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
     if cfg['provider'] == 'gemini' and uid is not None:
         try:
             doc = await db.ai_get_doc(uid)
-            if doc and doc.get('at') and (datetime.now() - doc['at']).total_seconds() > 48 * 3600:
+            if doc and doc.get('at') and (now_utc() - parse_machine_datetime(doc['at'])).total_seconds() > 48 * 3600:
                 doc = None   # فایلِ گوگل بعد از ۴۸ ساعت خودش منقضی می‌شه
         except Exception:
             doc = None
@@ -1309,7 +1313,7 @@ async def check_and_consume_quota(uid: int) -> tuple:
     """
     cfg   = await get_ai_config()
     limit = cfg['daily_limit']
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = today_tehran().isoformat()
     user  = await db.get_user(uid) or {}
     total_before = user.get('ai_total_usage', 0) or 0
     is_new_day   = user.get('ai_usage_date') != today
@@ -1368,7 +1372,7 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         quota_line = "🔓 امروز محدودیتی نداری — هر چقدر دلت خواست بپرس"
     else:
         user  = await db.get_user(uid) or {}
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = today_tehran().isoformat()
         used  = user.get('ai_usage_count', 0) if user.get('ai_usage_date') == today else 0
         quota_line = f"📊 تا الان {used} از {limit} سوالِ امروزتو استفاده کردی"
 

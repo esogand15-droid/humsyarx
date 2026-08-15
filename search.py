@@ -2,6 +2,10 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
+from time_utils import (
+    TimeContractError, format_date_fa, parse_clock_time,
+    parse_gregorian_date, parse_jalali_date,
+)
 
 logger = logging.getLogger(__name__)
 SEARCH = 3
@@ -77,16 +81,19 @@ async def _add_question(update, context, text):
 
 async def _add_schedule(update, context, text):
     import os
-    from datetime import datetime
     ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
     stype = context.user_data.pop('schedule_type', 'class')
     try:
         parts = [p.strip() for p in text.split(',')]
         if len(parts) < 5:
             raise ValueError("حداقل ۵ فیلد لازم است")
-        lesson, teacher, date, time, location = parts[:5]
+        lesson, teacher, entered_date, time, location = parts[:5]
         notes = parts[5] if len(parts) > 5 else ''
-        datetime.strptime(date, '%Y-%m-%d')
+        parsed_date = (parse_jalali_date(entered_date) if '/' in entered_date
+                       else parse_gregorian_date(entered_date))
+        date = parsed_date.isoformat()
+        parse_clock_time(time)
+        date_display = format_date_fa(date, long=True, date_only=True)
         await db.add_schedule(stype, lesson, teacher, date, time, location, notes)
 
         users = await db.notif_users('schedule' if stype != 'exam' else 'exam')
@@ -96,16 +103,16 @@ async def _add_schedule(update, context, text):
                 try:
                     type_fa = {'class': 'کلاس', 'exam': 'امتحان', 'makeup': 'جبرانی'}.get(stype, '')
                     await context.bot.send_message(u['user_id'],
-                        f"📅 <b>{type_fa} جدید:</b> {lesson}\n👨‍🏫 {teacher} | {date} {time}",
+                        f"📅 <b>{type_fa} جدید:</b> {lesson}\n👨‍🏫 {teacher} | {date_display} {time}",
                         parse_mode='HTML')
                     count += 1
                 except: pass
 
         await update.message.reply_text(
-            f"✅ برنامه اضافه شد!\n📌 {lesson} | {date} {time}\n🔔 {count} نفر مطلع شدند."
+            f"✅ برنامه اضافه شد!\n📌 {lesson} | {date_display} {time}\n🔔 {count} نفر مطلع شدند."
         )
-    except ValueError as e:
+    except (TimeContractError, ValueError) as e:
         await update.message.reply_text(
-            f"❌ خطا: {e}\nمثال: آناتومی, دکتر محمدی, 2024-03-20, 09:00, کلاس A2"
+            f"❌ خطا: {e}\nمثال: آناتومی, دکتر محمدی, 1405/05/24, 09:00, کلاس A2"
         )
     context.user_data.pop('mode', None)

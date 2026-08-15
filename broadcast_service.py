@@ -5,7 +5,7 @@ schedule/cancel/history و renderer تلگرام است. UIها فقط client ه
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -13,6 +13,7 @@ from bson import ObjectId
 
 from database import db
 from api.telegram_send import API_BASE, BOT_TOKEN
+from time_utils import now_utc, parse_machine_datetime, utc_now_iso
 
 MESSAGE_TYPES = {"text", "photo", "video", "document", "voice", "audio"}
 MEDIA_METHOD = {
@@ -25,7 +26,7 @@ MEDIA_METHOD = {
 
 
 def now_iso() -> str:
-    return datetime.now().isoformat()
+    return utc_now_iso()
 
 
 def campaign_id(value: Any) -> str:
@@ -102,11 +103,10 @@ async def resolve_recipients(target: str | dict, actor_id: int | None = None,
         users = [u for u in users if u.get("user_id") in allowed]
     elif scope == "subscription":
         status = str(target.get("subscription_status") or "")
-        now = datetime.now()
+        now = now_utc()
         if status == "active":
             ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}})
         elif status == "expiring_7":
-            from datetime import timedelta
             ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat(), "$lte": (now + timedelta(days=7)).isoformat()}})
         elif status == "inactive":
             active = set(await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}}))
@@ -134,7 +134,7 @@ async def create_campaign(*, payload: dict, target: str | dict, created_by: int,
     now = now_iso()
     if send_at:
         try:
-            if datetime.fromisoformat(send_at) <= datetime.now():
+            if parse_machine_datetime(send_at) <= now_utc():
                 raise ValueError("send_at_must_be_future")
         except ValueError as exc:
             if str(exc) == "send_at_must_be_future": raise
