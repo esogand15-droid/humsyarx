@@ -10,6 +10,7 @@ import random
 import string
 from datetime import datetime
 from dataclasses import dataclass, field
+from time_utils import now_tehran
 
 
 def generate_exam_code() -> str:
@@ -18,7 +19,7 @@ def generate_exam_code() -> str:
     برای قابلیت‌های آینده (QR Code، ردیابی نسخه، جلوگیری از تقلب) هم
     قابل استفاده است.
     """
-    ts = datetime.now().strftime('%y%m%d')
+    ts = now_tehran().strftime('%y%m%d')
     rand = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
     return f"HYB-{ts}-{rand}"
 

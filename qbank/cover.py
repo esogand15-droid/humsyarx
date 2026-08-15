@@ -26,12 +26,8 @@ def _draw_logo(c, cx, cy, r):
 
 
 def _today_jalali() -> str:
-    try:
-        from utils import fmt_jalali, now_tehran
-        return fmt_jalali(now_tehran().strftime('%Y-%m-%d'))
-    except Exception:
-        from datetime import datetime
-        return datetime.now().strftime('%Y-%m-%d')
+    from time_utils import format_date_fa, now_utc
+    return format_date_fa(now_utc(), long=True)
 
 
 def draw_cover_page(c, meta, question_count: int):
