@@ -24,6 +24,45 @@ class _Enc(json.JSONEncoder):
         return super().default(o)
 
 
+class BackupIntegrityError(RuntimeError):
+    """Raised instead of silently producing a truncated/inconsistent backup."""
+
+
+def _backup_settings_view(document: dict | None) -> dict:
+    """Return restorable non-secret settings; credentials never enter artifacts."""
+    safe = dict(document or {})
+    safe.pop('ai_api_key', None)
+    return safe
+
+
+async def _snapshot_collection(collection, limit: int, key: str, manifest: dict) -> list:
+    """Count-verified bounded snapshot; fail closed before any silent truncation.
+
+    Mongo writes may continue while a backup is built, so this is explicitly a
+    best-effort count-consistent snapshot rather than a transactional claim.
+    One retry absorbs a normal concurrent insert/delete; persistent drift fails
+    the backup and is surfaced to the owner.
+    """
+    for _attempt in range(2):
+        before = int(await collection.count_documents({}))
+        if before > limit:
+            manifest[key] = {"source_count": before, "exported_count": 0,
+                             "limit": limit, "complete": False,
+                             "reason": "capacity_exceeded"}
+            raise BackupIntegrityError(
+                f"backup capacity exceeded for {key}: {before}>{limit}")
+        rows = await collection.find({}).to_list(limit + 1)
+        after = int(await collection.count_documents({}))
+        if before == after == len(rows):
+            manifest[key] = {"source_count": after, "exported_count": len(rows),
+                             "limit": limit, "complete": True}
+            return rows
+    manifest[key] = {"source_count": after, "exported_count": len(rows),
+                     "limit": limit, "complete": False,
+                     "reason": "collection_changed_during_backup"}
+    raise BackupIntegrityError(f"collection changed during backup: {key}")
+
+
 # ══════════════════════════════════════════════════
 #  Callback اصلی
 # ══════════════════════════════════════════════════
@@ -78,7 +117,7 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'restore_prompt':
         await query.edit_message_text(
             "📥 <b>بازیابی از فایل پشتیبان</b>\n\n"
-            "⚠️ <b>هشدار:</b> این عملیات داده‌های فعلی را با داده‌های فایل پشتیبان <b>جایگزین</b> می‌کند!\n\n"
+            "⚠️ <b>هشدار:</b> این عملیات رکوردهای فایل را با روش <b>merge/upsert</b> بازیابی می‌کند؛ رکوردهای فعلیِ غایب از فایل حذف نمی‌شوند.\n\n"
             "فایل JSON پشتیبان را ارسال کنید:\n"
             "<i>(فایلی که قبلاً با دکمه «پشتیبان کامل» دریافت کرده‌اید)</i>",
             parse_mode='HTML',
@@ -195,14 +234,25 @@ async def build_full_backup_data() -> dict:
     FIX جدید: منطق ساخت بکاپ کامل از _export_all جدا شد تا هم از
     callback پنل ادمین و هم از job بکاپ خودکار قابل استفاده باشد.
     """
+    integrity = {}
     data = {
-        'backup_version': '2.0',
+        'backup_version': '3.0',
         'created_at':     datetime.now().isoformat(),
+        'restore_semantics': 'merge_upsert',
+        'integrity': {
+            'complete': True,
+            'consistency': 'count-verified-best-effort',
+            'datasets': integrity,
+            'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
+            'excluded_secrets': ['bot_settings.ai_api_key'],
+            'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
+            'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
+        },
         'sections':       {}
     }
 
     # ── کاربران ──
-    users = await db.users.find({}).to_list(10000)
+    users = await _snapshot_collection(db.users, 100000, 'users', integrity)
     data['sections']['users'] = {
         'description': 'اطلاعات کاربران ثبت‌نام شده',
         'count':       len(users),
@@ -210,9 +260,9 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── علوم پایه ──
-    lessons  = await db.bs_lessons.find({}).to_list(1000)
-    sessions = await db.bs_sessions.find({}).to_list(5000)
-    content  = await db.bs_content.find({}).to_list(10000)
+    lessons  = await _snapshot_collection(db.bs_lessons, 10000, 'bs_lessons', integrity)
+    sessions = await _snapshot_collection(db.bs_sessions, 100000, 'bs_sessions', integrity)
+    content  = await _snapshot_collection(db.bs_content, 100000, 'bs_content', integrity)
     data['sections']['basic_science'] = {
         'description': 'علوم پایه — درس‌ها، جلسات و محتوا',
         'lessons':     {'count': len(lessons),  'data': lessons},
@@ -221,9 +271,9 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── رفرنس‌ها ──
-    subjects  = await db.ref_subjects.find({}).to_list(500)
-    books     = await db.ref_books.find({}).to_list(2000)
-    ref_files = await db.ref_files.find({}).to_list(5000)
+    subjects  = await _snapshot_collection(db.ref_subjects, 10000, 'ref_subjects', integrity)
+    books     = await _snapshot_collection(db.ref_books, 50000, 'ref_books', integrity)
+    ref_files = await _snapshot_collection(db.ref_files, 100000, 'ref_files', integrity)
     data['sections']['references'] = {
         'description': 'رفرنس‌های درسی — درس‌ها، کتاب‌ها و فایل‌ها',
         'subjects':    {'count': len(subjects),  'data': subjects},
@@ -232,8 +282,8 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── بانک سوال ──
-    questions  = await db.questions.find({}).to_list(10000)
-    qbank_files= await db.qbank_files.find({}).to_list(1000)
+    questions  = await _snapshot_collection(db.questions, 100000, 'questions', integrity)
+    qbank_files= await _snapshot_collection(db.qbank_files, 50000, 'qbank_files', integrity)
     data['sections']['qbank'] = {
         'description': 'بانک سوال — سوالات و فایل‌ها',
         'questions':   {'count': len(questions),   'data': questions},
@@ -241,7 +291,7 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── برنامه ──
-    schedules = await db.schedules.find({}).to_list(5000)
+    schedules = await _snapshot_collection(db.schedules, 100000, 'schedules', integrity)
     data['sections']['schedules'] = {
         'description': 'برنامه کلاس‌ها و امتحانات',
         'count':       len(schedules),
@@ -249,7 +299,7 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── FAQ ──
-    faqs = await db.faq.find({}).to_list(500)
+    faqs = await _snapshot_collection(db.faq, 10000, 'faq', integrity)
     data['sections']['faq'] = {
         'description': 'سوالات متداول',
         'count':       len(faqs),
@@ -257,7 +307,7 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── تیکت‌ها ──
-    tickets = await db.tickets.find({}).to_list(5000)
+    tickets = await _snapshot_collection(db.tickets, 100000, 'tickets', integrity)
     data['sections']['tickets'] = {
         'description': 'تیکت‌های پشتیبانی',
         'count':       len(tickets),
@@ -267,24 +317,30 @@ async def build_full_backup_data() -> dict:
     # ── FIX جدید: دسترسی‌ها و امنیت — نقش‌های ادمین، بلک‌لیست، ورودی‌ها ──
     # این‌ها حیاتی‌اند: اگه گم بشن، همه‌ی نقش‌های تفویض‌شده (نماینده‌ها،
     # مدیران محتوای محدود و...) و لیست کاربران بلاک‌شده از دست می‌ره.
-    admin_roles = await db.admin_roles.find({}).to_list(1000)
-    blacklist   = await db.blacklist.find({}).to_list(5000)
-    intakes     = await db.intakes.find({}).to_list(500)
+    roles       = await _snapshot_collection(db.roles, 10000, 'roles', integrity)
+    user_roles  = await _snapshot_collection(db.user_roles, 100000, 'user_roles', integrity)
+    perm_catalog= await _snapshot_collection(db.perm_catalog, 10000, 'perm_catalog', integrity)
+    admin_roles = await _snapshot_collection(db.admin_roles, 10000, 'admin_roles', integrity)
+    blacklist   = await _snapshot_collection(db.blacklist, 100000, 'blacklist', integrity)
+    intakes     = await _snapshot_collection(db.intakes, 10000, 'intakes', integrity)
     data['sections']['access_control'] = {
-        'description': 'دسترسی‌ها و امنیت — نقش‌های ادمین، بلک‌لیست، ورودی‌ها',
+        'description': 'دسترسی‌ها و امنیت — RBAC اصلی، projection میراثی، بلک‌لیست و ورودی‌ها',
+        'roles':       {'count': len(roles), 'data': roles},
+        'user_roles':  {'count': len(user_roles), 'data': user_roles},
+        'perm_catalog': {'count': len(perm_catalog), 'data': perm_catalog},
         'admin_roles': {'count': len(admin_roles), 'data': admin_roles},
         'blacklist':   {'count': len(blacklist),   'data': blacklist},
         'intakes':     {'count': len(intakes),     'data': intakes},
     }
 
     # ── FIX جدید: سیستم اشتراک — دقیقاً همون چیزی که قبلاً توی بکاپ نبود ──
-    sub_plans     = await db.sub_plans.find({}).to_list(200)
-    subscriptions = await db.subscriptions.find({}).to_list(20000)
-    sub_payments  = await db.sub_payments.find({}).to_list(20000)
-    discount_codes= await db.discount_codes.find({}).to_list(1000)
+    sub_plans     = await _snapshot_collection(db.sub_plans, 10000, 'sub_plans', integrity)
+    subscriptions = await _snapshot_collection(db.subscriptions, 100000, 'subscriptions', integrity)
+    sub_payments  = await _snapshot_collection(db.sub_payments, 100000, 'sub_payments', integrity)
+    discount_codes= await _snapshot_collection(db.discount_codes, 10000, 'discount_codes', integrity)
     # کمپین تخفیف: سوابق مصرف هر کاربر (per_user_limit) + کمپین‌های برودکست
-    discount_uses  = await db.discount_uses.find({}).to_list(20000)
-    discount_bcasts= await db.discount_bcasts.find({}).to_list(2000)
+    discount_uses  = await _snapshot_collection(db.discount_uses, 100000, 'discount_uses', integrity)
+    discount_bcasts= await _snapshot_collection(db.discount_bcasts, 50000, 'discount_broadcasts', integrity)
     data['sections']['subscription_system'] = {
         'description': 'سیستم اشتراک — پلن‌ها، وضعیت هر کاربر، رسیدهای پرداخت، کدهای تخفیف و کمپین‌ها',
         'plans':          {'count': len(sub_plans),      'data': sub_plans},
@@ -296,7 +352,7 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── FIX جدید: نمرات ──
-    grades = await db.grades.find({}).to_list(20000)
+    grades = await _snapshot_collection(db.grades, 100000, 'grades', integrity)
     data['sections']['grades'] = {
         'description': 'نمرات ثبت‌شده توسط ادمین/نماینده‌های ورودی',
         'count':       len(grades),
@@ -305,7 +361,11 @@ async def build_full_backup_data() -> dict:
 
     # ── FIX جدید: تنظیمات کلی ربات — یک سند واحد (شماره کارت، کلید
     # اجباری اشتراک، بازه نوتیف، حالت تعمیر، لینک حمایت مالی و...) ──
-    settings_doc = await db.settings.find_one({'_id': 'global'})
+    settings_doc_raw = await db.settings.find_one({'_id': 'global'})
+    settings_doc = _backup_settings_view(settings_doc_raw)
+    integrity['settings'] = {'source_count': 1 if settings_doc_raw else 0,
+                             'exported_count': 1 if settings_doc else 0,
+                             'limit': 1, 'complete': True}
     data['sections']['settings'] = {
         'description': 'تنظیمات کلی ربات (یک سند واحد)',
         'count':       1 if settings_doc else 0,
@@ -313,9 +373,9 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── FIX جدید: گزارش‌ها و لاگ‌ها — کمتر حیاتی، ولی برای پیگیری مفیدن ──
-    content_reports = await db.content_reports.find({}).to_list(3000)
-    audit_logs       = await db.audit_logs.find({}).to_list(3000)
-    notif_runs        = await db.notif_runs.find({}).to_list(1000)
+    content_reports = await _snapshot_collection(db.content_reports, 100000, 'content_reports', integrity)
+    audit_logs       = await _snapshot_collection(db.audit_logs, 100000, 'audit_logs', integrity)
+    notif_runs        = await _snapshot_collection(db.notif_runs, 50000, 'notif_runs', integrity)
     data['sections']['logs'] = {
         'description': 'گزارش محتوا، لاگ فعالیت‌های حساس، تاریخچه‌ی اجرای نوتیف‌ها',
         'content_reports': {'count': len(content_reports), 'data': content_reports},
@@ -324,12 +384,49 @@ async def build_full_backup_data() -> dict:
     }
 
     # ── FIX جدید: آمار خام — پاسخ‌های دانشجویان به سوالات ──
-    stats_rows = await db.stats_col.find({}).to_list(20000)
-    answers    = await db.answers.find({}).to_list(30000)
+    stats_rows = await _snapshot_collection(db.stats_col, 100000, 'stats', integrity)
+    answers    = await _snapshot_collection(db.answers, 100000, 'answers', integrity)
     data['sections']['stats'] = {
-        'description': 'آمار خام تمرین‌ها — ممکن است در حجم خیلی بالا محدود (cap) شده باشد',
+        'description': 'آمار خام تمرین‌ها — snapshot شمارش‌شده؛ بالاتر از ظرفیت بدون تولید فایل ناقص متوقف می‌شود',
         'stats':   {'count': len(stats_rows), 'data': stats_rows},
         'answers': {'count': len(answers),    'data': answers},
+    }
+
+    # ── داده‌های durable جدید که در بکاپ v2 جا افتاده بودند ──
+    broadcast_campaigns = await _snapshot_collection(db.broadcast_campaigns, 100000, 'broadcast_campaigns', integrity)
+    user_notifications = await _snapshot_collection(db.user_notifs, 100000, 'user_notifications', integrity)
+    data['sections']['communications'] = {
+        'description': 'کمپین‌های ارسال همگانی و صندوق اعلان پایدار دانشجو؛ outbox اجرایی عمداً مستثنا است',
+        'broadcast_campaigns': {'count': len(broadcast_campaigns), 'data': broadcast_campaigns},
+        'user_notifications': {'count': len(user_notifications), 'data': user_notifications},
+    }
+
+    ai_reports = await _snapshot_collection(db.ai_reports, 100000, 'ai_reports', integrity)
+    ai_conversations = await _snapshot_collection(db.ai_conversations, 100000, 'ai_conversations', integrity)
+    data['sections']['ai'] = {
+        'description': 'گزارش‌های هوشیار و گفت‌وگوهای پایدار؛ فقط در پشتیبان owner-only',
+        'reports': {'count': len(ai_reports), 'data': ai_reports},
+        'conversations': {'count': len(ai_conversations), 'data': ai_conversations},
+    }
+
+    prestige_history = await _snapshot_collection(db.prestige_history, 100000, 'prestige_history', integrity)
+    feed_reactions = await _snapshot_collection(db.feed_reactions, 100000, 'feed_reactions', integrity)
+    exam_sessions = await _snapshot_collection(db.exam_sessions, 100000, 'exam_sessions', integrity)
+    data['sections']['prestige'] = {
+        'description': 'تاریخچه Prestige، واکنش فید و جلسات آزمون/چالش',
+        'history': {'count': len(prestige_history), 'data': prestige_history},
+        'feed_reactions': {'count': len(feed_reactions), 'data': feed_reactions},
+        'exam_sessions': {'count': len(exam_sessions), 'data': exam_sessions},
+    }
+
+    saved_views = await _snapshot_collection(db.wa_saved_filters, 100000, 'wa_saved_filters', integrity)
+    settings_meta = await _snapshot_collection(db.settings_meta, 100000, 'settings_meta', integrity)
+    migrations = await _snapshot_collection(db.migrations, 10000, 'migrations', integrity)
+    data['sections']['webadmin_state'] = {
+        'description': 'نماهای ذخیره‌شده، متای تنظیمات و وضعیت مهاجرت‌ها؛ بدون نشست و telemetry',
+        'saved_views': {'count': len(saved_views), 'data': saved_views},
+        'settings_meta': {'count': len(settings_meta), 'data': settings_meta},
+        'migrations': {'count': len(migrations), 'data': migrations},
     }
 
     # آمار خلاصه
@@ -344,9 +441,12 @@ async def build_full_backup_data() -> dict:
         'questions':      len(questions),
         'schedules':      len(schedules),
         'faqs':           len(faqs),
-        'tickets':        len(tickets),
-        'admin_roles':    len(admin_roles),
-        'blacklist':      len(blacklist),
+        'tickets':         len(tickets),
+        'roles':           len(roles),
+        'user_roles':      len(user_roles),
+        'permissions':     len(perm_catalog),
+        'admin_roles':     len(admin_roles),
+        'blacklist':       len(blacklist),
         'intakes':        len(intakes),
         'sub_plans':      len(sub_plans),
         'subscriptions':  len(subscriptions),
@@ -361,6 +461,16 @@ async def build_full_backup_data() -> dict:
         'notif_runs':     len(notif_runs),
         'stats_rows':     len(stats_rows),
         'answers':        len(answers),
+        'broadcast_campaigns': len(broadcast_campaigns),
+        'user_notifications': len(user_notifications),
+        'ai_reports':      len(ai_reports),
+        'ai_conversations': len(ai_conversations),
+        'prestige_history': len(prestige_history),
+        'feed_reactions':  len(feed_reactions),
+        'exam_sessions':   len(exam_sessions),
+        'saved_views':     len(saved_views),
+        'settings_meta':   len(settings_meta),
+        'migrations':      len(migrations),
     }
     return data
 
@@ -490,50 +600,60 @@ async def build_section_backup_data(section: str) -> dict:
     علاوه بر دکمه‌های ربات، از پنل وب (صف bot_notifications) هم همان
     خروجی یکسان تولید شود. بخش نامعتبر → ValueError.
     """
+    integrity = {}
     data = {
-        'backup_version': '2.0',
+        'backup_version': '3.0',
         'section':        section,
         'created_at':     datetime.now().isoformat(),
+        'restore_semantics': 'merge_upsert',
+        'integrity': {
+            'complete': True, 'consistency': 'count-verified-best-effort',
+            'datasets': integrity,
+            'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
+            'excluded_secrets': ['bot_settings.ai_api_key'],
+            'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
+            'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
+        },
     }
 
     if section == 'users':
-        rows = await db.users.find({}).to_list(10000)
+        rows = await _snapshot_collection(db.users, 100000, 'users', integrity)
         data['description'] = 'کاربران ثبت‌نام شده'
         data['count']       = len(rows)
         data['data']        = rows
 
     elif section == 'content':
-        lessons  = await db.bs_lessons.find({}).to_list(1000)
-        sessions = await db.bs_sessions.find({}).to_list(5000)
-        content  = await db.bs_content.find({}).to_list(10000)
+        lessons  = await _snapshot_collection(db.bs_lessons, 10000, 'bs_lessons', integrity)
+        sessions = await _snapshot_collection(db.bs_sessions, 100000, 'bs_sessions', integrity)
+        content  = await _snapshot_collection(db.bs_content, 100000, 'bs_content', integrity)
         data['description'] = 'علوم پایه'
         data['lessons']     = {'count': len(lessons),  'data': lessons}
         data['sessions']    = {'count': len(sessions), 'data': sessions}
         data['content']     = {'count': len(content),  'data': content}
 
     elif section == 'refs':
-        subjects  = await db.ref_subjects.find({}).to_list(500)
-        books     = await db.ref_books.find({}).to_list(2000)
-        ref_files = await db.ref_files.find({}).to_list(5000)
+        subjects  = await _snapshot_collection(db.ref_subjects, 10000, 'ref_subjects', integrity)
+        books     = await _snapshot_collection(db.ref_books, 50000, 'ref_books', integrity)
+        ref_files = await _snapshot_collection(db.ref_files, 100000, 'ref_files', integrity)
         data['description'] = 'رفرنس‌های درسی'
         data['subjects']    = {'count': len(subjects),  'data': subjects}
         data['books']       = {'count': len(books),     'data': books}
         data['files']       = {'count': len(ref_files), 'data': ref_files}
 
     elif section == 'qbank':
-        questions   = await db.questions.find({}).to_list(10000)
-        qbank_files = await db.qbank_files.find({}).to_list(1000)
+        questions   = await _snapshot_collection(db.questions, 100000, 'questions', integrity)
+        qbank_files = await _snapshot_collection(db.qbank_files, 50000, 'qbank_files', integrity)
         data['description'] = 'بانک سوال'
         data['questions']   = {'count': len(questions),   'data': questions}
         data['files']       = {'count': len(qbank_files), 'data': qbank_files}
 
     elif section == 'subscription':
-        sub_plans      = await db.sub_plans.find({}).to_list(200)
-        subscriptions  = await db.subscriptions.find({}).to_list(20000)
-        sub_payments   = await db.sub_payments.find({}).to_list(20000)
-        discount_codes = await db.discount_codes.find({}).to_list(1000)
-        discount_uses  = await db.discount_uses.find({}).to_list(20000)
-        discount_bcasts= await db.discount_bcasts.find({}).to_list(2000)
+        sub_plans      = await _snapshot_collection(db.sub_plans, 10000, 'sub_plans', integrity)
+        subscriptions  = await _snapshot_collection(db.subscriptions, 100000, 'subscriptions', integrity)
+        sub_payments   = await _snapshot_collection(db.sub_payments, 100000, 'sub_payments', integrity)
+        discount_codes = await _snapshot_collection(db.discount_codes, 10000, 'discount_codes', integrity)
+        discount_uses  = await _snapshot_collection(db.discount_uses, 100000, 'discount_uses', integrity)
+        discount_bcasts= await _snapshot_collection(db.discount_bcasts, 50000, 'discount_broadcasts', integrity)
         data['description']     = 'سیستم اشتراک — پلن‌ها، وضعیت کاربران، رسیدها، کدهای تخفیف و کمپین‌ها'
         data['plans']           = {'count': len(sub_plans),      'data': sub_plans}
         data['subscriptions']   = {'count': len(subscriptions),  'data': subscriptions}
@@ -543,17 +663,27 @@ async def build_section_backup_data(section: str) -> dict:
         data['discount_broadcasts'] = {'count': len(discount_bcasts), 'data': discount_bcasts}
 
     elif section == 'grades':
-        grades = await db.grades.find({}).to_list(20000)
+        grades = await _snapshot_collection(db.grades, 100000, 'grades', integrity)
         data['description'] = 'نمرات ثبت‌شده'
         data['count']       = len(grades)
         data['data']        = grades
 
     elif section == 'access':
-        admin_roles  = await db.admin_roles.find({}).to_list(1000)
-        blacklist    = await db.blacklist.find({}).to_list(5000)
-        intakes      = await db.intakes.find({}).to_list(500)
-        settings_doc = await db.settings.find_one({'_id': 'global'})
-        data['description'] = 'دسترسی‌ها (نقش/بلک‌لیست/ورودی) + تنظیمات ربات'
+        roles        = await _snapshot_collection(db.roles, 10000, 'roles', integrity)
+        user_roles   = await _snapshot_collection(db.user_roles, 100000, 'user_roles', integrity)
+        perm_catalog = await _snapshot_collection(db.perm_catalog, 10000, 'perm_catalog', integrity)
+        admin_roles  = await _snapshot_collection(db.admin_roles, 10000, 'admin_roles', integrity)
+        blacklist    = await _snapshot_collection(db.blacklist, 100000, 'blacklist', integrity)
+        intakes      = await _snapshot_collection(db.intakes, 10000, 'intakes', integrity)
+        settings_doc_raw = await db.settings.find_one({'_id': 'global'})
+        settings_doc = _backup_settings_view(settings_doc_raw)
+        integrity['settings'] = {'source_count': 1 if settings_doc_raw else 0,
+                                 'exported_count': 1 if settings_doc_raw else 0,
+                                 'limit': 1, 'complete': True}
+        data['description'] = 'RBAC اصلی، projection میراثی، بلک‌لیست، ورودی‌ها و تنظیمات'
+        data['roles']       = {'count': len(roles), 'data': roles}
+        data['user_roles']  = {'count': len(user_roles), 'data': user_roles}
+        data['perm_catalog'] = {'count': len(perm_catalog), 'data': perm_catalog}
         data['admin_roles'] = {'count': len(admin_roles), 'data': admin_roles}
         data['blacklist']   = {'count': len(blacklist),   'data': blacklist}
         data['intakes']     = {'count': len(intakes),     'data': intakes}
@@ -701,6 +831,10 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         tg_file    = await context.bot.get_file(doc.file_id)
         file_bytes = await tg_file.download_as_bytearray()
         data       = json.loads(file_bytes.decode('utf-8'))
+        integrity = data.get('integrity') if isinstance(data, dict) else None
+        if isinstance(integrity, dict) and integrity.get('complete') is not True:
+            await update.message.reply_text("❌ این فایل پشتیبان ناقص است و بازیابی نمی‌شود.")
+            return
 
         version = data.get('backup_version', '1.0')
         created = data.get('created_at', 'نامشخص')[:19]
@@ -728,16 +862,19 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             count = data.get('count', '?')
             info  = f"تعداد رکورد: {count}"
+        integrity_info = ("✅ manifest یکپارچگی کامل" if isinstance(integrity, dict)
+                          else "⚠️ فایل legacy بدون manifest یکپارچگی")
 
         await update.message.reply_text(
             f"📋 <b>اطلاعات فایل پشتیبان:</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📅 تاریخ ساخت: <code>{created}</code>\n"
             f"🔖 نسخه: {version}\n"
-            f"📦 بخش: {section}\n\n"
+            f"📦 بخش: {section}\n"
+            f"{integrity_info}\n\n"
             f"{info}\n\n"
             f"⚠️ <b>آیا مطمئن هستید؟</b>\n"
-            f"داده‌های فعلی با این فایل جایگزین می‌شوند!",
+            f"رکوردهای فایل merge/upsert می‌شوند؛ داده‌های فعلیِ غایب از فایل حذف نمی‌شوند!",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ بله، بازیابی کن", callback_data='backup:confirm_restore')],
@@ -772,12 +909,20 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text("⏳ <b>در حال بازیابی اطلاعات...</b>", parse_mode='HTML')
 
     try:
-        restored = {}
-
         sections = data.get('sections', {})
         if not sections:
-            # فایل بخشی (نه کامل)
             sections = {section: data}
+        actor_doc = await db.get_user(uid)
+        await db.log_action(
+            uid, (actor_doc or {}).get('name', 'ادمین'),
+            await db.get_actor_role_label(uid),
+            'آغاز بازیابی بکاپ از Bot', 'Backup', category='admin',
+            severity='CRITICAL', target_type='backup', target_label=section,
+            after={'phase': 'started', 'sections': len(sections),
+                   'semantics': data.get('restore_semantics') or 'merge_upsert'},
+            tags=['بازیابی_بکاپ', 'restore_started'],
+        )
+        restored = {}
 
         for sec_name, sec_data in sections.items():
             count = await _restore_section(sec_name, sec_data)
@@ -802,6 +947,10 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             'settings':              '⚙️ تنظیمات ربات',
             'logs':                  '📋 گزارش‌ها و لاگ‌ها',
             'stats':                 '📈 آمار خام تمرین‌ها',
+            'communications':        '📣 کمپین‌ها و صندوق اعلان',
+            'ai':                    '🤖 داده‌های پایدار هوشیار',
+            'prestige':              '🏅 تاریخچه Prestige و چالش‌ها',
+            'webadmin_state':         '🖥 وضعیت پایدار WebAdmin',
         }
         for k, v in restored.items():
             result_lines.append(f"{labels.get(k, k)}: {v} رکورد")
@@ -914,7 +1063,11 @@ async def _restore_section(section: str, sec_data: dict) -> int:
     # ── FIX جدید: بازیابی بخش‌های تازه‌اضافه‌شده — با alias برای هر دو
     # نامی که ممکنه فایل بکاپ داشته باشه (بکاپ کامل در برابر بکاپ سریع) ──
     elif section in ('access_control', 'access'):
-        for sub, col in [('admin_roles', 'admin_roles'), ('blacklist', 'blacklist'), ('intakes', 'intakes')]:
+        for sub, col in [
+            ('roles', 'roles'), ('user_roles', 'user_roles'),
+            ('perm_catalog', 'perm_catalog'), ('admin_roles', 'admin_roles'),
+            ('blacklist', 'blacklist'), ('intakes', 'intakes'),
+        ]:
             rows = sec_data.get(sub, {}).get('data', [])
             total += await _upsert_many(getattr(db, col), rows)
         # بکاپ سریع «دسترسی‌ها و تنظیمات» شامل settings هم می‌شود
@@ -954,6 +1107,29 @@ async def _restore_section(section: str, sec_data: dict) -> int:
 
     elif section == 'stats':
         for sub, col in [('stats', 'stats_col'), ('answers', 'answers')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'communications':
+        for sub, col in [('broadcast_campaigns', 'broadcast_campaigns'),
+                         ('user_notifications', 'user_notifs')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'ai':
+        for sub, col in [('reports', 'ai_reports'), ('conversations', 'ai_conversations')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'prestige':
+        for sub, col in [('history', 'prestige_history'), ('feed_reactions', 'feed_reactions'),
+                         ('exam_sessions', 'exam_sessions')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'webadmin_state':
+        for sub, col in [('saved_views', 'wa_saved_filters'),
+                         ('settings_meta', 'settings_meta'), ('migrations', 'migrations')]:
             rows = sec_data.get(sub, {}).get('data', [])
             total += await _upsert_many(getattr(db, col), rows)
 
