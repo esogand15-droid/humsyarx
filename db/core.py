@@ -64,6 +64,8 @@ class DBCore:
         # 🧠 موج N1 — صف ارسال DM (Source of Truth مصرف‌کننده‌ی «من»
         # نیست؛ فقط کانال خروجی ربات است — source of truth همیشه Inbox)
         self.bot_notifs   = _db['bot_notifications']
+        # 📢 کنترل‌پلین واحد کمپین‌های Bot/Web؛ payload و lifecycle مشترک.
+        self.broadcast_campaigns = _db['broadcast_campaigns']
         # 👑 موج P0 Prestige — سفر رنک/نشان/فید (Spec §۸.۲)
         self.prestige_history = _db['prestige_history']
         # 👑 موج P2 — واکنش‌های فید (ضدتکرار داخلی؛ خروجی فقط شمارنده)
@@ -126,6 +128,9 @@ class DBCore:
                 self.users.create_index([('approved', 1), ('registered_at', -1)], background=True),
                 self.users.create_index([('intake', 1), ('approved', 1), ('registered_at', -1)], background=True),
                 self.users.create_index([('intake', 1), ('group', 1), ('last_active', -1)], background=True),
+                self.users.create_index([('ai_banned', 1), ('name', 1)], background=True),
+                self.ai_reports.create_index([('created_at', -1)], background=True),
+                self.ai_reports.create_index([('user_id', 1), ('created_at', -1)], background=True),
                 self.questions.create_index('approved', background=True),
                 self.questions.create_index([('lesson', 1), ('topic', 1)], background=True),
                 # 🌊 موج C1 — کوئری داغ ورودی‌محور {(intake,term)} و
@@ -142,6 +147,7 @@ class DBCore:
                 self.bs_sessions.create_index([('fork_of', 1), ('intake', 1)], background=True),
                 self.ref_books.create_index([('fork_of', 1), ('intake', 1)], background=True),
                 self.qbank_files.create_index([('intake', 1), ('lesson', 1)], background=True),
+                self.qbank_files.create_index([('intake', 1), ('lesson', 1), ('topic', 1), ('description', 1)], background=True),
                 self.bs_lessons.create_index([('intake', 1), ('term', 1), ('order', 1)], background=True),
                 self.ref_subjects.create_index([('intake', 1), ('order', 1)], background=True),
                 self.bs_lessons.create_index([('term', 1), ('order', 1)], background=True),
@@ -171,6 +177,10 @@ class DBCore:
                 self.wa_api_metrics.create_index([('at', 1)], expireAfterSeconds=2592000, background=True),
                 self.wa_api_metrics.create_index([('route', 1), ('at', -1)], background=True),
                 self.wa_api_metrics.create_index([('status', 1), ('at', -1)], background=True),
+                self.broadcast_campaigns.create_index([('created_at', -1)], background=True),
+                self.broadcast_campaigns.create_index([('status', 1), ('send_at', 1)], background=True),
+                self.bot_notifs.create_index([('campaign_id', 1), ('sent', 1)], background=True),
+                self.bot_notifs.create_index([('sent', 1), ('send_at', 1)], background=True),
                 self.qbank_files.create_index([('lesson', 1), ('topic', 1)], background=True),
                 self.intakes.create_index('code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
@@ -2184,8 +2194,34 @@ class DBCore:
             return result.modified_count
         except Exception:
             logger.exception('apply_notif_default_to_all_users failed')
-            return 0
+            raise
 
+
+    async def update_notif_default(self, ntype: str, value: bool,
+                                   apply_existing: bool = True) -> dict:
+        """تنها domain operation تغییر default اعلان برای Bot و Web.
+
+        default همیشه برای کاربران جدید ذخیره می‌شود. در صورت درخواست، همان
+        مقدار با یک update_many واقعی روی کاربران فعلی هم اعمال می‌شود. اگر
+        fan-out شکست بخورد default قبلی بازگردانده می‌شود تا دو semantics
+        نیمه‌کاره باقی نماند.
+        """
+        defaults = await self.get_notif_defaults()
+        if ntype not in defaults:
+            raise ValueError('unknown_notification_type')
+        before = bool(defaults.get(ntype))
+        after = bool(value)
+        await self.set_notif_default(ntype, after)
+        affected = 0
+        if apply_existing:
+            try:
+                affected = await self.apply_notif_default_to_all_users(ntype, after)
+            except Exception:
+                await self.set_notif_default(ntype, before)
+                raise
+        return {"before": before, "after": after,
+                "apply_existing": bool(apply_existing),
+                "affected_users": int(affected or 0)}
 
 
     async def count_active_users(self, minutes: int = 30) -> int:

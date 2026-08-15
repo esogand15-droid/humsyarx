@@ -1697,6 +1697,13 @@ class DBContent:
             item = await self.qbank_files.find_one({'_id': ObjectId(file_id)})
             if not item:
                 return ('err', 'not_found')
+            duplicate_filter = {
+                'lesson': item.get('lesson', ''), 'topic': item.get('topic', ''),
+                'description': item.get('description', ''), 'intake': intake,
+                '_id': {'$ne': item['_id']},
+            }
+            if await self.qbank_files.find_one(duplicate_filter):
+                return ('err', 'duplicate')
             old = item.get('intake') or ''
             await self.qbank_files.update_one(
                 {'_id': ObjectId(file_id)}, {'$set': {'intake': intake}})
