@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, date, timezone
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -2158,55 +2159,76 @@ async def content_tree(intake: Optional[str] = Query(None),
                 {"intake": None}],
     }).to_list(400)
     lesson_ids = [str(l.get("_id")) for l in lessons]
+    # داده‌های legacy ممکن است foreign key را به‌صورت ObjectId نگه داشته
+    # باشند، در حالی که مسیرهای جدید string ذخیره می‌کنند. هر دو شکل باید
+    # در یک query خوانده شوند؛ خروجی API همیشه string است.
+    lesson_refs = list(lesson_ids)
+    lesson_refs.extend(oid for oid in (_oid(v) for v in lesson_ids) if oid is not None)
     sessions = await db.bs_sessions.find(
-        {"lesson_id": {"$in": lesson_ids}}).to_list(2000) if lesson_ids else []
+        {"lesson_id": {"$in": lesson_refs}}).to_list(2000) if lesson_refs else []
     if iv:
-        sessions = [s for s in sessions if (s.get("intake") or "") in ("", iv)
+        sessions = [s for s in sessions if str(s.get("intake") or "") in ("", iv)
                     or not s.get("fork_of")]
     else:
-        sessions = [s for s in sessions if (s.get("intake") or "") == ""
+        sessions = [s for s in sessions if str(s.get("intake") or "") == ""
                     and not s.get("fork_of")]
     sess_ids = [str(s.get("_id")) for s in sessions]
+    session_refs = list(sess_ids)
+    session_refs.extend(oid for oid in (_oid(v) for v in sess_ids) if oid is not None)
     counts = {}
-    if sess_ids:
+    if session_refs:
         for c in await db.bs_content.find(
-                {"session_id": {"$in": sess_ids}}).to_list(5000):
-            cid = c.get("session_id", "")
+                {"session_id": {"$in": session_refs}}).to_list(5000):
+            cid = str(c.get("session_id") or "")
             slot = counts.setdefault(cid, {"n": 0, "types": {}})
             slot["n"] += 1
-            t = c.get("type", "?")
+            t = str(c.get("type") or "?")
             slot["types"][t] = slot["types"].get(t, 0) + 1
 
     intake_labels = {}
     try:
         for i in await db.get_all_intakes():
             if i.get("active", True):
-                intake_labels[i.get("code", "")] = i.get("label", "")
+                code = str(i.get("code") or "")
+                if code:
+                    intake_labels[code] = str(i.get("label") or code)
     except Exception:
         pass
     if scoped_view:
         intake_labels = {iv: intake_labels.get(iv, iv)} if iv else {}
 
+    def legacy_int(value) -> int:
+        """order/number قدیمی گاهی string یا None است؛ قرارداد وب همیشه int."""
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
     tree = []
     for term in TERMS:
-        # 🌊 WA3-fix — order/number ممکن است در داکیومنت legacy مفقود یا
-        # None باشند؛ مقایسه‌ی None با int پایتون TypeError می‌دهد (ریشه‌ی 500).
-        t_lessons = sorted([l for l in lessons if l.get("term") == term],
-                           key=lambda x: (x.get("order") or 0))
+        # order/number در اسناد قدیمی می‌تواند None یا string باشد؛ مرتب‌سازی
+        # مستقیم int و str در Python 3 باعث TypeError و پاسخ 500 می‌شود.
+        t_lessons = sorted([l for l in lessons if str(l.get("term") or "") == term],
+                           key=lambda x: (legacy_int(x.get("order")), str(x.get("_id"))))
         trow = {"term": term, "lessons": []}
         for l in t_lessons:
             lid = str(l.get("_id"))
-            l_sessions = sorted([s for s in sessions if s.get("lesson_id") == lid],
-                                key=lambda x: ((x.get("number") or 0), str(x.get("_id"))))
+            l_sessions = sorted(
+                [s for s in sessions if str(s.get("lesson_id") or "") == lid],
+                key=lambda x: (legacy_int(x.get("number")), str(x.get("_id"))),
+            )
             srows = []
             for s in l_sessions:
                 sid = str(s.get("_id"))
-                s_intake = s.get("intake") or ""
-                s_intake_effective = s_intake if s_intake else (l.get("intake") or "")
-                fork_of = s.get("fork_of") or ""
+                s_intake = str(s.get("intake") or "")
+                s_intake_effective = s_intake if s_intake else str(l.get("intake") or "")
+                # fork_of در بعضی داده‌های قدیمی ObjectId است. عبور مستقیم آن
+                # به FastAPI هنگام json encoding با 500 شکست می‌خورد.
+                fork_of = str(s.get("fork_of") or "")
                 srows.append({
-                    "id": sid, "number": s.get("number") or 0,
-                    "topic": s.get("topic", ""), "teacher": s.get("teacher", ""),
+                    "id": sid, "number": legacy_int(s.get("number")),
+                    "topic": str(s.get("topic") or ""),
+                    "teacher": str(s.get("teacher") or ""),
                     "intake": s_intake_effective,
                     "intake_label": intake_labels.get(s_intake_effective, ""),
                     "kind": ("fork" if fork_of else
@@ -2216,17 +2238,21 @@ async def content_tree(intake: Optional[str] = Query(None),
                     "content_count": counts.get(sid, {}).get("n", 0),
                     "types": counts.get(sid, {}).get("types", {}),
                 })
+            lesson_intake = str(l.get("intake") or "")
             trow["lessons"].append({
-                "id": lid, "name": l.get("name", ""), "teacher": l.get("teacher", ""),
-                "intake": l.get("intake") or "",
-                "readonly": bool(scoped_view and (l.get("intake") or "") != iv),
+                "id": lid, "name": str(l.get("name") or ""),
+                "teacher": str(l.get("teacher") or ""),
+                "intake": lesson_intake,
+                "readonly": bool(scoped_view and lesson_intake != iv),
                 "sessions": srows, "session_count": len(srows),
                 "content_count": sum(r["content_count"] for r in srows),
             })
         tree.append(trow)
-    return {"intake": iv, "scope_kind": actor_scope.get("kind", "global"),
-            "tree": tree,
-            "intakes": [{"code": c, "label": l} for c, l in intake_labels.items()]}
+    result = {"intake": str(iv or ""), "scope_kind": str(actor_scope.get("kind") or "global"),
+              "tree": tree,
+              "intakes": [{"code": c, "label": l} for c, l in intake_labels.items()]}
+    # دفاع نهایی در برابر هر BSON legacy که از projection بالا عبور کرده باشد.
+    return jsonable_encoder(result, custom_encoder={ObjectId: str})
 
 
 async def _student_preview_context(user_id: int, admin: dict):
@@ -2545,7 +2571,11 @@ async def wa_analytics(user=Depends(_perm("stats.view")),
         except Exception:
             pass
     out["deep"] = deep
-    return out
+    # بعضی اسناد legacy هنوز ObjectId/datetime تو در تو دارند. routeهای
+    # analytics نباید بعد از موفقیت query در مرحله‌ی response serialization
+    # با 500 شکست بخورند. متدهای domain projection می‌دهند؛ این encoder فقط
+    # لایه‌ی دفاع نهایی قرارداد JSON است.
+    return jsonable_encoder(out, custom_encoder={ObjectId: str})
 
 
 # 🌊 موج Parity-Final — مرکز هوش ربات در وب: منطق rule-based واحدِ
