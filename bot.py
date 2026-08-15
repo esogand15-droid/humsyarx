@@ -9,6 +9,7 @@
 import os
 import sys
 import html
+import re
 import logging
 import asyncio
 from datetime import datetime, time as dtime, timezone, timedelta
@@ -605,12 +606,38 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
             if text.startswith("__"):
                 await coll.update_one({"_id": d["_id"]}, {"$set": {"sent": True, "skipped": True}})
                 continue
-            # 🧠 N2 — دکمه‌ی Deep Link (اگر صف لینک داشت) روی متنِ پایانی سوار است
-            ok = await safe_send(context.bot, d["chat_id"], text,
-                                 parse_mode="HTML", reply_markup=_dl_kb)
-            await coll.update_one({"_id": d["_id"]}, {"$set": {
-                "sent": ok, "sent_at": datetime.now().isoformat(), "failed": not ok,
-            }})
+            # 📢 Campaign payload از renderer واحد Bot/Web عبور می‌کند؛
+            # پیام‌های عادی قدیمی همچنان safe_send خودشان را دارند.
+            campaign = d.get("campaign_id")
+            if campaign and d.get("payload"):
+                from broadcast_service import send_payload, record_delivery, refresh_campaign
+                if not d.get("inbox_mirrored"):
+                    raw_body = d["payload"].get("text") or d["payload"].get("caption") or ""
+                    inbox_body = re.sub(r"<[^>]+>", "", raw_body).strip() or "پیام همگانی مدیریت"
+                    await db.inbox_add(d["chat_id"], "announcement", "📢 اطلاعیه‌ی مدیریت",
+                                       inbox_body, payload={"campaign_id": campaign})
+                    await coll.update_one({"_id": d["_id"]},
+                                          {"$set": {"inbox_mirrored": True}})
+                try:
+                    await send_payload(context.bot, d["chat_id"], d["payload"])
+                    ok, error = True, ""
+                except Exception as exc:
+                    ok, error = False, str(exc)[:200]
+                    logger.warning("broadcast campaign=%s uid=%s failed: %s",
+                                   campaign, d.get("chat_id"), error)
+                await coll.update_one({"_id": d["_id"]}, {"$set": {
+                    "sent": True, "delivered": ok, "sent_at": datetime.now().isoformat(),
+                    "failed": not ok, "error": error,
+                }})
+                await record_delivery(campaign, success=ok, error=error)
+                await refresh_campaign(campaign)
+            else:
+                # 🧠 N2 — دکمه‌ی Deep Link (اگر صف لینک داشت)
+                ok = await safe_send(context.bot, d["chat_id"], text,
+                                     parse_mode="HTML", reply_markup=_dl_kb)
+                await coll.update_one({"_id": d["_id"]}, {"$set": {
+                    "sent": ok, "sent_at": datetime.now().isoformat(), "failed": not ok,
+                }})
         if docs:
             logger.info(f"📤 mini_app_outbox: {len(docs)} پیام پردازش شد")
     except Exception as e:

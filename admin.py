@@ -16,6 +16,12 @@ from telegram import (
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.error import RetryAfter, Forbidden, BadRequest, TimedOut, NetworkError
 from database import db
+from broadcast_service import (
+    create_campaign as create_broadcast_campaign,
+    resolve_recipients as resolve_broadcast_recipients,
+    send_payload as send_broadcast_payload,
+    finish_direct as finish_broadcast_direct,
+)
 from utils import (
     main_keyboard, content_admin_keyboard, safe_send,
     send_audit_log, get_keyboard_for_user, fmt_jalali_dt, now_tehran, now_tehran_str,
@@ -345,13 +351,9 @@ async def _h_notif_default_toggle(query, context, parts, uid):
     ntype = parts[2]
     defaults = await db.get_notif_defaults()
     new_val  = not defaults.get(ntype, True)
-    await db.set_notif_default(ntype, new_val)
-    # FIX (بخش سوم): تغییر پیش‌فرض دیگر فقط روی کاربران جدید اعمال
-    # نمی‌شود — همین لحظه روی همه کاربران (قدیمی/جدید/فعال/غیرفعال)
-    # هم اعمال می‌شود، چون قبلاً هر کاربر یک کپی صریح از تنظیمات
-    # پیش‌فرض زمان ثبت‌نامش را نگه می‌داشت و از تغییرات بعدی بی‌خبر
-    # می‌ماند.
-    affected = await db.apply_notif_default_to_all_users(ntype, new_val)
+    # تک‌منبع semantics با WebAdmin: default + اعمال روی کاربران فعلی.
+    result = await db.update_notif_default(ntype, new_val, apply_existing=True)
+    affected = result['affected_users']
     admin_user = await db.get_user(uid)
     actor_name = admin_user.get('name', 'مدیر ارشد') if admin_user else 'مدیر ارشد'
     actor_role = await db.get_actor_role_label(uid)
@@ -1551,31 +1553,17 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
         h = delay_min // 60
         m = delay_min % 60
         t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
-        send_time = (datetime.now() + timedelta(minutes=delay_min)).strftime('%H:%M')
-
-        scheduler_id = query.from_user.id
-        job_id = f'broadcast_{int(datetime.now().timestamp())}'
-        context.job_queue.run_once(
-            _scheduled_broadcast_job,
-            when=timedelta(minutes=delay_min),
-            data={'msg_data': msg_data, 'target': target, 'admin_id': scheduler_id},
-            name=job_id,
-        )
-        # FIX (حرفه‌ای‌سازی): ذخیره در دیتابیس تا اگر ربات قبل از زمان
-        # ارسال ری‌استارت شد، بشود بعداً بررسی/بازیابی کرد (حداقل برای
-        # گزارش و شفافیت، نه فقط حافظه‌ی موقت جاب‌کیو).
-        try:
-            await db.set_setting(f'scheduled_broadcast_{job_id}', {
-                'msg_data': msg_data, 'target': target,
-                'send_at': (datetime.now() + timedelta(minutes=delay_min)).isoformat(),
-                'created_by': query.from_user.id,
-            })
-        except Exception:
-            logger.exception('could not persist scheduled broadcast record')
-
+        due = datetime.now() + timedelta(minutes=delay_min)
+        send_time = due.strftime('%H:%M')
+        campaign = await create_broadcast_campaign(
+            payload=msg_data, target=target, created_by=query.from_user.id,
+            created_by_name=query.from_user.full_name or "مدیر", source="bot",
+            send_at=due.isoformat(), enqueue=True)
         _broadcast_clear(context)
         await query.edit_message_text(
             f"✅ <b>پیام زماندار ثبت شد!</b>\n\n"
+            f"🆔 کمپین: <code>{campaign['campaign_id']}</code>\n"
+            f"👥 گیرنده: <b>{campaign['recipient_count']}</b>\n"
             f"⏰ ارسال خواهد شد در: <b>{t_str} دیگر</b>\n"
             f"🕐 حدوداً ساعت: <b>{send_time}</b>",
             parse_mode='HTML',
@@ -1602,6 +1590,11 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_comm')]]))
         return
 
+    campaign = await create_broadcast_campaign(
+        payload=msg_data, target=target, created_by=query.from_user.id,
+        created_by_name=query.from_user.full_name or "مدیر", source="bot",
+        enqueue=False)
+
     async def _progress(done, total_n, sent_n, failed_n, blocked_n):
         pct = int(done * 100 / total_n) if total_n else 100
         try:
@@ -1625,6 +1618,7 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
         context.user_data['bc_sending'] = False
 
     other_failed = failed_total - blocked
+    await finish_broadcast_direct(campaign["campaign_id"], sent, failed_total)
     _broadcast_clear(context)
     # FIX طبق سند: ارسال همگانی سراسری = CRITICAL (نه WARNING)،
     # چون اگر اشتباه به همه فرستاده شود باید فوری و برجسته معلوم باشد.
@@ -1721,18 +1715,8 @@ async def _do_broadcast_send(bot, users_list: list, msg_data: dict, progress_cb=
         ok  = False
         for attempt in range(3):
             try:
-                if msg_type == 'text':
-                    await bot.send_message(uid, text_val, parse_mode='HTML')
-                elif msg_type == 'photo':
-                    await bot.send_photo(uid, file_id, caption=caption, parse_mode='HTML')
-                elif msg_type == 'video':
-                    await bot.send_video(uid, file_id, caption=caption, parse_mode='HTML')
-                elif msg_type == 'document':
-                    await bot.send_document(uid, file_id, caption=caption, parse_mode='HTML')
-                elif msg_type == 'voice':
-                    await bot.send_voice(uid, file_id, caption=caption, parse_mode='HTML')
-                elif msg_type == 'audio':
-                    await bot.send_audio(uid, file_id, caption=caption, parse_mode='HTML')
+                # renderer واحد با Web outbox و test-send؛ payload دوم نداریم.
+                await send_broadcast_payload(bot, uid, msg_data)
                 ok = True
                 break
             except RetryAfter as e:
@@ -1780,26 +1764,7 @@ async def _get_target_users(target: str) -> list:
       intake_CODE_g1   → گروه ۱ از ورودی CODE
       intake_CODE_g2   → گروه ۲ از ورودی CODE
     """
-    all_users = await db.all_users(approved_only=True)
-    if target == "all":
-        return all_users
-    elif target == "g1":
-        return [u for u in all_users if str(u.get("group", "")) == "1"]
-    elif target == "g2":
-        return [u for u in all_users if str(u.get("group", "")) == "2"]
-    elif target.startswith("intake_"):
-        rest = target[7:]
-        if rest.endswith("_g1"):
-            code = rest[:-3]
-            return [u for u in all_users
-                    if u.get("intake") == code and str(u.get("group","")) == "1"]
-        elif rest.endswith("_g2"):
-            code = rest[:-3]
-            return [u for u in all_users
-                    if u.get("intake") == code and str(u.get("group","")) == "2"]
-        else:
-            return [u for u in all_users if u.get("intake") == rest]
-    return all_users
+    return await resolve_broadcast_recipients(target, actor_id=ADMIN_ID)
 
 
 def _get_target_label(target: str) -> str:
