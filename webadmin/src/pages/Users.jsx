@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
 import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
+import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
+import SavedViews from '../SavedViews.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -17,23 +19,24 @@ const USER_ACTIONS = {
 
 // 👥 WA2.4/2.8 — فیلتر ذخیره‌شده + bulk گسترده (تغییر ورودی/CSV) + دراور ۳۶۰ کاربر
 export default function Users({ go }) {
-  const [q, setQ] = useState('');
-  const [q2, setQ2] = useState(new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '');
-  const [status, setStatus] = useState(new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '');
-  const [intake, setIntake] = useState('');
+  const initial = readHashQuery();
+  const [q, setQ] = useState(initial.get('q') || '');
+  const [q2, setQ2] = useState(initial.get('q') || '');
+  const [status, setStatus] = useState(initial.get('status') || '');
+  const [intake, setIntake] = useState(initial.get('intake') || '');
   const [intakes, setIntakes] = useState([]);
-  const [group, setGroup] = useState('');
-  const [role, setRole] = useState('');
+  const [group, setGroup] = useState(initial.get('group') || '');
+  const [role, setRole] = useState(initial.get('role') || '');
   const [roles, setRoles] = useState([]);
-  const [activity, setActivity] = useState('');
-  const [accuracyMax, setAccuracyMax] = useState('');
-  const [subDays, setSubDays] = useState('');
-  const [openTicket, setOpenTicket] = useState('');
-  const [sortBy, setSortBy] = useState('registered_at');
-  const [sortDir, setSortDir] = useState('desc');
-  const [advanced, setAdvanced] = useState(false);
-  const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useState(25);
+  const [activity, setActivity] = useState(initial.get('activity') || '');
+  const [accuracyMax, setAccuracyMax] = useState(initial.get('accuracy_max') || '');
+  const [subDays, setSubDays] = useState(initial.get('sub_expiring_days') || '');
+  const [openTicket, setOpenTicket] = useState(initial.get('has_open_ticket') || '');
+  const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'registered_at');
+  const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
+  const [advanced, setAdvanced] = useState([...initial.keys()].some(k => !['q', 'status', 'intake', 'page', 'per_page'].includes(k)));
+  const [page, setPage] = useState(queryNumber(initial, 'page', 1));
+  const [perPage, setPerPage] = useState(queryNumber(initial, 'per_page', 25));
   const [data, setData] = useState({ users: [], total: 0, pages: 1 });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -45,17 +48,21 @@ export default function Users({ go }) {
   const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message
   const [bulkValue, setBulkValue] = useState('');
   const [bulkResult, setBulkResult] = useState(null);
-  const [filters, setFilters] = useState(null);
-  const [saveModal, setSaveModal] = useState(false);
-  const [filterName, setFilterName] = useState('');
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
   const [intOpen, setIntOpen] = useState(false);    // 🌊 WA4 — مدیریت ورودی‌ها
   const [caOpen, setCaOpen] = useState(false);      // 🌊 WA4 — ادمین‌های محتوا
 
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
   useEffect(() => { api.rolesPicker().then(r => setRoles(r.roles || [])).catch(() => setRoles([])); }, []);
-  useEffect(() => { api.savedFilters('users').then(r => setFilters(r.filters || [])).catch(() => setFilters([])); }, []);
   useEffect(() => { const t = setTimeout(() => setQ(q2), 350); return () => clearTimeout(t); }, [q2]);
+  useEffect(() => {
+    writeHashQuery('/users', { q: q2, status, intake, group, role, activity,
+      accuracy_max: accuracyMax, sub_expiring_days: subDays,
+      has_open_ticket: openTicket, sort_by: sortBy !== 'registered_at' ? sortBy : '',
+      sort_dir: sortDir !== 'desc' ? sortDir : '', page: page > 1 ? page : '',
+      per_page: perPage !== 25 ? perPage : '' });
+  }, [q2, status, intake, group, role, activity, accuracyMax, subDays, openTicket, sortBy, sortDir, page, perPage]);
 
   const load = async () => {
     setLoading(true); setErr('');
@@ -93,21 +100,6 @@ export default function Users({ go }) {
     setPage(1);
     toast(`نمای «${f.name}» اعمال شد ⏱`);
   };
-  const saveFilter = async () => {
-    if (!filterName.trim()) return;
-    try {
-      await api.saveFilter({ name: filterName.trim(), scope: 'users',
-        filters: { q, status, intake, group, role, activity, accuracyMax,
-          subDays, openTicket, sortBy, sortDir } });
-      toast('نمای هوشمند ذخیره شد ✅'); setSaveModal(false); setFilterName('');
-      setFilters((await api.savedFilters('users')).filters || []);
-    } catch (e) { toast(errText(e), 'err'); }
-  };
-  const removeFilter = async (id) => {
-    try { await api.delFilter(id); setFilters((await api.savedFilters('users')).filters || []); }
-    catch (e) { toast(errText(e), 'err'); }
-  };
-
   const exportSel = () => {
     const rows = (data.users || []).filter(u => sel.includes(u.id));
     exportCSV(`users-${Date.now()}.csv`, [
@@ -170,6 +162,9 @@ export default function Users({ go }) {
         <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>
         <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>
         <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>
+        <button className="btn sm" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
+          accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
+          sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
         {sel.length > 0 && <>
           <span className="badge acc">{sel.length} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>
@@ -196,7 +191,6 @@ export default function Users({ go }) {
           {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
         </select>
         <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ فیلتر هوشمند</button>
-        <button className="btn sm" title="ذخیره‌ی نمای فعلی" onClick={() => setSaveModal(true)}>💾 ذخیره نما</button>
       </FilterBar>
       {advanced && <FilterBar className="advanced-filter-bar">
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setPage(1); }}>
@@ -230,21 +224,13 @@ export default function Users({ go }) {
         <button className="btn sm" onClick={() => { setGroup(''); setRole(''); setActivity(''); setAccuracyMax(''); setSubDays(''); setOpenTicket(''); setSortBy('registered_at'); setSortDir('desc'); setPage(1); }}>پاک‌کردن پیشرفته</button>
       </FilterBar>}
 
-      {/* ⏱ WA2.4 — فیلترهای ذخیره‌شده */}
-      {filters && filters.length > 0 && (
-        <div className="row" style={{ marginBottom: 12, gap: 6 }}>
-          <span className="muted">⏱ فیلترهای ذخیره:</span>
-          {filters.map(f => (
-            <span key={f.id} className="chip">
-              <a onClick={() => applyFilter(f)}>{f.name}</a>
-              <button className="chip-x" onClick={() => removeFilter(f.id)} aria-label={`حذف فیلتر ذخیره‌شده ${f.name}`}>✕</button>
-            </span>
-          ))}
-        </div>
-      )}
+      <SavedViews scope="users" filters={{ q, status, intake, group, role, activity, accuracyMax,
+        subDays, openTicket, sortBy, sortDir }} columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }}
+        onApply={(flt, item) => { applyFilter({ ...item, filters: flt }); setVisibleColumns(item.columns || []); }} label="نماهای کاربران" />
 
       <DataTable columns={cols} rows={data.users} selectable onSelect={setSel}
-                 loading={loading} onRow={r => setDetail(r)} colToggle
+                 loading={loading} onRow={r => setDetail(r)} colToggle visibleColumns={visibleColumns}
+                 onColumnsChange={setVisibleColumns}
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
       {detail && <UserDrawer row={detail} go={go} onClose={() => { setDetail(null); load(); }} />}
@@ -301,19 +287,6 @@ export default function Users({ go }) {
             <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.value, bulkResult.failed.map(x => x.id))}>↻ تلاش مجدد ناموفق‌ها</button></div>}
         </Modal>
       )}
-      {saveModal && (
-        <Modal title="💾 ذخیره‌ی نمای هوشمند فعلی" onClose={() => setSaveModal(false)}>
-          <p className="muted" style={{ marginBottom: 10 }}>
-            وضعیت فعلی: {q ? `جست‌وجو: «${q}» · ` : ''}{STATUS[status] || 'همه'}{intake ? ` · ورودی: ${intake}` : ''}
-          </p>
-          <input className="inp" style={{ width: '100%' }} placeholder="نام فیلتر (مثلاً: دانشجویان بهمن در انتظار)…"
-                 value={filterName} onChange={e => setFilterName(e.target.value)} />
-          <div className="row" style={{ marginTop: 12 }}>
-            <button className="btn primary" disabled={!filterName.trim()} onClick={saveFilter}>ذخیره</button>
-            <button className="btn" onClick={() => setSaveModal(false)}>انصراف</button>
-          </div>
-        </Modal>
-      )}
     </>
   );
 }
@@ -336,8 +309,8 @@ function UserDrawer({ row, go, onClose }) {
     ['overview', '📊 نمای کلی'], ['identity', '👤 هویت'], ['academic', '📚 یادگیری و نمرات'],
     ['questions', '🧪 سؤال‌ها'], ['exams', '📝 آزمون‌ها'], ['ai', '🤖 هوشیار'],
     ['notifications', '🔔 اعلان‌ها'], ['tickets', '🎫 تیکت‌ها'], ['sub', '💎 اشتراک'],
-    ['prestige', '🏆 افتخار'], ['roles', '🛡 نقش‌ها'], ['audit', '🧭 فعالیت و حسابرسی'],
-    ['actions', '⚙️ اقدامات'],
+    ['prestige', '🏆 افتخار'], ['roles', '🛡 نقش‌ها'], ['activity', '🕓 فعالیت'],
+    ['audit', '🧭 حسابرسی'], ['actions', '⚙️ اقدامات'],
   ];
 
   return (
@@ -513,6 +486,17 @@ function UserDrawer({ row, go, onClose }) {
               <span className="muted">{t.at}</span>
             </div>
           ))}
+        </>
+      )}
+      {d && tab === 'activity' && (
+        <>
+          {!(d.activity || []).length && <Empty icon="🕓" text="فعالیتی ثبت نشده است" />}
+          {(d.activity || []).map(event => <button key={event.id} className="panel panel-pad row" style={{ width: '100%', marginBottom: 6, color: 'inherit', textAlign: 'right' }}
+            onClick={() => event.go && go(event.go)}>
+            <span style={{ fontSize: 18 }}>{event.icon || '•'}</span>
+            <span style={{ flex: 1 }}><b>{event.title}</b>{event.description && <span className="muted" style={{ display: 'block' }}>{event.description}</span>}</span>
+            <span className="muted code">{event.at || '—'}</span><span className="muted">‹</span>
+          </button>)}
         </>
       )}
       {d && tab === 'audit' && (

@@ -5,6 +5,7 @@ import {
   Empty, NoPerm, Modal, Switch,
 } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;
@@ -16,9 +17,11 @@ const TABS = [
 ];
 
 export default function Subscriptions({ route = '' }) {
-  const requested = new URLSearchParams(route.split('?')[1] || '').get('tab');
+  const params = new URLSearchParams(route.split('?')[1] || '');
+  const requested = params.get('tab');
   const [tab, setTab] = useState(TABS.some(([k]) => k === requested) ? requested : 'control');
   useEffect(() => { if (TABS.some(([k]) => k === requested)) setTab(requested); }, [requested]);
+  const changeTab = value => { setTab(value); writeHashQuery('/subscriptions', { tab: value !== 'control' ? value : '' }); };
   const [ov, setOv] = useState(null);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
@@ -48,11 +51,11 @@ export default function Subscriptions({ route = '' }) {
         <Stat icon="💰" label="درآمد ماه" value={money(stats.revenue_month)} tint="var(--purple)" />
       </div>
 
-      <Tabs items={TABS} value={tab} onChange={setTab} label="بخش‌های اشتراک" />
+      <Tabs items={TABS} value={tab} onChange={changeTab} label="بخش‌های اشتراک" />
 
       {tab === 'control' && <ControlPanel ov={ov} refresh={loadOverview} />}
-      {tab === 'payments' && <PaymentsPanel />}
-      {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} />}
+      {tab === 'payments' && <PaymentsPanel initial={{ status: params.get('status') ?? 'pending', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
+      {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}
     </>
   );
@@ -179,15 +182,16 @@ function PlanModal({ plan, onClose, onDone }) {
   </Modal>;
 }
 
-function PaymentsPanel() {
-  const [status, setStatus] = useState('pending');
-  const [q, setQ] = useState('');
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
+function PaymentsPanel({ initial = {} }) {
+  const [status, setStatus] = useState(initial.status ?? 'pending');
+  const [q, setQ] = useState(initial.q || '');
+  const [search, setSearch] = useState(initial.q || '');
+  const [page, setPage] = useState(initial.page || 1);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [rcpt, setRcpt] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 25;
 
   const load = async () => {
@@ -196,6 +200,7 @@ function PaymentsPanel() {
     catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, [status, search, page]);
+  useEffect(() => { writeHashQuery('/subscriptions', { tab: 'payments', status: status !== 'pending' ? status : '', q: search, page: page > 1 ? page : '' }); }, [status, search, page]);
   const decide = (pay, approved, note = '') => setConfirm({ pay, approved, note });
   const doDecision = async () => {
     const c = confirm; setConfirm(null);
@@ -227,8 +232,8 @@ function PaymentsPanel() {
         onKeyDown={e => e.key === 'Enter' && (setSearch(q.trim()), setPage(1))} placeholder="نام، آیدی، پلن یا کد تخفیف…" />
       <button className="btn sm" onClick={() => { setSearch(q.trim()); setPage(1); }}>🔎 جست‌وجو</button>
     </div>
-    <SavedViews scope="payments" filters={{ status, search }} onApply={f => { setStatus(f.status ?? 'pending'); setQ(f.search || ''); setSearch(f.search || ''); setPage(1); }} label="نماهای رسید" />
-    {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.payments || []} rowKey="id" colToggle
+    <SavedViews scope="payments" filters={{ status, search }} columns={visibleColumns} onApply={(f, item) => { setStatus(f.status ?? 'pending'); setQ(f.search || ''); setSearch(f.search || ''); setVisibleColumns(item.columns || []); setPage(1); }} label="نماهای رسید" />
+    {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.payments || []} rowKey="id" colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns}
       onRow={setRcpt} pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} />}
     {rcpt && <ReceiptDrawer pay={rcpt} decide={(ok, note) => decide(rcpt, ok, note)}
       onClose={() => setRcpt(null)} />}
@@ -267,16 +272,17 @@ function ReceiptDrawer({ pay: r, decide, onClose }) {
   </Drawer>;
 }
 
-function SubscribersPanel({ ov, refreshOverview }) {
-  const [status, setStatus] = useState('active');
-  const [q, setQ] = useState('');
-  const [search, setSearch] = useState('');
-  const [page, setPage] = useState(1);
+function SubscribersPanel({ ov, refreshOverview, initial = {} }) {
+  const [status, setStatus] = useState(initial.status || 'active');
+  const [q, setQ] = useState(initial.q || '');
+  const [search, setSearch] = useState(initial.q || '');
+  const [page, setPage] = useState(initial.page || 1);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [selected, setSelected] = useState(null);
   const [grantOpen, setGrantOpen] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 30;
   const load = async () => {
     setErr(''); setData(null);
@@ -284,6 +290,7 @@ function SubscribersPanel({ ov, refreshOverview }) {
     catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, [status, search, page]);
+  useEffect(() => { writeHashQuery('/subscriptions', { tab: 'subscribers', status: status !== 'active' ? status : '', q: search, page: page > 1 ? page : '' }); }, [status, search, page]);
   if (err) return <ErrorState error={err} onRetry={load} />;
   const total = data?.total || 0;
   const cols = [
@@ -306,8 +313,8 @@ function SubscribersPanel({ ov, refreshOverview }) {
       <button className="btn" onClick={() => setGrantOpen(true)}>👤 اعطای دستی</button>
       <button className="btn primary" onClick={() => setBulkOpen(true)}>🎁 اعطای دسته‌جمعی</button>
     </div>
-    <SavedViews scope="subscriptions" filters={{ status, search }} onApply={f => { setStatus(f.status || 'active'); setQ(f.search || ''); setSearch(f.search || ''); setPage(1); }} label="نماهای مشترک‌ها" />
-    {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.subscribers || []} rowKey="user_id" colToggle
+    <SavedViews scope="subscriptions" filters={{ status, search }} columns={visibleColumns} onApply={(f, item) => { setStatus(f.status || 'active'); setQ(f.search || ''); setSearch(f.search || ''); setVisibleColumns(item.columns || []); setPage(1); }} label="نماهای مشترک‌ها" />
+    {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.subscribers || []} rowKey="user_id" colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns}
       onRow={r => setSelected(r.user_id)} pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} />}
     {selected && <SubscriberDrawer uid={selected} plans={ov.plans || []} onClose={() => setSelected(null)}
       onChanged={() => { load(); refreshOverview(); }} />}

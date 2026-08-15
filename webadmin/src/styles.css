@@ -321,7 +321,8 @@ input[type="radio"] { accent-color: var(--c-acc); }
   transition: border-color var(--d-micro);
 }
 .chip:hover { border-color: var(--c-acc); }
-.chip a { color: var(--c-acc); cursor: pointer; }
+.chip a, .chip-link { color: var(--c-acc); cursor: pointer; }
+.chip-link { background: none; border: 0; padding: 0; font: inherit; }
 .chip-x { background: none; border: none; color: var(--c-txt3); font-size: 11px; padding: 0 2px; }
 .chip-x:hover { color: var(--c-bad); }
 
@@ -916,3 +917,5 @@ body.overlay-open { overflow: hidden; }
 .schedule-day.has { background: var(--c-surface); }
 .schedule-day button { border: 0; border-radius: 5px; background: rgba(77,184,255,.09); color: var(--c-txt2); padding: 3px 5px; text-align: right; font-size: var(--fs-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 1400px) { .schedule-month-grid { overflow-x: auto; grid-template-columns: repeat(7, minmax(125px, 1fr)); } }
+.attn-item.critical { border-color: color-mix(in srgb, var(--c-bad) 50%, var(--c-line)); }
+.attn-item.warning { border-color: color-mix(in srgb, var(--c-warn) 42%, var(--c-line)); }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
@@ -35,25 +36,31 @@ function parseImportText(text) {
 
 // 🧪 صف بازبینی سوالات (scope-aware) + ⚡ WA2.4 تأیید/رد گروهی
 // 🌊 موج Q-Editor — کشوی جزئیات کامل + ویرایش پیش از تأیید (PATCH واقعی) + فیلترها
-export default function Questions({ route = '' }) {
+export default function Questions({ route = '', go }) {
+  const initial = readHashQuery();
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [intakes, setIntakes] = useState([]);
   const [scopeKind, setScopeKind] = useState('global');
-  const [intake, setIntake] = useState('');
+  const [intake, setIntake] = useState(initial.get('intake') || '');
   const [sel, setSel] = useState([]);
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const [confirm, setConfirm] = useState(null);
+  const [bulkResult, setBulkResult] = useState(null);
   const [detail, setDetail] = useState(null);        // ردیف باز در کشو
   const wantsCreate = new URLSearchParams(route.split('?')[1] || '').get('create') === '1';
   const [createOpen, setCreateOpen] = useState(wantsCreate);
   const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
-  const [q, setQ] = useState('');
-  const [query, setQuery] = useState('');
-  const [status, setStatus] = useState('pending');
-  const [fdiff, setFdiff] = useState('');
-  const [fsrc, setFsrc] = useState('');
-  const [page, setPage] = useState(1);
+  const [q, setQ] = useState(initial.get('q') || '');
+  const [query, setQuery] = useState(initial.get('q') || '');
+  const [status, setStatus] = useState(initial.get('status') || 'pending');
+  const [fdiff, setFdiff] = useState(initial.get('difficulty') || '');
+  const [fsrc, setFsrc] = useState(initial.get('source') || '');
+  const [author, setAuthor] = useState(initial.get('author') || '');
+  const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'created_at');
+  const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
+  const [page, setPage] = useState(queryNumber(initial, 'page', 1));
   const [total, setTotal] = useState(0);
   const LIMIT = 30;
   useEffect(() => { if (wantsCreate) setCreateOpen(true); }, [wantsCreate]);
@@ -62,8 +69,8 @@ export default function Questions({ route = '' }) {
     setErr('');
     try {
       const r = await api.questions({
-        status, intake, q, difficulty: fdiff, source: fsrc,
-        skip: (page - 1) * LIMIT, limit: LIMIT,
+        status, intake, q, difficulty: fdiff, source: fsrc, author,
+        sort_by: sortBy, sort_dir: sortDir, skip: (page - 1) * LIMIT, limit: LIMIT,
       });
       setRows(r.questions || []); setTotal(Number(r.total || 0));
     } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
@@ -75,7 +82,12 @@ export default function Questions({ route = '' }) {
     }).catch(e => { if (e.status === 403) setPermErr(true); else setErr(errText(e)); });
   }, []);
   useEffect(() => { const t = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [query]);
-  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, page]);
+  useEffect(() => { writeHashQuery('/questions', { status: status !== 'pending' ? status : '', intake, q: query,
+    difficulty: fdiff, source: fsrc, author,
+    sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '',
+    page: page > 1 ? page : '', create: createOpen ? 1 : '' });
+  }, [status, intake, query, fdiff, fsrc, author, sortBy, sortDir, page, createOpen]);
+  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, author, sortBy, sortDir, page]);
 
   const act = async (qid, kind) => {
     try {
@@ -86,11 +98,12 @@ export default function Questions({ route = '' }) {
     } catch (e) { toast(errText(e), 'err'); }
   };
 
-  const bulk = async (action) => {
-    if (!sel.length) return;
+  const bulk = async (action, ids = sel) => {
+    if (!ids.length) return;
     try {
-      const r = await api.questionsBulk(action, sel);
-      toast(`${fa(r.done)} سؤال ${action === 'approve' ? 'تأیید' : 'رد'} شد`);
+      const r = await api.questionsBulk(action, ids);
+      setBulkResult({ ...r, action });
+      toast(`${fa(r.done)} موفق · ${fa(r.skipped?.length || 0)} ردشده · ${fa(r.failed?.length || 0)} ناموفق`, r.failed?.length ? 'err' : 'ok');
       setSel([]); load();
     } catch (e) { toast(errText(e), 'err'); }
   };
@@ -108,14 +121,14 @@ export default function Questions({ route = '' }) {
     { k: 'topic', label: 'مبحث' },
     { k: 'difficulty', label: 'سختی', sortable: true, sortVal: r => r.difficulty || '',
       render: r => { const [l, kk] = DIFF[r.difficulty] || [r.difficulty || '—', '']; return <B kind={kk}>{l}</B>; } },
-    { k: 'creator', label: 'طراح', render: r => (
-      <div style={{ fontSize: 12 }}>{r.creator_name || '—'}
-        <div className="muted">{SRC[r.source] || r.source || ''}</div></div>) },
+    { k: 'creator', label: 'طراح', stop: true, render: r => (
+      <button className="btn sm" disabled={!r.creator_id} onClick={() => r.creator_id && go?.(`/users?q=${r.creator_id}`)}>
+        {r.creator_name || '—'}<span className="muted" style={{ display: 'block' }}>{SRC[r.source] || r.source || ''}</span></button>) },
     { k: 'intake', label: 'ورودی', render: r => r.intake || <B>سراسری</B> },
     { k: 'approved', label: 'وضعیت', render: r => <B kind={r.approved ? 'ok' : 'warn'}>{r.approved ? 'تأییدشده' : 'در انتظار'}</B> },
-    { k: 'attempts', label: 'تلاش/دقت', render: r => <span>{fa(r.attempts)} · <B kind={r.accuracy >= 70 ? 'ok' : r.attempts ? 'warn' : ''}>{fa(r.accuracy)}٪</B></span> },
+    { k: 'attempts', label: 'تلاش/دقت', sortable: true, render: r => <span>{fa(r.attempts)} · <B kind={r.accuracy >= 70 ? 'ok' : r.attempts ? 'warn' : ''}>{fa(r.accuracy)}٪</B></span> },
     { k: 'reports', label: 'گزارش', render: r => r.reports ? <B kind="bad">{fa(r.reports)}</B> : '—' },
-    { k: 'created_at', label: 'ایجاد', render: r => <span className="code muted">{r.created_at || '—'}</span> },
+    { k: 'created_at', label: 'ایجاد', sortable: true, render: r => <span className="code muted">{r.created_at || '—'}</span> },
     { k: 'ops', label: '', stop: true, render: r => {
       const id = r.id || r._id;
       return (
@@ -132,6 +145,7 @@ export default function Questions({ route = '' }) {
       <PageHeader title="بازبینی سؤال‌ها" description="بازبینی، ویرایش، تأیید و رد تکی یا گروهی با حفظ محدوده ورودی" actions={<>
         <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
         <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
+        <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV همین فیلترها</button>
         {status === 'pending' && sel.length > 0 && <>
           <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
@@ -157,17 +171,26 @@ export default function Questions({ route = '' }) {
           <option value="">همه‌ی منابع</option>
           <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
+        <input className="inp" style={{ width: 150 }} placeholder="طراح یا ID…" value={author} onChange={e => { setAuthor(e.target.value); setPage(1); }} />
         <B kind="acc">{fa(total)} نتیجه</B>
       </FilterBar>
+      <div className="muted" style={{ margin: '-4px 0 10px' }}>رد سؤال در domain فعلی به‌معنای حذف پیشنهاد و اطلاع به طراح است؛ آرشیو «ردشده»‌ی مستقلی در پایگاه داده وجود ندارد.</div>
 
-      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc }} onApply={f => {
+      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc, author, sortBy, sortDir }}
+        columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }} onApply={(f, item) => {
         setStatus(f.status || 'pending'); setIntake(f.intake || ''); setQuery(f.q || '');
-        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setPage(1);
+        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setAuthor(f.author || '');
+        setSortBy(f.sortBy || item.sort?.key || 'created_at'); setSortDir(f.sortDir || item.sort?.dir || 'desc'); setVisibleColumns(item.columns || []); setPage(1);
       }} />
 
       {!rows ? <Loading /> : (
         <DataTable columns={cols} rows={vis} rowKey="id"
           selectable={status === 'pending'} onSelect={setSel} onRow={setDetail} colToggle
+          visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns}
+          sortState={{ k: sortBy === 'attempt_count' ? 'attempts' : sortBy, dir: sortDir }} onSort={next => {
+            setSortBy(next?.k === 'attempts' ? 'attempt_count' : next?.k || 'created_at');
+            setSortDir(next?.dir || 'desc'); setPage(1);
+          }}
           pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}
           empty={<Empty icon="🎉" text={status === 'pending' ? 'صف بازبینی خالی است' : 'سؤالی با این فیلترها نیست'} />} />
       )}
@@ -185,6 +208,12 @@ export default function Questions({ route = '' }) {
                  onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
                  onNo={() => setConfirm(null)} />
       )}
+      {bulkResult && <Modal title="گزارش عملیات گروهی سؤال" onClose={() => setBulkResult(null)}>
+        <div className="row"><B kind="ok">موفق: {fa(bulkResult.succeeded?.length || 0)}</B><B>ردشده: {fa(bulkResult.skipped?.length || 0)}</B><B kind="bad">ناموفق: {fa(bulkResult.failed?.length || 0)}</B></div>
+        {[...(bulkResult.skipped || []).map(x => ({ ...x, message: x.reason })), ...(bulkResult.failed || []).map(x => ({ ...x, message: x.error }))].slice(0, 30)
+          .map((x, i) => <div className="row" key={`${x.id}-${i}`}><span className="code">{x.id}</span><span className="muted">{x.message}</span></div>)}
+        {!!bulkResult.failed?.length && <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.failed.map(x => x.id))}>↻ تلاش مجدد ناموفق‌ها</button>}
+      </Modal>}
 
       {createOpen && <QuestionCreateModal intake={intake} onClose={(ok) => {
         setCreateOpen(false); if (ok) load();

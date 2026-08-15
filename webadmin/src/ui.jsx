@@ -166,10 +166,14 @@ export function Switch({ on, onChange, disabled, label }) {
 
 // ── DataTable v3 ──────────────────────────────────────────────────
 export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
-  pager, loading, onRow, empty, colToggle, caption = 'جدول داده‌ها', density = 'compact' }) {
+  pager, loading, onRow, empty, colToggle, caption = 'جدول داده‌ها', density = 'compact',
+  visibleColumns, onColumnsChange, sortState, onSort }) {
   const [sel, setSel] = useState(new Set());
-  const [sort, setSort] = useState(null);
-  const [hidden, setHidden] = useState(new Set());
+  const [localSort, setLocalSort] = useState(null);
+  const [densityMode, setDensityMode] = useState(() => localStorage.getItem('wa_table_density') || density);
+  const [hidden, setHidden] = useState(() => new Set(visibleColumns?.length
+    ? columns.filter(c => !visibleColumns.includes(c.k)).map(c => c.k) : []));
+  const sort = sortState === undefined ? localSort : sortState;
   const [colMenu, setColMenu] = useState(false);
   const keyOf = (r, i) => typeof rowKey === 'function' ? rowKey(r, i) : r?.[rowKey];
   const rowList = rows || [];
@@ -179,6 +183,10 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
     setSel(new Set());
     onSelect && onSelect([]);
   }, [rowSignature, pager?.page]);
+  useEffect(() => {
+    if (Array.isArray(visibleColumns)) setHidden(new Set(visibleColumns.length
+      ? columns.filter(c => !visibleColumns.includes(c.k)).map(c => c.k) : []));
+  }, [visibleColumns?.join('|'), columns.map(c => c.k).join('|')]);
 
   const toggle = (id) => {
     const next = new Set(sel); next.has(id) ? next.delete(id) : next.add(id);
@@ -192,7 +200,7 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
   };
   const visCols = columns.filter(c => !hidden.has(c.k));
   const sorted = useMemo(() => {
-    if (!sort) return rowList;
+    if (!sort || onSort) return rowList;
     const col = columns.find(c => c.k === sort.k);
     if (!col?.sortable) return rowList;
     const val = r => col.sortVal ? col.sortVal(r) : r[col.k];
@@ -202,27 +210,35 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
         ? na - nb : String(va ?? '').localeCompare(String(vb ?? ''), 'fa');
       return sort.dir === 'asc' ? cmp : -cmp;
     });
-  }, [rows, sort, columns]);
+  }, [rows, sort, columns, onSort]);
   const clickSort = c => {
     if (!c.sortable) return;
-    setSort(s => !s || s.k !== c.k ? { k: c.k, dir: 'asc' }
-      : s.dir === 'asc' ? { k: c.k, dir: 'desc' } : null);
+    const next = !sort || sort.k !== c.k ? { k: c.k, dir: 'asc' }
+      : sort.dir === 'asc' ? { k: c.k, dir: 'desc' } : null;
+    if (onSort) onSort(next); else setLocalSort(next);
   };
+  const toggleColumn = key => setHidden(h => {
+    const next = new Set(h); next.has(key) ? next.delete(key) : next.add(key);
+    if (next.size >= columns.length) return h;
+    onColumnsChange?.(columns.filter(c => !next.has(c.k)).map(c => c.k));
+    return next;
+  });
 
   return <div className="panel tbl-wrap" aria-busy={!!loading}>
     {colToggle && <div className="tbl-tools">
+      <button className="btn sm" onClick={() => setDensityMode(current => {
+        const next = current === 'compact' ? 'comfortable' : 'compact'; localStorage.setItem('wa_table_density', next); return next;
+      })} aria-label="تغییر تراکم جدول">{densityMode === 'compact' ? '↕ فشرده' : '↕ راحت'}</button>
       <button className="btn sm" onClick={() => setColMenu(v => !v)} aria-expanded={colMenu}
         aria-haspopup="menu" aria-label="انتخاب ستون‌های جدول">☰ ستون‌ها</button>
       {colMenu && <div className="colmenu" role="menu">
         {columns.map(c => <label key={c.k} className="colmenu-item">
-          <input type="checkbox" checked={!hidden.has(c.k)} onChange={() => setHidden(h => {
-            const next = new Set(h); next.has(c.k) ? next.delete(c.k) : next.add(c.k); return next;
-          })} /><span>{c.label || c.k}</span>
+          <input type="checkbox" checked={!hidden.has(c.k)} onChange={() => toggleColumn(c.k)} /><span>{c.label || c.k}</span>
         </label>)}
       </div>}
     </div>}
     <div className="tbl-scroll">
-      <table className={`tbl ${density}`}>
+      <table className={`tbl ${densityMode}`}>
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead><tr>
           {selectable && <th className="tbl-check"><input type="checkbox" checked={allOn} onChange={toggleAll} aria-label="انتخاب همه ردیف‌های صفحه" /></th>}

@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, B, PageHeader, ScopeBadge, Timeline, toast, Confirm, Modal, Empty, NoPerm } from '../ui.jsx';
+import { writeHashQuery } from '../urlState.js';
+import SavedViews from '../SavedViews.jsx';
 
 const TERM_ICON = '📚';
 const KIND = {
@@ -28,17 +30,19 @@ const CCONTENT_TABS = [
 ];
 
 export default function Content({ route = '' }) {
-  const requested = new URLSearchParams(route.split('?')[1] || '').get('tab');
+  const params = new URLSearchParams(route.split('?')[1] || '');
+  const requested = params.get('tab');
   const [tab, setTab] = useState(CCONTENT_TABS.some(([k]) => k === requested) ? requested : 'bs');
   useEffect(() => { if (CCONTENT_TABS.some(([k]) => k === requested)) setTab(requested); }, [requested]);
+  const changeTab = value => { setTab(value); writeHashQuery('/content', { tab: value !== 'bs' ? value : '' }); };
   return (
     <>
       <div className="tabs" style={{ marginBottom: 14 }} role="tablist" aria-label="بخش‌های مدیریت محتوا">
         {CCONTENT_TABS.map(([k, label]) => (
-          <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{label}</button>
+          <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => changeTab(k)}>{label}</button>
         ))}
       </div>
-      {tab === 'bs' && <BsTab />}
+      {tab === 'bs' && <BsTab initial={{ intake: params.get('intake') || '', q: params.get('q') || '', lesson: params.get('lesson') || null, session: params.get('session') || null }} />}
       {tab === 'refs' && <RefsTab />}
       {tab === 'schedule' && <ScheduleTab />}
       {tab === 'qbank' && <QbankTab />}
@@ -49,18 +53,18 @@ export default function Content({ route = '' }) {
 }
 
 /* ═══ تب علوم پایه — Split View سه‌ستونه ═══ */
-function BsTab() {
-  const [intake, setIntake] = useState('');
+function BsTab({ initial = {} }) {
+  const [intake, setIntake] = useState(initial.intake || '');
   const [scopeKind, setScopeKind] = useState('global');
   const [tree, setTree] = useState(null);
   const [intakes, setIntakes] = useState([]);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [openTerms, setOpenTerms] = useState({});
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(initial.q || '');
   const [sel, setSel] = useState([]);            // session ids برای عملیات گروهی
-  const [lesId, setLesId] = useState(null);      // درس منتخب (ستون دوم)
-  const [sesId, setSesId] = useState(null);      // جلسه‌ی منتخب (بازرس)
+  const [lesId, setLesId] = useState(initial.lesson);      // درس منتخب (ستون دوم)
+  const [sesId, setSesId] = useState(initial.session);      // جلسه‌ی منتخب (بازرس)
   const [editLes, setEditLes] = useState(null);  // lesson
   const [editSes, setEditSes] = useState(null);  // {lesson_id, s}
   const [confirm, setConfirm] = useState(null);
@@ -68,6 +72,8 @@ function BsTab() {
   const [quick, setQuick] = useState(false);
   const [addLes, setAddLes] = useState(null);    // term برای درس جدید
   const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
+  const firstLoad = useRef(true);
+  const preserveSelection = useRef(false);
 
   const load = async () => {
     setErr('');
@@ -81,7 +87,12 @@ function BsTab() {
       else setErr(errText(e));
     }
   };
-  useEffect(() => { setTree(null); setSel([]); setLesId(null); setSesId(null); load(); }, [intake]);
+  useEffect(() => {
+    setTree(null); setSel([]);
+    if (!firstLoad.current && !preserveSelection.current) { setLesId(null); setSesId(null); }
+    firstLoad.current = false; preserveSelection.current = false; load();
+  }, [intake]);
+  useEffect(() => { writeHashQuery('/content', { intake, q, lesson: lesId || '', session: sesId || '' }); }, [intake, q, lesId, sesId]);
 
   // انتخاب‌ها به‌صورت مشتق از درخت — بعد از هر reload همیشه تازه‌اند
   const selLesson = useMemo(() => {
@@ -147,6 +158,9 @@ function BsTab() {
       <PageHeader title="مرکز فرماندهی محتوا" description="درس‌ها ← جلسات ← بازرس فایل · نمای مؤثر سراسری و Override ورودی"
         actions={<><B>{fa(totals.lessons)} درس</B><B kind="acc">{fa(totals.sessions)} جلسه</B>
           <B kind="ok">{fa(totals.files)} فایل</B><button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button></>} />
+      <SavedViews scope="content" filters={{ intake, q, lesson: lesId || '', session: sesId || '' }} onApply={f => {
+        preserveSelection.current = (f.intake || '') !== intake; setIntake(f.intake || ''); setQ(f.q || ''); setLesId(f.lesson || null); setSesId(f.session || null);
+      }} label="نماهای محتوایی" />
 
       {!tree ? <Loading rows={5} /> : (
         <div className="ct3-grid">

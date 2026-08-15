@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -36,25 +37,30 @@ const valText = (v) => {
   return String(v) === '' ? '(خالی)' : String(v);
 };
 
-export default function Audit() {
-  const [filters, setFilters] = useState({ category: '', min_severity: '', q: '', actor: '', actor_role: '', module: '', action: '', target_type: '', target: '', date_from: '', date_to: '', correlation_id: '' });
-  const [q2, setQ2] = useState('');
-  const [advanced, setAdvanced] = useState(false);
-  const [skip, setSkip] = useState(0);
+export default function Audit({ go }) {
+  const initial = readHashQuery();
+  const initialFilters = Object.fromEntries(['category', 'min_severity', 'q', 'actor', 'actor_role', 'module', 'action', 'target_type', 'target', 'date_from', 'date_to', 'correlation_id'].map(k => [k, initial.get(k) || '']));
+  const [filters, setFilters] = useState(initialFilters);
+  const [q2, setQ2] = useState(initialFilters.q);
+  const [advanced, setAdvanced] = useState(['actor', 'actor_role', 'module', 'action', 'target_type', 'target', 'date_from', 'date_to', 'correlation_id'].some(k => initialFilters[k]));
+  const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
+  const [skip, setSkip] = useState((queryNumber(initial, 'page', 1) - 1) * 25);
   const [rows, setRows] = useState(null);
   const [counters, setCounters] = useState(null);
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 25;
 
   useEffect(() => { const t = setTimeout(() => setFilters(f => ({ ...f, q: q2 })), 350); return () => clearTimeout(t); }, [q2]);
+  useEffect(() => { writeHashQuery('/audit', { ...filters, q: q2, sort_dir: sortDir !== 'desc' ? sortDir : '', page: skip ? skip / 25 + 1 : '' }); }, [filters, q2, sortDir, skip]);
 
   const load = async () => {
     setErr('');
     try {
-      const r = await api.auditLogs({ ...filters, skip, limit: LIMIT });
+      const r = await api.auditLogs({ ...filters, sort_dir: sortDir, skip, limit: LIMIT });
       setRows(r.logs || r.items || []);
       setCounters(r.counters || null);
       setTotal(r.total || 0);
@@ -63,33 +69,38 @@ export default function Audit() {
       else setErr(errText(e));
     }
   };
-  useEffect(() => { load(); }, [filters, skip]);
+  useEffect(() => { load(); }, [filters, sortDir, skip]);
 
   if (denied) return <NoPerm text="مشاهده‌ی لاگ حسابرسی نیازمند مجوز audit.view است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const setSev = (s) => { setFilters(f => ({ ...f, min_severity: f.min_severity === s ? '' : s })); setSkip(0); };
+  const objectRoute = (type, id) => ({ user: `/users?q=${id}`, ticket: `/tickets?q=${id}`,
+    payment: '/subscriptions?tab=payments', subscription: '/subscriptions?tab=subscribers',
+    question: `/questions?q=${id}`, exam: '/exams' }[type]);
 
   const cols = [
-    { k: 'at', label: 'زمان', sortable: true, sortVal: r => atOf(r),
+    { k: 'at', label: 'زمان', sortable: true,
       render: r => <span className="muted">{atOf(r).replace('T', ' ').slice(5, 16)}</span> },
-    { k: 'actor', label: 'عامل', render: r => (
-      <div>{actorName(r)}<div className="muted">{actorRole(r)}</div></div>) },
+    { k: 'actor', label: 'عامل', stop: true, render: r => (
+      <button className="btn sm" disabled={!actorId(r)} onClick={() => actorId(r) && go?.(`/users?q=${actorId(r)}`)}>{actorName(r)}<span className="muted" style={{ display: 'block' }}>{actorRole(r)}</span></button>) },
     { k: 'action', label: 'عمل', render: r => <b style={{ color: 'var(--txt)' }}>{r.action}</b> },
     { k: 'module', label: 'ماژول', render: r => <B>{MOD_FA[r.module] || r.module || '—'}</B> },
-    { k: 'target', label: 'هدف', render: r => <span className="muted">{targetLabel(r) || targetId(r) || '—'}</span> },
+    { k: 'target', label: 'هدف', stop: true, render: r => objectRoute(targetType(r), targetId(r))
+      ? <button className="btn sm" onClick={() => go?.(objectRoute(targetType(r), targetId(r)))}>{targetLabel(r) || targetId(r) || '—'}</button>
+      : <span className="muted">{targetLabel(r) || targetId(r) || '—'}</span> },
     { k: 'diff', label: 'Δ', width: 46, render: r =>
       (r.changes || []).length > 0
         ? <B kind="acc" title={`${fa(r.changes.length)} تغییر میدانی`}>Δ {fa(r.changes.length)}</B>
         : <span className="muted">·</span> },
-    { k: 'severity', label: 'شدت', sortable: true, sortVal: r => SEV_RANK[r.severity] ?? 0,
+    { k: 'severity', label: 'شدت',
       render: r => <B kind={SEV[r.severity] || ''}>{SEV_ICON[r.severity] || ''} {r.severity || 'INFO'}</B> },
   ];
 
   return (
     <>
       <PageHeader title="لاگ حسابرسی" description="ردیابی اعمال حساس با عامل، هدف، شدت و تغییرات قبل/بعد"
-        actions={rows ? <B>{fa(total)} رویداد</B> : null} />
+        actions={<>{rows && <B>{fa(total)} رویداد</B>}<button className="btn sm" onClick={() => api.exportAuditCsv({ ...filters, sort_dir: sortDir })}>📥 CSV همین فیلترها</button></>} />
 
       {/* شمارنده‌ی سطوح (کلیک ⇒ فیلتر سریع) */}
       {counters && (
@@ -138,13 +149,14 @@ export default function Audit() {
         <button className="btn sm" onClick={() => { setFilters(f => ({ ...f, actor: '', actor_role: '', module: '', action: '', target_type: '', target: '', date_from: '', date_to: '', correlation_id: '' })); setSkip(0); }}>پاک‌کردن پیشرفته</button>
       </FilterBar>}
 
-      <SavedViews scope="audit" filters={filters} onApply={f => { setFilters(x => ({ ...x, ...f })); setQ2(f.q || ''); setAdvanced(!!(f.actor || f.actor_role || f.module || f.action || f.target || f.date_from || f.date_to || f.correlation_id)); setSkip(0); }} label="تحقیق‌های ذخیره‌شده" />
+      <SavedViews scope="audit" filters={{ ...filters, sortDir }} columns={visibleColumns} sort={{ key: 'timestamp', dir: sortDir }} onApply={(f, item) => { setFilters(x => ({ ...x, ...f, sortDir: undefined })); setQ2(f.q || ''); setSortDir(f.sortDir || item.sort?.dir || 'desc'); setVisibleColumns(item.columns || []); setAdvanced(!!(f.actor || f.actor_role || f.module || f.action || f.target || f.date_from || f.date_to || f.correlation_id)); setSkip(0); }} label="تحقیق‌های ذخیره‌شده" />
 
       {!rows ? <Loading /> : rows.length === 0 ? (
         <Empty icon="🧾" text="رویدادی با این فیلترها نیست" />
       ) : (
         <DataTable columns={cols} rows={rows} rowKey={(r) => r.id || r._id}
-                   onRow={setDetail} colToggle
+          onRow={setDetail} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns}
+          sortState={{ k: 'at', dir: sortDir }} onSort={next => { setSortDir(next?.dir || 'desc'); setSkip(0); }}
                    pager={{ page: skip / LIMIT + 1, pages: Math.max(1, Math.ceil(total / LIMIT)),
                             total, onPage: p => setSkip((p - 1) * LIMIT) }} />
       )}
@@ -170,6 +182,11 @@ export default function Audit() {
               <span className="code" style={{ fontSize: 11 }}>{targetId(detail) || '—'}</span></div>
             <div className="ct3-kv"><span className="muted">Correlation ID</span>
               <span className="code" style={{ fontSize: 11 }}>{detail.correlation_id || '—'}</span></div>
+          </div>
+          <div className="row" style={{ marginTop: 8 }}>
+            {actorId(detail) && <button className="btn sm" onClick={() => go?.(`/users?q=${actorId(detail)}`)}>👤 پرونده عامل</button>}
+            {objectRoute(targetType(detail), targetId(detail)) && <button className="btn sm primary" onClick={() => go?.(objectRoute(targetType(detail), targetId(detail)))}>بازکردن هدف ‹</button>}
+            {detail.correlation_id && <button className="btn sm" onClick={() => { setFilters(f => ({ ...f, correlation_id: detail.correlation_id })); setAdvanced(true); setDetail(null); setSkip(0); }}>🧬 زنجیره Correlation</button>}
           </div>
 
           {/* ── Diff قبل/بعد ── */}

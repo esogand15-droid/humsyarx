@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, Empty, B, FilterBar, PageHeader, toast, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, Empty, B, FilterBar, PageHeader, toast, NoPerm, Modal, Confirm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 // 🎫🌊 W-Admin — Support Command Center سه‌ستونه: صف | گفت‌وگو | کانتکست کاربر
 // (اصلاح باگ: فیلد پاسخ = message — قبلاً text می‌رفت و 422 می‌شد؛ حباب support راست‌چین شد)
 export default function Tickets({ go, me }) {
-  const [status, setStatus] = useState('open');
+  const initial = readHashQuery();
+  const [status, setStatus] = useState(initial.get('status') || 'open');
   const [list, setList] = useState(null);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
@@ -16,12 +18,20 @@ export default function Tickets({ go, me }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState([]);
-  const [q, setQ] = useState('');
-  const [search, setSearch] = useState('');
-  const [intake, setIntake] = useState('');
-  const [priority, setPriority] = useState('');
-  const [assignee, setAssignee] = useState('');
-  const [page, setPage] = useState(1);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [bulkConfirm, setBulkConfirm] = useState(null);
+  const [q, setQ] = useState(initial.get('q') || '');
+  const [search, setSearch] = useState(initial.get('q') || '');
+  const [intake, setIntake] = useState(initial.get('intake') || '');
+  const [priority, setPriority] = useState(initial.get('priority') || '');
+  const [assignee, setAssignee] = useState(initial.get('assignee') || '');
+  const [unanswered, setUnanswered] = useState(initial.get('unanswered') || '');
+  const [dateFrom, setDateFrom] = useState(initial.get('date_from') || '');
+  const [dateTo, setDateTo] = useState(initial.get('date_to') || '');
+  const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'created_at');
+  const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
+  const [advanced, setAdvanced] = useState(!!(initial.get('unanswered') || initial.get('date_from') || initial.get('date_to') || initial.get('sort_by')));
+  const [page, setPage] = useState(queryNumber(initial, 'page', 1));
   const [options, setOptions] = useState({ assignees: [], intakes: [] });
   const [analytics, setAnalytics] = useState(null);
   const [note, setNote] = useState('');
@@ -30,22 +40,30 @@ export default function Tickets({ go, me }) {
   const canManage = !!me?.is_owner || (me?.perms || []).includes('tickets.manage');
   const canReply = !!me?.is_owner || (me?.perms || []).includes('tickets.reply');
 
-  const bulk = async (action) => {
-    if (!sel.length) return;
+  const bulk = async (action, ids = sel) => {
+    if (!ids.length) return;
     try {
-      const r = await api.ticketsBulk(action, sel);
-      toast(`${r.done} تیکت ${action === 'close' ? 'بسته' : 'بازگشایی'} شد`);
+      const r = await api.ticketsBulk(action, ids);
+      setBulkResult({ ...r, action });
+      toast(`${r.done} موفق · ${r.skipped?.length || 0} ردشده · ${r.failed?.length || 0} ناموفق`, r.failed?.length ? 'err' : 'ok');
       setSel([]); load();
     } catch (e) { toast(errText(e), 'err'); }
   };
 
   const load = async () => {
     setErr('');
-    try { setList(await api.tickets({ status, q, intake, priority, assignee_id: assignee, page, limit: LIMIT })); }
+    try { setList(await api.tickets({ status, q, intake, priority, assignee_id: assignee,
+      unanswered, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir,
+      page, limit: LIMIT })); }
     catch (e) { if (e.status === 403) setDenied(true); else setErr(errText(e)); }
   };
   useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [search]);
-  useEffect(() => { load(); setSel([]); }, [status, q, intake, priority, assignee, page]);
+  useEffect(() => { writeHashQuery('/tickets', { status: status !== 'open' ? status : '', q: search,
+    intake, priority, assignee, unanswered, date_from: dateFrom, date_to: dateTo,
+    sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '',
+    page: page > 1 ? page : '' });
+  }, [status, search, intake, priority, assignee, unanswered, dateFrom, dateTo, sortBy, sortDir, page]);
+  useEffect(() => { load(); setSel([]); }, [status, q, intake, priority, assignee, unanswered, dateFrom, dateTo, sortBy, sortDir, page]);
   useEffect(() => {
     api.ticketAssignees().then(setOptions).catch(() => {});
     if (canManage) api.ticketAnalytics().then(setAnalytics).catch(() => {});
@@ -89,9 +107,11 @@ export default function Tickets({ go, me }) {
   return (
     <>
       <PageHeader title="کنسول پشتیبانی" description="صف، گفت‌وگو و کانتکست کاربر بدون ترک صفحه"
-        actions={canManage && sel.length > 0 ? <><B kind="acc">{sel.length} انتخاب‌شده</B>
-          <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
-          <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button></> : null} />
+        actions={<><button className="btn sm" onClick={() => api.exportTicketsCsv({ status, q: search, intake, priority,
+          assignee_id: assignee, unanswered, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همین صف</button>
+          {canManage && sel.length > 0 && <><B kind="acc">{sel.length} انتخاب‌شده</B>
+          <button className="btn sm ok" onClick={() => setBulkConfirm('close')}>✅ بستن گروهی</button>
+          <button className="btn sm" onClick={() => setBulkConfirm('reopen')}>🔓 بازگشایی</button></>}</>} />
 
       {analytics && <div className="row" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
         <B kind="warn">باز: {Number(analytics.status?.open || 0).toLocaleString('fa')}</B>
@@ -117,11 +137,23 @@ export default function Tickets({ go, me }) {
         {canManage && <select className="inp" value={assignee} onChange={e => { setAssignee(e.target.value); setPage(1); }}>
           <option value="">همه مسئولان</option>{(options.assignees || []).map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
         </select>}
+        <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ پیشرفته</button>
       </FilterBar>
+      {advanced && <FilterBar className="advanced-filter-bar">
+        <label className="row"><input type="checkbox" checked={unanswered === 'true'} onChange={e => { setUnanswered(e.target.checked ? 'true' : ''); setPage(1); }} />بدون پاسخ پشتیبان</label>
+        <label className="row"><span className="muted">از</span><input className="inp" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1); }} /></label>
+        <label className="row"><span className="muted">تا</span><input className="inp" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1); }} /></label>
+        <select className="inp" value={sortBy} onChange={e => setSortBy(e.target.value)}><option value="created_at">مرتب‌سازی ثبت</option><option value="last_reply_at">آخرین پاسخ</option></select>
+        <select className="inp" value={sortDir} onChange={e => setSortDir(e.target.value)}><option value="desc">نزولی</option><option value="asc">صعودی</option></select>
+        <button className="btn sm" onClick={() => { setUnanswered(''); setDateFrom(''); setDateTo(''); setSortBy('created_at'); setSortDir('desc'); setPage(1); }}>پاک‌کردن</button>
+      </FilterBar>}
 
-      <SavedViews scope="tickets" filters={{ status, q: search, intake, priority, assignee }} onApply={f => {
+      <SavedViews scope="tickets" filters={{ status, q: search, intake, priority, assignee, unanswered,
+        date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir }} sort={{ key: sortBy, dir: sortDir }} onApply={f => {
         setStatus(f.status || 'open'); setSearch(f.q || ''); setIntake(f.intake || '');
-        setPriority(f.priority || ''); setAssignee(f.assignee || ''); setPage(1);
+        setPriority(f.priority || ''); setAssignee(f.assignee || ''); setUnanswered(f.unanswered || '');
+        setDateFrom(f.date_from || ''); setDateTo(f.date_to || ''); setSortBy(f.sort_by || 'created_at'); setSortDir(f.sort_dir || 'desc');
+        setAdvanced(!!(f.unanswered || f.date_from || f.date_to || f.sort_by)); setPage(1);
       }} label="صف‌های ذخیره‌شده" />
 
       <div className="tk-grid">
@@ -275,6 +307,14 @@ export default function Tickets({ go, me }) {
           )}
         </div>
       </div>
+      {bulkConfirm && <Confirm danger={bulkConfirm === 'close'} text={`${bulkConfirm === 'close' ? 'بستن' : 'بازگشایی'} ${sel.length} تیکت انتخاب‌شده؟`}
+        onNo={() => setBulkConfirm(null)} onYes={async () => { const action = bulkConfirm; setBulkConfirm(null); await bulk(action); }} />}
+      {bulkResult && <Modal title="گزارش عملیات گروهی تیکت" onClose={() => setBulkResult(null)}>
+        <div className="row"><B kind="ok">موفق: {bulkResult.succeeded?.length || 0}</B><B>ردشده: {bulkResult.skipped?.length || 0}</B><B kind="bad">ناموفق: {bulkResult.failed?.length || 0}</B></div>
+        {[...(bulkResult.skipped || []).map(x => ({ ...x, message: x.reason })), ...(bulkResult.failed || []).map(x => ({ ...x, message: x.error }))].slice(0, 30)
+          .map((x, i) => <div className="row" key={`${x.id}-${i}`}><span className="code">{x.id}</span><span className="muted">{x.message}</span></div>)}
+        {!!bulkResult.failed?.length && <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.failed.map(x => x.id))}>↻ تلاش مجدد ناموفق‌ها</button>}
+      </Modal>}
     </>
   );
 }

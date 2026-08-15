@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, PageHeader, Tabs, DiffViewer, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import { writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const ST = [
@@ -18,16 +19,18 @@ export default function Exams({ route = '' }) {
   const requested = params.get('tab');
   const [tab, setTab] = useState(requested === 'grades' ? 'grades' : 'exams');
   useEffect(() => { setTab(requested === 'grades' ? 'grades' : 'exams'); }, [requested]);
+  const changeTab = value => { setTab(value); writeHashQuery('/exams', { tab: value === 'grades' ? 'grades' : '' }); };
   return (
     <>
-      <Tabs items={[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']]} value={tab} onChange={setTab} label="آزمون و نمرات" />
-      {tab === 'exams' ? <ExamsTab autoCreate={params.get('new') === 'exam'} /> : <GradesTab autoCreate={params.get('new') === 'grade'} />}
+      <Tabs items={[['exams', '📝 آزمون‌ها'], ['grades', '📊 نمرات']]} value={tab} onChange={changeTab} label="آزمون و نمرات" />
+      {tab === 'exams' ? <ExamsTab autoCreate={params.get('new') === 'exam'} initialStatus={params.get('status') || ''} /> : <GradesTab autoCreate={params.get('new') === 'grade'} initial={{ q: params.get('q') || '', lesson: params.get('lesson') || '', group: params.get('group') || '', page: Number(params.get('page')) || 1 }} />}
     </>
   );
 }
 
-function ExamsTab({ autoCreate = false }) {
-  const [status, setStatus] = useState('');
+function ExamsTab({ autoCreate = false, initialStatus = '' }) {
+  const [status, setStatus] = useState(initialStatus);
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const [data, setData] = useState(null);
   const [stats, setStats] = useState(null);
   const [err, setErr] = useState('');
@@ -46,6 +49,7 @@ function ExamsTab({ autoCreate = false }) {
     }
   };
   useEffect(() => { setData(null); load(); }, [status]);
+  useEffect(() => { writeHashQuery('/exams', { status }); }, [status]);
   useEffect(() => { api.examStats().then(setStats).catch(() => {}); }, []);
 
   if (permErr) return <NoPerm text="مدیریت آزمون‌ها نیازمند مجوز «مدیریت برنامه و امتحان» (schedules.manage) است" />;
@@ -94,8 +98,9 @@ function ExamsTab({ autoCreate = false }) {
         ))}
       </div>
 
+      <SavedViews scope="exams" filters={{ status }} columns={visibleColumns} onApply={(f, item) => { setStatus(f.status || ''); setVisibleColumns(item.columns || []); }} label="نماهای آزمون" />
       {!data ? <Loading /> : (
-        <DataTable columns={cols} rows={data.exams} empty={
+        <DataTable columns={cols} rows={data.exams} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
           <div className="center-state">آزمونی در این وضعیت نیست</div>} />
       )}
 
@@ -237,12 +242,13 @@ function ExamModal({ row, seed, onClose }) {
 }
 
 /* ── 📊🌊 WA3 — تب نمرات: لیست اخیر + ثبت گروهی (همان grades ربات) ───── */
-function GradesTab({ autoCreate = false }) {
-  const [skip, setSkip] = useState(0);
-  const [q, setQ] = useState('');
-  const [search, setSearch] = useState('');
-  const [lesson, setLesson] = useState('');
-  const [group, setGroup] = useState('');
+function GradesTab({ autoCreate = false, initial = {} }) {
+  const [skip, setSkip] = useState((initial.page - 1) * 30);
+  const [q, setQ] = useState(initial.q || '');
+  const [search, setSearch] = useState(initial.q || '');
+  const [lesson, setLesson] = useState(initial.lesson || '');
+  const [group, setGroup] = useState(initial.group || '');
+  const [visibleColumns, setVisibleColumns] = useState([]);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
@@ -259,6 +265,7 @@ function GradesTab({ autoCreate = false }) {
   };
   useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setSkip(0); }, 350); return () => clearTimeout(t); }, [search]);
   useEffect(() => { setData(null); load(); }, [skip, q, lesson, group]);
+  useEffect(() => { writeHashQuery('/exams', { tab: 'grades', q: search, lesson, group, page: skip ? Math.floor(skip / LIMIT) + 1 : '' }); }, [search, lesson, group, skip]);
 
   if (permErr) return <NoPerm text="مدیریت نمرات نیازمند مجوز «مدیریت نمرات» (grades.manage) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -293,11 +300,11 @@ function GradesTab({ autoCreate = false }) {
         <input className="inp" placeholder="فیلتر درس…" value={lesson} onChange={e => { setLesson(e.target.value); setSkip(0); }} />
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setSkip(0); }}><option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
       </div>
-      <SavedViews scope="grades" filters={{ q: search, lesson, group }} onApply={f => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setSkip(0); }} label="نماهای نمره" />
+      <SavedViews scope="grades" filters={{ q: search, lesson, group }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
 
       {!data ? <Loading /> : (
         <>
-          <DataTable columns={cols} rows={data.grades} empty={
+          <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
             <div className="center-state">نمره‌ای ثبت نشده</div>} />
           <div className="row" style={{ marginTop: 10 }}>
             <span className="muted">مجموع: {Number(total).toLocaleString('fa')} نمره</span>

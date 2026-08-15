@@ -83,7 +83,8 @@ export default function Dashboard({ me, go }) {
     { icon: '🎫', label: 'تیکت‌های باز', v: ov.open_tickets, tint: 'var(--bad)', go: '/tickets' },
     { icon: '💎', label: 'اشتراک‌های فعال', v: ov.active_subs, tint: 'var(--teal)' },
     { icon: '⏳', label: 'اشتراک‌های نزدیک به پایان', v: ov.expiring_soon, tint: 'var(--warn)' },
-  ];
+    { icon: '🚩', label: 'گزارش‌های باز', v: ov.open_reports, tint: 'var(--warn)', go: '/content?tab=reports' },
+  ].filter(card => card.v !== null && card.v !== undefined);
   const attnItems = (attn?.items || []).filter(i => i.count > 0);
   return (
     <>
@@ -121,11 +122,13 @@ export default function Dashboard({ me, go }) {
           {attnItems.length > 0 && (
             <div className="attn-grid" style={{ marginTop: 12 }}>
               {attnItems.map(i => (
-                <button type="button" key={i.key} className="attn-item" onClick={() => i.go && go(i.go)}>
+                <button type="button" key={i.key} className={`attn-item ${i.severity || ''}`} onClick={() => i.go && go(i.go)}>
                   <span style={{ fontSize: 20 }}>{i.icon}</span>
                   <div style={{ flex: 1 }}>
-                    <b style={{ color: 'var(--txt)', fontSize: 15 }}>{Number(i.count).toLocaleString('fa')}</b>
+                    <div className="row"><b style={{ color: 'var(--txt)', fontSize: 15 }}>{Number(i.count).toLocaleString('fa')}</b>
+                      {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
                     <div className="muted">{i.label}</div>
+                    {i.timestamp && <div className="muted code" style={{ marginTop: 3 }}>{String(i.timestamp).slice(0, 16).replace('T', ' ')}</div>}
                   </div>
                   <span className="muted">‹</span>
                 </button>

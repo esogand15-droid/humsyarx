@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, B, PageHeader, toast, NoPerm, Empty, Confirm, Switch, Modal } from '../ui.jsx';
+import { writeHashQuery } from '../urlState.js';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const STEPS = [
@@ -15,12 +16,16 @@ const STEPS = [
 // مخاطب ← محتوا ← پیش‌نمایش ← زمان‌بندی (فوری/زمان‌دار) ← تأیید ← ارسال.
 // بک‌اند: همان /api/admin/broadcast* سطح مالک (آیینه‌ی دقیق payload مینی‌اپ).
 // ⚠️ هیچ endpoint سطح مالک آزاد نشده — فقط UX کامل‌تر شده است.
-export default function Notify() {
-  const [step, setStep] = useState(1);
-  const [scope, setScope] = useState('all');
+export default function Notify({ route = '', go }) {
+  const initial = useMemo(() => new URLSearchParams(route.split('?')[1] || ''), []);
+  const [step, setStep] = useState(Math.min(5, Math.max(1, Number(initial.get('step')) || 1)));
+  const [scope, setScope] = useState(initial.get('scope') || 'all');
   const [intakes, setIntakes] = useState([]);
-  const [intake, setIntake] = useState('');
-  const [group, setGroup] = useState('1');
+  const [intake, setIntake] = useState(initial.get('intake') || '');
+  const [group, setGroup] = useState(initial.get('group') || '1');
+  const [role, setRole] = useState(initial.get('role') || '');
+  const [subscriptionStatus, setSubscriptionStatus] = useState(initial.get('subscription') || 'active');
+  const [audienceOptions, setAudienceOptions] = useState({ roles: [], subscription_statuses: [] });
   const [text, setText] = useState('');
   const [count, setCount] = useState(null);
   const [mode, setMode] = useState('now');           // now | later
@@ -36,10 +41,17 @@ export default function Notify() {
   const [drafts, setDrafts] = useState([]);
   const [saveOpen, setSaveOpen] = useState(null); // segment | draft
   const [saveName, setSaveName] = useState('');
+  const [saveShared, setSaveShared] = useState(false);
+  const [deleteSaved, setDeleteSaved] = useState(null);
   const [denied, setDenied] = useState(false);       // سطح مالک
 
+  useEffect(() => { writeHashQuery('/notify', { step: step > 1 ? step : '', scope: scope !== 'all' ? scope : '',
+    intake: (scope === 'intake' || scope === 'intake_group') ? intake : '', group: scope === 'intake_group' ? group : '',
+    role: scope === 'role' ? role : '', subscription: scope === 'subscription' ? subscriptionStatus : '' });
+  }, [step, scope, intake, group, role, subscriptionStatus]);
   useEffect(() => {
     api.waIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {});
+    api.broadcastOptions().then(r => setAudienceOptions({ roles: r.roles || [], subscription_statuses: r.subscription_statuses || [] })).catch(() => {});
     loadHist(); loadRuns(); loadSched(); loadSaved();
   }, []);
   const loadSaved = async () => {
@@ -84,15 +96,19 @@ export default function Notify() {
     || intakes.find(i => (i.code || i) === code)?.code || code;
   const target = useMemo(() => {
     const t = { scope };
-    if (scope !== 'all') t.intake = intake;
+    if (scope === 'intake' || scope === 'intake_group') t.intake = intake;
     if (scope === 'intake_group') t.group = group;
+    if (scope === 'role') t.role = role;
+    if (scope === 'subscription') t.subscription_status = subscriptionStatus;
     return t;
-  }, [scope, intake, group]);
+  }, [scope, intake, group, role, subscriptionStatus]);
   const audienceLabel = useMemo(() => {
     if (scope === 'all') return 'همه‌ی کاربران تأییدشده';
     if (scope === 'intake') return `ورودی «${intakeLabel(intake)}»`;
-    return `ورودی «${intakeLabel(intake)}» — گروه ${fa(group)}`;
-  }, [scope, intake, group, intakes]);
+    if (scope === 'intake_group') return `ورودی «${intakeLabel(intake)}» — گروه ${fa(group)}`;
+    if (scope === 'role') return `نقش «${audienceOptions.roles.find(x => x.key === role)?.label || role}»`;
+    return audienceOptions.subscription_statuses.find(x => x.key === subscriptionStatus)?.label || 'وضعیت اشتراک';
+  }, [scope, intake, group, role, subscriptionStatus, audienceOptions, intakes]);
 
   const preview = async () => {
     setBusy(true);
@@ -117,22 +133,23 @@ export default function Notify() {
     setBusy(false);
   };
   const reset = () => {
-    setStep(1); setScope('all'); setIntake(''); setGroup('1'); setText('');
+    setStep(1); setScope('all'); setIntake(''); setGroup('1'); setRole(''); setSubscriptionStatus('active'); setText('');
     setCount(null); setMode('now'); setSendAt(''); setSent(null);
   };
   const saveCurrent = async () => {
     if (!saveName.trim() || !saveOpen) return;
     const isDraft = saveOpen === 'draft';
     try {
-      await api.saveFilter({ name: saveName.trim(), scope: isDraft ? 'broadcast_draft' : 'broadcast_segment',
-        filters: isDraft ? { scope, intake, group, text, mode, sendAt } : { scope, intake, group } });
+      await api.saveFilter({ name: saveName.trim(), scope: isDraft ? 'broadcast_draft' : 'broadcast_segment', shared: saveShared,
+        filters: isDraft ? { scope, intake, group, role, subscriptionStatus, text, mode, sendAt } : { scope, intake, group, role, subscriptionStatus } });
       toast(isDraft ? 'پیش‌نویس ذخیره شد' : 'Segment مخاطبان ذخیره شد');
-      setSaveOpen(null); setSaveName(''); loadSaved();
+      setSaveOpen(null); setSaveName(''); setSaveShared(false); loadSaved();
     } catch (e) { toast(errText(e), 'err'); }
   };
   const applySaved = (item, isDraft = false) => {
     const f = item.filters || {};
     setScope(f.scope || 'all'); setIntake(f.intake || ''); setGroup(f.group || '1');
+    setRole(f.role || ''); setSubscriptionStatus(f.subscriptionStatus || 'active');
     if (isDraft) { setText(f.text || ''); setMode(f.mode || 'now'); setSendAt(f.sendAt || ''); }
     setCount(null); setSent(null); setStep(isDraft && f.text ? 2 : 1);
     toast(`«${item.name}» بارگذاری شد`);
@@ -153,15 +170,16 @@ export default function Notify() {
     catch { return sendAt; }
   }, [sendAt]);
 
-  const canNext1 = scope === 'all' || !!intake;
+  const canNext1 = scope === 'all' || ((scope === 'intake' || scope === 'intake_group') && !!intake)
+    || (scope === 'role' && !!role) || (scope === 'subscription' && !!subscriptionStatus);
   const canPreview = text.trim().length >= 5 && !busy;
   const canConfirm = mode === 'now' || (!!sendAt && new Date(sendAt).getTime() > Date.now());
 
   return (
     <>
       <PageHeader title="مرکز اعلان‌ها و ارسال همگانی" description="طراحی، پیش‌نمایش، زمان‌بندی، ارسال و پایش اعلان‌ها"
-        actions={<><button className="btn" onClick={() => { setSaveName(''); setSaveOpen('segment'); }}>💾 ذخیره Segment</button>
-          <button className="btn" disabled={!text.trim()} onClick={() => { setSaveName(''); setSaveOpen('draft'); }}>📝 ذخیره پیش‌نویس</button></>} />
+        actions={<><button className="btn" onClick={() => { setSaveName(''); setSaveShared(false); setSaveOpen('segment'); }}>💾 ذخیره Segment</button>
+          <button className="btn" disabled={!text.trim()} onClick={() => { setSaveName(''); setSaveShared(false); setSaveOpen('draft'); }}>📝 ذخیره پیش‌نویس</button></>} />
       {auxErr && <div className="panel panel-pad" style={{ marginBottom: 12 }}><ErrorState title="بخشی از داده‌های اعلان بارگذاری نشد" error={auxErr} onRetry={() => { setAuxErr(''); loadHist(); loadRuns(); loadSched(); }} /></div>}
       <div className="notify-layout">
       {/* ═══ جادوگر ═══ */}
@@ -207,7 +225,9 @@ export default function Notify() {
                 {[
                   ['all', '🌐', 'همه‌ی کاربران تأییدشده', 'هر کاربر فعال سامانه'],
                   ['intake', '🏷', 'یک ورودی خاص', 'مثلاً فقط ورودی بهمن'],
-                  ['intake_group', '👥', 'یک ورودی + گروه', 'دقیق‌ترین هدف‌گیری'],
+                  ['intake_group', '👥', 'یک ورودی + گروه', 'هدف‌گیری آموزشی دقیق'],
+                  ['role', '🛡', 'یک نقش دسترسی', 'اعضای واقعی نقش در RBAC'],
+                  ['subscription', '💳', 'وضعیت اشتراک هامزیار', 'فعال، غیرفعال یا رو به پایان'],
                 ].map(([v, icon, title, desc]) => (
                   <label key={v} className={`pick ${scope === v ? 'on' : ''}`}>
                     <input type="radio" checked={scope === v} onChange={() => setScope(v)} />
@@ -218,12 +238,18 @@ export default function Notify() {
                     </span>
                   </label>
                 ))}
-                {scope !== 'all' && (
+                {(scope === 'intake' || scope === 'intake_group') && (
                   <select className="inp" value={intake} onChange={e => setIntake(e.target.value)}>
                     <option value="">انتخاب ورودی…</option>
                     {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
                   </select>
                 )}
+                {scope === 'role' && <select className="inp" value={role} onChange={e => setRole(e.target.value)}>
+                  <option value="">انتخاب نقش…</option>{audienceOptions.roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                </select>}
+                {scope === 'subscription' && <select className="inp" value={subscriptionStatus} onChange={e => setSubscriptionStatus(e.target.value)}>
+                  {audienceOptions.subscription_statuses.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>}
                 {scope === 'intake_group' && (
                   <div className="row">
                     {['1', '2'].map(g => (
@@ -350,12 +376,13 @@ export default function Notify() {
           <b>نماهای ذخیره‌شده</b>
           {!!segments.length && <div style={{ marginTop: 8 }}><div className="muted">Segmentهای مخاطبان</div>
             <div className="row" style={{ marginTop: 5 }}>{segments.map(s => <span className="chip" key={s.id}>
-              <a onClick={() => applySaved(s)}>{s.name}</a><button className="chip-x" aria-label={`حذف Segment ${s.name}`} onClick={() => removeSaved(s)}>✕</button>
+              <button type="button" className="chip-link" onClick={() => applySaved(s)}>{s.shared ? '👥 ' : ''}{s.name}</button>
+              {s.editable !== false && <button className="chip-x" aria-label={`حذف Segment ${s.name}`} onClick={() => setDeleteSaved(s)}>✕</button>}
             </span>)}</div></div>}
           {!!drafts.length && <div style={{ marginTop: 8 }}><div className="muted">پیش‌نویس‌ها</div>
             <div className="grid" style={{ gap: 5, marginTop: 5 }}>{drafts.map(d => <div className="row" key={d.id}>
-              <button className="btn sm" style={{ flex: 1, textAlign: 'right' }} onClick={() => applySaved(d, true)}>📝 {d.name}</button>
-              <button className="btn sm danger" aria-label={`حذف پیش‌نویس ${d.name}`} onClick={() => removeSaved(d)}>🗑</button>
+              <button className="btn sm" style={{ flex: 1, textAlign: 'right' }} onClick={() => applySaved(d, true)}>📝 {d.shared ? '👥 ' : ''}{d.name}</button>
+              {d.editable !== false && <button className="btn sm danger" aria-label={`حذف پیش‌نویس ${d.name}`} onClick={() => setDeleteSaved(d)}>🗑</button>}
             </div>)}</div></div>}
         </div>}
         {/* 🌊 موج Notif-Scheduled — ارسال‌های زمان‌دار در انتظار + لغو */}
@@ -403,6 +430,7 @@ export default function Notify() {
                       {pending > 0 && <B kind="warn">⏳ {fa(pending)}</B>}
                       <span className="spacer" />
                       <button className="btn sm" onClick={() => { reset(); setText(h.text || ''); setStep(2); }}>📄 استفاده مجدد</button>
+                      {h.correlation_id && <button className="btn sm" onClick={() => go?.(`/audit?correlation_id=${encodeURIComponent(h.correlation_id)}`)}>🧬 ردیابی</button>}
                       <span className="muted">{(h.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                     </div>
                     <div className="minibar-track" style={{ marginTop: 7 }}>
@@ -446,9 +474,11 @@ export default function Notify() {
       {saveOpen && <Modal title={saveOpen === 'draft' ? 'ذخیره پیش‌نویس ارسال' : 'ذخیره Segment مخاطبان'} onClose={() => setSaveOpen(null)}>
         <p className="muted" style={{ marginBottom: 8 }}>{saveOpen === 'draft' ? 'مخاطب، متن و زمان‌بندی فعلی ذخیره می‌شود.' : `مخاطب فعلی: ${audienceLabel}`}</p>
         <input className="inp" style={{ width: '100%' }} placeholder="نام قابل تشخیص…" value={saveName} onChange={e => setSaveName(e.target.value)} />
+        <label className="row" style={{ marginTop: 10 }}><input type="checkbox" checked={saveShared} onChange={e => setSaveShared(e.target.checked)} />اشتراک با مدیران دارای مجوز ارسال همگانی</label>
         <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!saveName.trim()} onClick={saveCurrent}>ذخیره</button>
           <button className="btn" onClick={() => setSaveOpen(null)}>انصراف</button></div>
       </Modal>}
+      {deleteSaved && <Confirm danger text={`«${deleteSaved.name}» برای همیشه حذف شود؟`} onNo={() => setDeleteSaved(null)} onYes={() => { const item = deleteSaved; setDeleteSaved(null); removeSaved(item); }} />}
       {cancelOf && (
         <Confirm danger
                  text={`لغو ارسال زمان‌دار برای ${fa(cancelOf.total)} گیرنده؟ پیام‌ها از صف حذف می‌شوند و این عمل در حسابرسی (HIGH) ثبت می‌شود.`}
