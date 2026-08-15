@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
 import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
@@ -7,6 +7,41 @@ import SmartQueryBuilder from '../SmartQueryBuilder.jsx';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
+const USER360_STALE_MS = 60_000;
+const USER360_CACHE_LIMIT = 20;
+
+function mergeUserSnapshot(row, snapshot) {
+  const user = snapshot?.user;
+  if (!row || !user || Number(row.id) !== Number(user.id)) return row;
+  const roleRows = snapshot.section_errors?.roles ? null : (snapshot.roles || []);
+  return {
+    ...row,
+    name: user.name ?? row.name,
+    nickname: user.nickname ?? row.nickname,
+    display_name: user.display_name || user.nickname || user.name || row.display_name,
+    username: user.username ?? row.username,
+    student_id: user.student_id ?? row.student_id,
+    intake: user.intake ?? row.intake,
+    group: user.group ?? row.group,
+    role: user.role ?? row.role,
+    approved: user.approved ?? row.approved,
+    suspended: user.suspended ?? row.suspended,
+    registered_at: user.registered_at ?? row.registered_at,
+    last_active: user.last_active ?? row.last_active,
+    total_answers: user.total_answers ?? row.total_answers,
+    correct_answers: user.correct_answers ?? row.correct_answers,
+    accuracy: user.accuracy ?? row.accuracy,
+    rank: user.prestige_rank ?? row.rank,
+    div: user.prestige_div ?? row.div,
+    streak: user.streak_current ?? row.streak,
+    ai_usage: snapshot.ai?.total_usage ?? row.ai_usage,
+    exam_count: snapshot.counts?.exams ?? row.exam_count,
+    roles: roleRows ? roleRows.map(role => role.key) : row.roles,
+    role_scope: roleRows ? (roleRows.find(role => role.scope)?.scope || null) : row.role_scope,
+    subscription: snapshot.section_errors?.subscription ? row.subscription : snapshot.subscription,
+  };
+}
+
 // 🌊 WA3 — اکشن‌های تکی (دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات)
 const USER_ACTIONS = {
   approve:    { icon: '✅', label: 'تأیید حساب', perm: 'users.manage' },
@@ -56,6 +91,31 @@ export default function Users({ go, me, route = '' }) {
   const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
   const [intOpen, setIntOpen] = useState(false);    // 🌊 WA4 — مدیریت ورودی‌ها
   const [caOpen, setCaOpen] = useState(false);      // 🌊 WA4 — ادمین‌های محتوا
+  const user360Cache = useRef(new Map());
+  const closeUserDrawer = useCallback(() => setDetail(null), []);
+  const rememberUser360 = useCallback((uid, snapshot) => {
+    const cache = user360Cache.current;
+    cache.delete(uid);
+    cache.set(uid, { data: snapshot, at: Date.now() });
+    while (cache.size > USER360_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+  }, []);
+  const updateUserFromSnapshot = useCallback((uid, snapshot) => {
+    rememberUser360(uid, snapshot);
+    setData(previous => ({
+      ...previous,
+      users: (previous.users || []).map(row => Number(row.id) === Number(uid) ? mergeUserSnapshot(row, snapshot) : row),
+    }));
+    setDetail(previous => Number(previous?.id) === Number(uid) ? mergeUserSnapshot(previous, snapshot) : previous);
+  }, [rememberUser360]);
+  const removeUserLocally = useCallback(uid => {
+    user360Cache.current.delete(uid);
+    setData(previous => ({
+      ...previous,
+      total: Math.max(0, Number(previous.total || 0) - 1),
+      users: (previous.users || []).filter(row => Number(row.id) !== Number(uid)),
+    }));
+    setSel(previous => previous.filter(id => Number(id) !== Number(uid)));
+  }, []);
   const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
   const canAnyBatch = ['users.manage', 'users.suspend', 'users.message', 'users.delete'].some(has);
 
@@ -158,8 +218,18 @@ export default function Users({ go, me, route = '' }) {
   ];
 
   const act = async (uid, action) => {
-    try { await api.waUserAction(uid, action); toast('انجام شد'); load(); }
-    catch (e) { toast(errText(e), 'err'); }
+    try {
+      await api.waUserAction(uid, action);
+      const updates = action === 'approve' || action === 'unsuspend'
+        ? { approved: true, suspended: false }
+        : action === 'suspend' ? { approved: false, suspended: true } : null;
+      if (updates) {
+        user360Cache.current.delete(uid);
+        setData(previous => ({ ...previous, users: previous.users.map(row => Number(row.id) === Number(uid) ? { ...row, ...updates } : row) }));
+        setDetail(previous => Number(previous?.id) === Number(uid) ? { ...previous, ...updates } : previous);
+      }
+      toast('انجام شد');
+    } catch (e) { toast(errText(e), 'err'); }
   };
 
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -244,7 +314,10 @@ export default function Users({ go, me, route = '' }) {
                  onColumnsChange={setVisibleColumns}
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
 
-      {detail && <UserDrawer row={detail} me={me} go={go} onClose={() => { setDetail(null); load(); }} />}
+      {detail && <UserDrawer row={detail} me={me} go={go} onClose={closeUserDrawer}
+        initialData={(() => { const cached = user360Cache.current.get(detail.id); return cached && Date.now() - cached.at < USER360_STALE_MS ? cached.data : null; })()}
+        onSnapshot={updateUserFromSnapshot}
+        onRemoved={removeUserLocally} />}
       {blOpen && <BlacklistModal me={me} onClose={() => { setBlOpen(false); load(); }} />}
       {intOpen && <IntakesModal onClose={(ch) => { setIntOpen(false); if (ch) api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }} />}
       {caOpen && <ContentAdminsModal onClose={() => { setCaOpen(false); load(); }} />}
@@ -346,19 +419,43 @@ function LargeBatchModal({ has, intakes, roles, onClose, onDone }) {
 }
 
 /* ── 👤 WA2.8 — User 360: کانتکست کامل بدون ترک صفحه ─────────── */
-function UserDrawer({ row, me, go, onClose }) {
-  const [d, setD] = useState(null);
-  const [failed, setFailed] = useState(false);
+function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }) {
+  const [d, setD] = useState(initialData || null);
+  const [failed, setFailed] = useState('');
+  const [loading, setLoading] = useState(!initialData);
   const [tab, setTab] = useState('overview');
   const [relation, setRelation] = useState(null);
-  const refetch = () => api.user360(row.id).then(r => setD(r)).catch(() => {});
+  const requestSeq = useRef(0);
+
+  const fetchSnapshot = useCallback(async ({ keepData = true } = {}) => {
+    const uid = row.id;
+    const seq = ++requestSeq.current;
+    setFailed('');
+    if (!keepData) setD(null);
+    setLoading(true);
+    try {
+      const snapshot = await api.user360(uid);
+      if (seq !== requestSeq.current) return null;
+      setD(snapshot);
+      onSnapshot?.(uid, snapshot);
+      return snapshot;
+    } catch (error) {
+      if (seq === requestSeq.current) setFailed(errText(error));
+      return null;
+    } finally {
+      if (seq === requestSeq.current) setLoading(false);
+    }
+  }, [row.id, onSnapshot]);
+
   useEffect(() => {
-    let on = true;
-    api.user360(row.id)
-      .then(r => on && setD(r))
-      .catch(() => on && setFailed(true));
-    return () => { on = false; };
+    requestSeq.current += 1;
+    setTab('overview'); setRelation(null); setFailed('');
+    if (initialData) { setD(initialData); setLoading(false); }
+    else { setD(null); fetchSnapshot({ keepData: false }); }
+    return () => { requestSeq.current += 1; };
   }, [row.id]);
+
+  const refetch = useCallback(() => fetchSnapshot({ keepData: true }), [fetchSnapshot]);
 
   const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
   const canAct = ['users.manage', 'users.suspend', 'users.message', 'users.delete'].some(has);
@@ -380,19 +477,19 @@ function UserDrawer({ row, me, go, onClose }) {
           <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
         ))}
       </div>
-      {failed && (
-        <dl className="kv">
+      {failed && <div className="user-drawer-error"><ErrorState title="اطلاعات کاربر بارگذاری نشد" error={failed} onRetry={() => fetchSnapshot({ keepData: Boolean(d) })} />
+        {!d && <dl className="kv">
           {Object.entries({
             'نام': row.name, 'یوزرنیم': row.username && '@' + row.username,
             'شماره دانشجویی': row.student_id, 'ورودی': row.intake, 'گروه': row.group,
           }).filter(([, v]) => v).map(([k, v]) => (
             <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>
           ))}
-        </dl>
-      )}
-      {!failed && !d && tab !== 'actions' && <Loading />}
+        </dl>}
+      </div>}
+      {loading && !d && tab !== 'actions' && <Loading label="در حال بارگذاری پرونده کاربر" />}
       {tab === 'actions' && (
-        <UserActions row={row} d={d} me={me} onChanged={refetch} onClose={onClose} />
+        <UserActions row={row} d={d} me={me} onChanged={refetch} onClose={onClose} onRemoved={onRemoved} />
       )}
       {d && tab === 'overview' && (
         <>
@@ -602,7 +699,7 @@ function UserRelationModal({ uid, section, onClose }) {
 /* ── ⚙️🌊 WA3 — تب اقدامات: DM + ویرایش پروفایل + اکشن‌های مدیریتی ─────
    دقیقاً معادل دکمه‌های پنل مدیریت داخل ربات؛ همه از API /api/web-admin
    با guard سمت سرور و audit رد می‌شوند (سینک کامل با ربات/مینی‌اپ). */
-function UserActions({ row, d, me, onChanged, onClose }) {
+function UserActions({ row, d, me, onChanged, onClose, onRemoved }) {
   const u = d?.user || row;
   const has = permission => !!me?.is_owner || (me?.perms || []).includes(permission);
   const [msg, setMsg] = useState('');
@@ -637,7 +734,8 @@ function UserActions({ row, d, me, onChanged, onClose }) {
     const body = pendingPatch; setPendingPatch(null); setBusy(true);
     try {
       const r = await api.waUserPatch(row.id, body);
-      toast(`ذخیره شد ✅ (${(r.changed || []).length} فیلد)`); onChanged();
+      toast(`ذخیره شد ✅ (${(r.changed || []).length} فیلد)`);
+      await onChanged();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -646,8 +744,12 @@ function UserActions({ row, d, me, onChanged, onClose }) {
     try {
       await api.waUserAction(row.id, action, rs);
       toast(`${USER_ACTIONS[action].icon} ${USER_ACTIONS[action].label} — انجام شد`);
-      if (action === 'delete' || action === 'reject') return onClose();
-      onChanged();
+      if (action === 'delete' || action === 'reject') {
+        onRemoved?.(row.id);
+        onClose();
+        return;
+      }
+      await onChanged();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };

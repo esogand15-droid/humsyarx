@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 // ── Toast ─────────────────────────────────────────────────────────
 let _push;
@@ -289,16 +289,37 @@ export function Pagination({ page, pages, total, onPage }) {
 }
 
 // ── Dialogs ───────────────────────────────────────────────────────
+let _overlayLocks = 0;
+let _overlayScroll = { x: 0, y: 0 };
+let _overlayPaddingRight = '';
+function lockOverlayScroll() {
+  if (_overlayLocks === 0) {
+    _overlayScroll = { x: window.scrollX, y: window.scrollY };
+    _overlayPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+    if (scrollbarWidth) document.body.style.paddingRight = `${scrollbarWidth}px`;
+    document.body.classList.add('overlay-open');
+  }
+  _overlayLocks += 1;
+}
+function unlockOverlayScroll() {
+  _overlayLocks = Math.max(0, _overlayLocks - 1);
+  if (_overlayLocks === 0) {
+    document.body.classList.remove('overlay-open');
+    document.body.style.paddingRight = _overlayPaddingRight;
+    window.scrollTo(_overlayScroll.x, _overlayScroll.y);
+  }
+}
 function useDialog(onClose, active = true) {
   const ref = useRef(null);
   const previous = useRef(null);
   useEffect(() => {
     if (!active) return;
     previous.current = document.activeElement;
-    document.body.classList.add('overlay-open');
+    lockOverlayScroll();
     const root = ref.current;
     const focusables = () => [...(root?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
-    window.setTimeout(() => (focusables()[0] || root)?.focus(), 0);
+    window.setTimeout(() => (focusables()[0] || root)?.focus({ preventScroll: true }), 0);
     const key = e => {
       if (e.key === 'Escape') { e.preventDefault(); onClose(); }
       if (e.key === 'Tab') {
@@ -311,8 +332,8 @@ function useDialog(onClose, active = true) {
     document.addEventListener('keydown', key);
     return () => {
       document.removeEventListener('keydown', key);
-      document.body.classList.remove('overlay-open');
-      previous.current?.focus?.();
+      unlockOverlayScroll();
+      previous.current?.focus?.({ preventScroll: true });
     };
   }, [onClose, active]);
   return ref;
@@ -324,10 +345,23 @@ function DialogHeader({ title, onClose, titleId }) {
 }
 
 export function Drawer({ title, onClose, children, wide }) {
-  const id = useId(); const ref = useDialog(onClose);
-  return <><div className="scrim" onMouseDown={onClose} aria-hidden="true" />
-    <aside ref={ref} className={`drawer ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
-      <DialogHeader title={title} onClose={onClose} titleId={id} />{children}
+  const id = useId();
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) { onClose(); return; }
+    closingRef.current = true;
+    setClosing(true);
+  }, [onClose]);
+  const ref = useDialog(requestClose);
+  const finishClose = event => {
+    if (closing && event.target === event.currentTarget && event.animationName === 'drawerOut') onClose();
+  };
+  return <><div className={`scrim ${closing ? 'closing' : ''}`} onMouseDown={requestClose} aria-hidden="true" />
+    <aside ref={ref} className={`drawer ${wide ? 'wide' : ''} ${closing ? 'closing' : ''}`.trim()}
+      onAnimationEnd={finishClose} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
+      <DialogHeader title={title} onClose={requestClose} titleId={id} />{children}
     </aside></>;
 }
 

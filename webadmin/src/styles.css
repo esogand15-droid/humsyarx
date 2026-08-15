@@ -374,6 +374,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
   animation: drawerIn var(--d-drawer) var(--ease);
 }
 @keyframes drawerIn { from { transform: translateX(-32px); opacity: 0; } }
+.scrim.closing { animation: fadeOut var(--d-normal) var(--ease) both; pointer-events: none; }
+.drawer.closing { animation: drawerOut var(--d-drawer) var(--ease) both; pointer-events: none; }
+@keyframes fadeOut { to { opacity: 0; } }
+@keyframes drawerOut { to { transform: translateX(-32px); opacity: 0; } }
+.drawer > .dialog-head {
+  position: sticky; inset-block-start: 0; z-index: 2;
+  padding: var(--sp2) 0 var(--sp3);
+  background: color-mix(in srgb, var(--c-bg2) 96%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--c-line);
+}
 .modal {
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
   width: min(540px, 92vw); background: var(--c-bg2); border: 1px solid var(--c-line2);
