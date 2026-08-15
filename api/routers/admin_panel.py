@@ -500,10 +500,51 @@ async def delete_intake_ep(code: str, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/tickets")
-async def all_tickets(admin=Depends(get_admin_user), status: Optional[str]=Query(None)):
-    tickets = await db.ticket_get_all(status=status)
-    return {"tickets":[{"id":t.get("ticket_id"),"user_name":t.get("user_name",""),"subject":t.get("subject",""),
-        "status":t.get("status","open"),"reply_count":len(t.get("replies",[])),"created_at":t.get("created_at","")[:10]} for t in tickets]}
+async def all_tickets(
+    admin=Depends(get_admin_user), status: Optional[str] = Query(None),
+    q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
+    priority: Optional[str] = Query(None), assignee_id: Optional[int] = Query(None),
+    page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
+):
+    """تک‌منبع query صف پشتیبانی برای owner route و Web wrapper."""
+    # سازگاری direct-call تست‌ها/مصرف‌های قدیمی
+    q = q if isinstance(q, str) else None
+    intake = intake if isinstance(intake, str) else None
+    priority = priority if isinstance(priority, str) else None
+    assignee_id = assignee_id if isinstance(assignee_id, int) else None
+    page = page if isinstance(page, int) else 1
+    limit = limit if isinstance(limit, int) else 30
+    filt = {}
+    if status == "closed":
+        filt["status"] = "closed"
+    elif status == "answered":
+        filt.update({"status": {"$ne": "closed"}, "replies.0": {"$exists": True}})
+    elif status == "open":
+        filt["status"] = "open"
+    if q and q.strip():
+        import re
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        filt["$or"] = [{"subject": rx}, {"user_name": rx}, {"message": rx}]
+    if intake:
+        ids = await db.users.distinct("user_id", {"intake": intake})
+        filt["user_id"] = {"$in": ids}
+    if priority:
+        filt["priority"] = priority
+    if assignee_id is not None:
+        filt["assignee_id"] = assignee_id
+    total = await db.tickets.count_documents(filt)
+    tickets = await (db.tickets.find(filt).sort("created_at", -1)
+                     .skip((page - 1) * limit).limit(limit).to_list(limit))
+    return {"tickets": [{
+        "id": t.get("ticket_id"), "user_id": t.get("user_id"),
+        "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
+        "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+        "created_at": (t.get("created_at") or "")[:16].replace("T", " "),
+        "last_reply_at": (t.get("last_reply_at") or "")[:16].replace("T", " "),
+        "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
+        "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+    } for t in tickets], "total": total, "page": page, "limit": limit,
+        "pages": (total + limit - 1) // limit}
 
 @router.get("/tickets/{tid}")
 async def ticket_detail(tid: int, admin=Depends(get_admin_user)):
@@ -1107,6 +1148,15 @@ async def audit_logs_admin(
     category: Optional[str] = Query(None),
     min_severity: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
+    actor: Optional[str] = Query(None),
+    actor_role: Optional[str] = Query(None),
+    module: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    target_type: Optional[str] = Query(None),
+    target: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    correlation_id: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
 ):
@@ -1115,6 +1165,17 @@ async def audit_logs_admin(
     داده همان audit_logs مشترک با بات است؛ اکشن‌های ثبت‌شده از پنل وب
     (تگ «پنل_وب») و اکشن‌های بات هر دو اینجا دیده می‌شوند.
     """
+    # Direct-call regression harnessها FastAPI Query object را تزریق نمی‌کنند؛
+    # پارامترهای اختیاری تازه در آن حالت باید مثل None رفتار کنند.
+    actor = actor if isinstance(actor, str) else None
+    actor_role = actor_role if isinstance(actor_role, str) else None
+    module = module if isinstance(module, str) else None
+    action = action if isinstance(action, str) else None
+    target_type = target_type if isinstance(target_type, str) else None
+    target = target if isinstance(target, str) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
+    correlation_id = correlation_id if isinstance(correlation_id, str) else None
     query = {}
     if category in ("admin", "content", "user"):
         query["category"] = category
@@ -1132,6 +1193,39 @@ async def audit_logs_admin(
             {"details": pat},
             {"module": pat},
         ]
+    if actor:
+        import re
+        actor_pat = re.compile(re.escape(actor.strip()), re.IGNORECASE)
+        actor_or = [{"actor.name": actor_pat}]
+        if actor.strip().isdigit():
+            actor_or.extend([{"actor.id": int(actor.strip())}, {"actor.id": actor.strip()}])
+        query.setdefault("$and", []).append({"$or": actor_or})
+    if actor_role:
+        import re
+        query["actor.role"] = re.compile(re.escape(actor_role.strip()), re.IGNORECASE)
+    if module:
+        query["module"] = module.strip()
+    if action:
+        import re
+        query["action"] = re.compile(re.escape(action.strip()), re.IGNORECASE)
+    if target_type:
+        query["target.type"] = target_type.strip()
+    if target:
+        import re
+        target_pat = re.compile(re.escape(target.strip()), re.IGNORECASE)
+        query.setdefault("$and", []).append({"$or": [
+            {"target.label": target_pat}, {"target.id": target.strip()},
+            {"target_id": target.strip()},
+        ]})
+    if date_from or date_to:
+        ts = {}
+        if date_from:
+            ts["$gte"] = date_from.strip()[:10]
+        if date_to:
+            ts["$lte"] = date_to.strip()[:10] + "T23:59:59.999999"
+        query["timestamp"] = ts
+    if correlation_id:
+        query["correlation_id"] = correlation_id.strip()[:120]
 
     total = await db.audit_logs.count_documents(query)
 
@@ -1161,6 +1255,8 @@ async def audit_logs_admin(
         "details": r.get("details", ""),
         "changes": r.get("changes") or [],
         "tags": r.get("tags") or [],
+        "correlation_id": r.get("correlation_id"),
+        "metadata": r.get("metadata") or {},
     } for r in rows]
 
     return {"logs": logs, "total": total, "counters": counters}

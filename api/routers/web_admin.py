@@ -19,14 +19,18 @@
   WA2.9 Hardening              : محدودسازی bulk کاربران به مجوز + audit همه‌ی اکشن‌ها
 """
 import asyncio
+import csv
 import hashlib
+import io
+import json
 import re
 import secrets
 import time
 from datetime import datetime, timedelta, date
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -41,6 +45,8 @@ from api.routers import subscription_management as subscription_api
 from api.routers import ai_management as ai_admin_api
 from api.routers import content_admin as content_api
 from api.routers import academic_admin as academic_api
+from api.routers import rbac as rbac_api
+import backup as backup_service
 
 router = APIRouter()
 
@@ -57,7 +63,7 @@ CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
 
 
 def _now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now().isoformat()
 
 
 def _oid(v):
@@ -305,14 +311,26 @@ async def users_table(
     intake: str | None = Query(None),
     group: str | None = Query(None),
     status: str | None = Query(None),   # pending | suspended | active
+    role: str | None = Query(None, max_length=80),
+    activity: str | None = Query(None, pattern="^(never|inactive_14|inactive_30)$"),
+    accuracy_max: float | None = Query(None, ge=0, le=100),
+    sub_expiring_days: int | None = Query(None, ge=1, le=365),
+    has_open_ticket: bool | None = Query(None),
+    sort_by: str = Query("registered_at", pattern="^(registered_at|last_active|name|total_answers|correct_answers|streak_current|ai_total_usage)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
-    """جدول سرورساید کاربران — pagination واقعی (تا ۱۰۰ در صفحه)."""
+    """جدول حرفه‌ای کاربران با pagination/filter/sort کاملاً سرورساید.
+
+    enrichmentهای نقش، اشتراک، تیکت و تعداد آزمون برای همان صفحه به‌شکل
+    batch خوانده می‌شوند؛ هیچ query به‌ازای هر ردیف و هیچ full dataset fetch
+    در پاسخ وجود ندارد.
+    """
     filt = db.build_user_search_query(q) if q else {}
     if intake:
         filt["intake"] = intake
     if group:
-        filt["group"] = group
+        filt["group"] = db.normalize_group(group)
     if status == "pending":
         filt["approved"] = False
     elif status == "suspended":
@@ -320,76 +338,298 @@ async def users_table(
     elif status == "active":
         filt["approved"] = True
         filt["suspended"] = {"$ne": True}
+    if role:
+        role_ids = await db.user_ids_by_role(role, limit=5000)
+        # users.role فقط mirror سازگاری است؛ user_ids_by_role هر سه منبع را
+        # deduplicate می‌کند و منطق RBAC موازی نمی‌سازد.
+        filt["user_id"] = {"$in": role_ids}
+    now = datetime.now()
+    if activity == "never":
+        filt["$and"] = filt.get("$and", []) + [{"$or": [
+            {"last_active": {"$exists": False}}, {"last_active": None},
+            {"last_active": ""},
+        ]}]
+    elif activity in ("inactive_14", "inactive_30"):
+        days = 14 if activity == "inactive_14" else 30
+        cutoff = (now - timedelta(days=days)).isoformat()
+        filt["$and"] = filt.get("$and", []) + [{"$or": [
+            {"last_active": {"$lt": cutoff}}, {"last_active": {"$exists": False}},
+        ]}]
+    if accuracy_max is not None:
+        filt["$expr"] = {"$lte": [
+            {"$cond": [
+                {"$gt": [{"$ifNull": ["$total_answers", 0]}, 0]},
+                {"$multiply": [
+                    {"$divide": [
+                        {"$ifNull": ["$correct_answers", 0]},
+                        {"$ifNull": ["$total_answers", 1]},
+                    ]}, 100,
+                ]},
+                0,
+            ]},
+            accuracy_max,
+        ]}
+    if sub_expiring_days is not None:
+        sub_ids = await db.subscriptions.distinct("_id", {
+            "status": "active", "end_date": {
+                "$gte": now.isoformat(),
+                "$lte": (now + timedelta(days=sub_expiring_days)).isoformat(),
+            },
+        })
+        existing_ids = (filt.get("user_id") or {}).get("$in")
+        filt["user_id"] = {"$in": ([i for i in sub_ids if i in set(existing_ids)]
+                                      if existing_ids is not None else sub_ids)}
+    if has_open_ticket is not None:
+        ticket_ids = await db.tickets.distinct("user_id", {"status": "open"})
+        existing_ids = (filt.get("user_id") or {}).get("$in")
+        if has_open_ticket:
+            filt["user_id"] = {"$in": ([i for i in ticket_ids if i in set(existing_ids)]
+                                          if existing_ids is not None else ticket_ids)}
+        elif existing_ids is not None:
+            ticket_set = set(ticket_ids)
+            filt["user_id"] = {"$in": [i for i in existing_ids if i not in ticket_set]}
+        else:
+            filt["user_id"] = {"$nin": ticket_ids}
+
     total = await db.users.count_documents(filt)
-    _projection = {
+    projection = {
         "user_id": 1, "name": 1, "nickname": 1, "username": 1, "student_id": 1,
         "group": 1, "intake": 1, "role": 1, "approved": 1, "suspended": 1,
-        "registered_at": 1, "total_answers": 1, "prestige_rank": 1, "prestige_div": 1,
+        "registered_at": 1, "last_active": 1, "total_answers": 1,
+        "correct_answers": 1, "prestige_rank": 1, "prestige_div": 1,
+        "streak_current": 1, "ai_total_usage": 1,
     }
-    docs = await (db.users.find(filt, _projection)
-                  .sort("registered_at", -1)
+    docs = await (db.users.find(filt, projection)
+                  .sort(sort_by, 1 if sort_dir == "asc" else -1)
                   .skip((page - 1) * per_page).limit(per_page).to_list(per_page))
+    ids = [u.get("user_id") for u in docs if u.get("user_id") is not None]
+    if ids:
+        role_docs, sub_docs, open_docs, exam_counts = await asyncio.gather(
+            db.user_roles.find({"_id": {"$in": ids}}, {"roles": 1, "scope_intake": 1}).to_list(per_page),
+            db.subscriptions.find({"_id": {"$in": ids}}, {
+                "status": 1, "plan_name": 1, "end_date": 1,
+            }).to_list(per_page),
+            db.tickets.find({"user_id": {"$in": ids}, "status": "open"}, {"user_id": 1}).to_list(500),
+            db.exam_sessions.aggregate([
+                {"$match": {"user_id": {"$in": ids}}},
+                {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
+            ]).to_list(per_page),
+        )
+    else:
+        role_docs, sub_docs, open_docs, exam_counts = [], [], [], []
+    role_map = {r.get("_id"): r for r in role_docs}
+    sub_map = {s.get("_id"): s for s in sub_docs}
+    open_set = {t.get("user_id") for t in open_docs}
+    exam_map = {e.get("_id"): int(e.get("count") or 0) for e in exam_counts}
+
+    rows = []
+    for u in docs:
+        uid = u.get("user_id")
+        total_answers = int(u.get("total_answers") or 0)
+        correct = int(u.get("correct_answers") or 0)
+        sub = sub_map.get(uid) or {}
+        days_left = None
+        if sub.get("status") == "active" and sub.get("end_date"):
+            try:
+                days_left = max(0, (datetime.fromisoformat(sub["end_date"]) - now).days)
+            except (TypeError, ValueError):
+                days_left = None
+        roles = list((role_map.get(uid) or {}).get("roles") or [])
+        if not roles and u.get("role") not in (None, "", "student"):
+            roles = [u.get("role")]
+        rows.append({
+            "id": uid, "name": u.get("name", ""), "nickname": u.get("nickname"),
+            "username": u.get("username", ""), "display_name": db.display_name_of(u),
+            "student_id": u.get("student_id", ""), "group": u.get("group", ""),
+            "intake": u.get("intake", ""), "role": u.get("role", "student"),
+            "roles": roles, "role_scope": (role_map.get(uid) or {}).get("scope_intake"),
+            "approved": u.get("approved", False), "suspended": u.get("suspended", False),
+            "registered_at": (u.get("registered_at") or "")[:16],
+            "last_active": (u.get("last_active") or "")[:16],
+            "total_answers": total_answers, "correct_answers": correct,
+            "accuracy": round(correct * 100 / total_answers, 1) if total_answers else 0,
+            "rank": u.get("prestige_rank", ""), "div": u.get("prestige_div", ""),
+            "streak": int(u.get("streak_current") or 0),
+            "ai_usage": int(u.get("ai_total_usage") or 0),
+            "exam_count": exam_map.get(uid, 0), "has_open_ticket": uid in open_set,
+            "subscription": {
+                "status": sub.get("status", ""), "plan": sub.get("plan_name", ""),
+                "end_date": (sub.get("end_date") or "")[:10], "days_left": days_left,
+            } if sub else None,
+        })
     return {
         "total": total, "page": page, "per_page": per_page,
         "pages": (total + per_page - 1) // per_page,
-        "users": [{
-            "id": u.get("user_id"), "name": u.get("name", ""),
-            "nickname": u.get("nickname"), "username": u.get("username", ""),
-            "display_name": db.display_name_of(u),
-            "student_id": u.get("student_id", ""), "group": u.get("group", ""),
-            "intake": u.get("intake", ""), "role": u.get("role", "student"),
-            "approved": u.get("approved", False), "suspended": u.get("suspended", False),
-            "registered_at": u.get("registered_at", "")[:10],
-            "total_answers": u.get("total_answers", 0),
-            "rank": u.get("prestige_rank", ""), "div": u.get("prestige_div", ""),
-        } for u in docs],
+        "users": rows,
     }
+
+
+@router.get("/exports/users.csv")
+async def export_users_csv(
+    q: str | None = Query(None), intake: str | None = Query(None),
+    group: str | None = Query(None), status: str | None = Query(None),
+    role: str | None = Query(None), activity: str | None = Query(None),
+    accuracy_max: float | None = Query(None, ge=0, le=100),
+    sub_expiring_days: int | None = Query(None, ge=1, le=365),
+    has_open_ticket: bool | None = Query(None),
+    sort_by: str = Query("registered_at"), sort_dir: str = Query("desc"),
+    user=Depends(_perm_any("users.view", "users.manage")),
+):
+    """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
+    allowed_sort = {"registered_at", "last_active", "name", "total_answers", "correct_answers", "streak_current", "ai_total_usage"}
+    if sort_by not in allowed_sort or sort_dir not in ("asc", "desc"):
+        raise HTTPException(422, "مرتب‌سازی نامعتبر است")
+    if activity not in (None, "", "never", "inactive_14", "inactive_30"):
+        raise HTTPException(422, "فیلتر فعالیت نامعتبر است")
+    await _audit(user["id"], "خروجی CSV کاربران", severity="HIGH",
+                 target_type="export", target_label="users.csv",
+                 after={"filtered": bool(any([q, intake, group, status, role, activity,
+                                                accuracy_max is not None, sub_expiring_days,
+                                                has_open_ticket is not None]))},
+                 tags=["خروجی", "کاربران", "پنل_وب"])
+    columns = ["telegram_id", "name", "nickname", "username", "student_id", "intake", "group",
+               "status", "roles", "subscription", "subscription_end", "accuracy", "total_answers",
+               "exam_count", "ai_usage", "streak", "rank", "last_active", "registered_at"]
+
+    def safe(value):
+        text = "" if value is None else str(value)
+        return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+    async def stream():
+        buf = io.StringIO(); writer = csv.writer(buf)
+        writer.writerow(columns)
+        yield "\ufeff" + buf.getvalue(); buf.seek(0); buf.truncate(0)
+        page = 1
+        while True:
+            result = await users_table(
+                page=page, per_page=100, q=q, intake=intake, group=group, status=status,
+                role=role, activity=activity, accuracy_max=accuracy_max,
+                sub_expiring_days=sub_expiring_days, has_open_ticket=has_open_ticket,
+                sort_by=sort_by, sort_dir=sort_dir, user=user,
+            )
+            rows = result.get("users") or []
+            for row in rows:
+                sub = row.get("subscription") or {}
+                writer.writerow([safe(v) for v in [
+                    row.get("id"), row.get("name"), row.get("nickname"), row.get("username"),
+                    row.get("student_id"), row.get("intake"), row.get("group"),
+                    "suspended" if row.get("suspended") else "active" if row.get("approved") else "pending",
+                    "|".join(row.get("roles") or []), sub.get("status"), sub.get("end_date"),
+                    row.get("accuracy"), row.get("total_answers"), row.get("exam_count"),
+                    row.get("ai_usage"), row.get("streak"),
+                    " / ".join(x for x in [row.get("rank"), row.get("div")] if x),
+                    row.get("last_active"), row.get("registered_at"),
+                ]])
+                yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+            if page >= int(result.get("pages") or 1) or not rows:
+                break
+            page += 1
+
+    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename=humsyar-users.csv"})
 
 
 @router.post("/users/bulk")
 async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
-    """اکشن گروهی کاربران (سقف ۱۰۰).
-    🛡 WA2.9 — هر اکشن به مجوز متناظر RBAC محدود شد (تصمیم فقط با Permission):
-    approve/set_intake → users.manage ، suspend/unsuspend → users.suspend"""
-    _ACTION_PERM = {
-        "approve":   "users.manage",
-        "set_intake": "users.manage",
-        "suspend":   "users.suspend",
-        "unsuspend": "users.suspend",
+    """اکشن گروهی کاربران با گزارش success/failed/skipped و سقف ۱۰۰.
+
+    تغییر نقش از همان تابع RBAC و پیام از همان outbox موجود استفاده می‌کند؛
+    این endpoint orchestration وب است، نه business logic موازی.
+    """
+    action_perm = {
+        "approve": "users.manage", "set_intake": "users.manage",
+        "set_group": "users.manage", "add_role": "users.manage",
+        "remove_role": "users.manage", "suspend": "users.suspend",
+        "unsuspend": "users.suspend", "message": "users.message", "block": "users.delete",
     }
-    need = _ACTION_PERM.get(body.action)
+    need = action_perm.get(body.action)
     if not need:
         raise HTTPException(400, "اکشن نامعتبر است.")
     actor = user["id"]
     if not await db.has_permission(actor, need):
         raise HTTPException(403, "forbidden")
-    ids = [int(i) for i in (body.ids or []) if isinstance(i, (int, str)) and str(i).isdigit()][:100]
+    ids = list(dict.fromkeys(
+        int(i) for i in (body.ids or [])
+        if isinstance(i, (int, str)) and str(i).isdigit()
+    ))[:100]
     if not ids:
         raise HTTPException(400, "لیست کاربران خالی است.")
-    if ADMIN_ID in ids:
-        ids.remove(ADMIN_ID)
-    done = 0
+    succeeded, skipped, failed = [], [], []
+    value = (body.value or "").strip()
+    if body.action in ("set_intake", "set_group", "add_role", "remove_role", "message", "block") and not value:
+        raise HTTPException(422, "مقدار عملیات گروهی الزامی است")
+    if body.action in ("add_role", "remove_role") and not await db.get_role(value):
+        raise HTTPException(422, "نقش ناشناخته است")
+
     for uid in ids:
-        u = await db.get_user(uid)
-        if not u:
+        if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
+            skipped.append({"id": uid, "reason": "owner_protected"})
             continue
-        if body.action == "approve":
-            await db.update_user(uid, {"approved": True})
-            await db.inbox_add(uid, 'account', "✅ حسابت تأیید شد!",
-                               "اکنون به تمام بخش‌های هامزیار دسترسی داری — خوش اومدی! 🎓", link='/')
-        elif body.action == "suspend":
-            await db.update_user(uid, {"suspended": True, "approved": False})
-        elif body.action == "unsuspend":
-            await db.update_user(uid, {"suspended": False, "approved": True})
-        elif body.action == "set_intake":
-            await db.update_user(uid, {"intake": (body.value or "").strip()})
-        done += 1
-    fa = {"approve": "تأیید گروهی", "suspend": "تعلیق گروهی",
-          "unsuspend": "رفع تعلیق گروهی", "set_intake": "تغییر ورودی گروهی"}
-    await _audit(actor, f"{fa.get(body.action, body.action)} کاربران ({done} نفر)",
-                 severity="HIGH" if body.action == "suspend" else "INFO",
-                 target_label=f"{done} کاربر", tags=["bulk_users", "پنل_وب"])
-    return {"ok": True, "done": done}
+        target = await db.get_user(uid)
+        if not target:
+            skipped.append({"id": uid, "reason": "user_not_found"})
+            continue
+        try:
+            if body.action == "approve":
+                if target.get("approved") and not target.get("suspended"):
+                    skipped.append({"id": uid, "reason": "already_approved"}); continue
+                await db.update_user(uid, {"approved": True, "suspended": False})
+                await db.inbox_add(uid, 'account', "✅ حسابت تأیید شد!",
+                    "اکنون به تمام بخش‌های هامزیار دسترسی داری — خوش اومدی! 🎓", link='/')
+            elif body.action == "suspend":
+                if target.get("suspended"):
+                    skipped.append({"id": uid, "reason": "already_suspended"}); continue
+                await db.update_user(uid, {"suspended": True, "approved": False})
+            elif body.action == "unsuspend":
+                if not target.get("suspended"):
+                    skipped.append({"id": uid, "reason": "not_suspended"}); continue
+                await db.update_user(uid, {"suspended": False, "approved": True})
+            elif body.action == "set_intake":
+                if (target.get("intake") or "") == value:
+                    skipped.append({"id": uid, "reason": "unchanged"}); continue
+                await db.update_user(uid, {"intake": value})
+            elif body.action == "set_group":
+                normalized = db.normalize_group(value)
+                if (target.get("group") or "") == normalized:
+                    skipped.append({"id": uid, "reason": "unchanged"}); continue
+                await db.update_user(uid, {"group": normalized})
+            elif body.action in ("add_role", "remove_role"):
+                info = await db.get_user_roles(uid)
+                has_role = value in info.get("keys", [])
+                if (body.action == "add_role" and has_role) or (body.action == "remove_role" and not has_role):
+                    skipped.append({"id": uid, "reason": "unchanged"}); continue
+                payload = rbac_api.AssignBody(
+                    add=[value] if body.action == "add_role" else [],
+                    remove=[value] if body.action == "remove_role" else [],
+                )
+                await rbac_api.assign_roles(uid=uid, body=payload, user=user)
+            elif body.action == "message":
+                await wa_user_message(uid=uid, body=DmIn(text=value), user=user)
+            elif body.action == "block":
+                await wa_user_action(uid=uid, body=UserActionIn(action="block", reason=value), user=user)
+            succeeded.append(uid)
+        except HTTPException as exc:
+            failed.append({"id": uid, "error": str(exc.detail or "operation_failed")[:160]})
+        except Exception:
+            failed.append({"id": uid, "error": "operation_failed"})
+
+    labels = {
+        "approve": "تأیید گروهی", "suspend": "تعلیق گروهی",
+        "unsuspend": "رفع تعلیق گروهی", "set_intake": "تغییر ورودی گروهی",
+        "set_group": "تغییر گروه گروهی", "add_role": "افزودن نقش گروهی",
+        "remove_role": "حذف نقش گروهی", "message": "پیام گروهی انتخابی",
+        "block": "مسدودسازی گروهی",
+    }
+    await _audit(
+        actor, f"{labels[body.action]} کاربران ({len(succeeded)} موفق)",
+        severity="CRITICAL" if body.action == "block" else "HIGH" if body.action in ("suspend", "remove_role") else "INFO",
+        target_type="user_batch", target_label=f"{len(ids)} کاربر",
+        after={"action": body.action, "requested": len(ids),
+               "succeeded": len(succeeded), "failed": len(failed), "skipped": len(skipped)},
+        tags=["bulk_users", "پنل_وب"],
+    )
+    return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
+            "failed": failed, "skipped": skipped}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -605,7 +845,10 @@ async def saved_filters_add(body: SavedFilterIn, user=Depends(_guard_any_admin))
     name = (body.name or "").strip()[:60]
     if not name:
         raise HTTPException(422, "نام فیلتر الزامی است")
-    if body.scope not in ("users", "questions", "content", "audit", "payments"):
+    if body.scope not in (
+        "users", "questions", "content", "audit", "payments", "subscriptions",
+        "tickets", "reports", "grades", "broadcast_segment", "broadcast_draft",
+    ):
         raise HTTPException(422, "scope نامعتبر است")
     uid = user["id"]
     if await db.wa_saved_filters.count_documents({"owner": uid}) >= 30:
@@ -629,6 +872,58 @@ async def saved_filters_del(fid: str, user=Depends(_guard_any_admin)):
     if not getattr(r, "deleted_count", 0):
         raise HTTPException(404, "فیلتر یافت نشد")
     return {"ok": True}
+
+
+@router.get("/history/{target_type}/{target_id}")
+async def object_history(
+    target_type: str, target_id: str,
+    limit: int = Query(30, ge=1, le=100),
+    user=Depends(_guard_any_admin),
+):
+    """Timeline/diff عمومی objectها بر پایه audit مشترک، با RBAC هر domain."""
+    perm_map = {
+        "user": ("users.view", "users.manage"),
+        "question": ("questions.review", "questions.review_scoped"),
+        "ticket": ("tickets.reply", "tickets.manage"),
+        "payment": ("subscription.manage",), "subscription": ("subscription.manage",),
+        "role": ("roles.manage",), "notification": ("notifications.manage",),
+        "setting": ("settings.manage",), "exam": ("schedules.manage",),
+        "grade": ("grades.manage", "grades.scoped"),
+    }
+    required = perm_map.get(target_type)
+    if not required:
+        raise HTTPException(422, "نوع تاریخچه پشتیبانی نمی‌شود")
+    allowed = user["id"] == ADMIN_ID
+    if not allowed:
+        for permission in required:
+            if await db.has_permission(user["id"], permission):
+                allowed = True
+                break
+    if not allowed:
+        raise HTTPException(403, "forbidden")
+    if target_type == "question":
+        item = await db.get_question_by_id(target_id)
+        if not item:
+            raise HTTPException(404, "سؤال پیدا نشد")
+        scope = await _question_scope_context(user)
+        if scope.get("kind") == "scoped" and (item.get("intake") or "") != (scope.get("intake") or ""):
+            raise HTTPException(403, "intake_out_of_scope")
+    elif target_type == "user" and (not target_id.isdigit() or not await db.get_user(int(target_id))):
+        raise HTTPException(404, "کاربر پیدا نشد")
+    elif target_type == "ticket" and (not target_id.isdigit() or not await db.ticket_get(int(target_id))):
+        raise HTTPException(404, "تیکت پیدا نشد")
+    docs = await db.audit_logs.find({"$or": [
+        {"target.type": target_type, "target.id": target_id},
+        {"target_type": target_type, "target_id": target_id},
+    ]}).sort("timestamp", -1).limit(limit).to_list(limit)
+    return {"items": [{
+        "id": str(d.get("_id", "")), "title": d.get("action", ""),
+        "actor": (d.get("actor") or {}).get("name", ""),
+        "actor_role": (d.get("actor") or {}).get("role", ""),
+        "at": (d.get("timestamp") or "")[:16].replace("T", " "),
+        "description": d.get("details", ""), "severity": d.get("severity", "INFO"),
+        "changes": d.get("changes") or [], "correlation_id": d.get("correlation_id"),
+    } for d in docs], "target_type": target_type, "target_id": target_id}
 
 
 class TicketsBulk(BaseModel):
@@ -678,6 +973,68 @@ async def _question_admin(user: dict) -> dict:
     ctx = dict(user)
     ctx["_scope"] = await _question_scope_context(user)
     return ctx
+
+
+@router.get("/questions")
+async def wa_questions_list(
+    status: str = Query("pending", pattern="^(pending|approved|all)$"),
+    intake: Optional[str] = Query(None, max_length=80),
+    q: Optional[str] = Query(None, max_length=120),
+    lesson: Optional[str] = Query(None, max_length=100),
+    topic: Optional[str] = Query(None, max_length=100),
+    difficulty: Optional[str] = Query(None, pattern="^(easy|medium|hard)$"),
+    source: Optional[str] = Query(None, max_length=40),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """Question workspace سرورساید برای 10k+ سؤال، بدون تغییر endpoint قدیمی pending."""
+    scope = await _question_scope_context(user)
+    if scope.get("kind") == "scoped":
+        iv = scope.get("intake") or ""
+        if intake not in (None, "", iv):
+            raise HTTPException(403, "intake_out_of_scope")
+    else:
+        iv = intake or ""
+    filt = {"intake": iv}
+    if status == "pending":
+        filt["approved"] = False
+    elif status == "approved":
+        filt["approved"] = True
+    if lesson:
+        filt["lesson"] = lesson
+    if topic:
+        filt["topic"] = topic
+    if difficulty:
+        filt["difficulty"] = difficulty
+    if source:
+        filt["source"] = source
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        filt["$or"] = [{"question": rx}, {"lesson": rx}, {"topic": rx}, {"creator_name": rx}]
+    total = await db.questions.count_documents(filt)
+    docs = await (db.questions.find(filt)
+                  .sort(sort_by, 1 if sort_dir == "asc" else -1)
+                  .skip(skip).limit(limit).to_list(limit))
+    rows = []
+    for d in docs:
+        attempts = int(d.get("attempt_count") or 0)
+        correct = int(d.get("correct_count") or 0)
+        rows.append({
+            "id": str(d.get("_id", "")), "lesson": d.get("lesson", ""),
+            "topic": d.get("topic", ""), "difficulty": d.get("difficulty", ""),
+            "question": d.get("question", ""), "options": d.get("options", []),
+            "correct": d.get("correct_answer", 0), "explanation": d.get("explanation", ""),
+            "creator_id": d.get("creator_id"), "creator_name": d.get("creator_name", ""),
+            "created_at": (d.get("created_at") or "")[:16], "updated_at": (d.get("updated_at") or "")[:16],
+            "intake": d.get("intake", ""), "source": d.get("source", "bot"),
+            "approved": bool(d.get("approved")), "attempts": attempts,
+            "accuracy": round(correct * 100 / attempts, 1) if attempts else 0,
+            "reports": int(d.get("report_count") or 0),
+        })
+    return {"questions": rows, "total": total, "skip": skip, "limit": limit,
+            "pages": (total + limit - 1) // limit, "status": status, "intake": iv}
 
 
 @router.get("/questions/intakes")
@@ -1466,8 +1823,9 @@ async def wa_analytics(user=Depends(_perm("stats.view")),
 async def wa_insights(user=Depends(_perm("stats.view"))):
     try:
         return await db.admin_insights()
-    except Exception as e:
-        raise HTTPException(500, f"محاسبه‌ی هشدارها ناموفق بود: {str(e)[:120]}")
+    except Exception:
+        # جزئیات exception فقط در لاگ سرور می‌ماند؛ API متن داخلی/credential را لو نمی‌دهد.
+        raise HTTPException(503, "insights_temporarily_unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1753,14 +2111,23 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "role": target.get("role", "student"),
             "approved": target.get("approved", False),
             "suspended": target.get("suspended", False),
-            "registered_at": target.get("registered_at", "")[:10],
+            "registered_at": (target.get("registered_at") or "")[:16],
+            "last_active": (target.get("last_active") or "")[:16],
             "total_answers": target.get("total_answers", 0),
+            "correct_answers": target.get("correct_answers", 0),
+            "accuracy": round(
+                int(target.get("correct_answers") or 0) * 100 /
+                int(target.get("total_answers") or 1), 1
+            ) if int(target.get("total_answers") or 0) else 0,
             "prestige_rank": target.get("prestige_rank", ""),
             "prestige_div": target.get("prestige_div", ""),
+            "streak_current": target.get("streak_current", 0) or 0,
         },
-        "subscription": None, "admin_role": None, "perms": [],
-        "counts": {"tickets": 0, "grades": 0},
-        "recent_tickets": [], "recent_audit": [],
+        "subscription": None, "admin_role": None, "roles": [], "perms": [],
+        "counts": {"tickets": 0, "grades": 0, "answers": 0, "questions": 0,
+                   "exams": 0, "notifications": 0},
+        "recent_tickets": [], "recent_audit": [], "recent_questions": [],
+        "recent_exams": [], "recent_notifications": [], "prestige_history": [],
     }
     try:
         sub = await db.sub_get(uid)
@@ -1776,6 +2143,11 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         ar = await db.get_admin_role(uid)
         if ar:
             out["admin_role"] = {"role": ar.get("role"), "scope": ar.get("scope_intake")}
+        role_info = await db.get_user_roles(uid)
+        out["roles"] = [{
+            "key": r.get("_id"), "label": r.get("label", r.get("_id", "")),
+            "active": r.get("active", True), "scope": role_info.get("scope_intake"),
+        } for r in role_info.get("roles", [])]
     except Exception:
         pass
     try:
@@ -1793,14 +2165,24 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         pass
     try:
         out["counts"]["grades"] = await db.grades.count_documents({"student_id": uid})
+        out["counts"]["answers"] = await db.answers.count_documents({"user_id": uid})
+        out["counts"]["questions"] = await db.questions.count_documents({"creator_id": uid})
+        out["counts"]["exams"] = await db.exam_sessions.count_documents({"user_id": uid})
     except Exception:
         pass
     try:
-        logs = await db.audit_logs.find({"actor.id": uid}).sort("timestamp", -1).limit(10).to_list(10)
+        logs = await db.audit_logs.find({"$or": [
+            {"actor.id": uid}, {"target.id": str(uid)}, {"target.id": uid},
+            {"target_id": str(uid)}, {"target_id": uid},
+        ]}).sort("timestamp", -1).limit(20).to_list(20)
         out["recent_audit"] = [{
-            "action": l.get("action", ""), "module": l.get("module", ""),
+            "id": str(l.get("_id", "")), "action": l.get("action", ""),
+            "module": l.get("module", ""),
             "at": (l.get("timestamp") or "")[:16].replace("T", " "),
             "severity": l.get("severity", "INFO"),
+            "relation": "actor" if (l.get("actor") or {}).get("id") == uid else "target",
+            "changes": l.get("changes") or [],
+            "correlation_id": l.get("correlation_id"),
         } for l in logs]
     except Exception:
         pass
@@ -1839,12 +2221,58 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         }
     except Exception:
         out.setdefault("prestige", {})
-    try:  # 🔔 اعلان‌ها — شمارش خوانده‌نشده/کل
+    try:  # 🔔 اعلان‌ها — شمارش و آخرین آیتم‌ها
         un = await db.user_notifs.count_documents({"user_id": uid, "read": {"$ne": True}})
-        tot = await db.useer_notifs.count_documents({"user_id": uid})
+        tot = await db.user_notifs.count_documents({"user_id": uid})
+        ndocs = await db.user_notifs.find({"user_id": uid}).sort("created_at", -1).limit(8).to_list(8)
         out["notifs"] = {"unread": un, "total": tot}
+        out["counts"]["notifications"] = tot
+        out["recent_notifications"] = [{
+            "id": str(n.get("_id", "")), "type": n.get("type", ""),
+            "title": n.get("title", ""), "body": n.get("body", ""),
+            "read": bool(n.get("read")),
+            "at": (n.get("created_at") or "")[:16].replace("T", " "),
+        } for n in ndocs]
     except Exception:
         out.setdefault("notifs", {})
+    try:
+        qdocs = await db.questions.find({"creator_id": uid}).sort("created_at", -1).limit(8).to_list(8)
+        out["recent_questions"] = [{
+            "id": str(q.get("_id", "")), "question": (q.get("question") or "")[:180],
+            "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+            "difficulty": q.get("difficulty", ""), "approved": bool(q.get("approved")),
+            "attempts": int(q.get("attempt_count") or 0),
+            "accuracy": round(int(q.get("correct_count") or 0) * 100 /
+                              int(q.get("attempt_count") or 1), 1)
+                        if int(q.get("attempt_count") or 0) else 0,
+            "at": (q.get("created_at") or "")[:10],
+        } for q in qdocs]
+    except Exception:
+        pass
+    try:
+        edocs = await db.exam_sessions.find({"user_id": uid}).sort("started_at", -1).limit(8).to_list(8)
+        out["recent_exams"] = [{
+            "id": str(e.get("session_id") or e.get("_id", "")),
+            "lesson": e.get("lesson", ""), "topic": e.get("topic", ""),
+            "status": e.get("status", "active"),
+            "answered": int(e.get("answered") or 0), "correct": int(e.get("correct") or 0),
+            "total": len(e.get("question_ids") or []),
+            "percentage": round(int(e.get("correct") or 0) * 100 /
+                                int(e.get("answered") or 1)) if int(e.get("answered") or 0) else 0,
+            "started_at": (e.get("started_at") or "")[:16].replace("T", " "),
+        } for e in edocs]
+    except Exception:
+        pass
+    try:
+        pdocs = await db.prestige_history.find({"user_id": uid}).sort("created_at", -1).limit(10).to_list(10)
+        out["prestige_history"] = [{
+            "id": str(p.get("_id", "")), "kind": p.get("kind", ""),
+            "title": p.get("title", "") or p.get("label", ""),
+            "xp": int(p.get("xp") or p.get("amount") or 0),
+            "at": (p.get("created_at") or p.get("at") or "")[:16].replace("T", " "),
+        } for p in pdocs]
+    except Exception:
+        pass
     return out
 
 
@@ -1866,14 +2294,57 @@ async def wa_rbac_intakes(user=Depends(_perm("users.manage"))):
     ]}
 
 
+@router.get("/rbac/roles-picker")
+async def wa_rbac_roles_picker(user=Depends(_perm("users.manage"))):
+    """فهرست کمینه و فقط‌خواندنی نقش‌ها برای filter/bulk کاربر."""
+    roles = await db.list_roles()
+    return {"roles": [{
+        "key": r.get("_id"), "label": r.get("label", r.get("_id", "")),
+        "active": r.get("active", True),
+    } for r in roles if r.get("active", True)]}
+
+
 # ── Tickets ───────────────────────────────────────────────────────
 
 @router.get("/tickets")
 async def wa_tickets_list(
-    status: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    q: Optional[str] = Query(None, max_length=120),
+    intake: Optional[str] = Query(None, max_length=80),
+    priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
+    assignee_id: Optional[int] = Query(None),
+    page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
-    return await owner_api.all_tickets(status=status, admin=user)
+    """Support queue با search/filter/pagination سرورساید؛ legacy owner route حفظ شده."""
+    q = q if isinstance(q, str) else None
+    intake = intake if isinstance(intake, str) else None
+    priority = priority if isinstance(priority, str) else None
+    assignee_id = assignee_id if isinstance(assignee_id, int) else None
+    page = page if isinstance(page, int) else 1
+    limit = limit if isinstance(limit, int) else 30
+    return await owner_api.all_tickets(
+        status=status, q=q, intake=intake, priority=priority,
+        assignee_id=assignee_id, page=page, limit=limit, admin=user,
+    )
+
+
+@router.get("/tickets/assignees")
+async def wa_ticket_assignees(user=Depends(_perm_any("tickets.reply", "tickets.manage"))):
+    roles = await db.list_roles()
+    role_keys = [r.get("_id") for r in roles
+                 if r.get("active", True) and set(r.get("perms") or []) & {"tickets.reply", "tickets.manage"}]
+    ids = {ADMIN_ID}
+    for key in role_keys:
+        ids.update(await db.user_ids_by_role(key, limit=5000))
+    docs = await db.users.find({"user_id": {"$in": list(ids)}}, {
+        "user_id": 1, "name": 1, "username": 1,
+    }).sort("name", 1).to_list(5000)
+    intakes = await db.get_all_intakes()
+    return {"assignees": [{"id": u.get("user_id"), "name": u.get("name", ""),
+                             "username": u.get("username", "")} for u in docs],
+            "intakes": [{"code": i.get("code", ""), "label": i.get("label", i.get("code", ""))}
+                        for i in intakes]}
 
 
 @router.get("/tickets/{tid}")
@@ -1881,7 +2352,118 @@ async def wa_ticket_detail(
     tid: int,
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
-    return await owner_api.ticket_detail(tid=tid, admin=user)
+    result = await owner_api.ticket_detail(tid=tid, admin=user)
+    raw = await db.ticket_get(tid)
+    ticket = result.get("ticket") or {}
+    ticket.update({
+        "priority": (raw or {}).get("priority", "normal"),
+        "tags": (raw or {}).get("tags") or [],
+        "assignee_id": (raw or {}).get("assignee_id"),
+        "assignee_name": (raw or {}).get("assignee_name", ""),
+        "internal_notes": [{
+            "id": str(n.get("id") or i), "text": n.get("text", ""),
+            "actor_id": n.get("actor_id"), "actor_name": n.get("actor_name", ""),
+            "at": (n.get("at") or "")[:16].replace("T", " "),
+        } for i, n in enumerate((raw or {}).get("internal_notes") or [])],
+    })
+    return result
+
+
+class TicketMetaPatch(BaseModel):
+    priority: Optional[str] = None
+    tags: Optional[list[str]] = None
+    assignee_id: Optional[int] = None
+
+
+@router.patch("/tickets/{tid}/meta")
+async def wa_ticket_meta(
+    tid: int, body: TicketMetaPatch,
+    user=Depends(_perm("tickets.manage")),
+):
+    ticket = await db.ticket_get(tid)
+    if not ticket:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    updates = {}
+    if body.priority is not None:
+        if body.priority not in ("low", "normal", "high", "urgent"):
+            raise HTTPException(422, "اولویت نامعتبر است")
+        updates["priority"] = body.priority
+    if body.tags is not None:
+        updates["tags"] = list(dict.fromkeys(
+            str(tag).strip()[:30] for tag in body.tags if str(tag).strip()
+        ))[:12]
+    if "assignee_id" in body.model_fields_set:
+        if body.assignee_id is None:
+            updates.update({"assignee_id": None, "assignee_name": ""})
+        else:
+            assignee = await db.get_user(body.assignee_id)
+            if not assignee or not await db.has_permission(body.assignee_id, "tickets.reply"):
+                raise HTTPException(422, "مسئول انتخابی مجوز پاسخ‌گویی ندارد")
+            updates.update({"assignee_id": body.assignee_id,
+                            "assignee_name": assignee.get("name", str(body.assignee_id))})
+    if not updates:
+        raise HTTPException(422, "تغییری ارسال نشده است")
+    before = {key: ticket.get(key) for key in updates}
+    await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
+    await _audit(user["id"], "ویرایش صف/متادیتای تیکت", severity="WARNING",
+                 target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
+                 before=before, after=updates, tags=["تیکت", "متادیتا", "پنل_وب"])
+    return {"ok": True, "changed": list(updates)}
+
+
+class TicketNoteIn(BaseModel):
+    text: str
+
+
+@router.post("/tickets/{tid}/notes")
+async def wa_ticket_note(
+    tid: int, body: TicketNoteIn,
+    user=Depends(_perm("tickets.manage")),
+):
+    ticket = await db.ticket_get(tid)
+    if not ticket:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    text = (body.text or "").strip()
+    if not (1 <= len(text) <= 1500):
+        raise HTTPException(422, "یادداشت باید بین ۱ تا ۱۵۰۰ کاراکتر باشد")
+    actor = user.get("_db") or await db.get_user(user["id"]) or {}
+    note = {"id": secrets.token_hex(8), "text": text, "actor_id": user["id"],
+            "actor_name": actor.get("name", str(user["id"])), "at": _now()}
+    await db.tickets.update_one({"ticket_id": tid}, {"$push": {"internal_notes": note}})
+    await _audit(user["id"], "افزودن یادداشت داخلی تیکت", severity="INFO",
+                 target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
+                 after={"note_id": note["id"]}, tags=["تیکت", "یادداشت_داخلی", "پنل_وب"])
+    return {"ok": True, "note": note}
+
+
+@router.get("/tickets/analytics/summary")
+async def wa_tickets_analytics(user=Depends(_perm("tickets.manage"))):
+    docs = await db.tickets.find({}, {
+        "status": 1, "priority": 1, "assignee_id": 1, "assignee_name": 1,
+        "created_at": 1, "closed_at": 1, "replies": 1,
+    }).sort("created_at", -1).limit(5000).to_list(5000)
+    status_counts, priority_counts, workload = {}, {}, {}
+    response_minutes, resolution_minutes = [], []
+    for t in docs:
+        status = t.get("status", "open"); status_counts[status] = status_counts.get(status, 0) + 1
+        priority = t.get("priority", "normal"); priority_counts[priority] = priority_counts.get(priority, 0) + 1
+        if t.get("assignee_id"):
+            key = str(t.get("assignee_id")); workload.setdefault(key, {"name": t.get("assignee_name", key), "count": 0})["count"] += 1
+        try:
+            created = datetime.fromisoformat(t.get("created_at", ""))
+            admin_reply = next((r for r in (t.get("replies") or []) if not (r.get("text") or "").startswith("[دانشجو]")), None)
+            if admin_reply and admin_reply.get("at"):
+                response_minutes.append(max(0, (datetime.fromisoformat(admin_reply["at"]) - created).total_seconds() / 60))
+            if t.get("closed_at"):
+                resolution_minutes.append(max(0, (datetime.fromisoformat(t["closed_at"]) - created).total_seconds() / 60))
+        except (TypeError, ValueError):
+            pass
+    avg = lambda rows: round(sum(rows) / len(rows), 1) if rows else None
+    return {"total": len(docs), "sample_limited": len(docs) == 5000,
+            "status": status_counts, "priority": priority_counts,
+            "avg_first_response_minutes": avg(response_minutes),
+            "avg_resolution_minutes": avg(resolution_minutes),
+            "workload": sorted(workload.values(), key=lambda x: x["count"], reverse=True)[:10]}
 
 
 @router.post("/tickets/{tid}/reply")
@@ -2298,14 +2880,20 @@ async def wa_ai_reset_quota(
 async def wa_audit_logs(
     category: Optional[str] = Query(None),
     min_severity: Optional[str] = Query(None),
-    q: Optional[str] = Query(None),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(25, ge=1, le=100),
+    q: Optional[str] = Query(None), actor: Optional[str] = Query(None),
+    actor_role: Optional[str] = Query(None), module: Optional[str] = Query(None),
+    action: Optional[str] = Query(None), target_type: Optional[str] = Query(None),
+    target: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None), correlation_id: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
     user=Depends(_perm("audit.view")),
 ):
     return await owner_api.audit_logs_admin(
-        admin=user, category=category, min_severity=min_severity,
-        q=q, skip=skip, limit=limit)
+        admin=user, category=category, min_severity=min_severity, q=q,
+        actor=actor, actor_role=actor_role, module=module, action=action,
+        target_type=target_type, target=target, date_from=date_from,
+        date_to=date_to, correlation_id=correlation_id,
+        skip=skip, limit=limit)
 
 
 # ── System / Backup / Prestige ─────────────────────────────────────
@@ -2338,6 +2926,44 @@ async def wa_system_status(
     return out
 
 
+@router.get("/system/jobs")
+async def wa_system_jobs(
+    user=Depends(_perm_any("system.manage", "notifications.manage", "backup.manage")),
+):
+    """Job center فقط از queue/run/settings واقعی؛ هیچ scheduler ساختگی ندارد."""
+    perms = await db.get_user_perms(user["id"])
+    allow = lambda *keys: user["id"] == ADMIN_ID or any(k in perms for k in keys)
+    jobs = []
+    if allow("notifications.manage", "system.manage"):
+        runs = await db.get_recent_notif_runs(limit=20)
+        grouped = {}
+        for run in runs:
+            name = run.get("job_name") or "notification"
+            grouped.setdefault(name, run)
+        for name, run in grouped.items():
+            jobs.append({
+                "key": f"notif:{name}", "label": name, "kind": "notification",
+                "status": run.get("status", "unknown"),
+                "sent": int(run.get("sent") or 0), "failed": int(run.get("failed") or 0),
+                "total": int(run.get("total") or 0),
+                "last_run": (run.get("started_at") or "")[:16].replace("T", " "),
+            })
+        queue = await db.bot_notifs.count_documents({"sent": False})
+        scheduled = await db.bot_notifs.count_documents({
+            "sent": False, "send_at": {"$exists": True, "$ne": None},
+        })
+        jobs.append({"key": "outbox", "label": "صف خروجی ربات", "kind": "queue",
+                     "status": "pending" if queue else "idle", "pending": queue,
+                     "scheduled": scheduled})
+    if allow("backup.manage", "system.manage"):
+        enabled = bool(await db.get_setting("auto_backup_enabled", False))
+        jobs.append({"key": "backup", "label": "پشتیبان خودکار", "kind": "backup",
+                     "status": "enabled" if enabled else "disabled",
+                     "hour": int(await db.get_setting("auto_backup_hour", 3) or 3),
+                     "last_run": await db.get_setting("auto_backup_last_run", None)})
+    return {"jobs": jobs, "checked_at": _now()}
+
+
 @router.get("/system/backup-settings")
 async def wa_backup_settings(user=Depends(_perm("backup.manage"))):
     return {
@@ -2362,6 +2988,77 @@ async def wa_backup_settings_patch(
         auto_backup_hour=body.auto_backup_hour,
     )
     return await owner_api.bot_settings_patch(body=owner_body, admin=user)
+
+
+async def _read_restore_upload(file: UploadFile):
+    if not (file.filename or "").lower().endswith(".json"):
+        raise HTTPException(422, "فقط فایل JSON پشتیبان پذیرفته می‌شود")
+    raw = await file.read(50 * 1024 * 1024 + 1)
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل پشتیبان بیشتر از ۵۰MB است")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(422, "فایل JSON معتبر نیست")
+    if not isinstance(data, dict) or not data.get("backup_version"):
+        raise HTTPException(422, "ساختار فایل پشتیبان شناخته‌شده نیست")
+    section = data.get("section", "full")
+    sections = data.get("sections") or {section: data}
+    if not isinstance(sections, dict) or not sections:
+        raise HTTPException(422, "فایل هیچ بخش قابل بازیابی ندارد")
+    known = {"users", "basic_science", "content", "references", "refs", "qbank",
+             "schedules", "faq", "tickets", "access_control", "access",
+             "subscription_system", "subscription", "grades", "settings", "logs", "stats"}
+    unknown = [key for key in sections if key not in known]
+    if unknown:
+        raise HTTPException(422, f"بخش ناشناخته در پشتیبان: {', '.join(unknown[:5])}")
+    digest = hashlib.sha256(raw).hexdigest()
+    return data, sections, digest, len(raw)
+
+
+def _backup_section_count(value):
+    if not isinstance(value, dict):
+        return 0
+    if isinstance(value.get("count"), int):
+        return value["count"]
+    return sum(_backup_section_count(v) for v in value.values() if isinstance(v, dict))
+
+
+@router.post("/system/restore/validate")
+async def wa_restore_validate(
+    file: UploadFile = File(...), user=Depends(_guard_any_admin),
+):
+    if user["id"] != ADMIN_ID:
+        raise HTTPException(403, "owner_only")
+    data, sections, digest, size = await _read_restore_upload(file)
+    return {"valid": True, "digest": digest, "size": size,
+            "backup_version": data.get("backup_version"),
+            "created_at": (data.get("created_at") or "")[:19],
+            "sections": [{"key": key, "records": _backup_section_count(value)}
+                         for key, value in sections.items()]}
+
+
+@router.post("/system/restore/confirm")
+async def wa_restore_confirm(
+    file: UploadFile = File(...), digest: str = Form(...),
+    confirmation: str = Form(...), user=Depends(_guard_any_admin),
+):
+    if user["id"] != ADMIN_ID:
+        raise HTTPException(403, "owner_only")
+    if confirmation.strip() != "RESTORE HUMSYAR":
+        raise HTTPException(422, "عبارت تأیید بازیابی صحیح نیست")
+    _data, sections, actual_digest, _size = await _read_restore_upload(file)
+    if not secrets.compare_digest(actual_digest, digest.strip().lower()):
+        raise HTTPException(409, "فایل با نسخه‌ی اعتبارسنجی‌شده یکسان نیست")
+    restored = {}
+    for key, value in sections.items():
+        restored[key] = await backup_service._restore_section(key, value)
+    await _audit(user["id"], "بازیابی فایل پشتیبان از Web Admin", severity="CRITICAL",
+                 target_id=actual_digest[:16], target_type="backup",
+                 target_label=", ".join(sections.keys()),
+                 after={"sections": len(restored), "records": sum(restored.values())},
+                 tags=["بازیابی_بکاپ", "پنل_وب"])
+    return {"ok": True, "restored": restored, "total": sum(restored.values())}
 
 
 @router.post("/system/backup")
@@ -2499,13 +3196,16 @@ async def _grade_intake_scope(user: dict) -> Optional[str]:
 
 @router.get("/grades/recent")
 async def wa_grades_recent(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(30, ge=1, le=100),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    q: Optional[str] = Query(None, max_length=100),
+    lesson: Optional[str] = Query(None, max_length=100),
+    group: Optional[str] = Query(None, max_length=20),
     user=Depends(_perm_any("grades.manage", "grades.scoped")),
 ):
     intake = await _grade_intake_scope(user)
     return await academic_api.grades_recent(
-        skip=skip, limit=limit, intake=intake, admin=user)
+        skip=skip, limit=limit, intake=intake, group=group,
+        q=q, lesson=lesson, admin=user)
 
 
 @router.get("/grades/find-student")
