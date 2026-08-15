@@ -995,70 +995,112 @@ class DBCore:
     # حالا تک‌منبع حقیقت اینجاست و هر دو مسیر (مالک + stats.deep وب‌ادمین)
     # از آن استفاده می‌کنند — خروجی دقیقاً همان شکل قبلی است (Never Break).
     async def stats_analytics_bundle(self, days: int = 14) -> dict:
+        """Persisted period analytics plus an explicit like-for-like previous period.
+
+        The method deliberately returns ``None`` for percentage change when the
+        previous period is zero, because no finite comparison can be claimed.
+        """
         try:
-            days = max(7, min(90, int(days or 14)))
+            days = max(1, min(90, int(days or 14)))
         except (TypeError, ValueError):
             days = 14
-        since = (datetime.now() - timedelta(days=days)).isoformat()
+        now = datetime.now()
+        current_start = now - timedelta(days=days)
+        previous_start = now - timedelta(days=days * 2)
+        since = current_start.isoformat()
+        previous_since = previous_start.isoformat()
+        period_end = now.isoformat()
 
         async def _daily(col, ts_field):
             expr = {"$substrBytes": [f"${ts_field}", 0, 10]}
             rows = await col.aggregate([
-                {"$match": {ts_field: {"$gte": since}}},
+                {"$match": {ts_field: {"$gte": since, "$lt": period_end}}},
                 {"$group": {"_id": expr, "count": {"$sum": 1}}},
                 {"$sort": {"_id": 1}},
             ]).to_list(days + 2)
             return [{"date": r["_id"], "count": r["count"]}
                     for r in rows if r.get("_id")]
 
-        users_daily, activity_daily, tickets_daily = await asyncio.gather(
+        current_window = {"$gte": since, "$lt": period_end}
+        previous_window = {"$gte": previous_since, "$lt": since}
+        (
+            users_daily, activity_daily, tickets_daily,
+            active_uids, previous_active_uids,
+            new_users, previous_new_users,
+            total_actions, previous_total_actions,
+            new_tickets, previous_new_tickets,
+            open_reports,
+        ) = await asyncio.gather(
             _daily(self.users, "registered_at"),
             _daily(self.stats_col, "timestamp"),
             _daily(self.tickets, "created_at"),
+            self.stats_col.distinct("user_id", {"timestamp": current_window}),
+            self.stats_col.distinct("user_id", {"timestamp": previous_window}),
+            self.users.count_documents({"registered_at": current_window}),
+            self.users.count_documents({"registered_at": previous_window}),
+            self.stats_col.count_documents({"timestamp": current_window}),
+            self.stats_col.count_documents({"timestamp": previous_window}),
+            self.tickets.count_documents({"created_at": current_window}),
+            self.tickets.count_documents({"created_at": previous_window}),
+            self.content_reports.count_documents({"status": "new"}),
         )
 
-        active_uids = await self.stats_col.distinct(
-            "user_id", {"timestamp": {"$gte": since}})
-        new_users = await self.users.count_documents(
-            {"registered_at": {"$gte": since}})
-        total_actions = await self.stats_col.count_documents(
-            {"timestamp": {"$gte": since}})
-        new_tickets = await self.tickets.count_documents(
-            {"created_at": {"$gte": since}})
-        open_reports = await self.content_reports.count_documents(
-            {"status": "new"})
-
-        top_actions_rows = await self.stats_col.aggregate([
-            {"$match": {"timestamp": {"$gte": since}}},
-            {"$group": {"_id": "$action", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-            {"$limit": 8},
-        ]).to_list(8)
+        top_actions_rows, hourly_rows = await asyncio.gather(
+            self.stats_col.aggregate([
+                {"$match": {"timestamp": current_window}},
+                {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 8},
+            ]).to_list(8),
+            self.stats_col.aggregate([
+                {"$match": {"timestamp": current_window}},
+                {"$group": {"_id": {"$substrBytes": ["$timestamp", 11, 2]},
+                            "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 6},
+            ]).to_list(6),
+        )
         top_actions = [{"action": r["_id"] or "نامشخص", "count": r["count"]}
                        for r in top_actions_rows]
-
-        hourly_rows = await self.stats_col.aggregate([
-            {"$match": {"timestamp": {"$gte": since}}},
-            {"$group": {"_id": {"$substrBytes": ["$timestamp", 11, 2]},
-                        "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-            {"$limit": 6},
-        ]).to_list(6)
         hourly = sorted(
             [{"hour": int(r["_id"]), "count": r["count"]}
              for r in hourly_rows
              if r.get("_id") and str(r["_id"]).isdigit()],
             key=lambda x: x["hour"])
 
+        current_kpis = {
+            "active_users": len(active_uids),
+            "new_users": new_users,
+            "total_actions": total_actions,
+            "new_tickets": new_tickets,
+            "open_reports": open_reports,
+        }
+        previous_kpis = {
+            "active_users": len(previous_active_uids),
+            "new_users": previous_new_users,
+            "total_actions": previous_total_actions,
+            "new_tickets": previous_new_tickets,
+        }
+
+        def _comparison(key: str) -> dict:
+            current = int(current_kpis[key] or 0)
+            previous = int(previous_kpis[key] or 0)
+            change_pct = (round((current - previous) * 100 / previous, 1)
+                          if previous else (0.0 if current == 0 else None))
+            return {"current": current, "previous": previous,
+                    "change_pct": change_pct,
+                    "direction": "up" if current > previous else "down" if current < previous else "flat"}
+
         return {
             "days": days,
-            "kpis": {
-                "active_users": len(active_uids),
-                "new_users": new_users,
-                "total_actions": total_actions,
-                "new_tickets": new_tickets,
-                "open_reports": open_reports,
+            "generated_at": period_end,
+            "period": {
+                "current_start": since, "current_end": period_end,
+                "previous_start": previous_since, "previous_end": since,
             },
+            "kpis": current_kpis,
+            "previous_kpis": previous_kpis,
+            "comparison": {key: _comparison(key) for key in previous_kpis},
             "daily": {
                 "users": users_daily,
                 "activity": activity_daily,
@@ -1204,12 +1246,14 @@ class DBCore:
             top_admins = top_admins[:5]
 
         # ── روند رشد ۴ هفته‌ی اخیر + پیش‌بینی ساده‌ی هفته‌ی بعد ──
-        week_counts = []
+        week_queries = []
         for i in range(4):
             start = (now - timedelta(days=7 * (i + 1))).isoformat()
             end   = (now - timedelta(days=7 * i)).isoformat()
-            c = await self.users.count_documents({'registered_at': {'$gte': start, '$lt': end}})
-            week_counts.append(c)  # week_counts[0] = این هفته, [3] = ۴ هفته پیش
+            week_queries.append({'registered_at': {'$gte': start, '$lt': end}})
+        week_counts = list(await asyncio.gather(
+            *(self.users.count_documents(query) for query in week_queries)
+        ))  # week_counts[0] = این هفته، [3] = چهار هفته پیش
         this_week = week_counts[0]
         prior_avg = round(sum(week_counts[1:]) / 3, 1) if any(week_counts[1:]) else 0
         slope     = (week_counts[0] - week_counts[3]) / 3 if len(week_counts) == 4 else 0
@@ -1231,7 +1275,7 @@ class DBCore:
             })
         if tickets_old:
             alerts.append({
-                'icon': '🎫', 'title': f"{tickets_old} تیکت بیش از ۴۸ ساعت بدون پاسخ باز مانده",
+                'icon': '🎫', 'title': f"{tickets_old} تیکت بیش از ۴۸ ساعت باز مانده",
                 'detail': f"قدیمی‌ترین: {oldest_ticket_h} ساعت پیش" if oldest_ticket_h else '',
                 'action': 'ticket:manage',
             })

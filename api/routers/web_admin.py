@@ -1216,6 +1216,7 @@ SAVED_VIEW_SCOPE_PERMS = {
     "reports": ("reports.review",), "grades": ("grades.manage", "grades.scoped"),
     "broadcast_segment": ("broadcast.send",), "broadcast_draft": ("broadcast.send",),
     "exams": ("schedules.manage",),
+    "analytics": ("stats.view",),
 }
 
 
@@ -2235,7 +2236,7 @@ async def exams_stats(user=Depends(_perm("schedules.manage"))):
         out["runs_7d"] = await db.exam_sessions.count_documents(
             {"started_at": {"$gte": week_ago}})
         # میانگین درصد — نمونه‌ی ۵۰۰تایی اخیر (بدون aggregate سنگین)
-        rows = await db.exam_sessions.find({"status": "finished"}).limit(500).to_list(500)
+        rows = await db.exam_sessions.find({"status": "finished"}).sort("started_at", -1).limit(500).to_list(500)
         pcts = []
         for r in rows:
             tot = r.get("total") or r.get("count") or 0
@@ -2640,60 +2641,77 @@ async def content_items_bulk(body: ItemsBulk,
 @router.get("/wa-analytics")
 async def wa_analytics(user=Depends(_perm("stats.view")),
                        days: int = Query(14, ge=1, le=90)):
-    """📈 متحد از داشبوردهای آماری واقعی db + شمارش‌های زنده — فقط خواندنی.
+    """Management analytics from persisted aggregates, with per-domain status.
 
-    🌊 موج Analytics-Filters: پارامتر days (۷ تا ۹۰ روز) برای متریکهای
-    بازه‌ای؛ دارندگان مجوز stats.deep علاوه‌بر snapshot، «bundle»‌ی کامل
-    تحلیلی (KPI/سری روزانه/اکشن‌ها/ساعات اوج — همان منطق واحد db) می‌گیرند.
+    Snapshot domains keep their historical contract. Only ``bundle`` and
+    ``new_resources_in_range`` are controlled by ``days``; the response states
+    this explicitly so the UI never implies a time filter that was not applied.
     """
-    out = {}
-    out["days"] = days
-    for name, fn in (("users", getattr(db, "stats_dashboard_users", None)),
-                     ("content", getattr(db, "stats_dashboard_content", None)),
-                     ("questions", getattr(db, "stats_dashboard_questions", None)),
-                     ("tickets", getattr(db, "stats_dashboard_tickets", None)),
-                     ("notif", getattr(db, "stats_dashboard_notif", None))):
-        if fn:
-            try:
-                out[name] = await fn()
-            except Exception:
-                out[name] = {}
-    try:
-        out["pulse"] = await db.activity_pulse()
-    except Exception:
-        out["pulse"] = {}
-    try:
-        out["sub"] = await db.sub_stats()
-    except Exception:
-        out["sub"] = {}
-    try:
-        out["new_resources_7d"] = await db.new_resources_count(7)
-    except Exception:
-        out["new_resources_7d"] = 0
-    try:
-        out["new_resources_in_range"] = await db.new_resources_count(days)
-    except Exception:
-        out["new_resources_in_range"] = 0
-    try:
-        out["active_today"] = await db.count_active_users_today()
-    except Exception:
-        out["active_today"] = 0
-    # 🌊 تحلیل عمیق بازه‌ای — فقط با مجوز جداگانه (گیت دومرحله‌ای)
-    deep = False
+    generated_at = datetime.now().isoformat()
+    out = {
+        "days": days, "generated_at": generated_at, "domain_status": {},
+        "range_applies_to": ["bundle", "new_resources_in_range"],
+        "scope": {"kind": "global", "label": "کل سامانه"},
+    }
+    domain_specs = [
+        ("users", getattr(db, "stats_dashboard_users", None)),
+        ("content", getattr(db, "stats_dashboard_content", None)),
+        ("questions", getattr(db, "stats_dashboard_questions", None)),
+        ("tickets", getattr(db, "stats_dashboard_tickets", None)),
+        ("notif", getattr(db, "stats_dashboard_notif", None)),
+        ("pulse", getattr(db, "activity_pulse", None)),
+        ("sub", getattr(db, "sub_stats", None)),
+    ]
+
+    async def _call(fn):
+        if fn is None:
+            return RuntimeError("metric_source_unavailable")
+        try:
+            return await fn()
+        except Exception as exc:
+            return exc
+
+    results = await asyncio.gather(*[_call(fn) for _, fn in domain_specs])
+    for (name, _), value in zip(domain_specs, results):
+        if isinstance(value, Exception):
+            out[name] = {}
+            out["domain_status"][name] = {"ok": False, "error": "temporarily_unavailable"}
+        else:
+            out[name] = value
+            out["domain_status"][name] = {"ok": True}
+
+    # Reuse domain aggregates instead of repeating the exact same Mongo counts.
+    users_snapshot = out.get("users") or {}
+    content_snapshot = out.get("content") or {}
+    out["active_today"] = users_snapshot.get("active_today")
+    out["new_resources_7d"] = content_snapshot.get("new_this_week")
+    out["domain_status"]["active_today"] = dict(out["domain_status"].get("users", {"ok": False, "error": "temporarily_unavailable"}))
+    out["domain_status"]["new_resources_7d"] = dict(out["domain_status"].get("content", {"ok": False, "error": "temporarily_unavailable"}))
+    if days == 7 and out["new_resources_7d"] is not None:
+        out["new_resources_in_range"] = out["new_resources_7d"]
+        out["domain_status"]["new_resources_in_range"] = dict(out["domain_status"]["new_resources_7d"])
+    else:
+        try:
+            out["new_resources_in_range"] = await db.new_resources_count(days)
+            out["domain_status"]["new_resources_in_range"] = {"ok": True}
+        except Exception:
+            out["new_resources_in_range"] = None
+            out["domain_status"]["new_resources_in_range"] = {"ok": False, "error": "temporarily_unavailable"}
+
     try:
         deep = bool(await db.has_permission(user["id"], "stats.deep"))
     except Exception:
         deep = False
+    out["deep"] = deep
     if deep:
         try:
             out["bundle"] = await db.stats_analytics_bundle(days)
+            out["domain_status"]["bundle"] = {"ok": True}
         except Exception:
-            pass
-    out["deep"] = deep
-    # بعضی اسناد legacy هنوز ObjectId/datetime تو در تو دارند. routeهای
-    # analytics نباید بعد از موفقیت query در مرحله‌ی response serialization
-    # با 500 شکست بخورند. متدهای domain projection می‌دهند؛ این encoder فقط
-    # لایه‌ی دفاع نهایی قرارداد JSON است.
+            out["domain_status"]["bundle"] = {"ok": False, "error": "temporarily_unavailable"}
+    else:
+        out["domain_status"]["bundle"] = {"ok": False, "error": "permission_required"}
+
     return jsonable_encoder(out, custom_encoder={ObjectId: str})
 
 
