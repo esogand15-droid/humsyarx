@@ -758,7 +758,28 @@ class DBCore:
         # FIX جدید: ۳ کاربر برتر (بر اساس جدول برترین‌های dashboard.py)
         # هم اینجا نمایش داده می‌شود تا ادمین فعال‌ترین کاربران را هم
         # در کنار آمار رشد/فعالیت ببیند.
-        top_users = await self.get_leaderboard(3)
+        top_user_docs = await self.get_leaderboard(3)
+        # get_leaderboard اسناد کامل Mongo را برمی‌گرداند. برگرداندن مستقیم
+        # آن‌ها هم ObjectId را در JSON encoder منفجر می‌کرد و هم فیلدهای
+        # خصوصی نامرتبط کاربر (مثل حافظه‌ی AI) را وارد پاسخ analytics می‌کرد.
+        # این projection، قرارداد کمینه و سریال‌پذیر پنل را نگه می‌دارد.
+        def _as_count(value) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        top_users = []
+        for row in top_user_docs:
+            total = _as_count(row.get('total_answers'))
+            correct = _as_count(row.get('correct_answers'))
+            top_users.append({
+                'user_id': row.get('user_id'),
+                'name': str(row.get('nickname') or row.get('name') or ''),
+                'total_answers': total,
+                'correct_answers': correct,
+                'accuracy': round(correct * 100 / total, 1) if total else 0,
+            })
 
         return {
             'total_approved': total_approved, 'total_pending': total_pending,
