@@ -877,13 +877,17 @@ async def ref_del_book_ep(bid: str, admin=Depends(get_content_admin_user)):
     return {"ok":True}
 
 @router.get("/references/books/{bid}/files")
-async def ref_files_ep(bid: str, admin=Depends(get_content_admin_user)):
+async def ref_files_ep(bid: str, skip: int = Query(0, ge=0),
+                       limit: int = Query(50, ge=1, le=100),
+                       admin=Depends(get_content_admin_user)):
     # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ فایل‌های کتاب سراسری برای scoped
     ro = await _read_intake(await db.ref_book_intake(bid), admin)
-    items = await db.ref_get_files(bid)
+    items, total = await db.ref_get_files_page(bid, skip=skip, limit=limit)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     bdoc = await db.ref_get_book(bid) or {}
     return {"readonly": ro, "is_fork": bool(bdoc.get("fork_of")),
+        "total": total, "skip": skip, "limit": limit,
+        "has_more": skip + len(items) < total,
         "files":[{"id":str(f["_id"]),"lang":f.get("lang","fa"),"volume":f.get("volume",1),
         "description":f.get("description",""),"downloads":f.get("downloads",0)} for f in items]}
 
@@ -1113,16 +1117,16 @@ async def qbank_move_file_ep(fid: str, body: MoveBody, admin=Depends(GLOBAL_USER
 
 @router.get("/qbank/files")
 async def qbank_files_ep(lesson: Optional[str]=Query(None), topic: Optional[str]=Query(None),
-                          intake: Optional[str]=Query(None),
+                          intake: Optional[str]=Query(None), skip: int = Query(0, ge=0),
+                          limit: int = Query(50, ge=1, le=100),
                           admin=Depends(get_content_admin_user)):
     iv = resolve_content_intake(admin, intake)
     scope = admin.get("_scope") or {}
-    # 🌊 C1.5 — ادمین ورودی خاص: فایل‌های سراسری هم با فلگ readonly (§۲۲)
-    if scope.get("kind") == "scoped":
-        items = await db.get_qbank_files(lesson, topic, intake=[iv, ''])
-    else:
-        items = await db.get_qbank_files(lesson, topic, intake=iv)
-    return {"intake": iv,
+    visible_intakes = [iv, ''] if scope.get("kind") == "scoped" else iv
+    items, total = await db.get_qbank_files_page(
+        lesson, topic, intake=visible_intakes, skip=skip, limit=limit)
+    return {"intake": iv, "total": total, "skip": skip, "limit": limit,
+        "has_more": skip + len(items) < total,
         "files":[{"id":str(f["_id"]),"lesson":f.get("lesson",""),"topic":f.get("topic",""),
         "description":f.get("description",""),"file_type":f.get("file_type","document"),
         "intake": f.get("intake") or "",
