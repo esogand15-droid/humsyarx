@@ -199,6 +199,8 @@ export const api = {
   exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v)), `humsyar-audit-${new Date().toISOString().slice(0, 10)}.csv`),
   systemJobs: () => req('/api/web-admin/system/jobs'),
   systemObservability: (hours = 24) => req(`/api/web-admin/system/observability?hours=${hours}`),
+  securitySessions: (page = 1, limit = 30) => req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),
+  revokeSecuritySession: (id, reason) => req(`/api/web-admin/system/security/sessions/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: { reason } }),
   settings: () => req('/api/web-admin/system/backup-settings'),
   patchSettings: (body) => req('/api/web-admin/system/backup-settings', { method: 'PATCH', body }),
   backup: (section) => req('/api/web-admin/system/backup', { method: 'POST', body: { section: section || 'all' } }),

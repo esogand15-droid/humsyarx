@@ -27,6 +27,7 @@ export default function System({ me }) {
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
   const [observability, setObservability] = useState(null);
+  const [sessions, setSessions] = useState(null);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null); // section در انتظار تأیید
   const [busySec, setBusySec] = useState('');
@@ -47,12 +48,13 @@ export default function System({ me }) {
   const load = async () => {
     setErr('');
     try {
-      const [b, s, j, o] = await Promise.all([
+      const [b, s, j, o, sec] = await Promise.all([
         api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
         api.systemJobs().catch(() => ({ jobs: [] })),
         canObserve ? api.systemObservability().catch(() => null) : Promise.resolve(null),
+        canObserve ? api.securitySessions().catch(() => null) : Promise.resolve(null),
       ]);
-      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o);
+      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setSessions(sec);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -176,6 +178,8 @@ export default function System({ me }) {
         {!!observability.recent_errors?.length && <details style={{ marginTop: 10 }}><summary>خطاهای اخیر و Request ID</summary><div className="grid">{observability.recent_errors.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
       </div>}
 
+      {canObserve && <SecuritySessionsPanel data={sessions} onReload={load} />}
+
       {/* ── ⏰ بکاپ خودکار روزانه (داده واقعی settings؛ PATCH دارای audit) ── */}
       {st && (
         <div className="panel panel-pad" style={{ marginTop: 14 }}>
@@ -235,12 +239,14 @@ export default function System({ me }) {
         </div>
         {!!me?.is_owner && <div className="panel panel-pad" style={{ marginTop: 14, borderColor: 'color-mix(in srgb, var(--c-bad) 42%, var(--c-line))' }}>
           <b>📥 بازیابی پشتیبان — فقط مالک</b>
-          <p className="muted" style={{ marginTop: 5 }}>فایل ابتدا بدون mutation اعتبارسنجی و fingerprint می‌شود؛ اجرای مرحله دوم فقط با همان فایل و عبارت تأیید ممکن است. بازیابی در audit با CRITICAL ثبت می‌شود.</p>
+          <p className="muted" style={{ marginTop: 5 }}>فایل ابتدا بدون mutation اعتبارسنجی و fingerprint می‌شود؛ اجرای مرحله دوم فقط با همان فایل و عبارت تأیید ممکن است. بازیابی از نوع merge/upsert است، رکوردهای غایب از فایل حذف نمی‌شوند و عملیات در audit با CRITICAL ثبت می‌شود.</p>
           <input type="file" className="inp" accept=".json,application/json" disabled={restoreBusy} onChange={e => validateRestore(e.target.files?.[0])} />
           {restoreBusy && !restorePreview && <Loading rows={2} />}
           {restorePreview && <div style={{ marginTop: 10 }}>
             <div className="row"><B kind="ok">فایل معتبر</B><B>نسخه {restorePreview.backup_version}</B><B>{(restorePreview.size / 1024 / 1024).toFixed(2)} MB</B>
               <span className="code">{restorePreview.digest.slice(0, 16)}…</span></div>
+            {!!restorePreview.integrity?.complete && <div className="callout ok" style={{ marginTop: 8 }}>✅ manifest یکپارچگی فایل کامل است؛ نشست، OTP، کلید API هوشیار و outbox اجرایی عمداً داخل پشتیبان نیستند.</div>}
+            {!!restorePreview.warnings?.length && <div className="callout warn" style={{ marginTop: 8 }}>{restorePreview.warnings.map(w => <div key={w}>⚠️ {w}</div>)}</div>}
             <div className="grid g4" style={{ marginTop: 8 }}>{restorePreview.sections.map(s => <div className="panel panel-pad" style={{ background: 'var(--bg)' }} key={s.key}><b>{s.key}</b><div className="muted">{fa(s.records)} رکورد</div></div>)}</div>
             <label className="fld" style={{ marginTop: 10 }}><span>برای تأیید دقیقاً بنویسید: <span className="code">RESTORE HUMSYAR</span></span>
               <input className="inp code" value={restorePhrase} onChange={e => setRestorePhrase(e.target.value)} /></label>
@@ -263,6 +269,43 @@ export default function System({ me }) {
       )}
     </>
   );
+}
+
+function SecuritySessionsPanel({ data, onReload }) {
+  const [target, setTarget] = useState(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const revoke = async () => {
+    if (reason.trim().length < 3) return toast('دلیل لغو نشست را وارد کنید', 'err');
+    setBusy(true);
+    try {
+      await api.revokeSecuritySession(target.id, reason.trim());
+      toast('نشست با ثبت حسابرسی لغو شد');
+      setTarget(null); setReason(''); await onReload();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <section className="panel panel-pad" style={{ marginTop: 14 }}>
+    <div className="row"><div><b>🔐 نشست‌های فعال پنل وب</b>
+      <div className="muted">نشست‌های واقعی HttpOnly؛ انقضا با TTL و لغو از سمت سرور اعمال می‌شود.</div></div>
+      <span className="spacer" />{data && <B kind="acc">{fa(data.total)} نشست فعال</B>}
+      <button className="btn sm" onClick={onReload}>↻ تازه‌سازی</button></div>
+    {!data ? <ErrorState title="فهرست نشست‌ها در دسترس نیست" error="داده امنیتی بارگذاری نشد" onRetry={onReload} /> :
+      <div style={{ marginTop: 10 }}><DataTable columns={[
+        { k: 'admin', label: 'مدیر', render: r => <div><b>{r.name}</b><div className="muted ltr">{r.username ? `@${r.username} · ` : ''}{r.uid}</div></div> },
+        { k: 'created_at', label: 'شروع', render: r => <span className="ltr">{String(r.created_at || '—').slice(0, 16).replace('T', ' ')}</span> },
+        { k: 'expires_at', label: 'انقضا', render: r => <span className="ltr">{String(r.expires_at || '—').slice(0, 16).replace('T', ' ')}</span> },
+        { k: 'peer_ip', label: 'IP مستقیم', render: r => <span className="code">{r.peer_ip || 'ثبت‌نشده'}</span> },
+        { k: 'device', label: 'عامل کاربر', render: r => <span className="muted ltr" title={r.user_agent}>{r.user_agent ? r.user_agent.slice(0, 46) : 'legacy / ثبت‌نشده'}</span> },
+        { k: 'status', label: 'وضعیت', render: r => r.current ? <B kind="ok">نشست جاری</B> : <B>فعال</B> },
+        { k: 'action', label: '', render: r => r.current ? null : <button className="btn sm danger" onClick={() => { setTarget(r); setReason(''); }}>لغو نشست</button> },
+      ]} rows={data.sessions || []} rowKey="id" colToggle empty="نشست فعال دیگری وجود ندارد" /></div>}
+    {target && <Confirm onNo={() => { if (!busy) { setTarget(null); setReason(''); } }} onYes={revoke} danger>
+      <p className="state-description">نشست «{target.name}» بلافاصله بی‌اعتبار می‌شود. نشست مالک فقط توسط مالک قابل لغو است.</p>
+      <label className="fld" style={{ marginTop: 10 }}><span>دلیل لغو</span>
+        <input className="inp" maxLength={300} value={reason} onChange={e => setReason(e.target.value)} placeholder="مثلاً دستگاه ناشناس یا پایان همکاری" disabled={busy} /></label>
+    </Confirm>}
+  </section>;
 }
 
 function PrestigeConfigPanel() {
