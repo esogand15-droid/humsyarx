@@ -605,6 +605,40 @@ class DBRbac:
         )
 
 
+    async def rbac_restore_role(self, key: str, snapshot: dict = None) -> None:
+        """Compensating restore used when mandatory RBAC audit persistence fails."""
+        if snapshot is None:
+            await self.roles.delete_many({'_id': key})
+        else:
+            await self.roles.replace_one({'_id': key}, snapshot, upsert=True)
+
+
+    async def rbac_assignment_snapshot(self, uid: int) -> dict:
+        user = await self.users.find_one({'user_id': uid}, {'role': 1})
+        return {
+            'user_roles': await self.user_roles.find_one({'_id': uid}),
+            'admin_role': await self.admin_roles.find_one({'_id': uid}),
+            'legacy_role_present': bool(user and 'role' in user),
+            'legacy_role': (user or {}).get('role'),
+        }
+
+
+    async def rbac_restore_assignment(self, uid: int, snapshot: dict) -> None:
+        """Restore canonical assignment and both legacy projections exactly."""
+        for collection, key in ((self.user_roles, 'user_roles'),
+                                (self.admin_roles, 'admin_role')):
+            doc = snapshot.get(key)
+            if doc is None:
+                await collection.delete_many({'_id': uid})
+            else:
+                await collection.replace_one({'_id': uid}, doc, upsert=True)
+        if snapshot.get('legacy_role_present'):
+            await self.users.update_one({'user_id': uid},
+                                        {'$set': {'role': snapshot.get('legacy_role')}})
+        else:
+            await self.users.update_one({'user_id': uid}, {'$unset': {'role': ''}})
+
+
     async def get_role(self, key: str):
         return await self.roles.find_one({'_id': key})
 
@@ -701,10 +735,7 @@ class DBRbac:
             return False, 'not_found', 0
         if role.get('system'):
             return False, 'system_role', 0
-        count = 0
-        async for doc in self.user_roles.find({}):
-            if key in (doc.get('roles') or []):
-                count += 1
+        count = await self.user_roles.count_documents({'roles': key})
         if count:
             return False, 'in_use', count
         await self.roles.delete_many({'_id': key})
@@ -712,11 +743,12 @@ class DBRbac:
 
 
     async def users_count_by_role(self) -> dict:
-        counts = {}
-        async for doc in self.user_roles.find({}):
-            for key in (doc.get('roles') or []):
-                counts[key] = counts.get(key, 0) + 1
-        return counts
+        rows = await self.user_roles.aggregate([
+            {'$unwind': '$roles'},
+            {'$group': {'_id': '$roles', 'count': {'$sum': 1}}},
+        ]).to_list(None)
+        return {str(row.get('_id')): int(row.get('count') or 0)
+                for row in rows if row.get('_id')}
 
 
     async def user_ids_by_role(self, role: str, limit: int = 1000) -> list:

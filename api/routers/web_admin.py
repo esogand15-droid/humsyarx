@@ -37,8 +37,8 @@ from typing import Optional
 
 from api.auth import (
     ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
-    get_content_global_user, new_session_token, resolve_content_intake,
-    resolve_web_session, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
+    expiry_is_past, get_content_global_user, new_session_token, resolve_content_intake,
+    resolve_web_session, utc_now, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
 from database import db
 from api.routers import admin_panel as owner_api
@@ -148,21 +148,36 @@ async def _audit(actor_uid: int, action: str, *, severity: str = "INFO",
                  target_id: str = "", target_type: str = "",
                  target_label: str = "", tags=None,
                  before: dict = None, after: dict = None):
-    # 🌊 موج Audit-Diff — before/after افزودنی: db.log_action از همیشه
-    # changes را می‌ساخت؛ حالا روتر وب‌ادمین هم آن را پاس می‌دهد تا
-    # کشوی Diff «قبل/بعد» داده‌ی واقعی داشته باشد.
-    try:
-        u = await db.get_user(actor_uid)
-        await db.log_action(
-            actor_uid, (u or {}).get("name", str(actor_uid)),
-            await db.get_actor_role_label(actor_uid),
-            action, "WebAdmin", category="admin", severity=severity,
-            target_id=str(target_id), target_type=target_type,
-            target_label=target_label, tags=tags or [],
-            before=before, after=after,
-        )
-    except Exception:
-        pass
+    """Mandatory WebAdmin audit persistence.
+
+    Audit failures are no longer swallowed. Callers that need compensation can
+    now roll a domain mutation back; all other callers fail visibly with the
+    request ID rather than silently completing an unaudited sensitive action.
+    """
+    u = await db.get_user(actor_uid)
+    return await db.log_action(
+        actor_uid, (u or {}).get("name", str(actor_uid)),
+        await db.get_actor_role_label(actor_uid),
+        action, "WebAdmin", category="admin", severity=severity,
+        target_id=str(target_id), target_type=target_type,
+        target_label=target_label, tags=tags or [],
+        before=before, after=after,
+    )
+
+
+async def _audit_strict(actor_uid: int, action: str, *, severity: str = "HIGH",
+                        target_id: str = "", target_type: str = "",
+                        target_label: str = "", tags=None,
+                        before: dict = None, after: dict = None):
+    """Audit variant for mutations that must fail closed and compensate."""
+    actor = await db.get_user(actor_uid)
+    return await db.log_action(
+        actor_uid, (actor or {}).get("name", str(actor_uid)),
+        await db.get_actor_role_label(actor_uid), action, "WebAdmin",
+        category="admin", severity=severity, target_id=str(target_id),
+        target_type=target_type, target_label=target_label,
+        tags=tags or [], before=before, after=after,
+    )
 
 
 class RequestCode(BaseModel):
@@ -204,12 +219,13 @@ async def request_code(body: RequestCode, request: Request):
         uid = int(user.get("user_id"))
         if await _has_admin_access(uid):
             code = f"{secrets.randbelow(900000) + 100000}"
-            exp = (datetime.utcnow() + timedelta(minutes=OTP_TTL_MIN)).isoformat()
+            salt = secrets.token_hex(16)
+            exp = utc_now() + timedelta(minutes=OTP_TTL_MIN)
             await db.web_admin_otps.delete_many({"uid": uid})
             await db.web_admin_otps.insert_one({
-                "uid": uid,
-                "code_hash": hashlib.sha256(code.encode()).hexdigest(),
-                "expires_at": exp, "attempts": 0, "created_at": _now(),
+                "uid": uid, "code_salt": salt,
+                "code_hash": hashlib.sha256(f"{salt}:{code}".encode()).hexdigest(),
+                "expires_at": exp, "attempts": 0, "created_at": utc_now(),
             })
             # ارسال از صف outbox موجود ربات (همان الگوی admin_panel._notify)
             await db.client["medicalbot"]["bot_notifications"].insert_one({
@@ -227,17 +243,21 @@ async def request_code(body: RequestCode, request: Request):
 
 
 @router.post("/auth/verify")
-async def verify_code(body: VerifyCode, response: Response):
+async def verify_code(body: VerifyCode, request: Request, response: Response):
     user = await _resolve_user(body.identifier)
     if not user:
         raise HTTPException(status_code=401, detail="کد یا شناسه نامعتبر است.")
     uid = int(user.get("user_id"))
     otp = await db.web_admin_otps.find_one({"uid": uid})
-    if not otp or otp.get("expires_at", "") < _now():
+    if not otp or expiry_is_past(otp.get("expires_at")):
         raise HTTPException(status_code=401, detail="کد منقضی شده؛ دوباره درخواست بدهید.")
     if (otp.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
         raise HTTPException(status_code=429, detail="تلاش‌های ناموفق زیاد بود؛ دوباره درخواست کد بدهید.")
-    ok = hashlib.sha256((body.code or "").strip().encode()).hexdigest() == otp.get("code_hash")
+    raw_code = (body.code or "").strip()
+    salt = otp.get("code_salt")
+    candidate = hashlib.sha256(f"{salt}:{raw_code}".encode()).hexdigest() if salt \
+        else hashlib.sha256(raw_code.encode()).hexdigest()
+    ok = secrets.compare_digest(candidate, str(otp.get("code_hash") or ""))
     if not ok:
         await db.web_admin_otps.update_one({"uid": uid}, {"$inc": {"attempts": 1}})
         raise HTTPException(status_code=401, detail="کد نامعتبر است.")
@@ -246,18 +266,30 @@ async def verify_code(body: VerifyCode, response: Response):
 
     await db.web_admin_otps.delete_many({"uid": uid})
     token = new_session_token()
+    peer_ip = ((getattr(request, "client", None) and request.client.host) or "")[:64]
+    user_agent = (request.headers.get("user-agent") or "")[:240]
+    now_utc = utc_now()
     await db.web_admin_sessions.insert_one({
         "_id": _hash_token(token), "uid": uid,
-        "created_at": _now(),
-        "expires_at": (datetime.utcnow() + timedelta(hours=WA_SESSION_TTL_H)).isoformat(),
-        "revoked": False,
+        "created_at": now_utc,
+        "expires_at": now_utc + timedelta(hours=WA_SESSION_TTL_H),
+        "revoked": False, "peer_ip": peer_ip, "user_agent": user_agent,
     })
     response.set_cookie(
         WA_SESSION_COOKIE, token,
         max_age=WA_SESSION_TTL_H * 3600,
         httponly=True, secure=True, samesite="lax", path="/",
     )
-    await _audit(uid, "ورود موفق به پنل وب", tags=["ورود_وب"])
+    try:
+        await _audit(uid, "ورود موفق به پنل وب", tags=["ورود_وب"])
+    except Exception:
+        await db.web_admin_sessions.update_one(
+            {"_id": _hash_token(token)},
+            {"$set": {"revoked": True, "revoked_at": utc_now(),
+                      "revoke_reason": "login_audit_failed"}},
+        )
+        response.delete_cookie(WA_SESSION_COOKIE, path="/")
+        raise HTTPException(503, "ثبت حسابرسی ورود ممکن نشد؛ نشست ایجاد نشد")
     return {"ok": True, "id": uid, "name": user.get("name", "")}
 
 
@@ -282,10 +314,107 @@ async def logout(request: Request, response: Response, user=Depends(_guard_any_a
     sess = await resolve_web_session(request.cookies.get(WA_SESSION_COOKIE, ""))
     if sess:
         await db.web_admin_sessions.update_one(
-            {"_id": sess["_id"]}, {"$set": {"revoked": True, "revoked_at": _now()}})
+            {"_id": sess["_id"]}, {"$set": {"revoked": True, "revoked_at": utc_now()}})
     response.delete_cookie(WA_SESSION_COOKIE, path="/")
     await _audit(user["id"], "خروج از پنل وب", tags=["خروج_وب"])
     return {"ok": True}
+
+
+def _session_time(value) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value or "")
+
+
+@router.get("/system/security/sessions")
+async def wa_security_sessions(
+    request: Request, page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("system.manage")),
+):
+    """Bounded inventory of live WebAdmin sessions for security operations."""
+    now = utc_now()
+    legacy_now = utc_now().replace(tzinfo=None).isoformat()
+    active_query = {"revoked": False, "$or": [
+        {"expires_at": {"$type": "date", "$gt": now}},
+        {"expires_at": {"$type": "string", "$gt": legacy_now}},
+    ]}
+    total, docs = await asyncio.gather(
+        db.web_admin_sessions.count_documents(active_query),
+        db.web_admin_sessions.find(active_query).sort("created_at", -1)
+        .skip((page - 1) * limit).limit(limit).to_list(limit),
+    )
+    uids = sorted({int(doc.get("uid")) for doc in docs if doc.get("uid") is not None})
+    users = await db.users.find(
+        {"user_id": {"$in": uids}}, {"user_id": 1, "name": 1, "nickname": 1, "username": 1}
+    ).to_list(len(uids)) if uids else []
+    by_uid = {int(item.get("user_id")): item for item in users if item.get("user_id") is not None}
+    current_id = _hash_token(request.cookies.get(WA_SESSION_COOKIE, "")) \
+        if request.cookies.get(WA_SESSION_COOKIE) else ""
+    rows = []
+    for doc in docs:
+        uid = int(doc.get("uid"))
+        person = by_uid.get(uid, {})
+        rows.append({
+            "id": str(doc.get("_id")), "uid": uid,
+            "name": person.get("nickname") or person.get("name") or str(uid),
+            "username": person.get("username") or "",
+            "created_at": _session_time(doc.get("created_at")),
+            "expires_at": _session_time(doc.get("expires_at")),
+            "peer_ip": str(doc.get("peer_ip") or ""),
+            "user_agent": str(doc.get("user_agent") or "")[:240],
+            "current": str(doc.get("_id")) == current_id,
+        })
+    return {"sessions": rows, "total": int(total), "page": page, "limit": limit,
+            "pages": max(1, (int(total) + limit - 1) // limit), "checked_at": _now()}
+
+
+class SessionRevokeIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+
+
+@router.post("/system/security/sessions/{session_id}/revoke")
+async def wa_security_session_revoke(
+    session_id: str, body: SessionRevokeIn, request: Request,
+    user=Depends(_perm("system.manage")),
+):
+    if not re.fullmatch(r"[0-9a-f]{64}", session_id or ""):
+        raise HTTPException(422, "شناسه نشست معتبر نیست")
+    current_id = _hash_token(request.cookies.get(WA_SESSION_COOKIE, "")) \
+        if request.cookies.get(WA_SESSION_COOKIE) else ""
+    if session_id == current_id:
+        raise HTTPException(409, "برای پایان نشست جاری از خروج از حساب استفاده کنید")
+    session = await db.web_admin_sessions.find_one({"_id": session_id, "revoked": False})
+    if not session or expiry_is_past(session.get("expires_at")):
+        raise HTTPException(404, "نشست فعال پیدا نشد")
+    target_uid = int(session.get("uid"))
+    if target_uid == ADMIN_ID and user["id"] != ADMIN_ID:
+        raise HTTPException(403, "نشست مالک فقط توسط خود مالک قابل لغو است")
+    changed = await db.web_admin_sessions.update_one(
+        {"_id": session_id, "revoked": False},
+        {"$set": {"revoked": True, "revoked_at": utc_now(),
+                  "revoked_by": user["id"], "revoke_reason": body.reason.strip()}},
+    )
+    if not getattr(changed, "modified_count", 0):
+        raise HTTPException(409, "نشست هم‌زمان تغییر کرده است")
+    try:
+        await _audit_strict(
+            user["id"], "لغو نشست فعال پنل وب", severity="HIGH",
+            target_id=session_id[:16], target_type="web_admin_session",
+            target_label=str(target_uid), tags=["امنیت", "لغو_نشست"],
+            before={"uid": target_uid, "revoked": False,
+                    "expires_at": _session_time(session.get("expires_at"))},
+            after={"uid": target_uid, "revoked": True, "reason": body.reason.strip()},
+        )
+    except Exception:
+        await db.web_admin_sessions.update_one(
+            {"_id": session_id, "revoked_by": user["id"]},
+            {"$set": {"revoked": False},
+             "$unset": {"revoked_at": "", "revoked_by": "", "revoke_reason": ""}},
+        )
+        raise HTTPException(503, "ثبت حسابرسی ممکن نشد؛ لغو نشست بازگردانده شد")
+    return {"ok": True, "session_id": session_id, "uid": target_uid}
 
 
 @router.get("/overview")
@@ -968,9 +1097,15 @@ async def wa_alert_center(user=Depends(_guard_any_admin)):
 
 _QUALITY_META = {
     "users_missing_intake": ("warning", "کاربر تأییدشده بدون ورودی", "تکمیل ورودی فقط پس از بررسی پرونده"),
+    "users_invalid_intake": ("critical", "کاربر با ورودی نامعتبر", "تطبیق ورودی کاربر با رجیستری ورودی‌ها"),
+    "duplicate_student_ids": ("critical", "شماره دانشجویی تکراری", "بررسی هویت پیش از هر اصلاح"),
     "invalid_role_refs": ("critical", "ارجاع به نقش نامعتبر", "بازبینی تخصیص نقش و حذف reference نامعتبر"),
     "orphan_sessions": ("critical", "جلسه بدون درس والد", "اتصال به درس معتبر یا حذف با تأیید"),
     "orphan_files": ("critical", "فایل بدون جلسه والد", "اتصال به جلسه معتبر یا حذف با تأیید"),
+    "orphan_ref_books": ("critical", "کتاب رفرنس بدون موضوع والد", "اتصال به موضوع معتبر یا حذف با تأیید"),
+    "orphan_ref_files": ("critical", "فایل رفرنس بدون کتاب والد", "اتصال به کتاب معتبر یا حذف با تأیید"),
+    "orphan_subscriptions": ("critical", "اشتراک بدون کاربر", "بررسی زنجیره پرداخت و هویت پیش از اصلاح"),
+    "orphan_payments": ("critical", "پرداخت بدون کاربر", "بررسی رسید و هویت پیش از اصلاح"),
     "malformed_questions": ("warning", "رکورد سؤال ناقص", "اصلاح فیلدهای الزامی پیش از استفاده"),
     "files_missing_metadata": ("info", "فایل آموزشی با متادیتای ناقص", "تکمیل نام/نوع/توضیح"),
 }
@@ -1019,6 +1154,37 @@ async def _quality_orphans(child, parent, parent_field: str, skip=0, limit=30, c
     return await child.aggregate(pipeline).to_list(limit)
 
 
+async def _quality_value_orphans(child, parent, local_field: str, foreign_field: str,
+                                 skip=0, limit=30, count_only=False):
+    pipeline = [
+        {"$match": {local_field: {"$exists": True, "$nin": [None, ""]}}},
+        {"$lookup": {"from": parent.name, "localField": local_field,
+                     "foreignField": foreign_field, "as": "_parent"}},
+        {"$match": {"_parent.0": {"$exists": False}}},
+    ]
+    if count_only:
+        pipeline.append({"$count": "count"})
+        return await child.aggregate(pipeline).to_list(1)
+    pipeline.extend([{"$project": {"_parent": 0}}, {"$sort": {"_id": 1}},
+                     {"$skip": skip}, {"$limit": limit}])
+    return await child.aggregate(pipeline).to_list(limit)
+
+
+async def _quality_duplicate_student_ids(skip=0, limit=30, count_only=False):
+    pipeline = [
+        {"$match": {"student_id": {"$exists": True, "$nin": [None, ""]}}},
+        {"$group": {"_id": "$student_id", "count": {"$sum": 1},
+                    "user_ids": {"$addToSet": "$user_id"},
+                    "names": {"$addToSet": "$name"}}},
+        {"$match": {"count": {"$gt": 1}}},
+    ]
+    if count_only:
+        pipeline.append({"$count": "count"})
+        return await db.users.aggregate(pipeline).to_list(1)
+    pipeline.extend([{"$sort": {"count": -1, "_id": 1}}, {"$skip": skip}, {"$limit": limit}])
+    return await db.users.aggregate(pipeline).to_list(limit)
+
+
 async def _quality_count(kind: str):
     simple = _quality_simple_query(kind)
     if simple:
@@ -1026,10 +1192,22 @@ async def _quality_count(kind: str):
         return await collection.count_documents(query)
     if kind == "invalid_role_refs":
         rows = await _quality_invalid_roles(count_only=True)
+    elif kind == "duplicate_student_ids":
+        rows = await _quality_duplicate_student_ids(count_only=True)
+    elif kind == "users_invalid_intake":
+        rows = await _quality_value_orphans(db.users, db.intakes, "intake", "code", count_only=True)
     elif kind == "orphan_sessions":
         rows = await _quality_orphans(db.bs_sessions, db.bs_lessons, "lesson_id", count_only=True)
     elif kind == "orphan_files":
         rows = await _quality_orphans(db.bs_content, db.bs_sessions, "session_id", count_only=True)
+    elif kind == "orphan_ref_books":
+        rows = await _quality_orphans(db.ref_books, db.ref_subjects, "subject_id", count_only=True)
+    elif kind == "orphan_ref_files":
+        rows = await _quality_orphans(db.ref_files, db.ref_books, "book_id", count_only=True)
+    elif kind == "orphan_subscriptions":
+        rows = await _quality_value_orphans(db.subscriptions, db.users, "user_id", "user_id", count_only=True)
+    elif kind == "orphan_payments":
+        rows = await _quality_value_orphans(db.sub_payments, db.users, "user_id", "user_id", count_only=True)
     else:
         return 0
     return int(rows[0].get("count") or 0) if rows else 0
@@ -1063,17 +1241,30 @@ async def wa_data_quality_items(
         docs = await collection.find(query).sort("_id", 1).skip(skip).limit(limit).to_list(limit)
     elif kind == "invalid_role_refs":
         docs = await _quality_invalid_roles(skip, limit)
+    elif kind == "duplicate_student_ids":
+        docs = await _quality_duplicate_student_ids(skip, limit)
+    elif kind == "users_invalid_intake":
+        docs = await _quality_value_orphans(db.users, db.intakes, "intake", "code", skip, limit)
     elif kind == "orphan_sessions":
         docs = await _quality_orphans(db.bs_sessions, db.bs_lessons, "lesson_id", skip, limit)
-    else:
+    elif kind == "orphan_files":
         docs = await _quality_orphans(db.bs_content, db.bs_sessions, "session_id", skip, limit)
+    elif kind == "orphan_ref_books":
+        docs = await _quality_orphans(db.ref_books, db.ref_subjects, "subject_id", skip, limit)
+    elif kind == "orphan_ref_files":
+        docs = await _quality_orphans(db.ref_files, db.ref_books, "book_id", skip, limit)
+    elif kind == "orphan_subscriptions":
+        docs = await _quality_value_orphans(db.subscriptions, db.users, "user_id", "user_id", skip, limit)
+    else:
+        docs = await _quality_value_orphans(db.sub_payments, db.users, "user_id", "user_id", skip, limit)
     severity, label, suggestion = _QUALITY_META[kind]
     def shape(doc):
         return {"id": str(doc.get("_id", "")),
                 "label": doc.get("name") or doc.get("question") or doc.get("topic") or doc.get("description") or str(doc.get("_id", "")),
                 "reason": label, "severity": severity, "suggestion": suggestion,
                 "metadata": {key: doc.get(key) for key in
-                             ("user_id", "intake", "lesson_id", "session_id", "roles", "invalid", "type", "source")
+                             ("user_id", "user_ids", "names", "count", "intake", "lesson_id", "session_id",
+                              "subject_id", "book_id", "student_id", "roles", "invalid", "type", "source")
                              if doc.get(key) is not None}}
     return {"items": [shape(doc) for doc in docs], "total": total, "skip": skip, "limit": limit,
             "read_only": True}
@@ -4524,13 +4715,17 @@ async def _read_restore_upload(file: UploadFile):
         raise HTTPException(422, "فایل JSON معتبر نیست")
     if not isinstance(data, dict) or not data.get("backup_version"):
         raise HTTPException(422, "ساختار فایل پشتیبان شناخته‌شده نیست")
+    integrity = data.get("integrity")
+    if isinstance(integrity, dict) and integrity.get("complete") is not True:
+        raise HTTPException(422, "پشتیبان ناقص است و برای بازیابی پذیرفته نمی‌شود")
     section = data.get("section", "full")
     sections = data.get("sections") or {section: data}
     if not isinstance(sections, dict) or not sections:
         raise HTTPException(422, "فایل هیچ بخش قابل بازیابی ندارد")
     known = {"users", "basic_science", "content", "references", "refs", "qbank",
              "schedules", "faq", "tickets", "access_control", "access",
-             "subscription_system", "subscription", "grades", "settings", "logs", "stats"}
+             "subscription_system", "subscription", "grades", "settings", "logs", "stats",
+             "communications", "ai", "prestige", "webadmin_state"}
     unknown = [key for key in sections if key not in known]
     if unknown:
         raise HTTPException(422, f"بخش ناشناخته در پشتیبان: {', '.join(unknown[:5])}")
@@ -4553,9 +4748,17 @@ async def wa_restore_validate(
     if user["id"] != ADMIN_ID:
         raise HTTPException(403, "owner_only")
     data, sections, digest, size = await _read_restore_upload(file)
+    integrity = data.get("integrity") if isinstance(data.get("integrity"), dict) else None
+    warnings = []
+    if integrity is None:
+        warnings.append("این فایل legacy است و manifest یکپارچگی ندارد؛ شمارش کامل‌بودن قابل اثبات نیست.")
+    warnings.append("بازیابی از نوع merge/upsert است؛ رکوردهای فعلیِ غایب از فایل حذف نمی‌شوند.")
     return {"valid": True, "digest": digest, "size": size,
             "backup_version": data.get("backup_version"),
             "created_at": (data.get("created_at") or "")[:19],
+            "restore_semantics": data.get("restore_semantics") or "merge_upsert",
+            "integrity": integrity,
+            "warnings": warnings,
             "sections": [{"key": key, "records": _backup_section_count(value)}
                          for key, value in sections.items()]}
 
@@ -4572,6 +4775,16 @@ async def wa_restore_confirm(
     _data, sections, actual_digest, _size = await _read_restore_upload(file)
     if not secrets.compare_digest(actual_digest, digest.strip().lower()):
         raise HTTPException(409, "فایل با نسخه‌ی اعتبارسنجی‌شده یکسان نیست")
+    # Fail closed before touching data: at least the restore intent is durable,
+    # even if a later section fails and requires operator recovery.
+    await _audit_strict(
+        user["id"], "آغاز بازیابی فایل پشتیبان از Web Admin", severity="CRITICAL",
+        target_id=actual_digest[:16], target_type="backup",
+        target_label=", ".join(sections.keys()),
+        after={"phase": "started", "sections": len(sections),
+               "semantics": _data.get("restore_semantics") or "merge_upsert"},
+        tags=["بازیابی_بکاپ", "پنل_وب", "restore_started"],
+    )
     restored = {}
     for key, value in sections.items():
         restored[key] = await backup_service._restore_section(key, value)

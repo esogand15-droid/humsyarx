@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -97,16 +97,43 @@ def new_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def utc_now() -> datetime:
+    """Timezone-aware UTC clock shared by WebAdmin auth/session contracts."""
+    return datetime.now(timezone.utc)
+
+
+def expiry_is_past(value, now: datetime | None = None) -> bool:
+    """Read both legacy ISO-string expiries and new BSON datetime values.
+
+    New documents use BSON datetimes so Mongo TTL indexes can physically remove
+    expired OTP/session records. Legacy string records remain readable during
+    rollout and are rejected in Python once expired.
+    """
+    now = now or utc_now()
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+
+
 async def resolve_web_session(token: str) -> dict | None:
     """توکن خام کوکی را به سند سشن معتبر نگاشت می‌کند (expiry/revoke چک‌شده)."""
     if not token:
         return None
-    now = datetime.utcnow().isoformat()
     doc = await db.web_admin_sessions.find_one({
         "_id": _hash_token(token),
         "revoked": False,
-        "expires_at": {"$gt": now},
     })
+    if not doc or expiry_is_past(doc.get("expires_at")):
+        return None
     return doc
 
 

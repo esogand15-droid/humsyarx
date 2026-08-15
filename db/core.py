@@ -174,6 +174,10 @@ class DBCore:
                 self.grades.create_index([('exam_date', -1), ('lesson', 1)], background=True),
                 self.wa_saved_filters.create_index([('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
                 self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
+                self.web_admin_sessions.create_index([('uid', 1), ('revoked', 1), ('created_at', -1)], background=True),
+                self.web_admin_sessions.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self.web_admin_otps.create_index([('uid', 1)], background=True),
+                self.web_admin_otps.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self.wa_api_metrics.create_index([('at', 1)], expireAfterSeconds=2592000, background=True),
                 self.wa_api_metrics.create_index([('route', 1), ('at', -1)], background=True),
                 self.wa_api_metrics.create_index([('status', 1), ('at', -1)], background=True),
@@ -193,6 +197,7 @@ class DBCore:
                 self.sub_payments.create_index([('status', 1), ('submitted_at', -1)], background=True),
                 self.sub_payments.create_index([('user_id', 1), ('submitted_at', -1)], background=True),
                 self.subscriptions.create_index([('status', 1), ('end_date', 1)], background=True),
+                self.subscriptions.create_index([('user_id', 1), ('status', 1)], background=True),
                 # 🔔 موج ۴.۹۰ — کوئری داغ صندوق اعلان: فهرست کاربر به
                 # ترتیب زمان + شمارش خوانده‌نشده‌ها
                 self.user_notifs.create_index([('user_id', 1), ('created_at', -1)], background=True),
@@ -227,8 +232,18 @@ class DBCore:
                 await self.discount_codes.update_many(
                     {'per_user_limit': {'$exists': False}},
                     {'$set': {'per_user_limit': 0}})
+                # Full-System Evolution: legacy ISO expiry strings become BSON
+                # dates so TTL indexes can physically remove stale auth data.
+                for auth_collection in (self.web_admin_otps, self.web_admin_sessions):
+                    await auth_collection.update_many(
+                        {'expires_at': {'$type': 'string'}},
+                        [{'$set': {'expires_at': {'$convert': {
+                            'input': '$expires_at', 'to': 'date',
+                            'onError': datetime.utcnow(), 'onNull': datetime.utcnow(),
+                        }}}}],
+                    )
             except Exception as _me:
-                logger.warning(f"D1 migration warning: {_me}")
+                logger.warning(f"D1/auth migration warning: {_me}")
         except Exception as e:
             logger.warning(f"Index creation warning: {e}")
 

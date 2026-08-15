@@ -68,6 +68,14 @@ def _err(status: int, detail: str):
     raise HTTPException(status_code=status, detail=detail)
 
 
+async def _compensate_or_fail(restore, message: str):
+    try:
+        await restore
+    except Exception:
+        raise HTTPException(500, "ثبت حسابرسی و بازگردانی RBAC هر دو ناموفق شدند")
+    raise HTTPException(503, message)
+
+
 # ──────────────────────────────────────────
 #  رجیستری مجوزها (ماتریس دسته‌بندی‌شده)
 # ──────────────────────────────────────────
@@ -119,11 +127,17 @@ async def create_role(body: RoleCreate, user=_roles_guard):
         _err(422, "کلید نقش نامعتبر است (حروف کوچک/عدد/underline)")
     if not _COLOR_RE.match(body.color):
         _err(422, "فرمت رنگ نامعتبر است (مثل #70A7FF)")
-    doc, err = await db.create_role(body.dict(), actor=user["id"])
+    doc, err = await db.create_role(body.model_dump(), actor=user["id"])
     if err:
         _err(409 if err == "key_exists" else 422, err)
-    await _audit_rbac(user, "ساخت نقش جدید", doc["label"],
-                      after=_role_view(doc), target_id=doc["_id"])
+    try:
+        await _audit_rbac(user, "ساخت نقش جدید", doc["label"],
+                          after=_role_view(doc), target_id=doc["_id"])
+    except Exception:
+        await _compensate_or_fail(
+            db.rbac_restore_role(doc["_id"], None),
+            "ثبت حسابرسی ممکن نشد؛ ساخت نقش بازگردانده شد",
+        )
     return {"ok": True, "role": _role_view(doc)}
 
 
@@ -143,18 +157,24 @@ async def update_role(key: str, body: RolePatch, user=_roles_guard):
     old = await db.get_role(key)
     if not old:
         _err(404, "نقش پیدا نشد")
-    changes = body.dict(exclude_none=True)
+    changes = body.model_dump(exclude_none=True)
     if changes.get("color") and not _COLOR_RE.match(changes["color"]):
         _err(422, "فرمت رنگ نامعتبر است (مثل #70A7FF)")
     doc, err = await db.update_role(key, changes, actor=user["id"])
     if err:
         _err(422, err)
-    await _audit_rbac(
-        user, "ویرایش نقش", doc["label"],
-        before={k: old.get(k) for k in changes},
-        after={k: doc.get(k) for k in changes},
-        target_id=key,
-    )
+    try:
+        await _audit_rbac(
+            user, "ویرایش نقش", doc["label"],
+            before={k: old.get(k) for k in changes},
+            after={k: doc.get(k) for k in changes},
+            target_id=key,
+        )
+    except Exception:
+        await _compensate_or_fail(
+            db.rbac_restore_role(key, old),
+            "ثبت حسابرسی ممکن نشد؛ ویرایش نقش بازگردانده شد",
+        )
     return {"ok": True, "role": _role_view(doc)}
 
 
@@ -170,9 +190,15 @@ async def delete_role(key: str, user=_roles_guard):
             _err(409, "نقش سیستمی حذف‌ناپذیر است (فقط قابل ویرایش)")
         if err == "in_use":
             _err(409, f"این نقش به {count} کارگران وابسته است؛ ابتدا نقش را از آن‌ها بگیر")
-    await _audit_rbac(user, "حذف نقش", label,
-                      before=_role_view(old), severity="HIGH",
-                      target_id=key)
+    try:
+        await _audit_rbac(user, "حذف نقش", label,
+                          before=_role_view(old), severity="HIGH",
+                          target_id=key)
+    except Exception:
+        await _compensate_or_fail(
+            db.rbac_restore_role(key, old),
+            "ثبت حسابرسی ممکن نشد؛ حذف نقش بازگردانده شد",
+        )
     return {"ok": True}
 
 
@@ -218,28 +244,35 @@ async def assign_roles(uid: int, body: AssignBody, user=_users_guard):
             _err(422, f"نقش ناشناخته: {key}")
     before_info = await db.get_user_roles(uid)
     before = before_info["keys"]
-    for key in body.add:
-        await db._add_role_key(uid, key, body.scope_intake)
-    for key in body.remove:
-        await db._remove_role_key(uid, key)
-    # RBAC-Execution: scope باید حتی بدون add/remove هم قابل ویرایش باشد.
-    # رشته‌ی خالی یعنی پاک‌کردن scope؛ Noneِ ارسال‌نشده یعنی دست‌نخوردن.
-    if "scope_intake" in body.model_fields_set:
-        await db.user_roles.update_one(
-            {"_id": uid},
-            {"$set": {"scope_intake": body.scope_intake or None}},
-            upsert=True,
+    assignment_snapshot = await db.rbac_assignment_snapshot(uid)
+    try:
+        for key in body.add:
+            await db._add_role_key(uid, key, body.scope_intake)
+        for key in body.remove:
+            await db._remove_role_key(uid, key)
+        # RBAC-Execution: scope باید حتی بدون add/remove هم قابل ویرایش باشد.
+        # رشته‌ی خالی یعنی پاک‌کردن scope؛ Noneِ ارسال‌نشده یعنی دست‌نخوردن.
+        if "scope_intake" in body.model_fields_set:
+            await db.user_roles.update_one(
+                {"_id": uid},
+                {"$set": {"scope_intake": body.scope_intake or None}},
+                upsert=True,
+            )
+            await db._sync_admin_role_projection(uid)
+        # §۵ Sync: آینه‌ی users.role هم همیشه یکدست می‌ماند
+        await db.sync_legacy_role_mirror(uid)
+        after_info = await db.get_user_roles(uid)
+        after = after_info["keys"]
+        await _audit_rbac(
+            user, "تغییر نقش‌های کاربر",
+            target.get("name", str(uid)),
+            before={"roles": sorted(before), "scope_intake": before_info.get("scope_intake")},
+            after={"roles": sorted(after), "scope_intake": after_info.get("scope_intake")},
+            target_id=str(uid),
         )
-        await db._sync_admin_role_projection(uid)
-    # §۵ Sync: آینه‌ی users.role هم همیشه یکدست می‌ماند
-    await db.sync_legacy_role_mirror(uid)
-    after_info = await db.get_user_roles(uid)
-    after = after_info["keys"]
-    await _audit_rbac(
-        user, "تغییر نقش‌های کاربر",
-        target.get("name", str(uid)),
-        before={"roles": sorted(before), "scope_intake": before_info.get("scope_intake")},
-        after={"roles": sorted(after), "scope_intake": after_info.get("scope_intake")},
-        target_id=str(uid),
-    )
+    except Exception:
+        await _compensate_or_fail(
+            db.rbac_restore_assignment(uid, assignment_snapshot),
+            "تغییر نقش کامل نشد؛ وضعیت پیشین بازگردانده شد",
+        )
     return await _user_rbac_view(uid)
