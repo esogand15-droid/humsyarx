@@ -64,6 +64,19 @@ async function req(path, options = {}) {
   return promise;
 }
 
+async function downloadFile(path, filename) {
+  const response = await fetch(path, { credentials: 'same-origin', headers: { Accept: 'text/csv,application/octet-stream' } });
+  if (!response.ok) {
+    let payload = {}; try { payload = await response.json(); } catch {}
+    const error = new Error(typeof payload.detail === 'string' ? payload.detail : `download_failed_${response.status}`);
+    error.status = response.status; error.detail = payload.detail; throw error;
+  }
+  const blob = await response.blob(); const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename;
+  document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+  return { ok: true };
+}
+
 export const api = {
   // ── auth ──
   requestCode: (identifier) => req('/api/web-admin/auth/request-code', { method: 'POST', body: { identifier } }),
@@ -73,18 +86,8 @@ export const api = {
   overview: () => req('/api/web-admin/overview'),
   dashboardBundle: () => req('/api/web-admin/dashboard-bundle'),
   // ── users (WA سرورساید) ──
-  users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
-  // 🌊 موج Export — صفحه‌بندی خودکار برای خروجی کامل (سقف ۶۰ صفحه × ۱۰۰ = ۶هزار)
-  usersAll: async (p = {}) => {
-    const out = [];
-    for (let pg = 1; pg <= 60; pg++) {
-      const r = await api.users({ ...p, page: pg, per_page: 100 });
-      const us = r.users || [];
-      out.push(...us);
-      if (pg >= (r.pages || 1) || !us.length) break;
-    }
-    return out;
-  },
+  users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
+  exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${new Date().toISOString().slice(0, 10)}.csv`),
   usersBulk: (action, ids, value) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
@@ -94,10 +97,12 @@ export const api = {
   activity: (limit = 40) => req(`/api/web-admin/activity?limit=${limit}`),
   waSearch: (q) => req('/api/web-admin/search?q=' + encodeURIComponent(q)),
   savedFilters: (scope) => req('/api/web-admin/saved-filters' + (scope ? `?scope=${scope}` : '')),
+  rolesPicker: () => req('/api/web-admin/rbac/roles-picker'),
   saveFilter: (body) => req('/api/web-admin/saved-filters', { method: 'POST', body }),
   delFilter: (id) => req(`/api/web-admin/saved-filters/${id}`, { method: 'DELETE' }),
   user360: (uid) => req(`/api/web-admin/users/${uid}/360`),
   ticketsBulk: (action, ids) => req('/api/web-admin/tickets/bulk', { method: 'POST', body: { action, ids } }),
+  questions: (p = {}) => req('/api/web-admin/questions?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   questionsBulk: (action, ids) => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids } }),
   settingsCenter: () => req('/api/web-admin/settings/center'),
   patchSetting: (key, value) => req(`/api/web-admin/settings/center/${encodeURIComponent(key)}`, { method: 'PATCH', body: { value } }),
@@ -114,6 +119,7 @@ export const api = {
   // ── 🌊 WA2.1 Content Command Center ──
   contentTree: (intake) => req('/api/web-admin/content/tree' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
   contentHistory: (targetType, targetId) => req(`/api/web-admin/content/history?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
+  objectHistory: (targetType, targetId) => req(`/api/web-admin/history/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}`),
   dupSession: (sid) => req(`/api/web-admin/content/sessions/${sid}/duplicate`, { method: 'POST' }),
   sessionsBulk: (body) => req('/api/web-admin/content/sessions/bulk', { method: 'POST', body }),
   itemsBulk: (body) => req('/api/web-admin/content/items/bulk', { method: 'POST', body }),
@@ -142,8 +148,12 @@ export const api = {
   logGroupsTest: () => req('/api/web-admin/system/log-groups/test', { method: 'POST' }),
   analytics: (days) => req('/api/admin/analytics' + (days ? `?days=${days}` : '')),
   // 🛡 RBAC-Execution — مسیرهای permission-based (owner routeهای قدیمی دست‌نخورده)
-  tickets: (status) => req('/api/web-admin/tickets' + (status ? `?status=${status}` : '')),
+  tickets: (p = {}) => req('/api/web-admin/tickets?' + new URLSearchParams(Object.entries(typeof p === 'string' ? { status: p } : p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   ticket: (tid) => req(`/api/web-admin/tickets/${tid}`),
+  ticketAssignees: () => req('/api/web-admin/tickets/assignees'),
+  ticketAnalytics: () => req('/api/web-admin/tickets/analytics/summary'),
+  ticketMeta: (tid, body) => req(`/api/web-admin/tickets/${tid}/meta`, { method: 'PATCH', body }),
+  ticketNote: (tid, text) => req(`/api/web-admin/tickets/${tid}/notes`, { method: 'POST', body: { text } }),
   ticketReply: (tid, text) => req(`/api/web-admin/tickets/${tid}/reply`, { method: 'POST', body: { message: text } }),
   ticketClose: (tid) => req(`/api/web-admin/tickets/${tid}/close`, { method: 'POST' }),
   ticketReopen: (tid) => req(`/api/web-admin/tickets/${tid}/reopen`, { method: 'POST' }),
@@ -166,9 +176,12 @@ export const api = {
   channelLockAdd: (body) => req('/api/admin/channel-lock', { method: 'POST', body }),
   channelLockDel: (id) => req(`/api/admin/channel-lock/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   auditLogs: (p) => req('/api/web-admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
+  systemJobs: () => req('/api/web-admin/system/jobs'),
   settings: () => req('/api/web-admin/system/backup-settings'),
   patchSettings: (body) => req('/api/web-admin/system/backup-settings', { method: 'PATCH', body }),
   backup: (section) => req('/api/web-admin/system/backup', { method: 'POST', body: { section: section || 'all' } }),
+  restoreValidate: (file) => { const form = new FormData(); form.append('file', file); return req('/api/web-admin/system/restore/validate', { method: 'POST', form }); },
+  restoreConfirm: (file, digest, confirmation) => { const form = new FormData(); form.append('file', file); form.append('digest', digest); form.append('confirmation', confirmation); return req('/api/web-admin/system/restore/confirm', { method: 'POST', form }); },
   exportExcel: () => req('/api/web-admin/system/export/excel', { method: 'POST' }),
   intakes: () => req('/api/admin/intakes'),
   // 🌊 موج Intakes-CA — مدیریت ورودی‌ها + ادمین‌های محتوا (سطح مالک؛ endpointهای موجود)
@@ -267,7 +280,7 @@ export const api = {
   refFileAdd: (bid, form) => req(`/api/content/references/books/${bid}/files`, { method: 'POST', form }),
   refFileDel: (fid) => req(`/api/content/references/files/${fid}`, { method: 'DELETE' }),
   // ── 🌊 WA3 — نمرات (grades/recent + find-student + bulk) — همان ادمین ربات ──
-  gradesRecent: (skip = 0, limit = 30) => req(`/api/web-admin/grades/recent?skip=${skip}&limit=${limit}`),
+  gradesRecent: (skip = 0, limit = 30, filters = {}) => req('/api/web-admin/grades/recent?' + new URLSearchParams({ skip, limit, ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v !== null && v !== undefined)) })),
   gradesFind: (name) => req(`/api/web-admin/grades/find-student?q=${encodeURIComponent(name)}`),
   gradesBulk: (body) => req('/api/web-admin/grades/bulk', { method: 'POST', body: {
     ...body, entries: (body.entries || []).map(e => ({ user_id: e.user_id ?? e.student_id, score: e.score })),

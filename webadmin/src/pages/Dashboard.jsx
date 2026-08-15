@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api, exportCSV } from '../api.js';
+import { api, errText } from '../api.js';
 import { Stat, Loading, ErrorState, B, PageHeader, toast } from '../ui.jsx';
 
 // 📊 داشبورد عملیات + ⚠️ نیازمند اقدام (WA2.7) + 🕓 فید فعالیت واقعی (WA2.7)
@@ -50,34 +50,12 @@ export default function Dashboard({ me, go }) {
     return () => document.removeEventListener('mousedown', h);
   }, [prefsOpen]);
 
-  // 🌊 موج Export — خروجی CSV کامل کاربران (همان داده‌ی واقعی جدول سرورساید)
+  // CSV به‌صورت stream از سرور می‌آید؛ dataset کامل وارد RAM مرورگر نمی‌شود.
   const [expBusy, setExpBusy] = useState(false);
   const exportUsers = async () => {
     setExpBusy(true);
-    try {
-      const us = await api.usersAll();
-      if (!us.length) { toast('داده‌ای برای خروجی نیست', 'err'); return; }
-      const stamp = (ov?.jalali_today || new Date().toISOString().slice(0, 10));
-      exportCSV(
-        `humsyar-users-${stamp}.csv`,
-        [
-          { label: 'آیدی عددی', v: 'id' },
-          { label: 'نام', v: 'name' },
-          { label: 'لقب', v: 'nickname' },
-          { label: 'نام کاربری', v: 'username' },
-          { label: 'شماره دانشجویی', v: 'student_id' },
-          { label: 'ورودی', v: 'intake' },
-          { label: 'گروه', v: 'group' },
-          { label: 'نقش', v: 'role' },
-          { label: 'وضعیت', v: u => u.suspended ? 'معلق' : u.approved ? 'تأییدشده' : 'در انتظار' },
-          { label: 'تاریخ ثبت‌نام', v: 'registered_at' },
-          { label: 'کل پاسخ‌ها', v: 'total_answers' },
-          { label: 'رنک', v: u => `${u.rank || ''} ${u.div || ''}`.trim() },
-        ],
-        us,
-      );
-      toast(`${Number(us.length).toLocaleString('fa')} کاربر صادر شد ✅`);
-    } catch (e) { toast(e.message || 'خطا در خروجی', 'err'); }
+    try { await api.exportUsersCsv(); toast('خروجی CSV کاربران آماده شد'); }
+    catch (e) { toast(errText(e), 'err'); }
     setExpBusy(false);
   };
 

@@ -8,6 +8,7 @@ export default function Rbac({ me }) {
   const [perms, setPerms] = useState(null);
   const [err, setErr] = useState('');
   const [create, setCreate] = useState(false);
+  const [cloneRole, setCloneRole] = useState(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [editRole, setEditRole] = useState(null);
   const [deleteRole, setDeleteRole] = useState(null);
@@ -50,6 +51,7 @@ export default function Rbac({ me }) {
               {r.users_count != null && <B>{Number(r.users_count).toLocaleString('fa')} کاربر</B>}
               <span className="spacer" />
               <button className="btn sm" title="ویرایش مشخصات نقش" aria-label="ویرایش مشخصات نقش" onClick={() => setEditRole(r)}>✏️</button>
+              <button className="btn sm" aria-label={`کپی نقش ${r.label || r.key}`} onClick={() => setCloneRole(r)}>📄</button>
               {!r.system && (
                 <button className="btn sm danger" aria-label={`حذف نقش ${r.label || r.key}`}
                         onClick={() => setDeleteRole(r)}>🗑</button>
@@ -64,6 +66,7 @@ export default function Rbac({ me }) {
       </div>
 
       {create && <CreateRole onClose={() => setCreate(false)} onDone={() => { setCreate(false); load(); }} />}
+      {cloneRole && <CreateRole seed={cloneRole} onClose={() => setCloneRole(null)} onDone={() => { setCloneRole(null); load(); }} />}
       {editRole && <EditRole role={editRole} onClose={() => setEditRole(null)}
                              onDone={() => { setEditRole(null); load(); }} />}
       {assignOpen && <AssignRoles roles={roles} onClose={() => setAssignOpen(false)} />}
@@ -154,17 +157,19 @@ function PermMatrix({ roleKey, granted, groups, onChanged }) {
   );
 }
 
-function CreateRole({ onClose, onDone }) {
-  const [f, setF] = useState({ key: '', label: '', desc: '', color: '#38b6ff', perms: [] });
+function CreateRole({ seed, onClose, onDone }) {
+  const [f, setF] = useState({ key: '', label: seed ? `${seed.label} — کپی` : '', desc: seed?.desc || '',
+    color: seed?.color || '#38b6ff', icon: seed?.icon || '🛡', priority: seed?.priority || 90, perms: seed?.perms || [] });
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
-    try { await api.createRole({ key: f.key || undefined, label: f.label, desc: f.desc, color: f.color }); toast('نقش ساخته شد'); onDone(); }
+    try { await api.createRole({ key: f.key || undefined, label: f.label, desc: f.desc, color: f.color,
+      icon: f.icon, priority: Number(f.priority) || 90, perms: f.perms }); toast(seed ? 'کپی نقش ساخته شد' : 'نقش ساخته شد'); onDone(); }
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
   return (
-    <Modal title="نقش جدید" onClose={onClose}>
+    <Modal title={seed ? `📄 کپی نقش ${seed.label || seed.key}` : 'نقش جدید'} onClose={onClose}>
       <div className="grid" style={{ gap: 10 }}>
         <input className="inp" dir="ltr" placeholder="key (انگلیسی: support_lead)"
                value={f.key} onChange={e => setF({ ...f, key: e.target.value })} />
@@ -260,7 +265,9 @@ function AssignRoles({ roles, onClose }) {
   const toggle = (key) => setSelected(s => {
     const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n;
   });
-  const needsScope = roles.some(r => selected.has(r.key) &&
+  const selectedRoles = roles.filter(r => selected.has(r.key) && r.active !== false);
+  const effectivePerms = [...new Set(selectedRoles.flatMap(r => r.perms || []))].sort();
+  const needsScope = selectedRoles.some(r =>
     (r.key === 'content_scoped' || r.perms?.includes('content.scoped') || r.perms?.includes('grades.scoped')));
   const save = async () => {
     const before = new Set(current?.keys || []);
@@ -305,6 +312,11 @@ function AssignRoles({ roles, onClose }) {
             <span style={{ flex: 1 }}><b>{r.icon || '🛡'} {r.label || r.key}</b>
               <span className="muted code" style={{ marginRight: 6 }}>{r.key}</span></span>
           </label>)}
+        </div>
+        <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
+          <div className="row"><b>Effective Permissions</b><span className="spacer" /><B kind="acc">{effectivePerms.length.toLocaleString('fa')} مجوز</B></div>
+          {effectivePerms.length ? <div className="row" style={{ marginTop: 7, gap: 4 }}>{effectivePerms.map(p => <B key={p}>{p}</B>)}</div>
+            : <div className="muted" style={{ marginTop: 7 }}>نقش انتخاب‌شده‌ای مجوز مؤثر نمی‌دهد.</div>}
         </div>
         {needsScope && <label className="fld" style={{ marginTop: 10 }}><span>ورودی مجاز *</span>
           <select className="inp" value={scope} onChange={e => setScope(e.target.value)}>

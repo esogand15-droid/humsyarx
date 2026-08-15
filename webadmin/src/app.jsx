@@ -17,6 +17,7 @@ const AiAdmin = lazy(() => import('./pages/AiAdmin.jsx'));
 const System = lazy(() => import('./pages/System.jsx'));
 const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
+const TransferCenter = lazy(() => import('./pages/TransferCenter.jsx'));
 
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
@@ -50,6 +51,7 @@ const NAV_GROUPS = [
     { path: '/audit', icon: '🧭', label: 'حسابرسی', any: ['audit.view'] },
     { path: '/system', icon: '🖥', label: 'سلامت و پشتیبان', any: ['system.manage', 'backup.manage', 'prestige.manage', 'notifications.manage'] },
     { path: '/settings', icon: '⚙️', label: 'تنظیمات', any: ['settings.manage', 'notifications.manage', 'backup.manage'] },
+    { path: '/transfer', icon: '↕️', label: 'انتقال داده', any: ['users.view', 'questions.review', 'questions.review_scoped', 'grades.manage', 'grades.scoped', 'backup.manage', 'audit.view'] },
   ] },
 ];
 
@@ -58,6 +60,7 @@ const PAGES = {
   '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
   '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
+  '/transfer': TransferCenter,
 };
 
 const routeBase = route => route.split('?')[0];
@@ -146,6 +149,26 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => { window.removeEventListener('keydown', handler); window.clearTimeout(timer); };
   }, [go]);
+
+  useEffect(() => {
+    const tabKeys = e => {
+      const tab = e.target?.closest?.('[role="tab"]');
+      if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+      const list = tab.closest('[role="tablist"]');
+      const tabs = [...(list?.querySelectorAll('[role="tab"]') || [])].filter(x => !x.disabled);
+      if (!tabs.length) return;
+      const current = tabs.indexOf(tab);
+      const rtl = getComputedStyle(list).direction === 'rtl';
+      let next = current;
+      if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = tabs.length - 1;
+      else if (e.key === 'ArrowRight') next = (current + (rtl ? -1 : 1) + tabs.length) % tabs.length;
+      else if (e.key === 'ArrowLeft') next = (current + (rtl ? 1 : -1) + tabs.length) % tabs.length;
+      e.preventDefault(); tabs[next].focus(); tabs[next].click();
+    };
+    document.addEventListener('keydown', tabKeys);
+    return () => document.removeEventListener('keydown', tabKeys);
+  }, []);
 
   const commands = useMemo(() => {
     const list = flatNav.map(n => ({ icon: n.icon, label: `رفتن به ${n.label}`, hint: n.path, run: () => go(n.path) }));

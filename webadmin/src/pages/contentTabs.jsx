@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Empty, B, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
 // ════════════════════════════════════════════════════════════════════
 // 🌊 WA3 — تب‌های پریتی «مرکز فرماندهی محتوا» (همه روی API موجود، scope-aware)
@@ -264,6 +265,7 @@ const SCHED_TYPES = [['', 'همه'], ['class', '🏫 کلاس'], ['exam', '📝 
 
 export function ScheduleTab() {
   const [stype, setStype] = useState('');
+  const [view, setView] = useState('list');
   const [items, setItems] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
@@ -282,6 +284,9 @@ export function ScheduleTab() {
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const TYPE_FA = { class: 'کلاس', exam: 'امتحان', makeup: 'جبرانی' };
+  const byDate = (items || []).reduce((acc, item) => { (acc[item.date || 'بدون تاریخ'] ||= []).push(item); return acc; }, {});
+  const monthKey = Object.keys(byDate).find(x => /^\d{4}-\d{2}-\d{2}$/.test(x))?.slice(0, 7) || '';
+  const monthItems = monthKey ? (items || []).filter(x => (x.date || '').startsWith(monthKey)) : [];
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
@@ -290,11 +295,14 @@ export function ScheduleTab() {
             <button key={k} type="button" role="tab" aria-selected={stype === k} className={`tab ${stype === k ? 'on' : ''}`} onClick={() => setStype(k)}>{v}</button>
           ))}
         </div>
+        <div className="segmented" role="group" aria-label="نمای برنامه">
+          {[['list', 'فهرست'], ['week', 'هفته/Agenda'], ['month', 'ماه']].map(([k, label]) => <button key={k} className={view === k ? 'on' : ''} aria-pressed={view === k} onClick={() => setView(k)}>{label}</button>)}
+        </div>
         <span className="spacer" />
         <button className="btn primary" onClick={() => setEdit({ type: 'class', group: 'هر دو', flex_type: 'fixed' })}>➕ مورد جدید</button>
       </div>
-      {!items ? <Loading /> : items.length === 0 ? <Empty icon="📅" text="موردی نیست" /> : (
-        <div className="grid" style={{ gap: 8 }}>
+      {!items ? <Loading /> : items.length === 0 ? <Empty icon="📅" text="موردی نیست" /> : (<>
+        <div className="grid" style={{ gap: 8, display: view === 'list' ? 'grid' : 'none' }}>
           {items.map(s => (
             <div key={s.id} className="panel panel-pad row" style={{ padding: '10px 14px' }}>
               <span style={{ fontSize: 17 }}>{s.type === 'class' ? '🏫' : s.type === 'exam' ? '📝' : '🔄'}</span>
@@ -311,6 +319,7 @@ export function ScheduleTab() {
               {s.flex_type === 'flexible' &&
                 <button className="btn sm" title="اعلام زمان جدید کلاس منعطف" onClick={() => setFlex(s)}>🔄 زمان جدید</button>}
               <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })} aria-label={`ویرایش برنامه ${s.lesson}`}>✏️</button>
+              <button className="btn sm" onClick={() => setEdit({ ...s, id: null, lesson: `${s.lesson} — کپی`, note: s.note || '' })} aria-label={`کپی برنامه ${s.lesson}`}>📄</button>
               <button className="btn sm danger" aria-label={`حذف برنامه ${s.lesson}`} onClick={() => setConfirm({
                 text: `حذف «${s.lesson}» (${s.date})؟`,
                 run: async () => { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); load(); },
@@ -318,7 +327,25 @@ export function ScheduleTab() {
             </div>
           ))}
         </div>
-      )}
+        {view === 'week' && <div className="schedule-agenda">
+          {Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).slice(0, 7).map(([day, rows]) => <section key={day} className="panel panel-pad">
+            <div className="section-title"><span className="code">{day}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>
+            <div className="grid" style={{ gap: 6, marginTop: 8 }}>{rows.map(s => <button key={s.id} className="schedule-agenda-item" onClick={() => setEdit({ ...s, note: s.note || '' })}>
+              <span>{s.time || '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
+            </button>)}</div>
+          </section>)}
+        </div>}
+        {view === 'month' && <div className="schedule-month">
+          <div className="schedule-month-head"><b>{monthKey || 'ماه داده‌های موجود'}</b><span className="muted">نمای ماه بر اساس تاریخ‌های واقعی ثبت‌شده</span></div>
+          <div className="schedule-month-grid">{Array.from({ length: 31 }, (_, i) => i + 1).map(day => {
+            const rows = monthItems.filter(x => Number((x.date || '').slice(8, 10)) === day);
+            return <div key={day} className={`schedule-day ${rows.length ? 'has' : ''}`}><span className="muted">{day.toLocaleString('fa')}</span>
+              {rows.slice(0, 3).map(s => <button key={s.id} onClick={() => setEdit({ ...s, note: s.note || '' })} title={`${s.lesson} · ${s.time || ''}`}>{s.time || '•'} {s.lesson}</button>)}
+              {rows.length > 3 && <B>+{(rows.length - 3).toLocaleString('fa')}</B>}
+            </div>;
+          })}</div>
+        </div>}
+      </>)}
       {edit && <ScheduleModal row={edit.id ? edit : null} preset={edit}
                               onClose={(ok) => { setEdit(null); if (ok) load(); }} />}
       {flex && <FlexModal row={flex} onClose={(ok) => { setFlex(null); if (ok) load(); }} />}
@@ -651,6 +678,7 @@ export function ReportsTab() {
       {[['new', 'جدید'], ['reviewing', 'در بررسی'], ['resolved', 'حل‌شده'], ['rejected', 'ردشده'], ['', 'همه تاریخچه']].map(([k, l]) =>
         <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
     </div>
+    <SavedViews scope="reports" filters={{ status }} onApply={f => { setStatus(f.status ?? 'new'); setPage(1); }} label="صف‌های ذخیره‌شده" />
     {!data ? <Loading rows={6} /> : <DataTable columns={cols} rows={data.reports || []} rowKey="id" colToggle
       pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}
       empty={<Empty icon="🚩" text="گزارشی در این وضعیت نیست" />} />}

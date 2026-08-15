@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
@@ -48,15 +49,23 @@ export default function Questions({ route = '' }) {
   const [createOpen, setCreateOpen] = useState(wantsCreate);
   const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
   const [q, setQ] = useState('');
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('pending');
   const [fdiff, setFdiff] = useState('');
   const [fsrc, setFsrc] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const LIMIT = 30;
   useEffect(() => { if (wantsCreate) setCreateOpen(true); }, [wantsCreate]);
 
   const load = async () => {
     setErr('');
     try {
-      const r = await api.caQuestionsPending(intake || undefined);
-      setRows(r.questions || r.items || []);
+      const r = await api.questions({
+        status, intake, q, difficulty: fdiff, source: fsrc,
+        skip: (page - 1) * LIMIT, limit: LIMIT,
+      });
+      setRows(r.questions || []); setTotal(Number(r.total || 0));
     } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => {
@@ -65,7 +74,8 @@ export default function Questions({ route = '' }) {
       if (r.scope_kind === 'scoped') setIntake(r.scope_intake || r.intakes?.[0]?.code || '');
     }).catch(e => { if (e.status === 403) setPermErr(true); else setErr(errText(e)); });
   }, []);
-  useEffect(() => { setRows(null); setSel([]); load(); }, [intake]);
+  useEffect(() => { const t = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [query]);
+  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, page]);
 
   const act = async (qid, kind) => {
     try {
@@ -85,13 +95,7 @@ export default function Questions({ route = '' }) {
     } catch (e) { toast(errText(e), 'err'); }
   };
 
-  const vis = useMemo(() => (rows || []).filter(r => {
-    if (fdiff && r.difficulty !== fdiff) return false;
-    if (fsrc && (r.source || 'bot') !== fsrc) return false;
-    const s = q.trim();
-    if (s && !((r.question || '').includes(s) || (r.lesson || '').includes(s) || (r.topic || '').includes(s))) return false;
-    return true;
-  }), [rows, q, fdiff, fsrc]);
+  const vis = rows || [];
 
   if (permErr) return <NoPerm text="بازبینی سؤال نیازمند مجوز questions.review یا questions.review_scoped است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -108,13 +112,17 @@ export default function Questions({ route = '' }) {
       <div style={{ fontSize: 12 }}>{r.creator_name || '—'}
         <div className="muted">{SRC[r.source] || r.source || ''}</div></div>) },
     { k: 'intake', label: 'ورودی', render: r => r.intake || <B>سراسری</B> },
+    { k: 'approved', label: 'وضعیت', render: r => <B kind={r.approved ? 'ok' : 'warn'}>{r.approved ? 'تأییدشده' : 'در انتظار'}</B> },
+    { k: 'attempts', label: 'تلاش/دقت', render: r => <span>{fa(r.attempts)} · <B kind={r.accuracy >= 70 ? 'ok' : r.attempts ? 'warn' : ''}>{fa(r.accuracy)}٪</B></span> },
+    { k: 'reports', label: 'گزارش', render: r => r.reports ? <B kind="bad">{fa(r.reports)}</B> : '—' },
+    { k: 'created_at', label: 'ایجاد', render: r => <span className="code muted">{r.created_at || '—'}</span> },
     { k: 'ops', label: '', stop: true, render: r => {
       const id = r.id || r._id;
       return (
         <div className="row" style={{ gap: 4 }}>
-          <button className="btn sm" title="مشاهده/ویرایش" aria-label="مشاهده و ویرایش سؤال" onClick={() => setDetail(r)}>👁</button>
-          <button className="btn sm ok" title="تأیید" aria-label="تأیید سؤال" onClick={() => act(id, 'approve')}>✅</button>
-          <button className="btn sm danger" title="رد" aria-label="رد سؤال" onClick={() => act(id, 'reject')}>❌</button>
+          <button className="btn sm" title="مشاهده" aria-label="مشاهده سؤال" onClick={() => setDetail(r)}>👁</button>
+          {!r.approved && <><button className="btn sm ok" title="تأیید" aria-label="تأیید سؤال" onClick={() => act(id, 'approve')}>✅</button>
+          <button className="btn sm danger" title="رد" aria-label="رد سؤال" onClick={() => act(id, 'reject')}>❌</button></>}
         </div>);
     } },
   ];
@@ -124,7 +132,7 @@ export default function Questions({ route = '' }) {
       <PageHeader title="بازبینی سؤال‌ها" description="بازبینی، ویرایش، تأیید و رد تکی یا گروهی با حفظ محدوده ورودی" actions={<>
         <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
         <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
-        {sel.length > 0 && <>
+        {status === 'pending' && sel.length > 0 && <>
           <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
           <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
           <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
@@ -132,31 +140,40 @@ export default function Questions({ route = '' }) {
       </>} />
 
       <FilterBar>
-        <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)}>
+        <select className="inp" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
+          <option value="pending">در انتظار بازبینی</option><option value="approved">تأییدشده</option><option value="all">همه سؤال‌ها</option>
+        </select>
+        <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => { setIntake(e.target.value); setPage(1); }}>
           {scopeKind === 'global' && <option value="">🌐 سؤالات سراسری</option>}
           {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
         </select>
-        <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 متن/درس/مبحث…"
-               value={q} onChange={e => setQ(e.target.value)} />
-        <select className="inp" value={fdiff} onChange={e => setFdiff(e.target.value)}>
+        <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 متن/درس/مبحث/طراح…"
+               value={query} onChange={e => setQuery(e.target.value)} />
+        <select className="inp" value={fdiff} onChange={e => { setFdiff(e.target.value); setPage(1); }}>
           <option value="">همه‌ی سختی‌ها</option>
           <option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option>
         </select>
-        <select className="inp" value={fsrc} onChange={e => setFsrc(e.target.value)}>
+        <select className="inp" value={fsrc} onChange={e => { setFsrc(e.target.value); setPage(1); }}>
           <option value="">همه‌ی منابع</option>
           <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
         </select>
-        {(q || fdiff || fsrc) && <B kind="acc">{fa(vis.length)} از {fa(rows?.length ?? 0)}</B>}
+        <B kind="acc">{fa(total)} نتیجه</B>
       </FilterBar>
+
+      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc }} onApply={f => {
+        setStatus(f.status || 'pending'); setIntake(f.intake || ''); setQuery(f.q || '');
+        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setPage(1);
+      }} />
 
       {!rows ? <Loading /> : (
         <DataTable columns={cols} rows={vis} rowKey="id"
-          selectable onSelect={setSel} onRow={setDetail}
-          empty={<Empty icon="🎉" text="صف بازبینی خالی است" />} />
+          selectable={status === 'pending'} onSelect={setSel} onRow={setDetail} colToggle
+          pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}
+          empty={<Empty icon="🎉" text={status === 'pending' ? 'صف بازبینی خالی است' : 'سؤالی با این فیلترها نیست'} />} />
       )}
 
       {detail && (
-        <QuestionDrawer row={detail}
+        <QuestionDrawer row={detail} readonly={!!detail.approved}
           onClose={() => setDetail(null)}
           onAction={(kind) => act(detail.id || detail._id, kind)}
           onSaved={() => { load(); }} />
@@ -340,7 +357,7 @@ function ImportWizard({ intake, onClose, onDone }) {
 }
 
 /* ── 👁✏️ کشوی جزئیات سؤال — مشاهده کامل + ویرایش پیش از تأیید ── */
-function QuestionDrawer({ row, onClose, onAction, onSaved }) {
+function QuestionDrawer({ row, readonly = false, onClose, onAction, onSaved }) {
   const [edit, setEdit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [f, setF] = useState(() => ({
@@ -374,7 +391,7 @@ function QuestionDrawer({ row, onClose, onAction, onSaved }) {
 
   const [dl, dk] = DIFF[row.difficulty] || [row.difficulty || '—', ''];
   return (
-    <Drawer wide title={`🧪 سؤال در انتظار بازبینی — ${row.lesson || ''}`} onClose={onClose}>
+    <Drawer wide title={`🧪 ${readonly ? 'سؤال تأییدشده' : 'سؤال در انتظار بازبینی'} — ${row.lesson || ''}`} onClose={onClose}>
       <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
         <B kind={dk}>{dl}</B>
         <B>{SRC[row.source] || row.source || '—'}</B>
@@ -403,12 +420,13 @@ function QuestionDrawer({ row, onClose, onAction, onSaved }) {
               <div style={{ marginTop: 6, lineHeight: 1.9, color: 'var(--txt2)' }}>{f.explanation}</div>
             </div>
           )}
-          <div className="row" style={{ marginTop: 14, flexWrap: 'wrap', gap: 6 }}>
+          {!readonly ? <div className="row" style={{ marginTop: 14, flexWrap: 'wrap', gap: 6 }}>
             <button className="btn ok" onClick={() => onAction('approve')}>✅ تأیید و انتشار</button>
             <button className="btn danger" onClick={() => onAction('reject')}>❌ رد</button>
             <span className="spacer" />
             <button className="btn" onClick={() => setEdit(true)}>✏️ ویرایش پیش از تأیید</button>
-          </div>
+          </div> : <div className="row" style={{ marginTop: 14 }}><B kind="ok">این سؤال منتشر شده و این نما فقط‌خواندنی است</B>
+            <span className="spacer" /><B>{fa(row.attempts)} تلاش · دقت {fa(row.accuracy)}٪</B></div>}
         </>
       ) : (
         <div className="grid" style={{ gap: 10 }}>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, PageHeader, toast, NoPerm, Empty, Confirm, Switch } from '../ui.jsx';
+import { Loading, ErrorState, B, PageHeader, toast, NoPerm, Empty, Confirm, Switch, Modal } from '../ui.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const STEPS = [
@@ -32,12 +32,22 @@ export default function Notify() {
   const [sched, setSched] = useState(null);          // 🌊 ارسال‌های زمان‌دار در انتظار
   const [cancelOf, setCancelOf] = useState(null);
   const [auxErr, setAuxErr] = useState('');
+  const [segments, setSegments] = useState([]);
+  const [drafts, setDrafts] = useState([]);
+  const [saveOpen, setSaveOpen] = useState(null); // segment | draft
+  const [saveName, setSaveName] = useState('');
   const [denied, setDenied] = useState(false);       // سطح مالک
 
   useEffect(() => {
     api.waIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {});
-    loadHist(); loadRuns(); loadSched();
+    loadHist(); loadRuns(); loadSched(); loadSaved();
   }, []);
+  const loadSaved = async () => {
+    try {
+      const [s, d] = await Promise.all([api.savedFilters('broadcast_segment'), api.savedFilters('broadcast_draft')]);
+      setSegments(s.filters || []); setDrafts(d.filters || []);
+    } catch { setSegments([]); setDrafts([]); }
+  };
   const loadSched = async () => {
     try { setSched((await api.broadcastScheduled()).scheduled || []); }
     catch { setSched([]); }
@@ -110,6 +120,27 @@ export default function Notify() {
     setStep(1); setScope('all'); setIntake(''); setGroup('1'); setText('');
     setCount(null); setMode('now'); setSendAt(''); setSent(null);
   };
+  const saveCurrent = async () => {
+    if (!saveName.trim() || !saveOpen) return;
+    const isDraft = saveOpen === 'draft';
+    try {
+      await api.saveFilter({ name: saveName.trim(), scope: isDraft ? 'broadcast_draft' : 'broadcast_segment',
+        filters: isDraft ? { scope, intake, group, text, mode, sendAt } : { scope, intake, group } });
+      toast(isDraft ? 'پیش‌نویس ذخیره شد' : 'Segment مخاطبان ذخیره شد');
+      setSaveOpen(null); setSaveName(''); loadSaved();
+    } catch (e) { toast(errText(e), 'err'); }
+  };
+  const applySaved = (item, isDraft = false) => {
+    const f = item.filters || {};
+    setScope(f.scope || 'all'); setIntake(f.intake || ''); setGroup(f.group || '1');
+    if (isDraft) { setText(f.text || ''); setMode(f.mode || 'now'); setSendAt(f.sendAt || ''); }
+    setCount(null); setSent(null); setStep(isDraft && f.text ? 2 : 1);
+    toast(`«${item.name}» بارگذاری شد`);
+  };
+  const removeSaved = async (item) => {
+    try { await api.delFilter(item.id); loadSaved(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
 
   const minAt = useMemo(() => {
     const d = new Date(Date.now() + 5 * 60000);
@@ -128,7 +159,9 @@ export default function Notify() {
 
   return (
     <>
-      <PageHeader title="مرکز اعلان‌ها و ارسال همگانی" description="طراحی، پیش‌نمایش، زمان‌بندی، ارسال و پایش اعلان‌ها" />
+      <PageHeader title="مرکز اعلان‌ها و ارسال همگانی" description="طراحی، پیش‌نمایش، زمان‌بندی، ارسال و پایش اعلان‌ها"
+        actions={<><button className="btn" onClick={() => { setSaveName(''); setSaveOpen('segment'); }}>💾 ذخیره Segment</button>
+          <button className="btn" disabled={!text.trim()} onClick={() => { setSaveName(''); setSaveOpen('draft'); }}>📝 ذخیره پیش‌نویس</button></>} />
       {auxErr && <div className="panel panel-pad" style={{ marginBottom: 12 }}><ErrorState title="بخشی از داده‌های اعلان بارگذاری نشد" error={auxErr} onRetry={() => { setAuxErr(''); loadHist(); loadRuns(); loadSched(); }} /></div>}
       <div className="notify-layout">
       {/* ═══ جادوگر ═══ */}
@@ -313,6 +346,18 @@ export default function Notify() {
 
       {/* ═══ ستون کناری: زمان‌دارها + تاریخچه + اجراها ═══ */}
       <div className="grid" style={{ gap: 14, alignContent: 'start' }}>
+        {(segments.length > 0 || drafts.length > 0) && <div className="panel panel-pad">
+          <b>نماهای ذخیره‌شده</b>
+          {!!segments.length && <div style={{ marginTop: 8 }}><div className="muted">Segmentهای مخاطبان</div>
+            <div className="row" style={{ marginTop: 5 }}>{segments.map(s => <span className="chip" key={s.id}>
+              <a onClick={() => applySaved(s)}>{s.name}</a><button className="chip-x" aria-label={`حذف Segment ${s.name}`} onClick={() => removeSaved(s)}>✕</button>
+            </span>)}</div></div>}
+          {!!drafts.length && <div style={{ marginTop: 8 }}><div className="muted">پیش‌نویس‌ها</div>
+            <div className="grid" style={{ gap: 5, marginTop: 5 }}>{drafts.map(d => <div className="row" key={d.id}>
+              <button className="btn sm" style={{ flex: 1, textAlign: 'right' }} onClick={() => applySaved(d, true)}>📝 {d.name}</button>
+              <button className="btn sm danger" aria-label={`حذف پیش‌نویس ${d.name}`} onClick={() => removeSaved(d)}>🗑</button>
+            </div>)}</div></div>}
+        </div>}
         {/* 🌊 موج Notif-Scheduled — ارسال‌های زمان‌دار در انتظار + لغو */}
         {!denied && sched !== null && (
           <div className="panel panel-pad">
@@ -357,6 +402,7 @@ export default function Notify() {
                       {h.failed > 0 && <B kind="bad">✖ {fa(h.failed)}</B>}
                       {pending > 0 && <B kind="warn">⏳ {fa(pending)}</B>}
                       <span className="spacer" />
+                      <button className="btn sm" onClick={() => { reset(); setText(h.text || ''); setStep(2); }}>📄 استفاده مجدد</button>
                       <span className="muted">{(h.created_at || '').slice(0, 16).replace('T', ' ')}</span>
                     </div>
                     <div className="minibar-track" style={{ marginTop: 7 }}>
@@ -397,6 +443,12 @@ export default function Notify() {
         </div>
       </div>
 
+      {saveOpen && <Modal title={saveOpen === 'draft' ? 'ذخیره پیش‌نویس ارسال' : 'ذخیره Segment مخاطبان'} onClose={() => setSaveOpen(null)}>
+        <p className="muted" style={{ marginBottom: 8 }}>{saveOpen === 'draft' ? 'مخاطب، متن و زمان‌بندی فعلی ذخیره می‌شود.' : `مخاطب فعلی: ${audienceLabel}`}</p>
+        <input className="inp" style={{ width: '100%' }} placeholder="نام قابل تشخیص…" value={saveName} onChange={e => setSaveName(e.target.value)} />
+        <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!saveName.trim()} onClick={saveCurrent}>ذخیره</button>
+          <button className="btn" onClick={() => setSaveOpen(null)}>انصراف</button></div>
+      </Modal>}
       {cancelOf && (
         <Confirm danger
                  text={`لغو ارسال زمان‌دار برای ${fa(cancelOf.total)} گیرنده؟ پیام‌ها از صف حذف می‌شوند و این عمل در حسابرسی (HIGH) ثبت می‌شود.`}

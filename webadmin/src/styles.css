@@ -890,3 +890,29 @@ body.overlay-open { overflow: hidden; }
     transition-duration: .001ms !important;
   }
 }
+.upload-dropzone {
+  border: 1px dashed var(--c-line2); border-radius: var(--r-lg);
+  min-height: 104px; padding: var(--sp4); display: grid; place-content: center;
+  text-align: center; gap: 6px; background: var(--c-bg); cursor: pointer;
+  transition: border-color var(--d-micro), background var(--d-micro), transform var(--d-micro);
+}
+.upload-dropzone:hover, .upload-dropzone.on, .upload-dropzone:focus-visible {
+  border-color: var(--c-acc); background: rgba(77, 184, 255, .06); outline: none;
+}
+.file-row.upload-success { border-color: color-mix(in srgb, var(--c-ok) 45%, var(--c-line)); }
+.file-row.upload-error, .file-row.upload-invalid { border-color: color-mix(in srgb, var(--c-bad) 45%, var(--c-line)); }
+.file-row .field-error { max-width: 170px; }
+.transfer-card { display: flex; align-items: center; gap: var(--sp3); width: 100%; color: inherit; text-align: right; }
+.transfer-card:hover { border-color: var(--c-line2); background: var(--c-surface2); }
+.transfer-card .muted { display: block; margin-top: 4px; }
+.transfer-icon { font-size: 24px; width: 42px; height: 42px; display: grid; place-items: center; border-radius: var(--r-md); background: var(--c-bg); }
+.schedule-agenda { display: grid; gap: var(--sp3); grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.schedule-agenda-item { display: grid; grid-template-columns: 58px minmax(0,1fr) auto; gap: var(--sp2); align-items: center; width: 100%; padding: 8px; color: inherit; text-align: right; border: 1px solid var(--c-line); background: var(--c-bg); border-radius: var(--r-sm); }
+.schedule-agenda-item:hover { border-color: var(--c-line2); }
+.schedule-month { border: 1px solid var(--c-line); border-radius: var(--r-lg); overflow: hidden; }
+.schedule-month-head { display: flex; gap: var(--sp2); align-items: center; padding: var(--sp3); background: var(--c-surface2); }
+.schedule-month-grid { display: grid; grid-template-columns: repeat(7, minmax(100px, 1fr)); background: var(--c-line); gap: 1px; }
+.schedule-day { min-height: 92px; padding: 7px; background: var(--c-bg2); display: grid; align-content: start; gap: 4px; }
+.schedule-day.has { background: var(--c-surface); }
+.schedule-day button { border: 0; border-radius: 5px; background: rgba(77,184,255,.09); color: var(--c-txt2); padding: 3px 5px; text-align: right; font-size: var(--fs-caption); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1400px) { .schedule-month-grid { overflow-x: auto; grid-template-columns: repeat(7, minmax(125px, 1fr)); } }

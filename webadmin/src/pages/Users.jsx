@@ -22,6 +22,16 @@ export default function Users({ go }) {
   const [status, setStatus] = useState(new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '');
   const [intake, setIntake] = useState('');
   const [intakes, setIntakes] = useState([]);
+  const [group, setGroup] = useState('');
+  const [role, setRole] = useState('');
+  const [roles, setRoles] = useState([]);
+  const [activity, setActivity] = useState('');
+  const [accuracyMax, setAccuracyMax] = useState('');
+  const [subDays, setSubDays] = useState('');
+  const [openTicket, setOpenTicket] = useState('');
+  const [sortBy, setSortBy] = useState('registered_at');
+  const [sortDir, setSortDir] = useState('desc');
+  const [advanced, setAdvanced] = useState(false);
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState(25);
   const [data, setData] = useState({ users: [], total: 0, pages: 1 });
@@ -32,6 +42,9 @@ export default function Users({ go }) {
   const [confirm, setConfirm] = useState(null);
   const [intakeModal, setIntakeModal] = useState(false);
   const [intakeVal, setIntakeVal] = useState('');
+  const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message
+  const [bulkValue, setBulkValue] = useState('');
+  const [bulkResult, setBulkResult] = useState(null);
   const [filters, setFilters] = useState(null);
   const [saveModal, setSaveModal] = useState(false);
   const [filterName, setFilterName] = useState('');
@@ -40,40 +53,53 @@ export default function Users({ go }) {
   const [caOpen, setCaOpen] = useState(false);      // 🌊 WA4 — ادمین‌های محتوا
 
   useEffect(() => { api.intakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
+  useEffect(() => { api.rolesPicker().then(r => setRoles(r.roles || [])).catch(() => setRoles([])); }, []);
   useEffect(() => { api.savedFilters('users').then(r => setFilters(r.filters || [])).catch(() => setFilters([])); }, []);
   useEffect(() => { const t = setTimeout(() => setQ(q2), 350); return () => clearTimeout(t); }, [q2]);
 
   const load = async () => {
     setLoading(true); setErr('');
     try {
-      setData(await api.users({ page, per_page: perPage, q, intake, status }));
+      setData(await api.users({
+        page, per_page: perPage, q, intake, status, group, role, activity,
+        accuracy_max: accuracyMax, sub_expiring_days: subDays,
+        has_open_ticket: openTicket, sort_by: sortBy, sort_dir: sortDir,
+      }));
     } catch (e) { setErr(errText(e)); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, [page, perPage, q, intake, status]);
-  useEffect(() => { setSel([]); }, [page, q, intake, status]);
+  useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, sortBy, sortDir]);
+  useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket]);
 
-  const bulk = async (action, value) => {
-    if (!sel.length) return toast('ابتدا کاربران را انتخاب کنید', 'err');
+  const bulk = async (action, value, ids = sel) => {
+    if (!ids.length) return toast('ابتدا کاربران را انتخاب کنید', 'err');
     try {
-      const r = await api.usersBulk(action, sel, value);
-      toast(`${r.done} کاربر به‌روزرسانی شد`);
+      const r = await api.usersBulk(action, ids, value);
+      setBulkResult({ ...r, action, value });
+      toast(`${faNum(r.done)} موفق · ${faNum(r.skipped?.length || 0)} ردشده · ${faNum(r.failed?.length || 0)} ناموفق`, r.failed?.length ? 'err' : 'ok');
       setSel([]); load();
-    } catch (e) { toast(errText(e), 'err'); }
+      return r;
+    } catch (e) { toast(errText(e), 'err'); return null; }
   };
 
   const applyFilter = (f) => {
     const flt = f.filters || {};
     setQ2(flt.q || ''); setQ(flt.q || '');
-    setStatus(flt.status || ''); setIntake(flt.intake || ''); setPage(1);
-    toast(`فیلتر «${f.name}» اعمال شد ⏱`);
+    setStatus(flt.status || ''); setIntake(flt.intake || ''); setGroup(flt.group || '');
+    setRole(flt.role || ''); setActivity(flt.activity || '');
+    setAccuracyMax(flt.accuracyMax ?? ''); setSubDays(flt.subDays ?? '');
+    setOpenTicket(flt.openTicket || ''); setSortBy(flt.sortBy || 'registered_at');
+    setSortDir(flt.sortDir || 'desc'); setAdvanced(!!(flt.group || flt.role || flt.activity || flt.accuracyMax !== undefined || flt.subDays || flt.openTicket));
+    setPage(1);
+    toast(`نمای «${f.name}» اعمال شد ⏱`);
   };
   const saveFilter = async () => {
     if (!filterName.trim()) return;
     try {
       await api.saveFilter({ name: filterName.trim(), scope: 'users',
-        filters: { q, status, intake } });
-      toast('فیلتر ذخیره شد ✅'); setSaveModal(false); setFilterName('');
+        filters: { q, status, intake, group, role, activity, accuracyMax,
+          subDays, openTicket, sortBy, sortDir } });
+      toast('نمای هوشمند ذخیره شد ✅'); setSaveModal(false); setFilterName('');
       setFilters((await api.savedFilters('users')).filters || []);
     } catch (e) { toast(errText(e), 'err'); }
   };
@@ -86,8 +112,14 @@ export default function Users({ go }) {
     const rows = (data.users || []).filter(u => sel.includes(u.id));
     exportCSV(`users-${Date.now()}.csv`, [
       { label: 'id', v: 'id' }, { label: 'name', v: 'name' },
-      { label: 'student_id', v: 'student_id' }, { label: 'intake', v: 'intake' },
-      { label: 'group', v: 'group' },
+      { label: 'username', v: 'username' }, { label: 'student_id', v: 'student_id' },
+      { label: 'intake', v: 'intake' }, { label: 'group', v: 'group' },
+      { label: 'roles', v: r => (r.roles || []).join('|') },
+      { label: 'subscription', v: r => r.subscription?.status || '' },
+      { label: 'subscription_end', v: r => r.subscription?.end_date || '' },
+      { label: 'accuracy', v: 'accuracy' }, { label: 'answers', v: 'total_answers' },
+      { label: 'exams', v: 'exam_count' }, { label: 'ai_usage', v: 'ai_usage' },
+      { label: 'last_active', v: 'last_active' }, { label: 'registered_at', v: 'registered_at' },
       { label: 'status', v: r => r.suspended ? 'suspended' : r.approved ? 'active' : 'pending' },
     ], rows);
     toast(`خروجی ${rows.length} کاربر دانلود شد 📥`);
@@ -100,10 +132,22 @@ export default function Users({ go }) {
     { k: 'student_id', label: 'شماره دانشجویی', render: r => <span className="code">{r.student_id || '—'}</span> },
     { k: 'intake', label: 'ورودی' },
     { k: 'group', label: 'گروه' },
-    { k: 'total_answers', label: 'پاسخ‌ها', render: r => Number(r.total_answers || 0).toLocaleString('fa') },
-    { k: 'rank', label: 'رنک', render: r => r.rank ? <B kind="purple">{r.rank}</B> : '—' },
-    { k: 'st', label: 'وضعیت', render: r => r.suspended
-      ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B> },
+    { k: 'roles', label: 'نقش‌ها', render: r => (r.roles || []).length
+      ? <div className="row" style={{ gap: 3 }}>{r.roles.slice(0, 2).map(x => <B key={x} kind="acc">{x}</B>)}{r.roles.length > 2 && <B>+{r.roles.length - 2}</B>}</div>
+      : <span className="muted">دانشجو</span> },
+    { k: 'subscription', label: 'اشتراک هامزیار', render: r => r.subscription?.status === 'active'
+      ? <div><B kind="ok">{r.subscription.plan || 'فعال'}</B><div className="muted">{faNum(r.subscription.days_left)} روز</div></div>
+      : <span className="muted">—</span> },
+    { k: 'accuracy', label: 'دقت', render: r => <B kind={r.accuracy >= 70 ? 'ok' : r.accuracy < 50 && r.total_answers ? 'warn' : ''}>{faNum(r.accuracy)}٪</B> },
+    { k: 'total_answers', label: 'پاسخ‌ها', render: r => faNum(r.total_answers) },
+    { k: 'exam_count', label: 'آزمون', render: r => faNum(r.exam_count) },
+    { k: 'ai_usage', label: 'هوشیار', render: r => faNum(r.ai_usage) },
+    { k: 'streak', label: 'استریک', render: r => r.streak ? `🔥 ${faNum(r.streak)}` : '—' },
+    { k: 'rank', label: 'رنک', render: r => r.rank ? <B kind="purple">{r.rank}{r.div ? ` / ${r.div}` : ''}</B> : '—' },
+    { k: 'last_active', label: 'آخرین فعالیت', render: r => <span className="muted code">{r.last_active || '—'}</span> },
+    { k: 'registered_at', label: 'ثبت‌نام', render: r => <span className="muted code">{r.registered_at || '—'}</span> },
+    { k: 'st', label: 'وضعیت', render: r => <div className="row" style={{ gap: 3 }}>{r.suspended
+      ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B>}{r.has_open_ticket && <B kind="warn">🎫 باز</B>}</div> },
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
         {!r.approved && !r.suspended && <button className="btn sm ok" onClick={() => act(r.id, 'approve')} aria-label="تأیید کاربر">✅</button>}
@@ -132,12 +176,17 @@ export default function Users({ go }) {
           <button className="btn sm danger" onClick={() => setConfirm({ action: 'suspend', text: `تعلیق ${sel.length} کاربر؟` })}>⏸ تعلیق</button>
           <button className="btn sm" onClick={() => setConfirm({ action: 'unsuspend', text: `رفع تعلیق ${sel.length} کاربر؟` })}>🔓 رفع تعلیق</button>
           <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>
-          <button className="btn sm" onClick={exportSel}>📥 CSV</button>
+          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>
+          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>
+          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>
+          <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>
+          <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>
+          <button className="btn sm" onClick={exportSel}>📥 CSV انتخاب</button>
         </>}
       </>} />
 
       <FilterBar>
-        <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، شماره دانشجویی، آیدی…"
+        <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، نام‌نما، یوزرنیم، شماره دانشجویی یا Telegram ID…"
                value={q2} onChange={e => { setQ2(e.target.value); setPage(1); }} />
         <select className="inp" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
           {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -146,11 +195,40 @@ export default function Users({ go }) {
           <option value="">همه‌ی ورودی‌ها</option>
           {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
         </select>
+        <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ فیلتر هوشمند</button>
+        <button className="btn sm" title="ذخیره‌ی نمای فعلی" onClick={() => setSaveModal(true)}>💾 ذخیره نما</button>
+      </FilterBar>
+      {advanced && <FilterBar className="advanced-filter-bar">
+        <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setPage(1); }}>
+          <option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option>
+        </select>
+        <select className="inp" value={role} onChange={e => { setRole(e.target.value); setPage(1); }}>
+          <option value="">همه نقش‌ها</option>{roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+        </select>
+        <select className="inp" value={activity} onChange={e => { setActivity(e.target.value); setPage(1); }}>
+          <option value="">هر فعالیتی</option><option value="never">بدون اولین فعالیت</option>
+          <option value="inactive_14">غیرفعال بیش از ۱۴ روز</option><option value="inactive_30">غیرفعال بیش از ۳۰ روز</option>
+        </select>
+        <label className="row"><span className="muted">دقت ≤</span><input className="inp" type="number" min="0" max="100" style={{ width: 76 }} value={accuracyMax}
+          onChange={e => { setAccuracyMax(e.target.value); setPage(1); }} placeholder="٪" /></label>
+        <label className="row"><span className="muted">انقضا تا</span><input className="inp" type="number" min="1" max="365" style={{ width: 76 }} value={subDays}
+          onChange={e => { setSubDays(e.target.value); setPage(1); }} placeholder="روز" /></label>
+        <select className="inp" value={openTicket} onChange={e => { setOpenTicket(e.target.value); setPage(1); }}>
+          <option value="">هر وضعیت تیکت</option><option value="true">دارای تیکت باز</option><option value="false">بدون تیکت باز</option>
+        </select>
+        <select className="inp" value={sortBy} onChange={e => { setSortBy(e.target.value); setPage(1); }}>
+          <option value="registered_at">مرتب‌سازی: ثبت‌نام</option><option value="last_active">آخرین فعالیت</option>
+          <option value="name">نام</option><option value="total_answers">پاسخ‌ها</option>
+          <option value="correct_answers">پاسخ صحیح</option><option value="streak_current">استریک</option><option value="ai_total_usage">مصرف هوشیار</option>
+        </select>
+        <select className="inp" value={sortDir} onChange={e => { setSortDir(e.target.value); setPage(1); }}>
+          <option value="desc">نزولی</option><option value="asc">صعودی</option>
+        </select>
         <select className="inp" value={perPage} onChange={e => { setPerPage(+e.target.value); setPage(1); }}>
           {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n} در صفحه</option>)}
         </select>
-        <button className="btn sm" title="ذخیره‌ی فیلتر فعلی" onClick={() => setSaveModal(true)}>💾 ذخیره فیلتر</button>
-      </FilterBar>
+        <button className="btn sm" onClick={() => { setGroup(''); setRole(''); setActivity(''); setAccuracyMax(''); setSubDays(''); setOpenTicket(''); setSortBy('registered_at'); setSortDir('desc'); setPage(1); }}>پاک‌کردن پیشرفته</button>
+      </FilterBar>}
 
       {/* ⏱ WA2.4 — فیلترهای ذخیره‌شده */}
       {filters && filters.length > 0 && (
@@ -190,8 +268,41 @@ export default function Users({ go }) {
           </div>
         </Modal>
       )}
+      {bulkModal && (
+        <Modal title={{ set_group: '👥 تغییر گروه گروهی', add_role: '🛡 افزودن نقش گروهی', remove_role: '➖ حذف نقش گروهی', message: '📨 پیام به کاربران انتخاب‌شده', block: '⛔ مسدودسازی کاربران انتخاب‌شده' }[bulkModal]} onClose={() => setBulkModal(null)}>
+          <p className="muted" style={{ marginBottom: 10 }}>{faNum(sel.length)} کاربر انتخاب شده‌اند. نتیجه‌ی هر کاربر جداگانه گزارش می‌شود.</p>
+          {bulkModal === 'set_group' && <select className="inp" style={{ width: '100%' }} value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+            <option value="">انتخاب گروه…</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option>
+          </select>}
+          {(bulkModal === 'add_role' || bulkModal === 'remove_role') && <select className="inp" style={{ width: '100%' }} value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
+            <option value="">انتخاب نقش…</option>{roles.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>}
+          {(bulkModal === 'message' || bulkModal === 'block') && <textarea className="inp" rows={5} maxLength={1500} style={{ width: '100%' }}
+            placeholder={bulkModal === 'block' ? 'دلیل مسدودسازی — کاربران از دیتابیس فعال حذف و به لیست سیاه منتقل می‌شوند…' : 'متن پیام از سمت پشتیبانی هامزیار…'} value={bulkValue} onChange={e => setBulkValue(e.target.value)} />}
+          <div className="row" style={{ marginTop: 12 }}>
+            <button className={`btn ${bulkModal === 'remove_role' || bulkModal === 'block' ? 'danger' : 'primary'}`} disabled={!bulkValue.trim()} onClick={async () => {
+              const action = bulkModal; const value = bulkValue; setBulkModal(null); await bulk(action, value);
+            }}>بازبینی شد؛ اجرا</button>
+            <button className="btn" onClick={() => setBulkModal(null)}>انصراف</button>
+          </div>
+        </Modal>
+      )}
+      {bulkResult && (
+        <Modal title="گزارش عملیات گروهی" onClose={() => setBulkResult(null)}>
+          <div className="grid g3">
+            <div className="panel panel-pad"><b className="ok-text">{faNum(bulkResult.succeeded?.length || 0)}</b><div className="muted">موفق</div></div>
+            <div className="panel panel-pad"><b>{faNum(bulkResult.skipped?.length || 0)}</b><div className="muted">ردشده/بدون تغییر</div></div>
+            <div className="panel panel-pad"><b className="bad-text">{faNum(bulkResult.failed?.length || 0)}</b><div className="muted">ناموفق</div></div>
+          </div>
+          {!!bulkResult.skipped?.length && <div className="grid" style={{ marginTop: 10, gap: 4 }}><b>ردشده‌ها</b>
+            {bulkResult.skipped.slice(0, 20).map(x => <div key={`s-${x.id}`} className="row"><span className="code">{x.id}</span><span className="muted">{x.reason}</span></div>)}</div>}
+          {!!bulkResult.failed?.length && <div className="grid" style={{ marginTop: 10, gap: 4 }}><b>ناموفق‌ها</b>
+            {bulkResult.failed.slice(0, 20).map(x => <div key={`f-${x.id}`} className="row"><span className="code">{x.id}</span><span className="muted">{x.error}</span></div>)}
+            <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.value, bulkResult.failed.map(x => x.id))}>↻ تلاش مجدد ناموفق‌ها</button></div>}
+        </Modal>
+      )}
       {saveModal && (
-        <Modal title="💾 ذخیره‌ی فیلتر فعلی" onClose={() => setSaveModal(false)}>
+        <Modal title="💾 ذخیره‌ی نمای هوشمند فعلی" onClose={() => setSaveModal(false)}>
           <p className="muted" style={{ marginBottom: 10 }}>
             وضعیت فعلی: {q ? `جست‌وجو: «${q}» · ` : ''}{STATUS[status] || 'همه'}{intake ? ` · ورودی: ${intake}` : ''}
           </p>
@@ -221,9 +332,13 @@ function UserDrawer({ row, go, onClose }) {
     return () => { on = false; };
   }, [row.id]);
 
-  const TABS = [['overview', '👤 نمای کلی'], ['actions', '⚙️ اقدامات'], ['academic', '📊 تحصیلی'],
-                ['prestige', '🏆 افتخار'], ['ai', '🤖 هوشیار'], ['sub', '💎 اشتراک'],
-                ['tickets', '🎫 تیکت‌ها'], ['audit', '🧭 رویدادها']];
+  const TABS = [
+    ['overview', '📊 نمای کلی'], ['identity', '👤 هویت'], ['academic', '📚 یادگیری و نمرات'],
+    ['questions', '🧪 سؤال‌ها'], ['exams', '📝 آزمون‌ها'], ['ai', '🤖 هوشیار'],
+    ['notifications', '🔔 اعلان‌ها'], ['tickets', '🎫 تیکت‌ها'], ['sub', '💎 اشتراک'],
+    ['prestige', '🏆 افتخار'], ['roles', '🛡 نقش‌ها'], ['audit', '🧭 فعالیت و حسابرسی'],
+    ['actions', '⚙️ اقدامات'],
+  ];
 
   return (
     <Drawer wide title={`👤 ${row.display_name || row.name} · #${row.id}`} onClose={onClose}>
@@ -248,34 +363,35 @@ function UserDrawer({ row, go, onClose }) {
       )}
       {d && tab === 'overview' && (
         <>
-          <dl className="kv">
-            {Object.entries({
-              'نام': d.user.name, 'نام‌نما': d.user.nickname,
-              'یوزرنیم': d.user.username && '@' + d.user.username,
-              'شماره دانشجویی': d.user.student_id, 'ورودی': d.user.intake,
-              'گروه': d.user.group, 'نقش': d.user.role,
-              'وضعیت': d.user.suspended ? 'تعلیق‌شده' : d.user.approved ? 'فعال' : 'در انتظار',
-              'ثبت‌نام': d.user.registered_at,
-              'پاسخ‌ها': Number(d.user.total_answers || 0).toLocaleString('fa'),
-              'رنک': [d.user.prestige_rank, d.user.prestige_div].filter(Boolean).join(' / '),
-            }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => (
-              <React.Fragment key={k}><dt>{k}</dt><dd>{String(v)}</dd></React.Fragment>
-            ))}
-          </dl>
-          {d.admin_role && (
-            <div className="panel panel-pad" style={{ marginTop: 8, background: 'var(--bg)' }}>
-              <b>🛡 نقش مدیریتی</b>
-              <div style={{ marginTop: 6 }}>{d.admin_role.role}
-                {d.admin_role.scope ? <B kind="purple">scope: {d.admin_role.scope}</B> : null}</div>
-            </div>
-          )}
-          {!!(d.perms || []).length && (
-            <div className="row" style={{ marginTop: 10, gap: 4 }}>
-              {(d.perms || []).slice(0, 10).map(p => <B key={p} kind="acc">{p}</B>)}
-              {d.perms.length > 10 && <B>+{d.perms.length - 10}</B>}
-            </div>
-          )}
+          <div className="grid g4">
+            <div className="panel panel-pad"><b>{faNum(d.user.total_answers)}</b><div className="muted">پاسخ · دقت {faNum(d.user.accuracy)}٪</div></div>
+            <div className="panel panel-pad"><b>{faNum(d.counts.exams)}</b><div className="muted">آزمون</div></div>
+            <div className="panel panel-pad"><b>{faNum(d.counts.tickets)}</b><div className="muted">تیکت</div></div>
+            <div className="panel panel-pad"><b>{faNum(d.ai?.total_usage)}</b><div className="muted">استفاده از هوشیار</div></div>
+          </div>
+          <div className="grid g2" style={{ marginTop: 10 }}>
+            <div className="panel panel-pad"><b>وضعیت حساب</b><div style={{ marginTop: 6 }}>
+              {d.user.suspended ? <B kind="bad">تعلیق‌شده</B> : d.user.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار تأیید</B>}
+              <span className="muted"> · آخرین فعالیت: </span><span className="code">{d.user.last_active || 'ثبت نشده'}</span>
+            </div></div>
+            <div className="panel panel-pad"><b>اشتراک هامزیار</b><div style={{ marginTop: 6 }}>
+              {d.subscription?.status === 'active' ? <><B kind="ok">{d.subscription.plan}</B><span className="muted"> {faNum(d.subscription.days_left)} روز باقی</span></> : <span className="muted">اشتراک فعال ندارد</span>}
+            </div></div>
+          </div>
         </>
+      )}
+      {d && tab === 'identity' && (
+        <dl className="kv">
+          {Object.entries({
+            'نام کامل': d.user.name, 'نام‌نما': d.user.nickname,
+            'یوزرنیم': d.user.username && '@' + d.user.username,
+            'Telegram ID': d.user.id, 'شماره دانشجویی': d.user.student_id,
+            'ورودی': d.user.intake, 'گروه': d.user.group, 'نقش قدیمی': d.user.role,
+            'ثبت‌نام': d.user.registered_at, 'آخرین فعالیت': d.user.last_active,
+          }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => (
+            <React.Fragment key={k}><dt>{k}</dt><dd className={k === 'Telegram ID' || k === 'یوزرنیم' ? 'code' : ''}>{String(v)}</dd></React.Fragment>
+          ))}
+        </dl>
       )}
       {/* 🌊 W-Admin — تب‌های جدید User 360 */}
       {d && tab === 'academic' && (
@@ -295,8 +411,29 @@ function UserDrawer({ row, go, onClose }) {
           ))}
         </>
       )}
+      {d && tab === 'questions' && (
+        <>
+          <div className="muted" style={{ marginBottom: 8 }}>سؤال‌های طراحی‌شده: {faNum(d.counts.questions)}</div>
+          {!(d.recent_questions || []).length && <Empty icon="🧪" text="سؤالی طراحی نکرده است" />}
+          {(d.recent_questions || []).map(x => <div key={x.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
+            <div className="row"><b className="text-truncate">{x.question || '—'}</b><span className="spacer" />
+              <B kind={x.approved ? 'ok' : 'warn'}>{x.approved ? 'تأییدشده' : 'در انتظار'}</B></div>
+            <div className="muted">{x.lesson} · {x.topic} · {faNum(x.attempts)} تلاش · دقت {faNum(x.accuracy)}٪</div>
+          </div>)}
+        </>
+      )}
+      {d && tab === 'exams' && (
+        <>
+          <div className="muted" style={{ marginBottom: 8 }}>آزمون‌ها: {faNum(d.counts.exams)}</div>
+          {!(d.recent_exams || []).length && <Empty icon="📝" text="آزمونی ثبت نشده است" />}
+          {(d.recent_exams || []).map(x => <div key={x.id} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
+            <div style={{ flex: 1 }}><b>{x.lesson || 'آزمون سفارشی'}</b><div className="muted">{x.topic || 'همه مباحث'} · {x.started_at}</div></div>
+            <B kind={x.status === 'finished' ? 'ok' : 'warn'}>{x.status}</B><B kind="acc">{faNum(x.percentage)}٪</B>
+          </div>)}
+        </>
+      )}
       {d && tab === 'prestige' && (
-        <dl className="kv">
+        <> <dl className="kv">
           {Object.entries({
             'رنک': d.prestige?.rank, 'دسته (Division)': d.prestige?.div,
             'XP افتخار': d.prestige?.prestige_xp, 'XP مؤثر': d.prestige?.effective_xp,
@@ -308,6 +445,11 @@ function UserDrawer({ row, go, onClose }) {
               <dd>{typeof v === 'number' ? Number(v).toLocaleString('fa') : String(v)}</dd></React.Fragment>
           ))}
         </dl>
+        {!!(d.prestige_history || []).length && <div style={{ marginTop: 12 }}><b>تاریخچه Prestige</b>
+          {(d.prestige_history || []).map(x => <div key={x.id} className="row" style={{ padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
+            <span style={{ flex: 1 }}>{x.title || x.kind || 'رویداد'}</span><B kind={x.xp >= 0 ? 'ok' : 'warn'}>{x.xp >= 0 ? '+' : ''}{faNum(x.xp)} XP</B><span className="muted">{x.at}</span>
+          </div>)}</div>}
+        </>
       )}
       {d && tab === 'ai' && (
         <>
@@ -323,6 +465,28 @@ function UserDrawer({ row, go, onClose }) {
           {d.ai?.banned && (
             <p className="muted">رفع مسدودیت از صفحه‌ی «هوشیار ← دسترسی» انجام می‌شود.</p>
           )}
+        </>
+      )}
+      {d && tab === 'notifications' && (
+        <>
+          <div className="row" style={{ marginBottom: 8 }}><B kind="warn">خوانده‌نشده: {faNum(d.notifs?.unread)}</B><B>کل: {faNum(d.notifs?.total)}</B></div>
+          {!(d.recent_notifications || []).length && <Empty icon="🔔" text="اعلانی ثبت نشده است" />}
+          {(d.recent_notifications || []).map(x => <div key={x.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
+            <div className="row"><b>{x.title || x.type || 'اعلان'}</b><span className="spacer" />
+              <B kind={x.read ? '' : 'acc'}>{x.read ? 'خوانده‌شده' : 'جدید'}</B></div>
+            {x.body && <div className="muted">{x.body}</div>}<div className="muted">{x.at}</div>
+          </div>)}
+        </>
+      )}
+      {d && tab === 'roles' && (
+        <>
+          {!(d.roles || []).length && <Empty icon="🛡" text="نقش مدیریتی ندارد" />}
+          {(d.roles || []).map(r => <div key={r.key} className="panel panel-pad" style={{ marginBottom: 6 }}>
+            <div className="row"><b>{r.label || r.key}</b><span className="code">{r.key}</span><span className="spacer" />
+              <B kind={r.active ? 'ok' : 'bad'}>{r.active ? 'فعال' : 'غیرفعال'}</B>{r.scope && <B kind="purple">{r.scope}</B>}</div>
+          </div>)}
+          {!!(d.perms || []).length && <div className="row" style={{ marginTop: 10, gap: 4 }}>
+            {d.perms.map(p => <B key={p} kind="acc">{p}</B>)}</div>}
         </>
       )}
       {d && tab === 'sub' && (
@@ -357,8 +521,10 @@ function UserDrawer({ row, go, onClose }) {
           {(d.recent_audit || []).map((l, i) => (
             <div key={i} className="row" style={{ padding: '8px 0', borderBottom: '1px solid var(--line)' }}>
               <span className={`sev ${(l.severity || '').toLowerCase()}`} />
-              <span style={{ flex: 1 }}>{l.action}</span>
+              <span style={{ flex: 1 }}>{l.action}<div className="muted">{l.relation === 'target' ? 'عملیات روی این کاربر' : 'عملیات انجام‌شده توسط کاربر'}</div></span>
+              {!!l.changes?.length && <B kind="acc">Δ {faNum(l.changes.length)}</B>}
               <B>{l.module}</B>
+              {l.correlation_id && <span className="code">{l.correlation_id}</span>}
               <span className="muted">{l.at}</span>
             </div>
           ))}

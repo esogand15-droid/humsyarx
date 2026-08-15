@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, PageHeader, Tabs, DiffViewer, toast, Confirm, Modal, Stat, NoPerm } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
+const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const ST = [
   ['', 'همه'],
   ['scheduled', 'زمان‌بندی‌شده'],
@@ -65,6 +67,7 @@ function ExamsTab({ autoCreate = false }) {
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
         <button className="btn sm" onClick={() => setEdit(r)} aria-label={`ویرایش آزمون ${r.lesson}`}>✏️</button>
+        <button className="btn sm" onClick={() => setEdit({ clone: r })} aria-label={`کپی آزمون ${r.lesson}`}>📄</button>
         <button className="btn sm danger" onClick={() => setConfirm(r)} aria-label={`حذف آزمون ${r.lesson}`}>🗑</button>
       </div>) },
   ];
@@ -96,7 +99,7 @@ function ExamsTab({ autoCreate = false }) {
           <div className="center-state">آزمونی در این وضعیت نیست</div>} />
       )}
 
-      {edit && <ExamModal row={edit.id ? edit : null} onClose={(ch) => { setEdit(null); if (ch) load(); }} />}
+      {edit && <ExamModal row={edit.id ? edit : null} seed={edit.clone || null} onClose={(ch) => { setEdit(null); if (ch) load(); }} />}
       {confirm && (
         <Confirm text={`حذف آزمون «${confirm.lesson}» (${confirm.date})؟`} danger
                  onYes={async () => {
@@ -113,11 +116,12 @@ function ExamsTab({ autoCreate = false }) {
 // (همان payload قبلی؛ فقط UX گام‌به‌گام با اعتبارسنجی هر گام)
 const EX_STEPS = [['مشخصات', '📚'], ['زمان و مکان', '🗓'], ['بازبینی و ثبت', '✅']];
 
-function ExamModal({ row, onClose }) {
+function ExamModal({ row, seed, onClose }) {
+  const base = row || seed || {};
   const [f, setF] = useState({
-    lesson: row?.lesson || '', date: row?.date || '', time: row?.time || '',
-    teacher: row?.teacher || '', location: row?.location || '',
-    notes: row?.notes || '', group: row?.group || 'هر دو',
+    lesson: seed ? `${base.lesson || ''} — کپی` : base.lesson || '', date: base.date || '', time: base.time || '',
+    teacher: base.teacher || '', location: base.location || '',
+    notes: base.notes || '', group: base.group || 'هر دو',
   });
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -142,7 +146,7 @@ function ExamModal({ row, onClose }) {
   };
 
   return (
-    <Modal title={row ? `✏️ ویرایش آزمون — ${row.lesson}` : '📝 سازنده‌ی آزمون جدید'} onClose={() => onClose(false)}>
+    <Modal title={row ? `✏️ ویرایش آزمون — ${row.lesson}` : seed ? `📄 کپی آزمون — ${seed.lesson}` : '📝 سازنده‌ی آزمون جدید'} onClose={() => onClose(false)}>
       <div className="wiz-steps" style={{ marginBottom: 14 }}>
         {EX_STEPS.map(([label, icon], i) => (
           <div key={label} className={`wiz-step ${step === i + 1 ? 'on' : ''} ${step > i + 1 ? 'done' : ''}`}
@@ -235,6 +239,10 @@ function ExamModal({ row, onClose }) {
 /* ── 📊🌊 WA3 — تب نمرات: لیست اخیر + ثبت گروهی (همان grades ربات) ───── */
 function GradesTab({ autoCreate = false }) {
   const [skip, setSkip] = useState(0);
+  const [q, setQ] = useState('');
+  const [search, setSearch] = useState('');
+  const [lesson, setLesson] = useState('');
+  const [group, setGroup] = useState('');
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
@@ -246,10 +254,11 @@ function GradesTab({ autoCreate = false }) {
 
   const load = async () => {
     setErr('');
-    try { setData(await api.gradesRecent(skip, LIMIT)); }
+    try { setData(await api.gradesRecent(skip, LIMIT, { q, lesson, group })); }
     catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
-  useEffect(() => { setData(null); load(); }, [skip]);
+  useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setSkip(0); }, 350); return () => clearTimeout(t); }, [search]);
+  useEffect(() => { setData(null); load(); }, [skip, q, lesson, group]);
 
   if (permErr) return <NoPerm text="مدیریت نمرات نیازمند مجوز «مدیریت نمرات» (grades.manage) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -279,6 +288,12 @@ function GradesTab({ autoCreate = false }) {
         <span className="spacer" />
         <button className="btn primary" onClick={() => setBulkOpen(true)}>➕ ثبت گروهی نمره</button>
       </div>
+      <div className="filter-bar" style={{ marginTop: 10 }}>
+        <input className="inp" style={{ flex: 1 }} placeholder="جست‌وجوی دانشجو، شماره، درس یا عنوان آزمون…" value={search} onChange={e => setSearch(e.target.value)} />
+        <input className="inp" placeholder="فیلتر درس…" value={lesson} onChange={e => { setLesson(e.target.value); setSkip(0); }} />
+        <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setSkip(0); }}><option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
+      </div>
+      <SavedViews scope="grades" filters={{ q: search, lesson, group }} onApply={f => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setSkip(0); }} label="نماهای نمره" />
 
       {!data ? <Loading /> : (
         <>
@@ -323,7 +338,26 @@ function GradeBulkModal({ onClose }) {
   const [meta, setMeta] = useState({ lesson: '', exam_title: '', exam_date: '' });
   const [rows, setRows] = useState([{ q: '', hits: null, picked: null, score: '' }]);
   const [busy, setBusy] = useState(false);
+  const [importReport, setImportReport] = useState(null);
   const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
+  const importCSV = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const parsed = []; const failed = []; const seen = new Set();
+    lines.forEach((line, index) => {
+      const parts = line.split(/[;,\t]/).map(x => x.trim().replace(/^"|"$/g, ''));
+      const id = Number(parts[0]); const score = Number(parts[1]);
+      if (index === 0 && !Number.isFinite(id)) return;
+      if (!Number.isInteger(id) || id <= 0 || !Number.isFinite(score) || score < 0 || score > 20) {
+        failed.push({ line: index + 1, value: line }); return;
+      }
+      if (seen.has(id)) { failed.push({ line: index + 1, value: 'Telegram ID تکراری' }); return; }
+      seen.add(id); parsed.push({ q: `#${id}`, hits: null, picked: { id, name: `کاربر #${id}` }, score });
+    });
+    setRows(parsed.length ? parsed : [{ q: '', hits: null, picked: null, score: '' }]);
+    setImportReport({ parsed: parsed.length, failed });
+  };
 
   const find = async (i) => {
     const q = rows[i].q.trim();
@@ -355,6 +389,13 @@ function GradeBulkModal({ onClose }) {
                  onChange={e => setMeta({ ...meta, exam_title: e.target.value })} />
           <input className="inp" type="date" title="تاریخ آزمون" value={meta.exam_date}
                  onChange={e => setMeta({ ...meta, exam_date: e.target.value })} />
+        </div>
+        <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+          <div className="row"><div><b>درون‌ریزی CSV</b><div className="muted">دو ستون: Telegram ID و نمره؛ جداشده با comma، semicolon یا tab</div></div>
+            <span className="spacer" /><input type="file" className="inp" accept=".csv,text/csv,text/plain" onChange={e => importCSV(e.target.files?.[0])} /></div>
+          {importReport && <div className="row" style={{ marginTop: 8 }}><B kind="ok">معتبر: {fa(importReport.parsed)}</B>
+            <B kind={importReport.failed.length ? 'bad' : 'ok'}>خطادار/تکراری: {fa(importReport.failed.length)}</B>
+            {!!importReport.failed.length && <span className="muted">خطوط: {importReport.failed.slice(0, 8).map(x => x.line).join('، ')}</span>}</div>}
         </div>
         {rows.map((r, i) => (
           <div key={i} className="panel panel-pad" style={{ background: 'var(--bg)' }}>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FilterBar, PageHeader, Drawer, NoPerm, Empty } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 
@@ -36,8 +37,9 @@ const valText = (v) => {
 };
 
 export default function Audit() {
-  const [filters, setFilters] = useState({ category: '', min_severity: '', q: '' });
+  const [filters, setFilters] = useState({ category: '', min_severity: '', q: '', actor: '', actor_role: '', module: '', action: '', target_type: '', target: '', date_from: '', date_to: '', correlation_id: '' });
   const [q2, setQ2] = useState('');
+  const [advanced, setAdvanced] = useState(false);
   const [skip, setSkip] = useState(0);
   const [rows, setRows] = useState(null);
   const [counters, setCounters] = useState(null);
@@ -119,7 +121,24 @@ export default function Audit() {
           <option value="HIGH">از HIGH</option>
           <option value="CRITICAL">فقط CRITICAL</option>
         </select>
+        <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ بررسی پیشرفته</button>
       </FilterBar>
+      {advanced && <FilterBar className="advanced-filter-bar">
+        <input className="inp" placeholder="عامل یا Actor ID…" value={filters.actor} onChange={e => { setFilters(f => ({ ...f, actor: e.target.value })); setSkip(0); }} />
+        <input className="inp" placeholder="نقش عامل…" value={filters.actor_role} onChange={e => { setFilters(f => ({ ...f, actor_role: e.target.value })); setSkip(0); }} />
+        <select className="inp" value={filters.module} onChange={e => { setFilters(f => ({ ...f, module: e.target.value })); setSkip(0); }}>
+          <option value="">همه ماژول‌ها</option>{Object.keys(MOD_FA).map(m => <option key={m} value={m}>{MOD_FA[m]}</option>)}
+        </select>
+        <input className="inp" placeholder="عمل مشخص…" value={filters.action} onChange={e => { setFilters(f => ({ ...f, action: e.target.value })); setSkip(0); }} />
+        <input className="inp" placeholder="نوع هدف…" value={filters.target_type} onChange={e => { setFilters(f => ({ ...f, target_type: e.target.value })); setSkip(0); }} />
+        <input className="inp" placeholder="هدف/شناسه…" value={filters.target} onChange={e => { setFilters(f => ({ ...f, target: e.target.value })); setSkip(0); }} />
+        <label className="row"><span className="muted">از</span><input type="date" className="inp" value={filters.date_from} onChange={e => { setFilters(f => ({ ...f, date_from: e.target.value })); setSkip(0); }} /></label>
+        <label className="row"><span className="muted">تا</span><input type="date" className="inp" value={filters.date_to} onChange={e => { setFilters(f => ({ ...f, date_to: e.target.value })); setSkip(0); }} /></label>
+        <input className="inp code" placeholder="Correlation ID…" value={filters.correlation_id} onChange={e => { setFilters(f => ({ ...f, correlation_id: e.target.value })); setSkip(0); }} />
+        <button className="btn sm" onClick={() => { setFilters(f => ({ ...f, actor: '', actor_role: '', module: '', action: '', target_type: '', target: '', date_from: '', date_to: '', correlation_id: '' })); setSkip(0); }}>پاک‌کردن پیشرفته</button>
+      </FilterBar>}
+
+      <SavedViews scope="audit" filters={filters} onApply={f => { setFilters(x => ({ ...x, ...f })); setQ2(f.q || ''); setAdvanced(!!(f.actor || f.actor_role || f.module || f.action || f.target || f.date_from || f.date_to || f.correlation_id)); setSkip(0); }} label="تحقیق‌های ذخیره‌شده" />
 
       {!rows ? <Loading /> : rows.length === 0 ? (
         <Empty icon="🧾" text="رویدادی با این فیلترها نیست" />
@@ -149,6 +168,8 @@ export default function Audit() {
               <span>{targetLabel(detail) || '—'} {targetType(detail) && <span className="muted">({targetType(detail)})</span>}</span></div>
             <div className="ct3-kv"><span className="muted">شناسه‌ی هدف</span>
               <span className="code" style={{ fontSize: 11 }}>{targetId(detail) || '—'}</span></div>
+            <div className="ct3-kv"><span className="muted">Correlation ID</span>
+              <span className="code" style={{ fontSize: 11 }}>{detail.correlation_id || '—'}</span></div>
           </div>
 
           {/* ── Diff قبل/بعد ── */}

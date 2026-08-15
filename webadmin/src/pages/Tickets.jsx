@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, Empty, B, FilterBar, PageHeader, toast, NoPerm } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
 // 🎫🌊 W-Admin — Support Command Center سه‌ستونه: صف | گفت‌وگو | کانتکست کاربر
 // (اصلاح باگ: فیلد پاسخ = message — قبلاً text می‌رفت و 422 می‌شد؛ حباب support راست‌چین شد)
@@ -16,6 +17,16 @@ export default function Tickets({ go, me }) {
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState([]);
   const [q, setQ] = useState('');
+  const [search, setSearch] = useState('');
+  const [intake, setIntake] = useState('');
+  const [priority, setPriority] = useState('');
+  const [assignee, setAssignee] = useState('');
+  const [page, setPage] = useState(1);
+  const [options, setOptions] = useState({ assignees: [], intakes: [] });
+  const [analytics, setAnalytics] = useState(null);
+  const [note, setNote] = useState('');
+  const [tags, setTags] = useState('');
+  const LIMIT = 30;
   const canManage = !!me?.is_owner || (me?.perms || []).includes('tickets.manage');
   const canReply = !!me?.is_owner || (me?.perms || []).includes('tickets.reply');
 
@@ -30,17 +41,22 @@ export default function Tickets({ go, me }) {
 
   const load = async () => {
     setErr('');
-    try { setList(await api.tickets(status || undefined)); }
+    try { setList(await api.tickets({ status, q, intake, priority, assignee_id: assignee, page, limit: LIMIT })); }
     catch (e) { if (e.status === 403) setDenied(true); else setErr(errText(e)); }
   };
-  useEffect(() => { load(); }, [status]);
+  useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [search]);
+  useEffect(() => { load(); setSel([]); }, [status, q, intake, priority, assignee, page]);
+  useEffect(() => {
+    api.ticketAssignees().then(setOptions).catch(() => {});
+    if (canManage) api.ticketAnalytics().then(setAnalytics).catch(() => {});
+  }, [canManage]);
 
   const open = async (t) => {
     const id = t.id ?? t.tid;
     setCur(id); setDetail(null); setCtx(null);
     try {
       const d = (await api.ticket(id)).ticket;
-      setDetail(d);
+      setDetail(d); setTags((d.tags || []).join('، ')); setNote('');
       // کانتکست غنی: user360 موجود (users.view) — ضدخطا، اختیاری
       if (d.user?.id) api.user360(d.user.id).then(x => setCtx(x)).catch(() => {});
     } catch (e) { toast(errText(e), 'err'); }
@@ -56,13 +72,19 @@ export default function Tickets({ go, me }) {
     try { await fn(cur); open({ id: cur }); load(); toast(okMsg); }
     catch (e) { toast(errText(e), 'err'); }
   };
+  const patchMeta = async (body) => {
+    try { await api.ticketMeta(cur, body); toast('متادیتای تیکت ذخیره شد'); open({ id: cur }); load(); if (canManage) api.ticketAnalytics().then(setAnalytics).catch(() => {}); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const addNote = async () => {
+    if (!note.trim()) return;
+    try { await api.ticketNote(cur, note.trim()); setNote(''); toast('یادداشت داخلی ثبت شد'); open({ id: cur }); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
 
   if (denied) return <NoPerm text="این بخش نیازمند tickets.reply یا tickets.manage است" />;
   if (err) return <ErrorState title="بارگذاری تیکت‌ها ناموفق بود" error={err} onRetry={load} />;
-  const raw = (list && (list.tickets || list)) || [];
-  const items = q.trim()
-    ? raw.filter(t => (t.subject || '').includes(q.trim()) || (t.user_name || '').includes(q.trim()))
-    : raw;
+  const items = (list && (list.tickets || list)) || [];
 
   return (
     <>
@@ -71,15 +93,36 @@ export default function Tickets({ go, me }) {
           <button className="btn sm ok" onClick={() => bulk('close')}>✅ بستن گروهی</button>
           <button className="btn sm" onClick={() => bulk('reopen')}>🔓 بازگشایی</button></> : null} />
 
+      {analytics && <div className="row" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
+        <B kind="warn">باز: {Number(analytics.status?.open || 0).toLocaleString('fa')}</B>
+        <B kind="ok">بسته: {Number(analytics.status?.closed || 0).toLocaleString('fa')}</B>
+        {analytics.avg_first_response_minutes != null && <B kind="acc">میانگین پاسخ نخست: {Number(analytics.avg_first_response_minutes).toLocaleString('fa')} دقیقه</B>}
+        {analytics.avg_resolution_minutes != null && <B>میانگین حل: {Number(analytics.avg_resolution_minutes).toLocaleString('fa')} دقیقه</B>}
+        {analytics.sample_limited && <span className="muted">آمار زمان بر مبنای ۵۰۰۰ تیکت اخیر</span>}
+      </div>}
       <FilterBar>
         <div className="tabs" style={{ flex: 1, marginBottom: 0 }} role="tablist" aria-label="وضعیت تیکت‌ها">
           {[['open', '🟠 باز'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
-            <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => setStatus(k)}>{v}</button>
+            <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{v}</button>
           ))}
         </div>
-        <input className="inp" style={{ width: 220 }} placeholder="🔎 موضوع/نام…"
-               value={q} onChange={e => setQ(e.target.value)} />
+        <input className="inp" style={{ width: 220 }} placeholder="🔎 موضوع/نام/متن…"
+               value={search} onChange={e => setSearch(e.target.value)} />
+        <select className="inp" value={intake} onChange={e => { setIntake(e.target.value); setPage(1); }}>
+          <option value="">همه ورودی‌ها</option>{(options.intakes || []).map(i => <option key={i.code} value={i.code}>{i.label}</option>)}
+        </select>
+        <select className="inp" value={priority} onChange={e => { setPriority(e.target.value); setPage(1); }}>
+          <option value="">همه اولویت‌ها</option><option value="urgent">فوری</option><option value="high">بالا</option><option value="normal">عادی</option><option value="low">کم</option>
+        </select>
+        {canManage && <select className="inp" value={assignee} onChange={e => { setAssignee(e.target.value); setPage(1); }}>
+          <option value="">همه مسئولان</option>{(options.assignees || []).map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
+        </select>}
       </FilterBar>
+
+      <SavedViews scope="tickets" filters={{ status, q: search, intake, priority, assignee }} onApply={f => {
+        setStatus(f.status || 'open'); setSearch(f.q || ''); setIntake(f.intake || '');
+        setPriority(f.priority || ''); setAssignee(f.assignee || ''); setPage(1);
+      }} label="صف‌های ذخیره‌شده" />
 
       <div className="tk-grid">
         {/* ستون ۱ — صف */}
@@ -106,12 +149,19 @@ export default function Tickets({ go, me }) {
                     {t.reply_count ? ` · 💬 ${Number(t.reply_count).toLocaleString('fa')}` : ''}
                   </div>
                 </div>
+                {t.priority !== 'normal' && <B kind={t.priority === 'urgent' ? 'bad' : 'warn'}>{t.priority === 'urgent' ? 'فوری' : t.priority === 'high' ? 'بالا' : 'کم'}</B>}
+                {t.assignee_name && <B>{t.assignee_name}</B>}
                 <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
                   {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}
                 </B>
               </div>
             );
           })}
+          {list && Number(list.pages || 1) > 1 && <div className="panel-pad row" style={{ position: 'sticky', bottom: 0, background: 'var(--panel)' }}>
+            <button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>قبلی</button>
+            <span className="spacer" /><span className="muted">{Number(list.total || 0).toLocaleString('fa')} تیکت · صفحه {page.toLocaleString('fa')} از {Number(list.pages).toLocaleString('fa')}</span><span className="spacer" />
+            <button className="btn sm" disabled={page >= list.pages} onClick={() => setPage(p => p + 1)}>بعدی</button>
+          </div>}
         </div>
 
         {/* ستون ۲ — گفت‌وگو */}
@@ -202,8 +252,24 @@ export default function Tickets({ go, me }) {
                   <dd>{Number(ctx.counts?.tickets || 0).toLocaleString('fa')}</dd>
                 </dl>
               ) : detail && <div className="muted" style={{ fontSize: 11 }}>در حال تکمیل کانتکست…</div>}
+              {canManage && <div className="grid" style={{ gap: 7, marginTop: 12 }}>
+                <b>مدیریت صف</b>
+                <div className="row"><select className="inp" style={{ flex: 1 }} value={detail.priority || 'normal'} onChange={e => patchMeta({ priority: e.target.value })}>
+                  <option value="low">اولویت کم</option><option value="normal">اولویت عادی</option><option value="high">اولویت بالا</option><option value="urgent">اولویت فوری</option>
+                </select>
+                <select className="inp" style={{ flex: 1 }} value={detail.assignee_id || ''} onChange={e => patchMeta({ assignee_id: e.target.value ? Number(e.target.value) : null })}>
+                  <option value="">بدون مسئول</option>{(options.assignees || []).map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
+                </select></div>
+                <div className="row"><input className="inp" style={{ flex: 1 }} placeholder="برچسب‌ها با ویرگول…" value={tags} onChange={e => setTags(e.target.value)} />
+                  <button className="btn sm" onClick={() => patchMeta({ tags: tags.split(/[،,]/).map(x => x.trim()).filter(Boolean) })}>ذخیره برچسب</button></div>
+                {!!(detail.internal_notes || []).length && <div className="grid" style={{ gap: 5 }}>
+                  {detail.internal_notes.map(n => <div key={n.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}><div>{n.text}</div><div className="muted">فقط ادمین · {n.actor_name} · {n.at}</div></div>)}
+                </div>}
+                <textarea className="inp" rows={2} maxLength={1500} placeholder="یادداشت داخلی — برای دانشجو ارسال نمی‌شود…" value={note} onChange={e => setNote(e.target.value)} />
+                <button className="btn sm" disabled={!note.trim()} onClick={addNote}>افزودن یادداشت داخلی</button>
+              </div>}
               <div className="row" style={{ marginTop: 12 }}>
-                <button className="btn sm primary" onClick={() => go && go('/users')}>👤 بازکردن در کاربران</button>
+                <button className="btn sm primary" onClick={() => go && go(`/users?q=${detail.user?.id || ''}`)}>👤 بازکردن در کاربران</button>
               </div>
             </>
           )}

@@ -166,7 +166,7 @@ export function Switch({ on, onChange, disabled, label }) {
 
 // ── DataTable v3 ──────────────────────────────────────────────────
 export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
-  pager, loading, onRow, empty, colToggle, caption, density = 'compact' }) {
+  pager, loading, onRow, empty, colToggle, caption = 'جدول داده‌ها', density = 'compact' }) {
   const [sel, setSel] = useState(new Set());
   const [sort, setSort] = useState(null);
   const [hidden, setHidden] = useState(new Set());
@@ -227,7 +227,7 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
         <thead><tr>
           {selectable && <th className="tbl-check"><input type="checkbox" checked={allOn} onChange={toggleAll} aria-label="انتخاب همه ردیف‌های صفحه" /></th>}
           {visCols.map(c => <th key={c.k} style={c.width ? { width: c.width } : undefined}
-            onClick={() => clickSort(c)} aria-sort={sort?.k === c.k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+            onClick={() => clickSort(c)} aria-sort={c.sortable ? (sort?.k === c.k ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined}>
             {c.sortable ? <button type="button" className="th-sort" onClick={e => { e.stopPropagation(); clickSort(c); }}>
               {c.label}<span className="sort-ic">{sort?.k === c.k ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ' ⇅'}</span>
             </button> : c.label}
@@ -240,7 +240,14 @@ export function DataTable({ columns, rows, rowKey = 'id', selectable, onSelect,
             const id = keyOf(r, i) ?? `row-${i}`;
             return <tr key={id} className={sel.has(id) ? 'sel' : ''} aria-selected={sel.has(id) || undefined}
               tabIndex={onRow ? 0 : undefined} onClick={() => onRow && onRow(r)}
-              onKeyDown={e => { if (onRow && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onRow(r); } }}>
+              onKeyDown={e => {
+                if (onRow && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onRow(r); }
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  const rows = [...e.currentTarget.parentElement.querySelectorAll('tr[tabindex="0"]')];
+                  const at = rows.indexOf(e.currentTarget); const next = e.key === 'ArrowDown' ? rows[at + 1] : rows[at - 1];
+                  if (next) { e.preventDefault(); next.focus(); }
+                }
+              }}>
               {selectable && <td onClick={e => e.stopPropagation()}><input type="checkbox" checked={sel.has(id)}
                 onChange={() => toggle(id)} aria-label={`انتخاب ردیف ${i + 1}`} /></td>}
               {visCols.map(c => <td key={c.k} onClick={c.stop ? e => e.stopPropagation() : undefined}>
@@ -266,10 +273,11 @@ export function Pagination({ page, pages, total, onPage }) {
 }
 
 // ── Dialogs ───────────────────────────────────────────────────────
-function useDialog(onClose) {
+function useDialog(onClose, active = true) {
   const ref = useRef(null);
   const previous = useRef(null);
   useEffect(() => {
+    if (!active) return;
     previous.current = document.activeElement;
     document.body.classList.add('overlay-open');
     const root = ref.current;
@@ -290,7 +298,7 @@ function useDialog(onClose) {
       document.body.classList.remove('overlay-open');
       previous.current?.focus?.();
     };
-  }, [onClose]);
+  }, [onClose, active]);
   return ref;
 }
 
@@ -361,7 +369,8 @@ export function Palette({ open, onClose, commands, search, go }) {
   const [searching, setSearching] = useState(false);
   const inputRef = useRef(null);
   const debounce = useRef(null);
-  const close = () => onClose(false);
+  const close = React.useCallback(() => onClose(false), [onClose]);
+  const dialogRef = useDialog(close, open);
   useEffect(() => { if (open) { setQ(''); setIdx(0); setResults(null); window.setTimeout(() => inputRef.current?.focus(), 20); } }, [open]);
   useEffect(() => {
     const h = e => {
@@ -390,7 +399,7 @@ export function Palette({ open, onClose, commands, search, go }) {
     close();
   };
   return <><div className="scrim" onMouseDown={close} aria-hidden="true" />
-    <div className="palette" role="dialog" aria-modal="true" aria-label="جست‌وجو و فرمان">
+    <div ref={dialogRef} className="palette" role="dialog" aria-modal="true" aria-label="جست‌وجو و فرمان" tabIndex={-1}>
       <input ref={inputRef} placeholder="جست‌وجو در کاربران، محتوا، سؤال، آزمون، تیکت، پرداخت و لاگ…"
         value={q} onChange={e => { setQ(e.target.value); setIdx(0); }}
         onKeyDown={e => {

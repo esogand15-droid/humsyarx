@@ -25,11 +25,16 @@ const SECTIONS = [
 export default function System({ me }) {
   const [bs, setBs] = useState(null);
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
+  const [jobs, setJobs] = useState([]);
   const [err, setErr] = useState('');
   const [confirm, setConfirm] = useState(null); // section در انتظار تأیید
   const [busySec, setBusySec] = useState('');
   const [autoBusy, setAutoBusy] = useState(false);
   const [excelBusy, setExcelBusy] = useState(false);
+  const [restoreFile, setRestoreFile] = useState(null);
+  const [restorePreview, setRestorePreview] = useState(null);
+  const [restorePhrase, setRestorePhrase] = useState('');
+  const [restoreBusy, setRestoreBusy] = useState(false);
 
   const has = (p) => !!me?.is_owner || (me?.perms || []).includes(p);
   const canBackup = has('backup.manage');
@@ -40,8 +45,11 @@ export default function System({ me }) {
   const load = async () => {
     setErr('');
     try {
-      const [b, s] = await Promise.all([api.botStatus(), canBackup ? api.settings() : Promise.resolve(null)]);
-      setBs(b); setSt(s);
+      const [b, s, j] = await Promise.all([
+        api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
+        api.systemJobs().catch(() => ({ jobs: [] })),
+      ]);
+      setBs(b); setSt(s); setJobs(j.jobs || []);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -61,6 +69,23 @@ export default function System({ me }) {
       toast('درخواست ثبت شد 📑 ربات فایل اکسل را در گفت‌وگوی شما می‌فرستد');
     } catch (e) { toast(errText(e), 'err'); }
     setExcelBusy(false);
+  };
+  const validateRestore = async (file) => {
+    setRestoreFile(file || null); setRestorePreview(null); setRestorePhrase('');
+    if (!file) return;
+    setRestoreBusy(true);
+    try { setRestorePreview(await api.restoreValidate(file)); }
+    catch (e) { toast(errText(e), 'err'); setRestoreFile(null); }
+    setRestoreBusy(false);
+  };
+  const confirmRestore = async () => {
+    if (!restoreFile || !restorePreview) return;
+    setRestoreBusy(true);
+    try {
+      const r = await api.restoreConfirm(restoreFile, restorePreview.digest, restorePhrase);
+      toast(`${fa(r.total)} رکورد بازیابی شد`); setRestoreFile(null); setRestorePreview(null); setRestorePhrase(''); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setRestoreBusy(false);
   };
   // ⏰ کنترل بکاپ خودکار — همان کلیدهای backup:auto_settings ربات (PATCH دارای audit)
   const setAuto = async (patch) => {
@@ -117,6 +142,24 @@ export default function System({ me }) {
           ))}
         </dl>
       </div>
+
+      {!!jobs.length && <div className="panel panel-pad" style={{ marginTop: 14 }}>
+        <div className="row"><div><b>⚙️ Job Center</b><div className="muted">آخرین اجرای جاب‌های اعلان، صف خروجی و بکاپ واقعی</div></div>
+          <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی</button></div>
+        <div className="grid g3" style={{ marginTop: 10 }}>
+          {jobs.map(job => <div key={job.key} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+            <div className="row"><b>{job.label}</b><span className="spacer" />
+              <StatusBadge status={job.failed ? 'failed' : ['done', 'finished', 'enabled', 'idle'].includes(job.status) ? 'healthy' : 'pending'} label={job.status} /></div>
+            <div className="row" style={{ marginTop: 7 }}>
+              {job.pending != null && <B kind={job.pending ? 'warn' : 'ok'}>در صف: {fa(job.pending)}</B>}
+              {job.sent != null && <B kind="ok">ارسال: {fa(job.sent)}</B>}
+              {job.failed != null && <B kind={job.failed ? 'bad' : ''}>خطا: {fa(job.failed)}</B>}
+              {job.scheduled != null && <B>زمان‌دار: {fa(job.scheduled)}</B>}
+            </div>
+            {job.last_run && <div className="muted" style={{ marginTop: 7 }}>آخرین اجرا: <span className="code">{String(job.last_run).slice(0, 16).replace('T', ' ')}</span></div>}
+          </div>)}
+        </div>
+      </div>}
 
       {/* ── ⏰ بکاپ خودکار روزانه (داده واقعی settings؛ PATCH دارای audit) ── */}
       {st && (
@@ -175,6 +218,22 @@ export default function System({ me }) {
             </div>
           ))}
         </div>
+        {!!me?.is_owner && <div className="panel panel-pad" style={{ marginTop: 14, borderColor: 'color-mix(in srgb, var(--c-bad) 42%, var(--c-line))' }}>
+          <b>📥 بازیابی پشتیبان — فقط مالک</b>
+          <p className="muted" style={{ marginTop: 5 }}>فایل ابتدا بدون mutation اعتبارسنجی و fingerprint می‌شود؛ اجرای مرحله دوم فقط با همان فایل و عبارت تأیید ممکن است. بازیابی در audit با CRITICAL ثبت می‌شود.</p>
+          <input type="file" className="inp" accept=".json,application/json" disabled={restoreBusy} onChange={e => validateRestore(e.target.files?.[0])} />
+          {restoreBusy && !restorePreview && <Loading rows={2} />}
+          {restorePreview && <div style={{ marginTop: 10 }}>
+            <div className="row"><B kind="ok">فایل معتبر</B><B>نسخه {restorePreview.backup_version}</B><B>{(restorePreview.size / 1024 / 1024).toFixed(2)} MB</B>
+              <span className="code">{restorePreview.digest.slice(0, 16)}…</span></div>
+            <div className="grid g4" style={{ marginTop: 8 }}>{restorePreview.sections.map(s => <div className="panel panel-pad" style={{ background: 'var(--bg)' }} key={s.key}><b>{s.key}</b><div className="muted">{fa(s.records)} رکورد</div></div>)}</div>
+            <label className="fld" style={{ marginTop: 10 }}><span>برای تأیید دقیقاً بنویسید: <span className="code">RESTORE HUMSYAR</span></span>
+              <input className="inp code" value={restorePhrase} onChange={e => setRestorePhrase(e.target.value)} /></label>
+            <button className="btn danger" disabled={restoreBusy || restorePhrase !== 'RESTORE HUMSYAR'} onClick={confirmRestore}>
+              {restoreBusy ? '⏳ در حال بازیابی…' : 'بازیابی قطعی داده‌های فایل'}
+            </button>
+          </div>}
+        </div>}
       </div>}
 
       {canPrestige && <PrestigeConfigPanel />}

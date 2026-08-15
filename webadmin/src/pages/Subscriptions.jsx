@@ -4,6 +4,7 @@ import {
   DataTable, Loading, ErrorState, Stat, B, PageHeader, Tabs, toast, Confirm, Drawer,
   Empty, NoPerm, Modal, Switch,
 } from '../ui.jsx';
+import SavedViews from '../SavedViews.jsx';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;
@@ -111,6 +112,7 @@ function ControlPanel({ ov, refresh }) {
             <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B></div>
             <div className="row" style={{ marginTop: 10, gap: 5 }}>
               <button className="btn sm" onClick={() => setPlanEdit(p)}>✏️ ویرایش</button>
+              <button className="btn sm" onClick={() => setPlanEdit({ ...p, _clone: true })}>📄 کپی</button>
               <button className="btn sm" onClick={() => planToggle(p)}>{p.active ? '⏸ غیرفعال' : '▶ فعال'}</button>
               <button className="btn sm danger" onClick={() => setDeletePlan(p)} aria-label={`حذف پلن ${p.name}`}>🗑</button>
             </div>
@@ -152,18 +154,19 @@ function CardPanel({ card, refresh }) {
 }
 
 function PlanModal({ plan, onClose, onDone }) {
-  const [f, setF] = useState({ name: plan?.name || '', days: plan?.days || 30, price: plan?.price || 0 });
+  const clone = !!plan?._clone; const edit = !!plan && !clone;
+  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0 });
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
       const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price) };
-      if (plan) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
-      toast(plan ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
+      if (edit) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
+      toast(edit ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
-  return <Modal title={plan ? `✏️ ویرایش ${plan.name}` : '➕ پلن اشتراک جدید'} onClose={onClose}>
+  return <Modal title={edit ? `✏️ ویرایش ${plan.name}` : clone ? `📄 کپی پلن ${plan.name}` : '➕ پلن اشتراک جدید'} onClose={onClose}>
     <div className="grid" style={{ gap: 10 }}>
       <input className="inp" placeholder="نام پلن" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} />
       <div className="row"><label className="fld" style={{ flex: 1 }}><span>تعداد روز</span>
@@ -224,6 +227,7 @@ function PaymentsPanel() {
         onKeyDown={e => e.key === 'Enter' && (setSearch(q.trim()), setPage(1))} placeholder="نام، آیدی، پلن یا کد تخفیف…" />
       <button className="btn sm" onClick={() => { setSearch(q.trim()); setPage(1); }}>🔎 جست‌وجو</button>
     </div>
+    <SavedViews scope="payments" filters={{ status, search }} onApply={f => { setStatus(f.status ?? 'pending'); setQ(f.search || ''); setSearch(f.search || ''); setPage(1); }} label="نماهای رسید" />
     {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.payments || []} rowKey="id" colToggle
       onRow={setRcpt} pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} />}
     {rcpt && <ReceiptDrawer pay={rcpt} decide={(ok, note) => decide(rcpt, ok, note)}
@@ -302,6 +306,7 @@ function SubscribersPanel({ ov, refreshOverview }) {
       <button className="btn" onClick={() => setGrantOpen(true)}>👤 اعطای دستی</button>
       <button className="btn primary" onClick={() => setBulkOpen(true)}>🎁 اعطای دسته‌جمعی</button>
     </div>
+    <SavedViews scope="subscriptions" filters={{ status, search }} onApply={f => { setStatus(f.status || 'active'); setQ(f.search || ''); setSearch(f.search || ''); setPage(1); }} label="نماهای مشترک‌ها" />
     {!data ? <Loading rows={5} /> : <DataTable columns={cols} rows={data.subscribers || []} rowKey="user_id" colToggle
       onRow={r => setSelected(r.user_id)} pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} />}
     {selected && <SubscriberDrawer uid={selected} plans={ov.plans || []} onClose={() => setSelected(null)}
@@ -437,6 +442,7 @@ function DiscountsPanel({ plans, refreshOverview }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState('');
   const [addOpen, setAddOpen] = useState(false);
+  const [cloneSeed, setCloneSeed] = useState(null);
   const [detail, setDetail] = useState(null);
   const [del, setDel] = useState(null);
   const load = async () => { setErr(''); try { setItems((await api.discounts()).discounts || []); } catch (e) { setErr(errText(e)); } };
@@ -448,7 +454,7 @@ function DiscountsPanel({ plans, refreshOverview }) {
   return <>
     <div className="row" style={{ marginBottom: 12 }}><div><b>🎁 کدهای تخفیف و کمپین</b>
       <div className="muted">هدف پلن، ظرفیت، محدودیت هر کاربر، آمار مالی و انتشار هدفمند</div></div><span className="spacer" />
-      <button className="btn primary" onClick={() => setAddOpen(true)}>➕ کد جدید</button></div>
+      <button className="btn primary" onClick={() => { setCloneSeed(null); setAddOpen(true); }}>➕ کد جدید</button></div>
     {!items ? <Loading rows={5} /> : <div className="grid g2">{items.map(c => <div key={c.code} className="panel panel-pad">
       <div className="row"><span className="code" style={{ fontSize: 15, fontWeight: 800 }}>{c.code}</span><B kind="purple">{fa(c.percent)}٪</B>
         <span className="spacer" /><B kind={c.active ? 'ok' : 'bad'}>{c.active ? 'فعال' : 'غیرفعال'}</B></div>
@@ -456,17 +462,19 @@ function DiscountsPanel({ plans, refreshOverview }) {
         <B>هر کاربر: {c.per_user_limit ? fa(c.per_user_limit) : '∞'}</B><B>{c.expires_at || 'بدون انقضا'}</B></div>
       <div className="muted" style={{ marginTop: 7 }}>پلن‌ها: {(c.target_plan_ids || []).length ? c.target_plan_ids.map(id => planMap[String(id)] || id).join('، ') : 'همه‌ی پلن‌ها'}</div>
       <div className="row" style={{ marginTop: 10 }}><button className="btn sm" onClick={() => setDetail(c)}>📊 آمار و کمپین</button>
+        <button className="btn sm" onClick={() => { setCloneSeed(c); setAddOpen(true); }}>📄 کپی</button>
         <button className="btn sm" onClick={() => toggle(c)} aria-label={`${c.active ? 'غیرفعال‌کردن' : 'فعال‌کردن'} کد ${c.code}`}>{c.active ? '⏸' : '▶'}</button><button className="btn sm danger" onClick={() => setDel(c)} aria-label={`حذف کد ${c.code}`}>🗑</button></div>
     </div>)}{!items.length && <Empty text="کد تخفیفی نیست" />}</div>}
-    {addOpen && <DiscountAddModal plans={plans} onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); refreshOverview(); }} />}
+    {addOpen && <DiscountAddModal plans={plans} seed={cloneSeed} onClose={() => { setAddOpen(false); setCloneSeed(null); }} onDone={() => { setAddOpen(false); setCloneSeed(null); load(); refreshOverview(); }} />}
     {detail && <DiscountDrawer item={detail} onClose={() => setDetail(null)} />}
     {del && <Confirm danger text={`حذف کد «${del.code}»؟ snapshot پرداخت‌های قبلی حفظ می‌شود.`}
       onYes={async () => { const c = del; setDel(null); await remove(c); }} onNo={() => setDel(null)} />}
   </>;
 }
 
-function DiscountAddModal({ plans, onClose, onDone }) {
-  const [f, setF] = useState({ code: '', percent: 10, max_uses: 0, per_user_limit: 0, expires_at: '', target_plan_ids: [] });
+function DiscountAddModal({ plans, seed, onClose, onDone }) {
+  const [f, setF] = useState({ code: seed ? `${seed.code}_COPY` : '', percent: seed?.percent || 10, max_uses: seed?.max_uses || 0,
+    per_user_limit: seed?.per_user_limit || 0, expires_at: seed?.expires_at || '', target_plan_ids: seed?.target_plan_ids || [] });
   const [busy, setBusy] = useState(false);
   const togglePlan = id => setF(x => ({ ...x, target_plan_ids: x.target_plan_ids.includes(id) ? x.target_plan_ids.filter(v => v !== id) : [...x.target_plan_ids, id] }));
   const save = async () => {
@@ -476,7 +484,7 @@ function DiscountAddModal({ plans, onClose, onDone }) {
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
-  return <Modal title="➕ کد تخفیف جدید" onClose={onClose}><div className="grid" style={{ gap: 10 }}>
+  return <Modal title={seed ? `📄 کپی کد ${seed.code}` : '➕ کد تخفیف جدید'} onClose={onClose}><div className="grid" style={{ gap: 10 }}>
     <div className="row"><input className="inp" dir="ltr" placeholder="CODE" value={f.code} onChange={e => setF({ ...f, code: e.target.value.toUpperCase() })} />
       <label className="fld"><span>درصد</span><input className="inp" type="number" min="1" max="100" value={f.percent} onChange={e => setF({ ...f, percent: e.target.value })} /></label></div>
     <div className="row"><label className="fld"><span>ظرفیت کل (۰=نامحدود)</span><input className="inp" type="number" min="0" value={f.max_uses} onChange={e => setF({ ...f, max_uses: e.target.value })} /></label>

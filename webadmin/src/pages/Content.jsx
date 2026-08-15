@@ -709,8 +709,10 @@ function QuickUpload({ intakes, intake, onClose }) {
   const [tree, setTree] = useState(null);
   const [lessonId, setLessonId] = useState('');
   const [sessionId, setSessionId] = useState('');
-  const [files, setFiles] = useState([]);       // {file, ctype, description}
-  const [prog, setProg] = useState(null);       // {done,total}
+  const [files, setFiles] = useState([]);       // {file, ctype, description, status, error}
+  const [prog, setProg] = useState(null);       // {done,total,ok,failed}
+  const [dragging, setDragging] = useState(false);
+  const pickerRef = useRef(null);
 
   useEffect(() => {
     setTree(null);
@@ -727,18 +729,33 @@ function QuickUpload({ intakes, intake, onClose }) {
 
   const addFiles = (fl) => {
     const next = [...files];
-    for (const f of fl) {
+    const seen = new Set(next.map(x => `${x.file.name}:${x.file.size}`));
+    for (const f of Array.from(fl || [])) {
+      const signature = `${f.name}:${f.size}`;
+      if (seen.has(signature)) continue;
+      seen.add(signature);
       const ext = (f.name.split('.').pop() || '').toLowerCase();
-      next.push({ file: f, ctype: EXT_MAP[ext] || 'pdf', description: f.name.replace(/\.[^.]+$/, '') });
+      const ctype = EXT_MAP[ext];
+      let error = '';
+      if (!ctype) error = 'پسوند این فایل در Content Typeهای فعلی پشتیبانی نمی‌شود';
+      else if (f.size > 45 * 1024 * 1024) error = 'حجم بیشتر از سقف ۴۵MB است';
+      next.push({
+        file: f, ctype: ctype || 'pdf', description: f.name.replace(/\.[^.]+$/, ''),
+        status: error ? 'invalid' : 'pending', error,
+      });
     }
     setFiles(next.slice(0, 30));
   };
-  const guess_ok = files.length > 0 && lessonId && sessionId;
+  const ready = files.filter(x => ['pending', 'error'].includes(x.status) && !x.error.includes('پشتیبانی') && !x.error.includes('۴۵MB'));
+  const guess_ok = ready.length > 0 && lessonId && sessionId;
 
-  const run = async () => {
-    setProg({ done: 0, total: files.length });
-    let ok = 0;
-    for (const it of files) {
+  const run = async (retryOnly = false) => {
+    const indexes = files.map((it, i) => ({ it, i })).filter(({ it }) =>
+      retryOnly ? it.status === 'error' : ['pending', 'error'].includes(it.status) && !it.error.includes('پشتیبانی') && !it.error.includes('۴۵MB'));
+    if (!indexes.length) return;
+    setProg({ done: 0, total: indexes.length, ok: 0, failed: 0 });
+    for (const { it, i } of indexes) {
+      setFiles(xs => xs.map((x, j) => j === i ? { ...x, status: 'uploading', error: '' } : x));
       try {
         const fd = new FormData();
         fd.append('ctype', it.ctype);
@@ -746,12 +763,14 @@ function QuickUpload({ intakes, intake, onClose }) {
         fd.append('extra_info', '');
         fd.append('file', it.file);
         await api.caAddContent(sessionId, fd);
-        ok++;
-      } catch (e) { toast(`خطا در ${it.file.name}: ${errText(e)}`, 'err'); }
-      setProg(p => ({ ...p, done: (p.done || 0) + 1 }));
+        setFiles(xs => xs.map((x, j) => j === i ? { ...x, status: 'success', error: '' } : x));
+        setProg(p => ({ ...p, done: p.done + 1, ok: p.ok + 1 }));
+      } catch (e) {
+        const error = errText(e);
+        setFiles(xs => xs.map((x, j) => j === i ? { ...x, status: 'error', error } : x));
+        setProg(p => ({ ...p, done: p.done + 1, failed: p.failed + 1 }));
+      }
     }
-    toast(`${fa(ok)} از ${fa(files.length)} فایل آپلود شد ✅`);
-    setProg(null); onClose(ok > 0);
   };
 
   return (
@@ -775,25 +794,43 @@ function QuickUpload({ intakes, intake, onClose }) {
             </option>
           ))}
         </select>
-        <input type="file" multiple className="inp" onChange={e => addFiles(e.target.files)} />
+        <input ref={pickerRef} type="file" multiple hidden accept=".pdf,.ppt,.pptx,.mp4,.mov,.mkv,.webm,.mp3,.ogg,.wav,.m4a"
+          onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+        <div className={`upload-dropzone ${dragging ? 'on' : ''}`} role="button" tabIndex={0}
+          onClick={() => pickerRef.current?.click()}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickerRef.current?.click(); } }}
+          onDragEnter={e => { e.preventDefault(); setDragging(true); }} onDragOver={e => e.preventDefault()}
+          onDragLeave={e => { e.preventDefault(); setDragging(false); }}
+          onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}>
+          <b>فایل‌ها را اینجا رها کنید یا برای انتخاب کلیک کنید</b>
+          <div className="muted">PDF، PowerPoint، Video و Voice · حداکثر ۳۰ فایل · سقف هر فایل ۴۵MB</div>
+        </div>
         {files.map((f, i) => (
-          <div key={i} className="row file-row">
-            <span>{CTYPE[f.ctype] || '📎'}</span>
-            <input className="inp" style={{ flex: 1 }} value={f.description}
+          <div key={`${f.file.name}-${f.file.size}`} className={`row file-row upload-${f.status}`}>
+            <span>{f.status === 'success' ? '✅' : f.status === 'error' || f.status === 'invalid' ? '⚠️' : f.status === 'uploading' ? '⏳' : CTYPE[f.ctype] || '📎'}</span>
+            <div style={{ minWidth: 120 }}><b className="text-truncate">{f.file.name}</b><div className="muted">{(f.file.size / 1024 / 1024).toFixed(2)} MB</div></div>
+            <input className="inp" style={{ flex: 1 }} value={f.description} disabled={f.status === 'uploading' || f.status === 'success'}
                    onChange={e => setFiles(x => x.map((y, j) => j === i ? { ...y, description: e.target.value } : y))} />
-            <select className="inp" value={f.ctype}
+            <select className="inp" value={f.ctype} disabled={f.status === 'uploading' || f.status === 'success' || f.status === 'invalid'}
                     onChange={e => setFiles(x => x.map((y, j) => j === i ? { ...y, ctype: e.target.value } : y))}>
-              {Object.entries(CTYPE).map(([k, v]) => <option key={k} value={k}>{k}</option>)}
+              {Object.entries(CTYPE).map(([k]) => <option key={k} value={k}>{k}</option>)}
             </select>
-            <button className="btn sm danger" onClick={() => setFiles(x => x.filter((_, j) => j !== i))} aria-label={`حذف فایل ${i + 1} از صف`}>✕</button>
+            {f.error && <span className="field-error" title={f.error}>{f.error}</span>}
+            <button className="btn sm danger" disabled={f.status === 'uploading'} onClick={() => setFiles(x => x.filter((_, j) => j !== i))} aria-label={`حذف فایل ${i + 1} از صف`}>✕</button>
           </div>
         ))}
-        {prog && <div className="muted">⏳ {fa(prog.done)}/{fa(prog.total)}</div>}
+        {prog && <div className="panel panel-pad">
+          <div className="row"><span>پیشرفت {fa(prog.done)} از {fa(prog.total)}</span><span className="spacer" />
+            <B kind="ok">موفق {fa(prog.ok)}</B><B kind={prog.failed ? 'bad' : ''}>ناموفق {fa(prog.failed)}</B></div>
+          <div className="minibar-track" style={{ marginTop: 8 }}><div className="minibar-fill" style={{ width: `${prog.total ? Math.round(prog.done * 100 / prog.total) : 0}%` }} /></div>
+        </div>}
         <div className="row">
-          <button className="btn primary" disabled={!guess_ok || !!prog} onClick={run}>
-            ⬆️ آپلود {files.length ? `(${fa(files.length)} فایل)` : ''}
+          <button className="btn primary" disabled={!guess_ok || (prog && prog.done < prog.total)} onClick={() => run(false)}>
+            ⬆️ آپلود {ready.length ? `(${fa(ready.length)} فایل آماده)` : ''}
           </button>
-          <button className="btn" onClick={() => onClose(false)}>انصراف</button>
+          {files.some(x => x.status === 'error') && <button className="btn" disabled={prog && prog.done < prog.total} onClick={() => run(true)}>↻ تلاش مجدد ناموفق‌ها</button>}
+          {files.some(x => x.status === 'success') && <button className="btn ok" onClick={() => onClose(true)}>پایان و تازه‌سازی</button>}
+          <button className="btn" onClick={() => onClose(false)}>بستن</button>
         </div>
       </div>
     </Modal>
