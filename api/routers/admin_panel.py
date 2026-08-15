@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from api.auth import get_admin_user
 from database import db
+from request_context import current_request_id
 
 router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
@@ -17,7 +18,8 @@ async def _notify(chat_id: int, text: str, ntype: str = "admin_notice"):
     # این روتر (تأیید کاربر، پاسخ تیکت، سیگنال‌ها) سکوت-coroutine می‌شدند.
     notif = db.client["medicalbot"]["bot_notifications"]
     return await notif.insert_one({"type":ntype,"chat_id":chat_id,"text":text,
-        "sent":False,"created_at":datetime.now().isoformat()})
+        "sent":False,"created_at":datetime.now().isoformat(),
+        "correlation_id": current_request_id.get()})
 
 
 async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
@@ -504,6 +506,9 @@ async def all_tickets(
     admin=Depends(get_admin_user), status: Optional[str] = Query(None),
     q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
     priority: Optional[str] = Query(None), assignee_id: Optional[int] = Query(None),
+    unanswered: Optional[bool] = Query(None), date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    sort_by: str = Query("created_at"), sort_dir: str = Query("desc"),
     page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
 ):
     """تک‌منبع query صف پشتیبانی برای owner route و Web wrapper."""
@@ -512,6 +517,11 @@ async def all_tickets(
     intake = intake if isinstance(intake, str) else None
     priority = priority if isinstance(priority, str) else None
     assignee_id = assignee_id if isinstance(assignee_id, int) else None
+    unanswered = unanswered if isinstance(unanswered, bool) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
+    sort_by = sort_by if isinstance(sort_by, str) and sort_by in ("created_at", "last_reply_at") else "created_at"
+    sort_dir = sort_dir if isinstance(sort_dir, str) and sort_dir in ("asc", "desc") else "desc"
     page = page if isinstance(page, int) else 1
     limit = limit if isinstance(limit, int) else 30
     filt = {}
@@ -525,15 +535,29 @@ async def all_tickets(
         import re
         rx = {"$regex": re.escape(q.strip()), "$options": "i"}
         filt["$or"] = [{"subject": rx}, {"user_name": rx}, {"message": rx}]
+        if q.strip().isdigit():
+            filt["$or"].append({"ticket_id": int(q.strip())})
     if intake:
         ids = await db.users.distinct("user_id", {"intake": intake})
         filt["user_id"] = {"$in": ids}
-    if priority:
+    if priority == "normal":
+        # legacy ticketها قبل از افزودن priority فاقد فیلدند و معنای domain آن‌ها «عادی» است.
+        filt.setdefault("$and", []).append({"$or": [
+            {"priority": "normal"}, {"priority": {"$exists": False}}, {"priority": None}]})
+    elif priority:
         filt["priority"] = priority
     if assignee_id is not None:
         filt["assignee_id"] = assignee_id
+    if unanswered is True:
+        filt["replies.0"] = {"$exists": False}
+        filt["status"] = {"$ne": "closed"}
+    if date_from or date_to:
+        created = {}
+        if date_from: created["$gte"] = date_from[:10]
+        if date_to: created["$lte"] = date_to[:10] + "T23:59:59.999999"
+        filt["created_at"] = created
     total = await db.tickets.count_documents(filt)
-    tickets = await (db.tickets.find(filt).sort("created_at", -1)
+    tickets = await (db.tickets.find(filt).sort(sort_by, 1 if sort_dir == "asc" else -1)
                      .skip((page - 1) * limit).limit(limit).to_list(limit))
     return {"tickets": [{
         "id": t.get("ticket_id"), "user_id": t.get("user_id"),
@@ -593,16 +617,45 @@ async def reopen_ticket(tid: int, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 class BroadcastTarget(BaseModel):
-    scope: str = "all"                    # all | intake | intake_group
+    scope: str = "all"                    # all | intake | intake_group | role | subscription
     intake: Optional[str] = None
     group: Optional[str] = None           # "1" | "2"
+    role: Optional[str] = None
+    subscription_status: Optional[str] = None  # active | inactive | expiring_7
 
 async def _resolve_broadcast_users(target: BroadcastTarget):
+    """Audience resolver مشترک Bot/Web؛ هر segment به کاربران واقعی resolve می‌شود."""
     users = await db.all_users(approved_only=True)
+    if target.scope == "intake" and not target.intake:
+        raise HTTPException(422, "ورودی مخاطبان الزامی است")
+    if target.scope == "intake_group" and (not target.intake or not target.group):
+        raise HTTPException(422, "ورودی و گروه مخاطبان الزامی است")
+    if target.scope == "role" and not target.role:
+        raise HTTPException(422, "نقش مخاطبان الزامی است")
+    if target.scope == "subscription" and not target.subscription_status:
+        raise HTTPException(422, "وضعیت اشتراک مخاطبان الزامی است")
     if target.scope == "intake" and target.intake:
         users = [u for u in users if u.get("intake") == target.intake]
     elif target.scope == "intake_group" and target.intake and target.group:
-        users = [u for u in users if u.get("intake") == target.intake and u.get("group") == target.group]
+        users = [u for u in users if u.get("intake") == target.intake and db.normalize_group(u.get("group")) == db.normalize_group(target.group)]
+    elif target.scope == "role" and target.role:
+        allowed = set(await db.user_ids_by_role(target.role, limit=100000))
+        users = [u for u in users if u.get("user_id") in allowed]
+    elif target.scope == "subscription" and target.subscription_status:
+        now = datetime.now()
+        if target.subscription_status == "active":
+            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}})
+        elif target.subscription_status == "expiring_7":
+            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat(), "$lte": (now + timedelta(days=7)).isoformat()}})
+        elif target.subscription_status == "inactive":
+            active = set(await db.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}}))
+            ids = [u.get("user_id") for u in users if u.get("user_id") not in active]
+        else:
+            raise HTTPException(422, "وضعیت اشتراک مخاطب نامعتبر است")
+        allowed = set(ids)
+        users = [u for u in users if u.get("user_id") in allowed]
+    elif target.scope not in ("all", "intake", "intake_group", "role", "subscription"):
+        raise HTTPException(422, "نوع مخاطب نامعتبر است")
     return [u for u in users if u.get("user_id") != ADMIN_ID]
 
 class BroadcastPreview(BaseModel):
@@ -627,7 +680,8 @@ async def broadcast(body: BroadcastSend, admin=Depends(get_admin_user)):
         except ValueError: raise HTTPException(422, "فرمت زمان نامعتبر است")
     users = await _resolve_broadcast_users(body.target)
     notif = db.client["medicalbot"]["bot_notifications"]
-    doc_base = {"type":"broadcast","text":text,"sent":False,"created_at":datetime.now().isoformat()}
+    doc_base = {"type":"broadcast","text":text,"sent":False,"created_at":datetime.now().isoformat(),
+                "correlation_id": current_request_id.get()}
     if body.send_at: doc_base["send_at"] = body.send_at
     docs = [{**doc_base, "chat_id": u["user_id"]} for u in users]
     if docs: await notif.insert_many(docs)
@@ -652,13 +706,14 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20))
     notif = db.client["medicalbot"]["bot_notifications"]
     pipeline = [
         {"$match": {"type": "broadcast"}},
-        {"$group": {"_id": {"text":"$text","created_at":"$created_at"},
+        {"$group": {"_id": {"text":"$text","created_at":"$created_at","correlation_id":"$correlation_id"},
             "total": {"$sum": 1}, "sent": {"$sum": {"$cond": ["$sent", 1, 0]}},
             "failed": {"$sum": {"$cond": [{"$eq": ["$failed", True]}, 1, 0]}}}},
         {"$sort": {"_id.created_at": -1}}, {"$limit": limit},
     ]
     rows = await notif.aggregate(pipeline).to_list(limit)
     return {"history":[{"text":r["_id"]["text"][:80],"created_at":r["_id"]["created_at"],
+        "correlation_id":r["_id"].get("correlation_id"),
         "total":r["total"],"sent":r["sent"],"failed":r["failed"]} for r in rows]}
 
 # ── 🌊 موج Notif-Scheduled — مدیریت ارسال‌های همگانی زمان‌دارِ در انتظار ──
@@ -675,9 +730,9 @@ async def broadcast_scheduled(admin=Depends(get_admin_user), limit: int=Query(10
     ).sort("send_at", 1).limit(500).to_list(500)
     groups = {}
     for d in docs:
-        key = (d.get("text", ""), d.get("created_at", ""), d.get("send_at", ""))
+        key = (d.get("text", ""), d.get("created_at", ""), d.get("send_at", ""), d.get("correlation_id"))
         g = groups.setdefault(key, {"text": key[0], "created_at": key[1],
-                                    "send_at": key[2], "total": 0})
+                                    "send_at": key[2], "correlation_id": key[3], "total": 0})
         g["total"] += 1
     items = sorted(groups.values(), key=lambda x: x["send_at"])[:limit]
     for it in items:
@@ -1142,6 +1197,56 @@ async def log_groups_test(admin=Depends(get_admin_user)):
 # 🛡 لاگ فعالیت مدیران (نمایش در پنل وب)
 # ══════════════════════════════════════════════
 
+def build_audit_query(
+    category=None, min_severity=None, q=None, actor=None, actor_role=None,
+    module=None, action=None, target_type=None, target=None,
+    date_from=None, date_to=None, correlation_id=None,
+):
+    """Query builder مشترک list/export؛ یک semantics برای فیلترهای audit."""
+    import re
+    text = lambda value: value if isinstance(value, str) else None
+    actor, actor_role, module, action = map(text, (actor, actor_role, module, action))
+    target_type, target, date_from, date_to, correlation_id = map(
+        text, (target_type, target, date_from, date_to, correlation_id))
+    query = {}
+    if category in ("admin", "content", "user"):
+        query["category"] = category
+    if min_severity:
+        order = ["INFO", "WARNING", "HIGH", "CRITICAL"]
+        idx = order.index(min_severity) if min_severity in order else 0
+        query["severity"] = {"$in": order[idx:]}
+    if q:
+        pat = re.compile(re.escape(q), re.IGNORECASE)
+        query["$or"] = [{"action": pat}, {"actor.name": pat}, {"target.label": pat},
+                        {"details": pat}, {"module": pat}]
+    if actor:
+        actor_pat = re.compile(re.escape(actor.strip()), re.IGNORECASE)
+        actor_or = [{"actor.name": actor_pat}]
+        if actor.strip().isdigit():
+            actor_or.extend([{"actor.id": int(actor.strip())}, {"actor.id": actor.strip()}])
+        query.setdefault("$and", []).append({"$or": actor_or})
+    if actor_role:
+        query["actor.role"] = re.compile(re.escape(actor_role.strip()), re.IGNORECASE)
+    if module:
+        query["module"] = module.strip()
+    if action:
+        query["action"] = re.compile(re.escape(action.strip()), re.IGNORECASE)
+    if target_type:
+        query["target.type"] = target_type.strip()
+    if target:
+        target_pat = re.compile(re.escape(target.strip()), re.IGNORECASE)
+        query.setdefault("$and", []).append({"$or": [
+            {"target.label": target_pat}, {"target.id": target.strip()}, {"target_id": target.strip()}]})
+    if date_from or date_to:
+        ts = {}
+        if date_from: ts["$gte"] = date_from.strip()[:10]
+        if date_to: ts["$lte"] = date_to.strip()[:10] + "T23:59:59.999999"
+        query["timestamp"] = ts
+    if correlation_id:
+        query["correlation_id"] = correlation_id.strip()[:120]
+    return query
+
+
 @router.get("/audit-logs")
 async def audit_logs_admin(
     admin=Depends(get_admin_user),
@@ -1157,6 +1262,7 @@ async def audit_logs_admin(
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     correlation_id: Optional[str] = Query(None),
+    sort_dir: str = Query("desc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
 ):
@@ -1165,67 +1271,12 @@ async def audit_logs_admin(
     داده همان audit_logs مشترک با بات است؛ اکشن‌های ثبت‌شده از پنل وب
     (تگ «پنل_وب») و اکشن‌های بات هر دو اینجا دیده می‌شوند.
     """
-    # Direct-call regression harnessها FastAPI Query object را تزریق نمی‌کنند؛
-    # پارامترهای اختیاری تازه در آن حالت باید مثل None رفتار کنند.
-    actor = actor if isinstance(actor, str) else None
-    actor_role = actor_role if isinstance(actor_role, str) else None
-    module = module if isinstance(module, str) else None
-    action = action if isinstance(action, str) else None
-    target_type = target_type if isinstance(target_type, str) else None
-    target = target if isinstance(target, str) else None
-    date_from = date_from if isinstance(date_from, str) else None
-    date_to = date_to if isinstance(date_to, str) else None
-    correlation_id = correlation_id if isinstance(correlation_id, str) else None
-    query = {}
-    if category in ("admin", "content", "user"):
-        query["category"] = category
-    if min_severity:
-        order = ["INFO", "WARNING", "HIGH", "CRITICAL"]
-        idx = order.index(min_severity) if min_severity in order else 0
-        query["severity"] = {"$in": order[idx:]}
-    if q:
-        import re
-        pat = re.compile(re.escape(q), re.IGNORECASE)
-        query["$or"] = [
-            {"action": pat},
-            {"actor.name": pat},
-            {"target.label": pat},
-            {"details": pat},
-            {"module": pat},
-        ]
-    if actor:
-        import re
-        actor_pat = re.compile(re.escape(actor.strip()), re.IGNORECASE)
-        actor_or = [{"actor.name": actor_pat}]
-        if actor.strip().isdigit():
-            actor_or.extend([{"actor.id": int(actor.strip())}, {"actor.id": actor.strip()}])
-        query.setdefault("$and", []).append({"$or": actor_or})
-    if actor_role:
-        import re
-        query["actor.role"] = re.compile(re.escape(actor_role.strip()), re.IGNORECASE)
-    if module:
-        query["module"] = module.strip()
-    if action:
-        import re
-        query["action"] = re.compile(re.escape(action.strip()), re.IGNORECASE)
-    if target_type:
-        query["target.type"] = target_type.strip()
-    if target:
-        import re
-        target_pat = re.compile(re.escape(target.strip()), re.IGNORECASE)
-        query.setdefault("$and", []).append({"$or": [
-            {"target.label": target_pat}, {"target.id": target.strip()},
-            {"target_id": target.strip()},
-        ]})
-    if date_from or date_to:
-        ts = {}
-        if date_from:
-            ts["$gte"] = date_from.strip()[:10]
-        if date_to:
-            ts["$lte"] = date_to.strip()[:10] + "T23:59:59.999999"
-        query["timestamp"] = ts
-    if correlation_id:
-        query["correlation_id"] = correlation_id.strip()[:120]
+    query = build_audit_query(
+        category=category, min_severity=min_severity, q=q, actor=actor,
+        actor_role=actor_role, module=module, action=action, target_type=target_type,
+        target=target, date_from=date_from, date_to=date_to,
+        correlation_id=correlation_id,
+    )
 
     total = await db.audit_logs.count_documents(query)
 
@@ -1239,8 +1290,9 @@ async def audit_logs_admin(
         r["_id"]: r["count"] for r in sev_counts if r.get("_id")
     }
 
+    direction = 1 if isinstance(sort_dir, str) and sort_dir == "asc" else -1
     rows = await db.audit_logs.find(query).sort(
-        "timestamp", -1
+        "timestamp", direction
     ).skip(skip).limit(limit).to_list(limit)
 
     logs = [{

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -35,6 +36,7 @@ from api.routers import (
     web_admin,
 )
 from database import db
+from request_context import current_request_id
 
 
 @asynccontextmanager
@@ -65,19 +67,24 @@ async def request_context_and_safe_errors(request: Request, call_next):
     HTTPExceptionهای معتبر همچنان توسط FastAPI با status/detail اصلی مدیریت
     می‌شوند؛ فقط crashهای واقعی از نمایش traceback/500 خام به کاربر جلوگیری می‌کنند.
     """
-    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+    supplied = (request.headers.get("x-request-id") or "").strip()
+    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied) else uuid.uuid4().hex[:16]
+    token = current_request_id.set(request_id)
     try:
-        response = await call_next(request)
-    except Exception:
-        _api_logger.exception("unhandled API error request_id=%s path=%s",
-                              request_id, request.url.path)
-        response = JSONResponse(
-            status_code=500,
-            content={"detail": "internal_error", "error_id": request_id},
-        )
-    response.headers["X-Request-ID"] = request_id
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    return response
+        try:
+            response = await call_next(request)
+        except Exception:
+            _api_logger.exception("unhandled API error request_id=%s path=%s",
+                                  request_id, request.url.path)
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": "internal_error", "error_id": request_id},
+            )
+        response.headers["X-Request-ID"] = request_id
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
+    finally:
+        current_request_id.reset(token)
 
 
 WEBAPP_URL = os.getenv(

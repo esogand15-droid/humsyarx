@@ -285,22 +285,32 @@ async def logout(request: Request, response: Response, user=Depends(_guard_any_a
 
 @router.get("/overview")
 async def overview(user=Depends(_guard_any_admin)):
-    """کارت‌های داشبورد — فقط خواندنی، از سرویس‌های موجود db."""
-    pending_users = await db.pending_users()
-    pending_pays = await db.sub_payment_list_pending()
-    pending_qs = await db.pending_questions()
-    total_users = await db.users.count_documents({})
-    open_tickets = await db.tickets.count_documents({"status": "open"})
-    sub_stats = await db.sub_stats()
-    return {
-        "total_users": total_users,
-        "pending_users": len(pending_users),
-        "pending_payments": len(pending_pays),
-        "pending_questions": len(pending_qs),
-        "open_tickets": open_tickets,
-        "active_subs": (sub_stats or {}).get("active", 0),
-        "expiring_soon": (sub_stats or {}).get("expiring", 0),
-    }
+    """KPIهای role-aware؛ هیچ شمارش خارج از effective permissions query نمی‌شود."""
+    uid = user["id"]
+    perms = await db.get_user_perms(uid)
+    allow = lambda *keys: uid == ADMIN_ID or any(k in perms for k in keys)
+    jobs = {}
+    if allow("users.view", "users.manage", "stats.view"):
+        jobs["total_users"] = db.users.count_documents({})
+    if allow("users.manage"):
+        jobs["pending_users"] = db.users.count_documents({"approved": False, "suspended": {"$ne": True}})
+    if allow("subscription.manage"):
+        jobs["pending_payments"] = db.sub_payment_count_all("pending")
+        jobs["sub_stats"] = db.sub_stats()
+    if allow("questions.review", "questions.review_scoped"):
+        jobs["pending_questions"] = db.questions.count_documents({"approved": False})
+    if allow("tickets.reply", "tickets.manage"):
+        jobs["open_tickets"] = db.tickets.count_documents({"status": "open"})
+    if allow("reports.review"):
+        jobs["open_reports"] = db.content_reports.count_documents({"status": {"$in": ["new", "pending", "reviewing"]}})
+    keys = list(jobs)
+    values = await asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True)
+    data = {k: (None if isinstance(v, Exception) else v) for k, v in zip(keys, values)}
+    sub_stats = data.pop("sub_stats", None) or {}
+    if allow("subscription.manage"):
+        data["active_subs"] = sub_stats.get("active", 0)
+        data["expiring_soon"] = sub_stats.get("expiring", 0)
+    return data
 
 
 @router.get("/users")
@@ -641,35 +651,72 @@ async def attention(user=Depends(_guard_any_admin)):
     """صف‌های اقدام permission-aware؛ شمارش خارج از دسترسی حتی برگردانده نمی‌شود."""
     perms = await db.get_user_perms(user["id"])
     allow = lambda *keys: user["id"] == ADMIN_ID or any(k in perms for k in keys)
-    jobs = {}
+    jobs, time_jobs = {}, {}
+    async def latest_at(collection, query, *fields):
+        docs = await collection.find(query).sort(fields[0], -1).limit(1).to_list(1)
+        row = docs[0] if docs else {}
+        return next((row.get(field) for field in fields if row.get(field)), None)
     if allow("users.view", "users.manage"):
-        jobs["users"] = db.users.count_documents({"approved": False, "suspended": {"$ne": True}})
+        query = {"approved": False, "suspended": {"$ne": True}}
+        jobs["users"] = db.users.count_documents(query)
+        time_jobs["users"] = latest_at(db.users, query, "registered_at")
     if allow("subscription.manage"):
+        query = {"status": "pending"}
         jobs["payments"] = db.sub_payment_count_all("pending")
+        time_jobs["payments"] = latest_at(db.sub_payments, query, "submitted_at", "created_at")
     if allow("questions.review", "questions.review_scoped"):
-        jobs["questions"] = db.questions.count_documents({"approved": False})
+        query = {"approved": False}
+        jobs["questions"] = db.questions.count_documents(query)
+        time_jobs["questions"] = latest_at(db.questions, query, "created_at")
     if allow("tickets.reply", "tickets.manage"):
-        jobs["tickets"] = db.tickets.count_documents({"status": "open"})
+        query = {"status": "open"}
+        jobs["tickets"] = db.tickets.count_documents(query)
+        time_jobs["tickets"] = latest_at(db.tickets, query, "created_at")
     if allow("reports.review"):
-        jobs["reports"] = db.content_reports.count_documents({"status": {"$in": ["new", "pending"]}})
+        query = {"status": {"$in": ["new", "pending", "reviewing"]}}
+        jobs["reports"] = db.content_reports.count_documents(query)
+        time_jobs["reports"] = latest_at(db.content_reports, query, "created_at")
+    if allow("notifications.manage", "system.manage"):
+        async def failed_jobs_metric(kind):
+            runs = await db.get_recent_notif_runs(limit=20)
+            failed = [run for run in runs if int(run.get("failed") or 0) > 0]
+            return len(failed) if kind == "count" else ((failed[0].get("started_at") or failed[0].get("created_at")) if failed else None)
+        jobs["failed_jobs"] = failed_jobs_metric("count")
+        time_jobs["failed_jobs"] = failed_jobs_metric("time")
     keys = list(jobs)
-    values = await asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True)
+    values, time_values = await asyncio.gather(
+        asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True),
+        asyncio.gather(*(time_jobs[k] for k in keys), return_exceptions=True))
     counts = {k: (0 if isinstance(v, Exception) else int(v or 0)) for k, v in zip(keys, values)}
+    timestamps = {k: (None if isinstance(v, Exception) else v) for k, v in zip(keys, time_values)}
     meta = {
-        "payments": ("🧾", "رسید پرداخت در انتظار بررسی", "/subscriptions"),
-        "tickets": ("🎫", "تیکت بدون پاسخ", "/tickets"),
-        "questions": ("🧪", "سؤال در انتظار بازبینی", "/questions"),
-        "users": ("🧑‍🎓", "کاربر در انتظار تأیید", "/users?status=pending"),
-        "reports": ("🚩", "گزارش محتوا/سؤال در انتظار", "/content"),
+        "payments": ("🧾", "رسید پرداخت در انتظار بررسی", "/subscriptions?tab=payments", "warning"),
+        "tickets": ("🎫", "تیکت بدون پاسخ", "/tickets?status=open", "warning"),
+        "questions": ("🧪", "سؤال در انتظار بازبینی", "/questions?status=pending", "warning"),
+        "users": ("🧑‍🎓", "کاربر در انتظار تأیید", "/users?status=pending", "warning"),
+        "reports": ("🚩", "گزارش محتوا/سؤال در انتظار", "/content?tab=reports", "warning"),
+        "failed_jobs": ("⚙️", "اجرای اعلان دارای خطا", "/system", "critical"),
     }
+    checked_at = _now()
     items = [{"key": k, "icon": meta[k][0], "label": meta[k][1],
-              "count": counts.get(k, 0), "go": meta[k][2],
-              "urgent": counts.get(k, 0) > 0} for k in meta if k in counts]
+              "count": counts.get(k, 0), "go": meta[k][2], "severity": meta[k][3],
+              "timestamp": timestamps.get(k), "urgent": counts.get(k, 0) > 0}
+             for k in meta if k in counts]
     backup = None
-    if allow("backup.manage", "settings.manage"):
-        backup = {"last_run": await db.get_setting("auto_backup_last_run", None),
-                  "enabled": bool(await db.get_setting("auto_backup_enabled", False))}
-    return {"items": items, "backup": backup}
+    if allow("backup.manage", "settings.manage", "system.manage"):
+        last_run = await db.get_setting("auto_backup_last_run", None)
+        enabled = bool(await db.get_setting("auto_backup_enabled", False))
+        backup = {"last_run": last_run, "enabled": enabled}
+        stale = not enabled or not last_run
+        if enabled and last_run:
+            try: stale = datetime.fromisoformat(last_run) < datetime.now() - timedelta(hours=48)
+            except (TypeError, ValueError): stale = True
+        if stale:
+            items.append({"key": "backup_issue", "icon": "💾",
+                          "label": "پشتیبان‌گیری نیازمند بررسی است", "count": 1,
+                          "go": "/system", "severity": "critical",
+                          "timestamp": last_run or checked_at, "urgent": True})
+    return {"items": items, "backup": backup, "checked_at": checked_at}
 
 
 @router.get("/activity")
@@ -819,44 +866,118 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
 # 🌊 WA2.4 — فیلترهای ذخیره‌شده + اکشن گروهی تیکت/سؤال
 # ══════════════════════════════════════════════════════════════════
 
+SAVED_VIEW_SCOPE_PERMS = {
+    "users": ("users.view", "users.manage"),
+    "questions": ("questions.review", "questions.review_scoped"),
+    "content": ("content.manage", "content.scoped"),
+    "audit": ("audit.view",), "payments": ("subscription.manage",),
+    "subscriptions": ("subscription.manage",),
+    "tickets": ("tickets.reply", "tickets.manage"),
+    "reports": ("reports.review",), "grades": ("grades.manage", "grades.scoped"),
+    "broadcast_segment": ("broadcast.send",), "broadcast_draft": ("broadcast.send",),
+    "exams": ("schedules.manage",),
+}
+
+
+async def _saved_view_scope_allowed(user: dict, scope: str) -> bool:
+    if scope not in SAVED_VIEW_SCOPE_PERMS:
+        return False
+    if user["id"] == ADMIN_ID:
+        return True
+    for permission in SAVED_VIEW_SCOPE_PERMS[scope]:
+        if await db.has_permission(user["id"], permission):
+            return True
+    return False
+
+
 class SavedFilterIn(BaseModel):
     name: str
-    scope: str            # users | questions | content | audit | payments
+    scope: str
     filters: dict = {}
+    columns: list[str] = []
+    sort: dict = {}
+    shared: bool = False
+
+
+class SavedFilterPatch(BaseModel):
+    name: Optional[str] = None
+    filters: Optional[dict] = None
+    columns: Optional[list[str]] = None
+    sort: Optional[dict] = None
+    shared: Optional[bool] = None
 
 
 @router.get("/saved-filters")
 async def saved_filters_list(scope: str | None = Query(None),
                              user=Depends(_guard_any_admin)):
-    """⏱ فیلترهای ذخیره‌شده‌ی خود کاربر (person-scoped)."""
-    q = {"owner": user["id"]}
+    """Saved Views شخصی + اشتراکی، فقط در scope مجاز همان مدیر."""
+    if scope and not await _saved_view_scope_allowed(user, scope):
+        raise HTTPException(403, "forbidden")
+    query = {"$or": [{"owner": user["id"]}, {"shared": True}]}
     if scope:
-        q["scope"] = scope
-    docs = await db.wa_saved_filters.find(q).sort("created_at", -1).to_list(50)
+        query["scope"] = scope
+    else:
+        allowed_scopes = [key for key in SAVED_VIEW_SCOPE_PERMS
+                          if await _saved_view_scope_allowed(user, key)]
+        query["scope"] = {"$in": allowed_scopes}
+    docs = await db.wa_saved_filters.find(query).sort("updated_at", -1).limit(80).to_list(80)
+    owner_ids = list({d.get("owner") for d in docs if d.get("owner") is not None})
+    owners = await db.users.find({"user_id": {"$in": owner_ids}}, {"user_id": 1, "name": 1}).to_list(len(owner_ids) or 1)
+    owner_map = {u.get("user_id"): u.get("name", "") for u in owners}
     return {"filters": [{
         "id": str(d.get("_id", "")), "name": d.get("name", ""),
         "scope": d.get("scope", ""), "filters": d.get("filters") or {},
-        "created_at": d.get("created_at", "")[:16],
-    } for d in docs]}
+        "columns": d.get("columns") or [], "sort": d.get("sort") or {},
+        "shared": bool(d.get("shared")), "owner": d.get("owner"),
+        "owner_name": owner_map.get(d.get("owner"), ""),
+        "editable": d.get("owner") == user["id"],
+        "created_at": (d.get("created_at") or "")[:16],
+        "updated_at": (d.get("updated_at") or d.get("created_at") or "")[:16],
+    } for d in docs if d.get("owner") == user["id"] or d.get("shared")]}
 
 
 @router.post("/saved-filters")
 async def saved_filters_add(body: SavedFilterIn, user=Depends(_guard_any_admin)):
     name = (body.name or "").strip()[:60]
     if not name:
-        raise HTTPException(422, "نام فیلتر الزامی است")
-    if body.scope not in (
-        "users", "questions", "content", "audit", "payments", "subscriptions",
-        "tickets", "reports", "grades", "broadcast_segment", "broadcast_draft",
-    ):
-        raise HTTPException(422, "scope نامعتبر است")
+        raise HTTPException(422, "نام نما الزامی است")
+    if not await _saved_view_scope_allowed(user, body.scope):
+        raise HTTPException(403, "forbidden")
     uid = user["id"]
-    if await db.wa_saved_filters.count_documents({"owner": uid}) >= 30:
-        raise HTTPException(422, "حداکثر ۳۰ فیلتر ذخیره می‌توانید داشته باشید")
+    if await db.wa_saved_filters.count_documents({"owner": uid}) >= 50:
+        raise HTTPException(422, "حداکثر ۵۰ نمای ذخیره‌شده می‌توانید داشته باشید")
+    now = _now()
     doc = {"owner": uid, "name": name, "scope": body.scope,
-           "filters": body.filters or {}, "created_at": _now()}
+           "filters": body.filters or {}, "columns": list(dict.fromkeys(body.columns or []))[:80],
+           "sort": body.sort or {}, "shared": bool(body.shared),
+           "created_at": now, "updated_at": now}
     r = await db.wa_saved_filters.insert_one(doc)
     return {"ok": True, "id": str(getattr(r, "inserted_id", "") or "")}
+
+
+@router.put("/saved-filters/{fid}")
+async def saved_filters_update(fid: str, body: SavedFilterPatch,
+                               user=Depends(_guard_any_admin)):
+    oid = _oid(fid)
+    query = {"owner": user["id"], "_id": oid if oid else fid}
+    old = await db.wa_saved_filters.find_one(query)
+    if not old:
+        raise HTTPException(404, "نمای ذخیره‌شده پیدا نشد")
+    if not await _saved_view_scope_allowed(user, old.get("scope", "")):
+        raise HTTPException(403, "forbidden")
+    changes = {}
+    if body.name is not None:
+        name = body.name.strip()[:60]
+        if not name: raise HTTPException(422, "نام نما الزامی است")
+        changes["name"] = name
+    if body.filters is not None: changes["filters"] = body.filters
+    if body.columns is not None: changes["columns"] = list(dict.fromkeys(body.columns))[:80]
+    if body.sort is not None: changes["sort"] = body.sort
+    if body.shared is not None: changes["shared"] = bool(body.shared)
+    if not changes: raise HTTPException(422, "تغییری ارسال نشده است")
+    changes["updated_at"] = _now()
+    await db.wa_saved_filters.update_one(query, {"$set": changes})
+    return {"ok": True, "changed": list(changes)}
 
 
 @router.delete("/saved-filters/{fid}")
@@ -937,22 +1058,33 @@ async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage")))
     ids = [int(i) for i in (body.ids or []) if isinstance(i, (int, str)) and str(i).isdigit()][:100]
     if not ids:
         raise HTTPException(400, "لیست تیکت‌ها خالی است")
-    done = 0
+    if body.action not in ("close", "reopen"):
+        raise HTTPException(422, "اکشن گروهی نامعتبر است")
+    succeeded, skipped, failed = [], [], []
     for tid in ids:
-        t = await db.ticket_get(tid)
-        if not t:
-            continue
-        if body.action == "close" and t.get("status") != "closed":
-            await db.ticket_close(tid)
-            done += 1
-        elif body.action == "reopen" and t.get("status") == "closed":
-            await db.ticket_reopen(tid)
-            done += 1
+        try:
+            t = await db.ticket_get(tid)
+            if not t:
+                skipped.append({"id": tid, "reason": "ticket_not_found"}); continue
+            if body.action == "close":
+                if t.get("status") == "closed":
+                    skipped.append({"id": tid, "reason": "already_closed"}); continue
+                await db.ticket_close(tid)
+            else:
+                if t.get("status") != "closed":
+                    skipped.append({"id": tid, "reason": "already_open"}); continue
+                await db.ticket_reopen(tid)
+            succeeded.append(tid)
+        except Exception:
+            failed.append({"id": tid, "error": "operation_failed"})
     fa = {"close": "بستن گروهی", "reopen": "بازگشایی گروهی"}
-    await _audit(user["id"], f"{fa.get(body.action, body.action)} تیکت ({done} مورد)",
-                 severity="INFO", target_label=f"{done} تیکت",
+    await _audit(user["id"], f"{fa[body.action]} تیکت ({len(succeeded)} مورد)",
+                 severity="INFO", target_type="ticket_batch", target_label=f"{len(ids)} تیکت",
+                 after={"action": body.action, "succeeded": len(succeeded),
+                        "skipped": len(skipped), "failed": len(failed)},
                  tags=["bulk_tickets", "پنل_وب"])
-    return {"ok": True, "done": done}
+    return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
+            "skipped": skipped, "failed": failed}
 
 
 async def _question_scope_context(user: dict) -> dict:
@@ -984,12 +1116,14 @@ async def wa_questions_list(
     topic: Optional[str] = Query(None, max_length=100),
     difficulty: Optional[str] = Query(None, pattern="^(easy|medium|hard)$"),
     source: Optional[str] = Query(None, max_length=40),
+    author: Optional[str] = Query(None, max_length=100),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
     sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
 ):
     """Question workspace سرورساید برای 10k+ سؤال، بدون تغییر endpoint قدیمی pending."""
+    author = author if isinstance(author, str) else None
     scope = await _question_scope_context(user)
     if scope.get("kind") == "scoped":
         iv = scope.get("intake") or ""
@@ -1010,9 +1144,19 @@ async def wa_questions_list(
         filt["difficulty"] = difficulty
     if source:
         filt["source"] = source
+    if author and author.strip():
+        author_value = author.strip()
+        if author_value.isdigit():
+            filt["creator_id"] = int(author_value)
+        else:
+            filt["creator_name"] = {"$regex": re.escape(author_value), "$options": "i"}
     if q and q.strip():
-        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
-        filt["$or"] = [{"question": rx}, {"lesson": rx}, {"topic": rx}, {"creator_name": rx}]
+        term = q.strip()
+        rx = {"$regex": re.escape(term), "$options": "i"}
+        options = [{"question": rx}, {"lesson": rx}, {"topic": rx}, {"creator_name": rx}]
+        oid = _oid(term)
+        if oid: options.append({"_id": oid})
+        filt["$or"] = options
     total = await db.questions.count_documents(filt)
     docs = await (db.questions.find(filt)
                   .sort(sort_by, 1 if sort_dir == "asc" else -1)
@@ -1035,6 +1179,49 @@ async def wa_questions_list(
         })
     return {"questions": rows, "total": total, "skip": skip, "limit": limit,
             "pages": (total + limit - 1) // limit, "status": status, "intake": iv}
+
+
+@router.get("/exports/questions.csv")
+async def export_questions_csv(
+    status: str = Query("pending", pattern="^(pending|approved|all)$"),
+    intake: Optional[str] = Query(None), q: Optional[str] = Query(None),
+    lesson: Optional[str] = Query(None), topic: Optional[str] = Query(None),
+    difficulty: Optional[str] = Query(None), source: Optional[str] = Query(None),
+    author: Optional[str] = Query(None),
+    sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """خروجی سؤال با همان scope/filter/sort جدول؛ داده در مرورگر تجمیع نمی‌شود."""
+    await _audit(user["id"], "خروجی CSV سؤال‌ها", severity="HIGH",
+                 target_type="export", target_label="questions.csv",
+                 tags=["خروجی", "سؤال", "پنل_وب"])
+    columns = ["id", "question", "lesson", "topic", "difficulty", "status", "intake",
+               "creator_id", "creator_name", "source", "attempts", "accuracy", "created_at"]
+    def safe(value):
+        text = "" if value is None else str(value)
+        return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+    async def stream():
+        buf = io.StringIO(); writer = csv.writer(buf); writer.writerow(columns)
+        yield "\ufeff" + buf.getvalue(); buf.seek(0); buf.truncate(0)
+        skip = 0
+        while True:
+            result = await wa_questions_list(
+                status=status, intake=intake, q=q, lesson=lesson, topic=topic,
+                difficulty=difficulty, source=source, author=author,
+                skip=skip, limit=100, sort_by=sort_by, sort_dir=sort_dir, user=user)
+            rows = result.get("questions") or []
+            for row in rows:
+                writer.writerow([safe(v) for v in [row.get("id"), row.get("question"),
+                    row.get("lesson"), row.get("topic"), row.get("difficulty"),
+                    "approved" if row.get("approved") else "pending", row.get("intake"),
+                    row.get("creator_id"), row.get("creator_name"), row.get("source"),
+                    row.get("attempts"), row.get("accuracy"), row.get("created_at")]])
+                yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+            skip += len(rows)
+            if not rows or skip >= int(result.get("total") or 0): break
+    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename=humsyar-questions.csv"})
 
 
 @router.get("/questions/intakes")
@@ -1105,37 +1292,44 @@ async def questions_bulk(
         raise HTTPException(400, "لیست سؤال‌ها خالی است")
     if body.action not in ("approve", "reject"):
         raise HTTPException(400, "اکشن نامعتبر است")
-    done = 0
+    succeeded, skipped, failed = [], [], []
     scope = await _question_scope_context(user)
     for qid in ids:
-        q = await db.get_question_by_id(qid)
-        if not q or q.get("approved"):
-            continue
-        # scope مستقل permission سؤال؛ نقش سفارشی مجبور به content.manage نیست.
-        if (scope.get("kind") == "scoped"
-                and (q.get("intake") or "") != (scope.get("intake") or "")):
-            continue
-        if body.action == "approve":
-            # approve_question منبع واحد پاداش + اعلان طراح است.
-            await db.approve_question(qid)
-        else:
-            await db.delete_question(qid)
-            if q.get("source") == "webapp" and q.get("creator_id"):
-                await db.notify_user(
-                    q["creator_id"], "question_rejected",
-                    title="❌ سؤالت رد شد",
-                    body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
-                    link="/learn/my-questions",
-                    dm=(f"❌ <b>سؤالت رد شد</b>\n\n"
-                        f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
-                )
-        done += 1
+        try:
+            q = await db.get_question_by_id(qid)
+            if not q:
+                skipped.append({"id": qid, "reason": "question_not_found"}); continue
+            if q.get("approved"):
+                skipped.append({"id": qid, "reason": "already_approved"}); continue
+            # scope مستقل permission سؤال؛ نقش سفارشی مجبور به content.manage نیست.
+            if (scope.get("kind") == "scoped"
+                    and (q.get("intake") or "") != (scope.get("intake") or "")):
+                skipped.append({"id": qid, "reason": "intake_out_of_scope"}); continue
+            if body.action == "approve":
+                # approve_question منبع واحد پاداش + اعلان طراح است.
+                await db.approve_question(qid)
+            else:
+                await db.delete_question(qid)
+                if q.get("source") == "webapp" and q.get("creator_id"):
+                    await db.notify_user(
+                        q["creator_id"], "question_rejected",
+                        title="❌ سؤالت رد شد",
+                        body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
+                        link="/learn/my-questions",
+                        dm=(f"❌ <b>سؤالت رد شد</b>\n\n"
+                            f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
+                    )
+            succeeded.append(qid)
+        except Exception:
+            failed.append({"id": qid, "error": "operation_failed"})
     fa = {"approve": "تأیید گروهی", "reject": "رد گروهی"}
-    await _audit(user["id"], f"{fa[body.action]} سؤال‌ها ({done} مورد)",
-                 severity="INFO", target_type="question_batch", target_label=f"{done} سؤال",
-                 after={"action": body.action, "requested": len(ids), "processed": done},
+    await _audit(user["id"], f"{fa[body.action]} سؤال‌ها ({len(succeeded)} مورد)",
+                 severity="INFO", target_type="question_batch", target_label=f"{len(ids)} سؤال",
+                 after={"action": body.action, "requested": len(ids),
+                        "succeeded": len(succeeded), "skipped": len(skipped), "failed": len(failed)},
                  tags=["bulk_questions", "پنل_وب"])
-    return {"ok": True, "done": done}
+    return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
+            "skipped": skipped, "failed": failed}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2264,15 +2458,46 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
     except Exception:
         pass
     try:
-        pdocs = await db.prestige_history.find({"user_id": uid}).sort("created_at", -1).limit(10).to_list(10)
+        # منبع واحد domain: schema واقعی prestige_history با uid/type/detail/at.
+        pdocs = await db.prestige_history_list(uid, limit=10)
         out["prestige_history"] = [{
-            "id": str(p.get("_id", "")), "kind": p.get("kind", ""),
-            "title": p.get("title", "") or p.get("label", ""),
-            "xp": int(p.get("xp") or p.get("amount") or 0),
-            "at": (p.get("created_at") or p.get("at") or "")[:16].replace("T", " "),
-        } for p in pdocs]
+            "id": f"{i}:{p.get('type', '')}:{p.get('at', '')}", "kind": p.get("type", ""),
+            "title": p.get("title", "") or p.get("type", ""),
+            "xp": int((p.get("detail") or {}).get("xp") or (p.get("detail") or {}).get("amount") or 0),
+            "at": (p.get("at") or "")[:16].replace("T", " "),
+        } for i, p in enumerate(pdocs)]
     except Exception:
         pass
+    # Timeline واحد از eventهای واقعی و قابل‌ردیابی؛ هیچ event مصنوعی ساخته نمی‌شود.
+    activity = []
+    if target.get("registered_at"):
+        activity.append({"id": "registration", "kind": "registration", "icon": "👤",
+                         "title": "ثبت‌نام در هامزیار", "at": (target.get("registered_at") or "")[:16].replace("T", " "),
+                         "go": f"/users?q={uid}"})
+    try:
+        adocs = await db.answers.find({"user_id": uid}).sort("answered_at", -1).limit(12).to_list(12)
+        activity.extend({"id": f"answer:{a.get('_id')}", "kind": "answer", "icon": "🧪",
+                         "title": "پاسخ صحیح به سؤال" if a.get("is_correct") else "پاسخ به سؤال",
+                         "description": f"شناسه سؤال: {a.get('question_id', '')}",
+                         "at": (a.get("answered_at") or "")[:16].replace("T", " "), "go": f"/questions?q={a.get('question_id', '')}"}
+                        for a in adocs)
+    except Exception:
+        pass
+    activity.extend({"id": f"exam:{e['id']}", "kind": "exam", "icon": "📝",
+                     "title": f"آزمون {e.get('lesson') or 'سفارشی'}", "description": f"نتیجه {e.get('percentage', 0)}٪",
+                     "at": e.get("started_at", ""), "go": "/exams?tab=grades"} for e in out.get("recent_exams", []))
+    activity.extend({"id": f"ticket:{t['id']}", "kind": "ticket", "icon": "🎫",
+                     "title": t.get("subject") or "تیکت پشتیبانی", "description": t.get("status", ""),
+                     "at": t.get("at", ""), "go": f"/tickets?q={t['id']}"} for t in out.get("recent_tickets", []))
+    activity.extend({"id": f"prestige:{p['id']}", "kind": "prestige", "icon": "🏆",
+                     "title": p.get("title") or p.get("kind") or "رویداد Prestige",
+                     "description": f"{p.get('xp', 0):+d} XP", "at": p.get("at", ""), "go": f"/users?q={uid}"}
+                    for p in out.get("prestige_history", []))
+    activity.extend({"id": f"audit:{a.get('id', i)}", "kind": "audit", "icon": "🧭",
+                     "title": a.get("action") or "رویداد حسابرسی", "description": a.get("module", ""),
+                     "at": a.get("at", ""), "go": f"/audit?target={uid}"}
+                    for i, a in enumerate(out.get("recent_audit", [])))
+    out["activity"] = sorted(activity, key=lambda event: event.get("at") or "", reverse=True)[:40]
     return out
 
 
@@ -2312,7 +2537,10 @@ async def wa_tickets_list(
     q: Optional[str] = Query(None, max_length=120),
     intake: Optional[str] = Query(None, max_length=80),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
-    assignee_id: Optional[int] = Query(None),
+    assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
+    sort_by: str = Query("created_at", pattern="^(created_at|last_reply_at)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
@@ -2321,12 +2549,60 @@ async def wa_tickets_list(
     intake = intake if isinstance(intake, str) else None
     priority = priority if isinstance(priority, str) else None
     assignee_id = assignee_id if isinstance(assignee_id, int) else None
+    unanswered = unanswered if isinstance(unanswered, bool) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
+    sort_by = sort_by if isinstance(sort_by, str) else "created_at"
+    sort_dir = sort_dir if isinstance(sort_dir, str) else "desc"
     page = page if isinstance(page, int) else 1
     limit = limit if isinstance(limit, int) else 30
     return await owner_api.all_tickets(
         status=status, q=q, intake=intake, priority=priority,
-        assignee_id=assignee_id, page=page, limit=limit, admin=user,
+        assignee_id=assignee_id, unanswered=unanswered,
+        date_from=date_from, date_to=date_to, sort_by=sort_by, sort_dir=sort_dir,
+        page=page, limit=limit, admin=user,
     )
+
+
+@router.get("/exports/tickets.csv")
+async def export_tickets_csv(
+    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
+    priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
+    assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
+    sort_by: str = Query("created_at", pattern="^(created_at|last_reply_at)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    user=Depends(_perm_any("tickets.reply", "tickets.manage")),
+):
+    await _audit(user["id"], "خروجی CSV تیکت‌ها", severity="HIGH",
+                 target_type="export", target_label="tickets.csv",
+                 tags=["خروجی", "تیکت", "پنل_وب"])
+    columns = ["id", "subject", "user_id", "user_name", "status", "priority",
+               "assignee_id", "assignee_name", "reply_count", "created_at", "last_reply_at", "tags"]
+    def safe(value):
+        text = "" if value is None else str(value)
+        return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+    async def stream():
+        buf = io.StringIO(); writer = csv.writer(buf); writer.writerow(columns)
+        yield "\ufeff" + buf.getvalue(); buf.seek(0); buf.truncate(0)
+        page = 1
+        while True:
+            result = await owner_api.all_tickets(
+                admin=user, status=status, q=q, intake=intake, priority=priority,
+                assignee_id=assignee_id, unanswered=unanswered, date_from=date_from,
+                date_to=date_to, sort_by=sort_by, sort_dir=sort_dir, page=page, limit=100)
+            rows = result.get("tickets") or []
+            for row in rows:
+                writer.writerow([safe(v) for v in [row.get("id"), row.get("subject"), row.get("user_id"),
+                    row.get("user_name"), row.get("status"), row.get("priority"), row.get("assignee_id"),
+                    row.get("assignee_name"), row.get("reply_count"), row.get("created_at"),
+                    row.get("last_reply_at"), "|".join(row.get("tags") or [])]])
+                yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+            if not rows or page >= int(result.get("pages") or 1): break
+            page += 1
+    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename=humsyar-tickets.csv"})
 
 
 @router.get("/tickets/assignees")
@@ -2336,10 +2612,10 @@ async def wa_ticket_assignees(user=Depends(_perm_any("tickets.reply", "tickets.m
                  if r.get("active", True) and set(r.get("perms") or []) & {"tickets.reply", "tickets.manage"}]
     ids = {ADMIN_ID}
     for key in role_keys:
-        ids.update(await db.user_ids_by_role(key, limit=5000))
+        ids.update(await db.user_ids_by_role(key, limit=100000))
     docs = await db.users.find({"user_id": {"$in": list(ids)}}, {
         "user_id": 1, "name": 1, "username": 1,
-    }).sort("name", 1).to_list(5000)
+    }).sort("name", 1).to_list(100000)
     intakes = await db.get_all_intakes()
     return {"assignees": [{"id": u.get("user_id"), "name": u.get("name", ""),
                              "username": u.get("username", "")} for u in docs],
@@ -2511,6 +2787,19 @@ async def wa_broadcast_send(
     user=Depends(_perm("broadcast.send")),
 ):
     return await owner_api.broadcast(body=body, admin=user)
+
+
+@router.get("/broadcast/options")
+async def wa_broadcast_options(user=Depends(_perm("broadcast.send"))):
+    """گزینه‌های segment واقعی؛ فقط metadata نقش و وضعیت‌های persisted."""
+    roles = await db.list_roles()
+    return {"roles": [{"key": r.get("_id"), "label": r.get("label") or r.get("_id")}
+                      for r in roles if r.get("_id") and r.get("active", True)],
+            "subscription_statuses": [
+                {"key": "active", "label": "اشتراک فعال"},
+                {"key": "inactive", "label": "بدون اشتراک فعال"},
+                {"key": "expiring_7", "label": "پایان اشتراک تا ۷ روز"},
+            ]}
 
 
 @router.get("/broadcast/history")
@@ -2885,6 +3174,7 @@ async def wa_audit_logs(
     action: Optional[str] = Query(None), target_type: Optional[str] = Query(None),
     target: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None), correlation_id: Optional[str] = Query(None),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     skip: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100),
     user=Depends(_perm("audit.view")),
 ):
@@ -2892,8 +3182,66 @@ async def wa_audit_logs(
         admin=user, category=category, min_severity=min_severity, q=q,
         actor=actor, actor_role=actor_role, module=module, action=action,
         target_type=target_type, target=target, date_from=date_from,
-        date_to=date_to, correlation_id=correlation_id,
+        date_to=date_to, correlation_id=correlation_id, sort_dir=sort_dir,
         skip=skip, limit=limit)
+
+
+@router.get("/exports/audit.csv")
+async def export_audit_csv(
+    category: Optional[str] = Query(None), min_severity: Optional[str] = Query(None),
+    q: Optional[str] = Query(None), actor: Optional[str] = Query(None),
+    actor_role: Optional[str] = Query(None), module: Optional[str] = Query(None),
+    action: Optional[str] = Query(None), target_type: Optional[str] = Query(None),
+    target: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None), correlation_id: Optional[str] = Query(None),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    user=Depends(_perm("audit.view")),
+):
+    """CSV سرورساید و filter-aware برای 100k+ audit؛ بدون blobسازی dataset در React."""
+    query = owner_api.build_audit_query(
+        category=category, min_severity=min_severity, q=q, actor=actor,
+        actor_role=actor_role, module=module, action=action,
+        target_type=target_type, target=target, date_from=date_from,
+        date_to=date_to, correlation_id=correlation_id)
+    await _audit(user["id"], "خروجی CSV حسابرسی", severity="HIGH",
+                 target_type="export", target_label="audit.csv",
+                 after={"filters": {k: v for k, v in {
+                     "category": category, "min_severity": min_severity, "q": q,
+                     "actor": actor, "module": module, "target": target,
+                     "date_from": date_from, "date_to": date_to,
+                     "correlation_id": correlation_id}.items() if v}},
+                 tags=["خروجی", "حسابرسی", "پنل_وب"])
+    columns = ["timestamp", "severity", "category", "module", "action",
+               "actor_id", "actor_name", "actor_role", "target_type", "target_id",
+               "target_label", "correlation_id", "details"]
+
+    def safe(value):
+        text = "" if value is None else str(value)
+        return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+    async def stream():
+        buf = io.StringIO(); writer = csv.writer(buf)
+        writer.writerow(columns)
+        yield "\ufeff" + buf.getvalue(); buf.seek(0); buf.truncate(0)
+        offset = 0
+        while True:
+            docs = await db.audit_logs.find(query).sort("timestamp", 1 if sort_dir == "asc" else -1).skip(offset).limit(500).to_list(500)
+            if not docs: break
+            for row in docs:
+                actor_doc, target_doc = row.get("actor") or {}, row.get("target") or {}
+                writer.writerow([safe(v) for v in [
+                    row.get("timestamp"), row.get("severity"), row.get("category"), row.get("module"),
+                    row.get("action"), actor_doc.get("id"), actor_doc.get("name"), actor_doc.get("role"),
+                    target_doc.get("type") or row.get("target_type"),
+                    target_doc.get("id") or row.get("target_id"),
+                    target_doc.get("label") or row.get("target_label"),
+                    row.get("correlation_id"), row.get("details")]])
+                yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+            if len(docs) < 500: break
+            offset += len(docs)
+
+    return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename=humsyar-audit.csv"})
 
 
 # ── System / Backup / Prestige ─────────────────────────────────────
