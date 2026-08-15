@@ -614,6 +614,14 @@ class DBContent:
         return await self.ref_files.find({'book_id': book_id}).sort('order', 1).to_list(20)
 
 
+    async def ref_get_files_page(self, book_id: str, skip: int = 0, limit: int = 50):
+        """Bounded admin listing; keeps Mini App/domain reads unchanged."""
+        query = {'book_id': book_id}
+        total = await self.ref_files.count_documents(query)
+        items = await self.ref_files.find(query).sort('order', 1).skip(skip).limit(limit).to_list(limit)
+        return items, total
+
+
     async def ref_add_file(self, book_id: str, lang: str, file_id: str,
                            volume: int = 1, description: str = ''):
         # FIX جدید: notif_sent اضافه شد تا این فایل وارد صف نوتیف
@@ -720,6 +728,18 @@ class DBContent:
         if topic:  q['topic']  = topic
         q.update(self._intake_q(intake))
         return await self.qbank_files.find(q).sort('upload_date', -1).to_list(100)
+
+
+    async def get_qbank_files_page(self, lesson: str = None, topic: str = None,
+                                   intake=None, skip: int = 0, limit: int = 50):
+        """Server-paginated admin listing without changing student/Bot resolvers."""
+        query = {}
+        if lesson: query['lesson'] = lesson
+        if topic: query['topic'] = topic
+        query.update(self._intake_q(intake))
+        total = await self.qbank_files.count_documents(query)
+        items = await self.qbank_files.find(query).sort('upload_date', -1).skip(skip).limit(limit).to_list(limit)
+        return items, total
 
 
     async def get_qbank_file(self, fid: str):
