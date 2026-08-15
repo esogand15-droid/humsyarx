@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Loading, ErrorState, B, PageHeader, ScopeBadge, Timeline, toast, Confirm, Modal, Empty, NoPerm } from '../ui.jsx';
+import { Loading, ErrorState, B, PageHeader, Timeline, toast, Confirm, Modal, Empty, NoPerm } from '../ui.jsx';
+import { ContentActionGroup, ContentBreadcrumb, ContentBulkBar, ContentCountBadge, ContentDensityToggle, ContentEmptyState, ContentErrorState, ContentIconButton, ContentItem, ContentKV, ContentMetric, ContentMoreActions, ContentPane, ContentReorderControls, ContentSection, ContentShell, ContentSkeleton, ContentStats, ContentToolbar, ContentWorkspace, FileTypeBadge, ScopeBadge, fileTypeIcon, useContentDensity, useDebouncedValue } from '../ContentPrimitives.jsx';
 import { writeHashQuery } from '../urlState.js';
 import SavedViews from '../SavedViews.jsx';
 
@@ -37,7 +38,7 @@ export default function Content({ route = '' }) {
   const changeTab = value => { setTab(value); writeHashQuery('/content', { tab: value !== 'bs' ? value : '' }); };
   return (
     <>
-      <div className="tabs" style={{ marginBottom: 14 }} role="tablist" aria-label="بخش‌های مدیریت محتوا">
+      <div className="tabs content-tabs" role="tablist" aria-label="بخش‌های مدیریت محتوا">
         {CCONTENT_TABS.map(([k, label]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => changeTab(k)}>{label}</button>
         ))}
@@ -74,6 +75,8 @@ function BsTab({ initial = {} }) {
   const [addSes, setAddSes] = useState(null);    // lesson برای جلسه جدید
   const [studentPreview, setStudentPreview] = useState(false);
   const [rootMove, setRootMove] = useState(null); // {kind,id,label,from}
+  const [density, setDensity] = useContentDensity();
+  const deferredQ = useDebouncedValue(q.trim(), 180);
   const firstLoad = useRef(true);
   const preserveSelection = useRef(false);
 
@@ -94,7 +97,7 @@ function BsTab({ initial = {} }) {
     if (!firstLoad.current && !preserveSelection.current) { setLesId(null); setSesId(null); }
     firstLoad.current = false; preserveSelection.current = false; load();
   }, [intake]);
-  useEffect(() => { writeHashQuery('/content', { intake, q, lesson: lesId || '', session: sesId || '' }); }, [intake, q, lesId, sesId]);
+  useEffect(() => { writeHashQuery('/content', { intake, q: deferredQ, lesson: lesId || '', session: sesId || '' }); }, [intake, deferredQ, lesId, sesId]);
 
   // انتخاب‌ها به‌صورت مشتق از درخت — بعد از هر reload همیشه تازه‌اند
   const selLesson = useMemo(() => {
@@ -123,8 +126,8 @@ function BsTab({ initial = {} }) {
   }), [flatLessons]);
 
   const intakeLabel = (code) => intakes.find(i => i.code === code)?.label || code;
-  const lesMatch = (l) => !q.trim() || (l.name || '').includes(q.trim()) || (l.teacher || '').includes(q.trim());
-  const sesMatch = (s) => !q.trim() || (s.topic || '').includes(q.trim()) || (s.teacher || '').includes(q.trim()) || String(s.number) === q.trim();
+  const lesMatch = (l) => !deferredQ || (l.name || '').includes(deferredQ) || (l.teacher || '').includes(deferredQ);
+  const sesMatch = (s) => !deferredQ || (s.topic || '').includes(deferredQ) || (s.teacher || '').includes(deferredQ) || String(s.number) === deferredQ;
 
   const act = async (fn, okMsg = 'انجام شد') => {
     try { await fn(); toast(okMsg); load(); }
@@ -159,197 +162,141 @@ function BsTab({ initial = {} }) {
 
   return (
     <>
+      <ContentShell density={density}>
       <PageHeader title="مرکز فرماندهی محتوا" description="درس‌ها ← جلسات ← بازرس فایل · نمای مؤثر سراسری و Override ورودی"
-        actions={<><B>{fa(totals.lessons)} درس</B><B kind="acc">{fa(totals.sessions)} جلسه</B>
-          <B kind="ok">{fa(totals.files)} فایل</B><button className="btn" onClick={() => setStudentPreview(true)}>👁 مشاهده به‌عنوان دانشجو</button><button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button></>} />
-      <SavedViews scope="content" filters={{ intake, q, lesson: lesId || '', session: sesId || '' }} onApply={f => {
+        actions={<><ContentMetric icon="📘" value={fa(totals.lessons)} label="درس" /><ContentMetric icon="🗂" value={fa(totals.sessions)} label="جلسه" kind="acc" />
+          <ContentMetric icon="📎" value={fa(totals.files)} label="فایل" kind="ok" /><button className="btn" onClick={() => setStudentPreview(true)}>👁 مشاهده به‌عنوان دانشجو</button><button className="btn primary" onClick={() => setQuick(true)}>⚡ آپلود سریع</button></>} />
+      <ContentBreadcrumb items={[{ label: 'محتوا' }, { label: intake ? intakeLabel(intake) : 'سراسری' }, ...(selLesson ? [{ label: selLesson.name }] : []), ...(selSession ? [{ label: `جلسه ${fa(selSession.number)}` }] : [])]} />
+      <SavedViews scope="content" filters={{ intake, q, lesson: lesId || '', session: sesId || '' }} density={density} onApply={f => {
         preserveSelection.current = (f.intake || '') !== intake; setIntake(f.intake || ''); setQ(f.q || ''); setLesId(f.lesson || null); setSesId(f.session || null);
       }} label="نماهای محتوایی" />
+      <ContentToolbar>
+        <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)} aria-label="محدوده محتوای علوم پایه">
+          {scopeKind === 'global' && <option value="">🌐 سراسری (پایه)</option>}
+          {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
+        </select>
+        <input className="inp content-grow" placeholder="🔎 جست‌وجوی درس، استاد یا موضوع جلسه…" value={q} onChange={e => setQ(e.target.value)} aria-label="جست‌وجوی محتوای علوم پایه" />
+        <ContentDensityToggle value={density} onChange={setDensity} />
+      </ContentToolbar>
 
-      {!tree ? <Loading rows={5} /> : (
-        <div className="ct3-grid">
+      {!tree ? <ContentSkeleton panes={3} /> : (
+        <ContentWorkspace columns={3}>
           {/* ── ستون ۱: درخت درس‌ها ─────────────────────── */}
-          <div className="ct3-pane">
-            <div className="ct3-ph">
-              <span className="ct3-pt">📚 درس‌ها</span>
-              <B>{fa(totals.lessons)}</B>
-            </div>
-            <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => setIntake(e.target.value)}>
-              {scopeKind === 'global' && <option value="">🌐 سراسری (پایه)</option>}
-              {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
-            </select>
-            <input className="inp" placeholder="🔎 نام درس/استاد/موضوع جلسه…"
-                   value={q} onChange={e => setQ(e.target.value)} />
+          <ContentPane icon="📚" title="درس‌ها" count={fa(totals.lessons)}>
             {tree.map(t => {
               const visLes = t.lessons.filter(lesMatch);
-              if (q.trim() && visLes.length === 0) return null;
+              if (deferredQ && visLes.length === 0) return null;
               return (
-                <div key={t.term} className="ct3-term">
-                  <div className="ct3-term-head" onClick={() => setOpenTerms(s => ({ ...s, [t.term]: !s[t.term] }))}>
-                    <span>{TERM_ICON}</span><b>{t.term}</b>
-                    <B>{fa(t.lessons.length)}</B>
-                    <span className="spacer" />
-                    <button className="btn sm" title="افزودن درس به این ترم" aria-label="افزودن درس به این ترم"
-                            onClick={e => { e.stopPropagation(); setAddLes(t.term); }}>➕</button>
-                    <span className="muted">{openTerms[t.term] === false ? '◂' : '▾'}</span>
-                  </div>
-                  {openTerms[t.term] !== false && (
-                    visLes.length === 0
-                      ? <div className="ct3-none muted">درسی نیست</div>
-                      : visLes.map(l => {
-                          const idx = t.lessons.findIndex(x => x.id === l.id);
-                          return (
-                            <div key={l.id} className={`ct3-les ${lesId === l.id ? 'on' : ''}`}
-                                 onClick={() => { setLesId(l.id); setSesId(null); setSel([]); }}>
-                              <div className="ct3-r1">
-                                <span className="ct3-ic">{lesId === l.id ? '📖' : '📘'}</span>
-                                <div className="ct3-main">
-                                  <div className="ct3-t1">{l.name}</div>
-                                  <div className="ct3-t2">{l.teacher || '—'}</div>
-                                </div>
-                                {l.intake && <B kind="purple">🏷 {intakeLabel(l.intake)}</B>}
-                              </div>
-                              <div className="ct3-r2">
-                                <B>{fa(l.session_count)} جلسه</B>
-                                <B kind="acc">{fa(l.content_count)} فایل</B>
-                                <span className="spacer" />
-                                {l.readonly ? <B>🔒 فقط‌خواندنی</B> : <>
-                                  <button className="btn sm" title="بالا" aria-label="بالا" disabled={idx <= 0}
-                                          onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑'); }}>↑</button>
-                                  <button className="btn sm" title="پایین" aria-label="پایین" disabled={idx >= t.lessons.length - 1}
-                                          onClick={e => { e.stopPropagation(); reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓'); }}>↓</button>
-                                  <button className="btn sm" title="ویرایش نام و استاد" aria-label="ویرایش نام و استاد"
-                                          onClick={e => { e.stopPropagation(); setEditLes(l); }}>✏️</button>
-                                  <button className="btn sm" title="جلسه‌ی جدید" aria-label="جلسه‌ی جدید"
-                                          onClick={e => { e.stopPropagation(); setAddSes(l); }}>➕</button>
-                                  <button className="btn sm danger" title="حذف درس" aria-label="حذف درس"
-                                          onClick={e => { e.stopPropagation(); delLesson(l); }}>🗑</button>
-                                </>}
-                              </div>
-                            </div>
-                          );
-                        })
-                  )}
-                </div>
+                <ContentSection key={t.term} icon={TERM_ICON} title={t.term} count={fa(t.lessons.length)}
+                  open={openTerms[t.term] !== false}
+                  onToggle={() => setOpenTerms(state => ({ ...state, [t.term]: !state[t.term] }))}
+                  actions={<ContentIconButton icon="＋" label={`افزودن درس به ${t.term}`} kind="primary" onClick={() => setAddLes(t.term)} />}>
+                  {visLes.length === 0 ? (
+                    <ContentEmptyState icon="🌱" title="هنوز درسی برای این ترم ثبت نشده"
+                      description={deferredQ ? 'نتیجه‌ای برای جست‌وجوی فعلی نیست.' : 'نخستین درس این ترم را ایجاد کنید.'}
+                      action={!deferredQ ? <button className="btn sm primary" onClick={() => setAddLes(t.term)}>افزودن درس</button> : null} />
+                  ) : visLes.map(l => {
+                    const idx = t.lessons.findIndex(x => x.id === l.id);
+                    return <ContentItem key={l.id} icon={lesId === l.id ? '📖' : '📘'} title={l.name}
+                      meta={l.teacher || 'استاد ثبت نشده'} active={lesId === l.id} readonly={l.readonly}
+                      scope={l.intake ? 'intake' : 'global'} scopeLabel={l.intake ? intakeLabel(l.intake) : 'سراسری'}
+                      onClick={() => { setLesId(l.id); setSesId(null); setSel([]); }}
+                      metrics={<><ContentMetric icon="🗂" value={fa(l.session_count)} label="جلسه" /><ContentMetric icon="📎" value={fa(l.content_count)} label="فایل" kind="acc" /></>}
+                      actions={!l.readonly ? <>
+                        <ContentReorderControls noun="درس" canUp={idx > 0} canDown={idx < t.lessons.length - 1}
+                          onUp={() => reorder(() => api.waReorderLesson(l.id, 'up'), 'درس مرتب شد ↑')}
+                          onDown={() => reorder(() => api.waReorderLesson(l.id, 'down'), 'درس مرتب شد ↓')} />
+                        <ContentIconButton icon="✎" label="ویرایش نام و استاد" kind="primary" onClick={() => setEditLes(l)} />
+                        <ContentMoreActions>
+                          <ContentIconButton icon="＋" label="جلسه‌ی جدید" kind="primary" onClick={() => setAddSes(l)} />
+                          <ContentIconButton icon="🗑" label="حذف درس" kind="danger" onClick={() => delLesson(l)} />
+                        </ContentMoreActions>
+                      </> : null} />;
+                  })}
+                </ContentSection>
               );
             })}
-            {tree.length === 0 && (
-              <Empty icon="🌱" text="هنوز ساختار محتوایی نیست">
-                <span className="muted">با دکمه‌ی ➕ کنار هر ترم نخستین درس را بسازید</span>
-              </Empty>
-            )}
-          </div>
+            {tree.length === 0 && <ContentEmptyState icon="🌱" title="هنوز ساختار محتوایی نیست"
+              description="با افزودن نخستین درس به یکی از ترم‌ها شروع کنید." />}
+          </ContentPane>
 
           {/* ── ستون ۲: جلسات درس منتخب ─────────────────── */}
-          <div className="ct3-pane">
-            <div className="ct3-ph">
-              <span className="ct3-pt">🗂 جلسات</span>
-              {selLesson && <B kind="acc">{selLesson.name}</B>}
-              {selLesson && <B>{fa(selLesson.sessions.length)}</B>}
-              <span className="spacer" />
-              {selLesson && !selLesson.readonly && <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button>}
-            </div>
-            {sel.length > 0 && (
-              <div className="ct3-bulk">
-                <B kind="acc">{fa(sel.length)} انتخاب</B>
-                <button className="btn sm" onClick={() => bulk({ action: 'duplicate', ids: sel }).then(() => setSel([]))}>📄 کلون</button>
-                <button className="btn sm" onClick={() => setMoveTo({ ids: sel })}>📦 انتقال</button>
-                <button className="btn sm danger" onClick={() => setConfirm({
-                  text: `حذف ${fa(sel.length)} جلسه (به‌همراه فایل‌ها و نسخه‌های اختصاصی وابسته)؟`,
-                  run: () => bulk({ action: 'delete', ids: sel }).then(() => { setSel([]); setSesId(null); }),
-                })}>🗑 حذف</button>
-                <span className="spacer" />
-                <button className="btn sm" onClick={() => setSel([])}>لغو</button>
-              </div>
-            )}
+          <ContentPane icon="🗂" title="جلسات" subtitle={selLesson?.name} count={selLesson ? fa(selLesson.sessions.length) : null}
+            actions={selLesson && !selLesson.readonly ? <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button> : null}>
+            <ContentBulkBar count={sel.length} onClear={() => setSel([])} actions={<>
+              <button className="btn sm" onClick={() => bulk({ action: 'duplicate', ids: sel }).then(() => setSel([]))}>📄 کلون</button>
+              <button className="btn sm" onClick={() => setMoveTo({ ids: sel })}>📦 انتقال</button>
+              <button className="btn sm danger" onClick={() => setConfirm({
+                text: `حذف ${fa(sel.length)} جلسه (به‌همراه فایل‌ها و نسخه‌های اختصاصی وابسته)؟`,
+                run: () => bulk({ action: 'delete', ids: sel }).then(() => { setSel([]); setSesId(null); }),
+              })}>🗑 حذف</button>
+            </>} />
             {!selLesson ? (
-              <Empty icon="📚" text="نخست از ستون درس‌ها یک درس برگزینید" />
+              <ContentEmptyState icon="📚" title="هنوز درسی انتخاب نشده" description="برای مدیریت جلسه‌ها، یک درس را از ستون درخت انتخاب کنید." />
             ) : visSessions.length === 0 ? (
-              <Empty icon="📭" text={q.trim() ? 'جلسه‌ای با این جست‌وجو نیست' : 'این درس هنوز جلسه‌ای ندارد'}>
-                {!q.trim() && !selLesson.readonly && <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button>}
-              </Empty>
+              <ContentEmptyState icon="📭" title={deferredQ ? 'جلسه‌ای با این جست‌وجو نیست' : 'این درس هنوز جلسه‌ای ندارد'}
+                description={deferredQ ? 'عبارت جست‌وجو را تغییر دهید.' : 'برای شروع، نخستین جلسه را ایجاد کنید.'}
+                action={!deferredQ && !selLesson.readonly ? <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button> : null} />
             ) : visSessions.map(s => {
               const idx = selLesson.sessions.findIndex(x => x.id === s.id);
               return (
-                <div key={s.id}
-                     className={`ct3-ses ${sesId === s.id ? 'on' : ''} ${sel.includes(s.id) ? 'sel' : ''}`}
-                     onClick={() => setSesId(s.id)}>
-                  <div className="ct3-r1">
-                    {!s.readonly && <input type="checkbox" checked={sel.includes(s.id)}
-                           onClick={e => e.stopPropagation()} onChange={() => toggleSel(s.id)}
-                           aria-label="انتخاب جلسه" />}
-                    <span className="ct3-num">{fa(s.number)}</span>
-                    <div className="ct3-main">
-                      <div className="ct3-t1">{s.topic || '—'}</div>
-                      <div className="ct3-t2">{s.teacher || ''}</div>
-                    </div>
-                    <B kind={KIND[s.kind].kind}>
-                      {KIND[s.kind].icon} {s.kind === 'global' ? 'سراسری' : (s.intake_label || s.intake)}
-                    </B>
-                  </div>
-                  <div className="ct3-r2">
-                    <span className="muted">
-                      {Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'}${fa(v)}`).join(' ') || 'بدون فایل'}
-                    </span>
-                    <span className="spacer" />
-                    {s.readonly && <B>🔒 فقط‌خواندنی</B>}
-                    {s.kind === 'global' && intake &&
-                      <button className="btn sm warn" title="ساخت نسخه اختصاصی برای این ورودی" aria-label="ساخت نسخه اختصاصی برای این ورودی"
-                              onClick={e => { e.stopPropagation(); act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐'); }}>🍴</button>}
+                <ContentItem key={s.id}
+                  selection={!s.readonly ? <input type="checkbox" checked={sel.includes(s.id)}
+                    onChange={() => toggleSel(s.id)} aria-label={`انتخاب جلسه ${fa(s.number)}`} /> : null}
+                  icon={<span>{fa(s.number)}</span>}
+                  title={s.topic || 'موضوع ثبت نشده'} meta={s.teacher || 'استاد ثبت نشده'}
+                  active={sesId === s.id} selected={sel.includes(s.id)} readonly={s.readonly}
+                  scope={s.kind === 'fork' ? 'override' : (s.kind === 'global' ? 'global' : 'intake')}
+                  scopeLabel={s.kind === 'global' ? 'سراسری' : (s.intake_label || s.intake)}
+                  onClick={() => setSesId(s.id)}
+                  metrics={<span className="content-type-summary">{Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'} ${fa(v)}`).join(' · ') || 'بدون فایل'}</span>}
+                  actions={<>
+                    {s.kind === 'global' && intake && <ContentIconButton icon="🍴" label="ساخت نسخه اختصاصی برای این ورودی" kind="primary"
+                      onClick={() => act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐')} />}
                     {!s.readonly && <>
-                      <button className="btn sm" title="بالا" aria-label="بالا" disabled={idx <= 0}
-                              onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑'); }}>↑</button>
-                      <button className="btn sm" title="پایین" aria-label="پایین" disabled={idx >= selLesson.sessions.length - 1}
-                              onClick={e => { e.stopPropagation(); reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓'); }}>↓</button>
-                      {s.kind === 'fork' &&
-                        <button className="btn sm" title="حذف نسخه اختصاصی (بازگشت به سراسری)" aria-label="حذف نسخه اختصاصی (بازگشت به سراسری)"
-                                onClick={e => { e.stopPropagation(); act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️'); }}>↩️</button>}
-                      <button className="btn sm" title="کلون" aria-label="کلون"
-                              onClick={e => { e.stopPropagation(); act(() => api.dupSession(s.id), 'کلون ساخته شد 📄'); }}>📄</button>
-                      <button className="btn sm" title="ویرایش شماره/موضوع/استاد" aria-label="ویرایش شماره/موضوع/استاد"
-                              onClick={e => { e.stopPropagation(); setEditSes({ lesson_id: selLesson.id, s }); }}>✏️</button>
-                      <button className="btn sm danger" title="حذف" aria-label="حذف"
-                              onClick={e => { e.stopPropagation(); delSession(s); }}>🗑</button>
+                      <ContentReorderControls noun="جلسه" canUp={idx > 0} canDown={idx < selLesson.sessions.length - 1}
+                        onUp={() => reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑')}
+                        onDown={() => reorder(() => api.waReorderSession(s.id, 'down'), 'مرتب شد ↓')} />
+                      <ContentIconButton icon="✎" label="ویرایش شماره/موضوع/استاد" kind="primary" onClick={() => setEditSes({ lesson_id: selLesson.id, s })} />
+                      <ContentMoreActions>
+                        {s.kind === 'fork' && <ContentIconButton icon="↩" label="حذف نسخه اختصاصی و بازگشت به سراسری" onClick={() => act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️')} />}
+                        <ContentIconButton icon="⧉" label="کلون جلسه" onClick={() => act(() => api.dupSession(s.id), 'کلون ساخته شد 📄')} />
+                        <ContentIconButton icon="🗑" label="حذف جلسه" kind="danger" onClick={() => delSession(s)} />
+                      </ContentMoreActions>
                     </>}
-                  </div>
-                </div>
+                  </>} />
               );
             })}
-          </div>
+          </ContentPane>
 
           {/* ── ستون ۳: بازرس ──────────────────────────── */}
-          <div className="ct3-pane ct3-insp">
-            <div className="ct3-ph">
-              <span className="ct3-pt">🔎 بازرس</span>
-              {selSession && <B kind={KIND[selSession.kind].kind}>{KIND[selSession.kind].icon} {KIND[selSession.kind].label}</B>}
-            </div>
+          <ContentPane icon="🔎" title="بازرس" inspector
+            actions={selSession ? <ScopeBadge scope={selSession.kind === 'fork' ? 'override' : (selSession.kind === 'global' ? 'global' : 'intake')} label={KIND[selSession.kind].label} /> : null}>
             {!selLesson ? (
-              <Empty icon="🧭" text="برای بازبینی، نخست یک درس و سپس یک جلسه را برگزینید" />
+              <ContentEmptyState icon="🧭" title="موردی برای بازبینی انتخاب نشده" description="نخست یک درس و سپس یک جلسه را انتخاب کنید." />
             ) : !selSession ? (
               <>
-                <div className="ct3-kv"><span className="muted">درس</span><b>{selLesson.name}</b></div>
-                <div className="ct3-kv"><span className="muted">ترم</span><span>{selLesson.term}</span></div>
-                <div className="ct3-kv"><span className="muted">استاد</span><span>{selLesson.teacher || '—'}</span></div>
-                <div className="ct3-kv"><span className="muted">دامنه</span>
-                  <ScopeBadge scope={selLesson.intake || 'global'} label={selLesson.intake ? intakeLabel(selLesson.intake) : 'سراسری'} />
-                </div>
-                <div className="ct3-stats">
-                  <div className="ct3-stat"><b>{fa(selLesson.session_count)}</b><span>جلسه</span></div>
-                  <div className="ct3-stat"><b>{fa(selLesson.content_count)}</b><span>فایل</span></div>
-                  <div className="ct3-stat"><b>
-                    {fa(selLesson.sessions.filter(s => s.kind !== 'global').length)}
-                  </b><span>نسخه‌ی خاص</span></div>
-                </div>
-                <div className="row">
+                <ContentKV label="درس" value={selLesson.name} strong />
+                <ContentKV label="ترم" value={selLesson.term} />
+                <ContentKV label="استاد" value={selLesson.teacher || '—'} />
+                <ContentKV label="دامنه" value={<ScopeBadge scope={selLesson.intake ? 'intake' : 'global'} label={selLesson.intake ? intakeLabel(selLesson.intake) : 'سراسری'} />} />
+                <ContentStats items={[
+                  { value: fa(selLesson.session_count), label: 'جلسه' },
+                  { value: fa(selLesson.content_count), label: 'فایل' },
+                  { value: fa(selLesson.sessions.filter(s => s.kind !== 'global').length), label: 'نسخه‌ی خاص' },
+                ]} />
+                <ContentActionGroup>
                   {selLesson.readonly ? <B>🔒 این درس سراسری برای scope شما فقط‌خواندنی است</B> : <>
+                    <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
                     <button className="btn" onClick={() => setEditLes(selLesson)}>✏️ ویرایش درس</button>
-                    {scopeKind === 'global' && <button className="btn" onClick={() => setRootMove({ kind: 'lesson', id: selLesson.id, label: selLesson.name, from: selLesson.intake || '' })}>📦 انتقال سطل ورودی</button>}
-                    <button className="btn primary" style={{ flex: 1 }} onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
-                    <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
+                    <ContentMoreActions>
+                      {scopeKind === 'global' && <button className="btn" onClick={() => setRootMove({ kind: 'lesson', id: selLesson.id, label: selLesson.name, from: selLesson.intake || '' })}>📦 انتقال سطل ورودی</button>}
+                      <button className="btn danger" onClick={() => delLesson(selLesson)}>🗑 حذف درس</button>
+                    </ContentMoreActions>
                   </>}
-                </div>
+                </ContentActionGroup>
                 <ContentHistory targetType="lesson" targetId={selLesson.id} />
-                <p className="muted" style={{ margin: '4px 2px' }}>💡 برای دیدن و مدیریت فایل‌ها، از ستون میانی یک جلسه را برگزینید.</p>
+                <p className="muted content-help">💡 برای دیدن و مدیریت فایل‌ها، از ستون میانی یک جلسه را برگزینید.</p>
               </>
             ) : (
               <SessionInspector lesson={selLesson} session={selSession} intake={intake}
@@ -361,8 +308,8 @@ function BsTab({ initial = {} }) {
                 onMove={(s) => setMoveTo({ ids: [s.id] })}
                 onDelete={delSession} />
             )}
-          </div>
-        </div>
+          </ContentPane>
+        </ContentWorkspace>
       )}
 
       {editLes && <EditLesson lesson={editLes} onClose={(ch) => { setEditLes(null); if (ch) load(); }} />}
@@ -384,35 +331,35 @@ function BsTab({ initial = {} }) {
                            onNo={() => setConfirm(null)} />}
       {studentPreview && <StudentPreview onClose={() => setStudentPreview(false)} />}
       {rootMove && <RootMoveModal item={rootMove} intakes={intakes} onClose={(changed) => { setRootMove(null); if (changed) load(); }} />}
+      </ContentShell>
     </>
   );
 }
 
 /* ── 🔎 بازرس جلسه: مشخصات + اکشن‌ها + مدیریت کامل فایل‌ها ── */
 function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFork, onUnfork, onClone, onMove, onDelete }) {
+  const scope = session.kind === 'fork' ? 'override' : (session.kind === 'global' ? 'global' : 'intake');
   return (
     <>
-      <div className="ct3-kv"><span className="muted">جلسه</span><b className="num">{fa(session.number)}</b></div>
-      <div className="ct3-kv"><span className="muted">موضوع</span><span>{session.topic || '—'}</span></div>
-      <div className="ct3-kv"><span className="muted">درس</span><span>{lesson.name} <span className="muted">· {lesson.term}</span></span></div>
-      <div className="ct3-kv"><span className="muted">استاد</span><span>{session.teacher || lesson.teacher || '—'}</span></div>
-      <div className="ct3-kv"><span className="muted">وضعیت</span>
-        <ScopeBadge scope={session.kind} label={session.kind === 'global' ? 'سراسری' : (session.intake_label || session.intake)} />
-      </div>
-      <div className="ct3-kv"><span className="muted">مالکیت و ویرایش</span><span>{session.kind === 'global' ? 'مالک سراسری محتوا' : `ورودی ${session.intake_label || session.intake}`} · {session.readonly ? 'فقط مشاهده' : 'قابل ویرایش در scope فعلی'}</span></div>
-      <div className="ct3-acts">
+      <ContentKV label="جلسه" value={fa(session.number)} strong />
+      <ContentKV label="موضوع" value={session.topic || '—'} />
+      <ContentKV label="درس" value={<>{lesson.name} <span className="muted">· {lesson.term}</span></>} />
+      <ContentKV label="استاد" value={session.teacher || lesson.teacher || '—'} />
+      <ContentKV label="وضعیت" value={<ScopeBadge scope={scope} label={session.kind === 'global' ? 'سراسری' : (session.intake_label || session.intake)} />} />
+      <ContentKV label="مالکیت و ویرایش" value={`${session.kind === 'global' ? 'مالک سراسری محتوا' : `ورودی ${session.intake_label || session.intake}`} · ${session.readonly ? 'فقط مشاهده' : 'قابل ویرایش در scope فعلی'}`} />
+      <ContentActionGroup>
         {session.readonly && <B>🔒 فقط‌خواندنی</B>}
-        {session.kind === 'global' && intake &&
-          <button className="btn sm warn" onClick={() => onFork(session)}>🍴 نسخه‌ی اختصاصی</button>}
+        {session.kind === 'global' && intake && <button className="btn sm primary" onClick={() => onFork(session)}>🍴 نسخه‌ی اختصاصی</button>}
         {!session.readonly && <>
-          <button className="btn sm" onClick={() => onEdit(session)}>✏️ ویرایش</button>
-          {session.kind === 'fork' &&
-            <button className="btn sm" onClick={() => onUnfork(session)}>↩️ بازگشت به سراسری</button>}
-          <button className="btn sm" onClick={() => onClone(session)}>📄 کلون</button>
-          <button className="btn sm" onClick={() => onMove(session)}>📦 انتقال</button>
-          <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
+          <button className="btn sm primary" onClick={() => onEdit(session)}>✏️ ویرایش</button>
+          <ContentMoreActions>
+            {session.kind === 'fork' && <button className="btn sm" onClick={() => onUnfork(session)}>↩️ بازگشت به سراسری</button>}
+            <button className="btn sm" onClick={() => onClone(session)}>📄 کلون</button>
+            <button className="btn sm" onClick={() => onMove(session)}>📦 انتقال</button>
+            <button className="btn sm danger" onClick={() => onDelete(session)}>🗑 حذف</button>
+          </ContentMoreActions>
         </>}
-      </div>
+      </ContentActionGroup>
       <ImpactPanel targetType="session" targetId={session.id} />
       <ContentHistory targetType="session" targetId={session.id} />
       <SessionFiles session={session} onTreeChanged={onTreeChanged} />
@@ -422,14 +369,23 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
 
 function ImpactPanel({ targetType, targetId }) {
   const [data, setData] = useState(null);
-  useEffect(() => { let active = true; setData(null); api.contentImpact(targetType, targetId).then(r => active && setData(r)).catch(() => active && setData(false)); return () => { active = false; }; }, [targetType, targetId]);
-  if (data === false) return null;
-  return <div className="surface-inset" style={{ padding: 10 }}>
-    <div className="muted">🎯 تحلیل اثر واقعی</div>
-    {!data ? <Loading rows={1} variant="tree" /> : <><div className="row" style={{ marginTop: 6 }}>
-      <B kind="acc">{fa(data.affected_users)} کاربر بالقوه</B><B>{fa(data.affected_sessions)} جلسه</B><B>{fa(data.affected_files)} فایل</B>
-      <ScopeBadge scope={data.intake ? 'exclusive' : 'global'} label={data.intake || 'سراسری'} />
-    </div><div className="muted" style={{ marginTop: 5 }}>{data.explanation}</div></>}
+  const load = () => {
+    let active = true;
+    setData(null);
+    api.contentImpact(targetType, targetId).then(r => active && setData(r)).catch(() => active && setData(false));
+    return () => { active = false; };
+  };
+  useEffect(load, [targetType, targetId]);
+  return <div className="content-inset">
+    <div className="content-inset-title">🎯 تحلیل اثر واقعی</div>
+    {data === false ? <ContentErrorState title="تحلیل اثر بارگذاری نشد" compact onRetry={load} />
+      : !data ? <ContentSkeleton panes={1} rows={1} />
+        : <><ContentStats items={[
+          { value: fa(data.affected_users), label: 'کاربر بالقوه' },
+          { value: fa(data.affected_sessions), label: 'جلسه' },
+          { value: fa(data.affected_files), label: 'فایل' },
+        ]} />
+        <div className="content-inset-meta"><ScopeBadge scope={data.intake ? 'intake' : 'global'} label={data.intake || 'سراسری'} /> <span>{data.explanation}</span></div></>}
   </div>;
 }
 
@@ -443,10 +399,10 @@ function StudentPreview({ onClose }) {
   const chooseLesson = async value => { setLesson(value); setSession(''); setFiles([]); setBusy(true); try { setSessions((await api.studentPreviewSessions(student.id, value)).sessions || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
   const chooseSession = async value => { setSession(value); setBusy(true); try { setFiles((await api.studentPreviewFiles(student.id, value)).files || []); } catch (e) { setErr(errText(e)); } setBusy(false); };
   return <Modal wide title="👁 مشاهده محتوا به‌عنوان دانشجو" onClose={onClose}>
-    <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><B kind="acc">Resolver مشترک Mini App</B><span className="muted" style={{ marginInlineStart: 8 }}>این نما مستقیماً همان توابع terms/lessons/sessions/files دانشجو را اجرا می‌کند.</span></div>
-    {!student ? <><div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="نام، شماره دانشجویی، یوزرنیم یا Telegram ID…" /><button className="btn" disabled={busy} onClick={search}>جست‌وجو</button></div>
-      <div className="grid" style={{ gap: 6, marginTop: 8 }}>{(hits || []).map(user => <button key={user.id} className="pick" onClick={() => choose(user)}><b>{user.display_name || user.name}</b><span className="muted">{user.student_id || `#${user.id}`} · {user.intake || 'بدون ورودی'}</span></button>)}</div></> : <>
-      <div className="row" style={{ marginTop: 10 }}><B kind="purple">{root?.student?.name}</B><B>{root?.student?.intake || 'بدون ورودی'}</B><B>گروه {root?.student?.group || '—'}</B><button className="btn sm" onClick={() => { setStudent(null); setRoot(null); }}>تغییر دانشجو</button></div>
+    <div className="panel panel-pad content-preview-note"><B kind="acc">Resolver مشترک Mini App</B><span className="muted content-inline-note">این نما مستقیماً همان توابع terms/lessons/sessions/files دانشجو را اجرا می‌کند.</span></div>
+    {!student ? <><div className="row content-row-top-sm"><input className="inp content-grow" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="نام، شماره دانشجویی، یوزرنیم یا Telegram ID…" /><button className="btn" disabled={busy} onClick={search}>جست‌وجو</button></div>
+      <div className="grid content-grid-tight">{(hits || []).map(user => <button key={user.id} className="pick" onClick={() => choose(user)}><b>{user.display_name || user.name}</b><span className="muted">{user.student_id || `#${user.id}`} · {user.intake || 'بدون ورودی'}</span></button>)}</div></> : <>
+      <div className="row content-row-top-sm"><B kind="purple">{root?.student?.name}</B><B>{root?.student?.intake || 'بدون ورودی'}</B><B>گروه {root?.student?.group || '—'}</B><button className="btn sm" onClick={() => { setStudent(null); setRoot(null); }}>تغییر دانشجو</button></div>
       <div className="student-preview-grid">
         <div><b>ترم‌ها</b>{(root?.terms || []).map(item => <button key={item.name} className={`pick ${term === item.name ? 'on' : ''}`} onClick={() => chooseTerm(item.name)}>{item.name}<B>{fa(item.lesson_count)}</B></button>)}</div>
         <div><b>درس‌ها</b>{lessons.map(item => <button key={item._id} className={`pick ${lesson === item._id ? 'on' : ''}`} onClick={() => chooseLesson(item._id)}>{item.name}<span className="muted">{item.teacher}</span></button>)}</div>
@@ -478,10 +434,10 @@ function ContentHistory({ targetType, targetId }) {
     return () => { requestSeq.current += 1; };
   }, [targetType, targetId]);
 
-  return <div className="surface-inset" style={{ padding: 10 }}>
-    <div className="muted" style={{ marginBottom: 7 }}>🕓 تاریخچه تغییرات</div>
-    {err ? <ErrorState error={err} onRetry={load} />
-      : !items ? <Loading rows={2} variant="tree" />
+  return <div className="content-inset">
+    <div className="content-inset-title">🕓 تاریخچه تغییرات</div>
+    {err ? <ContentErrorState title="تاریخچه بارگذاری نشد" error={err} compact onRetry={load} />
+      : !items ? <ContentSkeleton panes={1} rows={2} />
         : <Timeline items={items.slice(0, 6)} empty="هنوز رویدادی برای این مورد ثبت نشده" />}
   </div>;
 }
@@ -525,6 +481,8 @@ function SessionFiles({ session, onTreeChanged }) {
     setBusy(false);
   };
   const del = async (cid) => {
+    const item = (items || []).find(entry => entry.id === cid);
+    if (!window.confirm(`فایل «${item?.description || cid}» حذف شود؟ این عملیات قابل بازگشت نیست.`)) return;
     try { await api.caDelContent(cid); toast('حذف شد'); changed(); }
     catch (e) { toast(errText(e), 'err'); }
   };
@@ -539,77 +497,60 @@ function SessionFiles({ session, onTreeChanged }) {
   const toggleSel = (id) => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id]);
 
   return (
-    <div className="ct3-files">
-      <div className="ct3-ph" style={{ marginTop: 2 }}>
-        <b style={{ fontSize: 'var(--fs-card)' }}>📁 فایل‌ها</b>
-        {items && <B>{fa(items.length)}</B>}
-        <span className="spacer" />
-        {readonly ? <B>🔒 فقط‌خواندنی</B> :
-          <button className="btn sm primary" onClick={() => setShowUp(x => !x)}>{showUp ? '✕ بستن' : '➕ افزودن فایل'}</button>}
-      </div>
-      {showUp && (
-        <div className="ct3-up">
-          <input ref={fileRef} type="file" className="inp"
-                 onChange={e => {
-                   const f = e.target.files[0] || null;
-                   setFile(f);
-                   if (f) setForm(x => ({ ...x, ctype: guess(f.name), description: x.description || f.name }));
-                 }} />
-          <div className="row">
-            <select className="inp" value={form.ctype} onChange={e => setForm({ ...form, ctype: e.target.value })}>
-              {Object.entries(CTYPE).map(([k, v]) => <option key={k} value={k}>{v} {k}</option>)}
-            </select>
-            <input className="inp" style={{ flex: 1 }} placeholder="توضیح (عنوان نمایشی)…"
-                   value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+    <div className="content-files">
+      <ContentSection icon="📁" title="فایل‌ها" count={items ? fa(items.length) : null} open
+        actions={readonly ? <B>🔒 فقط‌خواندنی</B> : <button className="btn sm primary" onClick={() => setShowUp(x => !x)}>{showUp ? '✕ بستن' : '➕ افزودن فایل'}</button>}>
+        {showUp && (
+          <div className="content-upload">
+            <label className="fld"><span>فایل</span><input ref={fileRef} type="file" className="inp"
+              onChange={e => {
+                const selectedFile = e.target.files[0] || null;
+                setFile(selectedFile);
+                if (selectedFile) setForm(x => ({ ...x, ctype: guess(selectedFile.name), description: x.description || selectedFile.name }));
+              }} /></label>
+            <div className="row content-form-row">
+              <label className="fld"><span>نوع فایل</span><select className="inp" value={form.ctype} onChange={e => setForm({ ...form, ctype: e.target.value })}>
+                {Object.entries(CTYPE).map(([k, v]) => <option key={k} value={k}>{v} {k}</option>)}
+              </select></label>
+              <label className="fld content-form-grow"><span>عنوان نمایشی</span><input className="inp" placeholder="توضیح…"
+                value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} /></label>
+            </div>
+            <label className="fld"><span>اطلاعات تکمیلی</span><input className="inp" placeholder="اختیاری…"
+              value={form.extra_info} onChange={e => setForm({ ...form, extra_info: e.target.value })} /></label>
+            <button className="btn primary" disabled={busy || !file} onClick={upload}>
+              {busy ? '⏳ در حال آپلود…' : '⬆️ آپلود (از مسیر تلگرام)'}</button>
           </div>
-          <input className="inp" placeholder="اطلاعات تکمیلی (اختیاری)…"
-                 value={form.extra_info} onChange={e => setForm({ ...form, extra_info: e.target.value })} />
-          <button className="btn primary" disabled={busy || !file} onClick={upload}>
-            {busy ? '⏳ در حال آپلود…' : '⬆️ آپلود (از مسیر تلگرام)'}</button>
-        </div>
-      )}
-      {err ? <ErrorState error={err} onRetry={load} /> : !items ? <Loading rows={3} /> : (
-        <>
-          {sel.length > 0 && (
-            <div className="ct3-bulk">
-              <B kind="acc">{fa(sel.length)} انتخاب</B>
+        )}
+        {err ? <ContentErrorState title="فایل‌های جلسه بارگذاری نشد" error={err} compact onRetry={load} /> : !items ? <ContentSkeleton panes={1} rows={3} /> : (
+          <>
+            <ContentBulkBar count={sel.length} onClear={() => setSel([])} actions={<>
               <button className="btn sm danger" onClick={async () => {
+                if (!window.confirm(`حذف ${fa(sel.length)} فایل انتخاب‌شده؟ این عملیات قابل بازگشت نیست.`)) return;
                 try {
                   const r = await api.itemsBulk({ action: 'delete', ids: sel });
                   toast(`${fa(r.done)} فایل حذف شد`); setSel([]); changed();
                 } catch (e) { toast(errText(e), 'err'); }
               }}>🗑 حذف گروهی</button>
-              <MoveItemsButton sel={sel} sessionId={session.id}
-                               onDone={() => { setSel([]); changed(); }} />
-              <span className="spacer" />
-              <button className="btn sm" onClick={() => setSel([])}>لغو</button>
-            </div>
-          )}
-          {items.length === 0 && <Empty icon="📭" text="فایلی برای این جلسه نیست" />}
-          {items.map((c, i) => (
-            <div key={c.id} className={`ct3-file ${sel.includes(c.id) ? 'sel' : ''}`}>
-              <div className="ct3-r1">
-                {!readonly && <input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleSel(c.id)} aria-label="انتخاب فایل" />}
-                <span style={{ fontSize: 16 }}>{CTYPE[c.type] || '📎'}</span>
-                <div className="ct3-main">
-                  <div className="ct3-t1">{c.description || '(بدون توضیح)'}</div>
-                  {c.extra_info && <div className="ct3-t2">{c.extra_info}</div>}
-                </div>
-                <B>{fa(c.downloads)} DL</B>
-              </div>
-              <div className="ct3-r2">
-                <span className="muted">{c.type}</span>
-                <span className="spacer" />
-                {!readonly && <>
-                  <button className="btn sm" title="بالا" aria-label="بالا" disabled={i <= 0} onClick={() => reorderItem(c.id, 'up')}>↑</button>
-                  <button className="btn sm" title="پایین" aria-label="پایین" disabled={i >= items.length - 1} onClick={() => reorderItem(c.id, 'down')}>↓</button>
-                  <button className="btn sm danger" title="حذف فایل" aria-label="حذف فایل" onClick={() => del(c.id)}>🗑</button>
-                </>}
-              </div>
-            </div>
-          ))}
-        </>
-      )}
+              <MoveItemsButton sel={sel} sessionId={session.id} onDone={() => { setSel([]); changed(); }} />
+            </>} />
+            {items.length === 0 && <ContentEmptyState icon="📭" title="فایلی برای این جلسه نیست"
+              description={readonly ? 'در این دامنه فایلی ثبت نشده است.' : 'با افزودن نخستین فایل، محتوای جلسه را کامل کنید.'}
+              action={!readonly ? <button className="btn sm primary" onClick={() => setShowUp(true)}>افزودن فایل</button> : null} />}
+            {items.map((c, i) => (
+              <ContentItem key={c.id}
+                selection={!readonly ? <input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleSel(c.id)} aria-label={`انتخاب فایل ${c.description || c.id}`} /> : null}
+                icon={<FileTypeBadge type={c.type} fileName={c.description} compact />}
+                title={c.description || '(بدون توضیح)'} meta={c.extra_info || c.type} selected={sel.includes(c.id)}
+                metrics={<ContentMetric icon="⬇" value={fa(c.downloads)} label="دریافت" />}
+                actions={!readonly ? <>
+                  <ContentReorderControls noun="فایل" canUp={i > 0} canDown={i < items.length - 1}
+                    onUp={() => reorderItem(c.id, 'up')} onDown={() => reorderItem(c.id, 'down')} />
+                  <ContentIconButton icon="🗑" label="حذف فایل" kind="danger" onClick={() => del(c.id)} />
+                </> : null} />
+            ))}
+          </>
+        )}
+      </ContentSection>
     </div>
   );
 }
@@ -622,10 +563,10 @@ function MoveItemsButton({ sel, sessionId, onDone }) {
       <button className="btn sm" onClick={() => setOpen(true)}>📦 انتقال به جلسه…</button>
       {open && (
         <Modal title="انتقال فایل‌ها به جلسه‌ی دیگر" onClose={() => setOpen(false)}>
-          <p className="muted" style={{ marginBottom: 10 }}>شناسه‌ی جلسه‌ی مقصد را وارد کنید (از نشانی/کارت جلسه کپی کنید):</p>
-          <input className="inp" style={{ width: '100%', direction: 'ltr' }} placeholder="session id مقصد…"
+          <p className="muted content-dialog-copy">شناسه‌ی جلسه‌ی مقصد را وارد کنید (از نشانی/کارت جلسه کپی کنید):</p>
+          <input className="inp content-input-full content-ltr" placeholder="session id مقصد…"
                  value={target} onChange={e => setTarget(e.target.value)} />
-          <div className="row" style={{ marginTop: 12 }}>
+          <div className="row content-row-top">
             <button className="btn primary" disabled={!target.trim()} onClick={async () => {
               try {
                 const r = await api.itemsBulk({ action: 'move', ids: sel, target_session: target.trim() });
@@ -652,8 +593,8 @@ function RootMoveModal({ item, intakes, onClose }) {
   const toLabel = to ? (intakes.find(x => (x.code || x) === to)?.label || to) : 'سراسری';
   return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}>
     <div className="panel panel-pad"><div className="row"><B>مبدأ: {fromLabel}</B><span>←</span><B kind="warn">مقصد: {toLabel}</B></div><div className="muted">این عملیات مالکیت root object را تغییر می‌دهد؛ overwrite ضمنی انجام نمی‌شود و تعارض همنام با 409 متوقف خواهد شد.</div></div>
-    <select className="inp" style={{ width: '100%', marginTop: 10 }} value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select>
-    <div className="row" style={{ marginTop: 12 }}><button className="btn danger" disabled={busy || to === item.from} onClick={run}>{busy ? '⏳' : 'تأیید انتقال'}</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+    <select className="inp content-input-full content-row-top-sm" value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select>
+    <div className="row content-row-top"><button className="btn danger" disabled={busy || to === item.from} onClick={run}>{busy ? '⏳' : 'تأیید انتقال'}</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
   </Modal>;
 }
 
@@ -663,7 +604,7 @@ function EditLesson({ lesson, onClose }) {
   const [teacher, setTeacher] = useState(lesson.teacher || '');
   const [busy, setBusy] = useState(false);
   return <Modal title={`✏️ ویرایش درس — ${lesson.name}`} onClose={() => onClose(false)}>
-    <div className="grid" style={{ gap: 10 }}>
+    <div className="grid content-modal-grid">
       <label className="fld"><span>نام درس</span><input className="inp" value={name} onChange={e => setName(e.target.value)} /></label>
       <label className="fld"><span>استاد</span><input className="inp" value={teacher} onChange={e => setTeacher(e.target.value)} /></label>
       <div className="row"><button className="btn primary" disabled={busy || !name.trim()} onClick={async () => {
@@ -683,7 +624,7 @@ function EditSession({ s, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`✏️ ویرایش جلسه ${fa(s.number)}`} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <label className="fld"><span>شماره جلسه</span><input className="inp" type="number" min="1" value={number} onChange={e => setNumber(e.target.value)} /></label>
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
@@ -709,7 +650,7 @@ function AddSession({ lesson, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`➕ جلسه‌ی جدید — ${lesson.name}`} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <input className="inp" type="number" min="1" value={number} onChange={e => setNumber(+e.target.value)} />
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
@@ -736,7 +677,7 @@ function AddLesson({ term, intake, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`➕ درس جدید — ${term}${intake ? ' · مختص ورودی' : ' · سراسری'}`} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <input className="inp" placeholder="نام درس…" value={name} onChange={e => setName(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
         <div className="row">
@@ -761,11 +702,11 @@ function MoveSessions({ lessons, sel, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`📦 انتقال ${fa(sel.length)} جلسه به درس دیگر`} onClose={() => onClose(false)}>
-      <select className="inp" style={{ width: '100%' }} value={target} onChange={e => setTarget(e.target.value)}>
+      <select className="inp content-input-full" value={target} onChange={e => setTarget(e.target.value)}>
         <option value="">انتخاب درس مقصد…</option>
         {lessons.map(l => <option key={l.id} value={l.id}>{l.term} — {l.name}</option>)}
       </select>
-      <div className="row" style={{ marginTop: 12 }}>
+      <div className="row content-row-top">
         <button className="btn primary" disabled={busy || !target} onClick={async () => {
           setBusy(true);
           try {
@@ -852,13 +793,13 @@ function QuickUpload({ intakes, intake, onClose }) {
 
   return (
     <Modal title="⚡ آپلود سریع به جلسه (چندفایلی)" onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <div className="row">
           <select className="inp" value={scIntake} onChange={e => { setScIntake(e.target.value); setLessonId(''); setSessionId(''); }}>
             <option value="">🌐 سراسری</option>
             {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
           </select>
-          <select className="inp" style={{ flex: 1 }} value={lessonId} onChange={e => { setLessonId(e.target.value); setSessionId(''); }}>
+          <select className="inp content-grow" value={lessonId} onChange={e => { setLessonId(e.target.value); setSessionId(''); }}>
             <option value="">{tree ? 'درس…' : '…'}</option>
             {lessons.map(l => <option key={l.id} value={l.id}>{l.term} — {l.name}</option>)}
           </select>
@@ -885,8 +826,8 @@ function QuickUpload({ intakes, intake, onClose }) {
         {files.map((f, i) => (
           <div key={`${f.file.name}-${f.file.size}`} className={`row file-row upload-${f.status}`}>
             <span>{f.status === 'success' ? '✅' : f.status === 'error' || f.status === 'invalid' ? '⚠️' : f.status === 'uploading' ? '⏳' : CTYPE[f.ctype] || '📎'}</span>
-            <div style={{ minWidth: 120 }}><b className="text-truncate">{f.file.name}</b><div className="muted">{(f.file.size / 1024 / 1024).toFixed(2)} MB</div></div>
-            <input className="inp" style={{ flex: 1 }} value={f.description} disabled={f.status === 'uploading' || f.status === 'success'}
+            <div className="content-upload-file-name"><b className="text-truncate">{f.file.name}</b><div className="muted">{(f.file.size / 1024 / 1024).toFixed(2)} MB</div></div>
+            <input className="inp content-grow" value={f.description} disabled={f.status === 'uploading' || f.status === 'success'}
                    onChange={e => setFiles(x => x.map((y, j) => j === i ? { ...y, description: e.target.value } : y))} />
             <select className="inp" value={f.ctype} disabled={f.status === 'uploading' || f.status === 'success' || f.status === 'invalid'}
                     onChange={e => setFiles(x => x.map((y, j) => j === i ? { ...y, ctype: e.target.value } : y))}>
@@ -899,7 +840,7 @@ function QuickUpload({ intakes, intake, onClose }) {
         {prog && <div className="panel panel-pad">
           <div className="row"><span>پیشرفت {fa(prog.done)} از {fa(prog.total)}</span><span className="spacer" />
             <B kind="ok">موفق {fa(prog.ok)}</B><B kind={prog.failed ? 'bad' : ''}>ناموفق {fa(prog.failed)}</B></div>
-          <div className="minibar-track" style={{ marginTop: 8 }}><div className="minibar-fill" style={{ width: `${prog.total ? Math.round(prog.done * 100 / prog.total) : 0}%` }} /></div>
+          <div className="minibar-track content-progress"><div className="minibar-fill" style={{ width: `${prog.total ? Math.round(prog.done * 100 / prog.total) : 0}%` }} /></div>
         </div>}
         <div className="row">
           <button className="btn primary" disabled={!guess_ok || (prog && prog.done < prog.total)} onClick={() => run(false)}>

@@ -300,7 +300,7 @@ export const api = {
   refBookDel: (bid) => req(`/api/content/references/books/${bid}`, { method: 'DELETE' }),
   refBookFork: (bid, intake) => req(`/api/content/references/books/${bid}/fork?intake=${encodeURIComponent(intake)}`, { method: 'POST' }),
   refBookUnfork: (bid) => req(`/api/content/references/books/${bid}/fork`, { method: 'DELETE' }),
-  refFiles: (bid) => req(`/api/content/references/books/${bid}/files`),
+  refFiles: (bid, p = {}) => req(`/api/content/references/books/${bid}/files?` + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== null))),
   refFileAdd: (bid, form) => req(`/api/content/references/books/${bid}/files`, { method: 'POST', form }),
   refFileDel: (fid) => req(`/api/content/references/files/${fid}`, { method: 'DELETE' }),
   // ── 🌊 WA3 — نمرات (grades/recent + find-student + bulk) — همان ادمین ربات ──

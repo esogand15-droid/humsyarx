@@ -2,6 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Empty, B, toast, Confirm, Modal, NoPerm } from '../ui.jsx';
 import SavedViews from '../SavedViews.jsx';
+import {
+  ContentActionGroup, ContentBreadcrumb, ContentDensityToggle, ContentEmptyState,
+  ContentErrorState, ContentIconButton, ContentItem, ContentKV, ContentMetric, ContentMoreActions,
+  ContentPane, ContentReorderControls, ContentShell, ContentSkeleton, ContentStats, ContentToolbar,
+  ContentWorkspace, FileTypeBadge, ScopeBadge, useContentDensity,
+} from '../ContentPrimitives.jsx';
 
 // ════════════════════════════════════════════════════════════════════
 // 🌊 WA3 — تب‌های پریتی «مرکز فرماندهی محتوا» (همه روی API موجود، scope-aware)
@@ -35,11 +41,15 @@ export function RefsTab() {
   const [booksReadonly, setBooksReadonly] = useState(false);
   const [book, setBook] = useState(null);
   const [files, setFiles] = useState(null);
+  const [filesPage, setFilesPage] = useState({ total: 0, hasMore: false });
   const [filesReadonly, setFilesReadonly] = useState(false);
   const [addModal, setAddModal] = useState(null);   // {kind:'subject'|'book'|'file'}
   const [editModal, setEditModal] = useState(null); // {kind,item}
   const [confirm, setConfirm] = useState(null);     // {text, run}
   const [rootMove, setRootMove] = useState(null);
+  const [booksErr, setBooksErr] = useState('');
+  const [filesErr, setFilesErr] = useState('');
+  const [density, setDensity] = useContentDensity();
   useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
   const loadSubjects = async () => {
@@ -51,15 +61,21 @@ export function RefsTab() {
     } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => { setSub(null); setBook(null); loadSubjects(); }, [intake]);
-  const loadBooks = async (s) => {
-    setSub(s); setBook(null); setBooks(null);
-    try { const r = await api.refBooks(s.id); setBooks(r.books || []); setBooksReadonly(!!r.readonly); }
-    catch (e) { toast(errText(e), 'err'); }
+  const loadBooks = async (selectedSubject) => {
+    setSub(selectedSubject); setBook(null); setBooks(null); setBooksErr(''); setFilesErr('');
+    try { const r = await api.refBooks(selectedSubject.id); setBooks(r.books || []); setBooksReadonly(!!r.readonly); }
+    catch (e) { setBooksErr(errText(e)); }
   };
-  const loadFiles = async (b) => {
-    setBook(b); setFiles(null);
-    try { const r = await api.refFiles(b.id); setFiles(r.files || []); setFilesReadonly(!!r.readonly); }
-    catch (e) { toast(errText(e), 'err'); }
+  const loadFiles = async (selectedBook, append = false) => {
+    const currentCount = append ? (files || []).length : 0;
+    setBook(selectedBook); if (!append) setFiles(null); setFilesErr('');
+    try {
+      const r = await api.refFiles(selectedBook.id, { skip: currentCount, limit: 50 });
+      const batch = r.files || [];
+      setFiles(previous => append ? [...(previous || []), ...batch] : batch);
+      setFilesPage({ total: Number(r.total ?? batch.length), hasMore: Boolean(r.has_more) });
+      setFilesReadonly(!!r.readonly);
+    } catch (e) { setFilesErr(errText(e)); }
   };
   const reorderRef = async (fn, reload) => {
     try {
@@ -70,125 +86,114 @@ export function RefsTab() {
   };
 
   if (permErr) return <NoPerm text="مدیریت رفرنس‌ها فقط برای مدیر محتواست" />;
-  if (err) return <ErrorState error={err} onRetry={loadSubjects} />;
 
+  const selectedIntakeLabel = intake ? (intakes.find(item => (item.code || item) === intake)?.label || intake) : 'سراسری';
   return (
-    <>
-      <div className="row" style={{ marginBottom: 12 }}>
+    <ContentShell density={density}>
+      <ContentBreadcrumb items={[{ label: 'محتوا' }, { label: 'رفرنس‌ها' }, { label: selectedIntakeLabel }, ...(sub ? [{ label: sub.name }] : []), ...(book ? [{ label: book.name }] : [])]} />
+      <SavedViews scope="content-references" density={density} filters={{ intake }} onApply={filters => setIntake(filters.intake || '')} label="نماهای رفرنس" />
+      <ContentToolbar>
         <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} scopeKind={intakeMeta.scope_kind} />
         <span className="spacer" />
+        <ContentDensityToggle value={density} onChange={setDensity} />
         <button className="btn sm primary" onClick={() => setAddModal({ kind: 'subject' })}>➕ موضوع</button>
-      </div>
-      <div className="grid" style={{ gridTemplateColumns: '240px 260px 1fr', alignItems: 'start' }}>
-        {/* موضوع‌ها */}
-        <div className="panel" style={{ maxHeight: '72vh', overflowY: 'auto' }}>
-          {!subjects ? <div className="panel-pad"><Loading /></div> :
-           subjects.length === 0 ? <Empty icon="📖" text="موضوعی نیست" /> :
-           subjects.map((s, i) => (
-            <div key={s.id} className={`tree-row ${sub?.id === s.id ? 'on' : ''}`} style={{ cursor: 'pointer' }}
-                 onClick={() => loadBooks(s)}>
-              <span>📖</span>
-              <span style={{ flex: 1, color: 'var(--txt)' }}>{s.name}</span>
-              {s.readonly && <B>🔒</B>}
-              {!s.readonly && <>
-                <button className="btn sm" disabled={i === 0} title="بالا" aria-label="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'up'), loadSubjects); }}>↑</button>
-                <button className="btn sm" disabled={i === subjects.length - 1} title="پایین" aria-label="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refSubjectReorder(s.id, 'down'), loadSubjects); }}>↓</button>
-                <button className="btn sm" title="ویرایش نام" aria-label="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'subject', item: s }); }}>✏️</button>
-                {intakeMeta.scope_kind === 'global' && <button className="btn sm" title="انتقال root به ورودی دیگر" onClick={e => { e.stopPropagation(); setRootMove({ kind: 'subject', id: s.id, label: s.name, from: s.intake || '' }); }}>📦</button>}
-                <button className="btn sm danger" aria-label={`حذف موضوع ${s.name}`} onClick={e => { e.stopPropagation(); setConfirm({
-                  text: `حذف موضوع «${s.name}» با همه‌ی کتاب‌ها و فایل‌هایش؟`,
-                  run: async () => { await api.refSubjectDel(s.id); toast('حذف شد'); setSub(null); loadSubjects(); },
-                }); }}>🗑</button>
-              </>}
-            </div>
-          ))}
-        </div>
-        {/* کتاب‌ها */}
-        <div className="panel" style={{ maxHeight: '72vh', overflowY: 'auto' }}>
-          {!sub && <Empty icon="📚" text="یک موضوع را انتخاب کنید" />}
-          {sub && !books && <div className="panel-pad"><Loading /></div>}
-          {sub && books && (
-            <>
-              <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 12px' }}>
-                <b style={{ fontSize: 12.5 }}>{sub.name}</b><span className="spacer" />
-                {!sub.readonly && <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })} aria-label={`افزودن کتاب به ${sub.name}`}>➕</button>}
-              </div>
-              {books.length === 0 && <Empty icon="📕" text="کتابی نیست" />}
-              {books.map((b, i) => (
-                <div key={b.id} className={`tree-row ${book?.id === b.id ? 'on' : ''}`} style={{ cursor: 'pointer' }}
-                     onClick={() => loadFiles(b)}>
-                  <span>{b.is_fork ? '⭐' : b.intake ? '🏷' : '📕'}</span>
-                  <span style={{ flex: 1, color: 'var(--txt)' }}>{b.name}</span>
-                  {!b.is_fork && !b.intake && intake &&
-                    <button className="btn sm warn" title="نسخه‌ی اختصاصی برای این ورودی" aria-label="نسخه‌ی اختصاصی برای این ورودی"
-                            onClick={(e) => { e.stopPropagation(); (async () => {
-                              try { await api.refBookFork(b.id, intake); toast('Fork ساخته شد ⭐'); loadBooks(sub); }
-                              catch (err) { toast(errText(err), 'err'); }
-                            })(); }}>🍴</button>}
-                  {( !booksReadonly || b.is_fork || b.intake === intake) ? <>
-                    <button className="btn sm" disabled={i === 0} title="بالا" aria-label="بالا" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'up'), () => loadBooks(sub)); }}>↑</button>
-                    <button className="btn sm" disabled={i === books.length - 1} title="پایین" aria-label="پایین" onClick={e => { e.stopPropagation(); reorderRef(() => api.refBookReorder(b.id, 'down'), () => loadBooks(sub)); }}>↓</button>
-                    <button className="btn sm" title="ویرایش نام" aria-label="ویرایش نام" onClick={e => { e.stopPropagation(); setEditModal({ kind: 'book', item: b }); }}>✏️</button>
-                    {b.is_fork && <button className="btn sm" title="بازگشت به نسخه‌ی سراسری" aria-label="بازگشت به نسخه‌ی سراسری"
-                            onClick={(e) => { e.stopPropagation(); (async () => {
-                              try { await api.refBookUnfork(b.id); toast('↩️ بازگشت به نسخه‌ی سراسری'); loadBooks(sub); }
-                              catch (err) { toast(errText(err), 'err'); }
-                            })(); }}>↩️</button>}
-                    <button className="btn sm danger" aria-label={`حذف کتاب ${b.name}`} onClick={e => { e.stopPropagation(); setConfirm({
-                      text: `حذف کتاب «${b.name}» و فایل‌هایش؟`,
-                      run: async () => { await api.refBookDel(b.id); toast('حذف شد'); setBook(null); loadBooks(sub); },
-                    }); }}>🗑</button>
-                  </> : <B>🔒</B>}
-                </div>
+      </ContentToolbar>
+      {err ? <ContentErrorState title="موضوع‌های رفرنس بارگذاری نشد" error={err} onRetry={loadSubjects} /> : (
+        <ContentWorkspace columns={3}>
+          <ContentPane icon="📖" title="موضوع‌ها" count={subjects ? subjects.length.toLocaleString('fa') : null}>
+            {!subjects ? <ContentSkeleton panes={1} rows={5} /> : subjects.length === 0 ?
+              <ContentEmptyState icon="📖" title="هنوز موضوعی ثبت نشده" description="برای ساخت ساختار رفرنس، نخستین موضوع را ایجاد کنید."
+                action={<button className="btn sm primary" onClick={() => setAddModal({ kind: 'subject' })}>افزودن موضوع</button>} /> :
+              subjects.map((subject, index) => (
+                <ContentItem key={subject.id} icon="📖" title={subject.name} active={sub?.id === subject.id}
+                  readonly={subject.readonly} scope={subject.intake ? 'intake' : 'global'} scopeLabel={subject.intake || 'سراسری'}
+                  onClick={() => loadBooks(subject)} actions={!subject.readonly ? <>
+                    <ContentReorderControls noun="موضوع" canUp={index > 0} canDown={index < subjects.length - 1}
+                      onUp={() => reorderRef(() => api.refSubjectReorder(subject.id, 'up'), loadSubjects)}
+                      onDown={() => reorderRef(() => api.refSubjectReorder(subject.id, 'down'), loadSubjects)} />
+                    <ContentIconButton icon="✎" label="ویرایش نام موضوع" kind="primary" onClick={() => setEditModal({ kind: 'subject', item: subject })} />
+                    <ContentMoreActions>
+                      {intakeMeta.scope_kind === 'global' && <ContentIconButton icon="📦" label="انتقال موضوع به دامنه دیگر" onClick={() => setRootMove({ kind: 'subject', id: subject.id, label: subject.name, from: subject.intake || '' })} />}
+                      <ContentIconButton icon="🗑" label={`حذف موضوع ${subject.name}`} kind="danger" onClick={() => setConfirm({
+                        text: `حذف موضوع «${subject.name}» با همه‌ی کتاب‌ها و فایل‌هایش؟`,
+                        run: async () => { await api.refSubjectDel(subject.id); toast('حذف شد'); setSub(null); loadSubjects(); },
+                      })} />
+                    </ContentMoreActions>
+                  </> : null} />
               ))}
-            </>
-          )}
-        </div>
-        {/* فایل‌ها */}
-        <div className="panel" style={{ maxHeight: '72vh', overflowY: 'auto' }}>
-          {!book && <Empty icon="📁" text="یک کتاب را انتخاب کنید" />}
-          {book && !files && <div className="panel-pad"><Loading /></div>}
-          {book && files && (
-            <>
-              <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 12px' }}>
-                <b style={{ fontSize: 12.5 }}>📁 {book.name}</b><span className="spacer" />
-                {filesReadonly ? <B>🔒 فقط‌خواندنی</B> :
-                  <button className="btn sm primary" onClick={() => setAddModal({ kind: 'file' })}>⬆️ آپلود فایل</button>}
-              </div>
-              {files.length === 0 && <Empty icon="📭" text="فایلی نیست" />}
-              {files.map(f => (
-                <div key={f.id} className="file-row" style={{ margin: '6px 10px' }}>
-                  <span>{f.lang === 'fa' ? '🇮🇷' : '🇬🇧'}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: 'var(--txt)', fontSize: 12.5 }}>{f.description || '(بدون توضیح)'}</div>
-                    <div className="muted">جلد {f.volume}</div>
-                  </div>
-                  <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
-                  {!filesReadonly && <button className="btn sm danger" aria-label={`حذف فایل ${f.description || 'بدون عنوان'}`} onClick={() => setConfirm({
-                    text: 'حذف این فایل؟',
-                    run: async () => { await api.refFileDel(f.id); toast('حذف شد'); loadFiles(book); },
-                  })}>🗑</button>}
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
+          </ContentPane>
 
-      {addModal && (
-        <RefAddModal kind={addModal.kind} sub={sub} book={book} intake={intake}
-                     onClose={(ok) => {
-                       setAddModal(null);
-                       if (ok) { if (addModal.kind === 'subject') loadSubjects(); else if (addModal.kind === 'book') loadBooks(sub); else loadFiles(book); }
-                     }} />
+          <ContentPane icon="📚" title="کتاب‌ها" subtitle={sub?.name} count={books ? books.length.toLocaleString('fa') : null}
+            actions={sub && !sub.readonly ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })} aria-label={`افزودن کتاب به ${sub.name}`}>➕ کتاب</button> : null}>
+            {!sub ? <ContentEmptyState icon="📚" title="موضوعی انتخاب نشده" description="یک موضوع را برای مشاهده کتاب‌های آن انتخاب کنید." />
+              : booksErr ? <ContentErrorState title="کتاب‌ها بارگذاری نشد" error={booksErr} compact onRetry={() => loadBooks(sub)} />
+                : !books ? <ContentSkeleton panes={1} rows={5} />
+                  : books.length === 0 ? <ContentEmptyState icon="📕" title="هنوز کتابی ثبت نشده" description="نخستین کتاب این موضوع را ایجاد کنید."
+                    action={!sub.readonly ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })}>افزودن کتاب</button> : null} />
+                    : books.map((entry, index) => {
+                      const editable = !booksReadonly || entry.is_fork || entry.intake === intake;
+                      const scope = entry.is_fork ? 'override' : (entry.intake ? 'intake' : 'global');
+                      return <ContentItem key={entry.id} icon={entry.is_fork ? '⭐' : '📕'} title={entry.name}
+                        active={book?.id === entry.id} readonly={!editable} scope={scope}
+                        scopeLabel={entry.is_fork ? 'نسخه اختصاصی' : (entry.intake || 'سراسری')}
+                        onClick={() => loadFiles(entry)} actions={<>
+                          {!entry.is_fork && !entry.intake && intake && <ContentIconButton icon="🍴" label="ساخت نسخه اختصاصی برای این ورودی" kind="primary" onClick={async () => {
+                            try { await api.refBookFork(entry.id, intake); toast('نسخه اختصاصی ساخته شد ⭐'); loadBooks(sub); }
+                            catch (error) { toast(errText(error), 'err'); }
+                          }} />}
+                          {editable && <>
+                            <ContentReorderControls noun="کتاب" canUp={index > 0} canDown={index < books.length - 1}
+                              onUp={() => reorderRef(() => api.refBookReorder(entry.id, 'up'), () => loadBooks(sub))}
+                              onDown={() => reorderRef(() => api.refBookReorder(entry.id, 'down'), () => loadBooks(sub))} />
+                            <ContentIconButton icon="✎" label="ویرایش نام کتاب" kind="primary" onClick={() => setEditModal({ kind: 'book', item: entry })} />
+                            <ContentMoreActions>
+                              {entry.is_fork && <ContentIconButton icon="↩" label="بازگشت به نسخه سراسری" onClick={async () => {
+                                try { await api.refBookUnfork(entry.id); toast('↩️ بازگشت به نسخه‌ی سراسری'); loadBooks(sub); }
+                                catch (error) { toast(errText(error), 'err'); }
+                              }} />}
+                              <ContentIconButton icon="🗑" label={`حذف کتاب ${entry.name}`} kind="danger" onClick={() => setConfirm({
+                                text: `حذف کتاب «${entry.name}» و فایل‌هایش؟`,
+                                run: async () => { await api.refBookDel(entry.id); toast('حذف شد'); setBook(null); loadBooks(sub); },
+                              })} />
+                            </ContentMoreActions>
+                          </>}
+                        </>} />;
+                    })}
+          </ContentPane>
+
+          <ContentPane icon="📁" title="فایل‌ها" subtitle={book?.name} count={files ? Number(filesPage.total || files.length).toLocaleString('fa') : null}
+            actions={book ? (filesReadonly ? <B>🔒 فقط‌خواندنی</B> : <button className="btn sm primary" onClick={() => setAddModal({ kind: 'file' })}>⬆️ آپلود فایل</button>) : null}>
+            {!book ? <ContentEmptyState icon="📁" title="کتابی انتخاب نشده" description="یک کتاب را برای مشاهده فایل‌های آن انتخاب کنید." />
+              : filesErr ? <ContentErrorState title="فایل‌های کتاب بارگذاری نشد" error={filesErr} compact onRetry={() => loadFiles(book)} />
+                : !files ? <ContentSkeleton panes={1} rows={5} />
+                  : files.length === 0 ? <ContentEmptyState icon="📭" title="هنوز فایلی ثبت نشده" description="نخستین فایل این کتاب را بارگذاری کنید."
+                    action={!filesReadonly ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'file' })}>آپلود فایل</button> : null} />
+                    : <>{files.map(file => <ContentItem key={file.id}
+                      icon={<FileTypeBadge type="document" compact />} title={file.description || '(بدون توضیح)'}
+                      meta={`${file.lang === 'fa' ? 'فارسی' : 'English'} · جلد ${file.volume}`} readonly={filesReadonly}
+                      scope={book.is_fork ? 'override' : (book.intake ? 'intake' : 'global')}
+                      scopeLabel={book.is_fork ? 'نسخه اختصاصی' : (book.intake || 'سراسری')}
+                      metrics={<ContentMetric icon="⬇" value={Number(file.downloads || 0).toLocaleString('fa')} label="دریافت" />}
+                      actions={!filesReadonly ? <ContentIconButton icon="🗑" label={`حذف فایل ${file.description || 'بدون عنوان'}`} kind="danger" onClick={() => setConfirm({
+                        text: `حذف فایل «${file.description || 'بدون عنوان'}» از کتاب «${book.name}»؟`,
+                        run: async () => { await api.refFileDel(file.id); toast('حذف شد'); loadFiles(book); },
+                      })} /> : null} />)}
+                      {filesPage.hasMore && <button className="btn content-load-more" onClick={() => loadFiles(book, true)}>نمایش فایل‌های بیشتر</button>}
+                    </>}
+          </ContentPane>
+        </ContentWorkspace>
       )}
+
+      {addModal && <RefAddModal kind={addModal.kind} sub={sub} book={book} intake={intake}
+        onClose={(ok) => {
+          const kind = addModal.kind; setAddModal(null);
+          if (ok) { if (kind === 'subject') loadSubjects(); else if (kind === 'book') loadBooks(sub); else loadFiles(book); }
+        }} />}
       {editModal && <RefNameModal kind={editModal.kind} item={editModal.item}
         onClose={(ok) => { const kind = editModal.kind; setEditModal(null); if (ok) kind === 'subject' ? loadSubjects() : loadBooks(sub); }} />}
-      {confirm && <Confirm text={confirm.text} danger
-                           onYes={async () => { await confirm.run(); setConfirm(null); }}
-                           onNo={() => setConfirm(null)} />}
+      {confirm && <Confirm text={confirm.text} danger onYes={async () => { await confirm.run(); setConfirm(null); }} onNo={() => setConfirm(null)} />}
       {rootMove && <RootMoveControl item={rootMove} intakes={intakes} onClose={(ok) => { setRootMove(null); if (ok) { setSub(null); loadSubjects(); } }} />}
-    </>
+    </ContentShell>
   );
 }
 
@@ -199,14 +204,14 @@ function RootMoveControl({ item, intakes, onClose }) {
     else await api.caMoveQbankRoot(item.id, to);
     toast('انتقال root انجام شد ✅'); onClose(true);
   } catch (e) { let conflict = ''; if (e.status === 409) { try { const d = JSON.parse(e.technical || '{}'); conflict = `${d.reason || 'تعارض مقصد'}${d.existing_id ? ` · Existing: ${d.existing_id}` : ''}`; } catch {} } toast(conflict || errText(e), 'err'); setBusy(false); } };
-  return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}><div className="muted">مبدأ: {item.from || 'سراسری'}؛ مقصد را انتخاب کنید. overwrite ضمنی انجام نمی‌شود.</div><select className="inp" style={{ width: '100%', marginTop: 10 }} value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select><div className="row" style={{ marginTop: 12 }}><button className="btn danger" disabled={busy || to === item.from} onClick={run}>تأیید انتقال</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div></Modal>;
+  return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}><div className="muted">مبدأ: {item.from || 'سراسری'}؛ مقصد را انتخاب کنید. overwrite ضمنی انجام نمی‌شود.</div><select className="inp content-input-full content-row-top-sm" value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select><div className="row content-row-top"><button className="btn danger" disabled={busy || to === item.from} onClick={run}>تأیید انتقال</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div></Modal>;
 }
 
 function RefNameModal({ kind, item, onClose }) {
   const [name, setName] = useState(item.name || '');
   const [busy, setBusy] = useState(false);
   return <Modal title={kind === 'subject' ? '✏️ ویرایش موضوع رفرنس' : '✏️ ویرایش نام کتاب'} onClose={() => onClose(false)}>
-    <div className="grid" style={{ gap: 10 }}>
+    <div className="grid content-modal-grid">
       <input className="inp" value={name} onChange={e => setName(e.target.value)} autoFocus />
       <div className="row"><button className="btn primary" disabled={busy || !name.trim()} onClick={async () => {
         setBusy(true);
@@ -230,7 +235,7 @@ function RefAddModal({ kind, sub, book, intake, onClose }) {
   const titles = { subject: '➕ موضوع جدید', book: `➕ کتاب جدید — ${sub?.name}`, file: `⬆️ فایل — ${book?.name}` };
   return (
     <Modal title={titles[kind]} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         {kind !== 'file' && (
           <input className="inp" placeholder={kind === 'subject' ? 'نام موضوع (مثلاً آناتومی)…' : 'نام کتاب…'}
                  value={name} onChange={e => setName(e.target.value)} />
@@ -242,7 +247,7 @@ function RefAddModal({ kind, sub, book, intake, onClose }) {
                 <option value="fa">🇮🇷 فارسی</option>
                 <option value="en">🇬🇧 انگلیسی</option>
               </select>
-              <input className="inp" type="number" min="1" style={{ width: 90 }} value={volume}
+              <input className="inp content-volume-input" type="number" min="1" value={volume}
                      onChange={e => setVolume(+e.target.value)} title="جلد" />
             </div>
             <input className="inp" placeholder="توضیح فایل…" value={desc} onChange={e => setDesc(e.target.value)} />
@@ -302,8 +307,8 @@ export function ScheduleTab() {
   const monthItems = monthKey ? (items || []).filter(x => (x.date || '').startsWith(monthKey)) : [];
   return (
     <>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <div className="tabs" style={{ marginBottom: 0, borderBottom: 'none' }} role="tablist" aria-label="نوع برنامه">
+      <div className="row content-tab-toolbar">
+        <div className="tabs content-inline-tabs" role="tablist" aria-label="نوع برنامه">
           {SCHED_TYPES.map(([k, v]) => (
             <button key={k} type="button" role="tab" aria-selected={stype === k} className={`tab ${stype === k ? 'on' : ''}`} onClick={() => setStype(k)}>{v}</button>
           ))}
@@ -315,17 +320,17 @@ export function ScheduleTab() {
         <button className="btn primary" onClick={() => setEdit({ type: 'class', group: 'هر دو', flex_type: 'fixed' })}>➕ مورد جدید</button>
       </div>
       {!items ? <Loading /> : items.length === 0 ? <Empty icon="📅" text="موردی نیست" /> : (<>
-        <div className="grid" style={{ gap: 8, display: view === 'list' ? 'grid' : 'none' }}>
+        <div className={`grid content-list-grid ${view === 'list' ? '' : 'is-hidden'}`}>
           {items.map(s => (
-            <div key={s.id} className="panel panel-pad row" style={{ padding: '10px 14px' }}>
-              <span style={{ fontSize: 17 }}>{s.type === 'class' ? '🏫' : s.type === 'exam' ? '📝' : '🔄'}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <b style={{ color: 'var(--txt)' }}>{s.lesson}</b>
+            <div key={s.id} className="panel panel-pad row schedule-list-item">
+              <span className="schedule-list-icon">{s.type === 'class' ? '🏫' : s.type === 'exam' ? '📝' : '🔄'}</span>
+              <div className="content-grow-min">
+                <b className="content-strong">{s.lesson}</b>
                 <span className="muted"> {s.teacher || ''}</span>
-                <div className="muted" style={{ marginTop: 2 }}>
+                <div className="muted content-meta-top">
                   📅 <span className="code">{s.date}</span> {s.time || ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
                 </div>
-                {s.flex_note && <div className="muted" style={{ marginTop: 2 }}>🔄 آخرین اعلان: {s.flex_note}</div>}
+                {s.flex_note && <div className="muted content-meta-top">🔄 آخرین اعلان: {s.flex_note}</div>}
               </div>
               {s.flex_type === 'flexible' && <B kind="warn">منعطف</B>}
               <B>{TYPE_FA[s.type] || s.type}</B>
@@ -343,7 +348,7 @@ export function ScheduleTab() {
         {view === 'week' && <div className="schedule-agenda">
           {Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).slice(0, 7).map(([day, rows]) => <section key={day} className="panel panel-pad">
             <div className="section-title"><span className="code">{day}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>
-            <div className="grid" style={{ gap: 6, marginTop: 8 }}>{rows.map(s => <button key={s.id} className="schedule-agenda-item" onClick={() => setEdit({ ...s, note: s.note || '' })}>
+            <div className="grid content-grid-tight">{rows.map(s => <button key={s.id} className="schedule-agenda-item" onClick={() => setEdit({ ...s, note: s.note || '' })}>
               <span>{s.time || '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
             </button>)}</div>
           </section>)}
@@ -379,7 +384,7 @@ function ScheduleModal({ row, preset, onClose }) {
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   return (
     <Modal title={row ? '✏️ ویرایش مورد برنامه' : '➕ مورد جدید برنامه'} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <div className="row">
           <select className="inp" value={f.type} onChange={e => set('type', e.target.value)}>
             {[['class', '🏫 کلاس'], ['exam', '📝 امتحان'], ['makeup', '🔄 جبرانی']].map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -426,7 +431,7 @@ function FlexModal({ row, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`🔄 اعلام زمان جدید — ${row.lesson}`} onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <p className="muted">این اکشن زمان جدید را ثبت و برای دانشجویان این گروه اطلاع‌رسانی می‌کند.</p>
         <div className="row">
           <input className="inp" type="date" value={f.date} onChange={e => setF(x => ({ ...x, date: e.target.value }))} />
@@ -458,65 +463,96 @@ export function QbankTab() {
   const [lesson, setLesson] = useState('');
   const [topic, setTopic] = useState('');
   const [files, setFiles] = useState(null);
+  const [filePage, setFilePage] = useState({ total: 0, hasMore: false });
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [addModal, setAddModal] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [rootMove, setRootMove] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [density, setDensity] = useContentDensity();
   useEffect(() => { if (intakeMeta.scope_kind === 'scoped' && intakeMeta.scope_intake) setIntake(intakeMeta.scope_intake); }, [intakeMeta.scope_kind, intakeMeta.scope_intake]);
 
-  const load = async () => {
+  const load = async (append = false) => {
+    const currentCount = append ? (files || []).length : 0;
     setErr('');
-    try { setFiles((await api.caQbank({ lesson, topic, intake })).files || []); }
+    try {
+      const response = await api.caQbank({ lesson, topic, intake, skip: currentCount, limit: 50 });
+      const batch = response.files || [];
+      setFiles(previous => append ? [...(previous || []), ...batch] : batch);
+      setFilePage({ total: Number(response.total ?? batch.length), hasMore: Boolean(response.has_more) });
+      if (!append) setSelectedFile(null);
+    }
     catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => { setFiles(null); load(); }, [intake]);
 
   if (permErr) return <NoPerm text="بانک سؤال فقط برای مدیر محتواست" />;
-  if (err) return <ErrorState error={err} onRetry={load} />;
 
-  const FT = { video: '🎬 ویدیو', voice: '🎙 ویس', document: '📕 سند' };
+  const applyFilters = () => { setFiles(null); load(); };
+  const scopeFor = (file) => file.intake ? 'intake' : 'global';
   return (
-    <>
-      <div className="row" style={{ marginBottom: 12 }}>
+    <ContentShell density={density}>
+      <ContentBreadcrumb items={[{ label: 'محتوا' }, { label: 'بانک سؤال' }, ...(selectedFile ? [{ label: selectedFile.lesson }, { label: selectedFile.topic }] : [])]} />
+      <ContentToolbar>
         <IntakeSelect intakes={intakes} value={intake} onChange={setIntake} scopeKind={intakeMeta.scope_kind} />
-        <input className="inp" placeholder="درس…" value={lesson} onChange={e => setLesson(e.target.value)} />
-        <input className="inp" placeholder="مبحث…" value={topic} onChange={e => setTopic(e.target.value)} />
-        <button className="btn sm" onClick={() => { setFiles(null); load(); }}>🔎 اعمال فیلتر</button>
+        <input className="inp" placeholder="درس…" value={lesson} onChange={e => setLesson(e.target.value)} onKeyDown={e => e.key === 'Enter' && applyFilters()} aria-label="فیلتر درس بانک سؤال" />
+        <input className="inp" placeholder="مبحث…" value={topic} onChange={e => setTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && applyFilters()} aria-label="فیلتر مبحث بانک سؤال" />
+        <button className="btn sm" onClick={applyFilters}>🔎 اعمال فیلتر</button>
         <span className="spacer" />
+        <ContentDensityToggle value={density} onChange={setDensity} />
         <button className="btn primary" onClick={() => setAddModal(true)}>⬆️ آپلود فایل</button>
-      </div>
-      {!files ? <Loading /> : files.length === 0 ? <Empty icon="🗂" text="فایلی نیست — فیلتر را خالی کنید یا فایل تازه آپلود کنید" /> : (
-        <div className="grid" style={{ gap: 6 }}>
-          {files.map(f => (
-            <div key={f.id} className="panel row" style={{ padding: '9px 14px' }}>
-              <span style={{ fontSize: 16 }}>{f.file_type === 'video' ? '🎬' : f.file_type === 'voice' ? '🎙' : '📕'}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <b style={{ color: 'var(--txt)' }}>{f.lesson}</b>
-                <span className="muted"> — {f.topic}</span>
-                <div className="muted">{f.description || ''}</div>
-              </div>
-              {f.readonly && <B>🔒 فقط‌خواندنی</B>}
-              <B kind="acc">{FT[f.file_type] || f.file_type}</B>
-              <B>{Number(f.downloads || 0).toLocaleString('fa')} DL</B>
-              <span className="muted">{f.upload_date}</span>
-              {!f.readonly && (<>
-                {intakeMeta.scope_kind === 'global' && <button className="btn sm" title="انتقال root فایل" onClick={() => setRootMove({ kind: 'qbank', id: f.id, label: f.description || `${f.lesson} / ${f.topic}`, from: f.intake || '' })}>📦</button>}
-                <button className="btn sm danger" aria-label={`حذف فایل ${f.description || f.topic}`} onClick={() => setConfirm({
-                  text: `حذف فایل «${f.description || f.topic}»؟`,
-                  run: async () => { await api.caQbankDel(f.id); toast('حذف شد'); load(); },
-                })}>🗑</button></>)}
-            </div>
-          ))}
-        </div>
+      </ContentToolbar>
+      {err ? <ContentErrorState title="فایل‌های بانک سؤال بارگذاری نشد" error={err} onRetry={() => load()} /> : (
+        <ContentWorkspace columns={2}>
+          <ContentPane icon="🗂" title="فایل‌های بانک سؤال" count={files ? Number(filePage.total || files.length).toLocaleString('fa') : null}>
+            {!files ? <ContentSkeleton panes={1} rows={7} /> : files.length === 0 ?
+              <ContentEmptyState icon="🗂" title="فایلی پیدا نشد" description="فیلترها را تغییر دهید یا فایل تازه‌ای بارگذاری کنید."
+                action={<button className="btn primary" onClick={() => setAddModal(true)}>آپلود فایل</button>} /> : <>
+              {files.map(file => (
+                <ContentItem key={file.id} icon={<FileTypeBadge type={file.file_type} compact />}
+                  title={`${file.lesson} — ${file.topic}`} meta={file.description || 'بدون توضیح'}
+                  active={selectedFile?.id === file.id} readonly={file.readonly}
+                  scope={scopeFor(file)} scopeLabel={file.intake || 'سراسری'} onClick={() => setSelectedFile(file)}
+                  metrics={<><ContentMetric icon="⬇" value={Number(file.downloads || 0).toLocaleString('fa')} label="دریافت" /><span className="content-date" dir="ltr">{file.upload_date}</span></>}
+                  actions={!file.readonly ? <ContentMoreActions label="عملیات فایل">
+                    {intakeMeta.scope_kind === 'global' && <ContentIconButton icon="📦" label="انتقال فایل به دامنه دیگر" onClick={() => setRootMove({ kind: 'qbank', id: file.id, label: file.description || `${file.lesson} / ${file.topic}`, from: file.intake || '' })} />}
+                    <ContentIconButton icon="🗑" label={`حذف فایل ${file.description || file.topic}`} kind="danger" onClick={() => setConfirm({
+                      text: `حذف فایل «${file.description || file.topic}» از ${file.lesson} / ${file.topic}؟`,
+                      run: async () => { await api.caQbankDel(file.id); toast('حذف شد'); load(); },
+                    })} />
+                  </ContentMoreActions> : null} />
+              ))}
+              {filePage.hasMore && <button className="btn content-load-more" onClick={() => load(true)}>نمایش فایل‌های بیشتر</button>}
+              </>}
+          </ContentPane>
+          <ContentPane icon="🔎" title="بازرس فایل" inspector actions={selectedFile ? <ScopeBadge scope={scopeFor(selectedFile)} label={selectedFile.intake || 'سراسری'} /> : null}>
+            {!selectedFile ? <ContentEmptyState icon="🧭" title="فایلی انتخاب نشده" description="برای مشاهده جزئیات و عملیات، یک فایل را از فهرست انتخاب کنید." /> : <>
+              <div className="content-inspector-hero"><FileTypeBadge type={selectedFile.file_type} /><div><b>{selectedFile.description || `${selectedFile.lesson} — ${selectedFile.topic}`}</b><span>{selectedFile.lesson} · {selectedFile.topic}</span></div></div>
+              <ContentKV label="درس" value={selectedFile.lesson} strong />
+              <ContentKV label="مبحث" value={selectedFile.topic} />
+              <ContentKV label="نوع فایل" value={<FileTypeBadge type={selectedFile.file_type} compact />} />
+              <ContentKV label="تاریخ بارگذاری" value={<span dir="ltr">{selectedFile.upload_date || '—'}</span>} />
+              <ContentKV label="دامنه" value={<ScopeBadge scope={scopeFor(selectedFile)} label={selectedFile.intake || 'سراسری'} />} />
+              <ContentStats items={[{ value: Number(selectedFile.downloads || 0).toLocaleString('fa'), label: 'دریافت' }]} />
+              <ContentActionGroup>
+                {selectedFile.readonly ? <B>🔒 فقط‌خواندنی</B> : <>
+                  {intakeMeta.scope_kind === 'global' && <button className="btn" onClick={() => setRootMove({ kind: 'qbank', id: selectedFile.id, label: selectedFile.description || `${selectedFile.lesson} / ${selectedFile.topic}`, from: selectedFile.intake || '' })}>📦 انتقال دامنه</button>}
+                  <button className="btn danger" onClick={() => setConfirm({
+                    text: `حذف فایل «${selectedFile.description || selectedFile.topic}» از ${selectedFile.lesson} / ${selectedFile.topic}؟`,
+                    run: async () => { await api.caQbankDel(selectedFile.id); toast('حذف شد'); setSelectedFile(null); load(); },
+                  })}>🗑 حذف فایل</button>
+                </>}
+              </ContentActionGroup>
+            </>}
+          </ContentPane>
+        </ContentWorkspace>
       )}
       {addModal && <QbankAddModal intakes={intakes} scopeKind={intakeMeta.scope_kind} defaultIntake={intake}
-                                  onClose={(ok) => { setAddModal(false); if (ok) load(); }} />}
-      {confirm && <Confirm text={confirm.text} danger
-                           onYes={async () => { await confirm.run(); setConfirm(null); }}
-                           onNo={() => setConfirm(null)} />}
+        onClose={(ok) => { setAddModal(false); if (ok) load(); }} />}
+      {confirm && <Confirm text={confirm.text} danger onYes={async () => { await confirm.run(); setConfirm(null); }} onNo={() => setConfirm(null)} />}
       {rootMove && <RootMoveControl item={rootMove} intakes={intakes} onClose={(ok) => { setRootMove(null); if (ok) load(); }} />}
-    </>
+    </ContentShell>
   );
 }
 
@@ -526,11 +562,11 @@ function QbankAddModal({ intakes, scopeKind, defaultIntake, onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title="⬆️ آپلود فایل بانک سؤال" onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <div className="row">
-          <input className="inp" style={{ flex: 1 }} placeholder="درس *" value={f.lesson}
+          <input className="inp content-grow" placeholder="درس *" value={f.lesson}
                  onChange={e => setF(x => ({ ...x, lesson: e.target.value }))} />
-          <input className="inp" style={{ flex: 1 }} placeholder="مبحث *" value={f.topic}
+          <input className="inp content-grow" placeholder="مبحث *" value={f.topic}
                  onChange={e => setF(x => ({ ...x, topic: e.target.value }))} />
         </div>
         <IntakeSelect intakes={intakes} value={f.intake} scopeKind={scopeKind} onChange={v => setF(x => ({ ...x, intake: v }))} />
@@ -580,22 +616,22 @@ export function FaqTab() {
   (items || []).forEach(i => { (cats[i.category] = cats[i.category] || []).push(i); });
   return (
     <>
-      <div className="row" style={{ marginBottom: 12 }}>
+      <div className="row content-tab-toolbar">
         <span className="muted">{(items || []).length} پرسش</span>
         <span className="spacer" />
         <button className="btn primary" onClick={() => setAddModal(true)}>➕ پرسش جدید</button>
       </div>
       {!items ? <Loading /> : items.length === 0 ? <Empty icon="❓" text="پرسشی نیست" /> :
         Object.entries(cats).map(([cat, rows]) => (
-          <div key={cat} className="panel" style={{ marginBottom: 10 }}>
-            <div className="panel-pad row" style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)' }}>
+          <div key={cat} className="panel content-faq-section">
+            <div className="panel-pad row content-section-row">
               <b>🗂 {cat}</b><B>{rows.length}</B>
             </div>
             {rows.map(f => (
-              <div key={f.id} className="row" style={{ padding: '9px 14px', borderBottom: '1px solid var(--line)', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1, cursor: 'pointer' }} onClick={() => setOpen(x => ({ ...x, [f.id]: !x[f.id] }))}>
-                  <div style={{ color: 'var(--txt)', fontSize: 12.5 }}>{open[f.id] ? '▾' : '▸'} {f.question}</div>
-                  {open[f.id] && <div className="muted" style={{ marginTop: 6, lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>{f.answer}</div>}
+              <div key={f.id} className="row content-faq-row">
+                <div className="content-faq-copy" onClick={() => setOpen(x => ({ ...x, [f.id]: !x[f.id] }))}>
+                  <div className="content-faq-question">{open[f.id] ? '▾' : '▸'} {f.question}</div>
+                  {open[f.id] && <div className="muted content-faq-answer">{f.answer}</div>}
                 </div>
                 <button className="btn sm danger" aria-label={`حذف پرسش ${f.question.slice(0, 40)}`} onClick={() => setConfirm({
                   text: `حذف پرسش «${f.question.slice(0, 40)}…»؟`,
@@ -618,7 +654,7 @@ function FaqAddModal({ onClose }) {
   const [busy, setBusy] = useState(false);
   return (
     <Modal title="➕ پرسش متداول جدید" onClose={() => onClose(false)}>
-      <div className="grid" style={{ gap: 10 }}>
+      <div className="grid content-modal-grid">
         <input className="inp" placeholder="دسته…" value={f.category}
                onChange={e => setF(x => ({ ...x, category: e.target.value }))} />
         <input className="inp" placeholder="پرسش (حداقل ۵ حرف) *" value={f.question}
@@ -674,23 +710,23 @@ export function ReportsTab() {
   const cols = [
     { k: 'reason', label: 'دلیل', render: r => <B kind="warn">{r.reason || '—'}</B> },
     { k: 'target_type', label: 'هدف', render: r => <div><b>{r.target_type === 'question' ? 'سؤال' : 'محتوا'}</b><div className="muted code">{r.target_id || '—'}</div></div> },
-    { k: 'note', label: 'توضیح', render: r => <span style={{ whiteSpace: 'pre-wrap' }}>{r.note || '—'}</span> },
+    { k: 'note', label: 'توضیح', render: r => <span className="content-pre-wrap">{r.note || '—'}</span> },
     { k: 'reporter_name', label: 'گزارش‌دهنده' },
     { k: 'created_at', label: 'ثبت' },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'resolved' ? 'ok' : r.status === 'rejected' ? 'bad' : r.status === 'reviewing' ? 'acc' : 'warn'}>{r.status}</B> },
-    { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
+    { k: 'ops', label: '', stop: true, render: r => <div className="row content-actions-tight">
       {r.status !== 'reviewing' && <button className="btn sm" onClick={() => setConfirm({ row: r, status: 'reviewing' })}>👁 بررسی</button>}
       {r.status !== 'resolved' && <button className="btn sm ok" onClick={() => setConfirm({ row: r, status: 'resolved' })}>✅ حل</button>}
       {r.status !== 'rejected' && <button className="btn sm danger" onClick={() => setConfirm({ row: r, status: 'rejected' })}>✖ رد</button>}
     </div> },
   ];
   return <>
-    <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+    <div className="row content-tab-toolbar content-wrap">
       <div><div className="h1">گزارش‌های محتوا و سؤال</div><div className="sub">صف بررسی، وضعیت جاری و تاریخچه کامل گزارش‌های دانشجویان</div></div>
       <span className="spacer" />
       {stats && <><B kind="warn">جدید: {Number(stats.new || 0).toLocaleString('fa')}</B><B kind="acc">در بررسی: {Number(stats.reviewing || 0).toLocaleString('fa')}</B><B kind="ok">حل: {Number(stats.resolved || 0).toLocaleString('fa')}</B></>}
     </div>
-    <div className="tabs" style={{ marginBottom: 10 }} role="tablist" aria-label="وضعیت گزارش‌ها">
+    <div className="tabs content-tabs-sm" role="tablist" aria-label="وضعیت گزارش‌ها">
       {[['new', 'جدید'], ['reviewing', 'در بررسی'], ['resolved', 'حل‌شده'], ['rejected', 'ردشده'], ['', 'همه تاریخچه']].map(([k, l]) =>
         <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
     </div>
