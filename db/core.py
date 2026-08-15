@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timedelta
 from bson import ObjectId
 import motor.motor_asyncio
+from request_context import current_request_id
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -121,6 +122,9 @@ class DBCore:
                 self.users.create_index('role', background=True),
                 self.users.create_index('registered_at', background=True),
                 self.users.create_index('intake', background=True),
+                self.users.create_index([('approved', 1), ('registered_at', -1)], background=True),
+                self.users.create_index([('intake', 1), ('approved', 1), ('registered_at', -1)], background=True),
+                self.users.create_index([('intake', 1), ('group', 1), ('last_active', -1)], background=True),
                 self.questions.create_index('approved', background=True),
                 self.questions.create_index([('lesson', 1), ('topic', 1)], background=True),
                 # 🌊 موج C1 — کوئری داغ ورودی‌محور {(intake,term)} و
@@ -129,6 +133,10 @@ class DBCore:
                 # 🌊 موج C1.5 — الگوی واقعی آزمون/distinct دانشجو:
                 # {approved, lesson[, topic]} + intake ∈ [own, '']
                 self.questions.create_index([('approved', 1), ('lesson', 1), ('intake', 1)], background=True),
+                # Ultimate Web Admin: pagination/sort/filterهای 10k+ سؤال
+                self.questions.create_index([('intake', 1), ('approved', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('intake', 1), ('difficulty', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('creator_id', 1), ('created_at', -1)], background=True),
                 # 🍴 موج C2 — Fork/Override: یافتن fork یک base برای یک ورودی
                 self.bs_sessions.create_index([('fork_of', 1), ('intake', 1)], background=True),
                 self.ref_books.create_index([('fork_of', 1), ('intake', 1)], background=True),
@@ -145,6 +153,19 @@ class DBCore:
                 self.stats_col.create_index([('user_id', 1), ('timestamp', -1)], background=True),
                 self.tickets.create_index('ticket_id', unique=True, background=True),
                 self.tickets.create_index([('user_id', 1), ('status', 1)], background=True),
+                self.tickets.create_index([('status', 1), ('created_at', -1)], background=True),
+                self.tickets.create_index([('priority', 1), ('created_at', -1)], background=True),
+                self.tickets.create_index([('assignee_id', 1), ('status', 1), ('created_at', -1)], background=True),
+                self.audit_logs.create_index([('timestamp', -1)], background=True),
+                self.audit_logs.create_index([('category', 1), ('severity', 1), ('timestamp', -1)], background=True),
+                self.audit_logs.create_index([('module', 1), ('timestamp', -1)], background=True),
+                self.audit_logs.create_index([('actor.id', 1), ('timestamp', -1)], background=True),
+                self.audit_logs.create_index([('correlation_id', 1), ('timestamp', 1)], background=True),
+                self.audit_logs.create_index([('target.type', 1), ('target.id', 1), ('timestamp', -1)], background=True),
+                self.grades.create_index([('student_id', 1), ('created_at', -1)], background=True),
+                self.grades.create_index([('lesson', 1), ('created_at', -1)], background=True),
+                self.wa_saved_filters.create_index([('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
+                self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
                 self.qbank_files.create_index([('lesson', 1), ('topic', 1)], background=True),
                 self.intakes.create_index('code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
@@ -1369,7 +1390,7 @@ class DBCore:
             'details':        details,
             'changes':        changes,
             'tags':           tags or [],
-            'correlation_id': correlation_id,
+            'correlation_id': correlation_id or current_request_id.get(),
         }
         r = await self.audit_logs.insert_one(doc)
         return str(r.inserted_id)

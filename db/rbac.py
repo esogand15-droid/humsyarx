@@ -728,7 +728,7 @@ class DBRbac:
         role = (role or '').strip()
         if not role:
             return []
-        limit = max(1, min(int(limit), 5000))
+        limit = max(1, min(int(limit), 100000))
         ids = []
         docs = await self.user_roles.find(
             {'roles': role}, {'_id': 1}
