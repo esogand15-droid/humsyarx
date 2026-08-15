@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import difflib
+import re
 from datetime import datetime, timedelta
 from bson import ObjectId
 import motor.motor_asyncio
@@ -2251,24 +2252,46 @@ class DBCore:
             return False
 
 
-    async def grade_list_recent(self, skip: int = 0, limit: int = 10, intake: str = None) -> list:
-        """
-        FIX جدید: مرور نمرات ثبت‌شده‌ی اخیر — اگه intake داده بشه (برای
-        نماینده)، فقط نمرات دانشجویان همون ورودی نشان داده می‌شود.
-        """
-        if not intake:
-            return await self.grades.find({}).sort('created_at', -1).skip(skip).limit(limit).to_list(limit)
-        # چون intake روی خودِ grade نیست (روی کاربره)، اول کاربرهای اون ورودی رو می‌گیریم
-        student_ids = [u['user_id'] async for u in self.users.find({'intake': intake}, {'user_id': 1})]
-        return await self.grades.find({'student_id': {'$in': student_ids}}) \
-            .sort('created_at', -1).skip(skip).limit(limit).to_list(limit)
+    async def _grade_admin_query(self, intake: str = None, group: str = None,
+                                 q: str = None, lesson: str = None) -> dict:
+        """فیلتر مشترک Bot/Web برای فهرست نمره؛ join کاربر با distinct و بدون N+1."""
+        clauses = []
+        user_filter = {}
+        if intake:
+            user_filter['intake'] = intake
+        if group:
+            user_filter['group'] = self.normalize_group(group)
+        allowed_ids = None
+        if user_filter:
+            allowed_ids = await self.users.distinct('user_id', user_filter)
+            clauses.append({'student_id': {'$in': allowed_ids}})
+        if lesson:
+            clauses.append({'lesson': {'$regex': re.escape(lesson.strip()), '$options': 'i'}})
+        if q and q.strip():
+            search_ids = await self.users.distinct('user_id', self.build_user_search_query(q.strip()))
+            if allowed_ids is not None:
+                allowed_set = set(allowed_ids)
+                search_ids = [uid for uid in search_ids if uid in allowed_set]
+            rx = {'$regex': re.escape(q.strip()), '$options': 'i'}
+            clauses.append({'$or': [
+                {'student_id': {'$in': search_ids}}, {'lesson': rx}, {'exam_title': rx},
+            ]})
+        if not clauses:
+            return {}
+        return clauses[0] if len(clauses) == 1 else {'$and': clauses}
 
 
-    async def grade_count_recent(self, intake: str = None) -> int:
-        if not intake:
-            return await self.grades.count_documents({})
-        student_ids = [u['user_id'] async for u in self.users.find({'intake': intake}, {'user_id': 1})]
-        return await self.grades.count_documents({'student_id': {'$in': student_ids}})
+    async def grade_list_recent(self, skip: int = 0, limit: int = 10,
+                                intake: str = None, group: str = None,
+                                q: str = None, lesson: str = None) -> list:
+        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson)
+        return await self.grades.find(query).sort('created_at', -1).skip(skip).limit(limit).to_list(limit)
+
+
+    async def grade_count_recent(self, intake: str = None, group: str = None,
+                                 q: str = None, lesson: str = None) -> int:
+        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson)
+        return await self.grades.count_documents(query)
 
 
     # ══════════════════════════════════════════════════
