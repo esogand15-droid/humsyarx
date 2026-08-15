@@ -8,9 +8,10 @@ import os
 import logging
 import asyncio
 import difflib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from bson import ObjectId
 import motor.motor_asyncio
+from time_utils import now_utc, parse_machine_datetime, utc_now_iso
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -67,7 +68,7 @@ class DBRbac:
             'code':       code,
             'label':      label,
             'active':     True,
-            'created_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
         })
         return True
 
@@ -169,7 +170,7 @@ class DBRbac:
                 'role':         role,
                 'scope_intake': scope_intake,
                 'added_by':     added_by,
-                'added_at':     datetime.now().isoformat(),
+                'added_at':     utc_now_iso(),
             }},
             upsert=True
         )
@@ -444,7 +445,7 @@ class DBRbac:
         roles با $setOnInsert ساخته می‌شوند ⇒ ویرایش دستی ادمین
         (نام/رنگ/مجوزها) در اجراهای بعدی سالم می‌ماند. نقش‌های سیستم
         با permsِ نگاشت‌یافته از ماتریس قدیمی — قفل رفتاری کامل."""
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
 
         # ۱) کاتالوگ مجوزها: فقط اگر کالکشن خالی است
         perms_seeded = 0
@@ -546,7 +547,7 @@ class DBRbac:
            برچسب سفارشی‌شده‌ی دستی ادمین هرگز له نمی‌شود.
         ۳) وضعیت اجرا در کالکشن migrations ثبت می‌شود (قابل ردیابی).
         """
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         backfilled = {}
         for name, col in [('bs_lessons', self.bs_lessons),
                           ('ref_subjects', self.ref_subjects),
@@ -665,7 +666,7 @@ class DBRbac:
         if not label or len(label) > 60:
             return None, 'label_invalid'
         if not key:
-            key = f"custom_{int(datetime.now().timestamp())}"
+            key = f"custom_{int(now_utc().timestamp())}"
         if not key.isidentifier() or ' ' in key or len(key) > 40:
             return None, 'key_invalid'
         if await self.get_role(key):
@@ -673,7 +674,7 @@ class DBRbac:
         valid = await self._valid_perm_keys()
         perms = sorted({p for p in (payload.get('perms') or [])
                         if p in valid})
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         doc = {
             '_id':        key,
             'label':      label,
@@ -722,7 +723,7 @@ class DBRbac:
             updates[field] = val
         if not updates:
             return old, None
-        updates['updated_at'] = datetime.now().isoformat()
+        updates['updated_at'] = utc_now_iso()
         updates['updated_by'] = actor
         await self.roles.update_one({'_id': key}, {'$set': updates})
         return await self.get_role(key), None
@@ -793,7 +794,7 @@ class DBRbac:
         changed = key not in roles
         if changed:
             roles.append(key)
-        updates = {'updated_at': datetime.now().isoformat()}
+        updates = {'updated_at': utc_now_iso()}
         if changed:
             updates['roles'] = roles
         if scope_intake is not None:
@@ -813,7 +814,7 @@ class DBRbac:
         await self.user_roles.update_one(
             {'_id': uid},
             {'$set': {'roles': roles,
-                      'updated_at': datetime.now().isoformat()}},
+                      'updated_at': utc_now_iso()}},
             upsert=True)
         # 🛡 RBAC-W3 — پروجکشن میراثی هم‌زمان (§۵)
         await self._sync_admin_role_projection(uid)
@@ -926,7 +927,7 @@ class DBRbac:
                 'role':         primary,
                 'scope_intake': scope,
                 'added_by':     'rbac',
-                'added_at':     datetime.now().isoformat(),
+                'added_at':     utc_now_iso(),
             }},
             upsert=True,
         )
@@ -1024,7 +1025,7 @@ class DBRbac:
             {'_id': 'identity_config'},
             {'$set': {**{f'config.{k}': v for k, v in clean.items()},
                       'updated_by': actor,
-                      'updated_at': datetime.now().isoformat()}},
+                      'updated_at': utc_now_iso()}},
             upsert=True,
         )
         return await self.get_identity_config()
@@ -1142,10 +1143,9 @@ class DBRbac:
         next_at = None
         if last:
             try:
-                from datetime import timedelta
-                last_dt = datetime.fromisoformat(str(last))
+                last_dt = parse_machine_datetime(last)
                 next_dt = last_dt + timedelta(days=cool)
-                if datetime.now() < next_dt:
+                if now_utc() < next_dt:
                     can_change = False
                     next_at = next_dt.isoformat()
             except ValueError:
@@ -1172,7 +1172,7 @@ class DBRbac:
         if not user:
             return False, 'not_found', {}
         cfg = await self.get_identity_config()
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         old_nick = user.get('nickname') or None
 
         # پاک‌کردن لقب — بدون Cooldown و بدون Validation

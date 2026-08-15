@@ -52,6 +52,11 @@ import backup as backup_service
 import broadcast_service
 from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
+from time_utils import (
+    TimeContractError, canonical_utc, day_bounds_utc, diagnostics as time_diagnostics,
+    format_datetime_fa, now_utc, parse_clock_time, parse_gregorian_date,
+    parse_machine_datetime, remaining_days, today_tehran, utc_now_iso,
+)
 
 router = APIRouter()
 
@@ -68,7 +73,17 @@ CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
 
 
 def _now() -> str:
-    return datetime.now().isoformat()
+    """Canonical machine timestamp; display conversion belongs to clients."""
+    return utc_now_iso()
+
+
+def _export_instant(value, human: bool = False):
+    if value in (None, ""):
+        return ""
+    try:
+        return format_datetime_fa(value, fallback=str(value)) if human else canonical_utc(value)
+    except ValueError:
+        return str(value)
 
 
 def _oid(v):
@@ -465,7 +480,7 @@ async def _compile_user_smart_query(raw: str | None) -> dict:
     except (TypeError, ValueError, json.JSONDecodeError):
         raise HTTPException(422, "ساختار فیلتر هوشمند معتبر نیست")
     state = {"nodes": 0, "leaves": 0}
-    now = datetime.now()
+    now = now_utc()
 
     async def compile_node(node, depth=0):
         if depth > 3 or not isinstance(node, dict):
@@ -604,7 +619,7 @@ async def users_table(
         # users.role فقط mirror سازگاری است؛ user_ids_by_role هر سه منبع را
         # deduplicate می‌کند و منطق RBAC موازی نمی‌سازد.
         filt["user_id"] = {"$in": role_ids}
-    now = datetime.now()
+    now = now_utc()
     if activity == "never":
         filt["$and"] = filt.get("$and", []) + [{"$or": [
             {"last_active": {"$exists": False}}, {"last_active": None},
@@ -692,7 +707,7 @@ async def users_table(
         days_left = None
         if sub.get("status") == "active" and sub.get("end_date"):
             try:
-                days_left = max(0, (datetime.fromisoformat(sub["end_date"]) - now).days)
+                days_left = remaining_days(sub["end_date"], now=now)
             except (TypeError, ValueError):
                 days_left = None
         roles = list((role_map.get(uid) or {}).get("roles") or [])
@@ -705,8 +720,8 @@ async def users_table(
             "intake": u.get("intake", ""), "role": u.get("role", "student"),
             "roles": roles, "role_scope": (role_map.get(uid) or {}).get("scope_intake"),
             "approved": u.get("approved", False), "suspended": u.get("suspended", False),
-            "registered_at": (u.get("registered_at") or "")[:16],
-            "last_active": (u.get("last_active") or "")[:16],
+            "registered_at": u.get("registered_at") or None,
+            "last_active": u.get("last_active") or None,
             "total_answers": total_answers, "correct_answers": correct,
             "accuracy": round(correct * 100 / total_answers, 1) if total_answers else 0,
             "rank": u.get("prestige_rank", ""), "div": u.get("prestige_div", ""),
@@ -715,7 +730,7 @@ async def users_table(
             "exam_count": exam_map.get(uid, 0), "has_open_ticket": uid in open_set,
             "subscription": {
                 "status": sub.get("status", ""), "plan": sub.get("plan_name", ""),
-                "end_date": (sub.get("end_date") or "")[:10], "days_left": days_left,
+                "end_date": sub.get("end_date") or None, "days_left": days_left,
             } if sub else None,
         })
     return {
@@ -734,6 +749,7 @@ async def export_users_csv(
     sub_expiring_days: int | None = Query(None, ge=1, le=365),
     has_open_ticket: bool | None = Query(None), smart: str | None = Query(None, max_length=8000),
     sort_by: str = Query("registered_at"), sort_dir: str = Query("desc"),
+    human: bool = False,
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
@@ -776,11 +792,12 @@ async def export_users_csv(
                     row.get("id"), row.get("name"), row.get("nickname"), row.get("username"),
                     row.get("student_id"), row.get("intake"), row.get("group"),
                     "suspended" if row.get("suspended") else "active" if row.get("approved") else "pending",
-                    "|".join(row.get("roles") or []), sub.get("status"), sub.get("end_date"),
+                    "|".join(row.get("roles") or []), sub.get("status"), _export_instant(sub.get("end_date"), human),
                     row.get("accuracy"), row.get("total_answers"), row.get("exam_count"),
                     row.get("ai_usage"), row.get("streak"),
                     " / ".join(x for x in [row.get("rank"), row.get("div")] if x),
-                    row.get("last_active"), row.get("registered_at"),
+                    _export_instant(row.get("last_active"), human),
+                    _export_instant(row.get("registered_at"), human),
                 ]])
                 yield buf.getvalue(); buf.seek(0); buf.truncate(0)
             if page >= int(result.get("pages") or 1) or not rows:
@@ -961,7 +978,7 @@ async def attention(user=Depends(_guard_any_admin)):
         backup = {"last_run": last_run, "enabled": enabled}
         stale = not enabled or not last_run
         if enabled and last_run:
-            try: stale = datetime.fromisoformat(last_run) < datetime.now() - timedelta(hours=48)
+            try: stale = parse_machine_datetime(last_run) < now_utc() - timedelta(hours=48)
             except (TypeError, ValueError): stale = True
         if stale:
             items.append({"key": "backup_issue", "icon": "💾",
@@ -981,7 +998,7 @@ async def activity(limit: int = Query(40, ge=1, le=100),
         actor = l.get("actor") or {}
         out.append({
             "id": str(l.get("_id", "")),
-            "at": (l.get("timestamp") or "")[:16].replace("T", " "),
+            "at": l.get("timestamp") or None,
             "actor_id": actor.get("id"),
             "actor_name": actor.get("name", ""),
             "actor_role": actor.get("role", ""),
@@ -1387,7 +1404,7 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
                 {"target.label": rx}]}).sort("timestamp", -1).limit(5).to_list(5)
             res["audit"] = [{"id": str(a.get("_id", "")), "action": a.get("action", ""),
                 "actor": (a.get("actor") or {}).get("name", ""),
-                "at": (a.get("timestamp") or "")[:16].replace("T", " ")} for a in al]
+                "at": a.get("timestamp") or None} for a in al]
         except Exception:
             pass
     return {"q": query, **res}
@@ -1465,10 +1482,10 @@ async def saved_filters_list(scope: str | None = Query(None),
         "density": d.get("density") or "", "shared": bool(d.get("shared")), "owner": d.get("owner"),
         "owner_name": owner_map.get(d.get("owner"), ""),
         "editable": d.get("owner") == user["id"],
-        "created_at": (d.get("created_at") or "")[:16],
-        "updated_at": (d.get("updated_at") or d.get("created_at") or "")[:16],
+        "created_at": d.get("created_at") or None,
+        "updated_at": d.get("updated_at") or d.get("created_at") or None,
         "updated_by": d.get("updated_by") or d.get("owner"),
-        "last_opened_at": (d.get("last_opened_at") or "")[:16],
+        "last_opened_at": d.get("last_opened_at") or None,
         "last_opened_by": d.get("last_opened_by"),
     } for d in docs if d.get("owner") == user["id"] or d.get("shared")]}
 
@@ -1702,7 +1719,7 @@ async def object_history(
         "id": str(d.get("_id", "")), "title": d.get("action", ""),
         "actor": (d.get("actor") or {}).get("name", ""),
         "actor_role": (d.get("actor") or {}).get("role", ""),
-        "at": (d.get("timestamp") or "")[:16].replace("T", " "),
+        "at": d.get("timestamp") or None,
         "description": d.get("details", ""), "severity": d.get("severity", "INFO"),
         "changes": d.get("changes") or [], "correlation_id": d.get("correlation_id"),
     } for d in docs], "target_type": target_type, "target_id": target_id}
@@ -1816,8 +1833,13 @@ async def wa_questions_list(
             filt["creator_name"] = {"$regex": re.escape(author_value), "$options": "i"}
     if date_from or date_to:
         created = {}
-        if date_from: created["$gte"] = date_from[:10]
-        if date_to: created["$lte"] = date_to[:10] + "T23:59:59.999999"
+        try:
+            if date_from:
+                created["$gte"] = day_bounds_utc(parse_gregorian_date(date_from))[0].isoformat()
+            if date_to:
+                created["$lt"] = day_bounds_utc(parse_gregorian_date(date_to))[1].isoformat()
+        except ValueError:
+            raise HTTPException(422, "بازه تاریخ سؤال معتبر نیست")
         filt["created_at"] = created
     if q and q.strip():
         term = q.strip()
@@ -1840,7 +1862,7 @@ async def wa_questions_list(
             "question": d.get("question", ""), "options": d.get("options", []),
             "correct": d.get("correct_answer", 0), "explanation": d.get("explanation", ""),
             "creator_id": d.get("creator_id"), "creator_name": d.get("creator_name", ""),
-            "created_at": (d.get("created_at") or "")[:16], "updated_at": (d.get("updated_at") or "")[:16],
+            "created_at": d.get("created_at") or None, "updated_at": d.get("updated_at") or None,
             "intake": d.get("intake", ""), "source": d.get("source", "bot"),
             "approved": bool(d.get("approved")), "attempts": attempts,
             "accuracy": round(correct * 100 / attempts, 1) if attempts else 0,
@@ -1859,7 +1881,7 @@ async def export_questions_csv(
     author: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
-    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
 ):
     """خروجی سؤال با همان scope/filter/sort جدول؛ داده در مرورگر تجمیع نمی‌شود."""
@@ -1886,7 +1908,7 @@ async def export_questions_csv(
                     row.get("lesson"), row.get("topic"), row.get("difficulty"),
                     "approved" if row.get("approved") else "pending", row.get("intake"),
                     row.get("creator_id"), row.get("creator_name"), row.get("source"),
-                    row.get("attempts"), row.get("accuracy"), row.get("created_at")]])
+                    row.get("attempts"), row.get("accuracy"), _export_instant(row.get("created_at"), human)]])
                 yield buf.getvalue(); buf.seek(0); buf.truncate(0)
             skip += len(rows)
             if not rows or skip >= int(result.get("total") or 0): break
@@ -2081,7 +2103,7 @@ async def settings_center(
             items.append({
                 "key": key, "label": label, "desc": desc, "type": typ,
                 "value": val,
-                "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
+                "updated_by": m.get("by_name", ""), "updated_at": m.get("at") or None,
             })
         if items:
             cats.append({"key": cat_key, "items": items})
@@ -2103,9 +2125,18 @@ async def settings_center(
                 "desc": "پیش‌فرض این دسته اعلان؛ هنگام ذخیره محدوده‌ی اعمال را انتخاب کنید",
                 "type": "bool", "value": bool(notif_defaults.get(k)),
                 "existing_users": existing_users,
-                "updated_by": m.get("by_name", ""), "updated_at": m.get("at", "")[:16],
+                "updated_by": m.get("by_name", ""), "updated_at": m.get("at") or None,
             })
         cats.append({"key": "notif", "items": notif_items})
+    if await db.has_permission(user["id"], "settings.manage"):
+        diag = time_diagnostics()
+        cats.append({"key": "time", "items": [
+            {"key": "system_timezone", "label": "Timezone رسمی", "desc": "منبع واحد business time", "type": "info", "value": diag["timezone"]},
+            {"key": "system_calendar", "label": "تقویم و locale", "desc": "نمایش تمام رابط‌های فارسی", "type": "info", "value": f'{diag["calendar"]} · {diag["locale"]}'},
+            {"key": "system_utc_now", "label": "زمان UTC ماشین", "desc": "timestamp canonical برای diagnostics", "type": "technical_time", "value": diag["server_utc"]},
+            {"key": "system_tehran_now", "label": "زمان فعلی تهران", "desc": "نمایش جلالی مطابق IANA", "type": "readonly", "value": diag["server_utc"]},
+            {"key": "system_week_start", "label": "شروع هفته", "desc": "مبنای تقویم، گزارش و تحلیل هفتگی", "type": "info", "value": diag["week_start"]},
+        ]})
     return {"categories": cats}
 
 
@@ -2275,10 +2306,10 @@ async def identity_policy_update(body: IdentityPolicyUpdate,
 def _exam_status(doc: dict) -> str:
     """scheduled | active | finished — مشتق از date/time (میلادی ISO همان سیستم)."""
     try:
-        d = date.fromisoformat((doc.get("date") or "")[:10])
+        d = parse_gregorian_date(doc.get("date"))
     except Exception:
         return "scheduled"
-    today = date.today()
+    today = today_tehran()
     if d > today:
         return "scheduled"
     if d == today:
@@ -2332,14 +2363,14 @@ def _valid_exam_fields(body) -> tuple:
         raise HTTPException(422, "عنوان درس/آزمون الزامی است (حداکثر ۸۰ کاراکتر)")
     d = (body.date or "").strip()
     try:
-        datetime.strptime(d, "%Y-%m-%d")
-    except (TypeError, ValueError):
+        parse_gregorian_date(d)
+    except (TimeContractError, TypeError, ValueError):
         raise HTTPException(422, "تاریخ باید به فرمت YYYY-MM-DD باشد")
     t = (body.time or "").strip()
     if t:
         try:
-            datetime.strptime(t, "%H:%M")
-        except (TypeError, ValueError):
+            parse_clock_time(t)
+        except (TimeContractError, TypeError, ValueError):
             raise HTTPException(422, "ساعت باید به فرمت HH:MM باشد")
     grp = db.normalize_group(body.group or "هر دو") or "هر دو"
     if grp not in ("هر دو", "1", "2"):
@@ -2423,7 +2454,7 @@ async def exams_stats(user=Depends(_perm("schedules.manage"))):
     try:
         out["total_runs"] = await db.exam_sessions.count_documents({})
         out["finished"] = await db.exam_sessions.count_documents({"status": "finished"})
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago = (now_utc() - timedelta(days=7)).isoformat()
         out["runs_7d"] = await db.exam_sessions.count_documents(
             {"started_at": {"$gte": week_ago}})
         # میانگین درصد — نمونه‌ی ۵۰۰تایی اخیر (بدون aggregate سنگین)
@@ -2690,7 +2721,7 @@ async def content_history(
     return {"items": [{
         "id": str(d.get("_id", "")), "title": d.get("action", ""),
         "actor": (d.get("actor") or {}).get("name", ""),
-        "at": (d.get("timestamp") or "")[:16].replace("T", " "),
+        "at": d.get("timestamp") or None,
         "description": d.get("details", ""), "severity": d.get("severity", "INFO"),
     } for d in docs]}
 
@@ -2838,7 +2869,7 @@ async def wa_analytics(user=Depends(_perm("stats.view")),
     ``new_resources_in_range`` are controlled by ``days``; the response states
     this explicitly so the UI never implies a time filter that was not applied.
     """
-    generated_at = datetime.now().isoformat()
+    generated_at = utc_now_iso()
     out = {
         "days": days, "generated_at": generated_at, "domain_status": {},
         "range_applies_to": ["bundle", "new_resources_in_range"],
@@ -2930,8 +2961,8 @@ async def notif_runs(job_name: str | None = Query(None),
         "id": str(r.get("_id", "")), "job_name": r.get("job_name", ""),
         "status": r.get("status", ""), "sent": r.get("sent", 0),
         "failed": r.get("failed", 0), "total": r.get("total", 0),
-        "started_at": (r.get("started_at") or "")[:16].replace("T", " "),
-        "finished_at": (r.get("finished_at") or "")[:16].replace("T", " ") if r.get("finished_at") else "",
+        "started_at": r.get("started_at") or None,
+        "finished_at": r.get("finished_at") or None,
     } for r in runs]}
 
 
@@ -3134,7 +3165,7 @@ async def wa_blacklist(user=Depends(_perm("users.view"))):
     return {"blacklist": [{
         "id": b.get("_id"), "name": b.get("name", ""),
         "blocked_by_name": b.get("blocked_by_name", ""),
-        "blocked_at": str(b.get("blocked_at", ""))[:10]} for b in items]}
+        "blocked_at": b.get("blocked_at") or None} for b in items]}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3219,8 +3250,8 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "role": target.get("role", "student"),
             "approved": target.get("approved", False),
             "suspended": target.get("suspended", False),
-            "registered_at": (target.get("registered_at") or "")[:16],
-            "last_active": (target.get("last_active") or "")[:16],
+            "registered_at": target.get("registered_at") or None,
+            "last_active": target.get("last_active") or None,
             "total_answers": target.get("total_answers", 0),
             "correct_answers": target.get("correct_answers", 0),
             "accuracy": round(
@@ -3244,7 +3275,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         if sub:
             out["subscription"] = {
                 "status": sub.get("status", ""), "plan": sub.get("plan_name", ""),
-                "end_date": (sub.get("end_date", "") or "")[:10],
+                "end_date": sub.get("end_date") or None,
                 "days_left": await db.sub_days_left(uid),
             }
     except Exception:
@@ -3269,7 +3300,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         out["recent_tickets"] = [{
             "id": t.get("ticket_id"), "subject": t.get("subject", ""),
             "status": t.get("status", ""),
-            "at": (t.get("created_at", "") or "")[:10],
+            "at": t.get("created_at") or None,
         } for t in await db.tickets.find({"user_id": uid}).sort("created_at", -1).limit(5).to_list(5)]
     except Exception:
         out["section_errors"]["tickets"] = "unavailable"
@@ -3288,7 +3319,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         out["recent_audit"] = [{
             "id": str(l.get("_id", "")), "action": l.get("action", ""),
             "module": l.get("module", ""),
-            "at": (l.get("timestamp") or "")[:16].replace("T", " "),
+            "at": l.get("timestamp") or None,
             "severity": l.get("severity", "INFO"),
             "relation": "actor" if (l.get("actor") or {}).get("id") == uid else "target",
             "changes": l.get("changes") or [],
@@ -3308,7 +3339,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         out.setdefault("academic", {"grades_recent": []})
         out["section_errors"]["academic"] = "unavailable"
     try:  # 🤖 هوشیار — از روی سند کاربر (بدون کوئری اضافه)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = today_tehran().isoformat()
         out["ai"] = {
             "total_usage": target.get("ai_total_usage", 0) or 0,
             "today": (target.get("ai_usage_count", 0) or 0)
@@ -3344,7 +3375,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "id": str(n.get("_id", "")), "type": n.get("type", ""),
             "title": n.get("title", ""), "body": n.get("body", ""),
             "read": bool(n.get("read")),
-            "at": (n.get("created_at") or "")[:16].replace("T", " "),
+            "at": n.get("created_at") or None,
         } for n in ndocs]
     except Exception:
         out.setdefault("notifs", {})
@@ -3359,7 +3390,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "accuracy": round(int(q.get("correct_count") or 0) * 100 /
                               int(q.get("attempt_count") or 1), 1)
                         if int(q.get("attempt_count") or 0) else 0,
-            "at": (q.get("created_at") or "")[:10],
+            "at": q.get("created_at") or None,
         } for q in qdocs]
     except Exception:
         out["section_errors"]["questions"] = "unavailable"
@@ -3373,7 +3404,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "total": len(e.get("question_ids") or []),
             "percentage": round(int(e.get("correct") or 0) * 100 /
                                 int(e.get("answered") or 1)) if int(e.get("answered") or 0) else 0,
-            "started_at": (e.get("started_at") or "")[:16].replace("T", " "),
+            "started_at": e.get("started_at") or None,
         } for e in edocs]
     except Exception:
         out["section_errors"]["exams"] = "unavailable"
@@ -3384,7 +3415,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "id": f"{i}:{p.get('type', '')}:{p.get('at', '')}", "kind": p.get("type", ""),
             "title": p.get("title", "") or p.get("type", ""),
             "xp": int((p.get("detail") or {}).get("xp") or (p.get("detail") or {}).get("amount") or 0),
-            "at": (p.get("at") or "")[:16].replace("T", " "),
+            "at": p.get("at") or None,
         } for i, p in enumerate(pdocs)]
     except Exception:
         out["section_errors"]["prestige_history"] = "unavailable"
@@ -3392,14 +3423,14 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
     activity = []
     if target.get("registered_at"):
         activity.append({"id": "registration", "kind": "registration", "icon": "👤",
-                         "title": "ثبت‌نام در هامزیار", "at": (target.get("registered_at") or "")[:16].replace("T", " "),
+                         "title": "ثبت‌نام در هامزیار", "at": target.get("registered_at") or None,
                          "go": f"/users?q={uid}"})
     try:
         adocs = await db.answers.find({"user_id": uid}).sort("answered_at", -1).limit(12).to_list(12)
         activity.extend({"id": f"answer:{a.get('_id')}", "kind": "answer", "icon": "🧪",
                          "title": "پاسخ صحیح به سؤال" if a.get("is_correct") else "پاسخ به سؤال",
                          "description": f"شناسه سؤال: {a.get('question_id', '')}",
-                         "at": (a.get("answered_at") or "")[:16].replace("T", " "), "go": f"/questions?q={a.get('question_id', '')}"}
+                         "at": a.get("answered_at") or None, "go": f"/questions?q={a.get('question_id', '')}"}
                         for a in adocs)
     except Exception:
         out["section_errors"]["answers"] = "unavailable"
@@ -3538,7 +3569,7 @@ async def export_tickets_csv(
     assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
     date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
     sort_by: str = Query("created_at", pattern="^(created_at|last_reply_at)$"),
-    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
     await _audit(user["id"], "خروجی CSV تیکت‌ها", severity="HIGH",
@@ -3562,8 +3593,9 @@ async def export_tickets_csv(
             for row in rows:
                 writer.writerow([safe(v) for v in [row.get("id"), row.get("subject"), row.get("user_id"),
                     row.get("user_name"), row.get("status"), row.get("priority"), row.get("assignee_id"),
-                    row.get("assignee_name"), row.get("reply_count"), row.get("created_at"),
-                    row.get("last_reply_at"), "|".join(row.get("tags") or [])]])
+                    row.get("assignee_name"), row.get("reply_count"),
+                    _export_instant(row.get("created_at"), human),
+                    _export_instant(row.get("last_reply_at"), human), "|".join(row.get("tags") or [])]])
                 yield buf.getvalue(); buf.seek(0); buf.truncate(0)
             if not rows or page >= int(result.get("pages") or 1): break
             page += 1
@@ -3605,7 +3637,7 @@ async def wa_ticket_detail(
         "internal_notes": [{
             "id": str(n.get("id") or i), "text": n.get("text", ""),
             "actor_id": n.get("actor_id"), "actor_name": n.get("actor_name", ""),
-            "at": (n.get("at") or "")[:16].replace("T", " "),
+            "at": n.get("at") or None,
         } for i, n in enumerate((raw or {}).get("internal_notes") or [])],
     })
     return result
@@ -3692,12 +3724,12 @@ async def wa_tickets_analytics(user=Depends(_perm("tickets.manage"))):
         if t.get("assignee_id"):
             key = str(t.get("assignee_id")); workload.setdefault(key, {"name": t.get("assignee_name", key), "count": 0})["count"] += 1
         try:
-            created = datetime.fromisoformat(t.get("created_at", ""))
+            created = parse_machine_datetime(t.get("created_at", ""))
             admin_reply = next((r for r in (t.get("replies") or []) if not (r.get("text") or "").startswith("[دانشجو]")), None)
             if admin_reply and admin_reply.get("at"):
-                response_minutes.append(max(0, (datetime.fromisoformat(admin_reply["at"]) - created).total_seconds() / 60))
+                response_minutes.append(max(0, (parse_machine_datetime(admin_reply["at"]) - created).total_seconds() / 60))
             if t.get("closed_at"):
-                resolution_minutes.append(max(0, (datetime.fromisoformat(t["closed_at"]) - created).total_seconds() / 60))
+                resolution_minutes.append(max(0, (parse_machine_datetime(t["closed_at"]) - created).total_seconds() / 60))
         except (TypeError, ValueError):
             pass
     avg = lambda rows: round(sum(rows) / len(rows), 1) if rows else None
@@ -4366,10 +4398,10 @@ def _ai_report_query(q: str | None = None, user_id: int | None = None,
         filt["user_id"] = user_id
     created = {}
     if date_from:
-        try: created["$gte"] = datetime.fromisoformat(date_from[:10])
+        try: created["$gte"] = day_bounds_utc(parse_gregorian_date(date_from))[0]
         except ValueError: raise HTTPException(422, "تاریخ شروع نامعتبر است")
     if date_to:
-        try: created["$lte"] = datetime.fromisoformat(date_to[:10] + "T23:59:59.999999")
+        try: created["$lt"] = day_bounds_utc(parse_gregorian_date(date_to))[1]
         except ValueError: raise HTTPException(422, "تاریخ پایان نامعتبر است")
     if created: filt["created_at"] = created
     return filt
@@ -4381,7 +4413,7 @@ def _ai_report_row(item: dict) -> dict:
             "name": str(item.get("name") or ""),
             "question": str(item.get("question") or ""),
             "answer": str(item.get("answer") or ""),
-            "created_at": at.isoformat() if isinstance(at, datetime) else str(at or "")[:19]}
+            "created_at": at.isoformat() if isinstance(at, datetime) else (at or None)}
 
 
 @router.get("/ai/reports")
@@ -4406,7 +4438,7 @@ async def wa_ai_reports(
 async def wa_ai_reports_export(
     q: Optional[str] = Query(None, max_length=100), user_id: Optional[int] = Query(None),
     date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
-    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm("ai.manage")),
 ):
     filt = _ai_report_query(q, user_id, date_from, date_to)
@@ -4415,7 +4447,7 @@ async def wa_ai_reports_export(
         cursor = db.ai_reports.find(filt).sort("created_at", -1 if sort_dir == "desc" else 1)
         async for item in cursor:
             row = _ai_report_row(item); buf = io.StringIO(); writer = csv.writer(buf)
-            writer.writerow([row["id"], row["user_id"], row["name"], row["question"], row["answer"], row["created_at"]])
+            writer.writerow([row["id"], row["user_id"], row["name"], row["question"], row["answer"], _export_instant(row["created_at"], human)])
             yield buf.getvalue().encode("utf-8")
     return StreamingResponse(stream(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=humsyar-ai-reports.csv"})
@@ -4527,7 +4559,7 @@ async def export_audit_csv(
     action: Optional[str] = Query(None), target_type: Optional[str] = Query(None),
     target: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None), correlation_id: Optional[str] = Query(None),
-    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm("audit.view")),
 ):
     """CSV سرورساید و filter-aware برای 100k+ audit؛ بدون blobسازی dataset در React."""
@@ -4563,7 +4595,7 @@ async def export_audit_csv(
             for row in docs:
                 actor_doc, target_doc = row.get("actor") or {}, row.get("target") or {}
                 writer.writerow([safe(v) for v in [
-                    row.get("timestamp"), row.get("severity"), row.get("category"), row.get("module"),
+                    _export_instant(row.get("timestamp"), human), row.get("severity"), row.get("category"), row.get("module"),
                     row.get("action"), actor_doc.get("id"), actor_doc.get("name"), actor_doc.get("role"),
                     target_doc.get("type") or row.get("target_type"),
                     target_doc.get("id") or row.get("target_id"),
@@ -4607,10 +4639,22 @@ async def wa_system_status(
     return out
 
 
+@router.get("/system/time-standard")
+async def wa_system_time_standard(
+    user=Depends(_perm_any("system.manage", "settings.manage")),
+):
+    return {
+        **time_diagnostics(),
+        "storage_contract": "UTC / timezone-aware ISO-8601 or BSON Date",
+        "display_contract": "Asia/Tehran / Persian / fa-IR",
+        "date_only_contract": "Gregorian YYYY-MM-DD machine date interpreted as Tehran civil day",
+    }
+
+
 @router.get("/system/observability")
 async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
                                   user=Depends(_perm("system.manage"))):
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    since = now_utc() - timedelta(hours=hours)
     match = {"at": {"$gte": since}}
     total, errors = await asyncio.gather(
         db.wa_api_metrics.count_documents(match),
@@ -4659,7 +4703,7 @@ async def wa_system_jobs(
                 "status": run.get("status", "unknown"),
                 "sent": int(run.get("sent") or 0), "failed": int(run.get("failed") or 0),
                 "total": int(run.get("total") or 0),
-                "last_run": (run.get("started_at") or "")[:16].replace("T", " "),
+                "last_run": run.get("started_at") or None,
             })
         queue = await db.bot_notifs.count_documents({"sent": False})
         scheduled = await db.bot_notifs.count_documents({
@@ -4755,7 +4799,7 @@ async def wa_restore_validate(
     warnings.append("بازیابی از نوع merge/upsert است؛ رکوردهای فعلیِ غایب از فایل حذف نمی‌شوند.")
     return {"valid": True, "digest": digest, "size": size,
             "backup_version": data.get("backup_version"),
-            "created_at": (data.get("created_at") or "")[:19],
+            "created_at": data.get("created_at") or None,
             "restore_semantics": data.get("restore_semantics") or "merge_upsert",
             "integrity": integrity,
             "warnings": warnings,

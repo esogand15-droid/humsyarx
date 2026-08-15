@@ -10,6 +10,7 @@
 import logging
 import os
 from datetime import datetime
+from time_utils import utc_now_iso
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -51,7 +52,7 @@ def _notify_admin(text: str):
         "chat_id": ADMIN_ID,
         "text": text,
         "sent": False,
-        "created_at": datetime.now().isoformat(),
+        "created_at": utc_now_iso(),
     })
 
 
@@ -234,7 +235,7 @@ async def register_via_miniapp(
                 "chat_id": int(chat_id),
                 "text": text,
                 "sent": False,
-                "created_at": datetime.now().isoformat(),
+                "created_at": utc_now_iso(),
             })
     except Exception as e:
         logger.warning(f"registration log-group sync failed: {e}")

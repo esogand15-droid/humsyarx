@@ -8,9 +8,13 @@ import os
 import logging
 import asyncio
 import difflib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from bson import ObjectId
 import motor.motor_asyncio
+from time_utils import (
+    UTC, end_of_day_tehran, now_utc, parse_gregorian_date,
+    parse_machine_datetime, remaining_days, start_of_month_tehran, utc_now_iso,
+)
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -31,7 +35,7 @@ class DBFinance:
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
             'active': True, 'order': count,
-            'created_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
         })
         return str(r.inserted_id)
 
@@ -80,6 +84,14 @@ class DBFinance:
         code = code.strip().upper()
         if await self.discount_codes.find_one({'code': code}):
             return False
+        if expires_at:
+            try:
+                if len(str(expires_at).strip()) == 10:
+                    expires_at = end_of_day_tehran(parse_gregorian_date(expires_at)).astimezone(UTC).isoformat()
+                else:
+                    expires_at = parse_machine_datetime(expires_at).astimezone(UTC).isoformat()
+            except ValueError:
+                raise ValueError('invalid_discount_expiry')
         await self.discount_codes.insert_one({
             'code': code, 'percent': max(1, min(100, percent)),
             'max_uses': max_uses, 'used_count': 0,
@@ -89,7 +101,7 @@ class DBFinance:
             'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
             # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
             'per_user_limit': max(0, int(per_user_limit or 0)),
-            'created_by': created_by, 'created_at': datetime.now().isoformat(),
+            'created_by': created_by, 'created_at': utc_now_iso(),
         })
         return True
 
@@ -129,8 +141,15 @@ class DBFinance:
         d = await self.discount_codes.find_one({'code': code.strip().upper()})
         if not d or not d.get('active'):
             return {'ok': False, 'reason': 'کد تخفیف معتبر نیست.'}
-        if d.get('expires_at') and d['expires_at'] < datetime.now().isoformat():
-            return {'ok': False, 'reason': 'این کد تخفیف منقضی شده.'}
+        if d.get('expires_at'):
+            try:
+                expiry_raw = str(d['expires_at']).strip()
+                expiry = (end_of_day_tehran(parse_gregorian_date(expiry_raw)).astimezone(UTC)
+                          if len(expiry_raw) == 10 else parse_machine_datetime(expiry_raw))
+                if expiry < now_utc():
+                    return {'ok': False, 'reason': 'این کد تخفیف منقضی شده.'}
+            except ValueError:
+                return {'ok': False, 'reason': 'زمان انقضای کد معتبر نیست.'}
         if d.get('max_uses', 0) > 0 and d.get('used_count', 0) >= d['max_uses']:
             return {'ok': False, 'reason': 'سقف استفاده از این کد تمام شده.'}
         # 🎟 موج D1 — محدودیت پلن هدف
@@ -162,6 +181,15 @@ class DBFinance:
         خروجی: سند به‌روزشده، یا None اگر نامعتبر/منقضی/پر شده باشد.
         """
         code_u = code.strip().upper()
+        legacy = await self.discount_codes.find_one({'code': code_u}, {'expires_at': 1})
+        legacy_expiry = str((legacy or {}).get('expires_at') or '').strip()
+        if len(legacy_expiry) == 10:
+            try:
+                canonical_expiry = end_of_day_tehran(parse_gregorian_date(legacy_expiry)).astimezone(UTC).isoformat()
+                await self.discount_codes.update_one({'code': code_u, 'expires_at': legacy_expiry},
+                                                     {'$set': {'expires_at': canonical_expiry}})
+            except ValueError:
+                return None
         # (۱) رزرو per-user — قبل از افزایش شمارنده، تا شکست مصرف نشتی نسازد
         reserved = False
         if user_id is not None:
@@ -170,13 +198,13 @@ class DBFinance:
                 try:
                     await self.discount_uses.insert_one({
                         'code': code_u, 'user_id': int(user_id),
-                        'used_at': datetime.now().isoformat(),
+                        'used_at': utc_now_iso(),
                     })
                     reserved = True
                 except Exception:
                     return None  # کاربر قبلاً این کد را مصرف کرده
         # (۲) مصرف اتمیک با guard
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
         d = await self.discount_codes.find_one_and_update(
             {
                 'code': code_u, 'active': True,
@@ -209,7 +237,7 @@ class DBFinance:
                 await self.bot_notifs.insert_one({
                     'type': 'signal', 'chat_id': 0,
                     'text': f'__DISCOUNT_EXHAUSTED__:{code_u}',
-                    'sent': False, 'created_at': datetime.now().isoformat(),
+                    'sent': False, 'created_at': utc_now_iso(),
                 })
         except Exception:
             pass  # سیگنال نباید مسیر خرید را بشکند
@@ -248,7 +276,7 @@ class DBFinance:
         """کاربران هدف کمپین. segment: all | subscribers | no_sub"""
         if segment == 'subscribers':
             subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': datetime.now().isoformat()}}
+                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
             ).to_list(length=None)
             ids = list({int(s['_id']) for s in subs})
             if not ids:
@@ -258,7 +286,7 @@ class DBFinance:
             ).to_list(length=None)
         if segment == 'no_sub':
             subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': datetime.now().isoformat()}}
+                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
             ).to_list(length=None)
             ids = list({int(s['_id']) for s in subs})
             return await self.users.find(
@@ -293,7 +321,7 @@ class DBFinance:
             'broadcast_id': bid, 'code': code, 'target': target,
             'status': 'sending', 'total': 0, 'sent': 0, 'failed': 0, 'blocked': 0,
             'source': source, 'created_by': created_by,
-            'created_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
         })
         return bid
 
@@ -345,7 +373,10 @@ class DBFinance:
         s = await self.sub_get(user_id)
         if not s or s.get('status') != 'active':
             return False
-        return s.get('end_date', '') >= datetime.now().isoformat()
+        try:
+            return parse_machine_datetime(s.get('end_date')) >= now_utc()
+        except ValueError:
+            return False
 
 
     async def sub_days_left(self, user_id: int) -> int:
@@ -353,8 +384,7 @@ class DBFinance:
         if not s or s.get('status') != 'active' or not s.get('end_date'):
             return 0
         try:
-            end = datetime.fromisoformat(s['end_date'])
-            return max(0, (end - datetime.now()).days)
+            return remaining_days(s['end_date'])
         except Exception:
             return 0
 
@@ -367,15 +397,19 @@ class DBFinance:
         روزها از تاریخ پایان فعلی جمع می‌شوند نه از الان (تا تمدید،
         روزهای باقی‌مانده را از بین نبرد).
         """
-        now = datetime.now()
+        now = now_utc()
         s = await self.sub_get(user_id)
-        if extend and s and s.get('status') == 'active' and s.get('end_date', '') > now.isoformat():
-            base = datetime.fromisoformat(s['end_date'])
+        try:
+            existing_end = parse_machine_datetime((s or {}).get('end_date'))
+        except ValueError:
+            existing_end = None
+        if extend and s and s.get('status') == 'active' and existing_end and existing_end > now:
+            base = existing_end
         else:
             base = now
         end_date = (base + timedelta(days=days)).isoformat()
-        # FIX جدید: total_days برای رسم نوار پیشرفت باقیمانده استفاده می‌شود
-        total_days = max(1, (datetime.fromisoformat(end_date) - base).days) if not extend else days
+        # total_days برای رسم نوار پیشرفت باقیمانده استفاده می‌شود
+        total_days = max(1, (parse_machine_datetime(end_date) - base).days) if not extend else days
         await self.subscriptions.update_one(
             {'_id': user_id},
             {'$set': {
@@ -397,7 +431,7 @@ class DBFinance:
             {'_id': user_id},
             {'$set': {
                 'status': 'revoked', 'revoke_reason': reason,
-                'revoked_by': revoked_by, 'revoked_at': datetime.now().isoformat(),
+                'revoked_by': revoked_by, 'revoked_at': utc_now_iso(),
             }}
         )
         return result.matched_count > 0
@@ -405,7 +439,7 @@ class DBFinance:
 
     async def sub_expire_due(self) -> list:
         """کاربرانی که تاریخ پایانشان گذشته ولی هنوز status=active مانده"""
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
         due = await self.subscriptions.find(
             {'status': 'active', 'end_date': {'$lt': now_iso}}
         ).to_list(500)
@@ -424,7 +458,7 @@ class DBFinance:
         FIX جدید: دو یادآوری جدا (۳ روز و ۱ روز قبل) — دقیقاً مثل
         الگوی یادآوری‌های پلکانی امتحان که در ربات وجود دارد.
         """
-        now = datetime.now()
+        now = now_utc()
         cutoff = (now + timedelta(days=days_before)).isoformat()
         return await self.subscriptions.find({
             'status': 'active',
@@ -446,7 +480,7 @@ class DBFinance:
         pending = await self.sub_payments.count_documents({'status': 'pending'})
         approved_total = await self.sub_payments.count_documents({'status': 'approved'})
         rejected_total = await self.sub_payments.count_documents({'status': 'rejected'})
-        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+        month_start = start_of_month_tehran().astimezone(now_utc().tzinfo).isoformat()
         revenue_total = revenue_month = 0
         plan_counter: dict = {}
         async for p in self.sub_payments.find({'status': 'approved'}):
@@ -479,7 +513,7 @@ class DBFinance:
             # درصدِ زمان تراکنش ثابت می‌ماند (immutability)
             'discount_percent': discount_percent,
             'screenshot_file_id': screenshot_file_id,
-            'status': 'pending', 'submitted_at': datetime.now().isoformat(),
+            'status': 'pending', 'submitted_at': utc_now_iso(),
             'admin_msg_id': None,
         })
         return str(r.inserted_id)
@@ -521,7 +555,7 @@ class DBFinance:
                 {'_id': ObjectId(pid)},
                 {'$set': {
                     'status': 'approved' if approved else 'rejected',
-                    'reviewed_by': admin_id, 'reviewed_at': datetime.now().isoformat(),
+                    'reviewed_by': admin_id, 'reviewed_at': utc_now_iso(),
                     'review_note': note,
                 }}
             )

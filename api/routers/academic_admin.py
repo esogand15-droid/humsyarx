@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from html import escape
 from typing import Literal
 
@@ -18,6 +17,7 @@ from api.auth import get_content_admin_user
 from api.routers.admin_panel import _audit
 from database import db
 from grade_utils import normalize_grade
+from time_utils import TimeContractError, parse_clock_time, parse_gregorian_date, utc_now_iso
 
 
 router = APIRouter()
@@ -55,15 +55,9 @@ def _valid_date(
     value: str,
 ) -> str:
     try:
-        datetime.strptime(
-            value,
-            "%Y-%m-%d",
-        )
+        parse_gregorian_date(value)
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    except (TimeContractError, TypeError, ValueError):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -86,12 +80,9 @@ def _valid_time(
         return ""
 
     try:
-        datetime.strptime(
-            value,
-            "%H:%M",
-        )
+        parse_clock_time(value)
 
-    except ValueError:
+    except (TimeContractError, ValueError):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -594,8 +585,7 @@ async def grades_bulk_create(
                     False,
 
                 "created_at":
-                    datetime.now()
-                    .isoformat(),
+                    utc_now_iso(),
             }
 
             for item in saved
@@ -663,8 +653,8 @@ async def grades_recent(
     group = group if isinstance(group, str) else None
     q = q if isinstance(q, str) else None
     lesson = lesson if isinstance(lesson, str) else None
-    date_from = date_from if isinstance(date_from, str) else None
-    date_to = date_to if isinstance(date_to, str) else None
+    date_from = _valid_date(date_from) if isinstance(date_from, str) else None
+    date_to = _valid_date(date_to) if isinstance(date_to, str) else None
     records = (
         await db.grade_list_recent(
             skip=skip, limit=limit, intake=intake,

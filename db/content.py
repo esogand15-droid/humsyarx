@@ -13,6 +13,7 @@ from html import escape
 from urllib.parse import quote
 from bson import ObjectId
 import motor.motor_asyncio
+from time_utils import today_tehran, utc_now_iso
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -39,7 +40,7 @@ class DBContent:
         r = await self.bs_lessons.insert_one({
             'term': term, 'name': name, 'teacher': teacher,
             'intake': intake,
-            'order': count, 'created_at': datetime.now().isoformat(),
+            'order': count, 'created_at': utc_now_iso(),
         })
         return r.inserted_id
 
@@ -88,7 +89,7 @@ class DBContent:
             return str(existing['_id'])
         r = await self.bs_sessions.insert_one({
             'lesson_id': lesson_id, 'number': number, 'topic': topic,
-            'teacher': teacher, 'created_at': datetime.now().isoformat(),
+            'teacher': teacher, 'created_at': utc_now_iso(),
         })
         return str(r.inserted_id)
 
@@ -130,7 +131,7 @@ class DBContent:
         r = await self.bs_content.insert_one({
             'session_id': session_id, 'type': ctype, 'file_id': file_id,
             'description': description, 'extra_info': extra_info,
-            'order': count, 'uploaded_at': datetime.now().isoformat(), 'downloads': 0,
+            'order': count, 'uploaded_at': utc_now_iso(), 'downloads': 0,
             'notif_sent': False,   # FIX جدید: برای batch نوتیف منابع جدید
         })
         return r.inserted_id
@@ -543,7 +544,7 @@ class DBContent:
         count = await self.ref_subjects.count_documents({'intake': intake})
         r = await self.ref_subjects.insert_one({
             'name': name, 'intake': intake,
-            'order': count, 'created_at': datetime.now().isoformat(),
+            'order': count, 'created_at': utc_now_iso(),
         })
         return r.inserted_id
 
@@ -582,7 +583,7 @@ class DBContent:
         count = await self.ref_books.count_documents({'subject_id': subject_id})
         r = await self.ref_books.insert_one({
             'subject_id': subject_id, 'name': name,
-            'order': count, 'created_at': datetime.now().isoformat(),
+            'order': count, 'created_at': utc_now_iso(),
         })
         return r.inserted_id
 
@@ -632,7 +633,7 @@ class DBContent:
         if existing:
             await self.ref_files.update_one({'_id': existing['_id']}, {'$set': {
                 'file_id': file_id, 'description': description,
-                'uploaded_at': datetime.now().isoformat(),
+                'uploaded_at': utc_now_iso(),
                 'notif_sent': False,
             }})
             return str(existing['_id'])
@@ -640,7 +641,7 @@ class DBContent:
         r = await self.ref_files.insert_one({
             'book_id': book_id, 'lang': lang, 'volume': volume,
             'description': description, 'file_id': file_id,
-            'uploaded_at': datetime.now().isoformat(), 'downloads': 0, 'order': count,
+            'uploaded_at': utc_now_iso(), 'downloads': 0, 'order': count,
             'notif_sent': False,
         })
         return str(r.inserted_id)
@@ -716,7 +717,7 @@ class DBContent:
             'lesson': lesson, 'topic': topic, 'file_id': file_id,
             'file_type': file_type, 'description': description,
             'intake': intake or '',
-            'upload_date': datetime.now().isoformat(), 'downloads': 0,
+            'upload_date': utc_now_iso(), 'downloads': 0,
         })
         return r.inserted_id
 
@@ -800,7 +801,7 @@ class DBContent:
             'explanation': explanation, 'creator_id': creator,
             'question_image': question_image, 'answer_image': answer_image,
             'intake': intake or '',
-            'approved': auto_approve, 'created_at': datetime.now().isoformat(),
+            'approved': auto_approve, 'created_at': utc_now_iso(),
             'attempt_count': 0, 'correct_count': 0,
         })
         return r.inserted_id
@@ -900,7 +901,7 @@ class DBContent:
         chosen = q[0]
         await self.questions.update_one(
             {'_id': chosen['_id']},
-            {'$set': {'last_daily_sent': datetime.now().isoformat()}}
+            {'$set': {'last_daily_sent': utc_now_iso()}}
         )
         return chosen
 
@@ -1093,7 +1094,7 @@ class DBContent:
                     'question_image': None, 'answer_image': None,
                     'intake': intake or '', 'source': 'web_import',
                     'approved': bool(auto_approve),
-                    'created_at': datetime.now().isoformat(),
+                    'created_at': utc_now_iso(),
                     'attempt_count': 0, 'correct_count': 0,
                 })
             except Exception as e:
@@ -1126,7 +1127,7 @@ class DBContent:
         await self.answers.insert_one({
             'user_id': uid, 'question_id': qid,
             'selected': selected, 'is_correct': is_correct,
-            'answered_at': datetime.now().isoformat(),
+            'answered_at': utc_now_iso(),
         })
         inc = {'total_answers': 1}
         if is_correct: inc['correct_answers'] = 1
@@ -1216,7 +1217,7 @@ class DBContent:
             'date': date, 'time': time, 'location': location,
             'notes': notes, 'group': group, 'is_weekly': is_weekly,
             'flex_type': flex_type, 'flex_note': flex_note,
-            'created_at': datetime.now().isoformat(), 'notified_days': [],
+            'created_at': utc_now_iso(), 'notified_days': [],
         })
         return r.inserted_id
 
@@ -1230,7 +1231,7 @@ class DBContent:
             await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
                 {'$set': {'date': new_date, 'time': new_time, 'flex_note': note,
-                          'last_time_change': datetime.now().isoformat()}}
+                          'last_time_change': utc_now_iso()}}
             )
             return True
         except Exception:
@@ -1262,7 +1263,7 @@ class DBContent:
         try:
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
-                {'$set': {field: value, 'last_edited_at': datetime.now().isoformat()}}
+                {'$set': {field: value, 'last_edited_at': utc_now_iso()}}
             )
             return result.matched_count > 0
         except Exception:
@@ -1287,7 +1288,7 @@ class DBContent:
                     'lesson': lesson, 'teacher': teacher, 'date': date, 'time': time,
                     'location': location, 'notes': notes, 'group': group,
                     'flex_type': flex_type, 'flex_note': flex_note,
-                    'last_edited_at': datetime.now().isoformat(),
+                    'last_edited_at': utc_now_iso(),
                 }}
             )
             return result.matched_count > 0
@@ -1373,7 +1374,7 @@ class DBContent:
             documents = [{
                 'type': f'schedule_{event}', 'chat_id': u['user_id'],
                 'text': '\n'.join(html_lines), 'sent': False,
-                'created_at': datetime.now().isoformat(),
+                'created_at': utc_now_iso(),
             } for u in users if u.get('user_id')]
             if documents:
                 await self.bot_notifs.insert_many(documents)
@@ -1416,7 +1417,7 @@ class DBContent:
 
 
     async def get_exams_for_reminder(self, remind_days: int):
-        target = (datetime.now() + timedelta(days=remind_days)).strftime('%Y-%m-%d')
+        target = (today_tehran() + timedelta(days=remind_days)).isoformat()
         key    = f'd{remind_days}'
         return await self.schedules.find({
             'type': 'exam', 'date': target, 'notified_days': {'$ne': key},
@@ -1444,7 +1445,7 @@ class DBContent:
         count = await self.faq.count_documents({})
         result = await self.faq.insert_one({
             'question': question, 'answer': answer, 'category': category,
-            'order': count, 'created_at': datetime.now().isoformat(),
+            'order': count, 'created_at': utc_now_iso(),
         })
         return result.inserted_id
 
@@ -1582,7 +1583,7 @@ class DBContent:
             'topic': base.get('topic', ''),
             'teacher': base.get('teacher', ''),
             'intake': intake, 'fork_of': session_id,
-            'created_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
         })
         new_sid = str(r.inserted_id)
         for c in (await self.bs_get_content(session_id)):
@@ -1593,7 +1594,7 @@ class DBContent:
                 'description': c.get('description', ''),
                 'extra_info': c.get('extra_info', ''),
                 'order': c.get('order', 0),
-                'uploaded_at': datetime.now().isoformat(),
+                'uploaded_at': utc_now_iso(),
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(c['_id']),
@@ -1630,7 +1631,7 @@ class DBContent:
             'name': base.get('name', ''),
             'order': count,
             'intake': intake, 'fork_of': book_id,
-            'created_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
         })
         new_bid = str(r.inserted_id)
         for f in (await self.ref_get_files(book_id)):
@@ -1641,7 +1642,7 @@ class DBContent:
                 'description': f.get('description', ''),
                 'file_id': f.get('file_id', ''),
                 'order': f.get('order', 0),
-                'uploaded_at': datetime.now().isoformat(),
+                'uploaded_at': utc_now_iso(),
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(f['_id']),
@@ -1767,7 +1768,7 @@ class DBContent:
             'note':         note,
             'designer_id':  designer_id,
             'status':       'new',   # new, reviewing, resolved, rejected
-            'created_at':   datetime.now().isoformat(),
+            'created_at':   utc_now_iso(),
             'resolved_at':  None,
             'resolved_by':  None,
         })
@@ -1798,7 +1799,7 @@ class DBContent:
             pass
         update_data = {'status': status}
         if status in ('resolved', 'rejected'):
-            update_data['resolved_at'] = datetime.now().isoformat()
+            update_data['resolved_at'] = utc_now_iso()
             update_data['resolved_by'] = resolved_by
         await self.content_reports.update_one(
             {'report_id': report_id}, {'$set': update_data}

@@ -28,6 +28,7 @@ from api.telegram_send import (
 )
 
 from database import db
+from time_utils import utc_now_iso
 
 
 router = APIRouter()
@@ -642,7 +643,7 @@ async def buy(
                 payment_id,
 
             "expires":
-                str(end_date)[:10],
+                str(end_date),
 
             "message":
                 "اشتراک رایگان فعال شد.",
@@ -843,8 +844,7 @@ async def buy(
                     False,
 
                 "created_at":
-                    datetime.now()
-                    .isoformat(),
+                    utc_now_iso(),
             })
         )
 

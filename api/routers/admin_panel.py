@@ -9,6 +9,7 @@ from api.auth import get_admin_user
 from database import db
 from request_context import current_request_id
 import broadcast_service
+from time_utils import day_bounds_utc, now_utc, parse_gregorian_date, utc_now_iso
 
 router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
@@ -19,7 +20,7 @@ async def _notify(chat_id: int, text: str, ntype: str = "admin_notice"):
     # این روتر (تأیید کاربر، پاسخ تیکت، سیگنال‌ها) سکوت-coroutine می‌شدند.
     notif = db.client["medicalbot"]["bot_notifications"]
     return await notif.insert_one({"type":ntype,"chat_id":chat_id,"text":text,
-        "sent":False,"created_at":datetime.now().isoformat(),
+        "sent":False,"created_at":utc_now_iso(),
         "correlation_id": current_request_id.get()})
 
 
@@ -101,7 +102,7 @@ async def stats(admin=Depends(get_admin_user)):
     from utils import today_start_utc_str
 
     today_start = today_start_utc_str()
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    week_ago = (now_utc() - timedelta(days=7)).isoformat()
     (users_total, users_pending, questions_approved, questions_pending,
      tickets_open, reports_open, subscriptions, active_today, active_week,
      new_today, total_answers) = await asyncio.gather(
@@ -198,7 +199,7 @@ async def bot_status(admin=Depends(get_admin_user)):
         "db_ok": db_ok,
         "db_ping_ms": db_ping,
         "db_error": db_error,
-        "checked_at": datetime.now().isoformat(),
+        "checked_at": utc_now_iso(),
         "sys": sys_info,
     }
 
@@ -234,14 +235,14 @@ async def list_users(admin=Depends(get_admin_user), search: Optional[str]=Query(
         "student_id":u.get("student_id",""),
         "group":u.get("group",""),"intake":u.get("intake",""),"role":u.get("role","student"),
         "approved":u.get("approved",False),"suspended":u.get("suspended",False),
-        "registered_at":u.get("registered_at","")[:10],"total_answers":u.get("total_answers",0),
+        "registered_at":u.get("registered_at") or None,"total_answers":u.get("total_answers",0),
         "prestige": _rp_mini(u)} for u in users]}
 
 @router.get("/users/pending")
 async def pending_users(admin=Depends(get_admin_user)):
     users = await db.pending_users()
     return {"users":[{"id":u.get("user_id"),"name":u.get("name",""),"student_id":u.get("student_id",""),
-        "group":u.get("group",""),"intake":u.get("intake",""),"registered_at":u.get("registered_at","")[:10]} for u in users]}
+        "group":u.get("group",""),"intake":u.get("intake",""),"registered_at":u.get("registered_at") or None} for u in users]}
 
 @router.get("/users/{uid}")
 async def user_detail(uid: int, admin=Depends(get_admin_user)):
@@ -253,7 +254,7 @@ async def user_detail(uid: int, admin=Depends(get_admin_user)):
         "student_id":u.get("student_id",""),
         "group":u.get("group",""),"intake":u.get("intake",""),"role":u.get("role","student"),
         "approved":u.get("approved",False),"suspended":u.get("suspended",False),
-        "registered_at":u.get("registered_at","")[:10],"total_answers":u.get("total_answers",0),
+        "registered_at":u.get("registered_at") or None,"total_answers":u.get("total_answers",0),
         "correct_answers":u.get("correct_answers",0),"downloads":u.get("downloads",0)}}
 
 @router.post("/users/{uid}/approve")
@@ -375,7 +376,7 @@ async def unblock_user_ep(uid: int, admin=Depends(get_admin_user)):
 async def blacklist(admin=Depends(get_admin_user)):
     items = await db.get_blacklist()
     return {"blacklist":[{"id":b.get("_id"),"name":b.get("name",""),
-        "blocked_by_name":b.get("blocked_by_name",""),"blocked_at":str(b.get("blocked_at",""))[:10]} for b in items]}
+        "blocked_by_name":b.get("blocked_by_name",""),"blocked_at":b.get("blocked_at") or None} for b in items]}
 
 # ══════════════════════════════════════════════
 # 🎓 ادمین‌های محتوا
@@ -554,8 +555,13 @@ async def all_tickets(
         filt["status"] = {"$ne": "closed"}
     if date_from or date_to:
         created = {}
-        if date_from: created["$gte"] = date_from[:10]
-        if date_to: created["$lte"] = date_to[:10] + "T23:59:59.999999"
+        try:
+            if date_from:
+                created["$gte"] = day_bounds_utc(parse_gregorian_date(date_from))[0].isoformat()
+            if date_to:
+                created["$lt"] = day_bounds_utc(parse_gregorian_date(date_to))[1].isoformat()
+        except ValueError:
+            raise HTTPException(422, "بازه تاریخ تیکت معتبر نیست")
         filt["created_at"] = created
     total = await db.tickets.count_documents(filt)
     tickets = await (db.tickets.find(filt).sort(sort_by, 1 if sort_dir == "asc" else -1)
@@ -564,8 +570,8 @@ async def all_tickets(
         "id": t.get("ticket_id"), "user_id": t.get("user_id"),
         "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
         "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
-        "created_at": (t.get("created_at") or "")[:16].replace("T", " "),
-        "last_reply_at": (t.get("last_reply_at") or "")[:16].replace("T", " "),
+        "created_at": t.get("created_at") or None,
+        "last_reply_at": t.get("last_reply_at") or None,
         "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
         "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
     } for t in tickets], "total": total, "page": page, "limit": limit,
@@ -577,9 +583,9 @@ async def ticket_detail(tid: int, admin=Depends(get_admin_user)):
     if not t: raise HTTPException(404)
     uid=t.get("user_id"); u=await db.get_user(uid) if uid else None
     replies=[{"text":r.get("text","").removeprefix("[دانشجو]").strip(),
-        "sender":"user" if r.get("text","").startswith("[دانشجو]") else "support","at":r.get("at","")[:16]} for r in t.get("replies",[])]
+        "sender":"user" if r.get("text","").startswith("[دانشجو]") else "support","at": r.get("at") or None} for r in t.get("replies",[])]
     return {"ticket":{"id":t.get("ticket_id"),"subject":t.get("subject",""),"message":t.get("message",""),
-        "status":t.get("status","open"),"created_at":t.get("created_at","")[:10],"replies":replies,
+        "status":t.get("status","open"),"created_at": t.get("created_at") or None,"replies":replies,
         "user":{"id":uid,"name":t.get("user_name",""),"student_id":u.get("student_id","") if u else "","group":u.get("group","") if u else "","intake":u.get("intake","") if u else ""}}}
 
 class AdminReply(BaseModel):
@@ -690,7 +696,7 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20, 
 @router.get("/broadcast/scheduled")
 async def broadcast_scheduled(admin=Depends(get_admin_user), limit: int=Query(10, ge=1, le=50)):
     docs = await db.broadcast_campaigns.find(
-        {"status": "scheduled", "send_at": {"$gt": datetime.now().isoformat()}}
+        {"status": "scheduled", "send_at": {"$gt": utc_now_iso()}}
     ).sort("send_at", 1).limit(limit).to_list(limit)
     return {"scheduled": [broadcast_service.campaign_row(doc) for doc in docs]}
 
@@ -841,7 +847,7 @@ async def notif_retry(run_id: str, admin=Depends(get_admin_user)):
     if not targets: raise HTTPException(404, "موردی برای تلاش مجدد پیدا نشد")
     notif = db.client["medicalbot"]["bot_notifications"]
     docs = [{"type":"notif_retry","chat_id":t["user_id"],"text":t["message"],"sent":False,
-        "created_at":datetime.now().isoformat()} for t in targets if t.get("message")]
+        "created_at":utc_now_iso()} for t in targets if t.get("message")]
     if docs: await notif.insert_many(docs)
     return {"ok":True, "requeued": len(docs)}
 
@@ -1202,8 +1208,13 @@ def build_audit_query(
             {"target.label": target_pat}, {"target.id": target.strip()}, {"target_id": target.strip()}]})
     if date_from or date_to:
         ts = {}
-        if date_from: ts["$gte"] = date_from.strip()[:10]
-        if date_to: ts["$lte"] = date_to.strip()[:10] + "T23:59:59.999999"
+        try:
+            if date_from:
+                ts["$gte"] = day_bounds_utc(parse_gregorian_date(date_from))[0].isoformat()
+            if date_to:
+                ts["$lt"] = day_bounds_utc(parse_gregorian_date(date_to))[1].isoformat()
+        except ValueError:
+            raise HTTPException(422, "بازه تاریخ معتبر نیست")
         query["timestamp"] = ts
     if correlation_id:
         query["correlation_id"] = correlation_id.strip()[:120]
@@ -1410,7 +1421,7 @@ async def prestige_config_put(body: PrestigeConfigPut, admin=Depends(get_admin_u
     await db.settings.update_one(
         {"_id": "prestige_config"},
         {"$set": {"values": clean,
-                  "updated_at": datetime.now().isoformat()}},
+                  "updated_at": utc_now_iso()}},
         upsert=True)
     try:
         setattr(db, "_pcfgc", None)      # باطل‌سازی فوری کش ۶۰ثانیه‌ای موتور

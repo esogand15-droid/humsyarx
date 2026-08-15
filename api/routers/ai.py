@@ -34,6 +34,7 @@ from ai_solver import (
 )
 from api.auth import get_current_user
 from database import db
+from time_utils import now_utc, parse_machine_datetime, today_tehran, utc_now_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -128,25 +129,14 @@ def _public_history(items: list) -> list[dict]:
 
 
 def _parse_datetime(value) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-
-    if not isinstance(value, str) or not value.strip():
-        return None
-
     try:
-        return datetime.fromisoformat(
-            value.strip().replace("Z", "+00:00")
-        )
+        return parse_machine_datetime(value)
     except (TypeError, ValueError):
         return None
 
 
-def _now_for(value: datetime) -> datetime:
-    if value.tzinfo:
-        return datetime.now(tz=value.tzinfo)
-
-    return datetime.now()
+def _now_for(_value: datetime) -> datetime:
+    return now_utc()
 
 
 def _public_reference(document: dict | None) -> dict | None:
@@ -541,7 +531,7 @@ async def _ask_provider(
         # مسیر گفت‌وگوی مستقل مینی‌اپ — به‌جای حافظه‌ی مشترک ai_mem،
         # دورِ پرسش/پاسخ در سندِ خودِ گفت‌وگو ذخیره می‌شود (اتمیک).
         conv_id, conv_doc = conv
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
 
         title = None
         if not _safe_int(conv_doc.get("msg_count")):
@@ -846,9 +836,7 @@ async def status(
         ),
     )
 
-    today = datetime.now().strftime(
-        "%Y-%m-%d"
-    )
+    today = today_tehran().isoformat()
 
     used = (
         max(
@@ -1134,7 +1122,7 @@ async def duplicate_conversation(
     legacy هم پشتیبانی می‌شود: حافظه‌ی مشترک با ربات به یک رشته‌ی
     مستقل تبدیل می‌شود (بدون دست‌خوردن به خودِ حافظه‌ی مشترک)."""
     user_id = user["id"]
-    now_iso = datetime.now().isoformat()
+    now_iso = utc_now_iso()
 
     if cid == "legacy":
         raw, _ = await db.ai_get_memory(user_id)

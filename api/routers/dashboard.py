@@ -14,6 +14,7 @@ from api.user_metrics import (
     same_user_id,
 )
 from database import db
+from time_utils import parse_gregorian_date
 from utils import now_tehran
 
 router = APIRouter()
@@ -26,7 +27,7 @@ def _text(value: Any, default: str = "") -> str:
 def _exam_item(exam: Mapping[str, Any], today: date) -> dict:
     raw_date = _text(exam.get("date"))
     try:
-        days_left = max(0, (date.fromisoformat(raw_date) - today).days)
+        days_left = max(0, (parse_gregorian_date(raw_date) - today).days)
     except (TypeError, ValueError):
         days_left = None
 

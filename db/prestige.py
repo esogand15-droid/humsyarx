@@ -8,9 +8,13 @@ import os
 import logging
 import asyncio
 import difflib
-from datetime import datetime, timedelta
+from datetime import timedelta
 from bson import ObjectId
 import motor.motor_asyncio
+from time_utils import (
+    month_key_tehran, now_utc, parse_gregorian_date, parse_machine_datetime,
+    to_tehran, utc_now_iso, week_key_tehran,
+)
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -347,7 +351,7 @@ class DBPrestige:
         try:
             await self.prestige_history.insert_one({
                 'uid': uid, 'type': etype, 'key': key,
-                'detail': detail or {}, 'at': datetime.now().isoformat(),
+                'detail': detail or {}, 'at': utc_now_iso(),
                 'reactions': {'clap': 0, 'fire': 0, 'crown': 0},
             })
         except Exception:
@@ -360,7 +364,7 @@ class DBPrestige:
             from pymongo import ReturnDocument
             doc = await self.settings.find_one_and_update(
                 {'_id': 'global_firsts', f'claims.{key}': {'$exists': False}},
-                {'$set': {f'claims.{key}': {'uid': uid, 'at': datetime.now().isoformat()}}},
+                {'$set': {f'claims.{key}': {'uid': uid, 'at': utc_now_iso()}}},
                 upsert=True, return_document=ReturnDocument.AFTER,
             )
             return bool(doc) and (doc.get('claims', {}).get(key, {}).get('uid') == uid)
@@ -428,16 +432,16 @@ class DBPrestige:
         badge_awards = []                # 👑 P1 — نشان‌های بازشده در همین رویداد
 
         # ── rollover هفته (lazy، idempotent — Spec §۸.۱ weekly_reset)
-        iso_week = f"{today[:4]}-W{datetime.fromisoformat(today).isocalendar().week:02d}"
-        if u['weekly_reset'] != iso_week:
+        business_week = week_key_tehran(parse_gregorian_date(today))
+        if u['weekly_reset'] != business_week:
             sets['weekly_xp'] = 0
-            sets['weekly_reset'] = iso_week
+            sets['weekly_reset'] = business_week
 
         # 👑 P2 — rollover ماه (تماماً هم‌الگوی هفته؛ برای بازه‌ی «ماه» لیدربرد)
-        iso_month = today[:7]
-        if u['monthly_reset'] != iso_month:
+        business_month = month_key_tehran(parse_gregorian_date(today))
+        if u['monthly_reset'] != business_month:
             sets['monthly_xp'] = 0
-            sets['monthly_reset'] = iso_month
+            sets['monthly_reset'] = business_month
 
         # 👑 P2 — rollover سيزن (All-Time هرگز ریست نمی‌شود — Spec §۱۶)
         season_now = await self._season_key()
@@ -454,8 +458,8 @@ class DBPrestige:
             sets['decay_blocks'] = 0
             sets['shield_until'] = today      # سپر روزِ برگشت (۱ روز)
             try:
-                return_idle_days = (datetime.fromisoformat(today)
-                                    - datetime.fromisoformat(u['last_active_day'])).days
+                return_idle_days = (parse_gregorian_date(today)
+                                    - parse_gregorian_date(u['last_active_day'])).days
             except Exception:
                 return_idle_days = 0
             await self._history_add(uid, 'return', detail={'cleared': u['decay_penalty']})
@@ -573,7 +577,7 @@ class DBPrestige:
             gain += n('xp_weekly_champion', self.XP_WEEKLY_CHAMPION)
             prev_ct = int((u.get('achievements') or {}).get('c_top1_week', {}).get('count', 0) or 0)
             new_ct = prev_ct + 1
-            sets['achievements.c_top1_week'] = {'at': datetime.now().isoformat(),
+            sets['achievements.c_top1_week'] = {'at': utc_now_iso(),
                                                 'count': new_ct, 'last_week': wk_str}
             cur1 = int(u['records'].get('top1_weeks_current', 0) or 0) + 1
             sets['records.top1_weeks_current'] = cur1
@@ -599,7 +603,7 @@ class DBPrestige:
         # ── استریک روز (اولین فعالیت معتبر روز — تهران)
         streak_new = False
         if u['last_active_day'] != today:
-            y = (datetime.fromisoformat(today) - timedelta(days=1)).date().isoformat()
+            y = (parse_gregorian_date(today) - timedelta(days=1)).isoformat()
             cur = (u['streak_current'] + 1) if u['last_active_day'] == y else 1
             best = max(cur, u['streak_best'])
             sets['streak_current'] = cur
@@ -638,7 +642,7 @@ class DBPrestige:
             inc['season_xp'] = total_gain
             inc['weekly_xp'] = total_gain
             inc['monthly_xp'] = total_gain
-            sets['last_gain_at'] = datetime.now().isoformat()
+            sets['last_gain_at'] = utc_now_iso()
         if inc or sets:
             upd = {}
             if inc: upd['$inc'] = inc
@@ -691,7 +695,7 @@ class DBPrestige:
         if awarded_up:
             sh_a = int(n('shield_answers', self.SHIELD_ANSWERS))
             sets2 = {'shield_answers': sh_a,
-                     'shield_until': (datetime.fromisoformat(today) + timedelta(days=int(n('shield_days', self.SHIELD_DAYS)))).date().isoformat()}
+                     'shield_until': (parse_gregorian_date(today) + timedelta(days=int(n('shield_days', self.SHIELD_DAYS)))).isoformat()}
             await self.users.update_one({'user_id': uid}, {'$set': sets2})
             u['shield_answers'] = sh_a
             u['shield_until'] = sets2['shield_until']
@@ -712,7 +716,7 @@ class DBPrestige:
             # نشان جهانی: اولین نفری که به این رنک برسد (اتمیک — §۴.۲)
             if await self._claim_global_first(f'first_rank_{r_new[0]}', uid):
                 await self.users.update_one({'user_id': uid},
-                    {'$set': {f'achievements.g_first_{r_new[0]}': {'at': datetime.now().isoformat()}}})
+                    {'$set': {f'achievements.g_first_{r_new[0]}': {'at': utc_now_iso()}}})
                 events['global_first'] = {'key': f'first_rank_{r_new[0]}', 'rank': r_new[1]}
                 bonus_xp += await self._global_first_xp(uid, bdown)
                 await self._history_add(uid, 'global_first', f'first_rank_{r_new[0]}', {'rank': r_new[1]})
@@ -752,7 +756,7 @@ class DBPrestige:
                 pass
         if cur_streak >= 365 and await self._claim_global_first('first_streak365', uid):
             await self.users.update_one({'user_id': uid},
-                {'$set': {'achievements.g_first_streak365': {'at': datetime.now().isoformat()}}})
+                {'$set': {'achievements.g_first_streak365': {'at': utc_now_iso()}}})
             events['global_first'] = {'key': 'first_streak365'}
             bonus_xp += await self._global_first_xp(uid, bdown)
             try:
@@ -762,7 +766,7 @@ class DBPrestige:
                 pass
         if total_a >= 10000 and await self._claim_global_first('first_q10000', uid):
             await self.users.update_one({'user_id': uid},
-                {'$set': {'achievements.g_first_q10000': {'at': datetime.now().isoformat()}}})
+                {'$set': {'achievements.g_first_q10000': {'at': utc_now_iso()}}})
             events['global_first'] = {'key': 'first_q10000'}
             bonus_xp += await self._global_first_xp(uid, bdown)
             try:
@@ -806,7 +810,7 @@ class DBPrestige:
         if u['shield_until'] and u['shield_until'] > idle_from:
             idle_from = u['shield_until']            # پنجره‌ی امنیت سپر لحاظ می‌شود
         try:
-            days = (datetime.fromisoformat(today) - datetime.fromisoformat(idle_from)).days
+            days = (parse_gregorian_date(today) - parse_gregorian_date(idle_from)).days
         except Exception:
             return None
         # 👑 P3 — پنجره‌ی رکود قابل‌تنظیم زنده است (بدون ری‌دیپلوی)
@@ -859,11 +863,11 @@ class DBPrestige:
         """تعداد Active Users با کش ۱۰دقیقه‌ای (Spec §۳.۵/§۱۳ — per-request هرگز)"""
         try:
             doc = await self.settings.find_one({'_id': 'pc_cache'})
-            now = datetime.now().timestamp()
+            now = now_utc().timestamp()
             if doc and (now - float(doc.get('computed_at', 0))) < self.PC_CACHE_TTL_SEC:
                 return int(doc.get('total_active', 0))
-            cutoff = (datetime.fromisoformat(self._tehran_today())
-                      - timedelta(days=self.ACTIVE_WINDOW_DAYS)).date().isoformat()
+            cutoff = (parse_gregorian_date(self._tehran_today())
+                      - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()
             total = await self.users.count_documents(
                 {'approved': True, 'last_active_day': {'$gte': cutoff}})
             await self.settings.update_one(
@@ -922,8 +926,8 @@ class DBPrestige:
             try:
                 better = await self.users.count_documents({
                     'approved': True,
-                    'last_active_day': {'$gte': (datetime.fromisoformat(today)
-                                                 - timedelta(days=self.ACTIVE_WINDOW_DAYS)).date().isoformat()},
+                    'last_active_day': {'$gte': (parse_gregorian_date(today)
+                                                 - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()},
                     'effective_xp': {'$gt': eff},
                 })
             except Exception:
@@ -970,7 +974,7 @@ class DBPrestige:
         (تعادل اقتصادی — ریپلای فقط XP پاسخ/آزمون است). از این لحظه به بعد
         موتور زنده، پله‌های بعدی را خودش باز می‌کند."""
         out = {}
-        at = ctx.get('at') or datetime.now().isoformat()
+        at = ctx.get('at') or utc_now_iso()
         for bkey, (icon, title, cname, tiers) in self.BADGES_PROG.items():
             try:
                 value = int(ctx.get(cname, 0) or 0)
@@ -999,7 +1003,7 @@ class DBPrestige:
         (grandfather — چالش قانون جدیدی است و نباید عطف‌به‌ماسبق شود)."""
         from utils import now_tehran
         today = now_tehran().date().isoformat()
-        iso_week = f"{today[:4]}-W{datetime.fromisoformat(today).isocalendar().week:02d}"
+        business_week = week_key_tehran(parse_gregorian_date(today))
         rep = {'scanned': 0, 'migrated': 0, 'founders': 0, 'firsts': [], 'errors': 0}
         sessions_coll = self.client['medicalbot']['exam_sessions']
         migrated = []
@@ -1089,7 +1093,11 @@ class DBPrestige:
                             g += self.XP_EXAM_PERFECT
                         elif pct >= 80:
                             g += self.XP_EXAM_ACC_BONUS
-                        fdate = str(s.get('finished_at') or '')[:10]
+                        finished_at = s.get('finished_at')
+                        try:
+                            fdate = to_tehran(finished_at).date().isoformat() if finished_at else ''
+                        except (TypeError, ValueError):
+                            fdate = ''
                         day_gain[fdate] = day_gain.get(fdate, 0) + g
                         xp += g
                         if fdate:
@@ -1118,7 +1126,7 @@ class DBPrestige:
                 run = 0
                 prev = None
                 for d in sorted_days:
-                    if prev and (datetime.fromisoformat(d) - datetime.fromisoformat(prev)).days == 1:
+                    if prev and (parse_gregorian_date(d) - parse_gregorian_date(prev)).days == 1:
                         run += 1
                     else:
                         run = 1
@@ -1130,8 +1138,8 @@ class DBPrestige:
                     if last >= (now_tehran().date() - timedelta(days=1)).isoformat():
                         tail = 1
                         for i in range(len(sorted_days) - 1, 0, -1):
-                            if (datetime.fromisoformat(sorted_days[i])
-                                    - datetime.fromisoformat(sorted_days[i - 1])).days == 1:
+                            if (parse_gregorian_date(sorted_days[i])
+                                    - parse_gregorian_date(sorted_days[i - 1])).days == 1:
                                 tail += 1
                             else:
                                 break
@@ -1140,13 +1148,16 @@ class DBPrestige:
                 floor = self.PRESTIGE_RANKS[idx][3]
                 week_gain = sum(g for d, g in day_gain.items()
                                 if d and d[:4] == today[:4]
-                                and f"{d[:4]}-W{datetime.fromisoformat(d).isocalendar().week:02d}" == iso_week) if day_gain else 0
+                                and week_key_tehran(parse_gregorian_date(d)) == business_week) if day_gain else 0
                 total_a = int(u.get('total_answers', 0) or 0)
                 corr_a = int(u.get('correct_answers', 0) or 0)
                 acc = round(corr_a / total_a * 100) if total_a else 0
-                reg = str(u.get('registered_at') or '')[:10]
+                registered_at = u.get('registered_at')
                 last_gain = max(sorted_days) if sorted_days else ''
-                founder_at = f"{reg}T00:00:00" if reg else datetime.now().isoformat()
+                try:
+                    founder_at = parse_machine_datetime(registered_at).isoformat() if registered_at else utc_now_iso()
+                except (TypeError, ValueError):
+                    founder_at = utc_now_iso()
                 # 👑 P1 — بازنشانی نشان‌ها از شواهد تاریخی (بدون XP عقب‌گرد)
                 any_day30 = any(int(e.get('correct', 0) or 0) >= 30
                                 for e in daily.values())
@@ -1173,7 +1184,7 @@ class DBPrestige:
                 })
                 await self.users.update_one({'user_id': uid}, {'$set': {
                     'prestige_xp': xp, 'season_xp': xp, 'weekly_xp': week_gain,
-                    'weekly_reset': iso_week, 'effective_xp': xp,
+                    'weekly_reset': business_week, 'effective_xp': xp,
                     'prestige_rank': self.PRESTIGE_RANKS[idx][0], 'prestige_div': div,
                     'rank_floor_xp': floor, 'decay_penalty': 0, 'decay_blocks': 0,
                     'overflow_xp': 0,
@@ -1236,7 +1247,7 @@ class DBPrestige:
             if await self._claim_global_first(key, win['uid']):
                 await self.users.update_one({'user_id': win['uid']},
                     {'$set': {f'achievements.g_first_{key.replace("first_rank_", "")}':
-                              {'at': datetime.now().isoformat()}}})
+                              {'at': utc_now_iso()}}})
                 await self._history_add(win['uid'], 'global_first', key, {})
                 rep['firsts'].append({'key': key, 'uid': win['uid']})
         return rep
@@ -1352,7 +1363,7 @@ class DBPrestige:
             return 0
         xp = self.BADGE_RARITY['ancient'][2]
         sets[f'achievements.g_first_{key.replace("first_", "")}'] = \
-            {'at': datetime.now().isoformat()}
+            {'at': utc_now_iso()}
         bdown.append((f"🏆 نشان جهانی: {label}", xp))
         badge_awards.append({'key': f'g_first_{key.replace("first_", "")}',
                              'icon': '🏆', 'title': label,
@@ -1395,7 +1406,7 @@ class DBPrestige:
             'reports': int(u.get('reports_resolved', 0) or 0)
                        + int(inc.get('reports_resolved', 0) or 0),
         }
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
 
         # ── ۵ نشان تکاملی (فقط یک پله‌ی جلو در هر رویداد)
         for bkey, (icon, title, cname, tiers) in self.BADGES_PROG.items():
@@ -1510,7 +1521,7 @@ class DBPrestige:
             return {'mode': 'pending', **base, 'needed_xp': start - eff}
         ch = u.get('challenge') or {}
         cd_until = ch.get('cooldown_until') or ''
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
         if cd_until and cd_until > now_iso:
             return {'mode': 'cooldown', **base,
                     'cooldown_until': cd_until, 'overflow_xp': max(0, eff - start)}
@@ -1609,7 +1620,7 @@ class DBPrestige:
             out = {'ok': False, 'code': mode, 'view': view}
             if mode == 'cooldown':
                 try:
-                    rem = datetime.fromisoformat(view['cooldown_until']) - datetime.now()
+                    rem = parse_machine_datetime(view['cooldown_until']) - now_utc()
                     out['hours_left'] = max(1, int(-(-rem.total_seconds() // 3600)))
                 except Exception:
                     out['hours_left'] = None
@@ -1620,14 +1631,14 @@ class DBPrestige:
             # چک TTL: جلسه‌ی منقضی = Fail خودکار + کول‌داون (ضدتقلب)؛
             # ⚠️ بلافاصله کول‌داون برگردان — اجازه‌ی شروع تازه در همان نفس نیست
             exp = sess.get('expires_ts')
-            if exp and int(datetime.now().timestamp()) >= int(exp):
+            if exp and int(now_utc().timestamp()) >= int(exp):
                 await self.challenge_expire_session(sess)
                 raw2 = await self.users.find_one({'user_id': uid}) or {}
                 until = str((raw2.get('challenge') or {}).get('cooldown_until') or '')
                 out = {'ok': False, 'code': 'cooldown', 'expired_ttl': True,
                        'cooldown_until': until, 'view': view}
                 try:
-                    rem = datetime.fromisoformat(until) - datetime.now()
+                    rem = parse_machine_datetime(until) - now_utc()
                     out['hours_left'] = max(1, int(-(-rem.total_seconds() // 3600)))
                 except Exception:
                     out['hours_left'] = None
@@ -1650,7 +1661,7 @@ class DBPrestige:
             await self.exam_sessions.update_one(
                 {'_id': sess['_id']},
                 {'$set': {'status': 'failed',
-                          'finished_at': datetime.now().isoformat()}})
+                          'finished_at': utc_now_iso()}})
         except Exception:
             pass
         uid = sess.get('user_id')
@@ -1678,11 +1689,11 @@ class DBPrestige:
                                      self.CH_APEX_COOLDOWN_H)) if apex
                       else int(self._cnum(_cfgc, 'challenge_cooldown_h',
                                           self.CH_COOLDOWN_H)))
-        until = (datetime.now() + timedelta(hours=cooldown_h)).isoformat()
+        until = (now_utc() + timedelta(hours=cooldown_h)).isoformat()
         await self.users.update_one({'user_id': uid}, {'$set': {
             'challenge.target_rank': target_key, 'challenge.apex': apex,
             'challenge.cooldown_until': until,
-            'challenge.last_fail_at': datetime.now().isoformat()}})
+            'challenge.last_fail_at': utc_now_iso()}})
         await self._history_add(uid, 'challenge_fail', target_key,
                                 {'pct': pct, 'cooldown_h': cooldown_h})
         try:
@@ -1876,10 +1887,7 @@ class DBPrestige:
         for r in rows:
             detail = r.get('detail') or {}
             title = type_labels.get(r.get('type'), r.get('type', ''))
-            try:
-                at_jalali = fmt_jalali_dt(str(r.get('at', '')))
-            except Exception:
-                at_jalali = str(r.get('at', ''))[:16].replace('T', ' ')
+            at_jalali = fmt_jalali_dt(r.get('at'))
             out.append({'type': r.get('type'), 'key': r.get('key', ''),
                         'title': title, 'detail': detail,
                         'at': r.get('at'), 'at_jalali': at_jalali})
@@ -1930,7 +1938,7 @@ class DBPrestige:
         cached = None
         try:
             doc = await self.settings.find_one({'_id': cache_id})
-            if doc and (datetime.now().timestamp()
+            if doc and (now_utc().timestamp()
                         - float(doc.get('computed_at', 0))) < self.PC_CACHE_TTL_SEC:
                 cached = doc.get('payload')
         except Exception:
@@ -1992,7 +2000,7 @@ class DBPrestige:
             try:
                 await self.settings.update_one({'_id': cache_id},
                     {'$set': {'payload': cached,
-                              'computed_at': datetime.now().timestamp()}},
+                              'computed_at': now_utc().timestamp()}},
                     upsert=True)
             except Exception:
                 pass
@@ -2079,13 +2087,13 @@ class DBPrestige:
         items = None
         try:
             doc = await self.settings.find_one({'_id': 'feed_cache'})
-            if doc and (datetime.now().timestamp()
+            if doc and (now_utc().timestamp()
                         - float(doc.get('computed_at', 0))) < self.PC_CACHE_TTL_SEC:
                 items = doc.get('items')
         except Exception:
             items = None
         if items is None:
-            cutoff = (datetime.now() - timedelta(hours=self.FEED_WINDOW_H)).isoformat()
+            cutoff = (now_utc() - timedelta(hours=self.FEED_WINDOW_H)).isoformat()
             docs = await self.prestige_history.find({'at': {'$gte': cutoff}}) \
                 .sort('at', -1).limit(60).to_list(60)
             docs = [d for d in docs if self._feed_is_public(d)]
@@ -2121,7 +2129,7 @@ class DBPrestige:
             try:
                 await self.settings.update_one({'_id': 'feed_cache'},
                     {'$set': {'items': items,
-                              'computed_at': datetime.now().timestamp()}},
+                              'computed_at': now_utc().timestamp()}},
                     upsert=True)
             except Exception:
                 pass
@@ -2156,7 +2164,7 @@ class DBPrestige:
         existing = await self.feed_reactions.find_one({'event_id': event_id, 'uid': uid})
         delta = {'clap': 0, 'fire': 0, 'crown': 0}
         my = None
-        now_iso = datetime.now().isoformat()
+        now_iso = utc_now_iso()
         # toggle-off: همان واکنش دوباره یا حذف صریح
         if (kind is None) or (existing and existing.get('kind') == kind):
             if existing:
@@ -2228,9 +2236,8 @@ class DBPrestige:
             try:
                 better = await self.users.count_documents({
                     'approved': True,
-                    'last_active_day': {'$gte': (datetime.fromisoformat(today)
-                                                 - timedelta(days=self.ACTIVE_WINDOW_DAYS))
-                                        .date().isoformat()},
+                    'last_active_day': {'$gte': (parse_gregorian_date(today)
+                                                 - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()},
                     'effective_xp': {'$gt': eff},
                 })
                 rank_number = better + 1
@@ -2281,10 +2288,10 @@ class DBPrestige:
     async def prestige_weekly_close(self) -> dict:
         """جاب پایان هفته: snapshot چینش + قهرمان هفته (+۱۰۰/نشان/رکوردها)"""
         today = self._tehran_today()
-        iso_now = f"{today[:4]}-W{datetime.fromisoformat(today).isocalendar().week:02d}"
-        done_key = f"weekly_closed:{iso_now}"
+        business_week = week_key_tehran(parse_gregorian_date(today))
+        done_key = f"weekly_closed:{business_week}"
         if await self.get_setting(done_key, False):
-            return {'skipped': True, 'week': iso_now}
+            return {'skipped': True, 'week': business_week}
         docs = await self.users.find({'approved': True, 'weekly_xp': {'$gt': 0}}) \
             .to_list(100000)
         docs.sort(key=lambda d: (-int(d.get('weekly_xp', 0) or 0),
@@ -2300,8 +2307,8 @@ class DBPrestige:
                 {'$set': prev or {}}, upsert=True)
             await self.settings.update_one(
                 {'_id': 'lb_snapshot_week'},
-                {'$set': {'week': iso_now, 'positions': positions,
-                          'at': datetime.now().isoformat()}},
+                {'$set': {'week': business_week, 'positions': positions,
+                          'at': utc_now_iso()}},
                 upsert=True)
         except Exception:
             pass
@@ -2309,7 +2316,7 @@ class DBPrestige:
         if docs:
             champ = docs[0]
             cuid = int(champ.get('user_id', 0) or 0)
-            await self.prestige_event(cuid, 'weekly_champion', {'week': iso_now})
+            await self.prestige_event(cuid, 'weekly_champion', {'week': business_week})
             champion = {'uid': cuid, 'name': champ.get('name') or 'کاربر',
                         'weekly_xp': int(champ.get('weekly_xp', 0) or 0)}
         # ریست زنجیره‌ی صدر برای همه‌ی غیرقهرمان‌ها (idempotent با خود جاب)
@@ -2327,7 +2334,7 @@ class DBPrestige:
             await self.set_setting(done_key, True)
         except Exception:
             pass
-        return {'skipped': False, 'week': iso_now,
+        return {'skipped': False, 'week': business_week,
                 'rows': len(docs), 'champion': champion}
 
 

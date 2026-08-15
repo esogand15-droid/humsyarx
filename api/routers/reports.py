@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 from api.auth import get_current_user
 from database import db
+from time_utils import utc_now_iso
 
 router = APIRouter()
 REASONS = [{"key":"wrong_answer","label":"❌ پاسخ اشتباه"},{"key":"wrong_option","label":"🔤 گزینه اشتباه"},
@@ -37,7 +38,7 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
         notif = db.client["medicalbot"]["bot_notifications"]
         await notif.insert_one({"type":"content_report","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"🚩 <b>گزارش #{rid}</b>\n👤 {db_user.get('name','')}\n📦 {target_label}\n⚠️ {reason_lbl}",
-            "sent":False,"created_at":datetime.now().isoformat()})
+            "sent":False,"created_at":utc_now_iso()})
     except Exception: pass
     return {"ok":True,"message":"✅ گزارش ثبت شد."}
 
@@ -49,4 +50,4 @@ async def my_reports(user=Depends(get_current_user)):
         "reason":next((r["label"] for r in REASONS if r["key"]==d.get("reason")),d.get("reason","")),
         "note":d.get("note",""),"status":d.get("status","new"),
         "status_label":STATUS.get(d.get("status","new"),"نامشخص"),
-        "created_at":d.get("created_at","")[:10]} for d in docs]}
+        "created_at":d.get("created_at") or None} for d in docs]}

@@ -39,6 +39,7 @@ from api.routers import (
 )
 from database import db
 from request_context import current_request_id
+from time_utils import now_utc
 
 
 @asynccontextmanager
@@ -88,7 +89,7 @@ async def request_context_and_safe_errors(request: Request, call_next):
         if request.url.path.startswith("/api/web-admin/"):
             route_template = getattr(request.scope.get("route"), "path", "")
             route = route_template or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)", "/:id", request.url.path)
-            metric = {"at": datetime.now(timezone.utc), "route": route[:180], "method": request.method,
+            metric = {"at": now_utc(), "route": route[:180], "method": request.method,
                       "status": int(response.status_code),
                       "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                       "request_id": request_id}

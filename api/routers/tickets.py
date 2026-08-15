@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from api.auth import get_current_user
 from database import db
+from time_utils import utc_now_iso
 
 router = APIRouter()
 SUBJECTS = ["🔬 مشکل در منابع","🧪 مشکل در بانک سوال","💳 مشکل اشتراک","📊 مشکل نمرات","👤 مشکل حساب","⚙️ مشکل فنی","💡 پیشنهاد","❓ سوال دیگر"]
@@ -12,12 +13,12 @@ SUBJECTS = ["🔬 مشکل در منابع","🧪 مشکل در بانک سوا�
 def _fmt(t, detail=False):
     replies = t.get("replies",[])
     r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":t.get("status","open"),
-        "created_at":t.get("created_at","")[:10],"reply_count":len(replies)}
+        "created_at": t.get("created_at") or None,"reply_count":len(replies)}
     if detail:
         r["message"] = t.get("message","")
         r["replies"] = [{"text":rep.get("text","").removeprefix("[دانشجو]").strip(),
             "sender":"user" if rep.get("text","").startswith("[دانشجو]") else "support",
-            "at":rep.get("at","")[:16]} for rep in replies]
+            "at": rep.get("at") or None} for rep in replies]
     return r
 
 @router.get("")
@@ -60,7 +61,7 @@ async def get_ticket(tid: int, user=Depends(get_current_user)):
     # باز شدن گفت‌وگو = خوانده شدن پاسخ‌های پشتیبانی
     await db.tickets.update_one(
         {"ticket_id": tid},
-        {"$set": {"user_seen_at": datetime.now().isoformat()}},
+        {"$set": {"user_seen_at": utc_now_iso()}},
     )
     return {"ticket":_fmt(ticket,detail=True)}
 
@@ -76,7 +77,7 @@ async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
         notif = db.client["medicalbot"]["bot_notifications"]
         await notif.insert_one({"type":"new_ticket","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"🔔 <b>تیکت #{tid}</b>\n👤 {db_user.get('name','')}\n📋 {body.subject}\n\n{body.message.strip()[:200]}",
-            "sent":False,"created_at":datetime.now().isoformat()})
+            "sent":False,"created_at":utc_now_iso()})
     except Exception: pass
     # 🔔 موج ۴.۹۰ — ثبت تیکت در مرکز اعلان: کاربر بعداً راحت سراغش می‌رود
     await db.inbox_add(uid, 'ticket_created',
@@ -101,6 +102,6 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
         notif = db.client["medicalbot"]["bot_notifications"]
         await notif.insert_one({"type":"ticket_reply","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"💬 <b>پاسخ دانشجو #{tid}</b>\n{msg[:200]}",
-            "sent":False,"created_at":datetime.now().isoformat()})
+            "sent":False,"created_at":utc_now_iso()})
     except Exception: pass
     return {"ok":True}

@@ -13,6 +13,10 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 import motor.motor_asyncio
 from request_context import current_request_id
+from time_utils import (
+    TEHRAN, day_bounds_utc, format_date_fa, now_utc, parse_gregorian_date,
+    parse_machine_datetime, start_of_month_tehran, today_tehran, utc_now_iso,
+)
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -239,7 +243,7 @@ class DBCore:
                         {'expires_at': {'$type': 'string'}},
                         [{'$set': {'expires_at': {'$convert': {
                             'input': '$expires_at', 'to': 'date',
-                            'onError': datetime.utcnow(), 'onNull': datetime.utcnow(),
+                            'onError': now_utc(), 'onNull': now_utc(),
                         }}}}],
                     )
             except Exception as _me:
@@ -299,7 +303,7 @@ class DBCore:
             'group':      group,
             'username':   username,
             'intake':     intake or '',
-            'registered_at': datetime.now().isoformat(),
+            'registered_at': utc_now_iso(),
             'approved':   False,
             'role':       'student',
             'notification_settings': dict(notif_defaults),
@@ -346,7 +350,7 @@ class DBCore:
         await self.blacklist.update_one(
             {'_id': uid},
             {'$set': {
-                'blocked_at':      datetime.now().isoformat(),
+                'blocked_at':      utc_now_iso(),
                 'blocked_by':      blocked_by,
                 'blocked_by_name': blocked_by_name,
                 'reason':          reason,
@@ -471,7 +475,7 @@ class DBCore:
         await self.tickets.insert_one({
             'ticket_id': tid, 'user_id': uid, 'user_name': name,
             'subject': subject, 'message': message, 'status': 'open',
-            'created_at': datetime.now().isoformat(), 'replies': [],
+            'created_at': utc_now_iso(), 'replies': [],
         })
         return tid
 
@@ -498,8 +502,8 @@ class DBCore:
         await self.tickets.update_one(
             {'ticket_id': ticket_id},
             {
-                '$push': {'replies': {'text': reply_text, 'at': datetime.now().isoformat()}},
-                '$set':  {'last_reply_at': datetime.now().isoformat()},
+                '$push': {'replies': {'text': reply_text, 'at': utc_now_iso()}},
+                '$set':  {'last_reply_at': utc_now_iso()},
             }
         )
 
@@ -511,7 +515,7 @@ class DBCore:
     async def ticket_close(self, ticket_id: int):
         await self.tickets.update_one(
             {'ticket_id': ticket_id},
-            {'$set': {'status': 'closed', 'closed_at': datetime.now().isoformat()}}
+            {'$set': {'status': 'closed', 'closed_at': utc_now_iso()}}
         )
 
 
@@ -533,12 +537,12 @@ class DBCore:
     async def log(self, uid: int, action: str, data: dict = None):
         await self.stats_col.insert_one({
             'user_id': uid, 'action': action,
-            'data': data or {}, 'timestamp': datetime.now().isoformat(),
+            'data': data or {}, 'timestamp': utc_now_iso(),
         })
 
 
     async def user_stats(self, uid: int) -> dict:
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago = (now_utc() - timedelta(days=7)).isoformat()
         week_act, downloads, user = await asyncio.gather(
             self.stats_col.count_documents({'user_id': uid, 'timestamp': {'$gt': week_ago}}),
             self.stats_col.count_documents({
@@ -560,19 +564,20 @@ class DBCore:
 
     async def weekly_activity(self, uid: int) -> list:
         result = []
+        today = today_tehran()
         for i in range(6, -1, -1):
-            day   = datetime.now() - timedelta(days=i)
-            start = day.replace(hour=0,  minute=0,  second=0,  microsecond=0).isoformat()
-            end   = day.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+            day = today - timedelta(days=i)
+            start, next_start = day_bounds_utc(day)
             count = await self.stats_col.count_documents({
-                'user_id': uid, 'timestamp': {'$gte': start, '$lte': end},
+                'user_id': uid,
+                'timestamp': {'$gte': start.isoformat(), '$lt': next_start.isoformat()},
             })
-            result.append((day.strftime('%m/%d'), count))
+            result.append((format_date_fa(day, date_only=True), count))
         return result
 
 
     async def global_stats(self) -> dict:
-        week_ago  = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago  = (now_utc() - timedelta(days=7)).isoformat()
         new_users = await self.users.count_documents({'registered_at': {'$gt': week_ago}})
         # FIX جدید: online_30m و total_downloads هم اینجا اضافه شد تا
         # نمای کلی سریع پنل ادمین (admin:stats) بدون فراخوانی جداگانه
@@ -724,7 +729,7 @@ class DBCore:
     async def stats_dashboard_users(self) -> dict:
         """آمار جزئی کاربران: رشد، فعالیت، گروه/ورودی، نقش‌های فرعی"""
         from utils import today_start_utc_str
-        now          = datetime.now()
+        now          = now_utc()
         today_start  = today_start_utc_str()
         week_ago     = (now - timedelta(days=7)).isoformat()
         month_ago    = (now - timedelta(days=30)).isoformat()
@@ -754,7 +759,12 @@ class DBCore:
                 {'last_active': None}, {'last_active': ''}]}),
             self.users.aggregate([
                 {'$match': {'approved': True, 'registered_at': {'$gte': week_ago}}},
-                {'$group': {'_id': {'$substrBytes': ['$registered_at', 0, 10]}, 'count': {'$sum': 1}}},
+                {'$addFields': {'_registered_dt': {'$convert': {
+                    'input': '$registered_at', 'to': 'date', 'onError': None, 'onNull': None}}}},
+                {'$match': {'_registered_dt': {'$ne': None}}},
+                {'$group': {'_id': {'$dateToString': {
+                    'format': '%Y-%m-%d', 'date': '$_registered_dt', 'timezone': 'Asia/Tehran'}},
+                    'count': {'$sum': 1}}},
             ]).to_list(10),
             self.users.aggregate([
                 {'$match': {'approved': True}},
@@ -767,9 +777,10 @@ class DBCore:
 
         growth_map = {row.get('_id'): int(row.get('count') or 0) for row in growth_rows}
         growth_7d = []
+        local_today = today_tehran()
         for i in range(6, -1, -1):
-            day = now - timedelta(days=i)
-            growth_7d.append((day.strftime('%m/%d'), growth_map.get(day.strftime('%Y-%m-%d'), 0)))
+            day = local_today - timedelta(days=i)
+            growth_7d.append((format_date_fa(day, date_only=True), growth_map.get(day.isoformat(), 0)))
 
         # تفکیک ورودی با aggregation؛ بدون hydration کاربران.
         intake_label = {i['code']: i['label'] for i in all_intakes}
@@ -821,7 +832,7 @@ class DBCore:
 
     async def stats_dashboard_content(self) -> dict:
         """آمار جزئی محتوا: علوم پایه به‌تفکیک نوع، رفرنس به‌تفکیک زبان، دانلودها"""
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago = (now_utc() - timedelta(days=7)).isoformat()
         (bs_lessons, bs_sessions, bs_by_type, ref_subjects, ref_books,
          ref_by_lang, faq_count, qbank_files, top_qbank_lessons,
          bs_dl_agg, ref_dl_agg, qbank_dl_agg, top_downloaded_qbank,
@@ -942,8 +953,8 @@ class DBCore:
 
     async def stats_dashboard_tickets(self) -> dict:
         """آمار جزئی پشتیبانی"""
-        week_ago  = (datetime.now() - timedelta(days=7)).isoformat()
-        month_ago = (datetime.now() - timedelta(days=30)).isoformat()
+        week_ago  = (now_utc() - timedelta(days=7)).isoformat()
+        month_ago = (now_utc() - timedelta(days=30)).isoformat()
         (open_t, closed_t, new_week, new_month, closed_week, resolved_month) = await asyncio.gather(
             self.tickets.count_documents({'status': 'open'}),
             self.tickets.count_documents({'status': 'closed'}),
@@ -960,8 +971,8 @@ class DBCore:
         durations_h = []
         for t in resolved_month:
             try:
-                c0 = datetime.fromisoformat(t['created_at'])
-                c1 = datetime.fromisoformat(t['closed_at'])
+                c0 = parse_machine_datetime(t['created_at'])
+                c1 = parse_machine_datetime(t['closed_at'])
                 durations_h.append((c1 - c0).total_seconds() / 3600)
             except Exception:
                 continue
@@ -989,7 +1000,7 @@ class DBCore:
                 'total_sent':    sum(r.get('sent', 0) for r in runs),
                 'total_failed':  sum(r.get('failed', 0) for r in runs),
                 'last_status':   last.get('status', ''),
-                'last_at':       (last.get('started_at') or '')[:16].replace('T', ' '),
+                'last_at':       last.get('started_at') or None,
                 'last_sent':     last.get('sent', 0),
                 'last_failed':   last.get('failed', 0),
             }
@@ -997,7 +1008,7 @@ class DBCore:
 
 
     async def new_resources_count(self, days: int = 7) -> int:
-        since = (datetime.now() - timedelta(days=days)).isoformat()
+        since = (now_utc() - timedelta(days=days)).isoformat()
         bs, refs = await asyncio.gather(
             self.bs_content.count_documents({'uploaded_at': {'$gt': since}}),
             self.ref_files.count_documents({'uploaded_at': {'$gt': since}}),
@@ -1019,7 +1030,7 @@ class DBCore:
             days = max(1, min(90, int(days or 14)))
         except (TypeError, ValueError):
             days = 14
-        now = datetime.now()
+        now = now_utc()
         current_start = now - timedelta(days=days)
         previous_start = now - timedelta(days=days * 2)
         since = current_start.isoformat()
@@ -1027,10 +1038,14 @@ class DBCore:
         period_end = now.isoformat()
 
         async def _daily(col, ts_field):
-            expr = {"$substrBytes": [f"${ts_field}", 0, 10]}
             rows = await col.aggregate([
                 {"$match": {ts_field: {"$gte": since, "$lt": period_end}}},
-                {"$group": {"_id": expr, "count": {"$sum": 1}}},
+                {"$addFields": {"_event_dt": {"$convert": {
+                    "input": f"${ts_field}", "to": "date", "onError": None, "onNull": None}}}},
+                {"$match": {"_event_dt": {"$ne": None}}},
+                {"$group": {"_id": {"$dateToString": {
+                    "format": "%Y-%m-%d", "date": "$_event_dt", "timezone": "Asia/Tehran"}},
+                    "count": {"$sum": 1}}},
                 {"$sort": {"_id": 1}},
             ]).to_list(days + 2)
             return [{"date": r["_id"], "count": r["count"]}
@@ -1134,13 +1149,17 @@ class DBCore:
         substring به‌جای پارس تاریخ کامل استخراج می‌شود (سریع‌تر و
         مطمئن‌تر روی رشته‌های با دقت میکروثانیه‌ی متغیر).
         """
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago = (now_utc() - timedelta(days=7)).isoformat()
         total_week, by_hour = await asyncio.gather(
             self.stats_col.count_documents({'timestamp': {'$gt': week_ago}}),
             self.stats_col.aggregate([
                 {'$match': {'timestamp': {'$gt': week_ago}}},
+                {'$addFields': {'_event_dt': {'$convert': {
+                    'input': '$timestamp', 'to': 'date', 'onError': None, 'onNull': None}}}},
+                {'$match': {'_event_dt': {'$ne': None}}},
                 {'$group': {
-                    '_id': {'$substrBytes': ['$timestamp', 11, 2]},
+                    '_id': {'$dateToString': {
+                        'format': '%H', 'date': '$_event_dt', 'timezone': 'Asia/Tehran'}},
                     'count': {'$sum': 1},
                 }},
                 {'$sort': {'count': -1}}, {'$limit': 1},
@@ -1163,7 +1182,7 @@ class DBCore:
         و پیش‌بینی رشد هفته‌ی بعد را تولید می‌کند. هیچ داده‌ای شبیه‌سازی
         نمی‌شود — همه از همان کالکشن‌های موجود محاسبه می‌شود.
         """
-        now        = datetime.now()
+        now        = now_utc()
         h48        = (now - timedelta(hours=48)).isoformat()
         d14        = (now - timedelta(days=14)).isoformat()
         d3         = (now - timedelta(days=3)).isoformat()
@@ -1199,13 +1218,13 @@ class DBCore:
         oldest_pending_h = None
         if oldest_pending:
             try:
-                oldest_pending_h = round((now - datetime.fromisoformat(oldest_pending[0]['registered_at'])).total_seconds() / 3600)
+                oldest_pending_h = round((now - parse_machine_datetime(oldest_pending[0]['registered_at'])).total_seconds() / 3600)
             except Exception:
                 pass
         oldest_ticket_h = None
         if oldest_ticket:
             try:
-                oldest_ticket_h = round((now - datetime.fromisoformat(oldest_ticket[0]['created_at'])).total_seconds() / 3600)
+                oldest_ticket_h = round((now - parse_machine_datetime(oldest_ticket[0]['created_at'])).total_seconds() / 3600)
             except Exception:
                 pass
 
@@ -1250,7 +1269,7 @@ class DBCore:
                     top_admins.append({'name': nm, 'role': rl, 'count': wk})
                 if last_ts:
                     try:
-                        days_idle = (now - datetime.fromisoformat(last_ts)).days
+                        days_idle = (now - parse_machine_datetime(last_ts)).days
                     except Exception:
                         days_idle = None
                 else:
@@ -1352,7 +1371,7 @@ class DBCore:
     async def set_setting(self, key: str, value) -> None:
         await self.settings.update_one(
             {'_id': 'global'},
-            {'$set': {key: value, 'updated_at': datetime.now().isoformat()}},
+            {'$set': {key: value, 'updated_at': utc_now_iso()}},
             upsert=True
         )
 
@@ -1463,7 +1482,7 @@ class DBCore:
                 })
 
         doc = {
-            'timestamp':      datetime.now().isoformat(),
+            'timestamp':      utc_now_iso(),
             'severity':       severity,
             'module':         module,
             'category':       category,
@@ -1542,7 +1561,7 @@ class DBCore:
 
     async def weekly_report_stats(self) -> dict:
         """آمار خلاصه برای گزارش دوره‌ای ادمین"""
-        week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        week_ago = (now_utc() - timedelta(days=7)).isoformat()
 
         new_users = await self.users.count_documents(
             {'registered_at': {'$gte': week_ago}}
@@ -1582,7 +1601,7 @@ class DBCore:
         )
 
         # کاربرانی که بیش از ۱۴ روز فعالیت نداشتند (احتمال غیرفعال شدن)
-        inactive_cutoff = (datetime.now() - timedelta(days=14)).isoformat()
+        inactive_cutoff = (now_utc() - timedelta(days=14)).isoformat()
         inactive_count = await self.users.count_documents({'approved': True, '$or': [
             {'last_active': {'$lt': inactive_cutoff}},
             {'last_active': {'$exists': False}, 'registered_at': {'$lt': inactive_cutoff}},
@@ -1754,11 +1773,11 @@ class DBCore:
         try:
             uid = int(user_id)
             meta = self.notif_type_meta(ntype)
-            now_iso = datetime.now().isoformat()
+            now_iso = utc_now_iso()
 
             # ♻ Smart Grouping — ادغام در سند باز هم‌کلید
             if group_key:
-                cutoff = (datetime.now() - timedelta(
+                cutoff = (now_utc() - timedelta(
                     hours=self._INBOX_GROUP_WINDOW_H)).isoformat()
                 prev = await self.user_notifs.find_one({
                     'user_id': uid, 'group_key': group_key,
@@ -1867,7 +1886,7 @@ class DBCore:
                         'text':       dm,
                         'link':       link or None,  # 🧩 ⇒ دکمه‌ی WebApp
                         'sent':       False,
-                        'created_at': datetime.now().isoformat(),
+                        'created_at': utc_now_iso(),
                     })
                     dm_queued = True
                 except Exception as e:
@@ -1881,7 +1900,7 @@ class DBCore:
         if not docs:
             return
         try:
-            now_iso = datetime.now().isoformat()
+            now_iso = utc_now_iso()
             rows = []
             for d in docs:
                 meta = self.notif_type_meta(d['type'])
@@ -2011,7 +2030,7 @@ class DBCore:
         """ثبت شروع یک اجرای job — برمی‌گرداند run_id برای ادامه ثبت"""
         r = await self.notif_runs.insert_one({
             'job_name':  job_name,
-            'started_at': datetime.now().isoformat(),
+            'started_at': utc_now_iso(),
             'status':    'running',
             'sent':      0,
             'failed':    0,
@@ -2030,7 +2049,7 @@ class DBCore:
                 {'$set': {
                     'sent': sent, 'failed': failed, 'total': total,
                     'status': status, 'error': error,
-                    'finished_at': datetime.now().isoformat(),
+                    'finished_at': utc_now_iso(),
                 }}
             )
         except Exception:
@@ -2228,7 +2247,7 @@ class DBCore:
             await self.users.update_one(
                 {'user_id': uid},
                 {'$set': {'blocked_bot': blocked,
-                          'blocked_bot_at': datetime.now().isoformat()}}
+                          'blocked_bot_at': utc_now_iso()}}
             )
         except Exception:
             pass
@@ -2289,7 +2308,7 @@ class DBCore:
         برای نمایش «کاربران آنلاین تقریبی» در وضعیت ربات استفاده می‌شود.
         """
         from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        cutoff = (now_utc() - timedelta(minutes=minutes)).isoformat()
         return await self.users.count_documents({'last_active': {'$gte': cutoff}})
 
 
@@ -2335,7 +2354,7 @@ class DBCore:
         آپدیت می‌شود (نه رکورد تکراری)، وگرنه درج می‌شود.
         خروجی: لیست رکوردهای نهایی ثبت‌شده (برای ارسال نوتیف).
         """
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         saved = []
         for e in entries:
             uid, score = e['user_id'], e['score']
@@ -2377,7 +2396,7 @@ class DBCore:
                 {'_id': ObjectId(grade_id)},
                 {'$set': {'score': score, 'max_score': 20,
                           'entered_by': entered_by,
-                          'updated_at': datetime.now().isoformat()}})
+                          'updated_at': utc_now_iso()}})
             return bool(getattr(result, 'matched_count', 0))
         except Exception:
             return False
@@ -2409,8 +2428,8 @@ class DBCore:
             clauses.append({'lesson': {'$regex': re.escape(lesson.strip()), '$options': 'i'}})
         if date_from or date_to:
             dates = {}
-            if date_from: dates['$gte'] = date_from[:10]
-            if date_to: dates['$lte'] = date_to[:10]
+            if date_from: dates['$gte'] = parse_gregorian_date(date_from).isoformat()
+            if date_to: dates['$lte'] = parse_gregorian_date(date_to).isoformat()
             clauses.append({'exam_date': dates})
         if q and q.strip():
             search_ids = await self.users.distinct('user_id', self.build_user_search_query(q.strip()))
@@ -2455,7 +2474,7 @@ class DBCore:
         check_and_consume_quota نگه‌داری می‌شوند؛ ai_total_tokens/
         ai_tokens_today هم در ai_inc_tokens. اینجا فقط جمع‌بندی‌شان می‌کنیم.
         """
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = today_tehran().isoformat()
         # تمام sum/topها داخل MongoDB؛ هیچ full-user hydration برای Analytics.
         rows = await self.users.aggregate([
             {'$match': {'$or': [{'ai_total_usage': {'$gt': 0}}, {'ai_usage_date': today}]}},
@@ -2543,7 +2562,7 @@ class DBCore:
             'name':     name or '—',
             'question': (question or '—')[:1000],
             'answer':   (answer or '—')[:2000],
-            'created_at': datetime.now(),
+            'created_at': now_utc(),
         })
 
 
@@ -2565,7 +2584,7 @@ class DBCore:
             {'user_id': uid},
             {
                 '$push': {'ai_mem': {'$each': [{'r': role, 't': (text or '')[:1200]}], '$slice': -max_items}},
-                '$set': {'ai_mem_at': datetime.now()},
+                '$set': {'ai_mem_at': now_utc()},
             },
         )
 
@@ -2596,8 +2615,8 @@ class DBCore:
             'items':      [],
             'preview':    '',
             'msg_count':  0,
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
+            'created_at': utc_now_iso(),
+            'updated_at': utc_now_iso(),
         }
         r = await self.ai_conversations.insert_one(doc)
         return str(r.inserted_id)
@@ -2608,7 +2627,7 @@ class DBCore:
                                   max_items: int = 120) -> str:
         """درج رونوشتِ یک گفت‌وگو — آیتم‌ها عیناً (با نقش و متن) کپی
         می‌شوند و برچسبِ زمانیِ ساخت/به‌روزرسانی، لحظه‌ی فعلی است."""
-        now = datetime.now().isoformat()
+        now = utc_now_iso()
         clipped = (items or [])[-max_items:]
         doc = {
             'user_id':    uid,
@@ -2636,7 +2655,7 @@ class DBCore:
         ).to_list(200)
         docs.sort(key=lambda d: (
             0 if d.get('pinned') else 1,
-            -(datetime.fromisoformat(d.get('updated_at', '1970-01-01')).timestamp()
+            -(parse_machine_datetime(d.get('updated_at', '1970-01-01T00:00:00+00:00')).timestamp()
               if d.get('updated_at') else 0),
         ))
         return docs
@@ -2657,7 +2676,7 @@ class DBCore:
         patch = {k: v for k, v in fields.items() if k in allowed}
         if not patch:
             return False
-        patch['updated_at'] = datetime.now().isoformat()
+        patch['updated_at'] = utc_now_iso()
         try:
             oid = ObjectId(cid)
         except Exception:
@@ -2698,7 +2717,7 @@ class DBCore:
         except Exception:
             return False
         set_fields = {
-            'updated_at': datetime.now().isoformat(),
+            'updated_at': utc_now_iso(),
             'preview':    (preview or '')[:90],
         }
         if title:
@@ -2726,7 +2745,7 @@ class DBCore:
             {'user_id': uid},
             {'$set': {
                 'ai_doc_uri': uri, 'ai_doc_mime': mime, 'ai_doc_name': name[:100],
-                'ai_doc_at': datetime.now(),
+                'ai_doc_at': now_utc(),
             }},
         )
 

@@ -1,12 +1,12 @@
 """Class and exam schedule endpoints."""
 
-from datetime import date
 from typing import Any, Literal, Mapping
 
 from fastapi import APIRouter, Depends, Query
 
 from api.auth import get_current_user
 from database import db
+from time_utils import parse_gregorian_date
 from utils import now_tehran
 
 
@@ -97,9 +97,7 @@ def _format_schedule(
         and raw_date
     ):
         try:
-            exam_date = date.fromisoformat(
-                raw_date
-            )
+            exam_date = parse_gregorian_date(raw_date)
 
             document["days_left"] = max(
                 0,

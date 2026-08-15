@@ -1,6 +1,5 @@
 """🎓 Content Admin — 🌊 موج C1: enforce اسکوپ ورودی در سطح endpoint"""
 import os
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -8,6 +7,7 @@ from api.auth import get_content_admin_user, get_content_global_user, resolve_co
 from api.telegram_send import upload_and_get_file_id
 from api.routers.admin_panel import _audit
 from database import db
+from time_utils import TimeContractError, parse_gregorian_date
 
 router = APIRouter()
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
@@ -103,7 +103,7 @@ async def pending_questions(admin=Depends(get_content_admin_user),
         "questions":[{"id":str(d["_id"]),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
         "difficulty":d.get("difficulty",""),"question":d.get("question",""),"options":d.get("options",[]),
         "correct":d.get("correct_answer",0),"explanation":d.get("explanation",""),
-        "creator_name":d.get("creator_name",""),"created_at":d.get("created_at","")[:10],
+        "creator_name":d.get("creator_name",""),"created_at":d.get("created_at") or None,
         "intake":d.get("intake",""),
         "source":d.get("source","bot")} for d in docs]}
 
@@ -268,8 +268,8 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
     if body.flex_type not in ("fixed", "flexible"):
         raise HTTPException(422, "نوع زمان‌بندی نامعتبر")
     try:
-        datetime.strptime(body.date, "%Y-%m-%d")
-    except ValueError:
+        parse_gregorian_date(body.date)
+    except (TimeContractError, ValueError):
         raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
     group = db.normalize_group(body.group) or "هر دو"
     sid = await db.add_schedule(
@@ -299,8 +299,8 @@ class ScheduleUpdate(BaseModel):
 @router.patch("/schedule/{sid}")
 async def edit_schedule(sid: str, body: ScheduleUpdate, admin=Depends(GLOBAL_USER)):
     try:
-        datetime.strptime(body.date, "%Y-%m-%d")
-    except ValueError:
+        parse_gregorian_date(body.date)
+    except (TimeContractError, ValueError):
         raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
     old = await db.get_schedule_by_id(sid)
     if not old:
@@ -363,8 +363,8 @@ class FlexChange(BaseModel):
 @router.post("/schedule/{sid}/flex-change")
 async def flex_change(sid: str, body: FlexChange, admin=Depends(GLOBAL_USER)):
     try:
-        datetime.strptime(body.date, "%Y-%m-%d")
-    except ValueError:
+        parse_gregorian_date(body.date)
+    except (TimeContractError, ValueError):
         raise HTTPException(422, "فرمت تاریخ YYYY-MM-DD")
     sched = await db.get_schedule_by_id(sid)
     if not sched:
@@ -1131,7 +1131,7 @@ async def qbank_files_ep(lesson: Optional[str]=Query(None), topic: Optional[str]
         "description":f.get("description",""),"file_type":f.get("file_type","document"),
         "intake": f.get("intake") or "",
         "readonly": (f.get("intake") or '') != iv if scope.get("kind") == "scoped" else False,
-        "downloads":f.get("downloads",0),"upload_date":f.get("upload_date","")[:10]} for f in items]}
+        "downloads":f.get("downloads",0),"upload_date":f.get("upload_date") or None} for f in items]}
 
 @router.post("/qbank/files")
 async def qbank_add_file_ep(lesson: str = Form(...), topic: str = Form(...),
@@ -1191,8 +1191,8 @@ async def reports_list_ep(
         "reports":[{"id":r.get("report_id"),"target_type":r.get("target_type",""),
         "target_id":r.get("target_id",""),"reporter_name":r.get("reporter_name",""),
         "reason":REASON_FA.get(r.get("reason",""), r.get("reason","")),"note":r.get("note",""),
-        "status":r.get("status","new"),"created_at":str(r.get("created_at", ""))[:16],
-        "resolved_at":str(r.get("resolved_at", "") or "")[:16]} for r in items]}
+        "status":r.get("status","new"),"created_at":r.get("created_at") or None,
+        "resolved_at":r.get("resolved_at") or None} for r in items]}
 
 class ReportStatusUpdate(BaseModel):
     status: str

@@ -5,12 +5,13 @@ import json
 import os
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl
 
 from fastapi import Depends, Header, HTTPException, Request
 
 from database import db
+from time_utils import TimeContractError, now_utc as _contract_now_utc, parse_machine_datetime
 
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
@@ -98,8 +99,8 @@ def new_session_token() -> str:
 
 
 def utc_now() -> datetime:
-    """Timezone-aware UTC clock shared by WebAdmin auth/session contracts."""
-    return datetime.now(timezone.utc)
+    """Compatibility alias for the global HUMSYAR time contract."""
+    return _contract_now_utc()
 
 
 def expiry_is_past(value, now: datetime | None = None) -> bool:
@@ -110,18 +111,11 @@ def expiry_is_past(value, now: datetime | None = None) -> bool:
     rollout and are rejected in Python once expired.
     """
     now = now or utc_now()
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return True
-    else:
+    try:
+        parsed = parse_machine_datetime(value)
+    except (TimeContractError, TypeError, ValueError):
         return True
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+    return parsed <= parse_machine_datetime(now)
 
 
 async def resolve_web_session(token: str) -> dict | None:

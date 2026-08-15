@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+from time_utils import format_datetime_fa, now_utc, utc_now_iso
 
 from fastapi import (
     APIRouter,
@@ -323,8 +324,8 @@ async def overview(
     # Fix-Foundation: KPIهای تکمیلی از داده‌ی واقعی؛ ساختار nested قدیمی
     # حفظ می‌شود و فقط کلیدهای افزوده به stats اضافه می‌شوند.
     stats = dict(stats or {})
-    now_iso = datetime.now().isoformat()
-    soon_iso = (datetime.now() + timedelta(days=7)).isoformat()
+    now_iso = utc_now_iso()
+    soon_iso = (now_utc() + timedelta(days=7)).isoformat()
     stats["expiring"] = await db.subscriptions.count_documents({
         "status": "active", "end_date": {"$gte": now_iso, "$lte": soon_iso},
     })
@@ -950,8 +951,7 @@ async def decide_payment(
             False,
 
         "created_at":
-            datetime.now()
-            .isoformat(),
+            utc_now_iso(),
     })
 
     decision = "approved" if body.approved else "rejected"
@@ -1175,13 +1175,7 @@ async def subscribers(
                     "",
                 ),
 
-            "end_date":
-                str(
-                    item.get(
-                        "end_date",
-                        "",
-                    )
-                )[:10],
+            "end_date": item.get("end_date") or None,
         })
 
     return {
@@ -1212,8 +1206,8 @@ async def subscriber_detail(
         },
         "subscription": ({
             "status": sub.get("status", ""), "plan_name": sub.get("plan_name", ""),
-            "start_date": str(sub.get("start_date", ""))[:10],
-            "end_date": str(sub.get("end_date", ""))[:10],
+            "start_date": sub.get("start_date") or None,
+            "end_date": sub.get("end_date") or None,
             "days_left": await db.sub_days_left(user_id),
             "source": sub.get("source", ""), "revoke_reason": sub.get("revoke_reason", ""),
         } if sub else None),
@@ -1223,8 +1217,8 @@ async def subscriber_detail(
             "final_price": p.get("final_price", p.get("price", 0)),
             "discount_code": p.get("discount_code", ""),
             "status": p.get("status", ""),
-            "submitted_at": str(p.get("submitted_at", ""))[:16],
-            "reviewed_at": str(p.get("reviewed_at", ""))[:16],
+            "submitted_at": p.get("submitted_at") or None,
+            "reviewed_at": p.get("reviewed_at") or None,
             "review_note": p.get("review_note", ""),
         } for p in history],
     }
@@ -1351,7 +1345,7 @@ async def grant_subscription(
     )
 
 
-    end_text = str(end_date)[:10]
+    end_text = format_datetime_fa(end_date, long=True)
     await _notify_subscription_change(
         body.user_id,
         "💎 اشتراک هامزیار فعال شد",
@@ -1423,7 +1417,7 @@ async def grant_subscription_bulk(
             end_date = await db.sub_activate(
                 uid, body.days, body.plan_name.strip(), source="free_grant",
                 granted_by=admin["id"], extend=body.extend)
-            end_text = str(end_date)[:10]
+            end_text = format_datetime_fa(end_date, long=True)
             await _notify_subscription_change(
                 uid, "🎁 اشتراک رایگان هامزیار",
                 f"{body.days} روز اشتراک تا {end_text} برای شما فعال شد.",
@@ -1536,14 +1530,7 @@ async def discounts(
                         0,
                     ),
 
-                "expires_at":
-                    str(
-                        item.get(
-                            "expires_at",
-                            "",
-                        )
-                        or ""
-                    )[:10],
+                "expires_at": item.get("expires_at") or None,
 
                 "active":
                     item.get(
@@ -1579,23 +1566,15 @@ async def add_discount(
         get_admin_user
     ),
 ):
-    created = (
-        await db.discount_add(
-            body.code,
-
-            body.percent,
-
-            body.max_uses,
-
-            body.expires_at,
-
-            admin["id"],
-
-            body.target_plan_ids,
-
-            body.per_user_limit,
+    try:
+        created = await db.discount_add(
+            body.code, body.percent, body.max_uses, body.expires_at,
+            admin["id"], body.target_plan_ids, body.per_user_limit,
         )
-    )
+    except ValueError as exc:
+        if str(exc) == "invalid_discount_expiry":
+            raise HTTPException(status_code=422, detail="تاریخ انقضای تخفیف معتبر نیست")
+        raise
 
     if not created:
         raise HTTPException(
@@ -1869,7 +1848,7 @@ async def start_discount_broadcast(
         await db.discount_bcast_update(bid, {
             "status": "cancelled" if cancelled else "completed",
             "sent": sent, "failed": failed,
-            "blocked": blocked, "finished_at": datetime.now().isoformat(),
+            "blocked": blocked, "finished_at": utc_now_iso(),
         })
         if not cancelled:
             await _audit(
@@ -1975,7 +1954,7 @@ async def discount_stats(
         "remaining_uses": remaining,
         "target_plans": plans_names or None,
         "per_user_limit": discount.get("per_user_limit", 0),
-        "expires_at": str(discount.get("expires_at", "") or "")[:10],
+        "expires_at": discount.get("expires_at") or None,
         "active": discount.get("active", True),
         "payments": pay,
     }

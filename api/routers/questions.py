@@ -6,7 +6,6 @@ import random
 import time
 import uuid
 
-from datetime import datetime
 from html import escape
 from typing import (
     Any,
@@ -39,6 +38,7 @@ from api.user_metrics import (
 )
 
 from database import db
+from time_utils import utc_now_iso
 
 
 router = APIRouter()
@@ -346,8 +346,7 @@ async def expire_if_needed(
         >= int(deadline)
     ):
         finished_at = (
-            datetime.now()
-            .isoformat()
+            utc_now_iso()
         )
 
         await exam_sessions.update_one(
@@ -1140,7 +1139,7 @@ async def start_exam(
             "answered": 0,
             "answers": [],
             "status": "active",
-            "started_at": datetime.now().isoformat(),
+            "started_at": utc_now_iso(),
             "finished_at": "",
             "promotion": True,
             "target_rank": view.get("target_rank") or "",
@@ -1272,8 +1271,7 @@ async def start_exam(
             "active",
 
         "started_at":
-            datetime.now()
-            .isoformat(),
+            utc_now_iso(),
 
         "finished_at":
             "",
@@ -1408,8 +1406,7 @@ async def exam_next(
         )
 
     finished_at = (
-        datetime.now()
-        .isoformat()
+        utc_now_iso()
     )
 
     await exam_sessions.update_one(
@@ -1574,8 +1571,7 @@ async def exam_answer(
     )
 
     answered_at = (
-        datetime.now()
-        .isoformat()
+        utc_now_iso()
     )
 
     update = {
@@ -1767,8 +1763,7 @@ async def abandon_exam(
                         "abandoned",
 
                     "finished_at":
-                        datetime.now()
-                        .isoformat(),
+                        utc_now_iso(),
                 }
             },
         )
@@ -1957,8 +1952,7 @@ async def design(
                 "webapp",
 
             "created_at":
-                datetime.now()
-                .isoformat(),
+                utc_now_iso(),
 
             "attempt_count":
                 0,
@@ -2001,8 +1995,7 @@ async def design(
                     False,
 
                 "created_at":
-                    datetime.now()
-                    .isoformat(),
+                    utc_now_iso(),
             })
 
         except Exception:
@@ -2166,8 +2159,7 @@ async def update_my_design(
                 **design_data(body),
 
                 "updated_at":
-                    datetime.now()
-                    .isoformat(),
+                    utc_now_iso(),
             }
         },
     )
