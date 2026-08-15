@@ -681,7 +681,7 @@ async def broadcast(body: BroadcastSend, admin=Depends(get_admin_user)):
     users = await _resolve_broadcast_users(body.target)
     notif = db.client["medicalbot"]["bot_notifications"]
     doc_base = {"type":"broadcast","text":text,"sent":False,"created_at":datetime.now().isoformat(),
-                "correlation_id": current_request_id.get()}
+                "correlation_id": current_request_id.get(), "audience": body.target.model_dump()}
     if body.send_at: doc_base["send_at"] = body.send_at
     docs = [{**doc_base, "chat_id": u["user_id"]} for u in users]
     if docs: await notif.insert_many(docs)
@@ -707,13 +707,14 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20))
     pipeline = [
         {"$match": {"type": "broadcast"}},
         {"$group": {"_id": {"text":"$text","created_at":"$created_at","correlation_id":"$correlation_id"},
+            "audience": {"$first": "$audience"},
             "total": {"$sum": 1}, "sent": {"$sum": {"$cond": ["$sent", 1, 0]}},
             "failed": {"$sum": {"$cond": [{"$eq": ["$failed", True]}, 1, 0]}}}},
         {"$sort": {"_id.created_at": -1}}, {"$limit": limit},
     ]
     rows = await notif.aggregate(pipeline).to_list(limit)
     return {"history":[{"text":r["_id"]["text"][:80],"created_at":r["_id"]["created_at"],
-        "correlation_id":r["_id"].get("correlation_id"),
+        "correlation_id":r["_id"].get("correlation_id"), "audience":r.get("audience") or {"scope":"all"},
         "total":r["total"],"sent":r["sent"],"failed":r["failed"]} for r in rows]}
 
 # ── 🌊 موج Notif-Scheduled — مدیریت ارسال‌های همگانی زمان‌دارِ در انتظار ──

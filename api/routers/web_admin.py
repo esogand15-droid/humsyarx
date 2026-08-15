@@ -26,7 +26,7 @@ import json
 import re
 import secrets
 import time
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -46,7 +46,9 @@ from api.routers import ai_management as ai_admin_api
 from api.routers import content_admin as content_api
 from api.routers import academic_admin as academic_api
 from api.routers import rbac as rbac_api
+from api.routers import resources as resources_api
 import backup as backup_service
+from request_context import current_request_id
 
 router = APIRouter()
 
@@ -313,6 +315,118 @@ async def overview(user=Depends(_guard_any_admin)):
     return data
 
 
+_SMART_USER_RAW_FIELDS = {
+    "name": "name", "nickname": "nickname", "username": "username",
+    "student_id": "student_id", "intake": "intake", "group": "group",
+    "total_answers": "total_answers", "correct_answers": "correct_answers",
+    "streak": "streak_current", "ai_usage": "ai_total_usage",
+    "registered_at": "registered_at", "last_active": "last_active",
+}
+_SMART_OPS = {"eq": "$eq", "ne": "$ne", "gt": "$gt", "gte": "$gte", "lt": "$lt", "lte": "$lte"}
+
+
+async def _compile_user_smart_query(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        tree = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(422, "ساختار فیلتر هوشمند معتبر نیست")
+    state = {"nodes": 0, "leaves": 0}
+    now = datetime.now()
+
+    async def compile_node(node, depth=0):
+        if depth > 3 or not isinstance(node, dict):
+            raise HTTPException(422, "عمق فیلتر هوشمند بیشتر از حد مجاز است")
+        state["nodes"] += 1
+        if state["nodes"] > 40:
+            raise HTTPException(422, "ساختار فیلتر هوشمند بیش از حد پیچیده است")
+        if "conditions" in node:
+            logic = str(node.get("logic") or "and").lower()
+            if logic not in ("and", "or"):
+                raise HTTPException(422, "منطق گروه باید AND یا OR باشد")
+            conditions = node.get("conditions") or []
+            if not conditions:
+                raise HTTPException(422, "گروه شرط خالی است")
+            compiled = [await compile_node(child, depth + 1) for child in conditions]
+            return {"$and" if logic == "and" else "$or": compiled}
+        state["leaves"] += 1
+        if state["leaves"] > 30:
+            raise HTTPException(422, "حداکثر ۳۰ شرط در فیلتر هوشمند مجاز است")
+        field, op, value = node.get("field"), node.get("op", "eq"), node.get("value")
+        if field in _SMART_USER_RAW_FIELDS:
+            db_field = _SMART_USER_RAW_FIELDS[field]
+            if op == "contains":
+                text = str(value or "").strip()
+                if not text: raise HTTPException(422, "مقدار جست‌وجوی شرط خالی است")
+                return {db_field: {"$regex": re.escape(text), "$options": "i"}}
+            if op == "in":
+                values = value if isinstance(value, list) else [part.strip() for part in str(value or "").split(",") if part.strip()]
+                return {db_field: {"$in": values[:100]}}
+            mongo_op = _SMART_OPS.get(op)
+            if not mongo_op: raise HTTPException(422, "عملگر فیلتر هوشمند پشتیبانی نمی‌شود")
+            if field in ("total_answers", "correct_answers", "streak", "ai_usage"):
+                try: value = float(value)
+                except (TypeError, ValueError): raise HTTPException(422, "مقدار عددی شرط نامعتبر است")
+            if field == "group": value = db.normalize_group(value)
+            return {db_field: value} if op == "eq" else {db_field: {mongo_op: value}}
+        if field == "status":
+            mapping = {
+                "active": {"approved": True, "suspended": {"$ne": True}},
+                "pending": {"approved": False, "suspended": {"$ne": True}},
+                "suspended": {"suspended": True},
+            }
+            if op not in ("eq", "ne") or value not in mapping:
+                raise HTTPException(422, "شرط وضعیت نامعتبر است")
+            if op == "eq": return mapping[value]
+            return {"$nor": [mapping[value]]}
+        if field == "accuracy":
+            try: threshold = float(value)
+            except (TypeError, ValueError): raise HTTPException(422, "آستانه دقت نامعتبر است")
+            if op not in _SMART_OPS: raise HTTPException(422, "عملگر دقت نامعتبر است")
+            accuracy_expr = {"$cond": [
+                {"$gt": [{"$ifNull": ["$total_answers", 0]}, 0]},
+                {"$multiply": [{"$divide": [{"$ifNull": ["$correct_answers", 0]},
+                                               {"$ifNull": ["$total_answers", 1]}]}, 100]}, 0]}
+            return {"$expr": {_SMART_OPS[op]: [accuracy_expr, threshold]}}
+        if field == "inactive_days":
+            try: days = max(0, min(3650, int(value)))
+            except (TypeError, ValueError): raise HTTPException(422, "تعداد روز عدم فعالیت نامعتبر است")
+            cutoff = (now - timedelta(days=days)).isoformat()
+            clause = {"$or": [{"last_active": {"$lt": cutoff}}, {"last_active": {"$exists": False}}, {"last_active": ""}]}
+            return clause if op in ("gte", "gt", "eq") else {"$nor": [clause]}
+        if field == "subscription_days_left":
+            try: days = max(0, min(3650, int(value)))
+            except (TypeError, ValueError): raise HTTPException(422, "روز باقی‌مانده اشتراک نامعتبر است")
+            end_filter = {"$gte": now.isoformat()}
+            cutoff = (now + timedelta(days=days)).isoformat()
+            if op in ("lte", "lt", "eq"): end_filter["$lte"] = cutoff
+            elif op in ("gt", "gte"): end_filter["$gt"] = cutoff
+            else: raise HTTPException(422, "عملگر اشتراک نامعتبر است")
+            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": end_filter})
+            return {"user_id": {"$in": ids}}
+        if field == "open_tickets":
+            ids = await db.tickets.distinct("user_id", {"status": "open"})
+            truthy = str(value).lower() in ("1", "true", "yes") or value is True
+            return {"user_id": {"$in" if truthy else "$nin": ids}}
+        if field == "role":
+            ids = await db.user_ids_by_role(str(value or "").strip(), limit=100000)
+            return {"user_id": {"$in": ids}}
+        if field == "exam_count":
+            try: threshold = max(0, int(value))
+            except (TypeError, ValueError): raise HTTPException(422, "تعداد آزمون نامعتبر است")
+            mongo_op = _SMART_OPS.get(op)
+            if not mongo_op: raise HTTPException(422, "عملگر تعداد آزمون نامعتبر است")
+            grouped = await db.exam_sessions.aggregate([
+                {"$group": {"_id": "$user_id", "count": {"$sum": 1}}},
+                {"$match": {"count": {mongo_op: threshold}}}, {"$project": {"_id": 1}},
+            ]).to_list(100000)
+            return {"user_id": {"$in": [row.get("_id") for row in grouped if row.get("_id") is not None]}}
+        raise HTTPException(422, "فیلد فیلتر هوشمند پشتیبانی نمی‌شود")
+
+    return await compile_node(tree)
+
+
 @router.get("/users")
 async def users_table(
     page: int = Query(1, ge=1),
@@ -326,6 +440,7 @@ async def users_table(
     accuracy_max: float | None = Query(None, ge=0, le=100),
     sub_expiring_days: int | None = Query(None, ge=1, le=365),
     has_open_ticket: bool | None = Query(None),
+    smart: str | None = Query(None, max_length=8000),
     sort_by: str = Query("registered_at", pattern="^(registered_at|last_active|name|total_answers|correct_answers|streak_current|ai_total_usage)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user=Depends(_perm_any("users.view", "users.manage")),
@@ -337,6 +452,10 @@ async def users_table(
     در پاسخ وجود ندارد.
     """
     filt = db.build_user_search_query(q) if q else {}
+    smart = smart if isinstance(smart, str) else None
+    smart_filter = await _compile_user_smart_query(smart)
+    if smart_filter:
+        filt = {"$and": [filt, smart_filter]} if filt else {"$and": [smart_filter]}
     if intake:
         filt["intake"] = intake
     if group:
@@ -349,7 +468,7 @@ async def users_table(
         filt["approved"] = True
         filt["suspended"] = {"$ne": True}
     if role:
-        role_ids = await db.user_ids_by_role(role, limit=5000)
+        role_ids = await db.user_ids_by_role(role, limit=100000)
         # users.role فقط mirror سازگاری است؛ user_ids_by_role هر سه منبع را
         # deduplicate می‌کند و منطق RBAC موازی نمی‌سازد.
         filt["user_id"] = {"$in": role_ids}
@@ -481,11 +600,12 @@ async def export_users_csv(
     role: str | None = Query(None), activity: str | None = Query(None),
     accuracy_max: float | None = Query(None, ge=0, le=100),
     sub_expiring_days: int | None = Query(None, ge=1, le=365),
-    has_open_ticket: bool | None = Query(None),
+    has_open_ticket: bool | None = Query(None), smart: str | None = Query(None, max_length=8000),
     sort_by: str = Query("registered_at"), sort_dir: str = Query("desc"),
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
+    smart = smart if isinstance(smart, str) else None
     allowed_sort = {"registered_at", "last_active", "name", "total_answers", "correct_answers", "streak_current", "ai_total_usage"}
     if sort_by not in allowed_sort or sort_dir not in ("asc", "desc"):
         raise HTTPException(422, "مرتب‌سازی نامعتبر است")
@@ -495,7 +615,7 @@ async def export_users_csv(
                  target_type="export", target_label="users.csv",
                  after={"filtered": bool(any([q, intake, group, status, role, activity,
                                                 accuracy_max is not None, sub_expiring_days,
-                                                has_open_ticket is not None]))},
+                                                has_open_ticket is not None, smart]))},
                  tags=["خروجی", "کاربران", "پنل_وب"])
     columns = ["telegram_id", "name", "nickname", "username", "student_id", "intake", "group",
                "status", "roles", "subscription", "subscription_end", "accuracy", "total_answers",
@@ -514,7 +634,7 @@ async def export_users_csv(
             result = await users_table(
                 page=page, per_page=100, q=q, intake=intake, group=group, status=status,
                 role=role, activity=activity, accuracy_max=accuracy_max,
-                sub_expiring_days=sub_expiring_days, has_open_ticket=has_open_ticket,
+                sub_expiring_days=sub_expiring_days, has_open_ticket=has_open_ticket, smart=smart,
                 sort_by=sort_by, sort_dir=sort_dir, user=user,
             )
             rows = result.get("users") or []
@@ -773,6 +893,190 @@ async def dashboard_bundle(user=Depends(_guard_any_admin)):
 
 
 # ══════════════════════════════════════════════════════════════════
+# 👑 W24/W28 — Operations Hub: My Work, Alerts, Data Quality
+# ══════════════════════════════════════════════════════════════════
+
+async def _oldest_time(collection, query: dict, *fields):
+    docs = await collection.find(query).sort(fields[0], 1).limit(1).to_list(1)
+    row = docs[0] if docs else {}
+    return next((row.get(field) for field in fields if row.get(field)), None)
+
+
+@router.get("/operations/my-work")
+async def wa_my_work(user=Depends(_guard_any_admin)):
+    """صف کار واقعی مدیر جاری؛ هیچ task یا SLA ساختگی تولید نمی‌شود."""
+    uid = user["id"]
+    perms = await db.get_user_perms(uid)
+    allow = lambda *keys: uid == ADMIN_ID or any(key in perms for key in keys)
+    jobs, times, meta = {}, {}, {}
+    if allow("tickets.reply", "tickets.manage"):
+        query = {"assignee_id": uid, "status": {"$ne": "closed"}}
+        jobs["assigned_tickets"] = db.tickets.count_documents(query)
+        times["assigned_tickets"] = _oldest_time(db.tickets, query, "created_at")
+        meta["assigned_tickets"] = ("🎫", "تیکت‌های تخصیص‌یافته به من", "/tickets?assignee=" + str(uid), "high")
+    if allow("questions.review", "questions.review_scoped"):
+        scope = await _question_scope_context(user)
+        query = {"approved": False}
+        if scope.get("kind") == "scoped": query["intake"] = scope.get("intake") or ""
+        jobs["question_reviews"] = db.questions.count_documents(query)
+        times["question_reviews"] = _oldest_time(db.questions, query, "created_at")
+        meta["question_reviews"] = ("🧪", "سؤال‌های منتظر بازبینی", "/questions?status=pending", "normal")
+    if allow("reports.review"):
+        query = {"status": {"$in": ["new", "pending", "reviewing"]}}
+        jobs["content_reports"] = db.content_reports.count_documents(query)
+        times["content_reports"] = _oldest_time(db.content_reports, query, "created_at")
+        meta["content_reports"] = ("🚩", "گزارش‌های محتوا", "/content?tab=reports", "normal")
+    if allow("subscription.manage"):
+        query = {"status": "pending"}
+        jobs["payment_reviews"] = db.sub_payments.count_documents(query)
+        times["payment_reviews"] = _oldest_time(db.sub_payments, query, "submitted_at", "created_at")
+        meta["payment_reviews"] = ("🧾", "رسیدهای منتظر بررسی", "/subscriptions?tab=payments", "high")
+    if allow("users.manage"):
+        query = {"approved": False, "suspended": {"$ne": True}}
+        jobs["user_approvals"] = db.users.count_documents(query)
+        times["user_approvals"] = _oldest_time(db.users, query, "registered_at")
+        meta["user_approvals"] = ("👤", "ثبت‌نام‌های منتظر تأیید", "/users?status=pending", "normal")
+    keys = list(jobs)
+    counts, oldest = await asyncio.gather(
+        asyncio.gather(*(jobs[key] for key in keys), return_exceptions=True),
+        asyncio.gather(*(times[key] for key in keys), return_exceptions=True),
+    ) if keys else ([], [])
+    tasks = []
+    for key, count_value, time_value in zip(keys, counts, oldest):
+        count = 0 if isinstance(count_value, Exception) else int(count_value or 0)
+        at = None if isinstance(time_value, Exception) else time_value
+        icon, label, go, urgency = meta[key]
+        tasks.append({"key": key, "icon": icon, "label": label, "count": count,
+                      "oldest_at": at, "go": go, "urgency": urgency,
+                      "empty": count == 0})
+    tasks.sort(key=lambda item: ({"high": 0, "normal": 1}.get(item["urgency"], 2),
+                                 0 if item["count"] else 1, item.get("oldest_at") or ""))
+    return {"tasks": tasks, "checked_at": _now()}
+
+
+@router.get("/operations/alerts")
+async def wa_alert_center(user=Depends(_guard_any_admin)):
+    data = await attention(user=user)
+    alerts = [item for item in data.get("items", []) if int(item.get("count") or 0) > 0]
+    alerts.sort(key=lambda item: (0 if item.get("severity") == "critical" else 1,
+                                  item.get("timestamp") or ""))
+    return {"alerts": alerts, "checked_at": data.get("checked_at")}
+
+
+_QUALITY_META = {
+    "users_missing_intake": ("warning", "کاربر تأییدشده بدون ورودی", "تکمیل ورودی فقط پس از بررسی پرونده"),
+    "invalid_role_refs": ("critical", "ارجاع به نقش نامعتبر", "بازبینی تخصیص نقش و حذف reference نامعتبر"),
+    "orphan_sessions": ("critical", "جلسه بدون درس والد", "اتصال به درس معتبر یا حذف با تأیید"),
+    "orphan_files": ("critical", "فایل بدون جلسه والد", "اتصال به جلسه معتبر یا حذف با تأیید"),
+    "malformed_questions": ("warning", "رکورد سؤال ناقص", "اصلاح فیلدهای الزامی پیش از استفاده"),
+    "files_missing_metadata": ("info", "فایل آموزشی با متادیتای ناقص", "تکمیل نام/نوع/توضیح"),
+}
+
+
+def _quality_simple_query(kind: str):
+    return {
+        "users_missing_intake": (db.users, {"approved": True, "$or": [
+            {"intake": {"$exists": False}}, {"intake": None}, {"intake": ""}]}),
+        "malformed_questions": (db.questions, {"$or": [
+            {"question": {"$exists": False}}, {"question": ""},
+            {"lesson": {"$exists": False}}, {"lesson": ""},
+            {"options": {"$exists": False}}, {"options.1": {"$exists": False}},
+            {"correct_answer": {"$exists": False}}]}),
+        "files_missing_metadata": (db.bs_content, {"$or": [
+            {"type": {"$exists": False}}, {"type": ""},
+            {"description": {"$exists": False}}, {"description": ""}]}),
+    }.get(kind)
+
+
+async def _quality_invalid_roles(skip=0, limit=30, count_only=False):
+    valid = [role.get("_id") for role in await db.list_roles() if role.get("_id")]
+    pipeline = [
+        {"$unwind": "$roles"}, {"$match": {"roles": {"$nin": valid}}},
+        {"$group": {"_id": "$_id", "invalid": {"$addToSet": "$roles"}}},
+    ]
+    if count_only:
+        pipeline.append({"$count": "count"})
+        return await db.user_roles.aggregate(pipeline).to_list(1)
+    pipeline.extend([{"$sort": {"_id": 1}}, {"$skip": skip}, {"$limit": limit}])
+    return await db.user_roles.aggregate(pipeline).to_list(limit)
+
+
+async def _quality_orphans(child, parent, parent_field: str, skip=0, limit=30, count_only=False):
+    pipeline = [
+        {"$addFields": {"_parent_oid": {"$convert": {
+            "input": f"${parent_field}", "to": "objectId", "onError": None, "onNull": None}}}},
+        {"$lookup": {"from": parent.name, "localField": "_parent_oid", "foreignField": "_id", "as": "_parent"}},
+        {"$match": {"_parent.0": {"$exists": False}}},
+    ]
+    if count_only:
+        pipeline.append({"$count": "count"})
+        return await child.aggregate(pipeline).to_list(1)
+    pipeline.extend([{"$project": {"_parent": 0, "_parent_oid": 0}}, {"$sort": {"_id": 1}},
+                     {"$skip": skip}, {"$limit": limit}])
+    return await child.aggregate(pipeline).to_list(limit)
+
+
+async def _quality_count(kind: str):
+    simple = _quality_simple_query(kind)
+    if simple:
+        collection, query = simple
+        return await collection.count_documents(query)
+    if kind == "invalid_role_refs":
+        rows = await _quality_invalid_roles(count_only=True)
+    elif kind == "orphan_sessions":
+        rows = await _quality_orphans(db.bs_sessions, db.bs_lessons, "lesson_id", count_only=True)
+    elif kind == "orphan_files":
+        rows = await _quality_orphans(db.bs_content, db.bs_sessions, "session_id", count_only=True)
+    else:
+        return 0
+    return int(rows[0].get("count") or 0) if rows else 0
+
+
+@router.get("/operations/data-quality")
+async def wa_data_quality(user=Depends(_perm("system.manage"))):
+    kinds = list(_QUALITY_META)
+    values = await asyncio.gather(*(_quality_count(kind) for kind in kinds), return_exceptions=True)
+    items = []
+    for kind, value in zip(kinds, values):
+        severity, label, suggestion = _QUALITY_META[kind]
+        items.append({"kind": kind, "severity": severity, "label": label,
+                      "suggestion": suggestion,
+                      "count": None if isinstance(value, Exception) else int(value or 0),
+                      "available": not isinstance(value, Exception)})
+    return {"items": items, "checked_at": _now(), "read_only": True}
+
+
+@router.get("/operations/data-quality/{kind}")
+async def wa_data_quality_items(
+    kind: str, skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    user=Depends(_perm("system.manage")),
+):
+    if kind not in _QUALITY_META:
+        raise HTTPException(404, "نوع بررسی کیفیت داده پیدا نشد")
+    total = await _quality_count(kind)
+    simple = _quality_simple_query(kind)
+    if simple:
+        collection, query = simple
+        docs = await collection.find(query).sort("_id", 1).skip(skip).limit(limit).to_list(limit)
+    elif kind == "invalid_role_refs":
+        docs = await _quality_invalid_roles(skip, limit)
+    elif kind == "orphan_sessions":
+        docs = await _quality_orphans(db.bs_sessions, db.bs_lessons, "lesson_id", skip, limit)
+    else:
+        docs = await _quality_orphans(db.bs_content, db.bs_sessions, "session_id", skip, limit)
+    severity, label, suggestion = _QUALITY_META[kind]
+    def shape(doc):
+        return {"id": str(doc.get("_id", "")),
+                "label": doc.get("name") or doc.get("question") or doc.get("topic") or doc.get("description") or str(doc.get("_id", "")),
+                "reason": label, "severity": severity, "suggestion": suggestion,
+                "metadata": {key: doc.get(key) for key in
+                             ("user_id", "intake", "lesson_id", "session_id", "roles", "invalid", "type", "source")
+                             if doc.get(key) is not None}}
+    return {"items": [shape(doc) for doc in docs], "total": total, "skip": skip, "limit": limit,
+            "read_only": True}
+
+
+# ══════════════════════════════════════════════════════════════════
 # 🌊 WA2.5 — جست‌وجوی سراسری سریع (Command Palette)
 # ══════════════════════════════════════════════════════════════════
 
@@ -786,8 +1090,8 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
     perms = await db.get_user_perms(uid)
     allow = lambda *keys: uid == ADMIN_ID or any(k in perms for k in keys)
     res = {"users": [], "tickets": [], "questions": [], "content": [],
-           "exams": [], "payments": [], "subscriptions": [],
-           "notifications": [], "audit": []}
+           "exams": [], "grades": [], "roles": [], "broadcasts": [],
+           "payments": [], "subscriptions": [], "notifications": [], "audit": []}
 
     if allow("users.view", "users.manage"):
         try:
@@ -830,6 +1134,40 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
                 {"lesson": rx}, {"teacher": rx}, {"location": rx}]}).sort("date", -1).limit(5).to_list(5)
             res["exams"] = [{"id": str(x.get("_id", "")), "lesson": x.get("lesson", ""),
                 "date": x.get("date", ""), "group": db.normalize_group(x.get("group")) or "هر دو"} for x in docs]
+        except Exception:
+            pass
+    if allow("grades.manage", "grades.scoped"):
+        try:
+            gf = {"$or": [{"lesson": rx}, {"exam_title": rx}]}
+            if query.isdigit(): gf["$or"].append({"student_id": int(query)})
+            if await db.has_permission(uid, "grades.scoped") and not await db.has_permission(uid, "grades.manage"):
+                scope = await db.get_scoped_intake(uid)
+                scoped_ids = await db.users.distinct("user_id", {"intake": scope}) if scope else []
+                gf["student_id"] = {"$in": scoped_ids}
+            docs = await db.grades.find(gf).sort("exam_date", -1).limit(5).to_list(5)
+            res["grades"] = [{"id": str(row.get("_id", "")), "student_id": row.get("student_id"),
+                              "lesson": row.get("lesson", ""), "exam_title": row.get("exam_title", ""),
+                              "score": row.get("score"), "exam_date": row.get("exam_date", "")} for row in docs]
+        except Exception:
+            pass
+    if allow("roles.manage"):
+        try:
+            docs = await db.roles.find({"$or": [{"label": rx}, {"_id": rx}]}).sort("priority", 1).limit(5).to_list(5)
+            res["roles"] = [{"id": row.get("_id"), "label": row.get("label", ""),
+                             "active": row.get("active", True), "permissions": len(row.get("perms") or [])} for row in docs]
+        except Exception:
+            pass
+    if allow("broadcast.send"):
+        try:
+            docs = await db.bot_notifs.find({"type": "broadcast", "text": rx}).sort("created_at", -1).limit(20).to_list(20)
+            seen = set()
+            for row in docs:
+                key = (row.get("text", ""), row.get("created_at", ""))
+                if key in seen: continue
+                seen.add(key)
+                res["broadcasts"].append({"id": str(row.get("_id", "")), "text": (row.get("text") or "")[:90],
+                                          "created_at": row.get("created_at", ""), "correlation_id": row.get("correlation_id")})
+                if len(res["broadcasts"]) >= 5: break
         except Exception:
             pass
     if allow("subscription.manage"):
@@ -995,6 +1333,111 @@ async def saved_filters_del(fid: str, user=Depends(_guard_any_admin)):
     return {"ok": True}
 
 
+async def _require_object_permission(user: dict, target_type: str):
+    perm_map = {
+        "user": ("users.view", "users.manage"), "question": ("questions.review", "questions.review_scoped"),
+        "ticket": ("tickets.reply", "tickets.manage"), "payment": ("subscription.manage",),
+        "subscription": ("subscription.manage",), "role": ("roles.manage",),
+        "notification": ("notifications.manage",), "broadcast": ("broadcast.send",),
+        "setting": ("settings.manage",), "exam": ("schedules.manage",), "grade": ("grades.manage", "grades.scoped"),
+    }
+    required = perm_map.get(target_type)
+    if not required: raise HTTPException(422, "نوع object پشتیبانی نمی‌شود")
+    if user["id"] == ADMIN_ID: return
+    if not any([await db.has_permission(user["id"], permission) for permission in required]):
+        raise HTTPException(403, "forbidden")
+
+
+@router.get("/objects/{target_type}/{target_id}")
+async def wa_object_summary(target_type: str, target_id: str, user=Depends(_guard_any_admin)):
+    """Universal object summary: identity/status/metadata/relations از persisted data."""
+    await _require_object_permission(user, target_type)
+    relations, actions = [], []
+    if target_type == "user":
+        if not target_id.isdigit(): raise HTTPException(422, "شناسه کاربر نامعتبر است")
+        doc = await db.get_user(int(target_id))
+        if not doc: raise HTTPException(404, "کاربر پیدا نشد")
+        identity = {"id": doc.get("user_id"), "label": db.display_name_of(doc), "type": "user"}
+        status = "suspended" if doc.get("suspended") else "active" if doc.get("approved") else "pending"
+        metadata = {key: doc.get(key) for key in ("username", "student_id", "intake", "group", "registered_at", "last_active")}
+        ticket_count, question_count = await asyncio.gather(
+            db.tickets.count_documents({"user_id": int(target_id)}),
+            db.questions.count_documents({"creator_id": int(target_id)}))
+        relations = [{"type": "ticket", "label": "تیکت‌ها", "count": ticket_count, "go": f"/tickets?q={target_id}"},
+                     {"type": "question", "label": "سؤال‌های طراحی‌شده", "count": question_count, "go": f"/questions?author={target_id}"}]
+        actions = ["edit", "message"]
+    elif target_type == "question":
+        doc = await db.get_question_by_id(target_id)
+        if not doc: raise HTTPException(404, "سؤال پیدا نشد")
+        scope = await _question_scope_context(user)
+        if scope.get("kind") == "scoped" and (doc.get("intake") or "") != (scope.get("intake") or ""):
+            raise HTTPException(403, "intake_out_of_scope")
+        identity = {"id": target_id, "label": (doc.get("question") or "")[:120], "type": "question"}
+        status = "approved" if doc.get("approved") else "pending"
+        metadata = {key: doc.get(key) for key in ("lesson", "topic", "difficulty", "source", "intake", "attempt_count", "correct_count", "report_count")}
+        if doc.get("creator_id"):
+            relations.append({"type": "user", "label": doc.get("creator_name") or "طراح", "id": doc.get("creator_id"), "go": f"/users?q={doc.get('creator_id')}"})
+        actions = [] if doc.get("approved") else ["edit", "approve", "reject"]
+    elif target_type == "ticket":
+        if not target_id.isdigit(): raise HTTPException(422, "شناسه تیکت نامعتبر است")
+        doc = await db.ticket_get(int(target_id))
+        if not doc: raise HTTPException(404, "تیکت پیدا نشد")
+        identity = {"id": int(target_id), "label": doc.get("subject") or f"تیکت {target_id}", "type": "ticket"}
+        status = doc.get("status", "open")
+        metadata = {key: doc.get(key) for key in ("priority", "assignee_name", "created_at", "last_reply_at", "tags")}
+        if doc.get("user_id"):
+            relations.append({"type": "user", "label": doc.get("user_name") or "کاربر", "id": doc.get("user_id"), "go": f"/users?q={doc.get('user_id')}"})
+        actions = ["reply", "close"] if status != "closed" else ["reopen"]
+    elif target_type == "role":
+        doc = await db.get_role(target_id)
+        if not doc: raise HTTPException(404, "نقش پیدا نشد")
+        identity = {"id": target_id, "label": doc.get("label") or target_id, "type": "role"}
+        status = "active" if doc.get("active", True) else "disabled"
+        metadata = {"description": doc.get("description") or doc.get("desc"), "permissions": doc.get("perms") or [], "system": bool(doc.get("system"))}
+        relations = [{"type": "user", "label": "اعضای نقش", "count": len(await db.user_ids_by_role(target_id, limit=100000)), "go": f"/users?role={target_id}"}]
+        actions = [] if doc.get("system") else ["edit", "clone", "toggle", "delete"]
+    elif target_type in ("payment", "subscription"):
+        uid = int(target_id) if target_id.isdigit() else None
+        if target_type == "payment":
+            oid = _oid(target_id); doc = await db.sub_payments.find_one({"_id": oid if oid else target_id})
+            uid = (doc or {}).get("user_id")
+        else:
+            doc = await db.sub_get(uid) if uid is not None else None
+        if not doc: raise HTTPException(404, "رکورد اشتراک پیدا نشد")
+        identity = {"id": target_id, "label": doc.get("plan_name") or f"اشتراک {target_id}", "type": target_type}
+        status = doc.get("status", "")
+        metadata = {key: doc.get(key) for key in ("amount", "final_price", "submitted_at", "start_date", "end_date", "discount_code")}
+        if uid is not None: relations.append({"type": "user", "label": "دارنده", "id": uid, "go": f"/users?q={uid}"})
+        actions = ["approve", "reject"] if target_type == "payment" and status == "pending" else []
+    else:
+        raise HTTPException(422, "خلاصه این نوع object هنوز پشتیبانی نمی‌شود")
+    return {"identity": identity, "status": status, "metadata": metadata,
+            "relations": relations, "available_actions": actions}
+
+
+@router.get("/audit/correlation/{correlation_id}")
+async def wa_correlation_chain(correlation_id: str, user=Depends(_perm("audit.view"))):
+    correlation_id = correlation_id.strip()[:120]
+    if not correlation_id: raise HTTPException(422, "Correlation ID الزامی است")
+    audits, outbox = await asyncio.gather(
+        db.audit_logs.find({"correlation_id": correlation_id}).sort("timestamp", 1).limit(100).to_list(100),
+        db.bot_notifs.find({"correlation_id": correlation_id}).sort("created_at", 1).limit(100).to_list(100),
+    )
+    events = [{"id": f"audit:{row.get('_id')}", "stage": "audit", "title": row.get("action") or "Audit",
+               "status": row.get("severity", "INFO"), "at": row.get("timestamp"),
+               "metadata": {"module": row.get("module"), "target": row.get("target") or {}}} for row in audits]
+    events.extend({"id": f"outbox:{row.get('_id')}", "stage": "outbox",
+                   "title": row.get("type") or "Outbox",
+                   "status": "failed" if row.get("failed") else "sent" if row.get("sent") else "scheduled" if row.get("send_at") else "queued",
+                   "at": row.get("sent_at") or row.get("created_at"),
+                   "metadata": {"chat_id": row.get("chat_id"), "send_at": row.get("send_at")}}
+                  for row in outbox)
+    events.sort(key=lambda event: event.get("at") or "")
+    return {"correlation_id": correlation_id, "events": events,
+            "counts": {"audit": len(audits), "outbox": len(outbox)},
+            "complete": bool(events)}
+
+
 @router.get("/history/{target_type}/{target_id}")
 async def object_history(
     target_type: str, target_id: str,
@@ -1002,26 +1445,7 @@ async def object_history(
     user=Depends(_guard_any_admin),
 ):
     """Timeline/diff عمومی objectها بر پایه audit مشترک، با RBAC هر domain."""
-    perm_map = {
-        "user": ("users.view", "users.manage"),
-        "question": ("questions.review", "questions.review_scoped"),
-        "ticket": ("tickets.reply", "tickets.manage"),
-        "payment": ("subscription.manage",), "subscription": ("subscription.manage",),
-        "role": ("roles.manage",), "notification": ("notifications.manage",),
-        "setting": ("settings.manage",), "exam": ("schedules.manage",),
-        "grade": ("grades.manage", "grades.scoped"),
-    }
-    required = perm_map.get(target_type)
-    if not required:
-        raise HTTPException(422, "نوع تاریخچه پشتیبانی نمی‌شود")
-    allowed = user["id"] == ADMIN_ID
-    if not allowed:
-        for permission in required:
-            if await db.has_permission(user["id"], permission):
-                allowed = True
-                break
-    if not allowed:
-        raise HTTPException(403, "forbidden")
+    await _require_object_permission(user, target_type)
     if target_type == "question":
         item = await db.get_question_by_id(target_id)
         if not item:
@@ -1117,6 +1541,7 @@ async def wa_questions_list(
     difficulty: Optional[str] = Query(None, pattern="^(easy|medium|hard)$"),
     source: Optional[str] = Query(None, max_length=40),
     author: Optional[str] = Query(None, max_length=100),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
     sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
@@ -1124,6 +1549,8 @@ async def wa_questions_list(
 ):
     """Question workspace سرورساید برای 10k+ سؤال، بدون تغییر endpoint قدیمی pending."""
     author = author if isinstance(author, str) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
     scope = await _question_scope_context(user)
     if scope.get("kind") == "scoped":
         iv = scope.get("intake") or ""
@@ -1150,6 +1577,11 @@ async def wa_questions_list(
             filt["creator_id"] = int(author_value)
         else:
             filt["creator_name"] = {"$regex": re.escape(author_value), "$options": "i"}
+    if date_from or date_to:
+        created = {}
+        if date_from: created["$gte"] = date_from[:10]
+        if date_to: created["$lte"] = date_to[:10] + "T23:59:59.999999"
+        filt["created_at"] = created
     if q and q.strip():
         term = q.strip()
         rx = {"$regex": re.escape(term), "$options": "i"}
@@ -1187,7 +1619,8 @@ async def export_questions_csv(
     intake: Optional[str] = Query(None), q: Optional[str] = Query(None),
     lesson: Optional[str] = Query(None), topic: Optional[str] = Query(None),
     difficulty: Optional[str] = Query(None), source: Optional[str] = Query(None),
-    author: Optional[str] = Query(None),
+    author: Optional[str] = Query(None), date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     sort_by: str = Query("created_at", pattern="^(created_at|attempt_count|correct_count|difficulty)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
@@ -1209,7 +1642,7 @@ async def export_questions_csv(
             result = await wa_questions_list(
                 status=status, intake=intake, q=q, lesson=lesson, topic=topic,
                 difficulty=difficulty, source=source, author=author,
-                skip=skip, limit=100, sort_by=sort_by, sort_dir=sort_dir, user=user)
+                date_from=date_from, date_to=date_to, skip=skip, limit=100, sort_by=sort_by, sort_dir=sort_dir, user=user)
             rows = result.get("questions") or []
             for row in rows:
                 writer.writerow([safe(v) for v in [row.get("id"), row.get("question"),
@@ -1276,8 +1709,9 @@ async def wa_questions_import(
 
 
 class QuestionsBulk(BaseModel):
-    action: str           # approve | reject
+    action: str           # approve | reject | metadata
     ids: list[str]
+    patch: Optional[dict] = None
 
 
 @router.post("/questions/bulk")
@@ -1290,10 +1724,18 @@ async def questions_bulk(
     ids = [str(i) for i in (body.ids or [])][:100]
     if not ids:
         raise HTTPException(400, "لیست سؤال‌ها خالی است")
-    if body.action not in ("approve", "reject"):
+    if body.action not in ("approve", "reject", "metadata"):
         raise HTTPException(400, "اکشن نامعتبر است")
+    patch_body = None
+    if body.action == "metadata":
+        allowed = {key: value for key, value in (body.patch or {}).items()
+                   if key in ("lesson", "topic", "difficulty") and value not in (None, "")}
+        if not allowed: raise HTTPException(422, "حداقل یک metadata معتبر لازم است")
+        try: patch_body = content_api.QuestionPatch(**allowed)
+        except Exception: raise HTTPException(422, "metadata سؤال معتبر نیست")
     succeeded, skipped, failed = [], [], []
     scope = await _question_scope_context(user)
+    question_admin = dict(user); question_admin["_scope"] = scope
     for qid in ids:
         try:
             q = await db.get_question_by_id(qid)
@@ -1308,6 +1750,8 @@ async def questions_bulk(
             if body.action == "approve":
                 # approve_question منبع واحد پاداش + اعلان طراح است.
                 await db.approve_question(qid)
+            elif body.action == "metadata":
+                await content_api.patch_question(qid=qid, body=patch_body, admin=question_admin)
             else:
                 await db.delete_question(qid)
                 if q.get("source") == "webapp" and q.get("creator_id"):
@@ -1322,10 +1766,11 @@ async def questions_bulk(
             succeeded.append(qid)
         except Exception:
             failed.append({"id": qid, "error": "operation_failed"})
-    fa = {"approve": "تأیید گروهی", "reject": "رد گروهی"}
+    fa = {"approve": "تأیید گروهی", "reject": "رد گروهی", "metadata": "ویرایش گروهی metadata"}
     await _audit(user["id"], f"{fa[body.action]} سؤال‌ها ({len(succeeded)} مورد)",
                  severity="INFO", target_type="question_batch", target_label=f"{len(ids)} سؤال",
                  after={"action": body.action, "requested": len(ids),
+                        "patch_fields": list((body.patch or {}).keys()) if body.action == "metadata" else [],
                         "succeeded": len(succeeded), "skipped": len(skipped), "failed": len(failed)},
                  tags=["bulk_questions", "پنل_وب"])
     return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
@@ -1784,6 +2229,98 @@ async def content_tree(intake: Optional[str] = Query(None),
             "intakes": [{"code": c, "label": l} for c, l in intake_labels.items()]}
 
 
+async def _student_preview_context(user_id: int, admin: dict):
+    target = await db.get_user(user_id)
+    if not target or not target.get("approved") or target.get("suspended"):
+        raise HTTPException(404, "دانشجوی فعال پیدا نشد")
+    if await _has_admin_access(user_id):
+        raise HTTPException(422, "برای پیش‌نمایش باید حساب دانشجو انتخاب شود")
+    intake = target.get("intake") or ""
+    scope = admin.get("_scope") or await db.get_content_scope(admin["id"])
+    if scope and scope.get("kind") == "scoped" and intake != (scope.get("intake") or ""):
+        raise HTTPException(403, "intake_out_of_scope")
+    return {"id": user_id, "_db": target}, target
+
+
+@router.get("/content/student-preview/students")
+async def wa_student_preview_students(q: str = Query(..., min_length=2, max_length=100),
+                                      admin=Depends(get_content_admin_user)):
+    query = db.build_user_search_query(q.strip())
+    query["approved"] = True; query["suspended"] = {"$ne": True}
+    scope = admin.get("_scope") or await db.get_content_scope(admin["id"])
+    if scope and scope.get("kind") == "scoped": query["intake"] = scope.get("intake") or ""
+    docs = await db.users.find(query, {"user_id": 1, "name": 1, "nickname": 1,
+        "student_id": 1, "username": 1, "intake": 1, "group": 1, "role": 1}).sort("name", 1).limit(20).to_list(20)
+    return {"students": [{"id": row.get("user_id"), "name": db.display_name_of(row),
+                           "student_id": row.get("student_id", ""), "username": row.get("username", ""),
+                           "intake": row.get("intake", ""), "group": row.get("group", "")}
+                          for row in docs if row.get("role", "student") == "student"]}
+
+
+@router.get("/content/student-preview")
+async def wa_student_preview(user_id: int = Query(...), admin=Depends(get_content_admin_user)):
+    context, target = await _student_preview_context(user_id, admin)
+    terms = await resources_api.terms(user=context)
+    return {"student": {"id": user_id, "name": db.display_name_of(target),
+                         "intake": target.get("intake", ""), "group": target.get("group", "")},
+            "terms": terms.get("terms") or [], "resolver": "mini_app_resources"}
+
+
+@router.get("/content/student-preview/lessons")
+async def wa_student_preview_lessons(user_id: int, term: str = Query(..., max_length=100),
+                                     admin=Depends(get_content_admin_user)):
+    context, _ = await _student_preview_context(user_id, admin)
+    return await resources_api.lessons(term=term, user=context)
+
+
+@router.get("/content/student-preview/sessions")
+async def wa_student_preview_sessions(user_id: int, lesson_id: str = Query(..., max_length=80),
+                                      admin=Depends(get_content_admin_user)):
+    context, _ = await _student_preview_context(user_id, admin)
+    return await resources_api.sessions(lesson_id=lesson_id, user=context)
+
+
+@router.get("/content/student-preview/files")
+async def wa_student_preview_files(user_id: int, session_id: str = Query(..., max_length=80),
+                                   admin=Depends(get_content_admin_user)):
+    context, _ = await _student_preview_context(user_id, admin)
+    return await resources_api.files(session_id=session_id, user=context)
+
+
+@router.get("/content/impact/{target_type}/{target_id}")
+async def wa_content_impact(
+    target_type: str, target_id: str, admin=Depends(get_content_admin_user),
+):
+    if target_type == "lesson":
+        item = await db.bs_get_lesson(target_id)
+        intake = (item or {}).get("intake") or ""
+        session_ids = [str(row.get("_id")) for row in await db.bs_sessions.find({"lesson_id": target_id}, {"_id": 1}).to_list(10000)]
+        sessions = len(session_ids)
+        files = await db.bs_content.count_documents({"session_id": {"$in": session_ids}}) if session_ids else 0
+    elif target_type == "session":
+        item = await db.bs_get_session(target_id)
+        intake = await db.session_intake(target_id) if item else ""
+        sessions = 1 if item else 0
+        files = await db.bs_content.count_documents({"session_id": target_id}) if item else 0
+    elif target_type == "content_item":
+        item = await db.bs_get_content_item(target_id)
+        intake = await db.content_intake(target_id) if item else ""
+        sessions, files = 0, 1 if item else 0
+    else:
+        raise HTTPException(422, "نوع محتوا برای تحلیل اثر پشتیبانی نمی‌شود")
+    if not item:
+        raise HTTPException(404, "محتوا پیدا نشد")
+    if not await db.can_access_intake(admin["id"], intake):
+        raise HTTPException(403, "intake_out_of_scope")
+    user_query = {"approved": True, "suspended": {"$ne": True}}
+    if intake: user_query["intake"] = intake
+    affected_users = await db.users.count_documents(user_query)
+    return {"target_type": target_type, "target_id": target_id, "intake": intake,
+            "affected_users": affected_users, "affected_sessions": sessions,
+            "affected_files": files, "visibility": "potential",
+            "explanation": "تعداد کاربران فعالی که این scope بالقوه برایشان قابل مشاهده است؛ سیاست اشتراک ممکن است دسترسی نهایی را محدود کند."}
+
+
 @router.get("/content/history")
 async def content_history(
     target_id: str = Query(..., min_length=1, max_length=80),
@@ -2040,6 +2577,25 @@ async def notif_runs(job_name: str | None = Query(None),
     } for r in runs]}
 
 
+@router.get("/notif/runs/{run_id}")
+async def notif_run_detail(run_id: str, user=Depends(_perm("notifications.manage"))):
+    oid = _oid(run_id)
+    if not oid: raise HTTPException(422, "شناسه اجرای اعلان نامعتبر است")
+    run = await db.notif_runs.find_one({"_id": oid})
+    if not run: raise HTTPException(404, "اجرای اعلان پیدا نشد")
+    failed = run.get("failed_targets_detailed") or [{"user_id": uid} for uid in (run.get("failed_user_ids") or [])]
+    return {"run": {"id": run_id, "job_name": run.get("job_name", ""),
+        "status": run.get("status", ""), "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"), "sent": int(run.get("sent") or 0),
+        "failed": int(run.get("failed") or 0), "skipped": int(run.get("skipped") or 0),
+        "total": int(run.get("total") or 0), "error": (run.get("error") or "")[:500],
+        "message_preview": (run.get("message_text") or "")[:500],
+        "correlation_id": run.get("correlation_id"),
+        "failed_targets": [{"user_id": item.get("user_id"), "error": item.get("error") or "send_failed"}
+                           for item in failed[:100]],
+        "failed_targets_truncated": len(failed) > 100}}
+
+
 @router.post("/notif/runs/{run_id}/retry")
 async def notif_retry(run_id: str, user=Depends(_perm("notifications.manage"))):
     """🔁 صف دوباره‌ی گیرندگان ناموفق — همان الگوی admin_panel ولی permission-based."""
@@ -2053,7 +2609,7 @@ async def notif_retry(run_id: str, user=Depends(_perm("notifications.manage"))):
             continue
         await notif.insert_one({"type": "notif_retry", "chat_id": t["user_id"],
                                 "text": t["message"], "sent": False,
-                                "created_at": _now()})
+                                "created_at": _now(), "correlation_id": current_request_id.get()})
         n += 1
     await _audit(user["id"], f"تلاش مجدد ارسال اعلان ({n} گیرنده)",
                  severity="INFO", target_label=run_id, tags=["retry_notif", "پنل_وب"])
@@ -3274,6 +3830,38 @@ async def wa_system_status(
     return out
 
 
+@router.get("/system/observability")
+async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
+                                  user=Depends(_perm("system.manage"))):
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    match = {"at": {"$gte": since}}
+    total, errors = await asyncio.gather(
+        db.wa_api_metrics.count_documents(match),
+        db.wa_api_metrics.count_documents({**match, "status": {"$gte": 400}}),
+    )
+    rows = await db.wa_api_metrics.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$route", "requests": {"$sum": 1},
+                    "errors": {"$sum": {"$cond": [{"$gte": ["$status", 400]}, 1, 0]}},
+                    "avg_ms": {"$avg": "$duration_ms"}, "max_ms": {"$max": "$duration_ms"}}},
+        {"$sort": {"requests": -1}}, {"$limit": 50},
+    ]).to_list(50)
+    recent = await db.wa_api_metrics.find({"at": {"$gte": since}, "status": {"$gte": 400}}, {
+        "route": 1, "method": 1, "status": 1, "duration_ms": 1, "request_id": 1, "at": 1,
+    }).sort("at", -1).limit(30).to_list(30)
+    total, errors = int(total or 0), int(errors or 0)
+    return {"hours": hours, "total": total, "errors": errors,
+            "error_rate": round(errors * 100 / total, 2) if total else None,
+            "routes": [{"route": row.get("_id"), "requests": row.get("requests", 0),
+                        "errors": row.get("errors", 0), "avg_ms": round(float(row.get("avg_ms") or 0), 2),
+                        "max_ms": round(float(row.get("max_ms") or 0), 2)} for row in rows],
+            "recent_errors": [{**{key: item.get(key) for key in
+                                ("route", "method", "status", "duration_ms", "request_id")},
+                               "at": item.get("at").isoformat() if hasattr(item.get("at"), "isoformat") else str(item.get("at") or "")}
+                              for item in recent],
+            "retention_days": 30, "persisted": True}
+
+
 @router.get("/system/jobs")
 async def wa_system_jobs(
     user=Depends(_perm_any("system.manage", "notifications.manage", "backup.manage")),
@@ -3547,13 +4135,29 @@ async def wa_grades_recent(
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
     q: Optional[str] = Query(None, max_length=100),
     lesson: Optional[str] = Query(None, max_length=100),
-    group: Optional[str] = Query(None, max_length=20),
+    group: Optional[str] = Query(None, max_length=20), intake: Optional[str] = Query(None, max_length=80),
+    date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
     user=Depends(_perm_any("grades.manage", "grades.scoped")),
 ):
-    intake = await _grade_intake_scope(user)
+    requested_intake = intake if isinstance(intake, str) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
+    scoped_intake = await _grade_intake_scope(user)
+    if scoped_intake is not None and requested_intake not in (None, "", scoped_intake):
+        raise HTTPException(403, "intake_out_of_scope")
+    effective_intake = scoped_intake if scoped_intake is not None else requested_intake
     return await academic_api.grades_recent(
-        skip=skip, limit=limit, intake=intake, group=group,
-        q=q, lesson=lesson, admin=user)
+        skip=skip, limit=limit, intake=effective_intake, group=group,
+        q=q, lesson=lesson, date_from=date_from, date_to=date_to, admin=user)
+
+
+@router.get("/grades/intakes")
+async def wa_grades_intakes(user=Depends(_perm_any("grades.manage", "grades.scoped"))):
+    scoped = await _grade_intake_scope(user)
+    items = await db.get_all_intakes()
+    return {"scope_intake": scoped, "intakes": [{"code": item.get("code", ""),
+             "label": item.get("label", item.get("code", ""))} for item in items
+             if item.get("active", True) and (scoped is None or item.get("code") == scoped)]}
 
 
 @router.get("/grades/find-student")

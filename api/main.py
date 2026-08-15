@@ -3,7 +3,9 @@ import asyncio
 import logging
 import os
 import re
+import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -67,6 +69,7 @@ async def request_context_and_safe_errors(request: Request, call_next):
     HTTPExceptionهای معتبر همچنان توسط FastAPI با status/detail اصلی مدیریت
     می‌شوند؛ فقط crashهای واقعی از نمایش traceback/500 خام به کاربر جلوگیری می‌کنند.
     """
+    started = time.perf_counter()
     supplied = (request.headers.get("x-request-id") or "").strip()
     request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied) else uuid.uuid4().hex[:16]
     token = current_request_id.set(request_id)
@@ -82,6 +85,17 @@ async def request_context_and_safe_errors(request: Request, call_next):
             )
         response.headers["X-Request-ID"] = request_id
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if request.url.path.startswith("/api/web-admin/"):
+            route_template = getattr(request.scope.get("route"), "path", "")
+            route = route_template or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)", "/:id", request.url.path)
+            metric = {"at": datetime.now(timezone.utc), "route": route[:180], "method": request.method,
+                      "status": int(response.status_code),
+                      "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                      "request_id": request_id}
+            async def persist_metric():
+                try: await db.wa_api_metrics.insert_one(metric)
+                except Exception: pass
+            asyncio.create_task(persist_metric())
         return response
     finally:
         current_request_id.reset(token)

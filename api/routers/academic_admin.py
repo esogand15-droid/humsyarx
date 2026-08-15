@@ -653,6 +653,8 @@ async def grades_recent(
     group: str | None = Query(default=None, max_length=20),
     q: str | None = Query(default=None, max_length=100),
     lesson: str | None = Query(default=None, max_length=100),
+    date_from: str | None = Query(default=None, max_length=10),
+    date_to: str | None = Query(default=None, max_length=10),
 
     admin=Depends(
         get_content_admin_user
@@ -661,10 +663,12 @@ async def grades_recent(
     group = group if isinstance(group, str) else None
     q = q if isinstance(q, str) else None
     lesson = lesson if isinstance(lesson, str) else None
+    date_from = date_from if isinstance(date_from, str) else None
+    date_to = date_to if isinstance(date_to, str) else None
     records = (
         await db.grade_list_recent(
             skip=skip, limit=limit, intake=intake,
-            group=group, q=q, lesson=lesson,
+            group=group, q=q, lesson=lesson, date_from=date_from, date_to=date_to,
         )
     )
 
@@ -674,6 +678,7 @@ async def grades_recent(
     total = (
         await db.grade_count_recent(
             intake=intake, group=group, q=q, lesson=lesson,
+            date_from=date_from, date_to=date_to,
         )
     )
 
