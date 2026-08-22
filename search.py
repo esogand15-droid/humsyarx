@@ -44,39 +44,11 @@ async def search_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif mode == 'add_question':
-        await _add_question(update, context, text)
-
     elif mode == 'add_schedule':
         await _add_schedule(update, context, text)
 
     return ConversationHandler.END
 
-
-async def _add_question(update, context, text):
-    import os
-    ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
-    try:
-        parts = [p.strip() for p in text.split('|')]
-        if len(parts) < 9:
-            raise ValueError("حداقل ۹ بخش لازم است")
-        lesson, topic, difficulty, question = parts[0], parts[1], parts[2], parts[3]
-        options = parts[4:8]
-        correct = int(parts[8])
-        if correct < 1 or correct > 4:
-            raise ValueError("شماره جواب باید 1 تا 4 باشد")
-        explanation = parts[9] if len(parts) > 9 else ''
-        await db.add_question(lesson, topic, difficulty, question, options, correct, explanation, update.effective_user.id)
-        await update.message.reply_text(
-            f"✅ سوال اضافه شد و منتظر تأیید ادمین است.\n📌 {lesson} — {topic}"
-        )
-    except ValueError as e:
-        await update.message.reply_text(
-            f"❌ خطا: {e}\n\nفرمت صحیح:\n"
-            "<code>درس|مبحث|سختی|سوال|گ۱|گ۲|گ۳|گ۴|جواب|توضیح</code>",
-            parse_mode='HTML'
-        )
-    context.user_data.pop('mode', None)
 
 
 async def _add_schedule(update, context, text):

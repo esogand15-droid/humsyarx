@@ -51,12 +51,10 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if uid == ADMIN_ID:
         mode = context.user_data.get('mode', '')
-        # FIX: همه mode های ادمین یکجا — qbank_awaiting_desc اضافه شد
         ADMIN_TEXT_MODES = (
             'search_user', 'edit_user',
             'add_lesson', 'add_topic',
-            'qbank_awaiting_desc',
-            'add_intake',   # FIX: اضافه شد
+            'add_intake',
         )
         if mode in ADMIN_TEXT_MODES:
             from admin import handle_admin_text
@@ -90,15 +88,20 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from schedule import handle_edit_schedule_field_text
         return await handle_edit_schedule_field_text(update, context)
 
-    # ── حالت ساخت سوال ──
+    # ── حالت ساخت سؤال؛ اشتراک در هر پیام دوباره server-side بررسی می‌شود ──
     if context.user_data.get('mode') == 'creating_question':
+        from subscription import has_access
+        if not await has_access(uid):
+            context.user_data.pop('mode', None); context.user_data.pop('create_step', None)
+            await update.message.reply_text("🔒 اشتراک فعال نیست؛ پیش‌نویس ارسال نشد.")
+            return
         from questions import handle_create_question_steps
         return await handle_create_question_steps(update, context)
 
-    # ── حالت نکته‌ی اختیاری برای طراحی سوال با هوشیار (AI) ──
-    if context.user_data.get('mode') == 'ai_question_note':
-        from questions import handle_ai_question_note_text
-        return await handle_ai_question_note_text(update, context)
+    # ── دلیل بررسی سؤال توسط reviewer/admin ──
+    if context.user_data.get('mode') == 'question_review_reason':
+        from questions import handle_question_review_reason_text
+        return await handle_question_review_reason_text(update, context)
 
     # ── حالت ادمین محتوا ──
     ca_text_modes = {

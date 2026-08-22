@@ -232,7 +232,7 @@ async def _show_cat_content(query):
         ],
         [InlineKeyboardButton("❓ مدیریت FAQ",      callback_data='ca:faq_admin')],
         [
-            InlineKeyboardButton("🧪 بانک سوال",    callback_data='admin:qbank_manage'),
+            InlineKeyboardButton("🧪 بازبینی سؤال‌ها", callback_data='questions:ca_q_list'),
             InlineKeyboardButton("✅ تأیید سوالات", callback_data='admin:pending_q'),
         ],
         [InlineKeyboardButton("⚠️ گزارشات سوال/جزوه", callback_data='report:manage:all')],
@@ -1096,88 +1096,27 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_send(context.bot, target_uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", reply_markup=main_keyboard())
         await query.answer("↩️ دسترسی لغو شد!", show_alert=True)
         await _show_cat_users(query, uid=uid)
-    elif action == 'qbank_manage':
-        await query.edit_message_text("🧪 <b>مدیریت بانک سوال</b>", parse_mode='HTML',
+    elif action in ('qbank_manage', 'qbank_upload', 'qbank_lesson', 'qbank_topic', 'qbank_list', 'qbank_del'):
+        context.user_data.pop('mode', None)
+        await query.edit_message_text(
+            "ℹ️ بانک فایل قدیمی بازنشسته شده است. سؤال‌ها اکنون به‌صورت ساختاریافته "
+            "در دامنه مشترک ساخته، بررسی و برای آزمون/PDF استفاده می‌شوند.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📁 مشاهده فایل‌ها", callback_data='admin:qbank_list')],
-                [InlineKeyboardButton("📤 آپلود فایل جدید", callback_data='admin:qbank_upload')],
-                [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_content')],
+                [InlineKeyboardButton("🧪 بازبینی سؤال‌ها", callback_data='questions:ca_q_list')],
+                [InlineKeyboardButton("🔙 پنل محتوا", callback_data='admin:cat_content')],
             ]))
-    elif action == 'qbank_upload':
-        lessons = await db.get_lessons()
-        if not lessons:
-            await query.edit_message_text("❌ هنوز درسی تعریف نشده.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='admin:qbank_manage')]]))
-            return
-        context.user_data['_lessons'] = lessons
-        keyboard = [[InlineKeyboardButton(l, callback_data=f'admin:qbank_lesson:{i}')] for i, l in enumerate(lessons)]
-        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:qbank_manage')])
-        await query.edit_message_text("📤 <b>آپلود بانک سوال</b>\n\nدرس را انتخاب کنید:", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-    elif action == 'qbank_lesson':
-        idx = int(parts[2])
-        lessons = context.user_data.get('_lessons', [])
-        if idx < len(lessons):
-            lesson = lessons[idx]
-            context.user_data['qbank_lesson'] = lesson
-            topics = await db.get_topics(lesson)
-            context.user_data['_topics'] = topics
-            keyboard = [[InlineKeyboardButton(t, callback_data=f'admin:qbank_topic:{i}')] for i, t in enumerate(topics)]
-            keyboard.append([InlineKeyboardButton("📂 همه مباحث", callback_data='admin:qbank_topic:all')])
-            keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:qbank_upload')])
-            await query.edit_message_text(f"📚 {lesson}\n\nمبحث را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif action == 'qbank_topic':
-        topics = context.user_data.get('_topics', [])
-        idx = parts[2]
-        topic = '' if idx == 'all' else (topics[int(idx)] if int(idx) < len(topics) else '')
-        context.user_data['qbank_topic'] = topic
-        context.user_data['mode'] = 'qbank_awaiting_file'
-        lessons = context.user_data.get('_lessons', [])
-        lesson  = context.user_data.get('qbank_lesson', '')
-        cancel_cb = f'admin:qbank_lesson:{lessons.index(lesson)}' if lesson in lessons else 'admin:qbank_manage'
-        await query.edit_message_text("📤 فایل PDF یا عکس بانک سوال را ارسال کنید:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data=cancel_cb)]]))
-    elif action == 'qbank_list':
-        await _show_qbank_list(query)
-    elif action == 'qbank_del':
-        await db.delete_qbank_file(parts[2])
-        await query.answer("🗑 حذف شد!", show_alert=True)
-        await _show_qbank_list(query)
     elif action == 'pending_q':
-        await _pending_questions(query)
+        # یک صف بررسی و یک permission/lifecycle contract برای همه پنل‌ها.
+        from questions import _ca_question_list
+        await _ca_question_list(query, uid, context)
     elif action == 'approve_q':
-        qid = parts[2]
-        q_doc_for_log = await db.get_question_by_id(qid)
-        await db.approve_question(qid)
-        await query.answer("✅ تأیید شد!")
-        admin_user = await db.get_user(uid)
-        actor_name = admin_user.get('name', 'مدیر') if admin_user else 'مدیر'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'admin', actor_name, uid,
-            "تأیید سوال", module='Questions', severity='INFO',
-            actor_role=actor_role, target_id=qid, target_type='question',
-            target_label=(q_doc_for_log.get('question', '')[:60] if q_doc_for_log else ''),
-            tags=['تایید_سوال']
-        )
-        await _pending_questions(query)
+        # سازگاری callbackهای قدیمی؛ mutation همچنان از domain مشترک می‌گذرد.
+        from questions import _h_ca_q_approve
+        await _h_ca_q_approve(query, context, uid, parts[2])
     elif action == 'reject_q':
-        qid = parts[2]
-        # FIX مهم: سوال باید قبل از حذف واکشی شود تا متن آن برای
-        # target_label در لاگ موجود باشد — بعد از حذف دیگر در دسترس نیست
-        q_doc_for_log = await db.get_question_by_id(qid)
-        await db.delete_question(qid)
-        await query.answer("🗑 رد شد!")
-        admin_user = await db.get_user(uid)
-        actor_name = admin_user.get('name', 'مدیر') if admin_user else 'مدیر'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'admin', actor_name, uid,
-            "رد و حذف سوال", module='Questions', severity='HIGH',
-            actor_role=actor_role, target_id=qid, target_type='question',
-            target_label=(q_doc_for_log.get('question', '')[:60] if q_doc_for_log else ''),
-            tags=['رد_سوال']
-        )
-        await _pending_questions(query)
+        # رد بدون دلیل ممنوع است؛ handler مشترک دلیل متنی می‌گیرد.
+        from questions import _h_ca_q_del
+        await _h_ca_q_del(query, context, uid, parts[2], target='rejected')
 
     # ══════════════════════════════════════════════
     # 📢 BROADCAST — سیستم جدید حرفه‌ای
@@ -2131,14 +2070,10 @@ async def _show_stats_content(query):
         f"  • {label}: <b>{cnt}</b>" for label, cnt in d['ref_langs'].items()
     ) or "  —"
     top_qbank_lines = "\n".join(
-        f"  • {lesson}: <b>{cnt}</b> فایل" for lesson, cnt in d['top_qbank_lessons']
+        f"  • {lesson}: <b>{cnt}</b> سؤال" for lesson, cnt in d['top_qbank_lessons']
     ) or "  —"
-    top_downloaded_lines = "\n".join(
-        f"  {i+1}. {name} — <b>{cnt}</b> دانلود"
-        for i, (name, cnt) in enumerate(d.get('top_downloaded_qbank', []))
-    ) or "  — هنوز دانلودی ثبت نشده"
 
-    total_downloads = d['bs_downloads'] + d['ref_downloads'] + d['qbank_downloads']
+    total_downloads = d['bs_downloads'] + d['ref_downloads']
 
     text = (
         "📚 <b>آمار جزئی محتوا</b>\n━━━━━━━━━━━━━━━━\n\n"
@@ -2148,11 +2083,11 @@ async def _show_stats_content(query):
         f"📚 <b>رفرنس‌ها</b> — {d['ref_subjects']} درس، {d['ref_books']} کتاب، "
         f"{d['ref_total_files']} فایل\n{ref_lang_lines}\n\n"
         f"❓ سوالات متداول (FAQ): <b>{d['faq_count']}</b>\n\n"
-        f"🧪 <b>بانک سوال</b> — <b>{d['qbank_files']}</b> فایل\n"
-        f"پرفایل‌ترین درس‌ها:\n{top_qbank_lines}\n\n"
-        f"🏆 <b>پردانلودترین فایل‌های بانک سوال:</b>\n{top_downloaded_lines}\n\n"
-        f"⬇️ <b>مجموع دانلود کل ربات: {total_downloads}</b>\n"
-        f"  • علوم پایه: {d['bs_downloads']}  |  رفرنس: {d['ref_downloads']}  |  بانک سوال: {d['qbank_downloads']}"
+        f"🧪 <b>بانک سؤال ساختاریافته</b> — <b>{d['qbank_questions']}</b> سؤال تأییدشده\n"
+        f"پرسؤال‌ترین درس‌ها:\n{top_qbank_lines}\n"
+        f"🧠 کل تلاش‌های ثبت‌شده: <b>{d['qbank_attempts']}</b>\n\n"
+        f"⬇️ <b>مجموع دانلود منابع: {total_downloads}</b>\n"
+        f"  • علوم پایه: {d['bs_downloads']}  |  رفرنس: {d['ref_downloads']}"
     )
     await query.edit_message_text(text, parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([
@@ -2444,50 +2379,6 @@ async def _show_blacklist(query):
     )
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
-
-async def _pending_questions(query):
-    questions = await db.pending_questions()
-    if not questions:
-        await query.edit_message_text("✅ هیچ سوال در انتظاری وجود ندارد.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_content')]]))
-        return
-    keyboard = []
-    for q in questions[:8]:
-        qid    = str(q['_id'])
-        opts   = q.get('options', [])
-        ltrs   = ['الف', 'ب', 'ج', 'د']
-        correct_idx = q.get('correct_answer', 0)
-        correct_txt = opts[correct_idx] if correct_idx < len(opts) else '—'
-        diff_map = {'easy':'🟢 آسان','medium':'🟡 متوسط','hard':'🔴 سخت'}
-        diff_txt = diff_map.get(q.get('difficulty',''), q.get('difficulty',''))
-        keyboard.append([InlineKeyboardButton(f"📋 {q.get('lesson','')} | {q.get('topic','')} | {diff_txt}", callback_data='admin:pending_q')])
-        keyboard.append([InlineKeyboardButton(f"❓ {q.get('question','')[:50]}", callback_data='admin:pending_q')])
-        opts_short = ' | '.join(f"{ltrs[i]}) {o[:15]}" for i, o in enumerate(opts[:4]))
-        keyboard.append([InlineKeyboardButton(f"گزینه‌ها: {opts_short[:50]}", callback_data='admin:pending_q')])
-        keyboard.append([InlineKeyboardButton(f"✅ جواب: {correct_txt[:20]}", callback_data='admin:pending_q')])
-        keyboard.append([
-            InlineKeyboardButton("✅ تأیید", callback_data=f'admin:approve_q:{qid}'),
-            InlineKeyboardButton("🗑 رد",    callback_data=f'admin:reject_q:{qid}'),
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_content')])
-    await query.edit_message_text(
-        f"⏳ <b>سوالات در انتظار تأیید</b> — {len(questions)} سوال\n━━━━━━━━━━━━━━━━",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _show_qbank_list(query):
-    files = await db.get_qbank_files()
-    keyboard = []
-    for f in files[:15]:
-        fid = str(f['_id'])
-        keyboard.append([
-            InlineKeyboardButton(f"📁 {f.get('lesson','')} — {f.get('topic','')[:15]}", callback_data='admin:qbank_list'),
-            InlineKeyboardButton("🗑", callback_data=f'admin:qbank_del:{fid}'),
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:qbank_manage')])
-    await query.edit_message_text(
-        f"📁 <b>فایل‌های بانک سوال</b> — {len(files)} فایل" if files else "❌ فایلی آپلود نشده.",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _show_notif_manage(query):
@@ -3456,19 +3347,6 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.message.reply_text("❌ فرمت اشتباه!\nمثال: <code>bahman_1404, بهمن ۱۴۰۴</code>", parse_mode='HTML')
             return True
 
-    elif mode == 'qbank_awaiting_desc':
-        desc     = '' if text == '-' else text
-        lesson   = context.user_data.get('qbank_lesson', '')
-        topic    = context.user_data.get('qbank_topic', '')
-        file_id  = context.user_data.get('qbank_file_id', '')
-        ftype    = context.user_data.get('qbank_file_type', 'document')
-        if file_id:
-            await db.add_qbank_file(lesson, topic, file_id, desc, ftype)
-            context.user_data['mode'] = ''
-            await update.message.reply_text(f"✅ فایل بانک سوال اضافه شد!\n📚 {lesson} — {topic}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به بانک سوال", callback_data='admin:qbank_manage')]]))
-        return True
-
     # ── ✉️ موج ۴.۸۰: دریافت متن «پیام مستقیم به کاربر»
     # نام و آیدی گیرنده قبل از پاک‌کردن state نگه داشته می‌شوند تا
     # حتی با خطای ورودی هم کارت کاربر قابلِ بازگشت باشد.
@@ -3552,26 +3430,3 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return True
 
     return False
-
-
-async def upload_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid != ADMIN_ID:
-        return
-    if context.user_data.get('mode') != 'qbank_awaiting_file':
-        return
-    doc = update.message.document or (update.message.photo[-1] if update.message.photo else None)
-    if not doc:
-        await update.message.reply_text("❌ فایل معتبر ارسال کنید.")
-        return
-    context.user_data.update({
-        'qbank_file_id':   doc.file_id,
-        'qbank_file_type': 'photo' if update.message.photo else 'document',
-        'mode':            'qbank_awaiting_desc',
-    })
-    lesson = context.user_data.get('qbank_lesson', '')
-    topic  = context.user_data.get('qbank_topic', '')
-    await update.message.reply_text(
-        f"✅ فایل دریافت شد!\n📚 {lesson} — {topic}\n\n📝 توضیح کوتاه وارد کنید (یا <code>-</code> بزنید):",
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='admin:qbank_manage')]]))

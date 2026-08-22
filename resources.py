@@ -142,7 +142,6 @@ async def upload_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📚 منبع درسی", callback_data='admin:set_mode:resource')],
             [InlineKeyboardButton("🎥 ویدیو کلاس", callback_data='admin:set_mode:video')],
-            [InlineKeyboardButton("🧪 بانک سوال (فایل)", callback_data='admin:set_mode:qbank')]
         ])
         context.user_data['pending_file_id'] = file_id
         await update.message.reply_text("📤 فایل دریافت شد. نوع را انتخاب کنید:", reply_markup=keyboard)
@@ -170,16 +169,6 @@ async def upload_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return UPLOAD_METADATA
 
-    elif mode == 'qbank':
-        path = context.user_data.get('upload_path', {})
-        await update.message.reply_text(
-            f"🧪 فایل بانک سوال دریافت شد.\n"
-            f"📌 {path.get('lesson','؟')} — {path.get('topic','؟')}\n\n"
-            "توضیح کوتاه بنویسید:\n"
-            "مثال: `بانک سوال امتحانات قبلی دکتر احمدی`",
-            parse_mode='Markdown'
-        )
-        return UPLOAD_METADATA
 
 
 async def upload_metadata_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,20 +235,6 @@ async def upload_metadata_handler(update: Update, context: ContextTypes.DEFAULT_
             path = context.user_data.get('upload_path', {})
             await db.add_video(path.get('lesson', ''), path.get('topic', ''), teacher, date, file_id)
             await update.message.reply_text(f"✅ ویدیو اضافه شد!\n🎥 {path.get('lesson','')} | {teacher} | {date}")
-
-        elif mode == 'qbank':
-            description = text
-            path = context.user_data.get('upload_path', {})
-            is_voice = False
-            await db.add_qbank_file(
-                path.get('lesson', ''), path.get('topic', ''),
-                file_id, description,
-                file_type='voice' if is_voice else 'document'
-            )
-            await update.message.reply_text(
-                f"✅ فایل بانک سوال اضافه شد!\n"
-                f"📚 {path.get('lesson','')} — {path.get('topic','')}"
-            )
 
     except ValueError as e:
         await update.message.reply_text(f"❌ خطا: {e}\nدوباره وارد کنید:")

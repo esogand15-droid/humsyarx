@@ -52,7 +52,7 @@ from schedule import schedule_callback
 from stats import stats_callback
 from notifications import notifications_callback
 from admin import (
-    admin_callback, admin_broadcast_handler, upload_file_handler,
+    admin_callback, admin_broadcast_handler,
     handle_admin_text, BROADCAST
 )
 from backup import backup_callback, backup_file_handler, backup_confirm_restore
@@ -958,11 +958,7 @@ async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if uid == ADMIN_ID and context.user_data.get('mode') == 'broadcast':
         return await admin_broadcast_handler(update, context)
 
-    # ۳. FIX: qbank file upload
-    if uid == ADMIN_ID and context.user_data.get('mode') in ('qbank_awaiting_file', 'upload_file'):
-        return await upload_file_handler(update, context)
-
-    # ۴. محتوا ادمین
+    # ۳. محتوا ادمین
     ca_mode = context.user_data.get('ca_mode', '')
     if ca_mode in ('waiting_file', 'waiting_ref_file') and await db.is_content_admin(uid):
         return await ca_file_handler(update, context)
@@ -1169,7 +1165,7 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # بعدی او در هر بخش دیگری از ربات به اشتباه به همین mode می‌رسد.
 INTERRUPTIBLE_SIMPLE_MODES = {
     'search_user', 'edit_user', 'add_intake', 'add_admin_role',
-    'qbank_awaiting_desc', 'add_schedule', 'flex_time_change',
+    'add_schedule', 'flex_time_change',
     'set_auto_backup_hour', 'report_note', 'ticket_search',
     'set_maintenance_text', 'set_log_group_admin', 'set_log_group_content',
     'add_required_channel', 'edit_schedule_field', 'set_donation_link',
@@ -1224,7 +1220,7 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     active_ca_mode = context.user_data.get('ca_mode', '')
     active_ticket_mode = context.user_data.get('ticket_mode', '')
     MEDIA_ALLOWED_MODES = {
-        'broadcast', 'qbank_awaiting_desc', 'waiting_description',
+        'broadcast', 'waiting_description',
         'waiting_ref_description', 'creating_question',
         'waiting_file', 'waiting_ref_file',  # ca_mode هایی که فایل می‌گیرند
     }
@@ -1296,11 +1292,7 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get('mode') == 'ai_query':
         return await handle_ai_text(update, context)
 
-    # ۵. FIX: qbank_awaiting_desc
-    if uid == ADMIN_ID and context.user_data.get('mode') == 'qbank_awaiting_desc':
-        return await handle_admin_text(update, context)
-
-    # ۵b. FIX: add_schedule — افزودن برنامه کلاسی/امتحان (باگ: قبلاً هیچ‌جا چک نمی‌شد)
+    # ۵. افزودن برنامه کلاسی/امتحان
     if context.user_data.get('mode') == 'add_schedule':
         from schedule import handle_add_schedule_text
         return await handle_add_schedule_text(update, context)
@@ -1507,7 +1499,7 @@ def build_application() -> Application:
         # داشبورد
         (dashboard_callback,       r'^dashboard'),
         # سوالات
-        (questions_callback,       r'^(questions|answer:|download_qbank:)'),
+        (questions_callback,       r'^(questions|answer:)'),
         # بقیه
         (schedule_callback,        r'^schedule'),
         (stats_callback,           r'^stats'),

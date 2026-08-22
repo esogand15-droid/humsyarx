@@ -282,13 +282,29 @@ async def build_full_backup_data() -> dict:
         'files':       {'count': len(ref_files), 'data': ref_files},
     }
 
-    # ── بانک سوال ──
-    questions  = await _snapshot_collection(db.questions, 100000, 'questions', integrity)
-    qbank_files= await _snapshot_collection(db.qbank_files, 50000, 'qbank_files', integrity)
+    # ── دامنه ساختاریافته بانک سؤال (بانک فایل legacy عمداً جدا archive می‌شود) ──
+    questions = await _snapshot_collection(db.questions, 100000, 'questions', integrity)
+    qprogress = await _snapshot_collection(db.question_progress, 1000000, 'question_progress', integrity)
+    qtopics = await _snapshot_collection(db.question_topic_stats, 500000, 'question_topic_stats', integrity)
+    qai = await _snapshot_collection(db.ai_practice_questions, 500000, 'ai_practice_questions', integrity)
+    qai_quotas = await _snapshot_collection(db.question_ai_quotas, 100000, 'question_ai_quotas', integrity)
+    exams = await _snapshot_collection(db.exam_sessions, 500000, 'exam_sessions', integrity)
+    pdf_generations = await _snapshot_collection(db.question_pdf_generations, 500000, 'question_pdf_generations', integrity)
+    import_jobs = await _snapshot_collection(db.question_import_jobs, 100000, 'question_import_jobs', integrity)
+    import_items = await _snapshot_collection(db.question_import_items, 1000000, 'question_import_items', integrity)
+    migration_backups = await _snapshot_collection(db.question_migration_backups, 200000, 'question_migration_backups', integrity)
     data['sections']['qbank'] = {
-        'description': 'بانک سوال — سوالات و فایل‌ها',
-        'questions':   {'count': len(questions),   'data': questions},
-        'files':       {'count': len(qbank_files), 'data': qbank_files},
+        'description': 'دامنه ساختاریافته بانک سؤال، تمرین، آزمون، PDF و import',
+        'questions': {'count': len(questions), 'data': questions},
+        'progress': {'count': len(qprogress), 'data': qprogress},
+        'topic_stats': {'count': len(qtopics), 'data': qtopics},
+        'ai_personal': {'count': len(qai), 'data': qai},
+        'ai_quotas': {'count': len(qai_quotas), 'data': qai_quotas},
+        'exams': {'count': len(exams), 'data': exams},
+        'pdf_generations': {'count': len(pdf_generations), 'data': pdf_generations},
+        'import_jobs': {'count': len(import_jobs), 'data': import_jobs},
+        'import_items': {'count': len(import_items), 'data': import_items},
+        'migration_backups': {'count': len(migration_backups), 'data': migration_backups},
     }
 
     # ── برنامه ──
@@ -642,11 +658,22 @@ async def build_section_backup_data(section: str) -> dict:
         data['files']       = {'count': len(ref_files), 'data': ref_files}
 
     elif section == 'qbank':
-        questions   = await _snapshot_collection(db.questions, 100000, 'questions', integrity)
-        qbank_files = await _snapshot_collection(db.qbank_files, 50000, 'qbank_files', integrity)
-        data['description'] = 'بانک سوال'
-        data['questions']   = {'count': len(questions),   'data': questions}
-        data['files']       = {'count': len(qbank_files), 'data': qbank_files}
+        snapshots = [
+            ('questions', db.questions, 100000, 'questions'),
+            ('progress', db.question_progress, 1000000, 'question_progress'),
+            ('topic_stats', db.question_topic_stats, 500000, 'question_topic_stats'),
+            ('ai_personal', db.ai_practice_questions, 500000, 'ai_practice_questions'),
+            ('ai_quotas', db.question_ai_quotas, 100000, 'question_ai_quotas'),
+            ('exams', db.exam_sessions, 500000, 'exam_sessions'),
+            ('pdf_generations', db.question_pdf_generations, 500000, 'question_pdf_generations'),
+            ('import_jobs', db.question_import_jobs, 100000, 'question_import_jobs'),
+            ('import_items', db.question_import_items, 1000000, 'question_import_items'),
+            ('migration_backups', db.question_migration_backups, 200000, 'question_migration_backups'),
+        ]
+        data['description'] = 'دامنه ساختاریافته بانک سؤال'
+        for key, collection, cap, name in snapshots:
+            rows = await _snapshot_collection(collection, cap, name, integrity)
+            data[key] = {'count': len(rows), 'data': rows}
 
     elif section == 'subscription':
         sub_plans      = await _snapshot_collection(db.sub_plans, 10000, 'sub_plans', integrity)
@@ -1046,7 +1073,14 @@ async def _restore_section(section: str, sec_data: dict) -> int:
             total += await _upsert_many(getattr(db, col), rows)
 
     elif section == 'qbank':
-        for sub, col in [('questions','questions'),('files','qbank_files')]:
+        for sub, col in [
+            ('questions', 'questions'), ('progress', 'question_progress'),
+            ('topic_stats', 'question_topic_stats'), ('ai_personal', 'ai_practice_questions'),
+            ('ai_quotas', 'question_ai_quotas'), ('exams', 'exam_sessions'),
+            ('pdf_generations', 'question_pdf_generations'),
+            ('import_jobs', 'question_import_jobs'), ('import_items', 'question_import_items'),
+            ('migration_backups', 'question_migration_backups'),
+        ]:
             rows = sec_data.get(sub, {}).get('data', [])
             total += await _upsert_many(getattr(db, col), rows)
 

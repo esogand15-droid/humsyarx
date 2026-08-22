@@ -1,9 +1,9 @@
 """
 بانک سوال — نسخه نهایی بهینه‌سازی‌شده
 ✅ فیکس دکمه‌های بازگشت در همه مسیرها
-✅ آزمون سفارشی (تعداد + زمان دلخواه)
-✅ خروجی فایل txt از سوالات
-✅ طراحی سوال توسط دانشجو و ادمین محتوا
+✅ آزمون سفارشی persistent با اجرای Bot/PDF
+✅ تمرین سریع با solved-unique و AI fallback شخصی
+✅ طراحی سؤال با lifecycle بررسی مشترک
 ✅ نمایش طراح سوال
 ✅ فیلتر درس + مبحث
 ✅ آمار پیشرفته
@@ -11,16 +11,23 @@
 """
 import os, io, asyncio, logging, time
 from datetime import datetime
+from html import escape
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
 from utils import send_audit_log, fmt_jalali_dt
 from time_utils import now_tehran, utc_now_iso
+from question_bank import ExamService, QuestionBankService, QuestionDomainError
+from question_bank.ai_practice import AIPersonalPracticeService
+from question_bank.contracts import DIFFICULTY_LABELS, canonical_difficulty
 
 logger     = logging.getLogger(__name__)
 ADMIN_ID   = int(os.getenv('ADMIN_ID', '0'))
 ANSWERING  = 4
 CREATING_Q = 6
+question_bank = QuestionBankService(db)
+exam_domain = ExamService(db)
+ai_practice = AIPersonalPracticeService(db)
 
 DIFF_EMOJI = {'آسان 🟢': '🟢', 'متوسط 🟡': '🟡', 'سخت 🔴': '🔴'}
 LETTERS    = ['🅐', '🅑', '🅒', '🅓']
@@ -35,6 +42,11 @@ def _back(label: str, cb: str) -> list:
     return [InlineKeyboardButton(label, callback_data=cb)]
 
 
+def _h(value) -> str:
+    """Escape domain/user text before Telegram HTML rendering."""
+    return escape(str(value or ""))
+
+
 # ══════════════════════════════════════════════════════════
 #  تابع ورودی از ReplyKeyboard (message_router)
 # ══════════════════════════════════════════════════════════
@@ -42,22 +54,18 @@ def _back(label: str, cb: str) -> list:
 async def _main_menu_msg(message):
     """نمایش منوی اصلی از طریق message (نه callback)"""
     keyboard = [
-        [InlineKeyboardButton("📁 بانک فایل سوالات",     callback_data='questions:file_bank')],
-        [InlineKeyboardButton("🧪 تمرین سریع",            callback_data='questions:practice')],
-        [InlineKeyboardButton("📝 آزمون سفارشی",          callback_data='questions:custom_exam')],
-        [InlineKeyboardButton("📄 خروجی فایل سوالات",    callback_data='questions:pdf_menu')],
-        [InlineKeyboardButton("✏️ طراحی سوال",            callback_data='questions:create')],
+        [InlineKeyboardButton("📝 تمرین سریع",            callback_data='questions:practice')],
+        [InlineKeyboardButton("🎯 آزمون سفارشی",          callback_data='questions:custom_exam')],
+        [InlineKeyboardButton("✍️ طراحی سؤال",            callback_data='questions:create')],
+        [InlineKeyboardButton("📚 سؤال‌های من",           callback_data='questions:my_questions')],
         [InlineKeyboardButton("📊 آمار و پیشرفت من",      callback_data='questions:stats')],
     ]
     await message.reply_text(
-        "🧪 <b>بانک سوال</b>\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "📁 <b>بانک فایل:</b> دانلود PDF سوالات\n"
-        "🧪 <b>تمرین سریع:</b> سوال چهارگزینه‌ای\n"
-        "📝 <b>آزمون سفارشی:</b> تعداد و زمان دلخواه\n"
-        "📄 <b>خروجی فایل:</b> سوالات را دانلود کنید\n"
-        "✏️ <b>طراحی سوال:</b> سوال خودتان بسازید\n"
-        "📊 <b>آمار:</b> پیشرفت و نقاط ضعف",
+        "🧠 <b>بانک سؤال</b>\n\n"
+        "📝 <b>تمرین سریع</b>\nبرای یادگیری و دیدن فوری پاسخ و تحلیل.\n\n"
+        "🎯 <b>آزمون سفارشی</b>\nبرای سنجش خودت با تعداد، زمان و نوع اجرای دلخواه.\n\n"
+        "✍️ <b>طراحی سؤال</b>\nسؤالت را برای بررسی و ورود به بانک پیشنهاد بده.\n\n"
+        "📚 <b>سؤال‌های من</b>\nوضعیت بررسی و دلیل اصلاح یا رد را ببین.",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -85,53 +93,6 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if action == 'main':
         await _main_menu(query)
 
-    # ── بانک فایل ──
-    elif action == 'file_bank':
-        await _fb_term_select(query, context)
-
-    elif action == 'fb_term':
-        term_idx = int(parts[2])
-        await _fb_lessons(query, context, term_idx)
-
-    elif action == 'fb_lesson':
-        idx     = int(parts[2])
-        lessons = context.user_data.get('_fb_lessons', [])
-        if idx < len(lessons):
-            context.user_data['fb_lesson'] = lessons[idx]
-            await _fb_topics(query, context, lessons[idx])
-
-    elif action == 'fb_topic':
-        lesson = context.user_data.get('fb_lesson', '')
-        topics = context.user_data.get('_fb_topics', [])
-        topic  = None if parts[2] == 'all' else (topics[int(parts[2])] if int(parts[2]) < len(topics) else None)
-        context.user_data['fb_topic'] = topic
-        await _fb_files(query, context, lesson, topic)
-
-    elif data.startswith('download_qbank:'):
-        fid  = parts[1]
-        item = await db.get_qbank_file(fid)
-        if not item:
-            await query.answer("فایل پیدا نشد!", show_alert=True); return
-        # 🌊 C1 — ضد ID-manipulation: فایل بانک سوال فقط در scope دانشجو
-        _stu_q = await db.get_user(uid)
-        _allowed_q = db.student_intake_filter((_stu_q or {}).get('intake', ''))
-        # دارندگان دسترسی مدیریتی (پیش‌نمایش ادمین) از فیلتر دانشجویی مستثنا‌اند
-        if not await db.is_content_admin(uid) and \
-                (item.get('intake') or '') not in _allowed_q:
-            await query.answer("⛔ این فایل برای ورودی شما نیست.",
-                               show_alert=True); return
-        await db.inc_qbank_download(fid, uid)
-        caption = (f"📁 <b>بانک سوال</b>\n📚 {item.get('lesson','')} — {item.get('topic','')}\n"
-                   f"📝 {item.get('description','')}\n⬇️ {item.get('downloads',0)} دانلود")
-        protect = await db.get_setting('protect_content_enabled', True)
-        # 🌊 Q2-W11 — bare except → except Exception (fallback document→photo عیناً حفظ شد)
-        try:
-            await query.message.reply_document(item['file_id'], caption=caption, parse_mode='HTML', protect_content=protect)
-        except Exception:
-            try:    await query.message.reply_photo(item['file_id'], caption=caption, parse_mode='HTML', protect_content=protect)
-            except Exception: await query.answer("خطا در ارسال فایل!", show_alert=True)
-        return
-
     # ── آزمون سفارشی ──
     elif action == 'custom_exam':
         await _custom_exam_menu(query, context)
@@ -140,14 +101,18 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         idx     = int(parts[2])
         lessons = context.user_data.get('_cx_lessons', [])
         if idx < len(lessons):
-            context.user_data.setdefault('cx', {})['lesson'] = lessons[idx]
+            selected = lessons[idx]
+            context.user_data.setdefault('cx', {}).update({
+                'lesson_id': selected['id'], 'lesson': selected['name']})
             context.user_data['cx_lesson_idx'] = idx
-            await _cx_topic_select(query, context, lessons[idx])
+            await _cx_topic_select(query, context, selected)
 
     elif action == 'cx_topic':
         topics = context.user_data.get('_cx_topics', [])
-        topic  = 'همه' if parts[2] == 'all' else (topics[int(parts[2])] if int(parts[2]) < len(topics) else 'همه')
-        context.user_data.setdefault('cx', {})['topic'] = topic
+        selected = None if parts[2] == 'all' else (topics[int(parts[2])] if int(parts[2]) < len(topics) else None)
+        context.user_data.setdefault('cx', {}).update({
+            'topic_id': selected['id'] if selected else '',
+            'topic': selected['name'] if selected else 'همه'})
         await _cx_count_select(query, context)
 
     elif action == 'cx_count':
@@ -161,7 +126,27 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'cx_time':
         minutes = int(parts[2])
         context.user_data.setdefault('cx', {})['time'] = minutes
-        await _cx_start(query, context, uid)
+        await _cx_output_select(query, context)
+
+    elif action == 'cx_output':
+        context.user_data.setdefault('cx', {})['output_mode'] = parts[2]
+        await _cx_preview(query, context, uid)
+
+    elif action == 'cx_confirm':
+        await _cx_start(query, context, uid, allow_smaller=False)
+
+    elif action == 'cx_confirm_smaller':
+        await _cx_start(query, context, uid, allow_smaller=True)
+
+    elif action == 'cx_resume':
+        context.user_data['exam_session_id'] = parts[2]
+        await _next_exam_q(query, context, uid)
+
+    elif action == 'exam_history':
+        await _exam_history(query, uid)
+
+    elif action == 'exam_abandon':
+        await _abandon_exam(query, context, uid)
 
     # ── تمرین آزاد ──
     elif action == 'practice':
@@ -179,7 +164,8 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _next_q(query, context, uid)
 
     elif action == 'exam':
-        await _term_select(query, context, 'exam')
+        # Legacy callback now converges on the persistent Custom Exam domain.
+        await _custom_exam_menu(query, context)
 
     elif action == 'sel_term':
         mode = parts[2]; term_idx = int(parts[3])
@@ -208,15 +194,40 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         topics = context.user_data.get('_topics', [])
         topic  = 'همه' if parts[3] == 'all' else (topics[int(parts[3])] if int(parts[3]) < len(topics) else 'همه')
         lesson = context.user_data.get('sel_lesson', '')
-        context.user_data.setdefault('quiz', {}).update({
-            'lesson': lesson, 'topic': topic, 'mode': mode,
-            'answered': [], 'correct': 0,
-            'total': 20 if mode == 'exam' else 999
-        })
-        await _next_q(query, context, uid)
+        if mode == 'exam':
+            context.user_data['cx'] = {'lesson': lesson, 'topic': topic,
+                                       'count': 20, 'time': 0}
+            await _cx_output_select(query, context)
+        else:
+            context.user_data.setdefault('quiz', {}).update({
+                'lesson': lesson, 'topic': topic, 'mode': mode,
+                'answered': [], 'correct': 0, 'total': 999
+            })
+            await _next_q(query, context, uid)
 
     elif action == 'next':
         await _next_q(query, context, uid)
+
+    elif action == 'exam_next':
+        await _next_exam_q(query, context, uid)
+
+    elif action == 'exam_answer':
+        await _handle_exam_answer(query, context, uid, parts[2], int(parts[3]))
+
+    elif action == 'ai_fallback':
+        await _generate_personal_ai_question(query, context, uid)
+
+    elif action == 'ai_personal_answer':
+        await _answer_personal_ai(query, context, uid, parts[2], int(parts[3]))
+
+    elif action == 'ai_personal_propose':
+        await _propose_personal_ai(query, context, uid, parts[2])
+
+    elif action == 'my_questions':
+        await _my_questions(query, uid, int(parts[2]) if len(parts) > 2 else 0)
+
+    elif action == 'edit_my':
+        await _edit_my_question(query, context, uid, parts[2])
 
     elif action == 'stats':
         await _quiz_stats(query, uid)
@@ -232,20 +243,22 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         lessons = context.user_data.get('_lessons', [])
         if idx < len(lessons):
             lesson = lessons[idx]
-            context.user_data['new_q']     = {'lesson': lesson}
-            context.user_data['cr_lesson'] = lesson
+            context.user_data['new_q'] = {'lesson_id': lesson['id'], 'lesson': lesson['name']}
+            context.user_data['cr_lesson'] = lesson['name']
             await _create_topic_select(query, context, lesson)
 
     elif action == 'cr_topic':
         topics = context.user_data.get('_topics', [])
-        idx    = int(parts[2])
-        topic  = topics[idx] if idx < len(topics) else ''
-        context.user_data.setdefault('new_q', {})['topic'] = topic
+        idx = int(parts[2])
+        topic = topics[idx] if idx < len(topics) else None
+        if not topic:
+            await query.answer("مبحث معتبر نیست", show_alert=True); return
+        context.user_data.setdefault('new_q', {}).update({'topic_id': topic['id'], 'topic': topic['name']})
         context.user_data['mode']        = 'creating_question'
         context.user_data['create_step'] = 'question'
         await query.edit_message_text(
             f"✏️ <b>طراحی سوال</b>\n"
-            f"📚 {context.user_data.get('cr_lesson','')} — {topic}\n\n"
+            f"📚 {context.user_data.get('cr_lesson','')} — {topic['name']}\n\n"
             "━━━━━━━━━━━━━━━━\n"
             "📝 <b>گام ۱ از ۵ — متن سوال</b>\n\nسوال خود را بنویسید:",
             parse_mode='HTML',
@@ -254,47 +267,23 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ]]))
         return CREATING_Q
 
-    # ── طراحی سوال با هوشیار (AI) ──
-    elif action == 'ai_create':
-        await _ai_create_start(query, context)
+    elif action == 'submit_question':
+        await _save_question(update, context)
 
-    elif action == 'ai_lesson':
-        idx     = int(parts[2])
-        lessons = context.user_data.get('_ai_lessons', [])
-        if idx < len(lessons):
-            await _ai_topic_select(query, context, lessons[idx])
-
-    elif action == 'ai_topic':
-        topics = context.user_data.get('_ai_topics', [])
-        idx    = int(parts[2])
-        topic  = topics[idx] if idx < len(topics) else context.user_data.get('ai_q_lesson', '')
-        context.user_data['ai_q_topic'] = topic
-        await _ai_difficulty_select(query, context)
-
-    elif action == 'ai_diff':
-        level = parts[2] if len(parts) > 2 else 'medium'
-        diff_map = {'easy': 'آسان 🟢', 'medium': 'متوسط 🟡', 'hard': 'سخت 🔴'}
-        context.user_data['ai_q_difficulty'] = diff_map.get(level, 'متوسط 🟡')
-        await _ai_ask_note(query, context)
-
-    elif action == 'ai_regen':
-        await _ai_generate_and_preview(query, context)
-
-    elif action == 'ai_save':
-        await _ai_save_question(query, context)
-
-    elif action == 'ai_cancel':
-        for k in ('ai_q_lesson', 'ai_q_topic', 'ai_q_difficulty', 'ai_q_note', 'ai_q_generated', '_ai_lessons', '_ai_topics'):
-            context.user_data.pop(k, None)
-        await _main_menu(query)
+    # Legacy AI-authoring callback now explains the personal-practice policy.
+    elif action in ('ai_create', 'ai_lesson', 'ai_topic', 'ai_diff', 'ai_regen', 'ai_save'):
+        await query.edit_message_text(
+            "🤖 سؤال هوشمند در نسخه جدید فقط وقتی سؤال‌های معتبر یک مبحث را کامل کرده باشی، "
+            "از داخل «تمرین سریع» ساخته می‌شود و خودکار وارد بانک مشترک نمی‌شود.",
+            reply_markup=InlineKeyboardMarkup([_back("📝 رفتن به تمرین سریع", "questions:practice"),
+                                               _back("🔙 بانک سؤال", "questions:main")]))
 
     # ── ⚠️ قابلیتِ جدید: تاییدِ ذخیره‌سازیِ سوالِ (احتمالاً) تکراری ──
     elif action == 'dup_confirm':
         q = context.user_data.get('new_q') or context.user_data.get('ai_q_generated')
         if context.user_data.get('new_q'):
+            context.user_data['allow_probable_duplicate'] = True
             await _do_insert_manual_question(update, context, context.user_data.get('new_q', {}), query.from_user.id)
-        elif context.user_data.get('ai_q_generated'):
-            await _do_insert_ai_question(query, context)
         else:
             await query.answer("⚠️ چیزی برای ذخیره نیست.", show_alert=True)
 
@@ -307,78 +296,6 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "❌ لغو شد — سوال ذخیره نشد.",
             reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت به بانک سوال", "questions:main")]))
 
-    # ── خروجی فایل سوالات ──
-    elif action == 'pdf_menu':
-        await _pdf_menu(query, context)
-
-    elif action == 'pdf_lesson':
-        idx     = int(parts[2])
-        lessons = context.user_data.get('_pdf_lessons', [])
-        if idx < len(lessons):
-            context.user_data['pdf_lesson'] = lessons[idx]
-            await _pdf_chapter_select(query, context, lessons[idx])
-
-    elif action == 'pdf_chapter':
-        chapters = context.user_data.get('_pdf_chapters', [])
-        chapter  = None if parts[2] == 'all' else (chapters[int(parts[2])] if int(parts[2]) < len(chapters) else None)
-        context.user_data['pdf_chapter'] = chapter
-        lesson = context.user_data.get('pdf_lesson', '')
-        await _pdf_topic_select(query, context, lesson, chapter)
-
-    elif action == 'pdf_topic':
-        topics = context.user_data.get('_pdf_topics', [])
-        topic  = 'همه' if parts[2] == 'all' else (topics[int(parts[2])] if int(parts[2]) < len(topics) else 'همه')
-        lesson  = context.user_data.get('pdf_lesson', '')
-        chapter = context.user_data.get('pdf_chapter')
-        context.user_data['pdf_topic'] = topic
-        await _pdf_difficulty_select(query, context, lesson, chapter, topic)
-
-    elif action == 'pdf_diff':
-        diffs = context.user_data.get('_pdf_diffs', [])
-        difficulty = None if parts[2] == 'all' else (diffs[int(parts[2])] if int(parts[2]) < len(diffs) else None)
-        context.user_data['pdf_difficulty'] = difficulty
-        lesson = context.user_data.get('pdf_lesson', '')
-        topic  = context.user_data.get('pdf_topic', 'همه')
-        await _pdf_count_select(query, context, lesson, topic)
-
-    elif action == 'pdf_count':
-        count = int(parts[2])
-        context.user_data['pdf_count'] = count
-        await _pdf_mode_select(query, context)
-
-    elif action == 'pdf_mode':
-        await query.edit_message_text("⏳ در حال ساخت فایل...", parse_mode='HTML')
-        await _generate_pdf_v2(query, context, uid, mode=parts[2])
-
-    elif action == 'pdf_topic_sel':
-        topics = context.user_data.get('_pdf_topics', [])
-        topic  = 'همه' if parts[2] == 'all' else (topics[int(parts[2])] if int(parts[2]) < len(topics) else 'همه')
-        context.user_data['pdf_topic'] = topic
-        lesson  = context.user_data.get('pdf_lesson','')
-        chapter = context.user_data.get('pdf_chapter')
-        await _pdf_difficulty_select(query, context, lesson, chapter, topic)
-
-    # ── دکمه‌های بازگشت یک‌قدمی در ویزارد PDF (بدون گم‌کردن انتخاب‌های قبلی) ──
-    elif action == 'pdf_back_chapter':
-        lesson = context.user_data.get('pdf_lesson', '')
-        await _pdf_chapter_select(query, context, lesson)
-
-    elif action == 'pdf_back_topic':
-        lesson  = context.user_data.get('pdf_lesson', '')
-        chapter = context.user_data.get('pdf_chapter')
-        await _pdf_topic_select(query, context, lesson, chapter)
-
-    elif action == 'pdf_back_diff':
-        lesson  = context.user_data.get('pdf_lesson', '')
-        chapter = context.user_data.get('pdf_chapter')
-        topic   = context.user_data.get('pdf_topic', 'همه')
-        await _pdf_difficulty_select(query, context, lesson, chapter, topic)
-
-    elif action == 'pdf_back_count':
-        lesson = context.user_data.get('pdf_lesson', '')
-        topic  = context.user_data.get('pdf_topic', 'همه')
-        await _pdf_count_select(query, context, lesson, topic)
-
     # ── مدیریت سوالات توسط ادمین محتوا/ادمین ──
     elif action == 'ca_q_list':
         await _ca_question_list(query, uid, context)
@@ -388,16 +305,23 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _ca_question_view(query, uid, qid)
 
     elif action == 'ca_q_del':
-        await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '')
+        await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '', target='rejected')
+
+    elif action == 'ca_q_needs_changes':
+        await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '', target='needs_changes')
 
     elif action == 'ca_q_approve':
         await _h_ca_q_approve(query, context, uid, parts[2] if len(parts) > 2 else '')
 
     elif action == 'ca_q_filter':
-        # فیلتر: ca_q_filter:type:value
         ftype = parts[2] if len(parts) > 2 else 'all'
         fval  = parts[3] if len(parts) > 3 else ''
         context.user_data[f'caq_filter_{ftype}'] = fval
+        context.user_data['caq_page'] = 0
+        await _ca_question_list(query, uid, context)
+
+    elif action == 'ca_q_page':
+        context.user_data['caq_page'] = max(0, int(parts[2] if len(parts) > 2 else 0))
         await _ca_question_list(query, uid, context)
 
     elif data.startswith('answer:'):
@@ -408,55 +332,63 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 #  🌊 Q2-W8 — هندلرهای استخراج‌شده از questions_callback
 #  (بدون تغییر رفتار؛ routing/scope/audit دقیقاً مثل قبل)
 # ══════════════════════════════════════════════════════════
-async def _h_ca_q_del(query, context, uid: int, qid: str):
-    """شاخه‌ی ca_q_del — حذف سوال توسط ادمین محتوا (با enforce scope + audit)."""
-    if await db.is_content_admin(uid):
-        # FIX طبق سند: حذف سوال در پنل محتوا قبلاً اصلاً لاگ نمی‌شد
-        q_doc = await db.get_question_by_id(qid)
-        # 🌊 C1 — enforce scope قبل از حذف (ضد callback-manipulation)
-        if not await db.can_access_intake(uid, (q_doc or {}).get('intake') or ''):
-            await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
-                               show_alert=True)
-            return
-        await db.delete_question(qid)
-        await query.answer("🗑 سوال حذف شد!", show_alert=True)
-        actor = await db.get_user(uid)
-        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'content', actor_name, uid,
-            "حذف سوال", module='Questions', severity='HIGH',
-            actor_role=actor_role,
-            target_id=qid, target_type='question',
-            target_label=(q_doc.get('question', '')[:60] if q_doc else ''),
-            tags=['حذف_سوال']
-        )
-        await _ca_question_list(query, uid, context)
+async def _h_ca_q_del(query, context, uid: int, qid: str, target='rejected'):
+    can_review = (await db.has_permission(uid, 'questions.review') or
+                  await db.has_permission(uid, 'questions.review_scoped'))
+    if not can_review or not await db.has_permission(uid, 'questions.reject'):
+        await query.answer("مجوز رد یا درخواست اصلاح سؤال را ندارید.", show_alert=True); return
+    question = await db.get_question_by_id(qid)
+    if not question:
+        await query.answer("سؤال پیدا نشد.", show_alert=True); return
+    scope = await db.get_scoped_intake(uid)
+    if scope and (question.get('intake') or '') != scope:
+        await query.answer("این سؤال خارج از scope شماست.", show_alert=True); return
+    context.user_data['mode'] = 'question_review_reason'
+    context.user_data['q_review'] = {'qid': qid, 'target': target}
+    label = 'رد' if target == 'rejected' else 'درخواست اصلاح'
+    await query.edit_message_text(f"📝 دلیل {label} سؤال را بنویسید (حداقل ۳ کاراکتر):",
+        reply_markup=InlineKeyboardMarkup([_back("❌ لغو", "questions:ca_q_list")]))
+
+
+async def handle_question_review_reason_text(update, context):
+    data = context.user_data.get('q_review') or {}; reason = (update.message.text or '').strip()
+    if len(reason) < 3:
+        await update.message.reply_text("دلیل باید حداقل ۳ کاراکتر باشد."); return
+    uid = update.effective_user.id
+    try:
+        updated = await question_bank.transition(question_id=data.get('qid',''), reviewer={'id': uid},
+                                                 target=data.get('target','rejected'), reason=reason)
+    except QuestionDomainError as exc:
+        await update.message.reply_text(f"❌ {exc.message}"); return
+    context.user_data.pop('mode', None); context.user_data.pop('q_review', None)
+    await send_audit_log(context.bot, 'content', str(uid), uid,
+        "بررسی سؤال", module='Questions', severity='WARNING',
+        target_id=str(updated.get('_id')), target_type='question',
+        details=f"{updated.get('status')} · {reason}", tags=['بررسی_سؤال'])
+    await update.message.reply_text("✅ نتیجه بررسی ثبت و به دانشجو اطلاع داده شد.")
 
 
 async def _h_ca_q_approve(query, context, uid: int, qid: str):
-    """شاخه‌ی ca_q_approve — تأیید سوال توسط ادمین محتوا (با enforce scope + audit)."""
-    if await db.is_content_admin(uid):
-        q_doc_approve = await db.get_question_by_id(qid)
-        # 🌊 C1 — enforce scope قبل از تأیید
-        if not await db.can_access_intake(
-                uid, (q_doc_approve or {}).get('intake') or ''):
-            await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
-                               show_alert=True)
-            return
-        await db.approve_question(qid)
-        await query.answer("✅ تأیید شد!", show_alert=True)
-        actor = await db.get_user(uid)
-        actor_name = actor.get('name', 'ادمین محتوا') if actor else 'ادمین محتوا'
-        actor_role = await db.get_actor_role_label(uid)
-        await send_audit_log(
-            context.bot, 'content', actor_name, uid,
-            "تأیید سوال", module='Questions', severity='INFO',
-            actor_role=actor_role, target_id=qid, target_type='question',
-            target_label=(q_doc_approve.get('question', '')[:60] if q_doc_approve else ''),
-            tags=['تایید_سوال']
-        )
-        await _ca_question_list(query, uid, context)
+    if not (await db.has_permission(uid, 'questions.review') or
+            await db.has_permission(uid, 'questions.review_scoped')):
+        await query.answer("مجوز تأیید سؤال را ندارید.", show_alert=True); return
+    question = await db.get_question_by_id(qid)
+    if not question:
+        await query.answer("سؤال پیدا نشد.", show_alert=True); return
+    scope = await db.get_scoped_intake(uid)
+    if scope and (question.get('intake') or '') != scope:
+        await query.answer("این سؤال خارج از scope شماست.", show_alert=True); return
+    try:
+        updated = await question_bank.transition(question_id=qid, reviewer={'id': uid},
+                                                 target='approved', reason='')
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True); return
+    await query.answer("✅ سؤال تأیید و منتشر شد.", show_alert=True)
+    await send_audit_log(context.bot, 'content', str(uid), uid,
+        "تأیید سؤال", module='Questions', severity='INFO',
+        target_id=qid, target_type='question', target_label=question.get('question','')[:60],
+        tags=['تأیید_سؤال'])
+    await _ca_question_list(query, uid, context)
 
 
 # ══════════════════════════════════════════════════════════
@@ -465,25 +397,20 @@ async def _h_ca_q_approve(query, context, uid: int, qid: str):
 
 async def _main_menu(query):
     keyboard = [
-        [InlineKeyboardButton("📁 بانک فایل سوالات",     callback_data='questions:file_bank')],
-        [InlineKeyboardButton("🧪 تمرین سریع",            callback_data='questions:practice')],
-        [InlineKeyboardButton("📝 آزمون سفارشی",          callback_data='questions:custom_exam')],
-        [InlineKeyboardButton("📄 خروجی فایل سوالات",    callback_data='questions:pdf_menu')],
-        [InlineKeyboardButton("✏️ طراحی سوال",            callback_data='questions:create')],
-        [InlineKeyboardButton("🧠 طراحی سوال با هوشیار",  callback_data='questions:ai_create')],
+        [InlineKeyboardButton("📝 تمرین سریع",            callback_data='questions:practice')],
+        [InlineKeyboardButton("🎯 آزمون سفارشی",          callback_data='questions:custom_exam')],
+        [InlineKeyboardButton("✍️ طراحی سؤال",            callback_data='questions:create')],
+        [InlineKeyboardButton("📚 سؤال‌های من",           callback_data='questions:my_questions')],
         [InlineKeyboardButton("📊 آمار و پیشرفت من",      callback_data='questions:stats')],
         _back("🔙 داشبورد", "dashboard:refresh"),
     ]
     await query.edit_message_text(
-        "🧪 <b>بانک سوال</b>\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "📁 <b>بانک فایل:</b> دانلود PDF سوالات\n"
-        "🧪 <b>تمرین سریع:</b> سوال چهارگزینه‌ای\n"
-        "📝 <b>آزمون سفارشی:</b> تعداد و زمان دلخواه\n"
-        "📄 <b>خروجی فایل:</b> سوالات را دانلود کنید\n"
-        "✏️ <b>طراحی سوال:</b> سوال خودتان بسازید\n"
-        "🧠 <b>طراحی با هوشیار:</b> AI براتون سوال بسازه\n"
-        "📊 <b>آمار:</b> پیشرفت و نقاط ضعف",
+        "🧠 <b>بانک سؤال</b>\n\n"
+        "📝 <b>تمرین سریع</b> — یادگیری با بازخورد فوری\n"
+        "🎯 <b>آزمون سفارشی</b> — سنجش زمان‌دار داخل ربات یا PDF\n"
+        "✍️ <b>طراحی سؤال</b> — مشارکت در بانک پس از بررسی\n"
+        "📚 <b>سؤال‌های من</b> — وضعیت، دلیل و ارسال مجدد\n"
+        "📊 <b>آمار من</b> — سؤال‌های یکتا و مباحث ضعیف",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -491,17 +418,16 @@ async def _practice_menu(query):
     keyboard = [
         [InlineKeyboardButton("📖 تمرین آزاد",                callback_data='questions:free')],
         [InlineKeyboardButton("⚡ نقاط ضعف من",               callback_data='questions:weak')],
-        [InlineKeyboardButton("📝 شبیه‌سازی امتحان (۲۰ سوال)", callback_data='questions:exam')],
-        [InlineKeyboardButton("🔴 سوالات سطح سخت",            callback_data='questions:hard')],
+        [InlineKeyboardButton("🔴 سؤال‌های سطح سخت",          callback_data='questions:hard')],
         _back("🔙 بازگشت", "questions:main"),
     ]
     await query.edit_message_text(
         "🧪 <b>تمرین سریع</b>\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "📖 <b>آزاد:</b> هر درس و مبحث دلخواه\n"
-        "⚡ <b>نقاط ضعف:</b> سوالاتی که اشتباه زدید\n"
-        "📝 <b>شبیه امتحان:</b> ۲۰ سوال پشت سر هم\n"
-        "🔴 <b>سخت:</b> چالشی‌ترین سوالات",
+        "📖 <b>آزاد:</b> یادگیری با پاسخ و تحلیل فوری\n"
+        "⚡ <b>نقاط ضعف:</b> تمرین مبحث‌هایی با دقت پایین\n"
+        "🔴 <b>سخت:</b> سؤال‌های سطح hard\n\n"
+        "برای سنجش تعداددار و زمان‌دار از «آزمون سفارشی» استفاده کن.",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -521,228 +447,352 @@ async def _picker_intake(uid: int):
 
 
 async def _custom_exam_menu(query, context):
-    # 🌊 C1.5 — لیست درس‌ها فقط در scope دید کاربر
-    lessons = await db.get_lessons(
-        intake=await _picker_intake(query.from_user.id))
-    if not lessons:
-        await query.edit_message_text(
-            "❌ هنوز سوالی در بانک موجود نیست.",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:main")
-            ])); return
-    context.user_data['_cx_lessons'] = lessons
+    user = await db.get_user(query.from_user.id) or {}
+    tree = await question_bank.taxonomy_tree(
+        visible_intakes=db.student_intake_filter(user.get('intake', '')),
+        only_with_questions=True)
+    if not tree:
+        await query.edit_message_text("❌ هنوز سؤال معتبر و قابل‌مشاهده‌ای در بانک نیست.",
+            reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:main")]))
+        return
+    context.user_data['_cx_lessons'] = tree
     context.user_data['cx'] = {}
     keyboard = []
-    for i in range(0, len(lessons), 2):
-        row = [InlineKeyboardButton(f"📚 {lessons[i]}", callback_data=f'questions:cx_lesson:{i}')]
-        if i+1 < len(lessons):
-            row.append(InlineKeyboardButton(f"📚 {lessons[i+1]}", callback_data=f'questions:cx_lesson:{i+1}'))
+    for i in range(0, len(tree), 2):
+        row = [InlineKeyboardButton(f"📚 {tree[i]['name']} · {tree[i]['question_count']}", callback_data=f'questions:cx_lesson:{i}')]
+        if i + 1 < len(tree):
+            row.append(InlineKeyboardButton(f"📚 {tree[i+1]['name']} · {tree[i+1]['question_count']}", callback_data=f'questions:cx_lesson:{i+1}'))
         keyboard.append(row)
+    active = await exam_domain.active(user={"id": query.from_user.id, "_db": user})
+    if active and active.get('status') == 'active':
+        keyboard.insert(0, [InlineKeyboardButton("▶️ ادامه آزمون فعال", callback_data=f"questions:cx_resume:{active['session_id']}")])
+    keyboard.append([InlineKeyboardButton("📜 تاریخچه آزمون‌ها", callback_data="questions:exam_history")])
     keyboard.append(_back("🔙 بازگشت", "questions:main"))
     await query.edit_message_text(
-        "📝 <b>آزمون سفارشی</b>\n\n"
-        "━━━━━━━━━━━━━━━━\n"
-        "<b>گام ۱ از ۴:</b> درس را انتخاب کنید:",
+        "🎯 <b>آزمون سفارشی</b>\n\nبرای سنجش خودت، درس را انتخاب کن. "
+        "آزمون ثبت می‌شود و بعد از restart هم قابل ادامه است.",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _cx_topic_select(query, context, lesson):
-    # 🌊 C1.5 — مباحث فقط در scope دید کاربر (+ رفع ابهام درسِ همنام)
-    topics = await db.get_topics(
-        lesson, intake=await _picker_intake(query.from_user.id))
+    topics = [x for x in lesson.get('topics', []) if x.get('question_count', 0) > 0]
     context.user_data['_cx_topics'] = topics
-    keyboard = [[InlineKeyboardButton(f"📌 {t}", callback_data=f'questions:cx_topic:{i}')]
+    keyboard = [[InlineKeyboardButton(f"📌 {t['name']} · {t['question_count']}", callback_data=f'questions:cx_topic:{i}')]
                 for i, t in enumerate(topics)]
-    keyboard.append([InlineKeyboardButton("📂 همه مباحث", callback_data='questions:cx_topic:all')])
+    keyboard.append([InlineKeyboardButton(f"📂 همه مباحث · {lesson.get('question_count',0)}", callback_data='questions:cx_topic:all')])
     keyboard.append(_back("🔙 بازگشت", "questions:custom_exam"))
     await query.edit_message_text(
-        f"📝 <b>آزمون سفارشی</b>\n📚 {lesson}\n\n"
-        "<b>گام ۲ از ۴:</b> مبحث را انتخاب کنید:",
+        f"🎯 <b>آزمون سفارشی</b>\n📚 {_h(lesson['name'])}\n\n<b>گام ۲:</b> مبحث را انتخاب کن:",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _cx_count_select(query, context):
-    cx     = context.user_data.get('cx', {})
-    lesson = cx.get('lesson', '')
-    topic  = cx.get('topic', 'همه')
-    t_label = f" — {topic}" if topic != 'همه' else ''
-    lesson_idx = context.user_data.get('cx_lesson_idx', 0)
+    cx = context.user_data.get('cx', {})
     keyboard = [
-        [InlineKeyboardButton("5 سوال",  callback_data='questions:cx_count:5'),
-         InlineKeyboardButton("10 سوال", callback_data='questions:cx_count:10')],
-        [InlineKeyboardButton("15 سوال", callback_data='questions:cx_count:15'),
-         InlineKeyboardButton("20 سوال", callback_data='questions:cx_count:20')],
-        [InlineKeyboardButton("30 سوال", callback_data='questions:cx_count:30'),
-         InlineKeyboardButton("40 سوال", callback_data='questions:cx_count:40')],
-        _back("🔙 بازگشت", f'questions:cx_lesson:{lesson_idx}'),
-    ]
+        [InlineKeyboardButton("۵ سؤال", callback_data='questions:cx_count:5'), InlineKeyboardButton("۱۰ سؤال", callback_data='questions:cx_count:10')],
+        [InlineKeyboardButton("۱۵ سؤال", callback_data='questions:cx_count:15'), InlineKeyboardButton("۲۰ سؤال", callback_data='questions:cx_count:20')],
+        [InlineKeyboardButton("۳۰ سؤال", callback_data='questions:cx_count:30'), InlineKeyboardButton("۴۰ سؤال", callback_data='questions:cx_count:40')],
+        _back("🔙 بازگشت", f"questions:cx_lesson:{context.user_data.get('cx_lesson_idx',0)}")]
     await query.edit_message_text(
-        f"📝 <b>آزمون سفارشی</b>\n📚 {lesson}{t_label}\n\n"
-        "<b>گام ۳ از ۴:</b> تعداد سوالات:",
+        f"🎯 <b>آزمون سفارشی</b>\n📚 {_h(cx.get('lesson'))} — {_h(cx.get('topic','همه'))}\n\n<b>گام ۳:</b> تعداد سؤال را انتخاب کن:",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _cx_time_select(query, context):
-    cx    = context.user_data.get('cx', {})
-    count = cx.get('count', 10)
-    lesson = cx.get('lesson', '')
-    topic  = cx.get('topic', 'همه')
-    t_label = f" — {topic}" if topic != 'همه' else ''
+    cx = context.user_data.get('cx', {})
     keyboard = [
-        [InlineKeyboardButton("بدون محدودیت ⏳", callback_data='questions:cx_time:0')],
-        [InlineKeyboardButton("۱۰ دقیقه ⏱",  callback_data='questions:cx_time:10'),
-         InlineKeyboardButton("۲۰ دقیقه ⏱",  callback_data='questions:cx_time:20')],
-        [InlineKeyboardButton("۳۰ دقیقه ⏱",  callback_data='questions:cx_time:30'),
-         InlineKeyboardButton("۴۵ دقیقه ⏱",  callback_data='questions:cx_time:45')],
-        [InlineKeyboardButton("۶۰ دقیقه ⏱",  callback_data='questions:cx_time:60'),
-         InlineKeyboardButton("۹۰ دقیقه ⏱",  callback_data='questions:cx_time:90')],
-        _back("🔙 بازگشت", "questions:cx_back_count"),
-    ]
+        [InlineKeyboardButton("بدون محدودیت", callback_data='questions:cx_time:0')],
+        [InlineKeyboardButton("۱۰ دقیقه", callback_data='questions:cx_time:10'), InlineKeyboardButton("۲۰ دقیقه", callback_data='questions:cx_time:20')],
+        [InlineKeyboardButton("۳۰ دقیقه", callback_data='questions:cx_time:30'), InlineKeyboardButton("۴۵ دقیقه", callback_data='questions:cx_time:45')],
+        [InlineKeyboardButton("۶۰ دقیقه", callback_data='questions:cx_time:60'), InlineKeyboardButton("۹۰ دقیقه", callback_data='questions:cx_time:90')],
+        _back("🔙 بازگشت", "questions:cx_back_count")]
     await query.edit_message_text(
-        f"📝 <b>آزمون سفارشی</b>\n📚 {lesson}{t_label}\n🔢 {count} سوال\n\n"
-        "<b>گام ۴ از ۴:</b> زمان آزمون:",
+        f"🎯 <b>آزمون سفارشی</b>\n📚 {_h(cx.get('lesson'))} — {_h(cx.get('topic','همه'))}\n"
+        f"🔢 {cx.get('count',10)} سؤال\n\n<b>گام ۴:</b> زمان آزمون را انتخاب کن:",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-async def _cx_start(query, context, uid):
-    cx      = context.user_data.get('cx', {})
-    lesson  = cx.get('lesson', '')
-    topic   = cx.get('topic', 'همه')
-    count   = cx.get('count', 10)
-    minutes = cx.get('time', 0)
-
-    context.user_data['quiz'] = {
-        'mode':     'custom',
-        'lesson':   lesson,
-        'topic':    topic if topic != 'همه' else None,
-        'answered': [],
-        'correct':  0,
-        'total':    count,
-        'start_ts': time.time(),
-        'duration': minutes * 60 if minutes else 0,
-    }
-    await _next_q(query, context, uid)
+async def _cx_output_select(query, context):
+    cx = context.user_data.get('cx', {})
+    keyboard = [
+        [InlineKeyboardButton("🤖 اجرا داخل ربات", callback_data='questions:cx_output:bot')],
+        [InlineKeyboardButton("📄 PDF تمرینی — پاسخ زیر سؤال", callback_data='questions:cx_output:pdf_practice')],
+        [InlineKeyboardButton("📝 PDF آزمونی — پاسخنامه انتهایی", callback_data='questions:cx_output:pdf_exam')],
+        _back("🔙 بازگشت", "questions:cx_back_count")]
+    await query.edit_message_text(
+        f"🎯 <b>نوع اجرای آزمون</b>\n\n📚 {_h(cx.get('lesson',''))} — {_h(cx.get('topic','همه'))}\n"
+        f"🔢 {cx.get('count',10)} سؤال · ⏱ {cx.get('time',0) or 'بدون محدودیت'}\n\n"
+        "داخل ربات برای پاسخ‌دادن و ثبت نتیجه است؛ PDF برای چاپ یا حل آفلاین.",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-# ══════════════════════════════════════════════════════════
-#  سوال بعدی و جواب
-# ══════════════════════════════════════════════════════════
+async def _cx_preview(query, context, uid):
+    cx = context.user_data.get('cx', {})
+    user = await db.get_user(uid) or {}
+    taxonomy = {'lesson_id': cx.get('lesson_id',''), 'topic_id': cx.get('topic_id',''),
+                'lesson': cx.get('lesson',''), 'topic': '' if cx.get('topic') == 'همه' else cx.get('topic','')}
+    try:
+        preview = await exam_domain.preview(user={'id': uid, '_db': user}, taxonomy=taxonomy,
+            requested_count=int(cx.get('count',10)), minutes=int(cx.get('time',0)),
+            output_mode=cx.get('output_mode','bot'))
+    except QuestionDomainError as exc:
+        await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:custom_exam")]))
+        return
+    available, requested = preview['available_count'], preview['requested_count']
+    lines = (f"🎯 <b>پیش‌نمایش آزمون</b>\n\n📚 {_h(cx.get('lesson',''))} — {_h(cx.get('topic','همه'))}\n"
+             f"📦 سؤال معتبر موجود: <b>{available}</b>\n🔢 تعداد انتخابی: <b>{requested}</b>\n"
+             f"⏱ زمان: <b>{cx.get('time',0) or 'بدون محدودیت'}</b>\n")
+    keyboard = []
+    if available >= requested:
+        keyboard.append([InlineKeyboardButton("✅ تأیید و ساخت آزمون", callback_data='questions:cx_confirm')])
+    elif available > 0:
+        lines += f"\n⚠️ حداکثر {available} سؤال قابل تولید است؛ بدون تأیید شما تعداد کم نمی‌شود."
+        keyboard.append([InlineKeyboardButton(f"✅ ساخت با {available} سؤال", callback_data='questions:cx_confirm_smaller')])
+    else:
+        lines += "\n❌ برای این فیلتر سؤالی وجود ندارد."
+    keyboard.append(_back("🔙 تغییر تنظیمات", "questions:custom_exam"))
+    await query.edit_message_text(lines, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _cx_start(query, context, uid, allow_smaller=False):
+    cx = context.user_data.get('cx', {})
+    user = await db.get_user(uid) or {}
+    taxonomy = {'lesson_id': cx.get('lesson_id',''), 'topic_id': cx.get('topic_id',''),
+                'lesson': cx.get('lesson',''), 'topic': '' if cx.get('topic') == 'همه' else cx.get('topic','')}
+    try:
+        exam = await exam_domain.create(user={'id': uid, '_db': user}, taxonomy=taxonomy,
+            requested_count=int(cx.get('count',10)), minutes=int(cx.get('time',0)),
+            output_mode=cx.get('output_mode','bot'), allow_smaller=allow_smaller)
+    except QuestionDomainError as exc:
+        await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:custom_exam")]))
+        return
+    context.user_data['exam_session_id'] = exam['session_id']
+    if exam['output_mode'].startswith('pdf_'):
+        mode = 'practice' if exam['output_mode'] == 'pdf_practice' else 'exam'
+        try:
+            pdf, meta = await exam_domain.generate_pdf(session_id=exam['session_id'], user={'id': uid, '_db': user}, mode=mode)
+            file_obj = io.BytesIO(pdf)
+            file_obj.name = f"humsyar_exam_{meta['exam_code']}.pdf"
+            sent = await query.message.reply_document(file_obj, filename=file_obj.name,
+                caption=f"📄 <b>دفترچه آزمون</b>\n📚 {_h(exam['lesson'])} — {_h(exam['topic'] or 'همه مباحث')}\n"
+                        f"🔢 {exam['actual_count']} سؤال · کد <code>{meta['exam_code']}</code>", parse_mode='HTML')
+            sent_doc = getattr(sent, 'document', None)
+            await db.question_pdf_generations.update_one(
+                {'generation_id': meta['generation_id']},
+                {'$set': {'delivery': 'telegram', 'telegram_file_id': getattr(sent_doc, 'file_id', None),
+                          'telegram_message_id': getattr(sent, 'message_id', None), 'telegram_chat_id': uid}})
+            await query.edit_message_text("✅ دفترچه ساخته و به آزمون ذخیره‌شده متصل شد.",
+                reply_markup=InlineKeyboardMarkup([_back("🔙 بانک سؤال", "questions:main")]))
+        except Exception:
+            logger.exception("question bank PDF generation failed session=%s", exam['session_id'])
+            await query.edit_message_text("❌ ساخت فایل با مشکل مواجه شد. لطفاً دوباره تلاش کنید.",
+                reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:custom_exam")]))
+        return
+    await _next_exam_q(query, context, uid)
+
+
+async def _exam_history(query, uid):
+    user_doc = await db.get_user(uid) or {}
+    result = await exam_domain.history(user={"id": uid, "_db": user_doc}, skip=0, limit=10)
+    if not result.get("exams"):
+        await query.edit_message_text("هنوز آزمون ذخیره‌شده‌ای نداری.",
+            reply_markup=InlineKeyboardMarkup([_back("🔙 آزمون سفارشی", "questions:custom_exam")]))
+        return
+    status_labels = {"active": "▶️ فعال", "finished": "✅ تمام‌شده",
+                     "expired": "⌛ منقضی", "abandoned": "⏹ رهاشده"}
+    lines = []
+    keyboard = []
+    for exam in result["exams"]:
+        lines.append(
+            f"{status_labels.get(exam['status'], exam['status'])} · {_h(exam.get('lesson',''))} / {_h(exam.get('topic') or 'همه')}\n"
+            f"{exam.get('answered',0)}/{exam.get('total',0)} پاسخ · {exam.get('percentage',0)}٪ · <code>{exam.get('exam_code') or '—'}</code>")
+        if exam["status"] == "active":
+            keyboard.append([InlineKeyboardButton("▶️ ادامه آزمون فعال",
+                                                   callback_data=f"questions:cx_resume:{exam['session_id']}")])
+    keyboard.append(_back("🔙 آزمون سفارشی", "questions:custom_exam"))
+    await query.edit_message_text("📜 <b>تاریخچه آزمون‌های من</b>\n\n" + "\n\n".join(lines),
+                                  parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _abandon_exam(query, context, uid):
+    session_id = context.user_data.get("exam_session_id")
+    if not session_id:
+        await query.answer("آزمون فعالی انتخاب نشده است.", show_alert=True)
+        return
+    user_doc = await db.get_user(uid) or {}
+    try:
+        await exam_domain.abandon(session_id=session_id, user={"id": uid, "_db": user_doc})
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True)
+        return
+    context.user_data.pop("exam_session_id", None)
+    await query.edit_message_text("⏹ آزمون رها شد و در تاریخچه باقی ماند.",
+        reply_markup=InlineKeyboardMarkup([_back("📜 تاریخچه", "questions:exam_history"),
+                                           _back("🏠 بانک سؤال", "questions:main")]))
+
 
 async def _next_q(query, context, uid):
-    quiz    = context.user_data.get('quiz', {})
-    mode    = quiz.get('mode', 'free')
-    lesson  = quiz.get('lesson')
-    topic   = quiz.get('topic')
-    diff    = quiz.get('difficulty')
-    done    = quiz.get('answered', [])
-    total   = quiz.get('total', 999)
-    start   = quiz.get('start_ts', 0)
-    dur     = quiz.get('duration', 0)
-
-    # تعیین دکمه بازگشت بر اساس mode
-    back_cb = 'questions:custom_exam' if mode == 'custom' else 'questions:practice'
-
-    # بررسی زمان
-    if dur and start and (time.time() - start) > dur:
-        correct = quiz.get('correct', 0)
-        pct     = round(correct / len(done) * 100) if done else 0
-        elapsed = int(time.time() - start) // 60
-        await query.edit_message_text(
-            f"⏰ <b>زمان آزمون تمام شد!</b>\n\n"
-            f"✅ صحیح: <b>{correct}</b> از <b>{len(done)}</b>\n"
-            f"📊 درصد: <b>{pct}%</b>\n"
-            f"⏱ زمان: {elapsed} دقیقه\n\n"
-            f"{'🏆 عالی!' if pct>=80 else '👍 خوب!' if pct>=60 else '📖 بیشتر مطالعه کنید'}",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 دوباره", callback_data=back_cb),
-                 InlineKeyboardButton("📊 آمار",   callback_data='questions:stats'),
-                 InlineKeyboardButton("🏠 منو",    callback_data='questions:main')]
-            ]))
+    quiz = context.user_data.get('quiz', {})
+    mode = quiz.get('mode', 'free')
+    user_doc = await db.get_user(uid) or {}
+    user = {'id': uid, '_db': user_doc}
+    taxonomy = {}
+    try:
+        if mode == 'weak':
+            stats = await question_bank.stats(user=user)
+            weak = sorted(stats['weak_topics'], key=lambda x: (x['accuracy'], -x['attempts']))
+            if not weak:
+                await query.edit_message_text("برای تشخیص نقاط ضعف، اول چند تمرین انجام بده.",
+                    reply_markup=InlineKeyboardMarkup([_back("🔙 تمرین سریع", "questions:practice")]))
+                return
+            taxonomy = weak[0]
+        elif quiz.get('lesson'):
+            taxonomy = await question_bank.resolve_taxonomy(
+                lesson_id=quiz.get('lesson_id'), topic_id=quiz.get('topic_id'),
+                lesson=quiz.get('lesson'), topic=None if quiz.get('topic') == 'همه' else quiz.get('topic'),
+                visible_intakes=db.student_intake_filter(user_doc.get('intake','')),
+                require_topic=bool(quiz.get('topic') and quiz.get('topic') != 'همه'))
+            quiz.update({'lesson_id': taxonomy.get('lesson_id'), 'topic_id': taxonomy.get('topic_id')})
+        result = await question_bank.practice_next(user=user, taxonomy=taxonomy,
+                                                   mode='hard' if mode == 'hard' else mode)
+    except QuestionDomainError as exc:
+        await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 تمرین سریع", "questions:practice")]))
         return
-
-    if len(done) >= total:
-        correct = quiz.get('correct', 0)
-        pct     = round(correct / len(done) * 100) if done else 0
-        elapsed = int(time.time() - start) // 60 if start else 0
-        time_txt = f"\n⏱ زمان: {elapsed} دقیقه" if start else ""
-        await query.edit_message_text(
-            f"🏁 <b>پایان آزمون</b>\n\n"
-            f"✅ صحیح: <b>{correct}</b> از <b>{len(done)}</b>\n"
-            f"📊 درصد: <b>{pct}%</b>{time_txt}\n\n"
-            f"{'🏆 عالی!' if pct>=80 else '👍 خوب!' if pct>=60 else '📖 بیشتر مطالعه کنید'}",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 دوباره",    callback_data=back_cb),
-                 InlineKeyboardButton("📊 آمار کلی",  callback_data='questions:stats'),
-                 InlineKeyboardButton("🏠 منو",       callback_data='questions:main')]
-            ]))
+    q = result.get('question')
+    progress = result.get('progress') or {}
+    if not q:
+        if result.get('ai_available') and taxonomy.get('topic_id'):
+            context.user_data['quiz_taxonomy'] = taxonomy
+            await query.edit_message_text(
+                f"✅ همه {progress.get('total',0)} سؤال معتبر این مبحث را حداقل یک‌بار حل کرده‌ای.\n\n"
+                "می‌توانی برای ادامه تمرین، یک سؤال شخصی با هوشیار بسازی. این سؤال خودکار وارد بانک مشترک نمی‌شود.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🤖 ساخت سؤال شخصی", callback_data='questions:ai_fallback')],
+                                                   _back("🔙 تمرین سریع", "questions:practice")]))
+        else:
+            await query.edit_message_text("❌ سؤال حل‌نشده‌ای برای این فیلتر پیدا نشد.",
+                reply_markup=InlineKeyboardMarkup([_back("🔙 تمرین سریع", "questions:practice")]))
         return
-
-    # 🌊 C1 — دانشجو فقط سوال‌های ورودی خودش + سراسری را می‌بیند
-    _stu = await db.get_user(uid)
-    _sf  = db.student_intake_filter((_stu or {}).get('intake', ''))
-    if mode == 'weak':
-        qs = await db.get_weak_questions(uid, limit=1)
-    else:
-        qs = await db.get_questions(lesson=lesson, topic=topic, difficulty=diff, limit=1, exclude=done, intake=_sf)
-
-    if not qs:
-        await query.edit_message_text(
-            "❌ سوال دیگری یافت نشد!\nتمام سوالات موجود را پاسخ دادید.",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", back_cb)
-            ]))
-        return
-
-    q   = qs[0]
-    qid = str(q['_id'])
-    context.user_data.setdefault('quiz', {}).setdefault('answered', []).append(qid)
-
-    diff_icon = DIFF_EMOJI.get(q.get('difficulty', ''), '⚪')
-    num       = len(done) + 1
-    total_str = f"/{total}" if total < 999 else ""
-
-    # اطلاعات طراح
-    creator_id   = q.get('creator_id')
-    by_bot       = q.get('by_bot', False)
-    creator_type = q.get('creator_type', '')
-    if creator_type == 'ai':
-        creator_line = "\n<i>🤖 طراحی شده توسط هوشیار (AI)</i>"
-    elif by_bot:
-        creator_line = "\n<i>🤖 طراحی شده توسط بات</i>"
-    elif creator_id:
-        user = await db.get_user(creator_id)
-        cname = user.get('name', '') if user else ''
-        creator_line = f"\n<i>✏️ طراح: {cname}</i>" if cname else ""
-    else:
-        creator_line = ""
-
-    # نمایش زمان باقیمانده
-    time_line = ""
-    if dur and start:
-        remain = max(0, int(dur - (time.time() - start)))
-        m, s   = divmod(remain, 60)
-        time_line = f"\n⏱ <b>{m:02d}:{s:02d}</b> باقیمانده"
-
-    keyboard = []
-    for i, opt in enumerate(q['options']):
-        keyboard.append([InlineKeyboardButton(
-            f"{LETTERS[i]} {opt}", callback_data=f'answer:{qid}:{i}')])
-    keyboard.append([
-        InlineKeyboardButton("⚠️ گزارش ایراد سوال", callback_data=f'report:question:{qid}'),
-    ])
-    keyboard.append([
-        InlineKeyboardButton("🏠 منو", callback_data='questions:main'),
-    ])
-
+    qid = q['id']
+    context.user_data['current_practice_question'] = qid
+    raw = await db.get_question_by_id(qid)
+    creator_line = ''
+    if raw:
+        if raw.get('creator_type') == 'ai': creator_line = "\n<i>🤖 منبع: AI تأییدشده بانک</i>"
+        elif raw.get('creator_name'): creator_line = f"\n<i>✏️ طراح: {_h(raw.get('creator_name'))}</i>"
+    letters = ['🅐','🅑','🅒','🅓']
+    keyboard = [[InlineKeyboardButton(f"{letters[i]} {opt}", callback_data=f'answer:{qid}:{i}')]
+                for i, opt in enumerate(q['options'][:4])]
+    keyboard.append([InlineKeyboardButton("⚠️ گزارش ایراد سؤال", callback_data=f'report:question:{qid}')])
+    keyboard.append([InlineKeyboardButton("🏠 منو", callback_data='questions:main')])
     await query.edit_message_text(
-        f"📝 <b>سوال {num}{total_str}</b>  {diff_icon}{time_line}\n"
-        f"📚 {q.get('lesson','')} — {q.get('topic','')}\n"
-        f"━━━━━━━━━━━━━━━━\n\n"
-        f"{q['question']}"
-        f"{creator_line}",
+        f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
+        f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _next_exam_q(query, context, uid):
+    session_id = context.user_data.get('exam_session_id')
+    if not session_id:
+        await query.edit_message_text("آزمون فعالی انتخاب نشده است.", reply_markup=InlineKeyboardMarkup([_back("🔙 آزمون سفارشی", "questions:custom_exam")]))
+        return
+    user_doc = await db.get_user(uid) or {}
+    user = {'id': uid, '_db': user_doc}
+    try:
+        result = await exam_domain.next_question(session_id=session_id, user=user)
+    except QuestionDomainError as exc:
+        await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 آزمون سفارشی", "questions:custom_exam")]))
+        return
+    if result.get('finished'):
+        await query.edit_message_text(
+            f"🏁 <b>آزمون پایان یافت</b>\n\n✅ صحیح: {result.get('correct',0)} از {result.get('answered',0)}\n"
+            f"📊 درصد: {result.get('percentage',0)}٪\nکد آزمون: <code>{result.get('exam_code','')}</code>",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 آزمون جدید", callback_data='questions:custom_exam')],
+                                                                  _back("🏠 بانک سؤال", "questions:main")]))
+        return
+    q = result['question']
+    letters = ['🅐','🅑','🅒','🅓']
+    keyboard = [[InlineKeyboardButton(f"{letters[i]} {opt}", callback_data=f"questions:exam_answer:{session_id}:{i}")]
+                for i, opt in enumerate(q['options'][:4])]
+    keyboard.append([InlineKeyboardButton("⏹ رها کردن آزمون", callback_data="questions:exam_abandon")])
+    remain = result.get('seconds_left')
+    remain_text = ''
+    if remain is not None:
+        m, sec = divmod(remain, 60)
+        remain_text = f"\n⏱ {m:02d}:{sec:02d} باقی‌مانده"
+    await query.edit_message_text(
+        f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}\n"
+        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _handle_exam_answer(query, context, uid, session_id, selected):
+    user_doc = await db.get_user(uid) or {}
+    try:
+        result = await exam_domain.answer(session_id=session_id, user={'id': uid, '_db': user_doc}, selected=selected)
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True)
+        return
+    if result.get('finished'):
+        context.user_data.pop('exam_session_id', None)
+        summary = result.get('result') or {}
+        await query.edit_message_text(
+            f"🏁 <b>آزمون تمام شد</b>\n\n"
+            f"✅ پاسخ صحیح: <b>{summary.get('correct', 0)}</b> از {summary.get('answered', result.get('total', 0))}\n"
+            f"📊 امتیاز: <b>{summary.get('percentage', 0)}٪</b>",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup([_back("📜 آزمون‌ها", "questions:exam_history"),
+                                                                  _back("🏠 بانک سؤال", "questions:main")]))
+    else:
+        await query.edit_message_text(
+            "✅ پاسخ ثبت شد. نتیجه‌ها تا پایان آزمون نمایش داده نمی‌شوند.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➡️ سؤال بعد", callback_data='questions:exam_next')],
+                                               [InlineKeyboardButton("⏹ رها کردن آزمون", callback_data='questions:exam_abandon')]]))
+
+
+async def _generate_personal_ai_question(query, context, uid):
+    taxonomy = context.user_data.get('quiz_taxonomy') or {}
+    user_doc = await db.get_user(uid) or {}
+    try:
+        result = await ai_practice.generate(user={'id': uid, '_db': user_doc}, taxonomy=taxonomy,
+                                            difficulty='medium', require_exhaustion=True)
+    except QuestionDomainError as exc:
+        await query.edit_message_text(f"⚠️ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 تمرین سریع", "questions:practice")]))
+        return
+    q = result['question']
+    aid = q['ai_question_id']
+    letters = ['🅐','🅑','🅒','🅓']
+    keyboard = [[InlineKeyboardButton(f"{letters[i]} {opt}", callback_data=f"questions:ai_personal_answer:{aid}:{i}")]
+                for i, opt in enumerate(q['options'])]
+    await query.edit_message_text(
+        f"🤖 <b>سؤال شخصی هوشیار</b>\n📚 {_h(q.get('lesson'))} — {_h(q.get('topic'))}\n"
+        f"<i>AI generated · {_h(q['provenance']['prompt_version'])}</i>\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _answer_personal_ai(query, context, uid, ai_question_id, selected):
+    user_doc = await db.get_user(uid) or {}
+    try:
+        result = await ai_practice.answer(user={'id': uid, '_db': user_doc}, ai_question_id=ai_question_id, selected=selected)
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True)
+        return
+    await query.edit_message_text(
+        f"{'✅ درست' if result['is_correct'] else '❌ نادرست'}\n\nپاسخ صحیح: گزینه {result['correct_answer'] + 1}\n"
+        f"💡 {_h(result.get('explanation') or '—')}\n\nاین سؤال شخصی است و هنوز در بانک مشترک نیست.",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 پیشنهاد به بانک مشترک", callback_data=f"questions:ai_personal_propose:{ai_question_id}")],
+            [InlineKeyboardButton("🤖 سؤال شخصی دیگر", callback_data='questions:ai_fallback')],
+            _back("🏠 بانک سؤال", "questions:main")]))
+
+
+async def _propose_personal_ai(query, context, uid, ai_question_id):
+    user_doc = await db.get_user(uid) or {}
+    try:
+        await ai_practice.propose(user={'id': uid, '_db': user_doc}, ai_question_id=ai_question_id)
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True)
+        return
+    await query.edit_message_text("✅ سؤال برای بررسی ورود به بانک مشترک ارسال شد.",
+        reply_markup=InlineKeyboardMarkup([_back("🏠 بانک سؤال", "questions:main")]))
 
 
 async def handle_question_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -766,7 +816,14 @@ async def handle_question_answer(update: Update, context: ContextTypes.DEFAULT_T
             {'user_id': uid, 'question_id': qid}, {'_id': 1})) is None
     except Exception:
         _ft = True
-    await db.save_answer(uid, qid, sel, is_correct)
+    user_doc = await db.get_user(uid) or {}
+    try:
+        await question_bank.record_answer(user={'id': uid, '_db': user_doc},
+                                          question=q_doc, selected=sel,
+                                          is_correct=is_correct, mode='practice')
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True)
+        return
     try:
         _ps_ev = await db.prestige_event(uid, 'answer', {
             'is_correct': is_correct,
@@ -788,12 +845,12 @@ async def handle_question_answer(update: Update, context: ContextTypes.DEFAULT_T
         if i == correct_idx:                   marker = "✅"
         elif i == sel and not is_correct:      marker = "❌"
         else:                                  marker = "⚫"
-        options_text += f"{marker} {opt}\n"
+        options_text += f"{marker} {_h(opt)}\n"
 
     text = (f"{icon} <b>{'صحیح!' if is_correct else 'اشتباه!'}</b>\n\n"
-            f"{q_doc['question']}\n\n{options_text}")
+            f"{_h(q_doc['question'])}\n\n{options_text}")
     if expl:
-        text += f"\n💡 <b>توضیح:</b> {expl}"
+        text += f"\n💡 <b>توضیح:</b> {_h(expl)}"
 
     # 👑 Prestige: خط XP درون همین پیام (بازخورد تعاملی — اعلان جداگانه‌ی جدیدی نیست)
     if _ps_ev and not _ps_ev.get('ignored'):
@@ -825,339 +882,6 @@ async def handle_question_answer(update: Update, context: ContextTypes.DEFAULT_T
     ]]
     await query.edit_message_text(text, parse_mode='HTML',
                                   reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-# ══════════════════════════════════════════════════════════
-#  بانک فایل
-# ══════════════════════════════════════════════════════════
-
-async def _fb_term_select(query, context):
-    """FIX جدید: لایه انتخاب ترم برای بانک فایل — مثل منابع علوم پایه"""
-    from utils import TERMS
-    keyboard = []
-    for i in range(0, len(TERMS), 2):
-        row = [InlineKeyboardButton(f"📘 {TERMS[i]}", callback_data=f'questions:fb_term:{i}')]
-        if i+1 < len(TERMS):
-            row.append(InlineKeyboardButton(f"📘 {TERMS[i+1]}", callback_data=f'questions:fb_term:{i+1}'))
-        keyboard.append(row)
-    keyboard.append(_back("🔙 بازگشت", "questions:main"))
-    await query.edit_message_text("📁 <b>بانک فایل سوالات</b>\n\nترم را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _fb_lessons(query, context, term_idx: int = None):
-    from utils import TERMS
-    term = TERMS[term_idx] if term_idx is not None and term_idx < len(TERMS) else None
-    context.user_data['fb_term_idx'] = term_idx
-    # 🌊 C1.5 — لیست درس‌های بانک فایل فقط در scope دید کاربر
-    lessons = await db.get_lessons(
-        term=term, intake=await _picker_intake(query.from_user.id))
-    back_cb = 'questions:file_bank' if term_idx is not None else 'questions:main'
-    if not lessons:
-        await query.edit_message_text(
-            f"📁 <b>بانک فایل</b>\n\n❌ هنوز فایلی برای {term or 'این بخش'} آپلود نشده.",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", back_cb)
-            ])); return
-    context.user_data['_fb_lessons'] = lessons
-    keyboard = []
-    for i in range(0, len(lessons), 2):
-        row = [InlineKeyboardButton(f"📚 {lessons[i]}", callback_data=f'questions:fb_lesson:{i}')]
-        if i+1 < len(lessons):
-            row.append(InlineKeyboardButton(f"📚 {lessons[i+1]}", callback_data=f'questions:fb_lesson:{i+1}'))
-        keyboard.append(row)
-    keyboard.append(_back("🔙 بازگشت", back_cb))
-    term_label = f" — {term}" if term else ""
-    await query.edit_message_text(f"📁 <b>بانک فایل سوالات{term_label}</b>\n\nدرس را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _fb_topics(query, context, lesson):
-    # 🌊 C1.5 — مباحث فقط در scope دید کاربر
-    topics = await db.get_topics(
-        lesson, intake=await _picker_intake(query.from_user.id))
-    context.user_data['_fb_topics'] = topics
-    # FIX جدید: بازگشت به لیست درس‌های همان ترم، نه به لیست ترم‌ها
-    term_idx = context.user_data.get('fb_term_idx')
-    back_cb  = f'questions:fb_term:{term_idx}' if term_idx is not None else 'questions:file_bank'
-    keyboard = [[InlineKeyboardButton(f"📌 {t}", callback_data=f'questions:fb_topic:{i}')]
-                for i, t in enumerate(topics)]
-    keyboard.append([InlineKeyboardButton("📂 همه مباحث", callback_data='questions:fb_topic:all')])
-    keyboard.append(_back("🔙 بازگشت", back_cb))
-    await query.edit_message_text(f"📁 <b>{lesson}</b>\n\nمبحث را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _fb_files(query, context, lesson, topic):
-    # 🌊 C1 — دانشجو فقط فایل‌های ورودی خودش + سراسری را می‌بیند
-    _stu = await db.get_user(query.from_user.id)
-    files = await db.get_qbank_files(
-        lesson=lesson, topic=topic,
-        intake=db.student_intake_filter((_stu or {}).get('intake', '')))
-    # بازگشت صحیح: به لیست مباحث همان درس
-    back_cb = f'questions:fb_lesson:{context.user_data.get("_fb_lessons", []).index(lesson)}' \
-        if lesson in context.user_data.get('_fb_lessons', []) else 'questions:file_bank'
-
-    if not files:
-        await query.edit_message_text(
-            f"📁 <b>{lesson}{' — '+topic if topic else ''}</b>\n\n❌ فایلی آپلود نشده.",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", back_cb)
-            ])); return
-    keyboard = []
-    for f in files:
-        fid   = str(f['_id'])
-        label = f"📥 {f.get('topic','')} | {f.get('description','')[:25]} | ⬇️{f.get('downloads',0)}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f'download_qbank:{fid}')])
-    keyboard.append(_back("🔙 بازگشت", back_cb))
-    await query.edit_message_text(
-        f"📁 <b>{lesson}{' — '+topic if topic else ''}</b>\n{len(files)} فایل:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-# ══════════════════════════════════════════════════════════
-#  خروجی فایل سوالات
-# ══════════════════════════════════════════════════════════
-
-async def _pdf_menu(query, context):
-    # 🌊 C1.5 — درس‌های دارای سؤال فقط در scope دید کاربر
-    lessons = await db.get_qbank_lessons(
-        intake=await _picker_intake(query.from_user.id))
-    if not lessons:
-        await query.edit_message_text(
-            "❌ هنوز سوالی موجود نیست.",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:main")
-            ])); return
-    context.user_data['_pdf_lessons'] = lessons
-    keyboard = []
-    for i in range(0, len(lessons), 2):
-        row = [InlineKeyboardButton(f"📚 {lessons[i]}", callback_data=f'questions:pdf_lesson:{i}')]
-        if i+1 < len(lessons):
-            row.append(InlineKeyboardButton(f"📚 {lessons[i+1]}", callback_data=f'questions:pdf_lesson:{i+1}'))
-        keyboard.append(row)
-    keyboard.append(_back("🔙 بازگشت", "questions:main"))
-    await query.edit_message_text(
-        "📄 <b>بانک سوالات — ساخت آزمون PDF</b>\n\n"
-        "درس مورد نظر را انتخاب کنید:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _pdf_chapter_select(query, context, lesson):
-    """
-    🆕 مرحله‌ی جدید (اختیاری): انتخاب فصل.
-    اگه سوالات این درس فصل‌بندی نشده باشن (چون این یک فیلد جدید و
-    اختیاریه)، این مرحله کاملاً و بی‌صدا رد می‌شه — رفتار قبلی حفظ
-    می‌شه، بدون این‌که کاربر یک مرحله‌ی خالی ببینه.
-    """
-    chapters = await db.get_qbank_chapters(
-        lesson, intake=await _picker_intake(query.from_user.id))
-    if not chapters:
-        context.user_data['pdf_chapter'] = None
-        await _pdf_topic_select(query, context, lesson, None)
-        return
-    context.user_data['_pdf_chapters'] = chapters
-    keyboard = [[InlineKeyboardButton(f"📖 {c}", callback_data=f'questions:pdf_chapter:{i}')]
-                for i, c in enumerate(chapters)]
-    keyboard.append([InlineKeyboardButton("📂 همه فصل‌ها", callback_data='questions:pdf_chapter:all')])
-    keyboard.append(_back("🔙 بازگشت", "questions:pdf_menu"))
-    await query.edit_message_text(f"📄 <b>{lesson}</b>\n\nفصل را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _pdf_topic_select(query, context, lesson, chapter=None):
-    topics = await db.get_qbank_topics(
-        lesson, chapter, intake=await _picker_intake(query.from_user.id))
-    context.user_data['_pdf_topics'] = topics
-    keyboard = [[InlineKeyboardButton(f"📌 {t}", callback_data=f'questions:pdf_topic_sel:{i}')]
-                for i, t in enumerate(topics)]
-    keyboard.append([InlineKeyboardButton("📂 همه مباحث", callback_data='questions:pdf_topic_sel:all')])
-    back_cb = 'questions:pdf_back_chapter' if context.user_data.get('_pdf_chapters') else 'questions:pdf_menu'
-    keyboard.append(_back("🔙 بازگشت", back_cb))
-    c_label = f" — {chapter}" if chapter else ''
-    await query.edit_message_text(f"📄 <b>{lesson}{c_label}</b>\n\nمبحث را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _pdf_difficulty_select(query, context, lesson, chapter, topic):
-    """
-    🆕 مرحله‌ی جدید (اختیاری): انتخاب سطح سختی.
-    اگه فقط یک سطح سختی (یا هیچ‌کدام) برای این فیلتر موجود باشه، این
-    مرحله خودکار رد می‌شه — کاربر مجبور به انتخاب چیزی که فرقی نداره
-    نمی‌شه.
-    """
-    from qbank.styles import normalize_difficulty
-    raw_diffs = await db.get_qbank_difficulties(
-        lesson, chapter, topic,
-        intake=await _picker_intake(query.from_user.id))
-    seen, diffs = set(), []
-    for d in raw_diffs:
-        key = normalize_difficulty(d)
-        if key not in seen:
-            seen.add(key)
-            diffs.append(d)
-    if len(diffs) <= 1:
-        context.user_data['pdf_difficulty'] = None
-        await _pdf_count_select(query, context, lesson, topic)
-        return
-    context.user_data['_pdf_diffs'] = diffs
-    icon = {'آسان': '🟢', 'متوسط': '🟡', 'سخت': '🔴'}
-    keyboard = [[InlineKeyboardButton(f"{icon.get(normalize_difficulty(d),'')} {normalize_difficulty(d)}",
-                                       callback_data=f'questions:pdf_diff:{i}')]
-                for i, d in enumerate(diffs)]
-    keyboard.append([InlineKeyboardButton("📂 همه سطوح", callback_data='questions:pdf_diff:all')])
-    keyboard.append(_back("🔙 بازگشت", "questions:pdf_back_topic"))
-    t_label = f" — {topic}" if topic != 'همه' else ''
-    await query.edit_message_text(f"📄 <b>{lesson}{t_label}</b>\n\nسطح سختی را انتخاب کنید:",
-                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _pdf_count_select(query, context, lesson, topic):
-    context.user_data['pdf_lesson'] = lesson
-    context.user_data['pdf_topic']  = topic
-    t_label = f" — {topic}" if topic != 'همه' else ''
-    diffs = context.user_data.get('_pdf_diffs')
-    back_cb = 'questions:pdf_back_diff' if diffs and len(diffs) > 1 else 'questions:pdf_back_topic'
-    keyboard = [
-        [InlineKeyboardButton("۱۰ سوال",  callback_data='questions:pdf_count:10'),
-         InlineKeyboardButton("۲۰ سوال",  callback_data='questions:pdf_count:20')],
-        [InlineKeyboardButton("۳۰ سوال",  callback_data='questions:pdf_count:30'),
-         InlineKeyboardButton("۵۰ سوال",  callback_data='questions:pdf_count:50')],
-        _back("🔙 بازگشت", back_cb),
-    ]
-    await query.edit_message_text(
-        f"📄 <b>{lesson}{t_label}</b>\n\nتعداد سوالات:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _pdf_mode_select(query, context):
-    """
-    🆕 مرحله‌ی جدید: انتخاب قالب خروجی.
-    - تمرین: پاسخ و تحلیل بلافاصله زیر هر سوال (مناسب مرور شخصی)
-    - آزمون: سوالات بدون پاسخ + پاسخنامه‌ی جدا + پاسخ تشریحی در انتها
-      (مناسب چاپ و خودآزمایی واقعی)
-    """
-    lesson = context.user_data.get('pdf_lesson', '')
-    count  = context.user_data.get('pdf_count', 20)
-    keyboard = [
-        [InlineKeyboardButton("🎯 تمرین (پاسخ زیر هر سوال)", callback_data='questions:pdf_mode:practice')],
-        [InlineKeyboardButton("📝 آزمون (پاسخنامه در انتها)", callback_data='questions:pdf_mode:exam')],
-        _back("🔙 بازگشت", "questions:pdf_back_count"),
-    ]
-    await query.edit_message_text(
-        f"📄 <b>{lesson}</b> — {count} سوال\n\nقالب خروجی را انتخاب کنید:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _resolve_question_images(context, questions: list) -> tuple:
-    """
-    دانلود تصاویر سوال/پاسخ (در صورت وجود file_id تلگرام) و تبدیل به
-    ImageReader آماده برای reportlab. qbank هیچ‌وقت مستقیم با تلگرام
-    کار نمی‌کند؛ این تابع همان لایه‌ی واسط است.
-    فعلاً فرم طراحی سوال، آپلود تصویر را جمع‌آوری نمی‌کند، پس این
-    دیکشنری‌ها معمولاً خالی می‌مانند — اما اگر یک سوال فیلد
-    question_image/answer_image داشته باشد (مثلاً به‌صورت دستی یا در
-    نسخه‌ی بعدی فرم طراحی سوال ثبت شود)، همین الان هم به‌درستی و
-    Responsive در PDF نمایش داده می‌شود.
-    """
-    from reportlab.lib.utils import ImageReader
-    q_images, a_images = {}, {}
-    for q in questions:
-        qid = str(q.get('_id', ''))
-        for field, target in (('question_image', q_images), ('answer_image', a_images)):
-            file_id = q.get(field)
-            if not file_id:
-                continue
-            try:
-                tg_file = await context.bot.get_file(file_id)
-                raw = await tg_file.download_as_bytearray()
-                target[qid] = ImageReader(io.BytesIO(bytes(raw)))
-            except Exception:
-                logger.warning(f"qbank: could not download image for question {qid}")
-    return q_images, a_images
-
-
-async def _generate_pdf_v2(query, context, uid, mode: str = 'practice'):
-    """
-    ساخت آزمون PDF کامل با معماری ماژولار qbank (کاور + سوالات +
-    در حالت آزمون: پاسخنامه + پاسخ تشریحی جدا). جایگزین کامل نسخه‌ی
-    قبلی که فقط یک فایل txt ساده می‌ساخت.
-    """
-    lesson     = context.user_data.get('pdf_lesson', '')
-    chapter    = context.user_data.get('pdf_chapter')
-    topic      = context.user_data.get('pdf_topic', 'همه')
-    difficulty = context.user_data.get('pdf_difficulty')
-    count      = context.user_data.get('pdf_count', 20)
-
-    from qbank.query import fetch_exam_questions, ExamMeta
-    # 🌊 C1.5 — سؤالات آزمون PDF فقط در scope دید کاربر (Backend-enforced)
-    qs = await fetch_exam_questions(
-        db, lesson=lesson, chapter=chapter, topic=topic if topic != 'همه' else None,
-        difficulty=difficulty, count=count, randomize=True,
-        intake=await _picker_intake(uid),
-    )
-    if not qs:
-        await query.edit_message_text(
-            "❌ سوالی برای این فیلتر پیدا نشد.",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:pdf_menu")
-            ])); return
-
-    user = await db.get_user(uid)
-    student_name = user.get('name', '') if user else ''
-
-    q_images, a_images = await _resolve_question_images(context, qs)
-
-    try:
-        from qbank import generate_exam_pdf
-        meta = ExamMeta(lesson=lesson, chapter=chapter, topic=topic,
-                         difficulty=difficulty, student_name=student_name)
-        # 🧵 ساخت PDF (reportlab) کاملاً همزمان/CPU-bound است و اگر مستقیم
-        # await شود، event loop اصلی ربات را برای چند ثانیه بلاک می‌کند —
-        # یعنی در همان لحظه هیچ کاربر دیگری (حتی /start) پاسخ نمی‌گیرد.
-        # با asyncio.to_thread آن را در یک ترد جدا اجرا می‌کنیم تا لوپ آزاد بماند.
-        pdf_bytes = await asyncio.to_thread(
-            generate_exam_pdf, qs, meta, mode=mode,
-            question_images=q_images, answer_images=a_images,
-        )
-    except Exception as e:
-        logger.exception("qbank exam PDF generation failed")
-        await query.edit_message_text(
-            f"❌ خطا در ساخت PDF: {e}",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:main")
-            ])); return
-
-    for k in ('pdf_chapter', 'pdf_difficulty', 'pdf_count', '_pdf_chapters', '_pdf_diffs'):
-        context.user_data.pop(k, None)
-
-    t_label = f" — {topic}" if topic and topic != 'همه' else ''
-    mode_label = "تمرین" if mode == 'practice' else "آزمون"
-    file_obj = io.BytesIO(pdf_bytes)
-    fname = f"qbank_{lesson}_{now_tehran().strftime('%Y%m%d_%H%M')}.pdf"
-    file_obj.name = fname
-
-    try:
-        protect = await db.get_setting('protect_content_enabled', True)
-        await query.message.reply_document(
-            document=file_obj,
-            caption=f"📄 <b>{mode_label} بانک سوال</b>\n📚 {lesson}{t_label}\n🔢 {len(qs)} سوال\n"
-                    f"🔖 کد: {meta.exam_code}",
-            parse_mode='HTML',
-            filename=fname,
-            protect_content=protect)
-        await query.edit_message_text(
-            f"✅ فایل PDF ({mode_label}) ارسال شد!\n📚 {lesson}\n🔢 {len(qs)} سوال",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت به منو", "questions:main")
-            ]))
-    except Exception as e:
-        await query.edit_message_text(f"❌ خطا: {e}",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:main")
-            ]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1228,7 +952,7 @@ async def _topic_select(query, context, lesson, mode):
                 for i, t in enumerate(topics)]
     keyboard.append([InlineKeyboardButton("📂 همه مباحث", callback_data=f'questions:sel_topic:{mode}:all')])
     keyboard.append(_back("🔙 بازگشت", back_cb))
-    await query.edit_message_text(f"📚 <b>{lesson}</b>\n\nمبحث را انتخاب کنید:",
+    await query.edit_message_text(f"📚 <b>{_h(lesson)}</b>\n\nمبحث را انتخاب کنید:",
                                   parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -1236,32 +960,64 @@ async def _topic_select(query, context, lesson, mode):
 #  آمار
 # ══════════════════════════════════════════════════════════
 
+async def _my_questions(query, uid, page=0):
+    page = max(0, int(page)); page_size = 12
+    data = await question_bank.list_my_contributions(uid, skip=page * page_size, limit=page_size)
+    if not data['questions']:
+        await query.edit_message_text("هنوز سؤالی پیشنهاد نکرده‌ای.",
+            reply_markup=InlineKeyboardMarkup([_back("✍️ طراحی سؤال", "questions:create"),
+                                               _back("🔙 بانک سؤال", "questions:main")]))
+        return
+    labels = {'pending': '⏳ در انتظار', 'approved': '✅ تأییدشده',
+              'rejected': '❌ ردشده', 'needs_changes': '✏️ نیازمند اصلاح'}
+    lines = []; keyboard = []
+    for item in data['questions'][:12]:
+        status = item['status']; reason = f" — {_h(item['review_reason'])}" if item.get('review_reason') else ''
+        lines.append(f"{labels.get(status,status)} · {_h(item['lesson'])} / {_h(item['topic'])}\n{_h(item['question'][:70])}{reason}")
+        if status in ('rejected', 'needs_changes'):
+            keyboard.append([InlineKeyboardButton(f"✏️ اصلاح: {item['question'][:25]}",
+                                                   callback_data=f"questions:edit_my:{item['id']}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("قبلی", callback_data=f"questions:my_questions:{page-1}"))
+    if (page + 1) * page_size < data['total']:
+        nav.append(InlineKeyboardButton("بعدی", callback_data=f"questions:my_questions:{page+1}"))
+    if nav:
+        keyboard.append(nav)
+    keyboard.append(_back("🔙 بانک سؤال", "questions:main"))
+    await query.edit_message_text(f"📚 <b>سؤال‌های من</b> · صفحه {page+1}\n\n" + "\n\n".join(lines),
+                                  parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _edit_my_question(query, context, uid, qid):
+    q = await db.get_question_by_id(qid)
+    if not q or int(q.get('creator_id') or 0) != uid or q.get('status') not in ('rejected', 'needs_changes'):
+        await query.answer("این سؤال قابل اصلاح نیست.", show_alert=True); return
+    context.user_data['editing_question_id'] = qid
+    context.user_data['new_q'] = {'lesson_id': q.get('lesson_id'), 'topic_id': q.get('topic_id'),
+                                  'lesson': q.get('lesson',''), 'topic': q.get('topic','')}
+    context.user_data['mode'] = 'creating_question'; context.user_data['create_step'] = 'question'
+    await query.edit_message_text(
+        f"✏️ <b>اصلاح و ارسال مجدد</b>\n\nدلیل بررسی: {_h(q.get('review_reason') or '—')}\n\n"
+        "گام ۱ — متن اصلاح‌شده سؤال را بفرست:", parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([_back("❌ لغو", "questions:my_questions")]))
+
+
 async def _quiz_stats(query, uid):
-    stats   = await db.user_stats(uid)
-    total   = stats['total_answers']
-    correct = stats['correct_answers']
-    pct     = stats['percentage']
-    weak    = stats.get('weak_topics', [])[:5]
-    bar     = '█' * int(pct/10) + '░' * (10 - int(pct/10))
-
+    user_doc = await db.get_user(uid) or {}; stats = await question_bank.stats(user={'id': uid, '_db': user_doc})
     designed = await db.questions.count_documents({'creator_id': uid})
-
-    text = (
-        f"📊 <b>آمار تمرین من</b>\n━━━━━━━━━━━━━━━━\n\n"
-        f"🧪 کل سوالات: <b>{total}</b>\n"
-        f"✅ صحیح: <b>{correct}</b>  ❌ اشتباه: <b>{total-correct}</b>\n\n"
-        f"📈 درصد صحیح:\n  {bar} <b>{pct}%</b>\n\n"
-        f"✏️ سوالات طراحی شده توسط شما: <b>{designed}</b>\n"
-    )
-    if weak:
-        text += f"\n⚡ <b>نقاط ضعف:</b>\n" + "".join(f"  • {w}\n" for w in weak)
-    else:
-        text += "\n🎉 هیچ نقطه ضعف ثبت‌شده‌ای ندارید!"
-
+    text = (f"📊 <b>آمار بانک سؤال من</b>\n━━━━━━━━━━━━━━━━\n\n"
+            f"🧠 سؤال یکتای حل‌شده: <b>{stats['solved_unique']}</b>\n"
+            f"🧪 کل تلاش‌ها: <b>{stats['attempts']}</b>\n"
+            f"✅ درست: <b>{stats['correct']}</b> · ❌ غلط: <b>{stats['wrong']}</b>\n"
+            f"📈 دقت: <b>{stats['accuracy']}٪</b>\n"
+            f"✍️ سؤال‌های پیشنهادی: <b>{designed}</b>")
+    if stats['weak_topics']:
+        text += "\n\n⚡ <b>مباحث نیازمند تمرین</b>\n" + "\n".join(
+            f"• {_h(x['lesson'])} / {_h(x['topic'])} — {x['accuracy']}٪ از {x['attempts']} تلاش"
+            for x in stats['weak_topics'][:5])
     await query.edit_message_text(text, parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([
-            _back("🔙 بازگشت", "questions:main")
-        ]))
+        reply_markup=InlineKeyboardMarkup([_back("🔙 بانک سؤال", "questions:main")]))
 
 
 # ══════════════════════════════════════════════════════════
@@ -1269,52 +1025,37 @@ async def _quiz_stats(query, uid):
 # ══════════════════════════════════════════════════════════
 
 async def _create_start(query, context):
-    # 🌊 C1.5 — طراحی سؤال: درس فقط از scope قابل‌مشاهده انتخاب شود
-    lessons = await db.get_lessons(
-        intake=await _picker_intake(query.from_user.id))
-    if not lessons:
-        await query.edit_message_text(
-            "❌ هنوز درسی تعریف نشده.",
-            reply_markup=InlineKeyboardMarkup([
-                _back("🔙 بازگشت", "questions:main")
-            ])); return
-    context.user_data['_lessons'] = lessons
+    user = await db.get_user(query.from_user.id) or {}
+    tree = await question_bank.taxonomy_tree(
+        visible_intakes=db.student_intake_filter(user.get('intake','')),
+        only_with_questions=False)
+    if not tree:
+        await query.edit_message_text("❌ هنوز taxonomy درس و مبحث تعریف نشده است.",
+            reply_markup=InlineKeyboardMarkup([_back("🔙 بانک سؤال", "questions:main")]))
+        return
+    context.user_data['_lessons'] = tree
     keyboard = []
-    for i in range(0, len(lessons), 2):
-        row = [InlineKeyboardButton(f"📚 {lessons[i]}", callback_data=f'questions:cr_lesson:{i}')]
-        if i+1 < len(lessons):
-            row.append(InlineKeyboardButton(f"📚 {lessons[i+1]}", callback_data=f'questions:cr_lesson:{i+1}'))
+    for i in range(0, len(tree), 2):
+        row = [InlineKeyboardButton(f"📚 {tree[i]['name']}", callback_data=f'questions:cr_lesson:{i}')]
+        if i + 1 < len(tree): row.append(InlineKeyboardButton(f"📚 {tree[i+1]['name']}", callback_data=f'questions:cr_lesson:{i+1}'))
         keyboard.append(row)
-    keyboard.append(_back("🔙 بازگشت", "questions:main"))
-    is_ca = context.user_data.get('creating_as_ca', False)
-    note  = "\n🤖 سوال شما با برچسب «طراحی توسط بات» ثبت می‌شود." if is_ca else \
-            "\n⏳ سوال شما پس از تأیید ادمین در بانک قرار می‌گیرد."
+    keyboard.append(_back("🔙 بانک سؤال", "questions:main"))
     await query.edit_message_text(
-        f"✏️ <b>طراحی سوال جدید</b>{note}\n\nدرس را انتخاب کنید:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+        "✍️ <b>طراحی سؤال</b>\n\nسؤال پس از preview و بررسی نقش مجاز وارد بانک می‌شود.\n"
+        "ابتدا درس را انتخاب کن:", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def _create_topic_select(query, context, lesson):
-    # 🌊 C1.5 — مباحث فقط در scope دید کاربر
-    topics = await db.get_topics(
-        lesson, intake=await _picker_intake(query.from_user.id))
+    topics = lesson.get('topics') or []
     if not topics:
-        context.user_data.setdefault('new_q', {})['topic'] = lesson
-        context.user_data['mode']        = 'creating_question'
-        context.user_data['create_step'] = 'question'
-        await query.edit_message_text(
-            f"✏️ <b>طراحی سوال</b>\n📚 {lesson}\n\n"
-            "📝 <b>گام ۱ از ۵ — متن سوال</b>\n\nسوال را بنویسید:",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("❌ لغو", callback_data='questions:main')
-            ]]))
-        return CREATING_Q
+        await query.edit_message_text("❌ برای این درس مبحث معتبری تعریف نشده است.",
+            reply_markup=InlineKeyboardMarkup([_back("🔙 انتخاب درس", "questions:create")]))
+        return
     context.user_data['_topics'] = topics
-    keyboard = [[InlineKeyboardButton(f"📌 {t}", callback_data=f'questions:cr_topic:{i}')]
+    keyboard = [[InlineKeyboardButton(f"📌 {t['name']}", callback_data=f'questions:cr_topic:{i}')]
                 for i, t in enumerate(topics)]
-    keyboard.append(_back("🔙 بازگشت", "questions:create"))
-    await query.edit_message_text(f"✏️ <b>{lesson}</b>\n\nمبحث را انتخاب کنید:",
+    keyboard.append(_back("🔙 انتخاب درس", "questions:create"))
+    await query.edit_message_text(f"✍️ <b>{_h(lesson['name'])}</b>\n\nمبحث معتبر را انتخاب کن:",
                                   parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
@@ -1348,7 +1089,7 @@ async def handle_create_question_steps(update: Update, context: ContextTypes.DEF
         next_map = {'opt1': ('opt2', 'ب', 3), 'opt2': ('opt3', 'ج', 4), 'opt3': ('opt4', 'د', 4)}
         if step == 'opt4':
             context.user_data['create_step'] = 'correct'
-            opt_list = "\n".join(f"  {LETTERS[i]} {o}" for i, o in enumerate(opts))
+            opt_list = "\n".join(f"  {LETTERS[i]} {_h(o)}" for i, o in enumerate(opts))
             await update.message.reply_text(
                 f"✅ گزینه‌ها:\n{opt_list}\n\n"
                 "📝 <b>گام ۴ از ۵ — گزینه صحیح</b>\n\nشماره گزینه صحیح را بنویسید (1-4):",
@@ -1383,7 +1124,15 @@ async def handle_create_question_steps(update: Update, context: ContextTypes.DEF
 
     elif step == 'explanation':
         q['explanation'] = '' if text == '-' else text
-        await _save_question(update, context)
+        opts = q.get('options', [])
+        preview = "\n".join(f"{'✅' if i == q.get('correct') else '▫️'} {i+1}) {_h(opt)}" for i, opt in enumerate(opts))
+        context.user_data['create_step'] = 'preview'
+        await update.message.reply_text(
+            f"👁 <b>پیش‌نمایش سؤال</b>\n📚 {_h(q.get('lesson'))} — {_h(q.get('topic'))}\n"
+            f"━━━━━━━━━━━━━━━━\n❓ {_h(q.get('question'))}\n\n{preview}\n\n💡 {_h(q.get('explanation') or 'بدون تحلیل')}",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ ارسال برای بررسی", callback_data='questions:submit_question')],
+                [InlineKeyboardButton("❌ لغو", callback_data='questions:main')]]))
         return ConversationHandler.END
 
     return CREATING_Q
@@ -1408,327 +1157,59 @@ async def handle_difficulty_choice(update: Update, context: ContextTypes.DEFAULT
 
 
 async def _save_question(update, context):
+    """Submit through the shared duplicate/lifecycle service only."""
     uid = update.effective_user.id
-    q   = context.user_data.get('new_q', {})
-
-    # ⚠️ قابلیتِ جدید: تشخیصِ سوالِ تکراری — قبل از ثبت، چک می‌کنیم شبیهِ
-    # سوالِ قبلی‌ای توی همون درس/مبحث نیست. این چک کاملاً محلیه (بدونِ
-    # هوش مصنوعی)، پس حتی اگه AI قطع باشه بازم کار می‌کنه.
-    similar = await db.find_similar_questions(q.get('lesson', ''), q.get('topic', ''), q.get('question', ''))
-    if similar:
-        top = similar[0]
-        await update.message.reply_text(
-            "⚠️ <b>این سوال شبیهِ یه سوالِ قبلیه!</b>\n\n"
-            f"📌 سوالِ مشابهِ موجود ({int(top['ratio']*100)}٪ شباهت):\n"
-            f"<i>{top.get('question','')}</i>\n\n"
-            "می‌خوای بازم اضافه‌ش کنی؟",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ بازم ذخیره کن", callback_data='questions:dup_confirm')],
-                [InlineKeyboardButton("❌ لغو (حذف پیش‌نویس)", callback_data='questions:dup_cancel')],
-            ]))
-        return
-
-    await _do_insert_manual_question(update, context, q, uid)
+    await _do_insert_manual_question(update, context, context.user_data.get('new_q', {}), uid)
 
 
 async def _do_insert_manual_question(update, context, q: dict, uid: int):
-    is_ca     = context.user_data.get('creating_as_ca', False)
-    is_admin  = (uid == ADMIN_ID)
-    auto      = is_ca or is_admin
-    by_bot    = is_ca
-
-    # دریافت نام طراح
-    creator_user = await db.get_user(uid)
-    # 🏷 Identity v1 — سطح اجتماعی طراح: display_name (اسنپ‌شات لحظه‌ای)
-    creator_name = db.display_name_of(creator_user) if creator_user else ''
-
-    result = await db.questions.insert_one({
-        'lesson':         q.get('lesson', ''),
-        'topic':          q.get('topic', ''),
-        'difficulty':     q.get('difficulty', 'متوسط 🟡'),
-        'question':       q.get('question', ''),
-        'options':        q.get('options', []),
-        'correct_answer': q.get('correct', 0),
-        'explanation':    q.get('explanation', ''),
-        'creator_id':     uid,
-        'creator_name':   creator_name,
-        'by_bot':         by_bot,
-        # 🌊 C1 — scope سوال: ادمین محتوا → ورودی انتخاب‌شده در پنل؛
-        # دانشجو → ورودی خودش؛ پیش‌فرض '' = سراسری
-        'intake':         (context.user_data.get('ca_intake', '') if is_ca
-                           else (creator_user.get('intake', '') or '')),
-        'approved':       auto,
-        'created_at':     utc_now_iso(),
-        'attempt_count':  0,
-        'correct_count':  0,
-    })
-    qid = str(result.inserted_id)
-
-    for k in ['new_q', 'create_step', 'mode', 'cr_lesson', 'creating_as_ca']:
-        context.user_data.pop(k, None)
-
-    if auto:
-        msg = "✅ <b>سوال با موفقیت در بانک سوال ثبت شد!</b>"
-        if by_bot:
-            msg += "\n\n<i>🤖 برچسب: طراحی شده توسط ادمین محتوا</i>"
-    else:
-        msg = (
-            "✅ <b>سوال ارسال شد و در انتظار تأیید ادمین است.</b>\n"
-            "پس از تأیید در بانک سوال نمایش داده می‌شود.\n\n"
-            f"<i>✏️ طراح: {creator_name}</i>"
-        )
-        # FIX: اطلاع‌رسانی به ادمین برای تأیید
-        try:
-            opts   = q.get('options', [])
-            ltrs   = ['الف', 'ب', 'ج', 'د']
-            ca_idx = q.get('correct', 0)
-            opts_text = '\n'.join(
-                f"  {'✅' if i == ca_idx else '▪️'} {ltrs[i]}) {opt}"
-                for i, opt in enumerate(opts[:4])
-            )
-            diff_map = {'آسان 🟢': '🟢 آسان', 'متوسط 🟡': '🟡 متوسط', 'سخت 🔴': '🔴 سخت'}
-            diff_txt = diff_map.get(q.get('difficulty', ''), q.get('difficulty', ''))
-            admin_notif = (
-                f"🔔 <b>سوال جدید برای تأیید</b>\n\n"
-                f"✏️ طراح: <b>{creator_name}</b>\n"
-                f"📚 {q.get('lesson','')} — {q.get('topic','')}\n"
-                f"📊 {diff_txt}\n\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"❓ <b>{q.get('question', '')}</b>\n\n"
-                f"{opts_text}\n\n"
-                f"📝 توضیح: {q.get('explanation','') or '—'}"
-            )
-            await context.bot.send_message(
-                ADMIN_ID, admin_notif, parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ تأیید", callback_data=f'admin:approve_q:{qid}'),
-                    InlineKeyboardButton("🗑 رد",    callback_data=f'admin:reject_q:{qid}'),
-                ]])
-            )
-        except Exception as e:
-            logger.warning(f"Admin notification failed: {e}")
-
-    final_markup = InlineKeyboardMarkup([_back("🔙 بازگشت به بانک سوال", "questions:main")])
-    if update.message:
-        await update.message.reply_text(msg, parse_mode='HTML', reply_markup=final_markup)
-    else:
-        await context.bot.send_message(update.effective_chat.id, msg, parse_mode='HTML', reply_markup=final_markup)
-
-
-# ══════════════════════════════════════════════════════════
-#  🧠 طراحی سوال با هوشیار (AI) — ⚠️ قابلیتِ جدید
-#  ویزاردِ مشابهِ طراحیِ دستی، ولی به‌جایِ تایپِ سوال/گزینه‌ها، فقط
-#  درس/مبحث/سختی رو انتخاب می‌کنی و یه نکته‌ی اختیاری می‌نویسی — هوشیار
-#  خودش سوال+گزینه‌ها+پاسخِ درست+تحلیل رو می‌سازه، بعد یه پیش‌نمایش
-#  می‌بینی و یا ذخیره می‌کنی، یا دوباره می‌سازتش، یا لغو می‌کنی.
-# ══════════════════════════════════════════════════════════
-
-async def _ai_create_start(query, context):
-    # 🌊 C1.5 — طراحی با هوشیار: درس فقط از scope قابل‌مشاهده
-    lessons = await db.get_lessons(
-        intake=await _picker_intake(query.from_user.id))
-    if not lessons:
-        await query.edit_message_text(
-            "❌ هنوز درسی تعریف نشده.",
-            reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:main")]))
-        return
-    context.user_data['_ai_lessons'] = lessons
-    keyboard = []
-    for i in range(0, len(lessons), 2):
-        row = [InlineKeyboardButton(f"📚 {lessons[i]}", callback_data=f'questions:ai_lesson:{i}')]
-        if i + 1 < len(lessons):
-            row.append(InlineKeyboardButton(f"📚 {lessons[i+1]}", callback_data=f'questions:ai_lesson:{i+1}'))
-        keyboard.append(row)
-    keyboard.append(_back("🔙 بازگشت", "questions:main"))
-    await query.edit_message_text(
-        "🧠 <b>طراحی سوال با هوشیار</b>\n\n"
-        "هوشیار برات یه سوالِ چهارگزینه‌ی کامل (با گزینه‌ها، پاسخِ درست و تحلیل) می‌سازه.\n\n"
-        "اول درس رو انتخاب کن:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _ai_topic_select(query, context, lesson):
-    context.user_data['ai_q_lesson'] = lesson
-    # 🌊 C1.5 — مباحث فقط در scope دید کاربر
-    topics = await db.get_topics(
-        lesson, intake=await _picker_intake(query.from_user.id))
-    if not topics:
-        context.user_data['ai_q_topic'] = lesson
-        await _ai_difficulty_select(query, context)
-        return
-    context.user_data['_ai_topics'] = topics
-    keyboard = [[InlineKeyboardButton(f"📌 {t}", callback_data=f'questions:ai_topic:{i}')]
-                for i, t in enumerate(topics)]
-    keyboard.append(_back("🔙 بازگشت", "questions:ai_create"))
-    await query.edit_message_text(
-        f"🧠 <b>{lesson}</b>\n\nمبحث را انتخاب کنید:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _ai_difficulty_select(query, context):
-    keyboard = [
-        [InlineKeyboardButton("🟢 آسان",  callback_data='questions:ai_diff:easy')],
-        [InlineKeyboardButton("🟡 متوسط", callback_data='questions:ai_diff:medium')],
-        [InlineKeyboardButton("🔴 سخت",   callback_data='questions:ai_diff:hard')],
-    ]
-    await query.edit_message_text(
-        f"🧠 <b>{context.user_data.get('ai_q_lesson','')} — {context.user_data.get('ai_q_topic','')}</b>\n\n"
-        "سطح سختی رو انتخاب کن:",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def _ai_ask_note(query, context):
-    context.user_data['mode'] = 'ai_question_note'
-    await query.edit_message_text(
-        f"🧠 <b>{context.user_data.get('ai_q_lesson','')} — {context.user_data.get('ai_q_topic','')}</b>\n\n"
-        "اگه نکته‌ی خاصی مدنظرته بنویس (مثلاً «روی یون پتاسیم تمرکز کن»)، "
-        "وگرنه فقط <code>-</code> بفرست تا هوشیار خودش انتخاب کنه:",
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='questions:ai_cancel')]]))
-
-
-async def handle_ai_question_note_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or '').strip()
-    context.user_data.pop('mode', None)
-    context.user_data['ai_q_note'] = '' if text == '-' else text
-
-    wait_msg = await update.message.reply_text("⏳ هوشیار داره سوال طراحی می‌کنه...")
-    await _ai_generate_and_preview(wait_msg, context, is_message=True)
-
-
-async def _ai_generate_and_preview(target, context, is_message: bool = False):
-    """target: یا query (از دکمه‌ها) یا یه Message (بعدِ نوشتنِ نکته)."""
-    from ai_solver import generate_question_ai, AIError
-
-    lesson = context.user_data.get('ai_q_lesson', '')
-    topic  = context.user_data.get('ai_q_topic', '')
-    diff   = context.user_data.get('ai_q_difficulty', '')
-    note   = context.user_data.get('ai_q_note', '')
-
-    async def _edit(text, reply_markup):
-        if is_message:
-            await target.edit_text(text, parse_mode='HTML', reply_markup=reply_markup)
-        else:
-            await target.edit_message_text(text, parse_mode='HTML', reply_markup=reply_markup)
-
+    creator_user = await db.get_user(uid) or {}; actor = {'id': uid, '_db': creator_user}
+    can_review = await db.has_permission(uid, 'questions.review')
+    editing_id = context.user_data.get('editing_question_id')
     try:
-        result = await generate_question_ai(lesson=lesson, topic=topic, difficulty=diff, note=note)
-    except AIError as e:
-        await _edit(
-            f"⚠️ طراحیِ سوال ناموفق بود:\n{e}",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 دوباره امتحان کن", callback_data='questions:ai_regen')],
-                [InlineKeyboardButton("❌ لغو", callback_data='questions:ai_cancel')],
-            ]))
+        payload = {**q, 'correct_answer': q.get('correct', q.get('correct_answer', 0))}
+        if editing_id:
+            document = await question_bank.update_contribution(
+                question_id=editing_id, user=actor, payload=payload, resubmit=True)
+        else:
+            scoped = await db.get_scoped_intake(uid) if can_review else None
+            result = await question_bank.create_question(
+                actor=actor, payload=payload,
+                source='admin_bot' if can_review else 'student_bot',
+                creator_type='admin' if can_review else 'student',
+                auto_approve=False,
+                intake=scoped if scoped is not None else creator_user.get('intake',''),
+                allow_probable_duplicate=bool(context.user_data.get('allow_probable_duplicate')))
+            document = result['question']
+    except QuestionDomainError as exc:
+        target = update.callback_query if getattr(update, 'callback_query', None) else None
+        if exc.code == 'probable_duplicate' and not editing_id:
+            probable = ((exc.details or {}).get('probable') or [{}])[0]
+            similar = escape(str(probable.get('question') or 'سؤال مشابه'))
+            ratio = int(float(probable.get('ratio') or 0) * 100)
+            msg = (f"⚠️ <b>سؤال مشابه پیدا شد</b> ({ratio}٪)\n\n<i>{similar}</i>\n\n"
+                   "اگر مطمئنی محتوای سؤال متفاوت است، ثبت را تأیید کن.")
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ ثبت با وجود شباهت", callback_data='questions:dup_confirm')],
+                [InlineKeyboardButton("❌ لغو", callback_data='questions:dup_cancel')]])
+            if target: await target.edit_message_text(msg, parse_mode='HTML', reply_markup=markup)
+            else: await update.message.reply_text(msg, parse_mode='HTML', reply_markup=markup)
+            return
+        msg = f"⚠️ {escape(exc.message)}"
+        if target: await target.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([_back("🔙 بانک سؤال", "questions:main")]))
+        else: await update.message.reply_text(msg)
         return
-    except Exception:
-        logger.exception("طراحی سوال با AI ناموفق بود")
-        await _edit(
-            "⚠️ یه خطای غیرمنتظره پیش اومد — دوباره امتحان کن.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='questions:ai_cancel')]]))
-        return
-
-    context.user_data['ai_q_generated'] = result
-    opts = result['options']
-    ci   = result['correct_index']
-    opts_text = "\n".join(
-        f"  {'✅' if i == ci else '▪️'} {LETTERS[i]} {o}"
-        for i, o in enumerate(opts)
-    )
-    preview = (
-        f"🧠 <b>پیش‌نمایشِ سوالِ طراحی‌شده</b>\n"
-        f"📚 {lesson} — {topic} | {diff}\n"
-        "━━━━━━━━━━━━━━━━\n\n"
-        f"❓ <b>{result['question']}</b>\n\n"
-        f"{opts_text}\n\n"
-        f"📝 <b>تحلیل:</b> {result['explanation']}"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ ذخیره کن", callback_data='questions:ai_save')],
-        [InlineKeyboardButton("🔄 دوباره بساز", callback_data='questions:ai_regen')],
-        [InlineKeyboardButton("❌ لغو", callback_data='questions:ai_cancel')],
-    ])
-    await _edit(preview, keyboard)
-
-
-async def _ai_save_question(query, context):
-    uid    = query.from_user.id
-    result = context.user_data.get('ai_q_generated')
-    if not result:
-        await query.answer("⚠️ چیزی برای ذخیره نیست، از اول شروع کن.", show_alert=True)
-        return
-
-    # ⚠️ قابلیتِ جدید: تشخیصِ سوالِ تکراری (کاملاً محلی، بدونِ AI) قبل
-    # از ثبتِ سوالِ طراحی‌شده با هوشیار هم اعمال می‌شه.
-    lesson = context.user_data.get('ai_q_lesson', '')
-    topic  = context.user_data.get('ai_q_topic', '')
-    similar = await db.find_similar_questions(lesson, topic, result.get('question', ''))
-    if similar:
-        top = similar[0]
-        await query.edit_message_text(
-            "⚠️ <b>این سوال شبیهِ یه سوالِ قبلیه!</b>\n\n"
-            f"📌 سوالِ مشابهِ موجود ({int(top['ratio']*100)}٪ شباهت):\n"
-            f"<i>{top.get('question','')}</i>\n\n"
-            "می‌خوای بازم اضافه‌ش کنی؟",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ بازم ذخیره کن", callback_data='questions:dup_confirm')],
-                [InlineKeyboardButton("❌ لغو", callback_data='questions:dup_cancel')],
-            ]))
-        return
-
-    await _do_insert_ai_question(query, context)
-
-
-async def _do_insert_ai_question(query, context):
-    uid      = query.from_user.id
-    result   = context.user_data.get('ai_q_generated')
-
-    is_ca    = await db.is_content_admin(uid)
-    is_admin = (uid == ADMIN_ID)
-    auto     = is_ca or is_admin
-
-    creator_user = await db.get_user(uid)
-    # 🏷 Identity v1 — سطح اجتماعی طراح: display_name (اسنپ‌شات لحظه‌ای)
-    creator_name = db.display_name_of(creator_user) if creator_user else ''
-
-    await db.questions.insert_one({
-        'lesson':         context.user_data.get('ai_q_lesson', ''),
-        'topic':          context.user_data.get('ai_q_topic', ''),
-        'difficulty':     context.user_data.get('ai_q_difficulty', 'متوسط 🟡'),
-        'question':       result['question'],
-        'options':        result['options'],
-        'correct_answer': result['correct_index'],
-        'explanation':    result['explanation'],
-        'creator_id':     uid,
-        'creator_name':   creator_name,
-        'creator_type':   'ai',          # ⚠️ تگِ جدید — برای گزارشِ «این سوال رو کی ساخته»
-        'by_bot':         False,
-        'intake':         '',            # 🌊 C1 — سوالات هوشیار = سراسری
-        'approved':       auto,
-        'created_at':     utc_now_iso(),
-        'attempt_count':  0,
-        'correct_count':  0,
-    })
-
-    for k in ('ai_q_lesson', 'ai_q_topic', 'ai_q_difficulty', 'ai_q_note', 'ai_q_generated', '_ai_lessons', '_ai_topics'):
-        context.user_data.pop(k, None)
-
-    if auto:
-        msg = "✅ <b>سوالِ طراحی‌شده با هوشیار در بانکِ سوال ثبت شد!</b>\n\n<i>🧠 برچسب: طراحی‌شده توسط هوشیار</i>"
+    for key in ['new_q','create_step','mode','cr_lesson','creating_as_ca','editing_question_id','allow_probable_duplicate']:
+        context.user_data.pop(key, None)
+    status = document.get('status')
+    message = ("✅ سؤال ثبت و در بانک منتشر شد." if status == 'approved' else
+               "✅ سؤال برای بررسی ارسال شد. وضعیت آن را از «سؤال‌های من» دنبال کن.")
+    markup = InlineKeyboardMarkup([_back("📚 سؤال‌های من", "questions:my_questions"),
+                                   _back("🔙 بانک سؤال", "questions:main")])
+    if getattr(update, 'message', None):
+        await update.message.reply_text(message, reply_markup=markup)
     else:
-        msg = (
-            "✅ <b>سوال ارسال شد و در انتظارِ تاییدِ ادمین است.</b>\n"
-            "<i>🧠 برچسب: طراحی‌شده توسط هوشیار</i>"
-        )
-
-    await query.edit_message_text(
-        msg, parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🧠 طراحیِ یکیِ دیگه", callback_data='questions:ai_create')],
-            _back("🔙 بازگشت به بانک سوال", "questions:main"),
-        ]))
+        await update.callback_query.edit_message_text(message, reply_markup=markup)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1737,8 +1218,8 @@ async def _do_insert_ai_question(query, context):
 
 async def _ca_question_list(query, uid: int, context):
     """لیست سوالات با قابلیت فیلتر — برای ادمین محتوا و ادمین"""
-    if not await db.is_content_admin(uid):
-        await query.answer("❌ دسترسی ندارید!", show_alert=True)
+    if not (await db.has_permission(uid, 'questions.review') or await db.has_permission(uid, 'questions.review_scoped')):
+        await query.answer("❌ مجوز بررسی سؤال را ندارید.", show_alert=True)
         return
 
     # فیلترها
@@ -1747,41 +1228,45 @@ async def _ca_question_list(query, uid: int, context):
 
     # ساخت query
     q_filter = {}
-    if f_status == 'approved':
-        q_filter['approved'] = True
-    elif f_status == 'pending':
-        q_filter['approved'] = False
+    from question_bank.contracts import status_query, canonical_status
+    if f_status in ('approved', 'pending', 'rejected', 'needs_changes'):
+        q_filter = status_query(f_status)
 
     if f_source == 'bot':
-        q_filter['by_bot'] = True
+        q_filter['source'] = 'admin_bot'
     elif f_source == 'student':
-        q_filter['by_bot'] = {'$ne': True}
-        q_filter['creator_type'] = {'$ne': 'ai'}
+        q_filter['creator_type'] = 'student'
     elif f_source == 'ai':
-        q_filter['creator_type'] = 'ai'
+        q_filter['source'] = 'ai_student'
 
     # 🌊 موج C1 — فیلتر scope ورودی (Backend-Enforced):
     # scoped → دقیقاً scope خودش؛ ادمین ارشد → context انتخاب‌شده در پنل؛
     # مالک بدون context → رفتار قدیمی (نمایش همه) حفظ می‌شود.
     _intake_note = None
-    _cscope = await db.get_content_scope(uid)
-    if _cscope and _cscope['kind'] == 'scoped':
-        q_filter['intake'] = _cscope.get('intake') or ''
+    try:
+        _qscope = await question_bank.permissions.review_scope({'id': uid})
+    except QuestionDomainError:
+        await query.answer("مجوز یا scope بررسی سؤال کامل نیست.", show_alert=True)
+        return
+    if _qscope['kind'] == 'scoped':
+        q_filter['intake'] = _qscope.get('intake') or ''
         _intake_note = q_filter['intake']
-    elif _cscope and _cscope['kind'] == 'global' and uid != ADMIN_ID:
+    elif uid != ADMIN_ID:
         _ctx_i = context.user_data.get('ca_intake')
         if _ctx_i is not None:
             q_filter['intake'] = _ctx_i
             _intake_note = _ctx_i
 
-    questions = await db.questions.find(q_filter).sort('created_at', -1).to_list(200)
-
-    # آمار
-    total    = len(questions)
-    approved = sum(1 for q in questions if q.get('approved'))
-    pending  = total - approved
-    by_bot_c = sum(1 for q in questions if q.get('by_bot'))
-    by_stu_c = total - by_bot_c
+    from question_bank.contracts import and_query
+    total = await db.questions.count_documents(q_filter)
+    approved = await db.questions.count_documents(and_query(q_filter, status_query('approved')))
+    pending = await db.questions.count_documents(and_query(q_filter, status_query('pending')))
+    by_bot_c = await db.questions.count_documents(and_query(q_filter, {'source': 'admin_bot'}))
+    by_stu_c = await db.questions.count_documents(and_query(q_filter, {'creator_type': 'student'}))
+    page = max(0, int(context.user_data.get('caq_page', 0) or 0)); page_size = 15
+    if page * page_size >= total and total:
+        page = max(0, (total - 1) // page_size); context.user_data['caq_page'] = page
+    questions = await db.questions.find(q_filter).sort('created_at', -1).skip(page * page_size).limit(page_size).to_list(page_size)
 
     # دکمه‌های فیلتر
     status_labels = {
@@ -1815,17 +1300,25 @@ async def _ca_question_list(query, uid: int, context):
     # لیست سوالات (حداکثر ۱۵ تا)
     for q in questions[:15]:
         qid     = str(q['_id'])
-        status  = "✅" if q.get('approved') else "⏳"
-        source  = "🧠" if q.get('creator_type') == 'ai' else ("🤖" if q.get('by_bot') else "✏️")
+        status_map = {'approved':'✅','pending':'⏳','rejected':'❌','needs_changes':'✏️'}
+        status = status_map.get(canonical_status(q), '⏳')
+        source  = "🧠" if q.get('source') == 'ai_student' else ("🤖" if q.get('source') == 'admin_bot' else "✏️")
         creator = q.get('creator_name', '') or ''
         lesson  = q.get('lesson', '')
         text_q  = q.get('question', '')[:30]
-        creator_tag = f" | {creator}" if (creator and not q.get('by_bot') and q.get('creator_type') != 'ai') else ''
+        creator_tag = f" | {creator}" if (creator and q.get('source') != 'admin_bot' and q.get('source') != 'ai_student') else ''
         keyboard.append([InlineKeyboardButton(
             f"{status}{source} {text_q} | {lesson}{creator_tag}",
             callback_data=f'questions:ca_q_view:{qid}'
         )])
 
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("قبلی", callback_data=f'questions:ca_q_page:{page-1}'))
+    if (page + 1) * page_size < total:
+        nav.append(InlineKeyboardButton("بعدی", callback_data=f'questions:ca_q_page:{page+1}'))
+    if nav:
+        keyboard.append(nav)
     back_cb = 'ca:main' if uid != int(__import__('os').getenv('ADMIN_ID', '0')) else 'admin:main'
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data=back_cb)])
 
@@ -1839,7 +1332,7 @@ async def _ca_question_list(query, uid: int, context):
         f"🧪 <b>مدیریت سوالات</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"{_scope_line}"
-        f"📊 مجموع: <b>{total}</b>  ✅ تأیید: <b>{approved}</b>  ⏳ انتظار: <b>{pending}</b>\n"
+        f"📊 مجموع: <b>{total}</b>  ✅ تأیید: <b>{approved}</b>  ⏳ انتظار: <b>{pending}</b> · صفحه {page + 1}\n"
         f"🤖 توسط بات: <b>{by_bot_c}</b>  ✏️ توسط دانشجو: <b>{by_stu_c}</b>\n\n"
         f"<i>روی هر سوال بزنید برای مشاهده و مدیریت</i>"
     )
@@ -1855,8 +1348,8 @@ async def _ca_question_list(query, uid: int, context):
 
 async def _ca_question_view(query, uid: int, qid: str):
     """نمایش کامل یک سوال با دکمه‌های مدیریت"""
-    if not await db.is_content_admin(uid):
-        await query.answer("❌ دسترسی ندارید!", show_alert=True)
+    if not (await db.has_permission(uid, 'questions.review') or await db.has_permission(uid, 'questions.review_scoped')):
+        await query.answer("❌ مجوز بررسی سؤال را ندارید.", show_alert=True)
         return
 
     q = await db.get_question_by_id(qid)
@@ -1864,61 +1357,64 @@ async def _ca_question_view(query, uid: int, qid: str):
         await query.answer("❌ سوال پیدا نشد!", show_alert=True)
         return
 
-    # 🌊 C1 — enforce scope: سوال ورودی دیگر هرگز نمایش داده نمی‌شود
-    if not await db.can_access_intake(uid, q.get('intake') or ''):
-        await query.answer("⛔ دسترسی غیرمجاز — این سوال در scope شما نیست.",
-                           show_alert=True)
+    # Scope نمایش همان contract mutation است؛ content scope جداگانه نیست.
+    try:
+        scope = await question_bank.permissions.review_scope({'id': uid})
+        if scope['kind'] == 'scoped' and (q.get('intake') or '') != scope['intake']:
+            raise QuestionDomainError('question_out_of_scope', 'سؤال خارج از scope شماست', 403)
+    except QuestionDomainError as exc:
+        await query.answer(f"⛔ {exc.message}", show_alert=True)
         return
 
     opts    = q.get('options', [])
     ltrs    = ['الف', 'ب', 'ج', 'د']
     ca_idx  = q.get('correct_answer', 0)
     opts_text = '\n'.join(
-        f"  {'✅' if i == ca_idx else '▪️'} {ltrs[i]}) {opt}"
+        f"  {'✅' if i == ca_idx else '▪️'} {ltrs[i]}) {_h(opt)}"
         for i, opt in enumerate(opts[:4])
     )
 
     diff_map = {'آسان 🟢': '🟢 آسان', 'متوسط 🟡': '🟡 متوسط', 'سخت 🔴': '🔴 سخت'}
     diff_txt = diff_map.get(q.get('difficulty', ''), q.get('difficulty', ''))
 
-    status = "✅ تأیید شده" if q.get('approved') else "⏳ در انتظار تأیید"
+    status_key = canonical_status(q)
+    status = {'approved':'✅ تأیید شده','pending':'⏳ در انتظار تأیید','rejected':'❌ رد شده','needs_changes':'✏️ نیازمند اصلاح'}.get(status_key, status_key)
 
     # تگ طراح
-    if q.get('creator_type') == 'ai':
-        creator_line = "🧠 <b>طراح:</b> هوشیار (هوش مصنوعی)"
-    elif q.get('by_bot'):
+    if q.get('source') == 'ai_student':
+        creator_line = "🧠 <b>طراح:</b> هوشیار (پیشنهاد شخصیِ بررسی‌شده)"
+    elif q.get('source') == 'admin_bot':
         creator_line = "🤖 <b>طراح:</b> ادمین محتوا (بات)"
     elif q.get('creator_name'):
-        creator_line = f"✏️ <b>طراح:</b> {q['creator_name']}"
+        creator_line = f"✏️ <b>طراح:</b> {_h(q['creator_name'])}"
     else:
         creator_line = "✏️ <b>طراح:</b> نامشخص"
 
     text = (
         f"🧪 <b>مشاهده سوال</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"📚 {q.get('lesson','')} — {q.get('topic','')}\n"
+        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
         f"📊 {diff_txt}  |  {status}\n"
         f"{creator_line}\n"
         f"📅 {fmt_jalali_dt(q.get('created_at',''), with_time=False)}\n\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"❓ <b>{q.get('question','')}</b>\n\n"
+        f"❓ <b>{_h(q.get('question',''))}</b>\n\n"
         f"{opts_text}\n\n"
-        f"📝 <b>توضیح:</b> {q.get('explanation','') or '—'}\n\n"
+        f"📝 <b>توضیح:</b> {_h(q.get('explanation','') or '—')}\n\n"
         f"📈 آمار: {q.get('attempt_count',0)} بار — {q.get('correct_count',0)} صحیح"
     )
 
     keyboard = []
 
-    # دکمه تأیید/رد
-    if not q.get('approved'):
-        keyboard.append([
-            InlineKeyboardButton("✅ تأیید",  callback_data=f'questions:ca_q_approve:{qid}'),
-            InlineKeyboardButton("🗑 حذف",    callback_data=f'questions:ca_q_del:{qid}'),
-        ])
-    else:
-        keyboard.append([
-            InlineKeyboardButton("🗑 حذف سوال", callback_data=f'questions:ca_q_del:{qid}'),
-        ])
+    # دکمه‌های mutation دقیقاً مطابق permission contract مشترک.
+    if status_key == 'pending':
+        if int(q.get('creator_id') or 0) != uid:
+            keyboard.append([InlineKeyboardButton("✅ تأیید", callback_data=f'questions:ca_q_approve:{qid}')])
+        if await db.has_permission(uid, 'questions.reject'):
+            keyboard.append([
+                InlineKeyboardButton("✏️ نیازمند اصلاح", callback_data=f'questions:ca_q_needs_changes:{qid}'),
+                InlineKeyboardButton("❌ رد با دلیل", callback_data=f'questions:ca_q_del:{qid}'),
+            ])
 
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='questions:ca_q_list')])
 

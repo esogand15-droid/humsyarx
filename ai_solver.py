@@ -591,12 +591,13 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 return "\n".join(lines)
 
             if name == 'admin_list_pending_approvals':
+                from question_bank.contracts import status_query
                 pending_u = await db.pending_users()
-                pending_q = await db.pending_questions()
+                pending_q_count = await db.questions.count_documents(status_query('pending'))
                 pending_p = await db.sub_payment_list_pending()
                 return (
                     f"👥 کاربرِ در انتظارِ تایید: {len(pending_u)}\n"
-                    f"❓ سوالِ در انتظارِ تایید: {len(pending_q)}\n"
+                    f"❓ سوالِ در انتظارِ تایید: {pending_q_count}\n"
                     f"💳 پرداختِ در انتظارِ بررسی: {len(pending_p)}"
                 )
 
@@ -1075,7 +1076,8 @@ QUESTION_SCHEMA = {
 }
 
 
-async def generate_question_ai(lesson: str, topic: str, difficulty: str = None, note: str = None) -> dict:
+async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
+                               note: str = None, grounding: list[str] = None) -> dict:
     """
     یک سوالِ چهارگزینه‌ی کامل (سوال/گزینه‌ها/پاسخِ درست/تحلیل) برای درس و
     مبحثِ داده‌شده می‌سازد. خروجی: {'question','options','correct_index','explanation'}.
@@ -1096,6 +1098,10 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None, 
         prompt += f"سطح سختی: {difficulty}\n"
     if note:
         prompt += f"نکته‌ی خاصِ موردنظر: {note}\n"
+    if grounding:
+        prompt += ("\nزمینه تأییدشده سامانه؛ سؤال باید فقط با این زمینه سازگار باشد و "
+                   "اگر زمینه کافی نیست، خروجی نامعتبر تولید نکن:\n" +
+                   "\n".join(f"- {str(item)[:300]}" for item in grounding[:8]) + "\n")
     prompt += (
         "سوال باید بدونِ ابهام باشه و فقط یکی از ۴ گزینه دقیقاً درست باشه. "
         "توی «explanation» هم توضیح بده چرا گزینه‌ی درست، درسته و بقیه چرا غلطن."
@@ -1132,12 +1138,13 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None, 
             raise ValueError('ساختارِ ناقص')
         correct_index = int(parsed['correct_index'])
         if not (0 <= correct_index <= 3):
-            correct_index = 0
+            raise ValueError('correct_index خارج از محدوده')
         return {
             'question':      str(parsed['question']).strip(),
             'options':       [str(o).strip() for o in options],
             'correct_index': correct_index,
             'explanation':   str(parsed.get('explanation') or '').strip(),
+            'model':         cfg['model'],
         }
     except (KeyError, IndexError, ValueError, TypeError, json.JSONDecodeError):
         raise AIConfigError("هوش مصنوعی خروجیِ قابل‌فهمی برنگردوند — دوباره امتحان کن.")

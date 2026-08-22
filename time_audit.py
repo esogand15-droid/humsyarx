@@ -72,7 +72,6 @@ FIELDS = (
 # production type/null ratios remain deliberately unresolved until --all runs.
 _EXTRA_INSTANTS = {
     "users": ("blocked_at", "blocked_bot_at", "resource_notif_last_sent", "challenge.last_fail_at"),
-    "qbank_files": ("created_at", "uploaded_at"),
     "bs_lessons": ("created_at", "updated_at"),
     "bs_sessions": ("created_at", "updated_at"),
     "bs_content": ("created_at", "uploaded_at", "last_edited_at"),
