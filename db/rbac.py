@@ -141,7 +141,7 @@ class DBRbac:
         'content_admin':  '🎓 ادمین ارشد محتوا',
         'content_scoped': '📅 ادمین محتوای ورودی خاص',
         'broadcaster':    '📢 مسئول اطلاعیه',
-        'reviewer':       '🤓 خرخون (بررسی گزارش سوال/جزوه)',   # FIX جدید
+        'reviewer':       '🤓 خرخون (بررسی سؤال و گزارش)',
         'bot_admin':      '👮 ادمین ربات (نماینده)',            # FIX جدید
         'grade_rep':      '📊 نماینده ورودی (ثبت نمره)',        # FIX جدید
     }
@@ -153,8 +153,9 @@ class DBRbac:
         'content_admin':  {'content', 'questions_review'},
         'content_scoped': {'content_scoped', 'questions_review_scoped'},
         'broadcaster':    {'broadcast'},
-        'reviewer':       {'reports_review'},                          # FIX جدید
-        'bot_admin':      {'users', 'schedules', 'notifications', 'broadcast'},      # FIX جدید
+        'reviewer':       {'reports_review', 'questions_review', 'questions_reject', 'questions_edit'},
+        'bot_admin':      {'users', 'schedules', 'notifications', 'broadcast',
+                           'questions_review', 'questions_reject', 'questions_edit'},
         'grade_rep':      {'grades_scoped'},                           # FIX جدید
     }
 
@@ -245,7 +246,7 @@ class DBRbac:
     # ══════════════════════════════════════════════════
     #  🌊 موج C1 — متن (scope) محتوای ورودی‌محور
     #  قرارداد: intake='' یعنی «🌐 سراسری» (شامل داده legacy).
-    #  لنگرهای scope: bs_lessons / ref_subjects / questions / qbank_files
+    #  لنگرهای scope فعال: bs_lessons / ref_subjects / questions
     #  فرزندان scope را از والد به ارث می‌برند (resolver زنجیره‌ای).
     # ══════════════════════════════════════════════════
 
@@ -400,7 +401,10 @@ class DBRbac:
         ('content.scoped',       'محتوای محدود به ورودی',       'content'),
         ('questions.review',     'بررسی سؤالات پیشنهادی',       'questions'),
         ('questions.review_scoped','بررسی سؤالات (ورودی خود)',  'questions'),
-        ('questions.delete',     'حذف سؤال',                    'questions'),
+        ('questions.reject',     'رد/نیازمند اصلاح سؤال',       'questions'),
+        ('questions.edit',       'ویرایش سؤال در صف بررسی',     'questions'),
+        ('questions.delete',     'حذف دائمی سؤال',              'questions'),
+        ('questions.import',     'درون‌ریزی بانک سؤال',         'questions'),
         ('schedules.manage',     'مدیریت برنامه و امتحان',      'schedules'),
         ('grades.manage',        'مدیریت نمرات (کلی)',          'grades'),
         ('grades.scoped',        'ثبت نمره (ورودی خود)',        'grades'),
@@ -427,6 +431,9 @@ class DBRbac:
         'tickets':                 ['tickets.reply', 'tickets.manage'],
         'content':                 ['content.manage'],
         'questions_review':        ['questions.review'],
+        'questions_reject':        ['questions.reject'],
+        'questions_edit':          ['questions.edit'],
+        'questions_import':        ['questions.import'],
         'content_scoped':          ['content.scoped'],
         'questions_review_scoped': ['questions.review_scoped'],
         'broadcast':               ['broadcast.send'],
@@ -449,14 +456,15 @@ class DBRbac:
 
         # ۱) کاتالوگ مجوزها: فقط اگر کالکشن خالی است
         perms_seeded = 0
-        if await self.perm_catalog.count_documents({}) == 0:
-            for key, label, cat in self.PERMISSION_CATALOG:
-                await self.perm_catalog.update_one(
-                    {'_id': key},
-                    {'$setOnInsert': {
-                        '_id': key, 'label': label, 'category': cat}},
-                    upsert=True,
-                )
+        catalog_was_empty = await self.perm_catalog.count_documents({}) == 0
+        for key, label, cat in self.PERMISSION_CATALOG:
+            await self.perm_catalog.update_one(
+                {'_id': key},
+                {'$setOnInsert': {
+                    '_id': key, 'label': label, 'category': cat}},
+                upsert=True,
+            )
+        if catalog_was_empty:
             perms_seeded = len(self.PERMISSION_CATALOG)
 
         # 🌊 موج Analytics-Filters — درج idempotent مجوز جدید حتی اگر بذرِ
@@ -496,6 +504,16 @@ class DBRbac:
                 }},
                 upsert=True,
             )
+        # Question Bank v2 permission contract is mandatory for legacy system roles.
+        # $addToSet is idempotent and does not replace any custom permissions.
+        await self.roles.update_one({'_id': 'reviewer'}, {'$addToSet': {'perms': {'$each': [
+            'questions.review', 'questions.reject', 'questions.edit', 'reports.review']}}})
+        await self.roles.update_one({'_id': 'bot_admin'}, {'$addToSet': {'perms': {'$each': [
+            'questions.review', 'questions.reject', 'questions.edit']}}})
+        await self.roles.update_one({'_id': 'content_admin'}, {'$addToSet': {'perms': {'$each': [
+            'questions.review', 'questions.reject', 'questions.edit']}}})
+        await self.roles.update_one({'_id': 'content_scoped'}, {'$addToSet': {'perms': {'$each': [
+            'questions.review_scoped', 'questions.reject', 'questions.edit']}}})
         roles_after = await self.roles.count_documents({})
         return {
             'roles_seeded': max(0, roles_after - roles_before),
@@ -551,8 +569,7 @@ class DBRbac:
         backfilled = {}
         for name, col in [('bs_lessons', self.bs_lessons),
                           ('ref_subjects', self.ref_subjects),
-                          ('questions', self.questions),
-                          ('qbank_files', self.qbank_files)]:
+                          ('questions', self.questions)]:
             r = await col.update_many(
                 {'intake': {'$exists': False}},
                 {'$set': {'intake': ''}},

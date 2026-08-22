@@ -14,6 +14,7 @@ from api.auth import (
 )
 
 from database import db
+from question_bank.contracts import approved_query
 
 
 router = APIRouter()
@@ -75,7 +76,6 @@ async def search(
         schedules,
         subjects,
         books,
-        qbank,
     ) = await asyncio.gather(
         db.search_resources(
             query,
@@ -83,10 +83,7 @@ async def search(
         ),
 
         db.questions.find({
-            "approved":
-                True,
-
-            "$or": [
+            "$and": [approved_query(), {"$or": [
                 {
                     "question":
                         pattern,
@@ -101,9 +98,7 @@ async def search(
                     "topic":
                         pattern,
                 },
-            ],
-
-            **_scope_q,
+            ], **_scope_q}],
         })
         .limit(10)
         .to_list(10),
@@ -165,28 +160,6 @@ async def search(
         .limit(10)
         .to_list(10),
 
-        db.qbank_files.find({
-            "$or": [
-                {
-                    "lesson":
-                        pattern,
-                },
-
-                {
-                    "topic":
-                        pattern,
-                },
-
-                {
-                    "description":
-                        pattern,
-                },
-            ],
-
-            **_scope_q,
-        })
-        .limit(10)
-        .to_list(10),
     )
 
 
@@ -479,59 +452,10 @@ async def search(
         })
 
 
-    for item in qbank:
-        title = " • ".join(
-            filter(
-                None,
-                [
-                    text(
-                        item.get(
-                            "lesson"
-                        )
-                    ),
-
-                    text(
-                        item.get(
-                            "topic"
-                        )
-                    ),
-                ],
-            )
-        )
-
-        results.append({
-            "id":
-                text(
-                    item.get("_id")
-                ),
-
-            "type":
-                "qbank",
-
-            "icon":
-                "📦",
-
-            "title": (
-                title
-                or "بانک فایل سؤال"
-            ),
-
-            "subtitle":
-                text(
-                    item.get(
-                        "description"
-                    )
-                ),
-
-            "route":
-                "/learn/resources",
-        })
-
 
     order = {
         "question": 0,
         "resource": 1,
-        "qbank": 2,
         "reference": 3,
         "schedule": 4,
         "faq": 5,

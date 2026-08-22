@@ -45,7 +45,14 @@ class DBCore:
 
         self.users        = _db['users']
         self.questions    = _db['questions']
-        self.qbank_files  = _db['qbank_files']
+        # Question Bank v2 shared domain collections.
+        self.question_progress = _db['question_progress']
+        self.question_topic_stats = _db['question_topic_stats']
+        self.ai_practice_questions = _db['ai_practice_questions']
+        self.question_ai_quotas = _db['question_ai_quotas']
+        self.question_import_jobs = _db['question_import_jobs']
+        self.question_import_items = _db['question_import_items']
+        self.question_migration_backups = _db['question_migration_backups']
         self.schedules    = _db['schedules']
         self.stats_col    = _db['stats']
         self.answers      = _db['answers']
@@ -76,6 +83,7 @@ class DBCore:
         self.feed_reactions  = _db['feed_reactions']
         # 👑 موج P1 — جلسات آزمون (چالش ارتقا روی همین زیرساخت، فلگ promotion)
         self.exam_sessions   = _db['exam_sessions']
+        self.question_pdf_generations = _db['question_pdf_generations']
         # FIX جدید: بلک‌لیست بلاک کامل — بر اساس آیدی عددی تلگرام (ثابت و
         # غیرقابل تغییر)، برخلاف یوزرنیم که کاربر می‌تواند عوضش کند.
         # کاربر بلاک‌شده هم از دیتابیس حذف می‌شود و هم دیگر نمی‌تواند
@@ -135,23 +143,42 @@ class DBCore:
                 self.users.create_index([('ai_banned', 1), ('name', 1)], background=True),
                 self.ai_reports.create_index([('created_at', -1)], background=True),
                 self.ai_reports.create_index([('user_id', 1), ('created_at', -1)], background=True),
+                # Question Bank v2 canonical and legacy-compatible query indexes.
                 self.questions.create_index('approved', background=True),
+                self.questions.create_index([('status', 1), ('intake', 1), ('lesson_id', 1), ('topic_id', 1), ('difficulty', 1)], background=True),
+                self.questions.create_index([('status', 1), ('lesson_id', 1), ('topic_id', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('intake', 1), ('status', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('creator_id', 1), ('status', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('status', 1), ('intake', 1), ('source', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('status', 1), ('intake', 1), ('creator_id', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('status', 1), ('intake', 1), ('difficulty', 1), ('created_at', -1)], background=True),
+                self.questions.create_index([('content_hash', 1), ('intake', 1)], background=True),
+                self.questions.create_index('import_identity', unique=True, sparse=True, background=True),
+                # Legacy read indexes stay until the explicit schema migration has been verified.
                 self.questions.create_index([('lesson', 1), ('topic', 1)], background=True),
-                # 🌊 موج C1 — کوئری داغ ورودی‌محور {(intake,term)} و
-                # فیلتر مدیریت سوال {(intake,approved)} و دانشجو
-                self.questions.create_index([('intake', 1), ('approved', 1)], background=True),
-                # 🌊 موج C1.5 — الگوی واقعی آزمون/distinct دانشجو:
-                # {approved, lesson[, topic]} + intake ∈ [own, '']
-                self.questions.create_index([('approved', 1), ('lesson', 1), ('intake', 1)], background=True),
-                # Ultimate Web Admin: pagination/sort/filterهای 10k+ سؤال
                 self.questions.create_index([('intake', 1), ('approved', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('intake', 1), ('difficulty', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('creator_id', 1), ('created_at', -1)], background=True),
+                self.question_progress.create_index([('user_id', 1), ('question_id', 1)], unique=True, background=True),
+                self.question_progress.create_index([('user_id', 1), ('topic_id', 1), ('last_answered_at', -1)], background=True),
+                self.question_progress.create_index([('user_id', 1), ('lesson_id', 1), ('last_answered_at', -1)], background=True),
+                self.question_topic_stats.create_index([('user_id', 1), ('updated_at', -1)], background=True),
+                self.ai_practice_questions.create_index([('user_id', 1), ('generated_at', -1)], background=True),
+                self.ai_practice_questions.create_index([('user_id', 1), ('topic_id', 1), ('generated_at', -1)], background=True),
+                self.question_ai_quotas.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self.question_import_jobs.create_index([('admin_id', 1), ('created_at', -1)], background=True),
+                self.question_import_jobs.create_index([('admin_id', 1), ('fingerprint', 1)], unique=True, background=True),
+                self.question_import_items.create_index([('job_id', 1), ('classification', 1), ('row', 1)], background=True),
+                self.question_import_items.create_index([('job_id', 1), ('external_id', 1)], unique=True, background=True),
+                self.question_migration_backups.create_index(
+                    [('migration', 1), ('question_id', 1)], unique=True,
+                    partialFilterExpression={'question_id': {'$type': 'string'}},
+                    name='uq_qbank_migration_question', background=True),
+                self.question_migration_backups.create_index(
+                    [('migration', 1), ('progress_id', 1)], unique=True,
+                    partialFilterExpression={'progress_id': {'$type': 'string'}},
+                    name='uq_qbank_migration_progress', background=True),
                 # 🍴 موج C2 — Fork/Override: یافتن fork یک base برای یک ورودی
                 self.bs_sessions.create_index([('fork_of', 1), ('intake', 1)], background=True),
                 self.ref_books.create_index([('fork_of', 1), ('intake', 1)], background=True),
-                self.qbank_files.create_index([('intake', 1), ('lesson', 1)], background=True),
-                self.qbank_files.create_index([('intake', 1), ('lesson', 1), ('topic', 1), ('description', 1)], background=True),
                 self.bs_lessons.create_index([('intake', 1), ('term', 1), ('order', 1)], background=True),
                 self.ref_subjects.create_index([('intake', 1), ('order', 1)], background=True),
                 self.bs_lessons.create_index([('term', 1), ('order', 1)], background=True),
@@ -189,7 +216,6 @@ class DBCore:
                 self.broadcast_campaigns.create_index([('status', 1), ('send_at', 1)], background=True),
                 self.bot_notifs.create_index([('campaign_id', 1), ('sent', 1)], background=True),
                 self.bot_notifs.create_index([('sent', 1), ('send_at', 1)], background=True),
-                self.qbank_files.create_index([('lesson', 1), ('topic', 1)], background=True),
                 self.intakes.create_index('code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
                 # unique + sparse (فقط اسنادی که فیلد دارند/غیرnull)
@@ -220,7 +246,13 @@ class DBCore:
                 self.feed_reactions.create_index([('event_id', 1), ('uid', 1)], unique=True, background=True),
                 self.feed_reactions.create_index([('uid', 1)], background=True),
                 # 👑 موج P1 — جست‌وجوی جلسه‌ی چالش فعال کاربر
+                self.exam_sessions.create_index('session_id', unique=True, background=True),
                 self.exam_sessions.create_index([('user_id', 1), ('promotion', 1), ('status', 1)], background=True),
+                self.exam_sessions.create_index([('user_id', 1), ('status', 1), ('started_at', -1)], background=True),
+                self.exam_sessions.create_index([('output_mode', 1), ('created_at', -1)], background=True),
+                self.exam_sessions.create_index([('status', 1), ('deadline_ts', 1)], background=True),
+                self.question_pdf_generations.create_index([('session_id', 1), ('generated_at', -1)], background=True),
+                self.question_pdf_generations.create_index([('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
                 self.discount_uses.create_index([('code', 1), ('user_id', 1)], unique=True, background=True),
                 self.discount_bcasts.create_index([('code', 1), ('created_at', -1)], background=True),
@@ -577,6 +609,7 @@ class DBCore:
 
 
     async def global_stats(self) -> dict:
+        from question_bank.contracts import approved_query, status_query
         week_ago  = (now_utc() - timedelta(days=7)).isoformat()
         new_users = await self.users.count_documents({'registered_at': {'$gt': week_ago}})
         # FIX جدید: online_30m و total_downloads هم اینجا اضافه شد تا
@@ -586,8 +619,8 @@ class DBCore:
         vals = await asyncio.gather(
             self.users.count_documents({'approved': True}),
             self.users.count_documents({'approved': False}),
-            self.questions.count_documents({'approved': True}),
-            self.qbank_files.count_documents({}),
+            self.questions.count_documents(approved_query()),
+            self.questions.count_documents(status_query("pending")),
             self.bs_lessons.count_documents({}),
             self.bs_sessions.count_documents({}),
             self.bs_content.count_documents({}),
@@ -600,7 +633,7 @@ class DBCore:
             self.ref_files.aggregate(dl_pipeline).to_list(1),
         )
         keys = [
-            'users','pending','questions','qbank_files',
+            'users','pending','questions','questions_pending',
             'bs_lessons','bs_sessions','bs_content',
             'ref_subjects','ref_books','open_tickets','content_admins',
             'online_30m',
@@ -831,42 +864,36 @@ class DBCore:
 
 
     async def stats_dashboard_content(self) -> dict:
-        """آمار جزئی محتوا: علوم پایه به‌تفکیک نوع، رفرنس به‌تفکیک زبان، دانلودها"""
+        """Content and structured Question Bank analytics (legacy file bank retired)."""
+        from question_bank.contracts import approved_query
         week_ago = (now_utc() - timedelta(days=7)).isoformat()
         (bs_lessons, bs_sessions, bs_by_type, ref_subjects, ref_books,
-         ref_by_lang, faq_count, qbank_files, top_qbank_lessons,
-         bs_dl_agg, ref_dl_agg, qbank_dl_agg, top_downloaded_qbank,
-         new_bs_week, new_ref_week) = await asyncio.gather(
+         ref_by_lang, faq_count, qbank_questions, top_qbank_lessons,
+         bs_dl_agg, ref_dl_agg, qbank_attempts,
+         new_bs_week, new_ref_week, new_questions_week) = await asyncio.gather(
             self.bs_lessons.count_documents({}),
             self.bs_sessions.count_documents({}),
             self.bs_content.aggregate(
-                [{'$group': {'_id': '$type', 'count': {'$sum': 1}}}]
-            ).to_list(20),
+                [{'$group': {'_id': '$type', 'count': {'$sum': 1}}}]).to_list(20),
             self.ref_subjects.count_documents({}),
             self.ref_books.count_documents({}),
             self.ref_files.aggregate(
-                [{'$group': {'_id': '$lang', 'count': {'$sum': 1}}}]
-            ).to_list(10),
+                [{'$group': {'_id': '$lang', 'count': {'$sum': 1}}}]).to_list(10),
             self.faq.count_documents({}),
-            self.qbank_files.count_documents({}),
-            self.qbank_files.aggregate([
+            self.questions.count_documents(approved_query()),
+            self.questions.aggregate([
+                {'$match': approved_query()},
                 {'$group': {'_id': '$lesson', 'count': {'$sum': 1}}},
                 {'$sort': {'count': -1}}, {'$limit': 5},
             ]).to_list(5),
             self.bs_content.aggregate(
-                [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]
-            ).to_list(1),
+                [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]).to_list(1),
             self.ref_files.aggregate(
-                [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]
-            ).to_list(1),
-            self.qbank_files.aggregate(
-                [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]
-            ).to_list(1),
-            self.qbank_files.find(
-                {'downloads': {'$gt': 0}}, {'lesson': 1, 'topic': 1, 'downloads': 1}
-            ).sort('downloads', -1).limit(5).to_list(5),
+                [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]).to_list(1),
+            self.answers.count_documents({}),
             self.bs_content.count_documents({'uploaded_at': {'$gt': week_ago}}),
             self.ref_files.count_documents({'uploaded_at': {'$gt': week_ago}}),
+            self.questions.count_documents({'created_at': {'$gt': week_ago}}),
         )
         type_labels = {
             'video': '🎥 ویدیو', 'ppt': '📊 پاورپوینت', 'pdf': '📄 PDF',
@@ -875,49 +902,46 @@ class DBCore:
         bs_types = {type_labels.get(d['_id'], d['_id'] or 'نامشخص'): d['count'] for d in bs_by_type}
         lang_labels = {'fa': '🇮🇷 فارسی', 'en': '🌍 انگلیسی'}
         ref_langs = {lang_labels.get(d['_id'], d['_id'] or 'نامشخص'): d['count'] for d in ref_by_lang}
-
         return {
             'bs_lessons': bs_lessons, 'bs_sessions': bs_sessions,
             'bs_types': bs_types, 'bs_total_content': sum(bs_types.values()),
             'ref_subjects': ref_subjects, 'ref_books': ref_books,
             'ref_langs': ref_langs, 'ref_total_files': sum(ref_langs.values()),
-            'faq_count': faq_count, 'qbank_files': qbank_files,
+            'faq_count': faq_count, 'qbank_questions': qbank_questions,
             'top_qbank_lessons': [(d['_id'] or 'نامشخص', d['count']) for d in top_qbank_lessons],
-            'top_downloaded_qbank': [
-                (f"{d.get('lesson','نامشخص')} / {d.get('topic','')}".strip(' /'), d.get('downloads', 0))
-                for d in top_downloaded_qbank
-            ],
+            'qbank_attempts': qbank_attempts,
             'bs_downloads': (bs_dl_agg[0]['total'] if bs_dl_agg else 0),
             'ref_downloads': (ref_dl_agg[0]['total'] if ref_dl_agg else 0),
-            'qbank_downloads': (qbank_dl_agg[0]['total'] if qbank_dl_agg else 0),
-            'new_this_week': new_bs_week + new_ref_week,
+            'new_this_week': new_bs_week + new_ref_week + new_questions_week,
         }
 
 
     async def stats_dashboard_questions(self) -> dict:
         """آمار جزئی بانک سوال: دقت پاسخ‌دهی، پرسوال‌ترین درس‌ها، سخت‌ترین سوالات"""
+        from question_bank.contracts import and_query, approved_query, status_query
+        approved = approved_query()
         (q_approved, q_pending, q_by_bot, q_by_users, by_diff, by_lesson, totals, hardest) = await asyncio.gather(
-            self.questions.count_documents({'approved': True}),
-            self.questions.count_documents({'approved': False}),
-            self.questions.count_documents({'approved': True, 'by_bot': True}),
-            self.questions.count_documents({'approved': True, 'by_bot': {'$ne': True}}),
+            self.questions.count_documents(approved),
+            self.questions.count_documents(status_query("pending")),
+            self.questions.count_documents(and_query(approved, {'source': 'admin_bot'})),
+            self.questions.count_documents(and_query(approved, {'source': {'$ne': 'admin_bot'}})),
             self.questions.aggregate([
-                {'$match': {'approved': True}},
+                {'$match': approved},
                 {'$group': {'_id': '$difficulty', 'count': {'$sum': 1}}},
             ]).to_list(10),
             self.questions.aggregate([
-                {'$match': {'approved': True}},
+                {'$match': approved},
                 {'$group': {'_id': '$lesson', 'count': {'$sum': 1}}},
                 {'$sort': {'count': -1}}, {'$limit': 5},
             ]).to_list(5),
             self.questions.aggregate([
-                {'$match': {'approved': True}},
+                {'$match': approved},
                 {'$group': {'_id': None,
                             'attempts': {'$sum': '$attempt_count'},
                             'correct':  {'$sum': '$correct_count'}}},
             ]).to_list(1),
             self.questions.aggregate([
-                {'$match': {'approved': True, 'attempt_count': {'$gte': 5}}},
+                {'$match': and_query(approved, {'attempt_count': {'$gte': 5}})},
                 {'$project': {
                     'lesson': 1, 'topic': 1, 'question': 1,
                     'attempt_count': 1, 'correct_count': 1,

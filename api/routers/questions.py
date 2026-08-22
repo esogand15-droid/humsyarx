@@ -23,6 +23,8 @@ from fastapi import (
     Query,
 )
 
+from fastapi.responses import Response
+
 from pydantic import (
     BaseModel,
     Field,
@@ -30,7 +32,7 @@ from pydantic import (
 
 from api.auth import (
     ADMIN_ID,
-    get_current_user,
+    get_question_access_user,
 )
 
 from api.user_metrics import (
@@ -39,14 +41,22 @@ from api.user_metrics import (
 
 from database import db
 from time_utils import utc_now_iso
+from question_bank import ExamService, QuestionBankService, QuestionDomainError
+from question_bank.ai_practice import AIPersonalPracticeService
 
 
 router = APIRouter()
 
-exam_sessions = (
-    db.client["medicalbot"]
-    ["exam_sessions"]
-)
+exam_sessions = db.exam_sessions
+question_bank = QuestionBankService(db)
+exam_domain = ExamService(db)
+ai_practice = AIPersonalPracticeService(db)
+
+
+def _domain_error(exc: QuestionDomainError):
+    raise HTTPException(status_code=exc.status_code,
+                        detail={"code": exc.code, "message": exc.message,
+                                **({"details": exc.details} if exc.details else {})})
 
 
 def _pub_prestige(ev):
@@ -377,502 +387,179 @@ async def expire_if_needed(
     return session
 
 
+@router.get("/taxonomy")
+async def taxonomy(user=Depends(get_question_access_user)):
+    return {"lessons": await question_bank.taxonomy_tree(
+        visible_intakes=question_bank.student_intakes(user), only_with_questions=False)}
+
+
 @router.get("/lessons")
-async def get_lessons(
-    user=Depends(
-        get_current_user
-    ),
-):
-    # 🌊 C1.5 — Scope-aware: distinct + count + fetch همه با یک تعریف واحد
-    # از scope (سراسری + ورودی خود دانشجو) تا عدد نمایشی با تعداد واقعی
-    # سؤال‌های قابل‌مشاهده ناهماهنگ نباشد.
-    scope_q = {
-        "intake": {
-            "$in": db.student_intake_filter(
-                (user.get("_db") or {}).get("intake", "")
-            )
-        }
-    }
-
-    lessons = (
-        await db.questions.distinct(
-            "lesson",
-            {
-                "approved": True,
-                **scope_q,
-            },
-        )
-    )
-
-    names = sorted({
-        text(item)
-        for item in lessons
-        if text(item)
-    })
-
-    # 🌊 Q2-W10 — شمارش گروهی با یک کوئری به‌جای N+1 count_documents
-    _lcounts = {}
-    async for _q in db.questions.find({"approved": True, **scope_q}):
-        _lv = _q.get('lesson')
-        _lcounts[_lv] = _lcounts.get(_lv, 0) + 1
-
-    result = []
-
-    for name in names:
-        count = _lcounts.get(name, 0)
-
-        result.append({
-            "name": name,
-
-            "count":
-                non_negative_int(
-                    count
-                ),
-        })
-
-    return {
-        "lessons": result,
-    }
+async def get_lessons(user=Depends(get_question_access_user)):
+    tree = await question_bank.taxonomy_tree(
+        visible_intakes=question_bank.student_intakes(user), only_with_questions=False)
+    return {"lessons": [{"id": row["id"], "name": row["name"],
+                          "term": row["term"], "count": row["question_count"]}
+                         for row in tree]}
 
 
-@router.get(
-    "/topics/{lesson}"
-)
-async def get_topics(
-    lesson: str,
+@router.get("/topics/{lesson}")
+async def get_topics(lesson: str, user=Depends(get_question_access_user)):
+    tree = await question_bank.taxonomy_tree(
+        visible_intakes=question_bank.student_intakes(user), only_with_questions=False)
+    selected = next((row for row in tree if row["id"] == lesson or row["name"] == lesson.strip()), None)
+    if not selected:
+        raise HTTPException(404, "درس پیدا نشد")
+    return {"lesson_id": selected["id"], "topics": [
+        {"id": topic["id"], "name": topic["name"], "count": topic["question_count"]}
+        for topic in selected["topics"]]}
 
-    user=Depends(
-        get_current_user
-    ),
-):
-    lesson = lesson.strip()
 
-    # 🌊 C1.5 — Scope-aware: شمارش مباحث فقط در scope دید دانشجو
-    scope_q = {
-        "intake": {
-            "$in": db.student_intake_filter(
-                (user.get("_db") or {}).get("intake", "")
-            )
-        }
-    }
-
-    topics = (
-        await db.questions.distinct(
-            "topic",
-            {
-                "lesson": lesson,
-                "approved": True,
-                **scope_q,
-            },
-        )
-    )
-
-    names = sorted({
-        text(item)
-        for item in topics
-        if text(item)
-    })
-
-    # 🌊 Q2-W10 — شمارش گروهی با یک کوئری به‌جای N+1 count_documents
-    _tcounts = {}
-    async for _q in db.questions.find(
-            {"lesson": lesson, "approved": True, **scope_q}):
-        _tv = _q.get('topic')
-        _tcounts[_tv] = _tcounts.get(_tv, 0) + 1
-
-    result = []
-
-    for topic in names:
-        count = _tcounts.get(topic, 0)
-
-        result.append({
-            "name": topic,
-
-            "count":
-                non_negative_int(
-                    count
-                ),
-        })
-
-    return {
-        "topics": result,
-    }
+async def _request_taxonomy(user, lesson_id=None, topic_id=None, lesson=None, topic=None):
+    if not any((lesson_id, topic_id, lesson, topic)):
+        return {}
+    try:
+        return await question_bank.resolve_taxonomy(
+            lesson_id=lesson_id, topic_id=topic_id, lesson=lesson, topic=topic,
+            visible_intakes=question_bank.student_intakes(user),
+            require_topic=bool(topic_id or topic))
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
 
 @router.get("/practice")
 async def practice(
-    user=Depends(
-        get_current_user
-    ),
-
-    lesson: str | None = Query(
-        default=None,
-        max_length=100,
-    ),
-
-    topic: str | None = Query(
-        default=None,
-        max_length=100,
-    ),
-
-    exclude: str | None = Query(
-        default=None,
-        max_length=2500,
-    ),
+    user=Depends(get_question_access_user),
+    lesson_id: str | None = Query(None), topic_id: str | None = Query(None),
+    lesson: str | None = Query(None, max_length=100),
+    topic: str | None = Query(None, max_length=100),
+    exclude: str | None = Query(None, deprecated=True),
 ):
-    questions = (
-        await db.get_questions(
-            lesson=lesson,
-            topic=topic,
-            limit=10,
-
-            exclude=exclude_ids(
-                exclude
-            ),
-            # 🌊 C1 — سوال‌های ورودی دانشجو + سراسری (Backend-enforced)
-            intake=db.student_intake_filter(
-                (user.get("_db") or {}).get("intake", "")
-            ),
-        )
-    )
-
-    formatted = [
-        safe_question(item)
-        for item in (questions or [])
-    ]
-
-    formatted = [
-        item
-        for item in formatted
-        if (
-            item
-            and len(
-                item["options"]
-            ) >= 2
-        )
-    ]
-
-    return {
-        "question": (
-            random.choice(formatted)
-            if formatted
-            else None
-        ),
-    }
+    taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
+    try:
+        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="free")
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
 
 @router.get("/weak")
-async def weak(
-    user=Depends(
-        get_current_user
-    ),
-):
-    questions = (
-        await db.get_weak_questions(
-            user["id"],
-            limit=10,
-        )
-    )
-
-    formatted = [
-        safe_question(item)
-        for item in (questions or [])
-    ]
-
-    formatted = [
-        item
-        for item in formatted
-        if (
-            item
-            and len(
-                item["options"]
-            ) >= 2
-        )
-    ]
-
-    return {
-        "question": (
-            random.choice(formatted)
-            if formatted
-            else None
-        ),
-
-        "message": (
-            ""
-            if formatted
-            else
-            "نقطه ضعفی ثبت نشده"
-        ),
-    }
+async def weak(user=Depends(get_question_access_user)):
+    stats = await question_bank.stats(user=user)
+    weak_topics = sorted(stats["weak_topics"], key=lambda x: (x["accuracy"], -x["attempts"]))
+    if not weak_topics:
+        return {"question": None, "message": "برای تشخیص نقاط ضعف، تمرین بیشتری لازم است", "stats": stats}
+    selected = weak_topics[0]
+    taxonomy = {"lesson_id": selected["lesson_id"], "topic_id": selected["topic_id"],
+                "lesson": selected["lesson"], "topic": selected["topic"]}
+    result = await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="weak")
+    result["weak_topic"] = selected
+    return result
 
 
 @router.get("/hard")
 async def hard(
-    user=Depends(
-        get_current_user
-    ),
-
-    exclude: str | None = Query(
-        default=None,
-        max_length=2500,
-    ),
+    user=Depends(get_question_access_user),
+    lesson_id: str | None = Query(None), topic_id: str | None = Query(None),
+    lesson: str | None = Query(None), topic: str | None = Query(None),
+    exclude: str | None = Query(None, deprecated=True),
 ):
-    questions = (
-        await db.get_questions(
-            difficulty="سخت 🔴",
-            limit=10,
-
-            exclude=exclude_ids(
-                exclude
-            ),
-            # 🌊 C1 — سوال‌های ورودی دانشجو + سراسری (Backend-enforced)
-            intake=db.student_intake_filter(
-                (user.get("_db") or {}).get("intake", "")
-            ),
-        )
-    )
-
-    formatted = [
-        safe_question(item)
-        for item in (questions or [])
-    ]
-
-    formatted = [
-        item
-        for item in formatted
-        if (
-            item
-            and len(
-                item["options"]
-            ) >= 2
-        )
-    ]
-
-    return {
-        "question": (
-            random.choice(formatted)
-            if formatted
-            else None
-        ),
-    }
+    taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
+    return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="hard")
 
 
 class AnswerInput(BaseModel):
-    question_id: str = Field(
-        min_length=24,
-        max_length=24,
-    )
-
-    selected: int = Field(
-        ge=0,
-        le=3,
-    )
+    question_id: str = Field(min_length=24, max_length=24)
+    selected: int = Field(ge=0, le=3)
 
 
 @router.post("/answer")
-async def answer(
-    body: AnswerInput,
+async def answer(body: AnswerInput, user=Depends(get_question_access_user)):
+    question = await db.get_question_by_id(body.question_id)
+    if not question:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    try:
+        await question_bank.verify_access(question, user)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    correct_answer = int(question.get("correct_answer", 0) or 0)
+    is_correct = body.selected == correct_answer
+    first_time = await _answer_first_time(user["id"], body.question_id)
+    try:
+        await question_bank.record_answer(user=user, question=question,
+                                          selected=body.selected, is_correct=is_correct)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    prestige = await _answer_prestige(user["id"], question, is_correct, first_time)
+    from question_bank.contracts import public_question
+    return {"is_correct": is_correct, "correct_answer": correct_answer,
+            "explanation": text(question.get("explanation")),
+            "question": public_question(question, reveal=True), "prestige": prestige}
 
-    user=Depends(
-        get_current_user
-    ),
-):
-    question = (
-        await db.get_question_by_id(
-            body.question_id
-        )
-    )
 
-    if (
-        not question
-        or not question.get(
-            "approved"
-        )
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="سؤال پیدا نشد",
-        )
+@router.get("/practice/stats")
+async def practice_stats(user=Depends(get_question_access_user)):
+    return await question_bank.stats(user=user)
 
-    correct_answer = int(
-        question.get(
-            "correct_answer",
-            0,
-        )
-        or 0
-    )
 
-    is_correct = (
-        body.selected
-        == correct_answer
-    )
+class AIGenerateInput(BaseModel):
+    lesson_id: str
+    topic_id: str
+    difficulty: str = "medium"
+    note: str = Field(default="", max_length=500)
 
-    # 👑 Prestige: پیش‌چک قبل از ثبت، رویداد بعد از ثبت (افزایشی)
-    first_time = await _answer_first_time(
-        user["id"], body.question_id)
 
-    await db.save_answer(
-        user["id"],
-        body.question_id,
-        body.selected,
-        is_correct,
-    )
+@router.post("/practice/ai/generate")
+async def generate_ai_practice(body: AIGenerateInput, user=Depends(get_question_access_user)):
+    taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id)
+    try:
+        return await ai_practice.generate(user=user, taxonomy=taxonomy,
+                                          difficulty=body.difficulty, note=body.note,
+                                          require_exhaustion=True)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
-    prestige = await _answer_prestige(
-        user["id"], question, is_correct, first_time)
 
-    formatted = (
-        safe_question(question)
-        or {}
-    )
+class AIAnswerInput(BaseModel):
+    selected: int = Field(ge=0, le=3)
 
-    explanation = text(
-        question.get(
-            "explanation"
-        )
-    )
 
-    return {
-        "is_correct":
-            is_correct,
+@router.post("/practice/ai/{ai_question_id}/answer")
+async def answer_ai_practice(ai_question_id: str, body: AIAnswerInput,
+                             user=Depends(get_question_access_user)):
+    try: return await ai_practice.answer(user=user, ai_question_id=ai_question_id, selected=body.selected)
+    except QuestionDomainError as exc: _domain_error(exc)
 
-        "correct_answer":
-            correct_answer,
 
-        "explanation":
-            explanation,
-
-        "question": {
-            **formatted,
-
-            "correct_answer":
-                correct_answer,
-
-            "explanation":
-                explanation,
-        },
-
-        "prestige": prestige,
-    }
+@router.post("/practice/ai/{ai_question_id}/propose")
+async def propose_ai_practice(ai_question_id: str, user=Depends(get_question_access_user)):
+    try: return await ai_practice.propose(user=user, ai_question_id=ai_question_id)
+    except QuestionDomainError as exc: _domain_error(exc)
 
 
 @router.get("/history")
 async def answer_history(
-    user=Depends(
-        get_current_user
-    ),
-
-    skip: int = Query(
-        default=0,
-        ge=0,
-    ),
-
-    limit: int = Query(
-        default=30,
-        ge=1,
-        le=100,
-    ),
+    user=Depends(get_question_access_user),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
 ):
-    query = {
-        "user_id": user["id"],
-    }
-
-    records = (
-        await db.answers
-        .find(query)
-        .sort(
-            "answered_at",
-            -1,
-        )
-        .skip(skip)
-        .limit(limit)
-        .to_list(limit)
-    )
-
-    total = (
-        await db.answers
-        .count_documents(query)
-    )
-
+    query = {"user_id": user["id"]}
+    total = await db.answers.count_documents(query)
+    records = await db.answers.find(query).sort("answered_at", -1).skip(skip).limit(limit).to_list(limit)
+    ids = [ObjectId(str(x.get("question_id"))) for x in records if ObjectId.is_valid(str(x.get("question_id")))]
+    docs = await db.questions.find({"_id": {"$in": ids}}).to_list(len(ids) or 1)
+    by_id = {str(x["_id"]): x for x in docs}
     result = []
-
     for record in records:
-        question_id = text(
-            record.get(
-                "question_id"
-            )
-        )
-
-        question = (
-            await db.get_question_by_id(
-                question_id
-            )
-        )
-
-        if not question:
-            continue
-
-        result.append({
-            "id": text(
-                record.get("_id")
-            ),
-
-            "question_id":
-                question_id,
-
-            "lesson": text(
-                question.get(
-                    "lesson"
-                )
-            ),
-
-            "topic": text(
-                question.get(
-                    "topic"
-                )
-            ),
-
-            "question": text(
-                question.get(
-                    "question"
-                )
-            ),
-
-            "selected":
-                non_negative_int(
-                    record.get(
-                        "selected"
-                    )
-                ),
-
-            "correct_answer":
-                non_negative_int(
-                    question.get(
-                        "correct_answer"
-                    )
-                ),
-
-            "is_correct": bool(
-                record.get(
-                    "is_correct"
-                )
-            ),
-
-            "answered_at": text(
-                record.get(
-                    "answered_at"
-                )
-            ),
-        })
-
-    return {
-        "answers": result,
-
-        "total":
-            non_negative_int(
-                total
-            ),
-    }
+        qid = text(record.get("question_id")); question = by_id.get(qid)
+        if not question: continue
+        result.append({"id": text(record.get("_id")), "question_id": qid,
+                       "lesson_id": str(question.get("lesson_id") or ""),
+                       "topic_id": str(question.get("topic_id") or ""),
+                       "lesson": text(question.get("lesson")), "topic": text(question.get("topic")),
+                       "question": text(question.get("question")),
+                       "selected": non_negative_int(record.get("selected")),
+                       "correct_answer": non_negative_int(question.get("correct_answer")),
+                       "is_correct": bool(record.get("is_correct")),
+                       "answered_at": text(record.get("answered_at"))})
+    return {"answers": result, "total": non_negative_int(total), "skip": skip, "limit": limit}
 
 
 @router.get(
@@ -880,7 +567,7 @@ async def answer_history(
 )
 async def stats_by_lesson(
     user=Depends(
-        get_current_user
+        get_question_access_user
     ),
 ):
     pipeline = [
@@ -1016,73 +703,42 @@ async def stats_by_lesson(
 
 
 class ExamStartInput(BaseModel):
-    lesson: str = Field(
-        min_length=1,
-        max_length=100,
-    )
-
-    topic: Optional[str] = Field(
-        default=None,
-        max_length=100,
-    )
-
-    count: int = Field(
-        ge=5,
-        le=40,
-    )
-
-    minutes: int = Field(
-        ge=0,
-        le=90,
-    )
-
-    # ⚔️ True ⇒ شروع چالش ارتقا (استخر/زمان/قواعد سرورمحور — فیلدهای بالا بی‌اثر)
+    lesson_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    lesson: str = Field(default="", max_length=100)
+    topic: Optional[str] = Field(default=None, max_length=100)
+    count: int = Field(ge=5, le=100)
+    minutes: int = Field(ge=0, le=180)
+    output_mode: str = Field(default="app", pattern="^(bot|app|pdf_practice|pdf_exam)$")
+    allow_smaller: bool = False
+    # ⚔️ True ⇒ شروع چالش ارتقا؛ قواعد سرورمحور قبلی حفظ می‌شود.
     promotion: bool = False
 
 
-@router.get(
-    "/custom-exam/history"
-)
+@router.get("/custom-exam/history")
 async def exam_history(
-    user=Depends(
-        get_current_user
-    ),
-
-    limit: int = Query(
-        default=30,
-        ge=1,
-        le=100,
-    ),
+    user=Depends(get_question_access_user),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
 ):
-    sessions = (
-        await exam_sessions
-        .find({
-            "user_id":
-                user["id"],
-        })
-        .sort(
-            "started_at",
-            -1,
-        )
-        .to_list(limit)
-    )
+    return await exam_domain.history(user=user, skip=skip, limit=limit)
 
-    result = []
 
-    for session in sessions:
-        session = (
-            await expire_if_needed(
-                session
-            )
-        )
+@router.get("/custom-exam/active")
+async def active_exam(user=Depends(get_question_access_user)):
+    return {"exam": await exam_domain.active(user=user)}
 
-        result.append(
-            exam_summary(session)
-        )
 
-    return {
-        "exams": result,
-    }
+@router.post("/custom-exam/preview")
+async def preview_exam(body: ExamStartInput, user=Depends(get_question_access_user)):
+    if body.promotion:
+        raise HTTPException(422, "چالش ارتقا preview عمومی ندارد")
+    taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id, body.lesson, body.topic)
+    try:
+        return await exam_domain.preview(user=user, taxonomy=taxonomy,
+            requested_count=body.count, minutes=body.minutes,
+            output_mode=body.output_mode)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
 
 @router.post(
@@ -1092,7 +748,7 @@ async def start_exam(
     body: ExamStartInput,
 
     user=Depends(
-        get_current_user
+        get_question_access_user
     ),
 ):
     # ⚔️ جریان چالش ارتقا (Spec §۳.۱) — استخر و قواعد کاملاً سرورمحور است؛
@@ -1166,134 +822,15 @@ async def start_exam(
             "expires_ts": document["expires_ts"],
         }
 
-    lesson = (
-        body.lesson.strip()
-    )
+    taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id, body.lesson, body.topic)
+    try:
+        return await exam_domain.create(
+            user=user, taxonomy=taxonomy, requested_count=body.count,
+            minutes=body.minutes, output_mode=body.output_mode,
+            allow_smaller=body.allow_smaller)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
-    topic = (
-        None
-        if (
-            not body.topic
-            or body.topic.strip()
-            == "همه"
-        )
-        else body.topic.strip()
-    )
-
-    query = {
-        "approved": True,
-        "lesson": lesson,
-        # 🌊 C1.5 — آزمون سفارشی فقط از سؤال‌های قابل‌مشاهدهٔ دانشجو
-        # (سراسری + ورودی خودش) ساخته می‌شود؛ enforce در Backend.
-        "intake": {
-            "$in": db.student_intake_filter(
-                (user.get("_db") or {}).get("intake", "")
-            )
-        },
-    }
-
-    if topic:
-        query["topic"] = topic
-
-    questions = (
-        await db.questions
-        .find(query)
-        .to_list(500)
-    )
-
-    questions = [
-        item
-        for item in questions
-        if safe_question(item)
-    ]
-
-    if not questions:
-        raise HTTPException(
-            status_code=404,
-            detail="سؤالی پیدا نشد",
-        )
-
-    random.shuffle(questions)
-
-    selected = questions[
-        :body.count
-    ]
-
-    session_id = (
-        uuid.uuid4()
-        .hex[:16]
-    )
-
-    deadline = (
-        int(time.time())
-        + body.minutes * 60
-        if body.minutes
-        else None
-    )
-
-    document = {
-        "session_id":
-            session_id,
-
-        "user_id":
-            user["id"],
-
-        "lesson":
-            lesson,
-
-        "topic":
-            topic or "همه",
-
-        "question_ids": [
-            text(item.get("_id"))
-            for item in selected
-        ],
-
-        "index":
-            0,
-
-        "minutes":
-            body.minutes,
-
-        "deadline_ts":
-            deadline,
-
-        "correct":
-            0,
-
-        "answered":
-            0,
-
-        "answers":
-            [],
-
-        "status":
-            "active",
-
-        "started_at":
-            utc_now_iso(),
-
-        "finished_at":
-            "",
-    }
-
-    await exam_sessions.insert_one(
-        document
-    )
-
-    return {
-        "session_id":
-            session_id,
-
-        "total":
-            len(selected),
-
-        "minutes":
-            body.minutes,
-
-        "ends_at":
-            deadline,
-    }
 
 
 @router.get(
@@ -1304,7 +841,7 @@ async def exam_next(
     session_id: str,
 
     user=Depends(
-        get_current_user
+        get_question_access_user
     ),
 ):
     session = (
@@ -1313,6 +850,12 @@ async def exam_next(
             user["id"],
         )
     )
+
+    if not session.get("promotion"):
+        try:
+            return await exam_domain.next_question(session_id=session_id, user=user)
+        except QuestionDomainError as exc:
+            _domain_error(exc)
 
     session = (
         await expire_if_needed(
@@ -1462,7 +1005,7 @@ async def exam_answer(
     body: ExamAnswerInput,
 
     user=Depends(
-        get_current_user
+        get_question_access_user
     ),
 ):
     session = (
@@ -1477,6 +1020,14 @@ async def exam_answer(
             session
         )
     )
+
+    # Normal custom exams use the single shared domain. Promotion challenge
+    # keeps its locked Prestige policy below.
+    if not session.get("promotion"):
+        try:
+            return await exam_domain.answer(session_id=session_id, user=user, selected=body.selected)
+        except QuestionDomainError as exc:
+            _domain_error(exc)
 
     # ⚔️ TTL چالش ارتقا (۲۴ساعته) — انقضا = Fail خودکار سرورمحور
     if (
@@ -1736,13 +1287,18 @@ async def abandon_exam(
     session_id: str,
 
     user=Depends(
-        get_current_user
+        get_question_access_user
     ),
 ):
     # ⚔️ رها کردن چالش ارتقا = Fail + کول‌داون (ضدتقلب — Spec §۳.۱)
     sess_doc = await exam_sessions.find_one(
         {"session_id": session_id, "user_id": user["id"],
          "status": "active"})
+    if sess_doc and not sess_doc.get("promotion"):
+        try:
+            return await exam_domain.abandon(session_id=session_id, user=user)
+        except QuestionDomainError as exc:
+            _domain_error(exc)
     result = (
         await exam_sessions
         .update_one(
@@ -1801,18 +1357,26 @@ async def abandon_exam(
     }
 
 
-class QuestionDesignInput(
-    BaseModel
-):
-    lesson: str = Field(
-        min_length=1,
-        max_length=100,
-    )
+@router.get("/custom-exam/{session_id}/pdf")
+async def exam_pdf(session_id: str, mode: str = Query("exam", pattern="^(practice|exam)$"),
+                   user=Depends(get_question_access_user)):
+    try:
+        content, meta = await exam_domain.generate_pdf(session_id=session_id, user=user, mode=mode)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    filename = f"humsyar-exam-{meta['exam_code']}.pdf"
+    return Response(content=content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                             "X-Exam-Session": session_id,
+                             "X-PDF-Generation": meta["generation_id"],
+                             "X-Content-SHA256": meta["sha256"]})
 
-    topic: str = Field(
-        min_length=1,
-        max_length=100,
-    )
+
+class QuestionDesignInput(BaseModel):
+    lesson_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    lesson: str = Field(default="", max_length=100)
+    topic: str = Field(default="", max_length=100)
 
     question: str = Field(
         min_length=10,
@@ -1862,14 +1426,12 @@ def design_data(
             ),
         )
 
-    difficulty = (
-        body.difficulty
-        if body.difficulty
-        in ALLOWED_DIFFICULTIES
-        else "متوسط 🟡"
-    )
+    from question_bank.contracts import canonical_difficulty
+    difficulty = canonical_difficulty(body.difficulty or "medium")
 
     return {
+        "lesson_id": body.lesson_id,
+        "topic_id": body.topic_id,
         "lesson":
             " ".join(
                 body.lesson.split()
@@ -1903,321 +1465,65 @@ def design_data(
 
 
 @router.post("/design")
-async def design(
-    body: QuestionDesignInput,
-
-    user=Depends(
-        get_current_user
-    ),
-):
-    data = design_data(body)
-
-    database_user = user["_db"]
-
-    privileged = (
-        user["id"] == ADMIN_ID
-        or database_user.get(
-            "role"
-        ) in {
-            "admin",
-            "content_admin",
-        }
-    )
-
-    result = (
-        await db.questions
-        .insert_one({
-            **data,
-
-            "creator_id":
-                user["id"],
-
-            # 🏷 Identity v1 — سطح اجتماعی: display_name
-            "creator_name":
-                db.display_name_of(database_user)
-                if isinstance(database_user, Mapping)
-                else "",
-
-            "approved":
-                privileged,
-
-            # 🌊 C1 — scope سوال طراحی‌شده از وب‌اپ:
-            # ادمین ورودی خاص → scope خودش؛ سایر → ورودی کاربر یا سراسری
-            "intake":
-                ((await db.get_scoped_intake(user["id"])) or "")
-                if privileged
-                else (database_user.get("intake", "") or ""),
-
-            "source":
-                "webapp",
-
-            "created_at":
-                utc_now_iso(),
-
-            "attempt_count":
-                0,
-
-            "correct_count":
-                0,
-        })
-    )
-
-    if not privileged:
-        try:
-            collection = (
-                db.client[
-                    "medicalbot"
-                ][
-                    "bot_notifications"
-                ]
-            )
-
-            await collection.insert_one({
-                "type":
-                    "new_question_design",
-
-                "chat_id":
-                    ADMIN_ID,
-
-                "text": (
-                    "🔔 <b>سؤال جدید</b>"
-
-                    f"\n✏️ "
-                    f"{escape(str(database_user.get('name', '')))}"
-
-                    f"\n📚 "
-                    f"{escape(data['lesson'])}"
-                    f" — "
-                    f"{escape(data['topic'])}"
-                ),
-
-                "sent":
-                    False,
-
-                "created_at":
-                    utc_now_iso(),
-            })
-
-        except Exception:
-            pass
-
-    return {
-        "ok": True,
-
-        "question_id":
-            str(
-                result.inserted_id
-            ),
-
-        "auto_approved":
-            privileged,
-
-        "message": (
-            "✅ ثبت شد!"
-            if privileged
-            else
-            "✅ بعد از تأیید ادمین نمایش داده می‌شود."
-        ),
-    }
+async def design(body: QuestionDesignInput, user=Depends(get_question_access_user)):
+    privileged = await db.has_permission(user["id"], "questions.review")
+    try:
+        result = await question_bank.create_question(
+            actor=user, payload=design_data(body),
+            source="web_admin" if privileged else "student_webapp",
+            creator_type="admin" if privileged else "student",
+            auto_approve=False,
+            intake=(await db.get_scoped_intake(user["id"])) if privileged else None)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    return {"ok": True, "question_id": str(result["question"]["_id"]),
+            "auto_approved": False,
+            "status": result["question"]["status"],
+            "message": "✅ سؤال برای بررسی مستقل ارسال شد"}
 
 
 @router.get("/my-designs")
 async def my_designs(
-    user=Depends(
-        get_current_user
-    ),
+    user=Depends(get_question_access_user),
+    skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
 ):
-    documents = (
-        await db.questions
-        .find({
-            "creator_id":
-                user["id"],
-        })
-        .sort(
-            "created_at",
-            -1,
-        )
-        .to_list(100)
-    )
-
-    result = []
-
-    for document in documents:
-        formatted = (
-            safe_question(
-                document
-            )
-        )
-
-        if not formatted:
-            continue
-
-        approved = bool(
-            document.get(
-                "approved"
-            )
-        )
-
-        result.append({
-            **formatted,
-
-            "approved":
-                approved,
-
-            "status": (
-                "approved"
-                if approved
-                else "pending"
-            ),
-
-            "created_at":
-                text(
-                    document.get(
-                        "created_at"
-                    )
-                )[:10],
-
-            "correct":
-                non_negative_int(
-                    document.get(
-                        "correct_answer"
-                    )
-                ),
-
-            "explanation":
-                text(
-                    document.get(
-                        "explanation"
-                    )
-                ),
-        })
-
-    return {
-        "questions": result,
-    }
+    return await question_bank.list_my_contributions(user["id"], skip=skip, limit=limit)
 
 
-@router.put(
-    "/my-designs/{question_id}"
-)
+@router.put("/my-designs/{question_id}")
 async def update_my_design(
-    question_id: str,
-    body: QuestionDesignInput,
-
-    user=Depends(
-        get_current_user
-    ),
+    question_id: str, body: QuestionDesignInput,
+    resubmit: bool = Query(False), user=Depends(get_question_access_user),
 ):
-    if not ObjectId.is_valid(
-        question_id
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "شناسه سؤال "
-                "نامعتبر است"
-            ),
-        )
-
-    existing = (
-        await db.questions.find_one(
-            {
-                "_id":
-                    ObjectId(
-                        question_id
-                    ),
-
-                "creator_id":
-                    user["id"],
-            }
-        )
-    )
-
-    if not existing:
-        raise HTTPException(
-            status_code=404,
-            detail="سؤال پیدا نشد",
-        )
-
-    if existing.get("approved"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "سؤال تأییدشده "
-                "قابل ویرایش نیست"
-            ),
-        )
-
-    await db.questions.update_one(
-        {
-            "_id":
-                existing["_id"],
-        },
-
-        {
-            "$set": {
-                **design_data(body),
-
-                "updated_at":
-                    utc_now_iso(),
-            }
-        },
-    )
-
-    return {
-        "ok": True,
-    }
+    try:
+        document = await question_bank.update_contribution(
+            question_id=question_id, user=user, payload=design_data(body), resubmit=resubmit)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    return {"ok": True, "status": document.get("status"), "version": document.get("version")}
 
 
-@router.delete(
-    "/my-designs/{question_id}"
-)
+@router.post("/my-designs/{question_id}/resubmit")
+async def resubmit_my_design(question_id: str, body: QuestionDesignInput,
+                             user=Depends(get_question_access_user)):
+    try:
+        document = await question_bank.update_contribution(
+            question_id=question_id, user=user, payload=design_data(body), resubmit=True)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    return {"ok": True, "status": document.get("status"), "version": document.get("version")}
+
+
+@router.delete("/my-designs/{question_id}")
 async def delete_my_design(
     question_id: str,
-
-    user=Depends(
-        get_current_user
-    ),
+    user=Depends(get_question_access_user),
 ):
-    if not ObjectId.is_valid(
-        question_id
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "شناسه سؤال "
-                "نامعتبر است"
-            ),
-        )
-
-    result = (
-        await db.questions
-        .delete_one(
-            {
-                "_id":
-                    ObjectId(
-                        question_id
-                    ),
-
-                "creator_id":
-                    user["id"],
-
-                "approved": {
-                    "$ne": True,
-                },
-            }
-        )
-    )
-
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "فقط سؤال تأییدنشده "
-                "قابل حذف است"
-            ),
-        )
-
-    return {
-        "ok": True,
-    }
+    """Compatibility verb: withdraws a contribution without deleting data."""
+    try:
+        document = await question_bank.withdraw_contribution(
+            question_id=question_id, user=user)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    return {"ok": True, "deleted": False, "status": document.get("status"),
+            "message": "سؤال بدون حذف داده از صف خارج شد"}

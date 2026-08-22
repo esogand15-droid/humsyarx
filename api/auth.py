@@ -227,6 +227,14 @@ def resolve_content_intake(user: dict, requested=None) -> str:
     return own
 
 
+async def get_question_access_user(user=Depends(get_current_user)) -> dict:
+    """Single server-side subscription gate for every student Question Bank API."""
+    from subscription import has_access
+    if not await has_access(user["id"]):
+        raise HTTPException(status_code=403, detail="subscription_required")
+    return user
+
+
 async def get_resource_access_user(user=Depends(get_current_user)) -> dict:
     """گیت اشتراک برای «منابع علوم پایه» و «رفرنس‌ها».
 

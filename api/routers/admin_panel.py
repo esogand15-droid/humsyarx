@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from api.auth import get_admin_user
 from database import db
+from question_bank.contracts import approved_query, status_query
 from request_context import current_request_id
 import broadcast_service
 from time_utils import day_bounds_utc, now_utc, parse_gregorian_date, utc_now_iso
@@ -108,8 +109,8 @@ async def stats(admin=Depends(get_admin_user)):
      new_today, total_answers) = await asyncio.gather(
         db.users.count_documents({"approved": True}),
         db.users.count_documents({"approved": False}),
-        db.questions.count_documents({"approved": True}),
-        db.questions.count_documents({"approved": False}),
+        db.questions.count_documents(approved_query()),
+        db.questions.count_documents(status_query("pending")),
         db.tickets.count_documents({"status": "open"}),
         db.content_reports.count_documents({"status": "new"}),
         db.sub_stats(),

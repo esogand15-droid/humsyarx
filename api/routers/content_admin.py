@@ -3,16 +3,32 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import Optional, List
-from api.auth import get_content_admin_user, get_content_global_user, resolve_content_intake
+from api.auth import get_content_admin_user, get_content_global_user, get_current_user, resolve_content_intake
 from api.telegram_send import upload_and_get_file_id
 from api.routers.admin_panel import _audit
 from database import db
 from time_utils import TimeContractError, parse_gregorian_date
+from question_bank import QuestionBankService, QuestionDomainError
+from question_bank.contracts import canonical_difficulty, canonical_status, status_query
 
 router = APIRouter()
+question_bank = QuestionBankService(db)
+
+
+def _qerror(exc: QuestionDomainError):
+    raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message,
+                                          **({"details": exc.details} if exc.details else {})})
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
 GLOBAL_USER = get_content_global_user  # بخش‌های بدون scope (schedule/grades/reports) — رفتار دقیق قبلی
+
+
+async def get_question_reviewer(user=Depends(get_current_user)) -> dict:
+    try:
+        scope = await question_bank.permissions.review_scope(user)
+    except QuestionDomainError as exc:
+        _qerror(exc)
+    return {**user, "_scope": scope}
 
 
 async def _deny_intake(item_intake: str, admin: dict):
@@ -95,59 +111,70 @@ async def overview(admin=Depends(get_content_admin_user),
     return out
 
 @router.get("/questions/pending")
-async def pending_questions(admin=Depends(get_content_admin_user),
-                            intake: Optional[str] = Query(None)):
+async def pending_questions(admin=Depends(get_question_reviewer),
+                            intake: Optional[str] = Query(None),
+                            skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
     iv = resolve_content_intake(admin, intake)
-    docs=await db.questions.find({"approved":False,"intake":iv}).sort("created_at",-1).to_list(100)
-    return {"intake": iv,
-        "questions":[{"id":str(d["_id"]),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
-        "difficulty":d.get("difficulty",""),"question":d.get("question",""),"options":d.get("options",[]),
+    query = {"$and": [status_query("pending"), {"intake": iv}]}
+    total = await db.questions.count_documents(query)
+    docs = await db.questions.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    return {"intake": iv, "total": total, "skip": skip, "limit": limit,
+        "questions":[{"id":str(d["_id"]),"lesson_id":str(d.get("lesson_id") or ""),
+        "topic_id":str(d.get("topic_id") or ""),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
+        "difficulty":canonical_difficulty(d.get("difficulty"), strict=False),"question":d.get("question",""),"options":d.get("options",[]),
         "correct":d.get("correct_answer",0),"explanation":d.get("explanation",""),
-        "creator_name":d.get("creator_name",""),"created_at":d.get("created_at") or None,
-        "intake":d.get("intake",""),
-        "source":d.get("source","bot")} for d in docs]}
+        "creator_name":d.get("creator_name",""),"creator_id":d.get("creator_id"),
+        "creator_type":d.get("creator_type","student"),"created_at":d.get("created_at") or None,
+        "updated_at":d.get("updated_at") or None,"intake":d.get("intake",""),
+        "status":canonical_status(d),"review_reason":d.get("review_reason", ""),
+        "source":d.get("source","system")} for d in docs]}
+
+class QuestionReviewInput(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+
+
+async def _review_question(qid: str, target: str, reason: str, admin: dict):
+    q = await db.get_question_by_id(qid)
+    if not q: raise HTTPException(404, "سؤال پیدا نشد")
+    await _deny_intake(q.get("intake", ""), admin)
+    try:
+        updated = await question_bank.transition(
+            question_id=qid, reviewer=admin, target=target, reason=reason)
+    except QuestionDomainError as exc:
+        _qerror(exc)
+    labels = {"approved": "تأیید سؤال پیشنهادی", "rejected": "رد سؤال پیشنهادی",
+              "needs_changes": "درخواست اصلاح سؤال"}
+    await _audit(admin, labels[target], "Questions",
+        severity="INFO" if target == "approved" else "WARNING",
+        target_id=qid, target_type="question",
+        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
+        before={"status": canonical_status(q)}, after={"status": target, "reason": reason},
+        tags=["سؤال", target, "پنل_وب"])
+    return {"ok": True, "status": target, "version": updated.get("version")}
+
 
 @router.post("/questions/{qid}/approve")
-async def approve_question(qid: str, admin=Depends(get_content_admin_user)):
-    q=await db.get_question_by_id(qid)
-    if not q: raise HTTPException(404)
-    await _deny_intake(q.get("intake",""), admin)
-    await db.approve_question(qid)
-    await _audit(
-        admin, "تأیید سؤال پیشنهادی", "Questions", severity="INFO",
-        target_id=qid, target_type="question",
-        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
-        before={"approved": False}, after={"approved": True},
-        tags=["سؤال", "تأیید", "پنل_وب"],
-    )
-    # db.approve_question منبع واحد پاداش + Inbox + DM طراح است.
-    return {"ok":True}
+async def approve_question(qid: str, body: QuestionReviewInput = None,
+                           admin=Depends(get_question_reviewer)):
+    return await _review_question(qid, "approved", (body or QuestionReviewInput()).reason, admin)
+
 
 @router.post("/questions/{qid}/reject")
-async def reject_question(qid: str, admin=Depends(get_content_admin_user)):
-    q=await db.get_question_by_id(qid)
-    if not q: raise HTTPException(404)
-    await _deny_intake(q.get("intake",""), admin)
-    await db.delete_question(qid)
-    await _audit(
-        admin, "رد و حذف سؤال پیشنهادی", "Questions", severity="WARNING",
-        target_id=qid, target_type="question",
-        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
-        before={"approved": False, "question": q.get("question", "")[:300]},
-        after={"deleted": True}, tags=["سؤال", "رد", "پنل_وب"],
-    )
-    if q.get("source")=="webapp" and q.get("creator_id"):
-        await db.notify_user(
-            q["creator_id"], "question_rejected", title="❌ سؤالت رد شد",
-            body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
-            link="/learn/my-questions", dm=(
-                f"❌ <b>سؤالت رد شد</b>\n\n"
-                f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
-        )
-    return {"ok":True}
+async def reject_question(qid: str, body: QuestionReviewInput,
+                          admin=Depends(get_question_reviewer)):
+    return await _review_question(qid, "rejected", body.reason, admin)
+
+
+@router.post("/questions/{qid}/needs-changes")
+async def needs_changes_question(qid: str, body: QuestionReviewInput,
+                                 admin=Depends(get_question_reviewer)):
+    return await _review_question(qid, "needs_changes", body.reason, admin)
+
 
 # ── 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit) ──
 class QuestionPatch(BaseModel):
+    lesson_id: Optional[str] = None
+    topic_id: Optional[str] = None
     question: Optional[str] = None
     options: Optional[List[str]] = None
     correct: Optional[int] = None                    # ایندکس گزینه‌ی صحیح (۰-مبنا)
@@ -158,57 +185,42 @@ class QuestionPatch(BaseModel):
 
 @router.patch("/questions/{qid}")
 async def patch_question(qid: str, body: QuestionPatch,
-                         admin=Depends(get_content_admin_user)):
-    """ویرایش سؤالِ در انتظار بازبینی — دقیقاً همان scope گیت approve/reject."""
+                         admin=Depends(get_question_reviewer)):
+    """Canonical reviewer edit; permission/scope/version live in the domain."""
     q = await db.get_question_by_id(qid)
-    if not q: raise HTTPException(404)
-    await _deny_intake(q.get("intake",""), admin)
-    if q.get("approved"):
-        raise HTTPException(422, "فقط سؤال‌های در انتظار بازبینی قابل ویرایش‌اند")
-
-    updates = {}
-    if body.question is not None:
-        t = body.question.strip()
-        if len(t) < 5: raise HTTPException(422, "متن سؤال خیلی کوتاه است")
-        updates["question"] = t[:1000]
-    if body.lesson is not None: updates["lesson"] = body.lesson.strip()[:80]
-    if body.topic is not None: updates["topic"] = body.topic.strip()[:80]
-    if body.explanation is not None:
-        updates["explanation"] = body.explanation.strip()[:2000]
-    if body.difficulty is not None:
-        if body.difficulty not in ("easy","medium","hard"):
-            raise HTTPException(422, "سختی نامعتبر است")
-        updates["difficulty"] = body.difficulty
-    if body.options is not None:
-        ops = [str(o).strip()[:300] for o in body.options]
-        ops = [o for o in ops if o]
-        if not (2 <= len(ops) <= 6): raise HTTPException(422, "گزینه‌ها باید بین ۲ تا ۶ باشند")
-        updates["options"] = ops
-        # سازگاری: اگر ایندکس صحیحِ قبلی از محدوده‌ی جدید بیرون افتاد، clamp
-        cur = q.get("correct_answer", 0)
-        if isinstance(cur, int) and cur >= len(ops) and body.correct is None:
-            updates["correct_answer"] = 0
-    if body.correct is not None:
-        final_ops = updates.get("options", q.get("options", []))
-        if not (0 <= body.correct < len(final_ops)):
-            raise HTTPException(422, "گزینه‌ی صحیح خارج از محدوده است")
-        updates["correct_answer"] = body.correct
-
-    if not updates: raise HTTPException(422, "چیزی برای ویرایش نیست")
-    ok = await db.update_question(qid, updates)
-    if not ok: raise HTTPException(500, "ویرایش انجام نشد")
+    if not q:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    payload = body.model_dump(exclude_none=True)
+    if "correct" in payload:
+        payload["correct_answer"] = payload.pop("correct")
+    if not payload:
+        raise HTTPException(422, "چیزی برای ویرایش نیست")
+    try:
+        updated = await question_bank.edit_pending(
+            question_id=qid, reviewer=admin, payload=payload)
+    except QuestionDomainError as exc:
+        _qerror(exc)
     try:
         await db.log_action(
             admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
             await db.get_actor_role_label(admin["id"]),
             "ویرایش سؤال در انتظار بازبینی", "Questions", "admin", "WARNING",
             str(qid), "question", f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
-            None, {k: (v if not isinstance(v, list) else f"{len(v)} گزینه")
-                     for k, v in updates.items()},
+            {"version": q.get("version", 1)},
+            {"version": updated.get("version"), "fields": sorted(payload)},
             "", ["ویرایش_سؤال", "پنل_وب"])
     except Exception:
-        pass
-    return {"ok": True, "changed": list(updates.keys())}
+        # Best-effort compensating rollback guarded by the version written above.
+        restore_keys = ("question", "options", "correct_answer", "difficulty", "explanation",
+                        "content_hash", "lesson_id", "topic_id", "lesson", "topic", "term", "intake", "updated_at")
+        rollback = await db.questions.update_one(
+            {"_id": q["_id"], "version": updated.get("version")},
+            {"$set": {key: q.get(key) for key in restore_keys},
+             "$inc": {"version": -1}, "$pop": {"review_history": 1}})
+        if not rollback.modified_count:
+            raise HTTPException(503, "ثبت حسابرسی ناموفق بود و تغییر هم‌زمان مانع بازگردانی شد")
+        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ ویرایش بازگردانده شد")
+    return {"ok": True, "changed": sorted(payload), "version": updated.get("version")}
 
 # ── 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware + audit) ──
 class QuestionImportItem(BaseModel):
@@ -226,28 +238,12 @@ class QuestionImportBody(BaseModel):
 
 @router.post("/questions/bulk-import")
 async def bulk_import_questions(body: QuestionImportBody, intake: Optional[str] = Query(None),
-                                admin=Depends(get_content_admin_user)):
-    """درون‌ریزی گروهی — تا ۲۰۰ سؤال؛ همان scope گیت approve/reject. آیتم‌های
-    معیوب رد و با متن خطا گزارش می‌شوند؛ بقیه درج می‌شوند."""
-    iv = resolve_content_intake(admin, intake)
-    if not body.items:
-        raise HTTPException(422, "فهرست سؤال‌ها خالی است")
-    res = await db.add_questions_bulk(
-        [it.model_dump() for it in body.items],
-        creator=admin["id"], intake=iv, auto_approve=body.approve)
-    try:
-        await db.log_action(
-            admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
-            await db.get_actor_role_label(admin["id"]),
-            "درون‌ریزی گروهی سؤال", "Questions", "admin", "WARNING",
-            "", "question_bank", f"ورودی {iv or 'سراسری'}",
-            None, {"درج": res["inserted"], "ناموفق": len(res["failed"]),
-                   "حالت": "تأیید مستقیم" if body.approve else "صف بازبینی"},
-            "", ["درون‌ریزی", "پنل_وب"])
-    except Exception:
-        pass
-    return {"ok": True, "inserted": res["inserted"], "failed": res["failed"],
-            "approve": body.approve, "intake": iv}
+                                admin=Depends(get_question_reviewer)):
+    """Retired unsafe path: use owner JSON preview/confirm ingestion."""
+    raise HTTPException(
+        status_code=410,
+        detail={"code": "preview_required",
+                "message": "درون‌ریزی مستقیم غیرفعال است؛ از جریان JSON نسخه‌دار، پیش‌نمایش و تأیید نهایی استفاده کنید"})
 
 @router.get("/schedule")
 async def schedule_list(admin=Depends(GLOBAL_USER), stype: Optional[str]=Query(None)):
@@ -1084,89 +1080,7 @@ async def ref_move_subject_ep(sid: str, body: MoveBody, admin=Depends(GLOBAL_USE
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
     return {"ok":True, "from":info, "to":iv}
 
-@router.post("/qbank/files/{fid}/move")
-async def qbank_move_file_ep(fid: str, body: MoveBody, admin=Depends(GLOBAL_USER)):
-    iv = body.intake or ''
-    if iv and iv not in (await _intakes_active_codes()):
-        raise HTTPException(422, "کد ورودی نامعتبر است")
-    source = await db.get_qbank_file(fid)
-    status, info = await db.qbank_move_file_intake(fid, iv)
-    if status == 'err':
-        if info == 'not_found': raise HTTPException(404, "فایل یافت نشد")
-        duplicate = await db.qbank_files.find_one({
-            'lesson': (source or {}).get('lesson', ''), 'topic': (source or {}).get('topic', ''),
-            'description': (source or {}).get('description', ''), 'intake': iv,
-            '_id': {'$ne': (source or {}).get('_id')}})
-        raise HTTPException(409, {"code": "duplicate_name",
-            "object": (source or {}).get('description') or f"{(source or {}).get('lesson','')} / {(source or {}).get('topic','')}",
-            "destination": iv or "global", "existing_id": str((duplicate or {}).get('_id', '')),
-            "reason": "فایل همسانی در سطل مقصد موجود است"})
-    try:
-        await _audit(admin, "انتقال فایل بانک سؤال به سطل ورودی", "Content",
-            severity="HIGH", target_id=str(fid), target_type="qbank_file",
-            details=f"📦 Move QBank File: {info or 'سراسری'} → {iv or 'سراسری'}",
-            tags=["فورک_محتوا"])
-    except Exception:
-        await db.qbank_move_file_intake(fid, info or '')
-        raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
-    return {"ok":True, "from":info, "to":iv}
-
-# ══════════════════════════════════════════════
-# 🧪 بانک سوال — آپلود و مدیریت فایل
-# ══════════════════════════════════════════════
-
-@router.get("/qbank/files")
-async def qbank_files_ep(lesson: Optional[str]=Query(None), topic: Optional[str]=Query(None),
-                          intake: Optional[str]=Query(None), skip: int = Query(0, ge=0),
-                          limit: int = Query(50, ge=1, le=100),
-                          admin=Depends(get_content_admin_user)):
-    iv = resolve_content_intake(admin, intake)
-    scope = admin.get("_scope") or {}
-    visible_intakes = [iv, ''] if scope.get("kind") == "scoped" else iv
-    items, total = await db.get_qbank_files_page(
-        lesson, topic, intake=visible_intakes, skip=skip, limit=limit)
-    return {"intake": iv, "total": total, "skip": skip, "limit": limit,
-        "has_more": skip + len(items) < total,
-        "files":[{"id":str(f["_id"]),"lesson":f.get("lesson",""),"topic":f.get("topic",""),
-        "description":f.get("description",""),"file_type":f.get("file_type","document"),
-        "intake": f.get("intake") or "",
-        "readonly": (f.get("intake") or '') != iv if scope.get("kind") == "scoped" else False,
-        "downloads":f.get("downloads",0),"upload_date":f.get("upload_date") or None} for f in items]}
-
-@router.post("/qbank/files")
-async def qbank_add_file_ep(lesson: str = Form(...), topic: str = Form(...),
-                             description: str = Form(""), intake: str = Form(""),
-                             file: UploadFile = File(...),
-                             admin=Depends(get_content_admin_user)):
-    iv = resolve_content_intake(admin, intake)
-    raw = await file.read()
-    if len(raw) > 45 * 1024 * 1024: raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
-    ctype = file.content_type or ""
-    ftype = "video" if ctype.startswith("video") else "voice" if ctype.startswith("audio") else "document"
-    file_id = await upload_and_get_file_id(admin["id"], file.filename or "file", raw,
-        ctype or "application/octet-stream")
-    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
-    fid = await db.add_qbank_file(lesson.strip(), topic.strip(), file_id, description.strip(), ftype, intake=iv)
-    await _audit(admin, "افزودن فایل بانک سؤال", "Content", severity="INFO",
-        target_id=str(fid), target_type="qbank_file",
-        target_label=description.strip() or f"{lesson.strip()} — {topic.strip()}",
-        after={"lesson": lesson.strip(), "topic": topic.strip(),
-               "file_type": ftype, "intake": iv},
-        tags=["بانک_سؤال", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":str(fid)}
-
-@router.delete("/qbank/files/{fid}")
-async def qbank_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
-    item = await db.get_qbank_file(fid)
-    if not item: raise HTTPException(404, "فایل بانک سؤال پیدا نشد")
-    await _deny_intake(item.get("intake",""), admin)
-    await db.delete_qbank_file(fid)
-    await _audit(admin, "حذف فایل بانک سؤال", "Content", severity="HIGH",
-        target_id=fid, target_type="qbank_file",
-        target_label=item.get("description", "") or f"{item.get('lesson','')} — {item.get('topic','')}",
-        before={"file_type": item.get("file_type"), "intake": item.get("intake", "")},
-        after={"deleted": True}, tags=["بانک_سؤال", "حذف_فایل", "پنل_وب"])
-    return {"ok":True}
+# Legacy uploaded file-bank routes retired; use structured questions + persistent PDF exams.
 
 # ══════════════════════════════════════════════
 # 🚩 گزارش‌های ایراد (سوال/جزوه)

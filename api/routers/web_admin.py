@@ -52,6 +52,8 @@ import backup as backup_service
 import broadcast_service
 from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
+from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
+from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, status_query
 from time_utils import (
     TimeContractError, canonical_utc, day_bounds_utc, diagnostics as time_diagnostics,
     format_datetime_fa, now_utc, parse_clock_time, parse_gregorian_date,
@@ -59,6 +61,8 @@ from time_utils import (
 )
 
 router = APIRouter()
+question_bank = QuestionBankService(db)
+question_imports = QuestionImportService(db)
 
 OTP_TTL_MIN = 5
 OTP_MAX_ATTEMPTS = 5
@@ -447,7 +451,11 @@ async def overview(user=Depends(_guard_any_admin)):
         jobs["pending_payments"] = db.sub_payment_count_all("pending")
         jobs["sub_stats"] = db.sub_stats()
     if allow("questions.review", "questions.review_scoped"):
-        jobs["pending_questions"] = db.questions.count_documents({"approved": False})
+        q_pending = status_query("pending")
+        if not await db.has_permission(uid, "questions.review"):
+            scoped_intake = await db.get_scoped_intake(uid)
+            q_pending = {"$and": [q_pending, {"intake": scoped_intake or "__missing_scope__"}]}
+        jobs["pending_questions"] = db.questions.count_documents(q_pending)
     if allow("tickets.reply", "tickets.manage"):
         jobs["open_tickets"] = db.tickets.count_documents({"status": "open"})
     if allow("reports.review"):
@@ -1787,7 +1795,7 @@ async def _question_admin(user: dict) -> dict:
 
 @router.get("/questions")
 async def wa_questions_list(
-    status: str = Query("pending", pattern="^(pending|approved|all)$"),
+    status: str = Query("pending", pattern="^(pending|approved|rejected|needs_changes|all)$"),
     intake: Optional[str] = Query(None, max_length=80),
     q: Optional[str] = Query(None, max_length=120),
     lesson: Optional[str] = Query(None, max_length=100),
@@ -1811,18 +1819,22 @@ async def wa_questions_list(
         if intake not in (None, "", iv):
             raise HTTPException(403, "intake_out_of_scope")
     else:
-        iv = intake or ""
-    filt = {"intake": iv}
-    if status == "pending":
-        filt["approved"] = False
-    elif status == "approved":
-        filt["approved"] = True
+        iv = intake if intake is not None else None
+    filt = {"intake": iv} if iv is not None else {}
+    if status != "all":
+        lifecycle = status_query(status)
+        if "$or" in lifecycle:
+            filt["$and"] = [lifecycle]
+        else:
+            filt.update(lifecycle)
     if lesson:
         filt["lesson"] = lesson
     if topic:
         filt["topic"] = topic
     if difficulty:
-        filt["difficulty"] = difficulty
+        key = canonical_difficulty(difficulty)
+        labels = {"easy": "آسان 🟢", "medium": "متوسط 🟡", "hard": "سخت 🔴"}
+        filt["difficulty"] = {"$in": [key, labels[key]]}
     if source:
         filt["source"] = source
     if author and author.strip():
@@ -1852,29 +1864,74 @@ async def wa_questions_list(
     docs = await (db.questions.find(filt)
                   .sort(sort_by, 1 if sort_dir == "asc" else -1)
                   .skip(skip).limit(limit).to_list(limit))
+    can_reject = await db.has_permission(user["id"], "questions.reject")
+    can_edit = await db.has_permission(user["id"], "questions.edit")
     rows = []
     for d in docs:
         attempts = int(d.get("attempt_count") or 0)
         correct = int(d.get("correct_count") or 0)
         rows.append({
-            "id": str(d.get("_id", "")), "lesson": d.get("lesson", ""),
-            "topic": d.get("topic", ""), "difficulty": d.get("difficulty", ""),
+            "id": str(d.get("_id", "")), "lesson_id": str(d.get("lesson_id") or ""),
+            "topic_id": str(d.get("topic_id") or ""), "lesson": d.get("lesson", ""),
+            "topic": d.get("topic", ""), "difficulty": canonical_difficulty(d.get("difficulty"), strict=False),
             "question": d.get("question", ""), "options": d.get("options", []),
             "correct": d.get("correct_answer", 0), "explanation": d.get("explanation", ""),
             "creator_id": d.get("creator_id"), "creator_name": d.get("creator_name", ""),
             "created_at": d.get("created_at") or None, "updated_at": d.get("updated_at") or None,
-            "intake": d.get("intake", ""), "source": d.get("source", "bot"),
-            "approved": bool(d.get("approved")), "attempts": attempts,
+            "intake": d.get("intake", ""), "source": d.get("source", "system"),
+            "creator_type": d.get("creator_type", "student"),
+            "status": canonical_status(d), "approved": canonical_status(d) == "approved",
+            "review_reason": d.get("review_reason", ""), "reviewed_by": d.get("reviewed_by"),
+            "reviewed_at": d.get("reviewed_at"), "version": int(d.get("version") or 1),
+            "attempts": attempts,
             "accuracy": round(correct * 100 / attempts, 1) if attempts else 0,
             "reports": int(d.get("report_count") or 0),
+            "can_approve": canonical_status(d) == "pending" and int(d.get("creator_id") or 0) != user["id"],
+            "can_reject": canonical_status(d) == "pending" and can_reject,
+            "can_edit": canonical_status(d) == "pending" and can_edit,
         })
     return {"questions": rows, "total": total, "skip": skip, "limit": limit,
             "pages": (total + limit - 1) // limit, "status": status, "intake": iv}
 
 
+class WebAdminQuestionCreate(BaseModel):
+    lesson_id: Optional[str] = None
+    topic_id: Optional[str] = None
+    lesson: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=100)
+    difficulty: str = Field(pattern="^(easy|medium|hard)$")
+    question: str = Field(min_length=10, max_length=2000)
+    options: list[str] = Field(min_length=4, max_length=4)
+    correct_answer: int = Field(ge=0, le=3)
+    explanation: str = Field(default="", max_length=4000)
+    intake: Optional[str] = Field(default=None, max_length=80)
+
+
+@router.post("/questions")
+async def wa_question_create(
+    body: WebAdminQuestionCreate,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    actor = await _question_admin(user)
+    try:
+        result = await question_bank.create_question(
+            actor=actor, payload=body.model_dump(), source="web_admin",
+            creator_type="admin", auto_approve=False, intake=body.intake)
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message,
+                                              "details": exc.details})
+    document = result["question"]
+    await _audit(user["id"], "ساخت سؤال و ارسال به بازبینی مستقل", severity="INFO",
+                 target_type="question", target_id=str(document["_id"]),
+                 target_label=document.get("question", "")[:100],
+                 after={"status": "pending", "intake": document.get("intake", "")},
+                 tags=["بانک_سؤال", "ساخت", "بازبینی_مستقل"])
+    return {"ok": True, "question_id": str(document["_id"]), "status": "pending"}
+
+
 @router.get("/exports/questions.csv")
 async def export_questions_csv(
-    status: str = Query("pending", pattern="^(pending|approved|all)$"),
+    status: str = Query("pending", pattern="^(pending|approved|rejected|needs_changes|all)$"),
     intake: Optional[str] = Query(None), q: Optional[str] = Query(None),
     lesson: Optional[str] = Query(None), topic: Optional[str] = Query(None),
     difficulty: Optional[str] = Query(None), source: Optional[str] = Query(None),
@@ -1916,6 +1973,23 @@ async def export_questions_csv(
                              headers={"Content-Disposition": "attachment; filename=humsyar-questions.csv"})
 
 
+@router.get("/questions/taxonomy")
+async def wa_question_taxonomy(
+    intake: Optional[str] = Query(None, max_length=80),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    scope = await _question_scope_context(user)
+    if scope["kind"] == "scoped":
+        if intake not in (None, "", scope["intake"]):
+            raise HTTPException(403, "intake_out_of_scope")
+        visible = [scope["intake"], ""]
+    else:
+        visible = [intake, ""] if intake else None
+    return {"lessons": await question_bank.taxonomy_tree(
+        visible_intakes=visible, only_with_questions=False),
+        "intake": scope.get("intake") if scope["kind"] == "scoped" else intake}
+
+
 @router.get("/questions/intakes")
 async def wa_question_intakes(
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
@@ -1929,29 +2003,38 @@ async def wa_questions_pending(
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
 ):
     return await content_api.pending_questions(
-        intake=intake, admin=await _question_admin(user))
+        intake=intake, skip=0, limit=100, admin=await _question_admin(user))
 
 
 @router.post("/questions/{qid}/approve")
 async def wa_question_approve(
-    qid: str,
+    qid: str, body: content_api.QuestionReviewInput = None,
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
 ):
-    return await content_api.approve_question(qid=qid, admin=await _question_admin(user))
+    return await content_api.approve_question(qid=qid, body=body, admin=await _question_admin(user))
 
 
 @router.post("/questions/{qid}/reject")
 async def wa_question_reject(
-    qid: str,
-    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+    qid: str, body: content_api.QuestionReviewInput,
+    user=Depends(_perm_any("questions.reject", "questions.review")),
 ):
-    return await content_api.reject_question(qid=qid, admin=await _question_admin(user))
+    return await content_api.reject_question(qid=qid, body=body, admin=await _question_admin(user))
+
+
+@router.post("/questions/{qid}/needs-changes")
+async def wa_question_needs_changes(
+    qid: str, body: content_api.QuestionReviewInput,
+    user=Depends(_perm_any("questions.reject", "questions.review")),
+):
+    return await content_api.needs_changes_question(qid=qid, body=body,
+                                                     admin=await _question_admin(user))
 
 
 @router.patch("/questions/{qid}")
 async def wa_question_patch(
     qid: str, body: content_api.QuestionPatch,
-    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+    user=Depends(_perm_any("questions.edit", "questions.review", "questions.review_scoped")),
 ):
     return await content_api.patch_question(
         qid=qid, body=body, admin=await _question_admin(user))
@@ -1968,9 +2051,10 @@ async def wa_questions_import(
 
 
 class QuestionsBulk(BaseModel):
-    action: str           # approve | reject | metadata
+    action: str           # approve | reject | needs_changes | metadata
     ids: list[str]
     patch: Optional[dict] = None
+    reason: str = ""
 
 
 @router.post("/questions/bulk")
@@ -1978,13 +2062,18 @@ async def questions_bulk(
     body: QuestionsBulk,
     user=Depends(_perm_any("questions.review", "questions.review_scoped")),
 ):
-    """⚡ تأیید/رد گروهی سؤال‌های پیشنهادی — معناشناسی دقیقاً مثل مسیر تکی:
-    approve → db.approve_question ؛ reject → db.delete_question + اطلاع به طراح (outbox)."""
+    """تغییر گروهی با همان lifecycle نرم، permission و scope مسیر تکی."""
     ids = [str(i) for i in (body.ids or [])][:100]
     if not ids:
         raise HTTPException(400, "لیست سؤال‌ها خالی است")
-    if body.action not in ("approve", "reject", "metadata"):
+    if body.action not in ("approve", "reject", "needs_changes", "metadata"):
         raise HTTPException(400, "اکشن نامعتبر است")
+    if body.action in ("reject", "needs_changes") and not await db.has_permission(user["id"], "questions.reject"):
+        raise HTTPException(403, "questions.reject required")
+    if body.action == "metadata" and not await db.has_permission(user["id"], "questions.edit"):
+        raise HTTPException(403, "questions.edit required")
+    if body.action in ("reject", "needs_changes") and len(body.reason.strip()) < 3:
+        raise HTTPException(422, "دلیل بررسی الزامی است")
     patch_body = None
     if body.action == "metadata":
         allowed = {key: value for key, value in (body.patch or {}).items()
@@ -2000,40 +2089,144 @@ async def questions_bulk(
             q = await db.get_question_by_id(qid)
             if not q:
                 skipped.append({"id": qid, "reason": "question_not_found"}); continue
-            if q.get("approved"):
+            if canonical_status(q) == "approved":
                 skipped.append({"id": qid, "reason": "already_approved"}); continue
             # scope مستقل permission سؤال؛ نقش سفارشی مجبور به content.manage نیست.
             if (scope.get("kind") == "scoped"
                     and (q.get("intake") or "") != (scope.get("intake") or "")):
                 skipped.append({"id": qid, "reason": "intake_out_of_scope"}); continue
             if body.action == "approve":
-                # approve_question منبع واحد پاداش + اعلان طراح است.
-                await db.approve_question(qid)
+                await question_bank.transition(question_id=qid, reviewer=user,
+                                               target="approved", reason=body.reason)
             elif body.action == "metadata":
                 await content_api.patch_question(qid=qid, body=patch_body, admin=question_admin)
             else:
-                await db.delete_question(qid)
-                if q.get("source") == "webapp" and q.get("creator_id"):
-                    await db.notify_user(
-                        q["creator_id"], "question_rejected",
-                        title="❌ سؤالت رد شد",
-                        body=f"📚 {q.get('lesson','')} — {q.get('topic','')}",
-                        link="/learn/my-questions",
-                        dm=(f"❌ <b>سؤالت رد شد</b>\n\n"
-                            f"📚 {q.get('lesson','')} — {q.get('topic','')}"),
-                    )
+                await question_bank.transition(question_id=qid, reviewer=user,
+                                               target=body.action, reason=body.reason)
             succeeded.append(qid)
+        except QuestionDomainError as exc:
+            skipped.append({"id": qid, "reason": exc.code})
         except Exception:
             failed.append({"id": qid, "error": "operation_failed"})
-    fa = {"approve": "تأیید گروهی", "reject": "رد گروهی", "metadata": "ویرایش گروهی metadata"}
+    fa = {"approve": "تأیید گروهی", "reject": "رد گروهی",
+          "needs_changes": "درخواست اصلاح گروهی", "metadata": "ویرایش گروهی metadata"}
     await _audit(user["id"], f"{fa[body.action]} سؤال‌ها ({len(succeeded)} مورد)",
                  severity="INFO", target_type="question_batch", target_label=f"{len(ids)} سؤال",
-                 after={"action": body.action, "requested": len(ids),
+                 after={"action": body.action, "requested": len(ids), "reason": body.reason,
                         "patch_fields": list((body.patch or {}).keys()) if body.action == "metadata" else [],
                         "succeeded": len(succeeded), "skipped": len(skipped), "failed": len(failed)},
                  tags=["bulk_questions", "پنل_وب"])
     return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
             "skipped": skipped, "failed": failed}
+
+
+# ── Question Bank JSON ingestion (owner-only, preview-first) ──────
+@router.get("/questions/import/prompt")
+async def question_import_prompt(user=Depends(get_admin_user)):
+    return question_imports.prompt()
+
+
+@router.post("/questions/import/upload")
+async def question_import_upload(file: UploadFile = File(...), user=Depends(get_admin_user)):
+    raw = await file.read()
+    try:
+        preview = await question_imports.create_preview(
+            admin=user, raw=raw, file_name=file.filename or "questions.json")
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "بارگذاری JSON بانک سؤال برای پیش‌نمایش", severity="HIGH",
+                 target_type="question_import", target_id=preview["job_id"],
+                 target_label=file.filename or "questions.json",
+                 after={"schema_version": preview["schema_version"], **preview["counts"]},
+                 tags=["بانک_سؤال", "درون‌ریزی", "پیش‌نمایش"])
+    return preview
+
+
+@router.get("/questions/import/{job_id}")
+async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
+    try:
+        preview = await question_imports.preview(job_id)
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    job = await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]})
+    if not job: raise HTTPException(404, "job پیدا نشد")
+    return preview
+
+
+@router.get("/questions/import/{job_id}/items")
+async def question_import_items(job_id: str, classification: Optional[str] = Query(None),
+                                skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                                user=Depends(get_admin_user)):
+    if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
+        raise HTTPException(404, "job پیدا نشد")
+    return await question_imports.list_items(job_id, classification=classification, skip=skip, limit=limit)
+
+
+class ImportMapInput(BaseModel):
+    lesson_id: str
+    topic_id: str
+
+
+@router.patch("/questions/import/{job_id}/items/{item_id}/mapping")
+async def question_import_mapping(job_id: str, item_id: str, body: ImportMapInput,
+                                  user=Depends(get_admin_user)):
+    if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
+        raise HTTPException(404, "job پیدا نشد")
+    try:
+        result = await question_imports.map_item(job_id=job_id, item_id=item_id,
+                                                 lesson_id=body.lesson_id, topic_id=body.topic_id)
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "نگاشت taxonomy ردیف import سؤال", severity="HIGH",
+                 target_type="question_import_item", target_id=item_id,
+                 after={"job_id": job_id, "lesson_id": body.lesson_id, "topic_id": body.topic_id,
+                        "classification": result.get("classification")},
+                 tags=["بانک_سؤال", "درون‌ریزی", "نگاشت"])
+    return result
+
+
+class ImportDecisionInput(BaseModel):
+    decision: str = Field(pattern="^(import|skip)$")
+
+
+@router.patch("/questions/import/{job_id}/items/{item_id}/decision")
+async def question_import_decision(job_id: str, item_id: str, body: ImportDecisionInput,
+                                   user=Depends(get_admin_user)):
+    if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
+        raise HTTPException(404, "job پیدا نشد")
+    try:
+        result = await question_imports.set_decision(job_id=job_id, item_id=item_id,
+                                                      decision=body.decision)
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "تصمیم ردیف import سؤال", severity="HIGH",
+                 target_type="question_import_item", target_id=item_id,
+                 after={"job_id": job_id, "decision": body.decision},
+                 tags=["بانک_سؤال", "درون‌ریزی", "تصمیم"])
+    return result
+
+
+@router.post("/questions/import/{job_id}/confirm")
+async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
+    try:
+        result = await question_imports.confirm(job_id=job_id, admin=user)
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "تأیید نهایی درون‌ریزی بانک سؤال", severity="CRITICAL",
+                 target_type="question_import", target_id=job_id, target_label=job_id,
+                 after={"imported": result.get("imported", 0), "skipped": result.get("skipped", 0),
+                        "failed": result.get("failed", 0), "idempotent": result.get("idempotent", False)},
+                 tags=["بانک_سؤال", "درون‌ریزی", "تأیید_نهایی"])
+    return result
+
+
+@router.post("/questions/import/{job_id}/cancel")
+async def question_import_cancel(job_id: str, user=Depends(get_admin_user)):
+    try: result = await question_imports.cancel(job_id=job_id, admin_id=user["id"])
+    except QuestionDomainError as exc: raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "لغو درون‌ریزی بانک سؤال", severity="INFO",
+                 target_type="question_import", target_id=job_id, target_label=job_id)
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2473,7 +2666,7 @@ async def exams_stats(user=Depends(_perm("schedules.manage"))):
     except Exception:
         pass
     try:
-        out["questions_total"] = await db.questions.count_documents({"approved": True})
+        out["questions_total"] = await db.questions.count_documents(approved_query())
     except Exception:
         pass
     return out
@@ -2692,7 +2885,7 @@ async def wa_content_impact(
 @router.get("/content/history")
 async def content_history(
     target_id: str = Query(..., min_length=1, max_length=80),
-    target_type: str = Query(..., pattern="^(lesson|session|content_item|reference_subject|reference_book|reference_file|qbank_file)$"),
+    target_type: str = Query(..., pattern="^(lesson|session|content_item|reference_subject|reference_book|reference_file)$"),
     limit: int = Query(20, ge=1, le=50),
     admin=Depends(get_content_admin_user),
 ):
@@ -2709,7 +2902,7 @@ async def content_history(
     elif target_type == "reference_file":
         item = await db.ref_get_file(target_id); item_intake = await db.ref_file_intake(target_id)
     else:
-        item = await db.get_qbank_file(target_id); item_intake = (item or {}).get("intake") or ""
+        raise HTTPException(422, "نوع محتوا پشتیبانی نمی‌شود")
     if not item:
         raise HTTPException(404, "محتوا پیدا نشد")
     scope = admin.get("_scope") or await db.get_content_scope(admin["id"])
@@ -3488,7 +3681,7 @@ async def user_relation_list(
         if section == "tickets": base.update({"title": doc.get("subject", ""), "status": doc.get("status", ""), "at": doc.get("created_at", "")})
         elif section == "grades": base.update({"title": doc.get("lesson", ""), "detail": doc.get("exam_title", ""), "value": doc.get("score"), "at": doc.get("exam_date", "")})
         elif section == "answers": base.update({"title": str(doc.get("question_id", "")), "status": "correct" if doc.get("is_correct") else "wrong", "at": doc.get("answered_at", "")})
-        elif section == "questions": base.update({"title": (doc.get("question") or "")[:220], "detail": f"{doc.get('lesson','')} · {doc.get('topic','')}", "status": "approved" if doc.get("approved") else "pending", "at": doc.get("created_at", "")})
+        elif section == "questions": base.update({"title": (doc.get("question") or "")[:220], "detail": f"{doc.get('lesson','')} · {doc.get('topic','')}", "status": canonical_status(doc), "at": doc.get("created_at", "")})
         elif section == "exams": base.update({"title": doc.get("lesson") or "آزمون سفارشی", "detail": doc.get("topic", ""), "status": doc.get("status", ""), "value": doc.get("correct", 0), "at": doc.get("started_at", "")})
         elif section == "notifications": base.update({"title": doc.get("title", ""), "detail": doc.get("body", ""), "status": "read" if doc.get("read") else "unread", "at": doc.get("created_at", "")})
         elif section == "prestige": base.update({"title": doc.get("title") or doc.get("type", ""), "detail": doc.get("detail") or {}, "at": doc.get("at", "")})

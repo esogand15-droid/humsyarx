@@ -7,13 +7,16 @@
 import os
 import logging
 import asyncio
-import difflib
 from datetime import datetime, timedelta
 from html import escape
 from urllib.parse import quote
 from bson import ObjectId
 import motor.motor_asyncio
 from time_utils import today_tehran, utc_now_iso
+from question_bank.contracts import (
+    DIFFICULTY_LABELS, and_query, approved_query, canonical_difficulty,
+    canonical_status, status_query,
+)
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
@@ -146,8 +149,7 @@ class DBContent:
         محتوای جدیدی که هنوز برای آن نوتیف ارسال نشده.
         FIX جدید: علاوه بر bs_content (منابع علوم‌پایه)، فایل‌های
         رفرنس (ref_files) هم اضافه شدند — طبق تصمیم صریح ادمین.
-        بانک سوال (qbank_files) عمداً اضافه نشده و وارد این سیستم
-        نمی‌شود. هر آیتم با کلید داخلی '_source' مشخص می‌شود که از
+        هر آیتم با کلید داخلی '_source' مشخص می‌شود که از
         کدام کالکشن آمده، تا هم متن نوتیف و هم علامت‌گذاری نهایی
         بدانند با کدام کالکشن طرفند.
         🌊 C1.5 — کلید '_intake' هم به هر آیتم متصل می‌شود (از طریق
@@ -707,119 +709,8 @@ class DBContent:
 
 
     # ══════════════════════════════════════════════════
-    #  بانک سوال
-    # ══════════════════════════════════════════════════
-
-    async def add_qbank_file(self, lesson: str, topic: str, file_id: str,
-                             description: str, file_type: str = 'document',
-                             intake: str = ''):
-        r = await self.qbank_files.insert_one({
-            'lesson': lesson, 'topic': topic, 'file_id': file_id,
-            'file_type': file_type, 'description': description,
-            'intake': intake or '',
-            'upload_date': utc_now_iso(), 'downloads': 0,
-        })
-        return r.inserted_id
-
-
-    async def get_qbank_files(self, lesson: str = None, topic: str = None,
-                              intake=None):
-        q = {}
-        if lesson: q['lesson'] = lesson
-        if topic:  q['topic']  = topic
-        q.update(self._intake_q(intake))
-        return await self.qbank_files.find(q).sort('upload_date', -1).to_list(100)
-
-
-    async def get_qbank_files_page(self, lesson: str = None, topic: str = None,
-                                   intake=None, skip: int = 0, limit: int = 50):
-        """Server-paginated admin listing without changing student/Bot resolvers."""
-        query = {}
-        if lesson: query['lesson'] = lesson
-        if topic: query['topic'] = topic
-        query.update(self._intake_q(intake))
-        total = await self.qbank_files.count_documents(query)
-        items = await self.qbank_files.find(query).sort('upload_date', -1).skip(skip).limit(limit).to_list(limit)
-        return items, total
-
-
-    async def get_qbank_file(self, fid: str):
-        try:
-            return await self.qbank_files.find_one({'_id': ObjectId(fid)})
-        except Exception:
-            return None
-
-
-    async def inc_qbank_download(self, fid: str, uid: int):
-        try:
-            await self.qbank_files.update_one({'_id': ObjectId(fid)}, {'$inc': {'downloads': 1}})
-        except Exception:
-            pass
-        first_time = False
-        try:
-            first_time = (await self.stats_col.count_documents(
-                {'user_id': uid, 'action': 'qbank_download',
-                 'data.file_id': str(fid)})) == 0
-        except Exception:
-            pass
-        await self.log(uid, 'qbank_download', {'file_id': fid})
-        try:
-            await self.prestige_event(uid, 'file_download',
-                                      {'first_time': first_time})
-        except Exception:
-            pass
-
-
-    async def delete_qbank_file(self, fid: str):
-        try:
-            await self.qbank_files.delete_one({'_id': ObjectId(fid)})
-        except Exception:
-            pass
-
-
-    # ══════════════════════════════════════════════════
     #  سوالات تستی
     # ══════════════════════════════════════════════════
-
-    async def add_question(self, lesson: str, topic: str, difficulty: str,
-                           question: str, options: list, correct: int,
-                           explanation: str, creator: int, auto_approve: bool = False,
-                           chapter: str = '', tags: list = None,
-                           question_image: str = None, answer_image: str = None,
-                           intake: str = ''):
-        """
-        FIX/بهبود (بانک سوالات حرفه‌ای): فیلدهای جدید و اختیاری اضافه شد —
-        chapter (فصل)، tags (تگ‌ها)، question_image/answer_image (شناسه
-        فایل تصویر در تلگرام). همه‌ی این‌ها اختیاری و ۱۰۰٪ سازگار با
-        نسخه‌ی قبلی هستند: هر فراخوانی قدیمی add_question بدون این
-        آرگومان‌ها دقیقاً مثل قبل کار می‌کند.
-        """
-        r = await self.questions.insert_one({
-            'lesson': lesson, 'topic': topic, 'difficulty': difficulty,
-            'chapter': chapter or '', 'tags': tags or [],
-            'question': question, 'options': options, 'correct_answer': correct,
-            'explanation': explanation, 'creator_id': creator,
-            'question_image': question_image, 'answer_image': answer_image,
-            'intake': intake or '',
-            'approved': auto_approve, 'created_at': utc_now_iso(),
-            'attempt_count': 0, 'correct_count': 0,
-        })
-        return r.inserted_id
-
-
-    async def get_questions(self, lesson: str = None, topic: str = None,
-                            difficulty: str = None, limit: int = 1,
-                            exclude: list = None, intake=None):
-        q = {'approved': True}
-        if lesson:    q['lesson'] = lesson
-        if topic and topic != 'همه': q['topic'] = topic
-        if difficulty: q['difficulty'] = difficulty
-        q.update(self._intake_q(intake))
-        if exclude:
-            try: q['_id'] = {'$nin': [ObjectId(i) for i in exclude]}
-            except Exception: pass
-        return await self.questions.find(q).limit(limit).to_list(limit)
-
 
     async def search_questions_text(self, query_text: str, limit: int = 10,
                                     intake=None) -> list:
@@ -831,51 +722,7 @@ class DBContent:
             return []
         rx = {'$regex': query_text, '$options': 'i'}
         return await self.questions.find(
-            dict({'approved': True, '$or': [{'question': rx}, {'explanation': rx}]},
-                 **self._intake_q(intake))
-        ).limit(limit).to_list(limit)
-
-
-    # ══════════════════════════════════════════════════
-    #  ⚠️ قابلیتِ جدید: تشخیصِ سوالِ تکراری قبل از ثبت. عمداً بدونِ هوش
-    #  مصنوعی پیاده شده (فقط شباهتِ متنیِ محلی با difflib) — چون این یه
-    #  چکِ کیفیِ مهمه که نباید هیچ‌وقت به دردسترس‌بودنِ AI وابسته باشه؛
-    #  حتی اگه سرویسِ AI کاملاً قطع باشه، این قابلیت بدونِ کم‌وکاستی کار
-    #  می‌کنه.
-    # ══════════════════════════════════════════════════
-
-    async def find_similar_questions(self, lesson: str, topic: str, text: str,
-                                      threshold: float = 0.72, limit: int = 3) -> list:
-        if not text:
-            return []
-        candidates = await self.questions.find(
-            {'lesson': lesson, 'topic': topic}, {'question': 1, 'options': 1, 'correct_answer': 1}
-        ).to_list(500)
-        scored = []
-        norm = text.strip().lower()
-        for c in candidates:
-            other = (c.get('question') or '').strip().lower()
-            if not other:
-                continue
-            ratio = difflib.SequenceMatcher(None, norm, other).ratio()
-            if ratio >= threshold:
-                scored.append((ratio, c))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [{'ratio': r, **c} for r, c in scored[:limit]]
-
-
-    async def get_weak_questions(self, uid: int, limit: int = 1):
-        user = await self.get_user(uid)
-        weak = user.get('weak_topics', []) if user else []
-        # 🌊 C1 — حتی سوالات ضعف هم در همان scope ورودی دانشجو هستند
-        sf = self._intake_q(self.student_intake_filter(
-            (user or {}).get('intake', '')))
-        if not weak: return await self.get_questions(
-            limit=limit, intake=self.student_intake_filter(
-                (user or {}).get('intake', '')))
-        q = {'approved': True, 'topic': {'$in': weak}}
-        q.update(sf)
-        return await self.questions.find(q
+            and_query(approved_query(), {'$or': [{'question': rx}, {'explanation': rx}]}, self._intake_q(intake))
         ).limit(limit).to_list(limit)
 
 
@@ -894,7 +741,7 @@ class DBContent:
         عوض می‌شود و یک دور کامل بانک سوال طی می‌شود.
         """
         q = await self.questions.find(
-            {'approved': True}
+            approved_query()
         ).sort('last_daily_sent', 1).limit(1).to_list(1)
         if not q:
             return None
@@ -915,7 +762,7 @@ class DBContent:
         """درس‌هایی که واقعاً در بانک سوالِ تأییدشده سوال دارند.
         🌊 C1.5 — intake اختیاری: None=رفتار قدیمی، لیست=scope دید دانشجو."""
         return sorted([l for l in await self.questions.distinct(
-            'lesson', dict({'approved': True}, **self._intake_q(intake))) if l])
+            'lesson', and_query(approved_query(), self._intake_q(intake))) if l])
 
 
     async def get_qbank_chapters(self, lesson: str, intake=None) -> list:
@@ -927,9 +774,7 @@ class DBContent:
         🌊 C1.5 — intake اختیاری (None=رفتار قدیمی).
         """
         chapters = await self.questions.distinct(
-            'chapter', dict({'approved': True, 'lesson': lesson,
-                             'chapter': {'$nin': [None, '']}},
-                            **self._intake_q(intake))
+            'chapter', and_query(approved_query(), {'lesson': lesson, 'chapter': {'$nin': [None, '']}}, self._intake_q(intake))
         )
         return sorted([c for c in chapters if c])
 
@@ -937,7 +782,7 @@ class DBContent:
     async def get_qbank_topics(self, lesson: str, chapter: str = None, intake=None) -> list:
         """مباحث موجود برای درس (و در صورت انتخاب، فصل) — فقط مباحث دارای سوال.
         🌊 C1.5 — intake اختیاری (None=رفتار قدیمی)."""
-        match = dict({'approved': True, 'lesson': lesson}, **self._intake_q(intake))
+        match = and_query(approved_query(), {'lesson': lesson}, self._intake_q(intake))
         if chapter:
             match['chapter'] = chapter
         topics = await self.questions.distinct('topic', match)
@@ -948,7 +793,7 @@ class DBContent:
                                      intake=None) -> list:
         """سطوح سختیِ واقعاً موجود برای این فیلتر (برای مرحله‌ی اختیاری انتخاب سختی).
         🌊 C1.5 — intake اختیاری (None=رفتار قدیمی)."""
-        match = dict({'approved': True, 'lesson': lesson}, **self._intake_q(intake))
+        match = and_query(approved_query(), {'lesson': lesson}, self._intake_q(intake))
         if chapter: match['chapter'] = chapter
         if topic and topic != 'همه': match['topic'] = topic
         diffs = await self.questions.distinct('difficulty', match)
@@ -969,11 +814,12 @@ class DBContent:
                      tags=None, exclude_ids=None, intake=None) -> dict:
         # 🌊 C1.5 — intake اختیاری: None=بدون فیلتر (ادمین/داخلی)،
         # لیست student_intake_filter = سوالات سراسری + ورودی خود دانشجو
-        match = {'approved': True, 'lesson': lesson}
-        match.update(self._intake_q(intake))
+        match = and_query(approved_query(), {'lesson': lesson}, self._intake_q(intake))
         if chapter: match['chapter'] = chapter
         if topic and topic != 'همه': match['topic'] = topic
-        if difficulty: match['difficulty'] = difficulty
+        if difficulty:
+            key = canonical_difficulty(difficulty)
+            match['difficulty'] = {'$in': [key, DIFFICULTY_LABELS[key]]}
         if tags: match['tags'] = {'$in': tags}
         if exclude_ids:
             try:
@@ -1014,113 +860,6 @@ class DBContent:
             return {}
         docs = await self.users.find({'user_id': {'$in': list(set(uids))}}).to_list(len(set(uids)))
         return {d['user_id']: d.get('name', '') for d in docs}
-
-
-    async def pending_questions(self):
-        return await self.questions.find({'approved': False}).to_list(50)
-
-
-    async def approve_question(self, qid: str):
-        qdoc = None
-        try:
-            qdoc = await self.questions.find_one({'_id': ObjectId(qid)})
-            was_approved = bool((qdoc or {}).get('approved'))
-            await self.questions.update_one({'_id': ObjectId(qid)}, {'$set': {'approved': True}})
-        except Exception:
-            was_approved = True
-        # 👑 P1 — پاداش طراح سؤال (فقط کاربر واقعی و فقط در گذار اول به تأیید)
-        # 🧠 N1.2 — سینک‌فیکس: رویداد موجود، اما خبر کاربری نداشت (نه DM
-        # نه Inbox). خبر + پاداش از همین تک‌گذار خارج می‌شود (تک‌منبع).
-        try:
-            creator = (qdoc or {}).get('creator_id')
-            ctype = (qdoc or {}).get('creator_type') or ''
-            if not was_approved and creator and ctype not in ('bot', 'ai'):
-                await self.prestige_event(int(creator), 'question_approved',
-                                          {'qid': str(qid)})
-        except Exception:
-            pass
-        # 🧠 N1.2 — خبر در try جدا: شکست XP نباید اعلان را ببلعد
-        try:
-            creator = (qdoc or {}).get('creator_id')
-            ctype = (qdoc or {}).get('creator_type') or ''
-            if not was_approved and creator and ctype not in ('bot', 'ai'):
-                qlink = f'/learn/my-questions?hl={qid}'
-                await self.notify_user(int(creator), 'question_approved',
-                    title='✍️ سؤالت تأیید شد!',
-                    body='سؤال پیشنهادیت به بانک سؤال اضافه شد '
-                         '— از مشارکتت ممنونیم 💚',
-                    link=qlink,
-                    dm=('✍️ <b>سؤالت تأیید شد!</b>\n\n'
-                        'سؤال پیشنهادیت به بانک سؤال اضافه شد '
-                        '— از مشارکتت ممنونیم 💚'))
-        except Exception:
-            pass
-
-
-    async def delete_question(self, qid: str):
-        try:
-            await self.questions.delete_one({'_id': ObjectId(qid)})
-        except Exception: pass
-
-
-    async def add_questions_bulk(self, items: list, creator: int,
-                                 intake: str = '', auto_approve: bool = False) -> dict:
-        """🌊 موج Q-Import — درج گروهی سؤال (مصرف: درون‌ریزی وب‌ادمین).
-        هر آیتم با همان اعتبارسنجی add_question تک‌تکی: متن ≥۵، گزینه‌ها ۲..۶،
-        ایندکس صحیح داخل محدوده، سختی easy|medium|hard. آیتم‌های معیوب رد و
-        گزارش می‌شوند و بقیه درج می‌شوند (تراکنش همه‌یا‌هیچ نیست — گزارش دقیق).
-        خروجی: {inserted, failed:[{i, error}]}"""
-        docs, failed = [], []
-        for i, it in enumerate(items or []):
-            try:
-                q   = (it.get('question') or '').strip()
-                ops = [str(o).strip()[:300] for o in (it.get('options') or [])]
-                ops = [o for o in ops if o]
-                cor = it.get('correct', 0)
-                dif = (it.get('difficulty') or '').strip()
-                if len(q) < 5: raise ValueError('متن سؤال خیلی کوتاه است')
-                if not (2 <= len(ops) <= 6): raise ValueError('گزینه‌ها باید بین ۲ تا ۶ باشند')
-                if not isinstance(cor, int) or not (0 <= cor < len(ops)):
-                    raise ValueError('گزینه‌ی صحیح خارج از محدوده است')
-                if dif not in ('easy', 'medium', 'hard'):
-                    raise ValueError('سختی نامعتبر است (easy|medium|hard)')
-                docs.append({
-                    'lesson': (it.get('lesson') or '').strip()[:80],
-                    'topic': (it.get('topic') or '').strip()[:80],
-                    'difficulty': dif, 'chapter': '', 'tags': [],
-                    'question': q[:1000], 'options': ops, 'correct_answer': cor,
-                    'explanation': (it.get('explanation') or '').strip()[:2000],
-                    'creator_id': creator,
-                    'question_image': None, 'answer_image': None,
-                    'intake': intake or '', 'source': 'web_import',
-                    'approved': bool(auto_approve),
-                    'created_at': utc_now_iso(),
-                    'attempt_count': 0, 'correct_count': 0,
-                })
-            except Exception as e:
-                failed.append({'i': i, 'error': str(e)})
-        inserted = 0
-        if docs:
-            r = await self.questions.insert_many(docs)
-            inserted = len(getattr(r, 'inserted_ids', docs))
-        return {'inserted': inserted, 'failed': failed}
-
-
-    async def update_question(self, qid: str, updates: dict) -> bool:
-        """🌊 موج Q-Editor — ویرایش whitelistی سؤال (افزودنی؛ مصرف: وب‌ادمین
-        «ویرایش پیش از تأیید»). فقط فیلدهای محتوایی قابل تغییرند — هویت
-        سازنده/وضعیت تأیید/intake از این مسیر دست‌نخورده می‌ماند."""
-        allowed = {'question', 'options', 'correct_answer', 'explanation',
-                   'difficulty', 'lesson', 'topic'}
-        safe = {k: v for k, v in (updates or {}).items() if k in allowed}
-        if not safe:
-            return False
-        try:
-            r = await self.questions.update_one({'_id': ObjectId(qid)},
-                                                {'$set': safe})
-            return getattr(r, 'modified_count', 0) > 0 or True
-        except Exception:
-            return False
 
 
     async def save_answer(self, uid: int, qid: str, selected: int, is_correct: bool):
@@ -1710,27 +1449,6 @@ class DBContent:
         old = subject.get('intake') or ''
         await self.ref_update_subject(subject_id, {'intake': intake})
         return ('ok', old)
-
-
-    async def qbank_move_file_intake(self, file_id: str, intake: str):
-        intake = intake or ''
-        try:
-            item = await self.qbank_files.find_one({'_id': ObjectId(file_id)})
-            if not item:
-                return ('err', 'not_found')
-            duplicate_filter = {
-                'lesson': item.get('lesson', ''), 'topic': item.get('topic', ''),
-                'description': item.get('description', ''), 'intake': intake,
-                '_id': {'$ne': item['_id']},
-            }
-            if await self.qbank_files.find_one(duplicate_filter):
-                return ('err', 'duplicate')
-            old = item.get('intake') or ''
-            await self.qbank_files.update_one(
-                {'_id': ObjectId(file_id)}, {'$set': {'intake': intake}})
-            return ('ok', old)
-        except Exception:
-            return ('err', 'not_found')
 
 
 
