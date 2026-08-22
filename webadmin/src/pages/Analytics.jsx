@@ -274,7 +274,7 @@ function Overview({ data, compareEnabled, aiState, attention, insightsState, rel
     <div className="an-executive-grid">
       <MetricCard domain="users" metricKey="active_today" value={active} icon="👥" override={activeDefinition} comparison={comparisons.active_users ? { ...comparisons.active_users, days: bundle.days } : null} compareEnabled={compareEnabled && Boolean(bundle.kpis)} />
       <MetricCard domain="questions" metricKey="total_attempts" value={questions.total_attempts} icon="🧠" />
-      <MetricCard domain="content" metricKey="bs_downloads" value={Number(content.bs_downloads || 0) + Number(content.ref_downloads || 0) + Number(content.qbank_downloads || 0)} icon="📚" override={{ label: 'کل دانلود محتوای آموزشی', unit: 'دانلود', range: 'تجمعی در سه دامنه محتوا', source: 'bs_content + ref_files + qbank_files', calculation: 'جمع دانلود علوم پایه، رفرنس و بانک سؤال' }} />
+      <MetricCard domain="content" metricKey="bs_downloads" value={Number(content.bs_downloads || 0) + Number(content.ref_downloads || 0)} icon="📚" override={{ label: 'کل دانلود منابع آموزشی', unit: 'دانلود', range: 'تجمعی در دو دامنه فایل', source: 'bs_content + ref_files', calculation: 'جمع دانلود علوم پایه و رفرنس‌ها' }} />
       <MetricCard domain="tickets" metricKey="open" value={tickets.open} icon="🎫" tone={tickets.open > 0 ? 'warning' : ''} />
       <MetricCard domain="subscriptions" metricKey="active" value={sub.active} icon="💎" />
       <MetricCard domain="subscriptions" metricKey="pending" value={sub.pending} icon="🧾" tone={sub.pending > 0 ? 'warning' : ''} />

@@ -19,13 +19,12 @@ const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 // چیدمان سه‌ستونه‌ی دسکتاپ‌محور «درخت درس‌ها | جلسات | بازرس» روی همان APIهای
 // موجود (بدون هیچ تغییر بک‌اندی) — همه‌ی اکشن‌های قبلی (fork/کلون/انتقال/حذف
 // گروهی/reorder/آپلود چندفایلی/گزارش‌ها) حفظ شده‌اند.
-import { RefsTab, ScheduleTab, QbankTab, FaqTab, ReportsTab } from './contentTabs.jsx';
+import { RefsTab, ScheduleTab, FaqTab, ReportsTab } from './contentTabs.jsx';
 
 const CCONTENT_TABS = [
   ['bs', '📚 علوم پایه'],
   ['refs', '📖 رفرنس‌ها'],
   ['schedule', '🗓 کلاس‌ها/برنامه'],
-  ['qbank', '🧪 بانک سؤال'],
   ['faq', '❓ راهنما/FAQ'],
   ['reports', '🚩 گزارش‌ها'],
 ];
@@ -46,7 +45,6 @@ export default function Content({ route = '' }) {
       {tab === 'bs' && <BsTab initial={{ intake: params.get('intake') || '', q: params.get('q') || '', lesson: params.get('lesson') || null, session: params.get('session') || null }} />}
       {tab === 'refs' && <RefsTab />}
       {tab === 'schedule' && <ScheduleTab />}
-      {tab === 'qbank' && <QbankTab />}
       {tab === 'faq' && <FaqTab />}
       {tab === 'reports' && <ReportsTab />}
     </>

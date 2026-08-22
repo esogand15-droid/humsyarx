@@ -1,42 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Confirm, Empty, Switch, Modal, NoPerm } from '../ui.jsx';
-import SavedViews from '../SavedViews.jsx';
+import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Modal, Empty, NoPerm } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
-const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
+const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const DIFF = { easy: ['آسان', 'ok'], medium: ['متوسط', 'warn'], hard: ['سخت', 'bad'] };
-const SRC = { bot: '🤖 ربات', webapp: '📱 مینی‌اپ', user: '👤 کاربر', web_import: '📥 درون‌ریزی وب' };
+const STATUS = {
+  pending: ['در انتظار', 'warn'], approved: ['تأییدشده', 'ok'],
+  rejected: ['ردشده', 'bad'], needs_changes: ['نیازمند اصلاح', 'purple'],
+};
+const SRC = {
+  student_bot: '👤 ربات دانشجو', student_webapp: '📱 مینی‌اپ دانشجو',
+  admin_bot: '🛡 ربات مدیر', web_admin: '🖥 وب‌ادمین', ai_student: '🤖 پیشنهاد AI',
+  ai_admin_import: '📥 درون‌ریزی JSON', system: '⚙️ سیستم',
+};
+const CLASS_LABEL = {
+  ready: 'آماده', error: 'خطای ساختار', unmatched: 'taxonomy نامشخص', ambiguous: 'taxonomy مبهم',
+  exact_duplicate: 'تکراری قطعی', probable_duplicate: 'احتمالاً تکراری', conflict: 'تعارض پاسخ',
+};
 
-// 🌊 موج Q-Import — پارس خطی (هر خط = یک سؤال):
-// درس | مبحث | سختی | متن سؤال | گزینه۱ ;; گزینه۲ ;; … | شماره گزینه صحیح | توضیح
-const DIFF_ALIASES = { 'آسان': 'easy', 'easy': 'easy', 'متوسط': 'medium', 'medium': 'medium', 'سخت': 'hard', 'hard': 'hard' };
-function parseImportText(text) {
-  const rows = [];
-  String(text || '').split('\n').forEach((ln, li) => {
-    const t = ln.trim();
-    if (!t || t.startsWith('#')) return;                    // خط خالی/کامنت
-    const p = t.split('|').map(s => s.trim());
-    const err = (m) => rows.push({ li: li + 1, ok: false, error: m, raw: t.slice(0, 60) });
-    if (p.length < 6) return err('حداقل ۶ بخش با | لازم است');
-    const [lesson, topic, diffRaw, question, opsRaw, corRaw, ...exRest] = p;
-    const difficulty = DIFF_ALIASES[diffRaw] || '';
-    const options = opsRaw.split(';;').map(s => s.trim()).filter(Boolean);
-    const correct = parseInt(corRaw, 10) - 1;               // ورودی انسانی ۱-مبنا
-    if (!lesson) return err('درس خالی است');
-    if (!difficulty) return err('سختی نامعتبر (آسان/متوسط/سخت)');
-    if (question.length < 5) return err('متن سؤال خیلی کوتاه است');
-    if (options.length < 2 || options.length > 6) return err('گزینه‌ها باید ۲ تا ۶ باشند (با ;; جدا کنید)');
-    if (!(correct >= 0 && correct < options.length)) return err('شماره گزینه صحیح خارج از محدوده است');
-    rows.push({ li: li + 1, ok: true,
-      item: { lesson, topic, difficulty, question, options, correct, explanation: exRest.join(' | ') } });
-  });
-  return rows;
-}
-
-// 🧪 صف بازبینی سوالات (scope-aware) + ⚡ WA2.4 تأیید/رد گروهی
-// 🌊 موج Q-Editor — کشوی جزئیات کامل + ویرایش پیش از تأیید (PATCH واقعی) + فیلترها
 export default function Questions({ route = '', go }) {
   const initial = readHashQuery();
   const [rows, setRows] = useState(null);
@@ -45,18 +28,9 @@ export default function Questions({ route = '', go }) {
   const [intakes, setIntakes] = useState([]);
   const [scopeKind, setScopeKind] = useState('global');
   const [intake, setIntake] = useState(initial.get('intake') || '');
-  const [sel, setSel] = useState([]);
-  const [visibleColumns, setVisibleColumns] = useState([]);
-  const [confirm, setConfirm] = useState(null);
-  const [bulkResult, setBulkResult] = useState(null);
-  const [metadataBulk, setMetadataBulk] = useState(null);
-  const [detail, setDetail] = useState(null);        // ردیف باز در کشو
-  const wantsCreate = new URLSearchParams(route.split('?')[1] || '').get('create') === '1';
-  const [createOpen, setCreateOpen] = useState(wantsCreate);
-  const [importOpen, setImportOpen] = useState(false); // 🌊 Q-Import wizard
-  const [q, setQ] = useState(initial.get('q') || '');
-  const [query, setQuery] = useState(initial.get('q') || '');
   const [status, setStatus] = useState(initial.get('status') || 'pending');
+  const [query, setQuery] = useState(initial.get('q') || '');
+  const [q, setQ] = useState(initial.get('q') || '');
   const [fdiff, setFdiff] = useState(initial.get('difficulty') || '');
   const [fsrc, setFsrc] = useState(initial.get('source') || '');
   const [author, setAuthor] = useState(initial.get('author') || '');
@@ -66,452 +40,262 @@ export default function Questions({ route = '', go }) {
   const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
   const [page, setPage] = useState(queryNumber(initial, 'page', 1));
   const [total, setTotal] = useState(0);
+  const [selected, setSelected] = useState([]);
+  const [detail, setDetail] = useState(null);
+  const [review, setReview] = useState(null); // {action, ids, reason}
+  const [bulkResult, setBulkResult] = useState(null);
+  const [createOpen, setCreateOpen] = useState(new URLSearchParams(route.split('?')[1] || '').get('create') === '1');
+  const [importOpen, setImportOpen] = useState(false);
   const LIMIT = 30;
-  useEffect(() => { if (wantsCreate) setCreateOpen(true); }, [wantsCreate]);
 
   const load = async () => {
     setErr('');
     try {
-      const r = await api.questions({
-        status, intake, q, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo,
-        sort_by: sortBy, sort_dir: sortDir, skip: (page - 1) * LIMIT, limit: LIMIT,
-      });
-      setRows(r.questions || []); setTotal(Number(r.total || 0));
+      const result = await api.questions({ status, intake, q, difficulty: fdiff, source: fsrc, author,
+        date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir,
+        skip: (page - 1) * LIMIT, limit: LIMIT });
+      setRows(result.questions || []); setTotal(Number(result.total || 0));
     } catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
+
   useEffect(() => {
-    api.questionIntakes().then(r => {
-      setIntakes(r.intakes || []); setScopeKind(r.scope_kind || 'global');
-      if (r.scope_kind === 'scoped') setIntake(r.scope_intake || r.intakes?.[0]?.code || '');
+    api.questionIntakes().then(result => {
+      setIntakes(result.intakes || []); setScopeKind(result.scope_kind || 'global');
+      if (result.scope_kind === 'scoped') setIntake(result.scope_intake || result.intakes?.[0]?.code || '');
     }).catch(e => { if (e.status === 403) setPermErr(true); else setErr(errText(e)); });
   }, []);
-  useEffect(() => { const t = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(t); }, [query]);
+  useEffect(() => { const timer = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(timer); }, [query]);
+  useEffect(() => { setRows(null); setSelected([]); load(); }, [status, intake, q, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
   useEffect(() => { writeHashQuery('/questions', { status: status !== 'pending' ? status : '', intake, q: query,
     difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo,
-    sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '',
-    page: page > 1 ? page : '', create: createOpen ? 1 : '' });
-  }, [status, intake, query, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page, createOpen]);
-  useEffect(() => { setRows(null); setSel([]); load(); }, [intake, status, q, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
+    sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '', page: page > 1 ? page : '' });
+  }, [status, intake, query, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
 
-  const act = async (qid, kind) => {
+  const approve = async id => {
+    try { await api.caQuestionApprove(id); toast('سؤال تأیید و منتشر شد ✅'); setDetail(null); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const runReview = async () => {
+    const reason = (review?.reason || '').trim();
+    if (!review || ((review.action === 'reject' || review.action === 'needs_changes') && reason.length < 3)) return;
     try {
-      await (kind === 'approve' ? api.caQuestionApprove(qid) : api.caQuestionReject(qid));
-      toast(kind === 'approve' ? 'تأیید شد ✅' : 'رد شد');
-      setDetail(null);
-      load();
+      if (review.ids.length === 1) {
+        if (review.action === 'reject') await api.caQuestionReject(review.ids[0], reason);
+        else await api.caQuestionNeedsChanges(review.ids[0], reason);
+      } else {
+        const result = await api.questionsBulk(review.action, review.ids, null, reason);
+        setBulkResult(result); setSelected([]);
+      }
+      toast(review.action === 'reject' ? 'رد با دلیل ثبت شد' : 'درخواست اصلاح ثبت شد');
+      setReview(null); setDetail(null); load();
     } catch (e) { toast(errText(e), 'err'); }
   };
-
-  const bulk = async (action, ids = sel, patch = null) => {
-    if (!ids.length) return;
-    try {
-      const r = await api.questionsBulk(action, ids, patch);
-      setBulkResult({ ...r, action, patch });
-      toast(`${fa(r.done)} موفق · ${fa(r.skipped?.length || 0)} ردشده · ${fa(r.failed?.length || 0)} ناموفق`, r.failed?.length ? 'err' : 'ok');
-      setSel([]); load();
-    } catch (e) { toast(errText(e), 'err'); }
+  const bulkApprove = async () => {
+    try { const result = await api.questionsBulk('approve', selected); setBulkResult(result); setSelected([]); load(); }
+    catch (e) { toast(errText(e), 'err'); }
   };
 
-  const vis = rows || [];
-
-  if (permErr) return <NoPerm text="بازبینی سؤال نیازمند مجوز questions.review یا questions.review_scoped است" />;
+  if (permErr) return <NoPerm text="بازبینی سؤال نیازمند questions.review یا questions.review_scoped است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
 
-  const cols = [
-    { k: 'question', label: 'سؤال', render: r => (
-      <div style={{ maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {r.question || r.text}</div>) },
-    { k: 'lesson', label: 'درس' },
-    { k: 'topic', label: 'مبحث' },
-    { k: 'difficulty', label: 'سختی', sortable: true, sortVal: r => r.difficulty || '',
-      render: r => { const [l, kk] = DIFF[r.difficulty] || [r.difficulty || '—', '']; return <B kind={kk}>{l}</B>; } },
-    { k: 'creator', label: 'طراح', stop: true, render: r => (
-      <button className="btn sm" disabled={!r.creator_id} onClick={() => r.creator_id && go?.(`/users?q=${r.creator_id}`)}>
-        {r.creator_name || '—'}<span className="muted" style={{ display: 'block' }}>{SRC[r.source] || r.source || ''}</span></button>) },
-    { k: 'intake', label: 'ورودی', render: r => r.intake || <B>سراسری</B> },
-    { k: 'approved', label: 'وضعیت', render: r => <B kind={r.approved ? 'ok' : 'warn'}>{r.approved ? 'تأییدشده' : 'در انتظار'}</B> },
-    { k: 'attempts', label: 'تلاش/دقت', sortable: true, render: r => <span>{fa(r.attempts)} · <B kind={r.accuracy >= 70 ? 'ok' : r.attempts ? 'warn' : ''}>{fa(r.accuracy)}٪</B></span> },
-    { k: 'reports', label: 'گزارش', render: r => r.reports ? <B kind="bad">{fa(r.reports)}</B> : '—' },
-    { k: 'created_at', label: 'ایجاد', sortable: true, render: r => <FaDateTime value={r.created_at} /> },
-    { k: 'ops', label: '', stop: true, render: r => {
-      const id = r.id || r._id;
-      return (
-        <div className="row" style={{ gap: 4 }}>
-          <button className="btn sm" title="مشاهده" aria-label="مشاهده سؤال" onClick={() => setDetail(r)}>👁</button>
-          {!r.approved && <><button className="btn sm ok" title="تأیید" aria-label="تأیید سؤال" onClick={() => act(id, 'approve')}>✅</button>
-          <button className="btn sm danger" title="رد" aria-label="رد سؤال" onClick={() => act(id, 'reject')}>❌</button></>}
-        </div>);
-    } },
+  const columns = [
+    { k: 'question', label: 'سؤال', render: row => <div style={{ maxWidth: 350, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.question}</div> },
+    { k: 'lesson', label: 'درس/مبحث', render: row => <div>{row.lesson}<small className="muted" style={{ display: 'block' }}>{row.topic}</small></div> },
+    { k: 'difficulty', label: 'سختی', sortable: true, render: row => { const [label, kind] = DIFF[row.difficulty] || ['—', '']; return <B kind={kind}>{label}</B>; } },
+    { k: 'creator', label: 'طراح', stop: true, render: row => <button className="btn sm" disabled={!row.creator_id} onClick={() => go?.(`/users?q=${row.creator_id}`)}>{row.creator_name || '—'}<small className="muted" style={{ display: 'block' }}>{SRC[row.source] || row.source}</small></button> },
+    { k: 'intake', label: 'ورودی', render: row => row.intake || <B>سراسری</B> },
+    { k: 'status', label: 'چرخه عمر', render: row => { const [label, kind] = STATUS[row.status] || [row.status, '']; return <div><B kind={kind}>{label}</B>{row.review_reason && <small className="muted" style={{ display: 'block', maxWidth: 180 }}>{row.review_reason}</small>}</div>; } },
+    { k: 'attempts', label: 'تلاش/دقت', sortable: true, render: row => `${fa(row.attempts)} · ${fa(row.accuracy)}٪` },
+    { k: 'created_at', label: 'ایجاد', sortable: true, render: row => <FaDateTime value={row.created_at} /> },
+    { k: 'ops', label: '', stop: true, render: row => <div className="row" style={{ gap: 4 }}>
+      <button className="btn sm" aria-label="مشاهده سؤال" onClick={() => setDetail(row)}>👁</button>
+      {row.can_approve && <button className="btn sm ok" aria-label="تأیید سؤال" onClick={() => approve(row.id)}>✅</button>}
+      {row.can_reject && <button className="btn sm" aria-label="درخواست اصلاح" onClick={() => setReview({ action: 'needs_changes', ids: [row.id], reason: '' })}>✏️</button>}
+      {row.can_reject && <button className="btn sm danger" aria-label="رد سؤال" onClick={() => setReview({ action: 'reject', ids: [row.id], reason: '' })}>❌</button>}
+    </div> },
   ];
 
-  return (
-    <>
-      <PageHeader title="بازبینی سؤال‌ها" description="بازبینی، ویرایش، تأیید و رد تکی یا گروهی با حفظ محدوده ورودی" actions={<>
-        <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ ساخت سؤال</button>
-        <button className="btn" onClick={() => setImportOpen(true)}>📥 درون‌ریزی گروهی</button>
-        <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV همین فیلترها</button>
-        {status === 'pending' && sel.length > 0 && <>
-          <span className="badge acc">{fa(sel.length)} انتخاب‌شده</span>
-          <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', n: sel.length })}>✅ تأیید گروهی</button>
-          <button className="btn sm danger" onClick={() => setConfirm({ action: 'reject', n: sel.length })}>❌ رد گروهی</button>
-          <button className="btn sm" onClick={() => setMetadataBulk({ lesson: '', topic: '', difficulty: '' })}>✏️ metadata گروهی</button>
-        </>}
-      </>} />
+  return <>
+    <PageHeader title="بازبینی سؤال‌ها" description="دامنه مشترک ربات، API و وب‌ادمین؛ رد بدون حذف داده و اصلاح با ارسال مجدد" actions={<>
+      <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ پیشنهاد سؤال</button>
+      <button className="btn" onClick={() => setImportOpen(true)}>📥 JSON نسخه‌دار</button>
+      <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
+      {status === 'pending' && selected.length > 0 && <>
+        <B kind="acc">{fa(selected.length)} انتخاب</B>
+        {selected.every(id => rows?.find(row => row.id === id)?.can_approve) && <button className="btn sm ok" onClick={bulkApprove}>✅ تأیید گروهی</button>}
+        {selected.every(id => rows?.find(row => row.id === id)?.can_reject) && <button className="btn sm" onClick={() => setReview({ action: 'needs_changes', ids: selected, reason: '' })}>✏️ اصلاح گروهی</button>}
+        {selected.every(id => rows?.find(row => row.id === id)?.can_reject) && <button className="btn sm danger" onClick={() => setReview({ action: 'reject', ids: selected, reason: '' })}>❌ رد گروهی</button>}
+      </>}
+    </>} />
+    <FilterBar>
+      <select className="inp" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
+        <option value="pending">در انتظار</option><option value="needs_changes">نیازمند اصلاح</option>
+        <option value="rejected">ردشده</option><option value="approved">تأییدشده</option><option value="all">همه</option>
+      </select>
+      <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => { setIntake(e.target.value); setPage(1); }}>
+        {scopeKind === 'global' && <option value="">همه ورودی‌ها</option>}
+        {intakes.map(item => <option key={item.code} value={item.code}>{item.label || item.code}</option>)}
+      </select>
+      <input className="inp" style={{ flex: 1, minWidth: 190 }} placeholder="جست‌وجوی متن، درس، مبحث یا طراح" value={query} onChange={e => setQuery(e.target.value)} />
+      <select className="inp" value={fdiff} onChange={e => setFdiff(e.target.value)}><option value="">همه سختی‌ها</option><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select>
+      <select className="inp" value={fsrc} onChange={e => setFsrc(e.target.value)}><option value="">همه منابع</option>{Object.entries(SRC).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select>
+      <input className="inp" style={{ width: 140 }} placeholder="طراح یا ID" value={author} onChange={e => setAuthor(e.target.value)} />
+      <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={setDateFrom} placeholder="تاریخ شمسی" /></label>
+      <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={setDateTo} placeholder="تاریخ شمسی" /></label>
+      <B kind="acc">{fa(total)} نتیجه</B>
+    </FilterBar>
+    <div className="muted" style={{ margin: '-4px 0 10px' }}>رد و «نیازمند اصلاح» soft lifecycle هستند؛ هیچ سؤال با این عملیات حذف نمی‌شود. طراح دلیل را می‌بیند و فقط در این دو وضعیت می‌تواند اصلاح و دوباره ارسال کند.</div>
+    {!rows ? <Loading /> : <DataTable columns={columns} rows={rows} rowKey="id" selectable={status === 'pending'} onSelect={setSelected} onRow={setDetail}
+      sortState={{ k: sortBy === 'attempt_count' ? 'attempts' : sortBy, dir: sortDir }} onSort={next => { setSortBy(next?.k === 'attempts' ? 'attempt_count' : next?.k || 'created_at'); setSortDir(next?.dir || 'desc'); setPage(1); }}
+      pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} empty={<Empty icon="🧪" text="سؤالی با این فیلترها نیست" />} />}
 
-      <FilterBar>
-        <select className="inp" value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
-          <option value="pending">در انتظار بازبینی</option><option value="approved">تأییدشده</option><option value="all">همه سؤال‌ها</option>
-        </select>
-        <select className="inp" value={intake} disabled={scopeKind === 'scoped'} onChange={e => { setIntake(e.target.value); setPage(1); }}>
-          {scopeKind === 'global' && <option value="">🌐 سؤالات سراسری</option>}
-          {intakes.map(i => <option key={i.code} value={i.code}>🏷 {i.label || i.code}</option>)}
-        </select>
-        <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="🔎 متن/درس/مبحث/طراح…"
-               value={query} onChange={e => setQuery(e.target.value)} />
-        <select className="inp" value={fdiff} onChange={e => { setFdiff(e.target.value); setPage(1); }}>
-          <option value="">همه‌ی سختی‌ها</option>
-          <option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option>
-        </select>
-        <select className="inp" value={fsrc} onChange={e => { setFsrc(e.target.value); setPage(1); }}>
-          <option value="">همه‌ی منابع</option>
-          <option value="webapp">📱 مینی‌اپ</option><option value="bot">🤖 ربات</option><option value="web_import">📥 وب‌ادمین</option>
-        </select>
-        <input className="inp" style={{ width: 150 }} placeholder="طراح یا ID…" value={author} onChange={e => { setAuthor(e.target.value); setPage(1); }} />
-        <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setPage(1); }} placeholder="تاریخ شمسی" /></label>
-        <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setPage(1); }} placeholder="تاریخ شمسی" /></label>
-        <B kind="acc">{fa(total)} نتیجه</B>
-      </FilterBar>
-      <div className="muted" style={{ margin: '-4px 0 10px' }}>رد سؤال در domain فعلی به‌معنای حذف پیشنهاد و اطلاع به طراح است؛ آرشیو «ردشده»‌ی مستقلی در پایگاه داده وجود ندارد.</div>
-
-      <SavedViews scope="questions" filters={{ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sortBy, sortDir }}
-        columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }} onApply={(f, item) => {
-        setStatus(f.status || 'pending'); setIntake(f.intake || ''); setQuery(f.q || '');
-        setFdiff(f.difficulty || ''); setFsrc(f.source || ''); setAuthor(f.author || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || '');
-        setSortBy(f.sortBy || item.sort?.key || 'created_at'); setSortDir(f.sortDir || item.sort?.dir || 'desc'); setVisibleColumns(item.columns || []); setPage(1);
-      }} />
-
-      {!rows ? <Loading /> : (
-        <DataTable columns={cols} rows={vis} rowKey="id"
-          selectable={status === 'pending'} onSelect={setSel} onRow={setDetail} colToggle
-          visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns}
-          sortState={{ k: sortBy === 'attempt_count' ? 'attempts' : sortBy, dir: sortDir }} onSort={next => {
-            setSortBy(next?.k === 'attempts' ? 'attempt_count' : next?.k || 'created_at');
-            setSortDir(next?.dir || 'desc'); setPage(1);
-          }}
-          pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }}
-          empty={<Empty icon="🎉" text={status === 'pending' ? 'صف بازبینی خالی است' : 'سؤالی با این فیلترها نیست'} />} />
-      )}
-
-      {detail && (
-        <QuestionDrawer row={detail} readonly={!!detail.approved}
-          onClose={() => setDetail(null)}
-          onAction={(kind) => act(detail.id || detail._id, kind)}
-          onSaved={() => { load(); }} />
-      )}
-
-      {confirm && (
-        <Confirm text={`${confirm.action === 'approve' ? 'تأیید' : 'رد'} ${fa(confirm.n)} سؤال انتخاب‌شده؟ (فقط موارد داخل scope شما پردازش می‌شوند)`}
-                 danger={confirm.action === 'reject'}
-                 onYes={async () => { await bulk(confirm.action); setConfirm(null); }}
-                 onNo={() => setConfirm(null)} />
-      )}
-      {bulkResult && <Modal title="گزارش عملیات گروهی سؤال" onClose={() => setBulkResult(null)}>
-        <div className="row"><B kind="ok">موفق: {fa(bulkResult.succeeded?.length || 0)}</B><B>ردشده: {fa(bulkResult.skipped?.length || 0)}</B><B kind="bad">ناموفق: {fa(bulkResult.failed?.length || 0)}</B></div>
-        {[...(bulkResult.skipped || []).map(x => ({ ...x, message: x.reason })), ...(bulkResult.failed || []).map(x => ({ ...x, message: x.error }))].slice(0, 30)
-          .map((x, i) => <div className="row" key={`${x.id}-${i}`}><span className="code">{x.id}</span><span className="muted">{x.message}</span></div>)}
-        {!!bulkResult.failed?.length && <button className="btn" onClick={() => bulk(bulkResult.action, bulkResult.failed.map(x => x.id), bulkResult.patch)}>↻ تلاش مجدد ناموفق‌ها</button>}
-      </Modal>}
-      {metadataBulk && <Modal title={`✏️ ویرایش metadata برای ${fa(sel.length)} سؤال`} onClose={() => setMetadataBulk(null)}>
-        <div className="muted">فقط فیلدهای پرشده تغییر می‌کنند؛ ویرایش هر سؤال از همان domain validation و audit تکی عبور می‌کند.</div>
-        <div className="grid" style={{ gap: 8, marginTop: 10 }}><input className="inp" placeholder="درس جدید (اختیاری)…" value={metadataBulk.lesson} onChange={e => setMetadataBulk({ ...metadataBulk, lesson: e.target.value })} /><input className="inp" placeholder="مبحث جدید (اختیاری)…" value={metadataBulk.topic} onChange={e => setMetadataBulk({ ...metadataBulk, topic: e.target.value })} /><select className="inp" value={metadataBulk.difficulty} onChange={e => setMetadataBulk({ ...metadataBulk, difficulty: e.target.value })}><option value="">سختی بدون تغییر</option><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select></div>
-        <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!metadataBulk.lesson.trim() && !metadataBulk.topic.trim() && !metadataBulk.difficulty} onClick={async () => { const patch = metadataBulk; setMetadataBulk(null); await bulk('metadata', sel, patch); }}>تأیید و اجرا</button><button className="btn" onClick={() => setMetadataBulk(null)}>انصراف</button></div>
-      </Modal>}
-
-      {createOpen && <QuestionCreateModal intake={intake} onClose={(ok) => {
-        setCreateOpen(false); if (ok) load();
-      }} />}
-      {importOpen && (
-        <ImportWizard intake={intake} onClose={() => setImportOpen(false)}
-          onDone={(n) => { setImportOpen(false); toast(`📥 ${fa(n)} سؤال درج شد`); load(); }} />
-      )}
-    </>
-  );
+    {detail && <QuestionDrawer row={detail} onClose={() => setDetail(null)} onApprove={() => approve(detail.id)}
+      onReview={action => setReview({ action, ids: [detail.id], reason: '' })} onSaved={() => { setDetail(null); load(); }} />}
+    {review && <ReviewModal value={review} onChange={setReview} onClose={() => setReview(null)} onSubmit={runReview} />}
+    {bulkResult && <Modal title="نتیجه عملیات گروهی" onClose={() => setBulkResult(null)}><div className="row"><B kind="ok">موفق {fa(bulkResult.succeeded?.length)}</B><B>ردشده {fa(bulkResult.skipped?.length)}</B><B kind="bad">ناموفق {fa(bulkResult.failed?.length)}</B></div>{[...(bulkResult.skipped || []), ...(bulkResult.failed || [])].slice(0, 30).map((item, i) => <div key={`${item.id}-${i}`} className="row"><span className="code">{item.id}</span><span className="muted">{item.reason || item.error}</span></div>)}</Modal>}
+    {createOpen && <QuestionCreateModal intake={intake} onClose={ok => { setCreateOpen(false); if (ok) load(); }} />}
+    {importOpen && <ImportWizard onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}
+  </>;
 }
 
-/* ── ➕ فرم مستقل ساخت یک سؤال ─────────────────────────── */
+function ReviewModal({ value, onChange, onClose, onSubmit }) {
+  const label = value.action === 'reject' ? 'رد' : 'درخواست اصلاح';
+  return <Modal title={`${label} ${fa(value.ids.length)} سؤال`} onClose={onClose}>
+    <div className="muted">دلیل برای طراح نمایش داده می‌شود و در تاریخچه بررسی باقی می‌ماند. حداقل ۳ کاراکتر.</div>
+    <textarea className="inp" rows={4} autoFocus value={value.reason} onChange={e => onChange({ ...value, reason: e.target.value })} placeholder="دلیل روشن و قابل اقدام…" style={{ marginTop: 10 }} />
+    <div className="row" style={{ marginTop: 12 }}><button className={`btn ${value.action === 'reject' ? 'danger' : 'primary'}`} disabled={value.reason.trim().length < 3} onClick={onSubmit}>ثبت {label}</button><button className="btn" onClick={onClose}>انصراف</button></div>
+  </Modal>;
+}
+
+function TaxonomyFields({ intake, value, onChange }) {
+  const [lessons, setLessons] = useState([]);
+  useEffect(() => { api.questionTaxonomy(intake).then(r => setLessons(r.lessons || [])).catch(e => toast(errText(e), 'err')); }, [intake]);
+  const lesson = lessons.find(item => item.id === value.lesson_id);
+  return <div className="row">
+    <select className="inp" style={{ flex: 1 }} value={value.lesson_id || ''} onChange={e => { const item = lessons.find(x => x.id === e.target.value); onChange({ ...value, lesson_id: item?.id || '', lesson: item?.name || '', topic_id: '', topic: '' }); }}>
+      <option value="">درس را انتخاب کنید</option>{lessons.map(item => <option key={item.id} value={item.id}>{item.name} · {item.intake || 'سراسری'}</option>)}
+    </select>
+    <select className="inp" style={{ flex: 1 }} value={value.topic_id || ''} disabled={!lesson} onChange={e => { const item = lesson?.topics?.find(x => x.id === e.target.value); onChange({ ...value, topic_id: item?.id || '', topic: item?.name || '' }); }}>
+      <option value="">مبحث را انتخاب کنید</option>{(lesson?.topics || []).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+    </select>
+  </div>;
+}
+
 function QuestionCreateModal({ intake, onClose }) {
-  const [f, setF] = useState({
-    lesson: '', topic: '', difficulty: 'medium', question: '',
-    options: ['', '', '', ''], correct: 0, explanation: '',
-  });
-  const [approve, setApprove] = useState(true);
+  const [form, setForm] = useState({ lesson_id: '', topic_id: '', lesson: '', topic: '', difficulty: 'medium', question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '', intake });
   const [busy, setBusy] = useState(false);
-  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
-  const setOpt = (i, v) => setF(x => ({ ...x, options: x.options.map((o, j) => j === i ? v : o) }));
+  const setOption = (index, text) => setForm(current => ({ ...current, options: current.options.map((item, i) => i === index ? text : item) }));
   const submit = async () => {
     setBusy(true);
-    try {
-      const kept = f.options.map((x, i) => ({ text: x.trim(), i })).filter(x => x.text);
-      const correct = kept.findIndex(x => x.i === f.correct);
-      if (correct < 0) throw new Error('گزینه صحیح نباید خالی باشد');
-      const r = await api.caQuestionsImport([{ ...f, options: kept.map(x => x.text), correct }], approve, intake);
-      if (!r.inserted) throw new Error(r.failed?.[0]?.error || 'سؤال درج نشد');
-      toast(approve ? 'سؤال ساخته و منتشر شد ✅' : 'سؤال در صف بازبینی ثبت شد ✅'); onClose(true);
-    } catch (e) { toast(errText(e), 'err'); setBusy(false); }
+    try { await api.questionCreate({ ...form, intake: intake || null }); toast('سؤال برای بازبینی مستقل ارسال شد ✅'); onClose(true); }
+    catch (e) { toast(errText(e), 'err'); setBusy(false); }
   };
-  return <Modal title="➕ ساخت سؤال جدید" onClose={() => onClose(false)}>
-    <div className="grid" style={{ gap: 10 }}>
-      <div className="row"><B kind={intake ? 'purple' : 'acc'}>{intake ? `🏷 ورودی ${intake}` : '🌐 سراسری'}</B>
-        <span className="spacer" /><label className="row"><Switch on={approve} onChange={setApprove} /><span>انتشار مستقیم</span></label></div>
-      <div className="row"><input className="inp" style={{ flex: 1 }} placeholder="درس *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
-        <input className="inp" style={{ flex: 1 }} placeholder="مبحث" value={f.topic} onChange={e => set('topic', e.target.value)} />
-        <select className="inp" value={f.difficulty} onChange={e => set('difficulty', e.target.value)}><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select></div>
-      <textarea className="inp" rows={3} placeholder="متن سؤال *" value={f.question} onChange={e => set('question', e.target.value)} />
-      <b>گزینه‌ها <span className="muted">— گزینه صحیح را علامت بزنید</span></b>
-      {f.options.map((o, i) => <div key={i} className="row">
-        <input type="radio" name="new-q-correct" checked={f.correct === i} onChange={() => set('correct', i)} />
-        <input className="inp" style={{ flex: 1 }} placeholder={`گزینه ${fa(i + 1)}`} value={o} onChange={e => setOpt(i, e.target.value)} />
-        <button className="btn sm danger" disabled={f.options.length <= 2} onClick={() => setF(x => ({ ...x,
-          options: x.options.filter((_, j) => j !== i), correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct) }))} aria-label={`حذف گزینه ${i + 1}`}>✕</button>
-      </div>)}
-      {f.options.length < 6 && <button className="btn sm" onClick={() => set('options', [...f.options, ''])}>➕ گزینه</button>}
-      <textarea className="inp" rows={2} placeholder="توضیح پاسخ (اختیاری)" value={f.explanation} onChange={e => set('explanation', e.target.value)} />
-      <div className="row"><button className="btn primary" disabled={busy || !f.lesson.trim() || f.question.trim().length < 5 || f.options.filter(x => x.trim()).length < 2} onClick={submit}>{busy ? '⏳…' : 'ثبت سؤال'}</button>
-        <button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
+  const valid = form.lesson_id && form.topic_id && form.question.trim().length >= 10 && form.options.every(item => item.trim()) && new Set(form.options.map(item => item.trim())).size === 4;
+  return <Modal title="➕ پیشنهاد سؤال چهارگزینه‌ای" onClose={() => onClose(false)}>
+    <div className="muted">حتی سؤال مدیر مستقیماً منتشر نمی‌شود؛ بازبین دیگری باید آن را تأیید کند.</div>
+    <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+      <TaxonomyFields intake={intake} value={form} onChange={setForm} />
+      <select className="inp" value={form.difficulty} onChange={e => setForm({ ...form, difficulty: e.target.value })}><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select>
+      <textarea className="inp" rows={4} placeholder="متن سؤال (حداقل ۱۰ کاراکتر)" value={form.question} onChange={e => setForm({ ...form, question: e.target.value })} />
+      {form.options.map((option, index) => <div className="row" key={index}><input type="radio" name="new-correct" checked={form.correct_answer === index} onChange={() => setForm({ ...form, correct_answer: index })} /><input className="inp" style={{ flex: 1 }} placeholder={`گزینه ${fa(index + 1)}`} value={option} onChange={e => setOption(index, e.target.value)} /></div>)}
+      <textarea className="inp" rows={2} placeholder="توضیح پاسخ (اختیاری)" value={form.explanation} onChange={e => setForm({ ...form, explanation: e.target.value })} />
+      <div className="row"><button className="btn primary" disabled={busy || !valid} onClick={submit}>{busy ? 'در حال ثبت…' : 'ارسال به صف بررسی'}</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div>
     </div>
   </Modal>;
 }
 
-
-/* ── 📥🌊 ویزارد درون‌ریزی گروهی (موج Q-Import) — ۳ گام: متن ← بازبینی ← ثبت ── */
-const IM_STEPS = ['ورود متن', 'بازبینی', 'ثبت'];
-function ImportWizard({ intake, onClose, onDone }) {
-  const [step, setStep] = useState(0);
-  const [text, setText] = useState('');
-  const [approve, setApprove] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);
-  const parsed = useMemo(() => parseImportText(text), [text]);
-  const okRows = parsed.filter(r => r.ok);
-  const badRows = parsed.filter(r => !r.ok);
-
-  const submit = async () => {
-    setBusy(true);
-    try {
-      const r = await api.caQuestionsImport(okRows.map(r => r.item), approve, intake);
-      setResult(r);
-      setStep(2);
-    } catch (e) { toast(errText(e), 'err'); }
-    setBusy(false);
-  };
-
-  return (
-    <Drawer title="📥 درون‌ریزی گروهی سؤال" onClose={onClose} wide>
-      <div style={{ marginBottom: 8 }}><B kind={intake ? 'purple' : 'acc'}>{intake ? `🏷 ورودی ${intake}` : '🌐 سراسری'}</B></div>
-      <div className="wiz-steps" style={{ marginBottom: 14 }}>
-        {IM_STEPS.map((l, i) => (
-          <div key={l} className={`wiz-step ${step === i ? 'on' : ''} ${step > i ? 'done' : ''}`}>
-            <span className="wiz-n">{fa(i + 1)}</span><span className="wiz-l">{l}</span>
-          </div>
-        ))}
-      </div>
-
-      {step === 0 && (<>
-        <div className="muted" style={{ marginBottom: 8 }}>
-          هر خط یک سؤال — قالب:
-          <div className="code" dir="ltr" style={{ marginTop: 6, padding: 8, fontSize: 11 }}>
-            درس | مبحث | سختی | متن سؤال | گزینه۱ ;; گزینه۲ ;; گزینه۳ | شماره صحیح | توضیح
-          </div>
-          <div style={{ marginTop: 6 }}>سختی: آسان/متوسط/سخت · شماره صحیح از ۱ · خط‌های خالی یا شروع‌شده با # نادیده گرفته می‌شوند</div>
-        </div>
-        <textarea className="inp" rows={10} dir="auto" style={{ fontFamily: 'inherit', lineHeight: 1.9 }}
-          placeholder={'کالبدآنالیز | قلب | متوسط | بزرگ‌ترین لایه دیواره قلب؟ | اندوکارد ;; میوکارد ;; اپیکارد ;; پریکارد | 2 | میوکارد لایه عضلانی است.\n# خط دوم…'}
-          value={text} onChange={e => setText(e.target.value)} />
-        <label className="row" style={{ gap: 6, marginTop: 10 }}>
-          <Switch on={approve} onChange={setApprove} />
-          <span>تأیید مستقیم (بدون ورود به صف بازبینی)</span>
-        </label>
-        <div className="row" style={{ marginTop: 12 }}>
-          <span className="spacer" />
-          <span className="muted">{fa(okRows.length)} معتبر {badRows.length > 0 && `· ${fa(badRows.length)} معیوب`}</span>
-          <button className="btn primary" disabled={!okRows.length || okRows.length > 200}
-                  onClick={() => setStep(1)}>بازبینی ←</button>
-        </div>
-        {okRows.length > 200 && <div className="badge bad" style={{ marginTop: 8 }}>حداکثر ۲۰۰ سؤال در هر بار</div>}
-      </>)}
-
-      {step === 1 && (<>
-        <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-          <B kind="ok">{fa(okRows.length)} سؤال معتبر</B>
-          {badRows.length > 0 && <B kind="bad">{fa(badRows.length)} خط معیوب (درج نمی‌شوند)</B>}
-          <B kind={approve ? 'warn' : 'acc'}>{approve ? 'تأیید مستقیم' : 'صف بازبینی'}</B>
-        </div>
-        <DataTable columns={[
-          { k: 'q', label: 'سؤال', render: r => <div style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.item.question}</div> },
-          { k: 'lesson', label: 'درس', render: r => r.item.lesson },
-          { k: 'topic', label: 'مبحث', render: r => r.item.topic },
-          { k: 'diff', label: 'سختی', render: r => { const [l, kk] = DIFF[r.item.difficulty] || ['—', '']; return <B kind={kk}>{l}</B>; } },
-          { k: 'ops', label: 'گزینه/صحیح', render: r => `${fa(r.item.options.length)} / ${fa(r.item.correct + 1)}` },
-        ]} rows={okRows.slice(0, 60)} rowKey="li"
-          empty={<Empty icon="🗂" text="سؤال معتبری نیست" />} />
-        {okRows.length > 60 && <div className="muted" style={{ marginTop: 4 }}>… و {fa(okRows.length - 60)} مورد دیگر</div>}
-        {badRows.length > 0 && (
-          <div className="panel panel-pad" style={{ marginTop: 10, background: 'var(--bg)' }}>
-            <b className="badge bad">خطاهای نادیده‌گرفته‌شده</b>
-            {badRows.slice(0, 10).map(r => (
-              <div key={r.li} className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-                خط {fa(r.li)}: {r.error} <span className="code">{r.raw}</span>
-              </div>))}
-          </div>
-        )}
-        <div className="row" style={{ marginTop: 12 }}>
-          <button className="btn" onClick={() => setStep(0)}>→ ویرایش متن</button>
-          <span className="spacer" />
-          <button className="btn primary" disabled={busy || !okRows.length} onClick={submit}>
-            {busy ? '⏳ در حال درج…' : `ثبت ${fa(okRows.length)} سؤال`}
-          </button>
-        </div>
-      </>)}
-
-      {step === 2 && result && (<>
-        <div className="grid g3" style={{ marginTop: 4 }}>
-          <div className="panel stat"><div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>✅</div>
-            <div><div className="v">{fa(result.inserted)}</div><div className="l">درج‌شده ({result.approve ? 'تأیید مستقیم' : 'صف بازبینی'})</div></div></div>
-          <div className="panel stat"><div className="ic" style={{ background: 'rgba(248,113,113,.1)' }}>❌</div>
-            <div><div className="v">{fa((result.failed || []).length)}</div><div className="l">ردشده توسط سرور</div></div></div>
-        </div>
-        {(result.failed || []).length > 0 && (
-          <div className="panel panel-pad" style={{ marginTop: 10, background: 'var(--bg)' }}>
-            {result.failed.slice(0, 12).map((f2, i) => (
-              <div key={i} className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-                ردیف {fa(f2.i + 1)}: {f2.error}
-              </div>))}
-          </div>
-        )}
-        <div className="row" style={{ marginTop: 14 }}>
-          <span className="spacer" />
-          <button className="btn primary" onClick={() => onDone(result.inserted)}>پایان</button>
-        </div>
-      </>)}
-    </Drawer>
-  );
-}
-
-/* ── 👁✏️ کشوی جزئیات سؤال — مشاهده کامل + ویرایش پیش از تأیید ── */
-function QuestionDrawer({ row, readonly = false, onClose, onAction, onSaved }) {
+function QuestionDrawer({ row, onClose, onApprove, onReview, onSaved }) {
   const [edit, setEdit] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState(() => ({
-    question: row.question || '',
-    lesson: row.lesson || '',
-    topic: row.topic || '',
-    difficulty: row.difficulty || 'medium',
-    explanation: row.explanation || '',
-    options: [...(row.options || [])],
-    correct: row.correct ?? row.answer ?? 0,
-  }));
-  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
-  const setOpt = (i, v) => setF(x => ({ ...x, options: x.options.map((o, j) => j === i ? v : o) }));
-
+  const [form, setForm] = useState({ lesson_id: row.lesson_id, topic_id: row.topic_id, lesson: row.lesson, topic: row.topic,
+    difficulty: row.difficulty, question: row.question, options: [...(row.options || [])], correct: row.correct, explanation: row.explanation || '' });
+  const [statusLabel, statusKind] = STATUS[row.status] || [row.status, ''];
   const save = async () => {
     setBusy(true);
-    try {
-      await api.caQuestionPatch(row.id || row._id, {
-        question: f.question, lesson: f.lesson, topic: f.topic,
-        difficulty: f.difficulty, explanation: f.explanation,
-        options: f.options, correct: f.correct,
-      });
-      toast('ویرایش ذخیره شد ✅');
-      setEdit(false);
-      onSaved();
-      // داده‌ی محلی کشو را هم تازه نگه دار
-      Object.assign(row, { ...f, correct: f.correct });
-    } catch (e) { toast(errText(e), 'err'); }
+    try { await api.caQuestionPatch(row.id, form); toast('ویرایش canonical ذخیره شد'); onSaved(); }
+    catch (e) { toast(errText(e), 'err'); setBusy(false); }
+  };
+  return <Drawer wide title="جزئیات سؤال" onClose={onClose}>
+    <div className="row" style={{ flexWrap: 'wrap' }}><B kind={statusKind}>{statusLabel}</B><ScopeBadge scope={row.intake || 'global'} label={row.intake || 'سراسری'} /><B>{SRC[row.source] || row.source}</B><span className="spacer" /><FaDateTime value={row.created_at} /></div>
+    {row.review_reason && <div className="panel panel-pad" style={{ marginTop: 10, background: 'var(--bg)' }}><b>دلیل بررسی</b><div>{row.review_reason}</div></div>}
+    {!edit ? <>
+      <div className="panel panel-pad" style={{ marginTop: 10, lineHeight: 2 }}>{row.question}</div>
+      <div className="grid" style={{ gap: 7, marginTop: 10 }}>{(row.options || []).map((option, i) => <div className="badge" key={i} style={{ justifyContent: 'flex-start' }}>{i === row.correct ? '✅' : '▫️'} {option}</div>)}</div>
+      <div className="muted" style={{ marginTop: 10 }}>{row.lesson} / {row.topic} · طراح: {row.creator_name || row.creator_id}</div>
+      {row.explanation && <div className="panel panel-pad" style={{ marginTop: 10 }}><b>توضیح پاسخ</b><div>{row.explanation}</div></div>}
+      {row.status === 'pending' && <div className="row" style={{ marginTop: 14, flexWrap: 'wrap' }}>
+        {row.can_approve && <button className="btn ok" onClick={onApprove}>✅ تأیید</button>}
+        {row.can_reject && <button className="btn" onClick={() => onReview('needs_changes')}>✏️ نیازمند اصلاح</button>}
+        {row.can_reject && <button className="btn danger" onClick={() => onReview('reject')}>❌ رد با دلیل</button>}
+        <span className="spacer" />{row.can_edit && <button className="btn" onClick={() => setEdit(true)}>ویرایش پیش از بررسی</button>}
+      </div>}
+    </> : <div className="grid" style={{ gap: 10, marginTop: 10 }}>
+      <TaxonomyFields intake={row.intake} value={form} onChange={setForm} />
+      <textarea className="inp" rows={4} value={form.question} onChange={e => setForm({ ...form, question: e.target.value })} />
+      {form.options.map((option, index) => <div className="row" key={index}><input type="radio" name="edit-correct" checked={form.correct === index} onChange={() => setForm({ ...form, correct: index })} /><input className="inp" style={{ flex: 1 }} value={option} onChange={e => setForm({ ...form, options: form.options.map((x, i) => i === index ? e.target.value : x) })} /></div>)}
+      <select className="inp" value={form.difficulty} onChange={e => setForm({ ...form, difficulty: e.target.value })}><option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option></select>
+      <textarea className="inp" rows={2} value={form.explanation} onChange={e => setForm({ ...form, explanation: e.target.value })} />
+      <div className="row"><button className="btn primary" disabled={busy || form.options.length !== 4 || form.options.some(x => !x.trim())} onClick={save}>ذخیره</button><button className="btn" onClick={() => setEdit(false)}>انصراف</button></div>
+    </div>}
+  </Drawer>;
+}
+
+function ImportWizard({ onClose, onDone }) {
+  const [prompt, setPrompt] = useState(null);
+  const [promptError, setPromptError] = useState('');
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [items, setItems] = useState([]);
+  const [classification, setClassification] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [mapItem, setMapItem] = useState(null);
+  useEffect(() => { api.questionImportPrompt().then(setPrompt).catch(e => { const message = e.status === 403 ? 'درون‌ریزی JSON فقط برای مالک فعال است.' : errText(e); setPromptError(message); toast(message, 'err'); }); }, []);
+  const loadItems = async (jobId = preview?.job_id, cls = classification) => {
+    if (!jobId) return;
+    try { const data = await api.questionImportItems(jobId, { classification: cls, skip: 0, limit: 100 }); setItems(data.items || []); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const upload = async () => {
+    if (!file) return; setBusy(true);
+    try { const data = await api.questionImportUpload(file); setPreview(data); await loadItems(data.job_id, ''); }
+    catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
+  const refresh = async () => { const data = await api.questionImportPreview(preview.job_id); setPreview(data); await loadItems(data.job_id); };
+  const decision = async (item, value) => { try { await api.questionImportDecision(preview.job_id, item.id, value); await loadItems(); } catch (e) { toast(errText(e), 'err'); } };
+  const confirm = async () => {
+    setBusy(true); try { const data = await api.questionImportConfirm(preview.job_id); setResult(data); toast('درون‌ریزی نهایی شد ✅'); } catch (e) { toast(errText(e), 'err'); } setBusy(false);
+  };
+  const cancel = async () => { if (preview) { try { await api.questionImportCancel(preview.job_id); } catch { /* already final */ } } onClose(); };
+  const counts = preview?.counts || {};
+  return <Drawer wide title="📥 درون‌ریزی JSON نسخه‌دار" onClose={cancel}>
+    {promptError && <div className="panel panel-pad"><B kind="bad">دسترسی محدود</B><p>{promptError}</p></div>}
+    {!preview && !promptError && <>
+      <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><b>۱. استخراج خارج از سامانه</b><p className="muted">prompt نسخه {prompt?.schema_version || '۱.۰'} را کپی کنید، PDF را با آن به مدل بدهید و فقط JSON خروجی را بارگذاری کنید. ورود مستقیم یا فایل با تعداد گزینه غیر از چهار رد می‌شود.</p>
+        <button className="btn" disabled={!prompt} onClick={() => navigator.clipboard?.writeText(prompt?.prompt || '').then(() => toast('prompt کپی شد'))}>📋 کپی prompt و schema</button></div>
+      <div className="panel panel-pad" style={{ marginTop: 10 }}><b>۲. بارگذاری برای validation و preview</b><input className="inp" type="file" accept="application/json,.json" onChange={e => setFile(e.target.files?.[0] || null)} style={{ marginTop: 10 }} /><button className="btn primary" disabled={!file || busy || !prompt} onClick={upload} style={{ marginTop: 10 }}>{busy ? 'در حال تحلیل…' : 'ساخت پیش‌نمایش'}</button></div>
+    </>}
+    {preview && !result && <>
+      <div className="row" style={{ flexWrap: 'wrap' }}><B>کل {fa(counts.total)}</B><B kind="ok">آماده {fa(counts.ready)}</B><B kind="bad">خطا {fa(counts.errors)}</B><B kind="warn">نامشخص/مبهم {fa(Number(counts.unmatched || 0) + Number(counts.ambiguous || 0))}</B><B>تکراری قطعی {fa(counts.exact_duplicates)}</B><B kind="purple">احتمالی/تعارض {fa(Number(counts.probable_duplicates || 0) + Number(counts.conflicts || 0))}</B></div>
+      <div className="muted" style={{ marginTop: 8 }}>job: <span className="code">{preview.job_id}</span> · فایل: {preview.file_name} · تأیید نهایی idempotent است.</div>
+      <div className="grid g2" style={{ marginTop: 10 }}>{(preview.classification || []).map(group => <div className="panel panel-pad" key={group.lesson}><b>{group.lesson} · {fa(group.count)}</b><div className="muted">{group.topics.map(t => `${t.topic} (${fa(t.count)})`).join('، ')}</div></div>)}</div>
+      <div className="row" style={{ marginTop: 12 }}><select className="inp" value={classification} onChange={async e => { setClassification(e.target.value); await loadItems(preview.job_id, e.target.value); }}><option value="">همه ردیف‌ها</option>{Object.entries(CLASS_LABEL).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><button className="btn" onClick={refresh}>↻ تازه‌سازی</button></div>
+      <DataTable columns={[
+        { k: 'row', label: 'ردیف', render: x => fa(x.row) },
+        { k: 'question', label: 'سؤال', render: x => <div style={{ maxWidth: 280 }}>{x.normalized?.question || x.external_id}<small className="muted" style={{ display: 'block' }}>{x.taxonomy?.lesson || x.raw?.lesson || '—'} / {x.taxonomy?.topic || x.raw?.topic || '—'}</small></div> },
+        { k: 'class', label: 'طبقه‌بندی', render: x => <B kind={x.classification === 'ready' ? 'ok' : x.classification === 'error' ? 'bad' : 'warn'}>{CLASS_LABEL[x.classification] || x.classification}</B> },
+        { k: 'issue', label: 'جزئیات', render: x => <span className="muted">{x.errors?.join('، ') || x.duplicate?.question || '—'}</span> },
+        { k: 'ops', label: '', stop: true, render: x => <div className="row">{['unmatched', 'ambiguous'].includes(x.classification) && <button className="btn sm" onClick={() => setMapItem(x)}>🧭 نگاشت</button>}{['probable_duplicate', 'conflict'].includes(x.classification) && <><button className="btn sm ok" onClick={() => decision(x, 'import')}>ورود</button><button className="btn sm" onClick={() => decision(x, 'skip')}>ردیابی و رد</button></>}{x.decision && <B>{x.decision}</B>}</div> },
+      ]} rows={items} rowKey="id" empty={<Empty icon="📥" text="ردیفی در این طبقه نیست" />} />
+      <div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={busy || preview.status !== 'preview_ready'} onClick={confirm}>{busy ? 'در حال ثبت…' : 'تأیید نهایی و import موارد آماده'}</button><button className="btn" onClick={cancel}>لغو job</button></div>
+    </>}
+    {result && <div><div className="grid g3"><div className="panel stat"><div><div className="v">{fa(result.imported)}</div><div className="l">واردشده</div></div></div><div className="panel stat"><div><div className="v">{fa(result.skipped)}</div><div className="l">ردشده/تکراری</div></div></div><div className="panel stat"><div><div className="v">{fa(result.failed)}</div><div className="l">ناموفق</div></div></div></div><button className="btn primary" onClick={onDone} style={{ marginTop: 12 }}>پایان</button></div>}
+    {mapItem && <ImportMapModal item={mapItem} onClose={() => setMapItem(null)} onSave={async mapping => { try { await api.questionImportMap(preview.job_id, mapItem.id, mapping.lesson_id, mapping.topic_id); setMapItem(null); await refresh(); } catch (e) { toast(errText(e), 'err'); } }} />}
+  </Drawer>;
+}
 
-  const [dl, dk] = DIFF[row.difficulty] || [row.difficulty || '—', ''];
-  return (
-    <Drawer wide title={`🧪 ${readonly ? 'سؤال تأییدشده' : 'سؤال در انتظار بازبینی'} — ${row.lesson || ''}`} onClose={onClose}>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-        <B kind={dk}>{dl}</B>
-        <B>{SRC[row.source] || row.source || '—'}</B>
-        <ScopeBadge scope={row.intake || 'global'} label={row.intake || 'سراسری'} />
-        <span className="spacer" />
-        <span className="muted">👤 {row.creator_name || '—'} · <FaDateTime value={row.created_at} fallback="" /></span>
-      </div>
-
-      {!edit ? (
-        <>
-          <div className="panel panel-pad" style={{ background: 'var(--bg)', lineHeight: 2 }}>{f.question}</div>
-          <div className="grid" style={{ gap: 6, marginTop: 10 }}>
-            {f.options.map((o, i) => (
-              <div key={i} className="badge" style={{ justifyContent: 'flex-start', padding: '8px 10px',
-                borderColor: i === f.correct ? 'rgba(58,210,155,.6)' : undefined,
-                background: i === f.correct ? 'rgba(58,210,155,.07)' : undefined }}>
-                {i === f.correct ? '✅' : '▫️'} {o}
-              </div>
-            ))}
-          </div>
-          <div className="ct3-kv" style={{ marginTop: 10 }}><span className="muted">درس</span><span>{f.lesson || '—'}</span></div>
-          <div className="ct3-kv" style={{ marginTop: 6 }}><span className="muted">مبحث</span><span>{f.topic || '—'}</span></div>
-          {f.explanation && (
-            <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
-              <b>💡 راهنما/توضیح</b>
-              <div style={{ marginTop: 6, lineHeight: 1.9, color: 'var(--txt2)' }}>{f.explanation}</div>
-            </div>
-          )}
-          {!readonly ? <div className="row" style={{ marginTop: 14, flexWrap: 'wrap', gap: 6 }}>
-            <button className="btn ok" onClick={() => onAction('approve')}>✅ تأیید و انتشار</button>
-            <button className="btn danger" onClick={() => onAction('reject')}>❌ رد</button>
-            <span className="spacer" />
-            <button className="btn" onClick={() => setEdit(true)}>✏️ ویرایش پیش از تأیید</button>
-          </div> : <div className="row" style={{ marginTop: 14 }}><B kind="ok">این سؤال منتشر شده و این نما فقط‌خواندنی است</B>
-            <span className="spacer" /><B>{fa(row.attempts)} تلاش · دقت {fa(row.accuracy)}٪</B></div>}
-        </>
-      ) : (
-        <div className="grid" style={{ gap: 10 }}>
-          <label className="muted" style={{ fontSize: 11 }}>متن سؤال
-            <textarea className="inp" rows={4} value={f.question} onChange={e => set('question', e.target.value)} />
-          </label>
-          <div className="row">
-            <input className="inp" placeholder="درس…" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
-            <input className="inp" placeholder="مبحث…" value={f.topic} onChange={e => set('topic', e.target.value)} />
-            <select className="inp" value={f.difficulty} onChange={e => set('difficulty', e.target.value)}>
-              <option value="easy">آسان</option><option value="medium">متوسط</option><option value="hard">سخت</option>
-            </select>
-          </div>
-          <b style={{ marginTop: 4 }}>گزینه‌ها <span className="muted">(تیک = گزینه‌ی صحیح)</span></b>
-          {f.options.map((o, i) => (
-            <div key={i} className="row">
-              <input type="radio" name="q-correct" checked={f.correct === i}
-                     onChange={() => set('correct', i)} aria-label="گزینه‌ی صحیح"
-                     style={{ accentColor: 'var(--ok)' }} />
-              <input className="inp" style={{ flex: 1 }} value={o} onChange={e => setOpt(i, e.target.value)} />
-              <button className="btn sm danger" title="حذف گزینه" aria-label={`حذف گزینه ${i + 1}`} disabled={f.options.length <= 2}
-                      onClick={() => setF(x => ({
-                        ...x,
-                        options: x.options.filter((_, j) => j !== i),
-                        correct: x.correct === i ? 0 : (x.correct > i ? x.correct - 1 : x.correct),
-                      }))}>✕</button>
-            </div>
-          ))}
-          {f.options.length < 6 && (
-            <button className="btn sm" onClick={() => set('options', [...f.options, ''])}>➕ افزودن گزینه</button>
-          )}
-          <label className="muted" style={{ fontSize: 11 }}>راهنما/توضیح (اختیاری)
-            <textarea className="inp" rows={2} value={f.explanation} onChange={e => set('explanation', e.target.value)} />
-          </label>
-          <div className="row">
-            <button className="btn" onClick={() => setEdit(false)}>انصراف</button>
-            <button className="btn primary" style={{ flex: 1 }}
-                    disabled={busy || f.question.trim().length < 5 || f.options.filter(o => o.trim()).length < 2}
-                    onClick={save}>
-              {busy ? '⏳ …' : '💾 ذخیره‌ی ویرایش'}
-            </button>
-          </div>
-        </div>
-      )}
-    </Drawer>
-  );
+function ImportMapModal({ item, onClose, onSave }) {
+  const [value, setValue] = useState({ lesson_id: '', topic_id: '', lesson: '', topic: '' });
+  return <Modal title={`نگاشت taxonomy ردیف ${fa(item.row)}`} onClose={onClose}><TaxonomyFields intake="" value={value} onChange={setValue} /><div className="muted" style={{ marginTop: 8 }}>مقدار ورودی: {item.raw?.lesson || '—'} / {item.raw?.topic || '—'}</div><div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!value.lesson_id || !value.topic_id} onClick={() => onSave(value)}>ثبت نگاشت</button><button className="btn" onClick={onClose}>انصراف</button></div></Modal>;
 }
