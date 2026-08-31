@@ -260,7 +260,7 @@ function EmptyState({
 }
 
 
-function ResourcesPage() {
+function ResourcesPage({ hlFlash = false }) {
   const [
     view,
     setView,
@@ -1487,7 +1487,9 @@ export default function Resources() {
     <ResourceAccessGate
       feature="منابع علوم پایه"
     >
-      <ResourcesPage />
+      <ResourcesPage
+        hlFlash={hlFlash}
+      />
     </ResourceAccessGate>
   );
 }

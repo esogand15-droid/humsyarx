@@ -210,7 +210,7 @@ function ReferenceFile({
 }
 
 
-function ReferencesPage() {
+function ReferencesPage({ hlFlash = false }) {
   const [
     view,
     setView,
@@ -1243,7 +1243,9 @@ export default function References() {
     <ResourceAccessGate
       feature="رفرنس‌های درسی"
     >
-      <ReferencesPage />
+      <ReferencesPage
+        hlFlash={hlFlash}
+      />
     </ResourceAccessGate>
   );
 }
