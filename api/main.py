@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.routers import (
     academic_admin,
@@ -60,6 +61,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+#: مبنای محاسبه‌ی uptime برای /api/health — در زمان import تنظیم می‌شود.
+#: (monotonic: تحت تأثیر پرش ساعت سیستم/NTP قرار نمی‌گیرد.)
+_APP_STARTED_MONO = time.monotonic()
+
 _api_logger = logging.getLogger("api")
 
 
@@ -102,19 +107,64 @@ async def request_context_and_safe_errors(request: Request, call_next):
         current_request_id.reset(token)
 
 
+# ──────────────────────────────────────────────────────────
+#  🚂 مهاجرت Railway — CORS
+#
+#  Mini App و API حالا روی *یک origin* هستند (/app/ و /api/* روی
+#  همان دامنه)، پس مرورگر اصلاً preflight نمی‌فرستد و CORS در
+#  production عملاً بی‌مصرف است. با این حال آن را حذف نمی‌کنیم:
+#  ممکن است یک دامنه‌ی سفارشی/موقت یا کلاینت خارجی در میانه باشد.
+#
+#  🔧 اصلاح یک باگ واقعی: WEBAPP_URL آدرس *صفحه* است
+#     (مثلاً https://example.com/app — مسیر مینی‌اپ)
+#  ولی CORS به *origin* نیاز دارد (https://example.com). گذاشتن
+#  مقدار کامل داخل allow_origins یعنی هیچ‌وقت match نمی‌شود و
+#  همه‌ی درخواست‌های CORS‌دار رد می‌شدند. پس مبدأ parse می‌شود.
+#
+#  سازگاری عقب‌رو: WEBAPP_URL می‌تواند لیست جداشده با کاما باشد؛
+#  مقدار تنظیم‌نشده همچنان "*" است (رفتار قبلی).
+# ──────────────────────────────────────────────────────────
+def _cors_origins(raw: str) -> list[str]:
+    """از هر ورودی، فقط «scheme://host[:port]» را بیرون می‌کشد."""
+    from urllib.parse import urlsplit
+
+    out: list[str] = []
+    for item in (raw or "").split(","):
+        item = item.strip().rstrip("/")
+        if not item:
+            continue
+        if item == "*":
+            return ["*"]
+        # host خام بدون scheme (مثلاً example.com/app)
+        candidate = item if "://" in item else f"https://{item}"
+        parts = urlsplit(candidate)
+        if not parts.netloc:
+            continue
+        origin = f"{parts.scheme}://{parts.netloc}"
+        if origin not in out:
+            out.append(origin)
+    return out or ["*"]
+
+
 WEBAPP_URL = os.getenv(
     "WEBAPP_URL",
     "*",
 )
 
+_CORS_ALLOW_CREDENTIALS = os.getenv("CORS_ALLOW_CREDENTIALS", "true").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+_CORS_ORIGINS = _cors_origins(WEBAPP_URL)
+# با allow_credentials=True، فرستادن "*" از نظر مرورگر نامعتبر است؛
+# در همان حالت فقط originهای صریح مجازند.
+if _CORS_ORIGINS == ["*"] and _CORS_ALLOW_CREDENTIALS:
+    _local_dev = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173"]
+    _CORS_ORIGINS = _local_dev  # فقط dev؛ production با WEBAPP_URL صریح کار می‌کند
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=(
-        [WEBAPP_URL]
-        if WEBAPP_URL != "*"
-        else ["*"]
-    ),
-    allow_credentials=True,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=_CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -269,37 +319,286 @@ app.include_router(
 
 @app.get("/api/health")
 async def health():
+    """سلامت سبک — فقط «API پاسخ می‌دهد».
+
+    عمداً ارزان است و هیچ وابستگی بیرونی (Mongo/تلگرام/ربات) را
+    نمی‌سنجد: Railway همین endpoint را healthcheck می‌کند و نباید
+    با مردن ربات یا کندی Mongo کل سرویس را unhealthy و restart کند.
+    تشخیص کامل → /api/health/deep
+    """
     return {
         "status": "ok",
         "version": "2.0.0",
+        "uptime_s": round(time.monotonic() - _APP_STARTED_MONO, 1),
+        "miniapp": _MINIAPP_DIST_STATE["built"],
     }
 
 
-# ──────────────────────────────────────────────────────────
-#  🖥️ موج WA — سرو Web Admin SPA روی همان دامنه‌ی Railway:
-#  /admin/* → فایل‌های استاتیک build فرانت (webadmin/dist)
-#  - SPA fallback: هر مسیر /admin/... بدون فایل ⇒ index.html
-#  - /api/* و سایر routeهای فعلی کاملاً دست‌نخورده‌اند.
-# ──────────────────────────────────────────────────────────
-_WA_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "webadmin", "dist")
-if os.path.isdir(_WA_DIST):
-    from fastapi.staticfiles import StaticFiles
+@app.get("/api/health/deep", include_in_schema=False)
+async def health_deep():
+    """دیاگنوستیک کامل برای انسان: API + ربات + Mongo + بیلدها.
 
-    class _WebAdminSPA(StaticFiles):
-        """StaticFiles + fallback به index.html برای مسیرهای SPA (بدون تغییر 404های /api)."""
+    هر بخش مستقل سنجیده می‌شود و خطای یکی بقیه را نمی‌کُشد.
+    هرگز به‌عنوان healthcheck استقرار استفاده نشود (کندتر است و
+    به فرایند ربات و دیتابیس وابسته است).
+    """
+    from bot_heartbeat import read_heartbeat
 
-        async def get_response(self, path: str, scope):   # noqa: D401
-            from starlette.exceptions import HTTPException as StarletteHTTPException
-            try:
-                return await super().get_response(path, scope)
-            except StarletteHTTPException as exc:
-                if exc.status_code == 404:
-                    return await super().get_response("index.html", scope)
+    hb = read_heartbeat()
+
+    db_ok = False
+    db_ms = None
+    db_error = ""
+    try:
+        t0 = time.perf_counter()
+        await db.client.admin.command("ping")
+        db_ms = round((time.perf_counter() - t0) * 1000, 1)
+        db_ok = True
+    except Exception as exc:
+        db_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+    return {
+        "status": "ok",
+        "version": "2.0.0",
+        "uptime_s": round(time.monotonic() - _APP_STARTED_MONO, 1),
+        "api": {"ok": True, "pid": os.getpid()},
+        "bot": {
+            "process_ok": _bot_process_ok()[0],
+            "process_pid": _bot_process_ok()[1],
+            "heartbeat": hb,
+            "note": ("heartbeat هیچ‌وقت دیده نشده — آیا bot.py بالا آمده است؟"
+                     if not hb.get("seen") else None),
+        },
+        "mongo": {"ok": db_ok, "ping_ms": db_ms, "error": db_error},
+        "miniapp": dict(_MINIAPP_DIST_STATE),
+        "webadmin": dict(_WEBADMIN_DIST_STATE),
+        "routes": _count_api_operations(),
+    }
+
+
+def _count_api_operations() -> dict:
+    """شماریک خط‌مبِ رگرسیون: ۴۵۰ عملیات OpenAPI (بدون گاردهای schema-less).
+
+    دو عدد کنار هم، چون معیارهای متفاوتی‌اند و هر دو مفیدند:
+      openapi_operations  — آنچه در /openapi.json مستند شده. این همان
+                            خط‌مب مهاجرت است: پیش از تغییرات ۴۵۰ بود و
+                            یک مهاجرت معماری نباید این عدد را جابه‌جا کند
+      api_route_objects   — تعداد شیء route زیر /api در app.routes
+                            (mountهای استاتیک شمرده نمی‌شوند)
+    """
+    paths = app.openapi()["paths"]
+    ops = sum(len([m for m in v if m in
+                   ("get", "post", "put", "patch", "delete", "head", "options")])
+              for p, v in paths.items() if p.startswith("/api"))
+    routes = sum(1 for r in app.routes if getattr(r, "path", "").startswith("/api"))
+    return {"openapi_operations": ops, "api_route_objects": routes,
+            "baseline_expected": 450, "routes_match_baseline": ops == 450}
+
+
+# ──────────────────────────────────────────────────────────
+#  🚂 مهاجرت Railway — گارد 404 برای /api/*
+#
+#  بدون این route، هر مسیر اشتباه زیر /api به دست handlerهای دیگر
+#  یا (در صورت اضافه‌شدن catch-all ریشه در آینده) HTML مینی‌اپ
+#  می‌افتاد. با این گارد، /api/nope همیشه JSON 404 است — یعنی یک
+#  fetch شکست‌خورده هرگز «index.html با status 200» تحویل نمی‌دهد
+#  که در فرانت به خطای رمزگشانی JSON منجر می‌شود.
+#  include_in_schema=False → تعداد عملیات OpenAPI دست‌نخورده می‌ماند.
+# ──────────────────────────────────────────────────────────
+@app.api_route(
+    "/api/{missing_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def _api_not_found(missing_path: str, request: Request):
+    return JSONResponse(
+        status_code=404,
+        content={"detail": "not_found", "path": f"/api/{missing_path}"},
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  🚂 مهاجرت Railway — سرو دو SPA روی یک سرویس
+#
+#     /app/*    → Telegram Mini App   (miniapp/dist)
+#     /admin/*  → Web Admin           (webadmin/dist)  ← بدون تغییر
+#     /api/*    → FastAPI              (routeهای بالاتر همین فایل)
+#
+#  چرا مینی‌اپ روی ریشه نیست؟
+#  مینی‌اپ routeهایی مثل /admin، /admin/users و … دارد. اگر روی ریشه
+#  سرو می‌شد، هر ورودی به /admin می‌توانست توسط SPA-fallback مینی‌اپ
+#  قورت داده شود و وب‌ادمین عملاً دیده نشود. جدا بودن namespace،
+#  تداخل را از ریشه حذف می‌کند.
+#
+#  ترتیب ثبت (FastAPI از بالا به پایین تطبیق می‌دهد):
+#     ۱) همه‌ی routerهای /api          ← هیچ‌وقت SPA نمی‌شوند
+#     ۲) گارد 404 برای /api/*           ← بالا تعریف شده
+#     ۳) mount /admin                   ← Web Admin، اولویت مطلق
+#     ۴) mount /app                     ← فقط پیشوند خودش
+#  mount با پیشوند /app هر مسیری جز /app/… را نمی‌گیرد، پس /admin
+#  و /api هرگز توسط مینی‌اپ shadow نمی‌شوند.
+# ══════════════════════════════════════════════════════════
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WA_DIST = os.path.join(_ROOT, "webadmin", "dist")
+_MA_DIST = os.path.join(_ROOT, "miniapp", "dist")
+
+#: درخواست‌هایی که پسوند فایل دارند، SPA fallback نمی‌گیرند.
+#: چرا؟ اگر deploy نیمه‌کاره بماند، درخواست /app/assets/index-<hash>.js
+#: که وجود ندارد با fallback به index.html پاسخ داده می‌شد: مرورگر
+#: HTML را به‌عنوان JS parse می‌کرد و کاربر «Unexpected token '<'»
+#: می‌دید — یعنی یک صفحه‌ی کاملاً خراب، بی‌سرنخ. حالا همان حالت
+#: 404 است: شکستِ واضح، و «نگهبان مونت» داخل index.html پیام بازیابی
+#: را نشان می‌دهد. با SPA_ASSET_404=0 می‌توان به رفتار قبلی برگشت.
+_SPA_ASSET_404 = os.getenv("SPA_ASSET_404", "1").strip().lower() not in ("0", "false", "no", "off")
+_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
+
+
+class _SpaStaticFiles(StaticFiles):
+    """StaticFiles با fallback به index.html، اما نه برای فایلِ درخواستی.
+
+    مسیرهای بدون پسوند (= route منطقی SPA) → index.html
+    مسیرهای با پسوند (= asset)             → 404 واقعی
+    """
+
+    async def get_response(self, path: str, scope):   # noqa: D102
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+        from starlette.responses import Response as _Resp
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
                 raise
+            if _SPA_ASSET_404 and _EXT_RE.search(path.split("?")[0]):
+                raise
+            try:
+                return await super().get_response("index.html", scope)
+            except StarletteHTTPException:
+                # index.html هم نیست → بیلد انجام نشده؛ 405 مثل قبل نه، 404 روشن
+                return _Resp(status_code=404, content=b"")
 
-    app.mount("/admin", _WebAdminSPA(directory=_WA_DIST, html=True), name="web-admin-spa")
-else:
-    @app.get("/admin")
+
+def _mount_spa(prefix: str, dist: str, name: str, state: dict) -> bool:
+    """اگر بیلد موجود است mount می‌کند؛ در غیر این صورت False."""
+    ok = os.path.isdir(dist) and os.path.isfile(os.path.join(dist, "index.html"))
+    state["built"] = ok
+    state["path"] = os.path.relpath(dist, _ROOT)
+    if ok:
+        app.mount(prefix, _SpaStaticFiles(directory=dist, html=True), name=name)
+    return ok
+
+
+#: وضعیت بیلدها برای /api/health — در زمان import یک‌بار محاسبه می‌شود
+#: (ls‌کردنِ dir در هر healthcheck بی‌مصرف است).
+_MINIAPP_DIST_STATE: dict = {"built": False, "path": "miniapp/dist"}
+_WEBADMIN_DIST_STATE: dict = {"built": False, "path": "webadmin/dist"}
+
+# اول /admin (تا مینی‌اپ هیچ‌وقت فرصت تصاحب این پیشوند را پیدا نکند)
+_WA_MOUNTED = _mount_spa("/admin", _WA_DIST, "web-admin-spa", _WEBADMIN_DIST_STATE)
+# بعد /app
+_MA_MOUNTED = _mount_spa("/app", _MA_DIST, "mini-app-spa", _MINIAPP_DIST_STATE)
+
+
+if not _WA_MOUNTED:
+    # رفتار قبلی حفظ شد (پاسخ تشخیصی به‌جای 404 بی‌نام‌ونشان)، فقط
+    # با status دقیق‌تر و راهنمای build.
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/", include_in_schema=False)
     async def _wa_not_built():
-        return {"detail": "web-admin build not present (webadmin/dist)"}
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "web-admin build not present (webadmin/dist)",
+                "hint": "build it: cd webadmin && npm ci && npm run build",
+            },
+        )
+
+
+
+if not _MINIAPP_DIST_STATE["built"]:
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/", include_in_schema=False)
+    async def _ma_not_built():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "mini_app_build_not_present",
+                "hint": "miniapp/dist/index.html not found — build it "
+                        "(cd miniapp && npm ci && npm run build) or let the "
+                        "Docker image build it",
+                "expected": os.path.relpath(_MA_DIST, _ROOT),
+            },
+        )
+
+
+# ──────────────────────────────────────────────────────────
+#  ریشه‌ی دامنه → مینی‌اپ
+#  (روی دامنه‌ی Railway، کاربر/لینک قدیمی ممکن است / را بزند؛
+#   302 به /app/ او را به مقصد می‌رساند. /admin و /api دست‌نخورده‌اند.)
+# ──────────────────────────────────────────────────────────
+@app.get("/", include_in_schema=False)
+async def _root():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/app/", status_code=307)
+
+
+# ──────────────────────────────────────────────────────────
+#  🗂️ سربرگ‌های کشِ فایل‌های استاتیک مینی‌اپ
+#  معادل رفتار vercel.json قبلی، تا حذف Vercel تغییر رفتاری ایجاد نکند:
+#    /app/assets/<hash>  → immutable، یک‌ساله (اسم با hash عوض می‌شود)
+#    بقیه‌ی /app/*        → must-revalidate (تا deploy تازه سریع دیده شود)
+# ──────────────────────────────────────────────────────────
+@app.middleware("http")
+async def _spa_cache_headers(request, call_next):
+    resp = await call_next(request)
+    try:
+        path = request.url.path or ""
+    except Exception:
+        path = ""
+    if path.startswith("/app/assets/") or path.startswith("/admin/assets/"):
+        resp.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif path == "/app" or path.startswith("/app/") or path == "/admin" or path.startswith("/admin/"):
+        if resp.headers.get("Cache-Control") is None and resp.status_code == 200:
+            resp.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+    # 📱 Telegram Mini App در WebView باز می‌شود ⇒ هرگز نباید
+    # X-Frame-Options/CSPframe-ancestors روی /app/* بگذاریم.
+    # (پالیسی امنیتی وب‌ادمین عمداً به اینجا سرایت نمی‌کند.)
+    return resp
+
+
+# ──────────────────────────────────────────────────────────
+#  👁️ حضور process ربات (برای /api/health/deep)
+#  همان ایده‌ی /api/admin/bot-status، اما کش‌شده: سلامت‌سنجی هر
+#  چند ثانیه نباید هر بار /proc را اسکن کند.
+# ──────────────────────────────────────────────────────────
+_BOT_PROC_CACHE = {"at": 0.0, "ok": False, "pid": None}
+_BOT_PROC_TTL = float(os.getenv("BOT_PROC_CACHE_TTL", "10"))
+
+
+def _bot_process_ok() -> tuple[bool, int | None]:
+    now = time.monotonic()
+    if now - _BOT_PROC_CACHE["at"] < _BOT_PROC_TTL:
+        return _BOT_PROC_CACHE["ok"], _BOT_PROC_CACHE["pid"]
+    ok, pid = False, None
+    try:
+        import psutil
+
+        me = os.getpid()
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                args = p.info.get("cmdline") or []
+                name = (p.info.get("name") or "").lower()
+                exe = os.path.basename(args[0]).lower() if args else ""
+                if p.info.get("pid") == me:
+                    continue
+                if ("python" in name or exe.startswith("python")) and any(
+                    os.path.basename(str(a)) == "bot.py" for a in args[1:]
+                ):
+                    ok, pid = True, p.info.get("pid")
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        ok, pid = False, None
+    _BOT_PROC_CACHE.update({"at": now, "ok": ok, "pid": pid})
+    return ok, pid
