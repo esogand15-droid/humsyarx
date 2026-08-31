@@ -13,11 +13,21 @@
 #
 #  Vercel در این معماری هیچ نقشی ندارد؛ مینی‌اپ هم‌ریشه‌ی API است.
 #
-#  ⚠️ replica باید ۱ بماند (railway.json) — job_queue و یادآوری‌ها
-#  در هر replica جدا اجرا می‌شوند و پیام‌ها تکراری می‌شوند.
+#  ⚠️ replica باید ۱ بماند (railway.json / Settings → Replicas) — job_queue
+#  و یادآوری‌ها در هر replica جدا اجرا می‌شوند و پیام‌ها تکراری می‌شوند.
 #
 #  layer caching: فایل‌های package*.json و requirements.txt جدا کپی
 #  می‌شوند تا نصب وابستگی‌ها تا زمانی که تغییر نکرده‌اند کش بماند.
+#
+#  ── قاعده‌ی ترتیب در این فایل (تغییرش نده) ──
+#  `COPY` توسط buildkit با کاربر root اجرا می‌شود، ولی `RUN` با
+#  `USER`ی که ست شده. پس `USER humsyar` **باید آخرین دستور فایل**
+#  باشد: هر RUN/COPY--chown بعد از آن با uid 10001 اجرا می‌شود و
+#  مثلاً `chmod +x /entrypoint.sh` روی فایلِ root‌owner با
+#  `Operation not permitted` می‌ترکد (دقیقاً همان خطایی که در
+#  بیلد Railway دیدیم). برای همین همه‌ی کارهای نیازمند root
+#  (useradd، chown، chmod) بالای USER هستند و بعد از USER فقط
+#  دستورهای متادیتا (EXPOSE/ENTRYPOINT/CMD/HEALTHCHECK) می‌آیند.
 # ════════════════════════════════════════════════════════════════════
 
 # ────────────────────────────────────────────────────────────
@@ -80,24 +90,44 @@ COPY . .
 COPY --from=frontend /build/miniapp/dist  ./miniapp/dist
 COPY --from=frontend /build/webadmin/dist ./webadmin/dist
 
-# ── کاربر غیرroot ──
-# /tmp تنها جایی است که این process می‌نویسد (heartbeat ربات) و
-# از قبل world-writable است؛ هیچ داده‌ی ماندگار دیگری روی دیسک
-# نوشته نمی‌شود (همه‌ی خروجی‌ها BytesIO و آپلودها در حافظه‌اند).
+# ── کاربر غیرroot (همه‌ی کارهای root همین‌جا، قبل از USER) ──
+# /tmp تنها جایی است که این process می‌نویسد (heartbeat ربات، سوکت
+# supervisor، pidfile) و از قبل world-writable است؛ هیچ داده‌ی
+# ماندگار دیگری روی دیسک نوشته نمی‌شود (خروجی‌ها BytesIO‌اند).
 RUN groupadd --gid 10001 humsyar \
  && useradd  --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin humsyar \
  && mkdir -p /tmp \
  && chmod 1777 /tmp \
  && chown -R humsyar:humsyar /srv/humsyar
-USER humsyar
 
+# PORT فقط پیش‌فرض است؛ Railway خودش PORT را inject می‌کند و آن
+# مقدار بر این ENV اولویت دارد (عمداً در Variables ستش نکنید).
 ENV PORT=8000 \
     PYTHONPATH=/srv/humsyar \
     BOT_HEARTBEAT_FILE=/tmp/humsyar-bot-heartbeat.json
 
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+
+# bit اجرایی را خودمان قطعی می‌کنیم: git معمولاً آن را نگه می‌دارد،
+# ولی اگر فایل از ZIP/ویرایشگر ویندوزی رد شود ممکن است ۰۶۴۴ بیاید و
+# آن‌وقت ENTRYPOINT هنگام *اجرا* می‌میرد (exec format error /
+# Permission denied). این chmod باید این‌جا (هنوز root) انجام شود.
+# بقیه‌ی خط‌ها یک self-check زمان build‌اند: اگر entrypoint، config،
+# supervisord یا هر دو dist درست نسازده نشوند، build با پیام روشن
+# می‌ایستد — نه اینکه سرویس بالا بیاید و /app/ سفید بدهد.
+RUN set -eu; \
+    chmod 0755 /entrypoint.sh; \
+    test -x /entrypoint.sh                || { echo "Dockerfile selfcheck: /entrypoint.sh executable نیست"; exit 1; }; \
+    test -f /etc/supervisor/conf.d/supervisord.conf \
+                                          || { echo "Dockerfile selfcheck: supervisord.conf کپی نشده"; exit 1; }; \
+    test -f /srv/humsyar/miniapp/dist/index.html  \
+                                          || { echo "Dockerfile selfcheck: miniapp/dist نساخته شد"; exit 1; }; \
+    test -f /srv/humsyar/webadmin/dist/index.html \
+                                          || { echo "Dockerfile selfcheck: webadmin/dist نساخته شد"; exit 1; }; \
+    command -v supervisord >/dev/null      || { echo "Dockerfile selfcheck: supervisord در PATH نیست"; exit 1; }; \
+    id humsyar >/dev/null                  || { echo "Dockerfile selfcheck: کاربر humsyar ساخته نشده"; exit 1; }; \
+    /entrypoint.sh /bin/true >/dev/null     # entrypoint را واقعاً اجرا می‌کند (shebang/CRLF/set -e)
 
 EXPOSE 8000
 
@@ -111,3 +141,8 @@ CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]
 # کانتینر را unhealthy و restart کند.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/api/health" || exit 1
+
+# ── آخرین دستور: کاربر غیرroot ──
+# عمداً این‌جاست (قبلش همه‌ی RUNها root باشند). بعد از این خط هیچ
+# RUN اضافه نکنید.
+USER humsyar
