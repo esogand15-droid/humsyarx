@@ -557,13 +557,26 @@ import os as _os
 
 def webapp_url(link: str = '') -> str:
     """🔗 url مطلق مینی‌اپ برای Deep Link (خود link از / شروع می‌شود).
-    اگر WEBAPP_URL تنظیم نشده (محیط لوکال)، None → بدون دکمه."""
+    اگر WEBAPP_URL تنظیم نشده (محیط لوکال)، None → بدون دکمه.
+
+    🚂 مهاجرت Railway — مقدار درست:
+        WEBAPP_URL=https://<domain>/app
+    (مینی‌اپ روی پیشوند /app/ سرو می‌شود، نه ریشه‌ی دامنه.)
+    این تابع همان source of truth همه‌ی دکمه‌های web_app است، پس یک
+    بار تنظیم کردن متغیر، همه‌ی لینک‌ها را جابه‌جا می‌کند.
+
+    دو نکته‌ی رفتاری که اینجا تضمین شده‌اند:
+      • هرگز اسلش دوبل ساخته نمی‌شود: /app + /schedule → /app/schedule
+        (نه /app//schedule) — با rstrip روی پایه و '/' اجباری روی link
+      • query string و fragment داخل link سالم می‌مانند
+        ('/me/subscription?tab=pay#x' دست‌نخورده می‌چسبد)
+    """
     base = (_os.getenv('WEBAPP_URL') or '').strip()
     if not base or base == '*':
         return None
     if link and not link.startswith('/'):
         link = '/' + link
-    if link and '://' not in base:  # دفاع در برابر host خام
+    if '://' not in base:  # دفاع در برابر host خام — برای link خالی هم لازم است
         base = 'https://' + base
     return (base.rstrip('/') + link) if link else base.rstrip('/')
 

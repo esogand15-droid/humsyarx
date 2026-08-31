@@ -1562,7 +1562,25 @@ def build_application() -> Application:
 #  post_init: ایندکس‌ها + job‌ها
 # ══════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════
+#  💓 موج Railway — تپش قلب (diagnostics بین processها)
+#  فایل تنها محل اشتراک API و bot در یک container است؛ مسیر با
+#  BOT_HEARTBEAT_FILE قابل تغییر است (پیش‌فرض /tmp).
+# ══════════════════════════════════════════════════
+from bot_heartbeat import HEARTBEAT_INTERVAL
+
+
+async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
+    from bot_heartbeat import write_heartbeat
+    write_heartbeat({'phase': 'running'})
+
+
 async def post_init(application: Application):
+    # 💓 اولین تپش قلب: همان لحظه که ربات بالا آمد (قبل از هر کار کند)
+    # نوشته می‌شود تا /api/health/deep بداند polling شروع شده است.
+    from bot_heartbeat import write_heartbeat
+    write_heartbeat({'phase': 'post_init', 'started_at': now_utc().isoformat()})
+
     await db.ensure_indexes()
     logger.info("✅ ایندکس‌های دیتابیس آماده شدند")
 
@@ -1629,6 +1647,18 @@ async def post_init(application: Application):
             interval=20,
             first=10,
             name='mini_app_outbox'
+        )
+
+        # 💓 موج Railway — تپش قلب ربات برای /api/health/deep
+        # ربات هر BOT_HEARTBEAT_INTERVAL ثانیه یک فایل کوچک در /tmp
+        # می‌نویسد؛ API با عمرِ آن می‌فهمد event loop ربات واقعاً جلو
+        # می‌رود (psutil به‌تنهایی فقط می‌گوید PID زنده است — نه اینکه
+        # حلقه قفل نشده باشد). خطای نوشتن هیچ‌وقت ربات را متوقف نمی‌کند.
+        application.job_queue.run_repeating(
+            bot_heartbeat_job,
+            interval=HEARTBEAT_INTERVAL,
+            first=0,
+            name='bot_heartbeat',
         )
 
         # FIX جدید: نوتیف منابع جدید — هر ساعت چک می‌شود، خودش تشخیص
@@ -1710,13 +1740,35 @@ async def post_init(application: Application):
         logger.warning('   نصب با: pip install "python-telegram-bot[job-queue]"')
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """پرچم boolean از env — مقادیر 1/true/yes/on = True."""
+    raw = (os.getenv(name) or '').strip().lower()
+    if not raw:
+        return default
+    return raw in ('1', 'true', 'yes', 'on')
+
+
 def main():
     app = build_application()
     app.post_init = post_init
 
+    # 🔁 موج Railway — updateهای pending دیگر کورکورانه دور ریخته نمی‌شوند.
+    #
+    # چرا این تغییر لازم بود: drop_pending_updates=True در ابتدای هر
+    # polling، صف updateهای تلگرام را خالی می‌کند. در Railway هر deploy /
+    # restart (شامل ری‌استارت خودکار supervisor پس از کرش) آن پیام‌ها را
+    # برای همیشه حذف می‌کرد: پیامی که کاربر حین deploy فرستاده بود هیچ‌وقت
+    # پردازش نمی‌شد و کاربر بی‌پاسخ می‌ماند.
+    #
+    # رفتار پیش‌فرض حالا «حفظ» است؛ با BOT_DROP_PENDING=1 می‌توان آگاهانه
+    # برگشت (مثلاً برای پاک‌کردن یک صف گیرکرده‌ی بزرگ پس از یک incident).
+    drop_pending = _env_flag('BOT_DROP_PENDING', False)
+    if drop_pending:
+        logger.warning("⚠️ BOT_DROP_PENDING=1 — updateهای pending در شروع حذف می‌شوند")
+
     logger.info("🩺 ربات پزشکی شروع به کار کرد...")
     app.run_polling(
-        drop_pending_updates=True,
+        drop_pending_updates=drop_pending,
         allowed_updates=Update.ALL_TYPES,
         poll_interval=0.5,
     )
