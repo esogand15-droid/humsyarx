@@ -242,7 +242,10 @@ class ExamService:
             session_set.update({"status": "finished", "finished_at": generated_at})
         await self.sessions.update_one(
             {"_id": session["_id"]},
-            {"$set": session_set, "$push": {"generation_ids": generation_id}})
+            # 🛡 AUDIT-V3 — کرانه: فایل‌ها در question_pdf_generations می‌مانند؛
+                # اینجا فقط ۱۰۰ اشاره‌گرِ آخر نگه داشته می‌شود.
+                {"$set": session_set,
+                 "$push": {"generation_ids": {"$each": [generation_id], "$slice": -100}}})
         return content, {"session_id": session_id, "generation_id": generation_id,
                          "exam_code": meta.exam_code, "mode": mode,
                          "questions": len(questions), "generated_at": generated_at,

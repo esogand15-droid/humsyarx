@@ -572,10 +572,14 @@ async def send_backup_to_bot_chat(bot, chat_id: int, data: dict, filename: str =
         f"{stats_text}\n\n"
         f"📦 حجم: {len(file_bytes)//1024} KB"
     )
-    await bot.send_document(
+    sent = await bot.send_document(
         chat_id, document=file_obj, caption=caption,
         parse_mode='HTML', filename=fname
     )
+    # 🛡 AUDIT-V2 — شناسه‌ی پیام برگردانده می‌شود تا سیاست نگهداری
+    # (retention) بتواند بکاپ‌های خودکارِ قدیمی را-best-effort- پاک کند.
+    # دو فراخوان فعلی مقدار خروجی را نادیده می‌گیرند ⇒ سازگاری کامل.
+    return getattr(sent, 'message_id', None)
 
 
 async def send_backup_from_web(bot, chat_id: int, section: str = 'all') -> int:
@@ -1036,12 +1040,12 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         d = dict(doc)
         if '_id' in d and isinstance(d['_id'], str):
             try: d['_id'] = ObjectId(d['_id'])
-            except: pass
+            except Exception: pass   # 🛡 §۲۰ — bare except، CancelledError را هم می‌بلعید
         # فیلدهای رابطه‌ای
         for fk in ['lesson_id','session_id','subject_id','book_id','user_id']:
             if fk in d and isinstance(d[fk], str) and len(d[fk]) == 24:
                 try: d[fk] = str(d[fk])  # نگه داریم به صورت str
-                except: pass
+                except Exception: pass
         return d
 
     async def _upsert_many(col, docs):

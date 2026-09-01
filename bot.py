@@ -56,7 +56,7 @@ from admin import (
     handle_admin_text, BROADCAST
 )
 from backup import backup_callback, backup_file_handler, backup_confirm_restore
-from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, CONTENT_ICONS, fmt_jalali, now_tehran_str, webapp_kb
+from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, safe_send_ex, safe_send_status, spawn_bg, CONTENT_ICONS, fmt_jalali, now_tehran_str, webapp_kb
 from time_utils import (
     TEHRAN, format_time_fa, now_tehran, now_utc, parse_gregorian_date,
     parse_machine_datetime, remaining_days, utc_now_iso, week_key_tehran,
@@ -303,6 +303,26 @@ async def _build_new_resources_text(new_items: list) -> str:
 
 
 async def _run_new_resources_notif(bot, force: bool = False) -> dict:
+    """🛡 AUDIT-A2 — پوسته‌ی «قفل اجرا» روی هسته‌ی نوتیف منابع.
+
+    سه راه ورود به این هسته وجود دارد: جاب زمان‌بندی‌شده، دکمه‌ی «🚀 ارسال
+    فوری» در پنل ادمین (admin.py) و سیگنال outboxِ __FORCE_RES_NOTIF__؛
+    هم‌پوشانی آن‌ها قبلاً می‌توانست یک batch را دو بار برای همان کاربران
+    بفرستد (دورِ دوم هنوز last_sent را ثبت نکرده و `seen_by` هم به‌روز
+    نشده). با ادعای یکتای `res_notif_run` دورِ دوم بی‌اثر برمی‌گردد؛ TTL
+    ۱۵ دقیقه‌ای هم اگر پروسه میانه‌ی کار بمیرد قفل را آزاد می‌کند (وگرنه
+    نوتیف برای همیشه خاموش می‌ماند).
+    """
+    if not await db.op_claim('res_notif_run', 'global', ttl_seconds=15 * 60):
+        logger.warning("📚 new_resources_notif: دور قبلی هنوز در حال اجراست — این فراخوانی رد شد")
+        return {'sent': False, 'reason': 'already_running'}
+    try:
+        return await _new_resources_run(bot, force=force)
+    finally:
+        await db.op_release('res_notif_run', 'global')
+
+
+async def _new_resources_run(bot, force: bool = False) -> dict:
     """
     FIX جدید: هسته‌ی مشترک نوتیف منابع جدید — هم توسط جاب ساعتی و هم
     توسط دکمه‌ی «🚀 ارسال فوری» در پنل ادمین صدا زده می‌شود.
@@ -527,6 +547,8 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                         )
                     elif result.get("reason") == "no_items":
                         msg = "ℹ️ منبع اعلام‌نشده‌ای در صف نبود."
+                    elif result.get("reason") == "already_running":
+                        msg = "⚠️ یک دور ارسال قبلاً همین حالا در جریان است؛ این درخواست رد شد."
                     else:
                         msg = ("❌ ارسال فوری انجام نشد.\n"
                                f"<code>{html.escape(str(result.get('error') or result.get('reason') or 'نامشخص')[:300])}</code>")
@@ -610,10 +632,17 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
                         "sent": True, "sent_at": utc_now_iso()}})
                     if _code:
-                        asyncio.create_task(
-                            _discount_soldout_edit_task(context.bot, _code))
+                        # 🛡 AUDIT-M1 — مرجع + لاگ خطا (قبلاً تسک بی‌صاحب بود)
+                        spawn_bg(_discount_soldout_edit_task(context.bot, _code),
+                                 'discount_soldout_edit')
                 except Exception as e:
+                    # 🛡 AUDIT-A3 — مثل الگوی __EXCEL_EXPORT__: حتی در شکست هم
+                    # مصرف می‌شود، وگرنه سیگنال هر ۲۰ ثانیه تا ابد تکرار می‌شود.
                     logger.error(f"__DISCOUNT_EXHAUSTED__ failed: {e}")
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": True, "error": str(e)[:200],
+                        "sent_at": utc_now_iso(),
+                    }})
                 continue
 
             # سایر سیگنال‌های داخلی (__*) متنی نیستند — skip
@@ -647,11 +676,43 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                 await refresh_campaign(campaign)
             else:
                 # 🧠 N2 — دکمه‌ی Deep Link (اگر صف لینک داشت)
-                ok = await safe_send(context.bot, d["chat_id"], text,
-                                     parse_mode="HTML", reply_markup=_dl_kb)
-                await coll.update_one({"_id": d["_id"]}, {"$set": {
-                    "sent": ok, "sent_at": utc_now_iso(), "failed": not ok,
-                }})
+                ok, err, exc = await safe_send_ex(context.bot, d["chat_id"], text,
+                                                  parse_mode="HTML", reply_markup=_dl_kb)
+                if ok:
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": False, "status": "sent",
+                        "sent_at": utc_now_iso(),
+                    }})
+                else:
+                    # 🛡 AUDIT-A3 — سه سرنوشت جدا، نه «sent:False» تا ابد:
+                    # permanent ⇒ سند بسته می‌شود (skipped) تا صفِ مرده هر ۲۰
+                    # ثانیه بی‌نهایت retry نشود و پنالتی تلگرام نسازد؛
+                    # backoff ⇒ دقیقاً به اندازه‌ی retry_after عقب؛
+                    # retry ⇒ بک‌آف نمایی تا ۴ تلاش، بعد «dead» (قابل دیدن در
+                    # لاگ/پنل، نه گم‌شده در حلقه).
+                    kind = safe_send_status(exc)
+                    attempts = int(d.get("attempts") or 0) + 1
+                    base = {"attempts": attempts, "failed": True,
+                            "error": str(err or "")[:300]}
+                    if kind == "permanent":
+                        base.update({"sent": True, "skipped": True,
+                                     "status": "skipped", "sent_at": utc_now_iso()})
+                        logger.info(f"📤 outbox #{d['_id']} بسته شد (غیرقابل‌ارسال): "
+                                    f"uid={d['chat_id']} err={str(err)[:120]}")
+                    elif kind == "backoff":
+                        delay = min(max(int(getattr(exc, "retry_after", 5) or 5), 5), 900)
+                        base.update({"status": "backoff", "sent": False,
+                                     "send_at": (now_utc() + timedelta(seconds=delay)).isoformat(timespec="microseconds")})
+                    elif attempts >= 4:
+                        base.update({"sent": True, "skipped": False, "status": "dead",
+                                     "sent_at": utc_now_iso()})
+                        logger.warning(f"📤 outbox #{d['_id']} بعد از {attempts} تلاش مرد "
+                                       f"(uid={d['chat_id']}): {str(err)[:120]}")
+                    else:
+                        delay = 60 * (2 ** (attempts - 1))
+                        base.update({"status": "retry", "sent": False,
+                                     "send_at": (now_utc() + timedelta(seconds=delay)).isoformat(timespec="microseconds")})
+                    await coll.update_one({"_id": d["_id"]}, {"$set": base})
         if docs:
             logger.info(f"📤 mini_app_outbox: {len(docs)} پیام پردازش شد")
     except Exception as e:
@@ -738,9 +799,39 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
         from backup import build_full_backup_data, send_backup_to_bot_chat
         from utils import send_audit_log
         data = await build_full_backup_data()
-        await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
+        msg_id = await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
         await db.set_setting('auto_backup_last_run', utc_now_iso())
         logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
+        # 🛡 AUDIT-V2 — نگهداریِ کرانه‌دار: سابقه‌ی بکاپ‌های خودکار در یک
+        # لیست bounded نگه داشته می‌شود و پیام‌های قدیمی‌تر از
+        # BACKUP_AUTO_KEEP (پیش‌فرض ۱۴) best-effort پاک می‌شوند.
+        # سه قاعده‌ی ایمنی: (۱) فقط پیام‌های خودِ همین job (msg_id که
+        # خودمان گرفته‌ایم) هدف قرار می‌گیرند؛ (۲) همیشه KEEP تایِ آخر
+        # دست‌نخورده می‌ماند؛ (۳) مسیر پاک‌سازی در try مستقل است —
+        # شکستِ آن هرگز بکاپ‌گیری موفق را ناموفق گزارش نمی‌کند.
+        try:
+            keep = max(3, int(os.getenv('BACKUP_AUTO_KEEP', '14') or 14))
+            hist = await db.get_setting('auto_backup_history', []) or []
+            if not isinstance(hist, list):
+                hist = []
+            hist.append({'at': utc_now_iso(), 'msg_id': msg_id,
+                         'size_kb': (len(data.get('__bytes__', '') or '') // 1024) or None,
+                         'users': (data.get('summary') or {}).get('users', 0)})
+            hist = hist[-(keep * 3):]                       # کرانه‌ی خودِ سابقه
+            stale = hist[:-keep] if len(hist) > keep else []
+            for row in stale:
+                mid = row.get('msg_id')
+                if not mid or row.get('deleted'):
+                    continue
+                try:
+                    await context.bot.delete_message(ADMIN_ID, int(mid))
+                    row['deleted'] = True
+                except Exception as de:
+                    logger.debug(f"پاک‌سازی بکاپ کهنه ناموفق (بی‌خطر): {de}")
+            await db.set_setting('auto_backup_history', hist)
+            await db.set_setting('auto_backup_consec_fail', 0)
+        except Exception as re_err:
+            logger.warning(f"auto_backup retention خطای جزئی: {re_err}")
         # FIX جدید طبق سند: بکاپ‌گیری باید لاگ شود — این یک job
         # سیستمی است (نه عمل یک ادمین خاص)، پس actor خود ربات است.
         summary = data.get('summary', {})
@@ -752,11 +843,26 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             tags=['بکاپ_خودکار']
         )
     except Exception as e:
+        # 🛡 AUDIT-V2 — شکست‌ها شمرده می‌شوند و بعد از ۳ بار به ادمین
+        # گفته می‌شود؛ قبلاً یک بکاپ‌گیریِ خراب می‌توانست ماه‌ها بی‌صدا بماند.
         logger.error(f"auto_backup_job error: {e}")
         try:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"⚠️ <b>خطا در بکاپ خودکار</b>\n<code>{str(e)[:300]}</code>",
+            nf = int(await db.get_setting('auto_backup_consec_fail', 0) or 0) + 1
+            await db.set_setting('auto_backup_consec_fail', nf)
+            if nf in (3, 7):
+                from utils import safe_send as _ss
+                await _ss(context.bot, ADMIN_ID,
+                          f"⚠️ بکاپ خودکار {nf} بار پشت‌سرهم ناموفق بود.\n"
+                          f"آخرین خطا: {str(e)[:200]}")
+        except Exception:
+            pass
+        try:
+            # 🛡 AUDIT-§۲۴/§۸۲ — در مسیر خطا هم safe_send: اگر ادمین بات را
+            # بلاک کرده باشد یا متنِ خطا HTML را بشکند، خودِ اطلاع‌رسانی
+            # نباید دوباره منفجر شود (قبلاً خطای دوم در except بی‌صدا می‌مرد).
+            await safe_send(
+                context.bot, ADMIN_ID,
+                f"⚠️ <b>خطا در بکاپ خودکار</b>\n<code>{html.escape(str(e)[:300])}</code>",
                 parse_mode='HTML'
             )
             # FIX جدید: خطای بکاپ هم باید در Audit Log ثبت شود — CRITICAL
@@ -767,8 +873,9 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
                 actor_role='سیستم', details=str(e)[:200],
                 tags=['خطای_بکاپ']
             )
-        except Exception:
-            pass
+        except Exception as _be:
+            # 🛡 AUDIT-§۲۰ — «pass» با دلیل: لاگ، نه سکوت
+            logger.warning(f"auto_backup_job: اطلاع‌رسانی خطای بکاپ هم شکست خورد: {_be}")
 
 
 async def weekly_report_job(context: ContextTypes.DEFAULT_TYPE):
@@ -919,21 +1026,34 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
-    # از اینجا به بعد فقط خطاهای واقعی — همان‌طور که بود
+    # از اینجا به بعد فقط خطاهای واقعی
     logger.error(f"Exception: {context.error}", exc_info=context.error)
     if ADMIN_ID:
         try:
             uid_info = ""
-            if isinstance(update, Update) and update.effective_user:
+            ctx_info = ""
+            if isinstance(update, Update):
                 u = update.effective_user
-                uid_info = f"\n👤 کاربر: {u.full_name} | آیدی: {u.id}"
+                if u:
+                    # 🛡 AUDIT-T1b — full_name ورودیِ خودِ کاربر است: بدون escape
+                    # می‌توانست با <a href> در DM خطای ادمین لینک کاذب بسازد.
+                    uid_info = f"\n👤 کاربر: {html.escape(u.full_name or '')} | آیدی: {u.id}"
+                if update.callback_query and update.callback_query.data:
+                    # 🛡 AUDIT-§۳۲ — بدون این خط، «کدام دکمه» قابل بازسازی نبود
+                    ctx_info = f"\n🔘 data: <code>{html.escape(str(update.callback_query.data)[:80])}</code>"
+                elif update.message and update.message.text:
+                    ctx_info = f"\n💬 متن: <code>{html.escape(update.message.text[:80])}</code>"
+            # 🛡 AUDIT-§۲۴ — خودِ متن خطا هم کاربر-کنترل می‌تواند باشد (پیام
+            # تلگرام شامل متن ورودی)؛ escape نشسته بود و با «<» پیامِ هشدار
+            # می‌ترکید و در `except: pass` گم می‌شد ⇒ ادمین هرگز از خطا خبردار
+            # نمی‌شد. safe_send هم فالبکِ بدون HTML دارد.
             err_text = (
-                f"⚠️ <b>خطای ربات</b>{uid_info}\n"
-                f"<code>{err_str[:300]}</code>"
+                f"⚠️ <b>خطای ربات</b>{uid_info}{ctx_info}\n"
+                f"<code>{html.escape(err_str[:300])}</code>"
             )
-            await context.bot.send_message(ADMIN_ID, err_text, parse_mode='HTML')
-        except Exception:
-            pass
+            await safe_send(context.bot, ADMIN_ID, err_text, parse_mode='HTML')
+        except Exception as _eh:
+            logger.warning(f"error_handler: ارسال هشدار به ادمین شکست خورد: {_eh}")
 
 
 # ══════════════════════════════════════════════════

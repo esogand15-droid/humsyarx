@@ -1,3 +1,4 @@
+import logging
 """🎫 Tickets"""
 import os
 from datetime import datetime
@@ -78,7 +79,10 @@ async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
         await notif.insert_one({"type":"new_ticket","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"🔔 <b>تیکت #{tid}</b>\n👤 {db_user.get('name','')}\n📋 {body.subject}\n\n{body.message.strip()[:200]}",
             "sent":False,"created_at":utc_now_iso()})
-    except Exception: pass
+    except Exception as _ne:
+        # 🛡 AUDIT-R6 — اگر درجِ صف اعلان شکست بخورد، ادمین هرگز از این تیکت
+        # باخبر نمی‌شود. درخواست کاربر را نمی‌شکنیم، ولی ردپا می‌ماند.
+        logging.getLogger(__name__).warning("notif enqueue failed (تیکت): %s", _ne)
     # 🔔 موج ۴.۹۰ — ثبت تیکت در مرکز اعلان: کاربر بعداً راحت سراغش می‌رود
     await db.inbox_add(uid, 'ticket_created',
         f"🎫 تیکت #{tid} ثبت شد",
@@ -103,5 +107,8 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
         await notif.insert_one({"type":"ticket_reply","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"💬 <b>پاسخ دانشجو #{tid}</b>\n{msg[:200]}",
             "sent":False,"created_at":utc_now_iso()})
-    except Exception: pass
+    except Exception as _ne:
+        # 🛡 AUDIT-R6 — اگر درجِ صف اعلان شکست بخورد، ادمین هرگز از این تیکت
+        # باخبر نمی‌شود. درخواست کاربر را نمی‌شکنیم، ولی ردپا می‌ماند.
+        logging.getLogger(__name__).warning("notif enqueue failed (تیکت): %s", _ne)
     return {"ok":True}

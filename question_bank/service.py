@@ -239,6 +239,16 @@ class QuestionBankService:
             await self.notify_review_queue(document)
         return {"question": document, "duplicates": duplicates}
 
+    # 🛡 AUDIT-V3 — تاریخچه‌ی بازبینی روی سند سؤال کرانه دارد (هر گذار ~۱۲۰
+    # بایت؛ رکوردِ دائمی در audit_logs باقی می‌ماند، پس این کرانه فقط
+    # پیش‌گیری از سقف ۱۶ مگابایتِ Mongo است، نه حذف سابقه).
+    REVIEW_HISTORY_CAP = 200
+
+    @staticmethod
+    def _capped(item, cap: int) -> dict:
+        """$push با کرانه — تنها شکل مجاز `$slice` (همراه `$each`)."""
+        return {"$each": [item], "$slice": -int(cap)}
+
     async def notify_review_queue(self, question: Mapping) -> None:
         """Enqueue only authorized reviewers using bulk role/scope resolution."""
         admin_id = int(os.getenv("ADMIN_ID", "0")); creator = int(question.get("creator_id") or 0)
@@ -320,7 +330,9 @@ class QuestionBankService:
         result = await self.db.questions.find_one_and_update(
             {"_id": document["_id"], "$or": [{"status": current}, {"status": {"$exists": False}}]},
             {"$set": update, "$inc": {"version": 1},
-             "$push": {"review_history": {"from": current, "to": target, "by": rid, "at": now, "reason": reason}}},
+             "$push": {"review_history": self._capped(
+                 {"from": current, "to": target, "by": rid, "at": now, "reason": reason},
+                 self.REVIEW_HISTORY_CAP)}},
             return_document=ReturnDocument.AFTER,
         )
         if not result:
@@ -395,8 +407,10 @@ class QuestionBankService:
         result = await self.db.questions.find_one_and_update(
             {"_id": existing["_id"], "status": "pending", "version": int(existing.get("version") or 1)},
             {"$set": {**normalized, **taxonomy, "updated_at": now}, "$inc": {"version": 1},
-             "$push": {"review_history": {"from": "pending", "to": "pending", "by": rid,
-                                             "at": now, "reason": "ویرایش توسط بازبین", "action": "edit"}}},
+             "$push": {"review_history": self._capped(
+                 {"from": "pending", "to": "pending", "by": rid,
+                  "at": now, "reason": "ویرایش توسط بازبین", "action": "edit"},
+                 self.REVIEW_HISTORY_CAP)}},
             return_document=ReturnDocument.AFTER,
         )
         if not result:
@@ -443,7 +457,9 @@ class QuestionBankService:
         await self.db.questions.update_one(
             {"_id": existing["_id"], "creator_id": int(user.get("id") or 0)},
             {"$set": update, "$inc": {"version": 1},
-             **({"$push": {"review_history": {"from": status, "to": "pending", "by": int(user.get("id") or 0), "at": now, "reason": "ارسال مجدد"}}} if resubmit else {})},
+             **({"$push": {"review_history": self._capped(
+                   {"from": status, "to": "pending", "by": int(user.get("id") or 0),
+                    "at": now, "reason": "ارسال مجدد"}, self.REVIEW_HISTORY_CAP)}} if resubmit else {})},
         )
         current = await self.db.questions.find_one({"_id": existing["_id"]})
         if resubmit:
@@ -469,8 +485,9 @@ class QuestionBankService:
             {"$set": {"status": "rejected", "approved": False, "review_reason": reason,
                       "withdrawn_by_creator": True, "withdrawn_at": now, "updated_at": now},
              "$inc": {"version": 1},
-             "$push": {"review_history": {"from": current, "to": "rejected", "by": uid,
-                                             "at": now, "reason": reason}}},
+             "$push": {"review_history": self._capped(
+                 {"from": current, "to": "rejected", "by": uid, "at": now, "reason": reason},
+                 self.REVIEW_HISTORY_CAP)}},
             return_document=ReturnDocument.AFTER,
         )
         if not result:

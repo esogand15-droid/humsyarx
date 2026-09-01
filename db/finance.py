@@ -9,6 +9,7 @@ import logging
 import asyncio
 import difflib
 from datetime import timedelta
+from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 import motor.motor_asyncio
 from time_utils import (
@@ -224,8 +225,11 @@ class DBFinance:
                 try:
                     await self.discount_uses.delete_one(
                         {'code': code_u, 'user_id': int(user_id)})
-                except Exception:
-                    pass
+                except Exception as _rel:
+                    # 🛡 AUDIT-R6 — جبران رزروی که بی‌صدا بمیرد یعنی کاربر یک
+                    # مصرف سوخته روی کد دارد (ریسک مالی، نه جزئیات).
+                    logger.error(f"discount compensation failed code={code_u} "
+                                 f"uid={user_id}: {_rel}")
             return None
         # ⛔ موج D2 — لحظه‌ی اتمام ظرفیت: فقط همین یک مصرف‌کننده گذار از
         # max-1 به max را می‌بیند (فیلتر اتمیک تضمین می‌کند) ⇒ دقیقاً یک
@@ -267,8 +271,10 @@ class DBFinance:
             await self.discount_codes.update_one(
                 {'code': code_u, 'used_count': {'$gt': 0}},
                 {'$inc': {'used_count': -1}})
-        except Exception:
-            pass
+        except Exception as e:
+            # 🛡 AUDIT-R6 — release ناموفق کد را «مصرف‌شده» نگه می‌دارد درحالی‌که
+            # پرداخت رد شده ⇒ حتماً لاگ شود.
+            logger.error(f"discount_release failed code={code} uid={user_id}: {e}")
 
 
     # ── کاربران و سگمنت‌های کمپین (موج D1) ──
@@ -354,14 +360,22 @@ class DBFinance:
             return
         await self.discount_bcasts.update_one(
             {'broadcast_id': bid},
-            {'$push': {'sent_msgs': {'$each': refs}}})
+            # 🛡 AUDIT-V3 — کرانه: کمپین‌های بزرگ‌تر از SENT_MSGS_CAP فقط
+            # برای «ادیت همگانی اتمام موجودی» پیام‌های ابتدایی را جا می‌اندازند
+            # و یک فلگ قابل‌مشاهده می‌خورند؛ داده‌ی مالی حذف نمی‌شود.
+            {'$push': {'sent_msgs': {'$each': refs, '$slice': -self.SENT_MSGS_CAP}},
+             '$set': {'sent_msgs_at': utc_now_iso()}})
 
 
-    async def discount_bcast_with_msgs(self, code: str) -> list:
+    SENT_MSGS_CAP = 5000             # 🛡 AUDIT-V3 — سقف مرجع‌های هر کمپین
+
+    async def discount_bcast_with_msgs(self, code: str, limit: int = 50) -> list:
         """کمپین‌های این کد که حداقل یک مرجع پیام دارند (قابل ادیت)"""
         return await self.discount_bcasts.find(
+            # 🛡 AUDIT-V4 — کرانه‌ی صریح (کمپین‌های تازه‌تر مهم‌ترند)
             {'code': code, 'soldout_marked': {'$ne': True},
-             'sent_msgs.0': {'$exists': True}}).to_list(None)
+             'sent_msgs.0': {'$exists': True}}
+        ).sort('created_at', -1).to_list(max(1, min(int(limit or 50), 200)))
 
 
     # ── وضعیت اشتراک هر کاربر (یک سند در هر کاربر، با _id = user_id) ──
@@ -500,6 +514,35 @@ class DBFinance:
         }
 
 
+    # ─── 🛡 AUDIT-A1b: ادعای یکتا (idempotency) برای عملیات‌های تکرارناپذیر ───
+    # هر اثری که «دو بار اجرا شدنش» فاجعه است (اعطای روز اشتراک، لغو،
+    # آزادسازی کد) باید اول کلیدش را ادعا کند. سند TTL دارد تا میز رشد
+    # نکند (§58) و در خطای DB fail-open است (§49 — نبودِ قفل نباید
+    # سرویس سالم را بخواباند؛ خودِ نوشتن در همان لحظه شکست می‌خورد).
+    async def op_claim(self, kind: str, key: str, ttl_seconds: int = 120) -> bool:
+        """ادعای کلید `kind:key` — True یعنی «مال من است»، False یعنی تکراری."""
+        try:
+            await self.admin_op_locks.insert_one({
+                '_id': f"{kind}:{key}",
+                'kind': kind,
+                'created_at': utc_now_iso(),
+                'expires_at': now_utc() + timedelta(seconds=ttl_seconds),
+            })
+            return True
+        except DuplicateKeyError:
+            return False
+        except Exception as e:
+            logger.warning(f"op_claim({kind}) degraded (fail-open): {e}")
+            return True
+
+    async def op_release(self, kind: str, key: str) -> None:
+        """آزادسازی ادعا وقتی عملیات شکست خورد (تا ادمین بتواند تلاش کند)."""
+        try:
+            await self.admin_op_locks.delete_one({'_id': f"{kind}:{key}"})
+        except Exception as e:
+            logger.warning(f"op_release({kind}) failed: {e}")
+
+
     # ── صف رسیدهای پرداخت ──
     async def sub_payment_create(self, user_id: int, plan_id: str, plan_name: str,
                                   price: int, final_price: int, screenshot_file_id: str,
@@ -550,17 +593,29 @@ class DBFinance:
 
 
     async def sub_payment_decide(self, pid: str, approved: bool, admin_id: int, note: str = ''):
+        """تصمیم روی رسید — 🛡 AUDIT-A1: گذار **اتمیک** از `pending`.
+
+        شرط `status: 'pending'` داخل خودِ update نوشته می‌شود، پس فقط یک
+        فراخوانی می‌تواند سند را از pending خارج کند و `True` بگیرد؛ بقیه
+        `False` می‌گیرند و موظف‌اند هیچ اثر جانبی (فعال‌سازی اشتراک،
+        آزادسازی کد تخفیف، نوتیف) تولید نکنند.
+
+        چرا لازم بود: مسیرهای وب/ربات «اول می‌خواندند بعد می‌نوشتند»
+        (check-then-act) و دو تأیید هم‌زمان = دو بار `sub_activate(extend=True)`
+        = دو دوره اشتراک به‌ازای یک رسید.
+        """
         try:
-            await self.sub_payments.update_one(
-                {'_id': ObjectId(pid)},
+            res = await self.sub_payments.update_one(
+                {'_id': ObjectId(pid), 'status': 'pending'},
                 {'$set': {
                     'status': 'approved' if approved else 'rejected',
                     'reviewed_by': admin_id, 'reviewed_at': utc_now_iso(),
                     'review_note': note,
                 }}
             )
-            return True
-        except Exception:
+            return res.modified_count == 1
+        except Exception as e:
+            logger.warning(f"sub_payment_decide failed for {pid}: {e}")
             return False
 
 

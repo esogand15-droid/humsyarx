@@ -68,6 +68,46 @@ _APP_STARTED_MONO = time.monotonic()
 
 _api_logger = logging.getLogger("api")
 
+#: 🛡 AUDIT-R3 — کرانه‌ی هدر Range (PYSEC-2026-1942 / CVE-2025-…):
+#: ستاره‌ت 0.41.x که FastAPI این ریپو روی آن قفل است، پارس/ادغام چندrange
+#: را O(n²) انجام می‌دهد و StaticFiles (اسناد miniapp/webadmin که همین‌جا
+#: mount شده‌اند) با یک هدرِ ساخته‌شده می‌تواند CPU یک ورکر را قفل کند.
+#: راه‌حل اصلی ارتقای starlette است (در گزارش §۶۷)، ولی تا آن زمان این
+#: میان‌افزار بی‌خطرِ ۸ خطی، درخواست‌های چندتاییِ غیرمعمول را رد می‌کند.
+#: مرورگرها برای تماشای ویدیو/دانلود تک‌range می‌فرستند ⇒ رفتار عادی تغییر
+#: نمی‌کند؛ فقط الگوی آلوده (۱۶+ بازه یا رشته‌ی خیلی بلند) رد می‌شود.
+_RANGE_MAX_INTERVALS = 16
+_RANGE_MAX_LEN = 512
+
+
+def _raw_path(request) -> str:
+    """مسیر خام درخواست از `scope` — **نه** مسیرِ بازسازی‌شده‌ی `request.url`.
+
+    🛡 AUDIT-R4 (PYSEC-2026-161 و PYSEC-2026-248، starlette 0.41.3): در این
+    نسخه `request.url` را از `Host` + path بازسازی و دوباره پارس می‌کند، پس
+    با `Host: x/evil?y=` مقدار مسیرِ بازسازی‌شده با مسیری که واقعاً route
+    شده فرق می‌کند. هر تصمیم امنیتی که به `.startswith('/admin')` وابسته باشد
+    (هدرهای CSP/X-Frame-Options و کش اsets) با آن مقدار گمراه‌شونده است؛
+    `scope["path"]` همان مقداری است که FastAPI برای مسیریابی استفاده کرده.
+    """
+    try:
+        return request.scope.get("path") or ""
+    except Exception:                                  # pragma: no cover
+        return ""
+
+
+@app.middleware("http")
+async def _bound_range_header(request, call_next):
+    rng = request.headers.get("range")
+    if rng and rng.startswith("bytes="):
+        spec = rng[len("bytes="):]
+        if len(spec) > _RANGE_MAX_LEN or spec.count(",") + 1 > _RANGE_MAX_INTERVALS:
+            from starlette.responses import PlainTextResponse
+
+            return PlainTextResponse("range too broad", status_code=416,
+                                     headers={"Content-Range": "*"})
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def request_context_and_safe_errors(request: Request, call_next):
@@ -85,24 +125,30 @@ async def request_context_and_safe_errors(request: Request, call_next):
             response = await call_next(request)
         except Exception:
             _api_logger.exception("unhandled API error request_id=%s path=%s",
-                                  request_id, request.url.path)
+                                  request_id, _raw_path(request))
             response = JSONResponse(
                 status_code=500,
                 content={"detail": "internal_error", "error_id": request_id},
             )
         response.headers["X-Request-ID"] = request_id
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        if request.url.path.startswith("/api/web-admin/"):
+        if _raw_path(request).startswith("/api/web-admin/"):
             route_template = getattr(request.scope.get("route"), "path", "")
-            route = route_template or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)", "/:id", request.url.path)
+            route = route_template or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)", "/:id", _raw_path(request))
             metric = {"at": now_utc(), "route": route[:180], "method": request.method,
                       "status": int(response.status_code),
                       "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                       "request_id": request_id}
             async def persist_metric():
-                try: await db.wa_api_metrics.insert_one(metric)
-                except Exception: pass
-            asyncio.create_task(persist_metric())
+                try:
+                    await db.wa_api_metrics.insert_one(metric)
+                except Exception as _me:
+                    # 🛡 AUDIT-§۲۰ — دیگر «pass» بی‌صدا نیست: شکستِ نوشتن متریک
+                    # دیده می‌شود، ولی هرگز درخواست کاربر را نمی‌شکند.
+                    _api_logger.debug("wa_api_metrics insert failed: %s", _me)
+            # 🛡 AUDIT-M1 — تسک با مرجع و لاگ خطا
+            from utils import spawn_bg
+            spawn_bg(persist_metric(), 'wa_api_metric')
         return response
     finally:
         current_request_id.reset(token)
@@ -179,7 +225,7 @@ async def _wa2_security_headers(request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     try:
-        path = request.url.path or ""
+        path = _raw_path(request)   # 🛡 AUDIT-R4 — مسیر خام (ضدِ Host-header confusion)
     except Exception:
         path = ""
     if path.startswith("/admin"):
@@ -561,7 +607,7 @@ async def _root():
 async def _spa_cache_headers(request, call_next):
     resp = await call_next(request)
     try:
-        path = request.url.path or ""
+        path = _raw_path(request)   # 🛡 AUDIT-R4 — مسیر خام (ضدِ Host-header confusion)
     except Exception:
         path = ""
     if path.startswith("/app/assets/") or path.startswith("/admin/assets/"):

@@ -70,7 +70,31 @@ OTP_RL_COUNT = 5          # حداکثر درخواست کد
 OTP_RL_WINDOW = 600       # در ۱۰ دقیقه
 
 # rate-limit ساده‌ی درون‌حافظه‌ای per-identifier (گره Railway تک‌نمونه‌ای)
+# 🛡 AUDIT-A4 — محدود و خودتصفیه‌شونده: مقدار هر کلید فقط «شمارنده + شروع
+# پنجره» است (لیست بی‌نهایت زمان نه)، و کل دیکشنری بالای سقفِ کلید
+# جارو می‌شود؛ در حمله‌ی کلید-متفاوت دیگر RAM پروسه بی‌نهایت رشد نمی‌کند.
 _otp_rl: dict = {}
+_OTP_RL_MAX_KEYS = 4096
+
+
+def _otp_rl_allow(key: str) -> bool:
+    """True اگر درخواست مجاز است؛ False یعنی پنجره پر شده (429)."""
+    now = time.time()
+    ent = _otp_rl.get(key)
+    if not ent or (now - float(ent.get("first") or 0.0)) >= OTP_RL_WINDOW:
+        _otp_rl[key] = {"first": now, "n": 1}
+        allowed = True
+    else:
+        ent["n"] = int(ent.get("n") or 0) + 1
+        allowed = ent["n"] <= OTP_RL_COUNT
+    if len(_otp_rl) > _OTP_RL_MAX_KEYS:
+        for k in [k for k, v in _otp_rl.items() if (now - float(v.get("first") or 0.0)) >= OTP_RL_WINDOW]:
+            _otp_rl.pop(k, None)
+        if len(_otp_rl) > _OTP_RL_MAX_KEYS:      # هنوز شلوغ → قدیمی‌ترین‌ها
+            for k in sorted(_otp_rl, key=lambda k: float(_otp_rl[k].get("first") or 0.0))[
+                    : len(_otp_rl) - _OTP_RL_MAX_KEYS]:
+                _otp_rl.pop(k, None)
+    return allowed
 
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
@@ -116,13 +140,18 @@ async def _has_admin_access(uid: int) -> bool:
 
 async def _resolve_user(identifier: str):
     """آیدی عددی یا یوزرنیم تلگرام → سند کاربر (بدون نشت وجود/عدم وجود)."""
-    ident = (identifier or "").strip()
+    ident = (identifier or "").strip()[:64]
     if not ident:
         return None
     if ident.lstrip("-").isdigit():
         return await db.get_user(int(ident))
     uname = ident.lstrip("@").lower()
-    return await db.users.find_one({"username": {"$regex": f"^{uname}$", "$options": "i"}})
+    # 🛡 AUDIT-R2 — ورودی باید «رشته» باشد نه الگو: قبلاً `. * + \d (…)` در
+    # یوزرنیم معنای regexp می‌گرفت → تطبیق عرضیِ حساب‌های دیگر و هزینه‌ی
+    # ReDoS روی ورودی بلند. escape + سقف طول، تطبیق را بایت‌به‌بایت می‌کند.
+    return await db.users.find_one(
+        {"username": {"$regex": f"^{re.escape(uname)}$", "$options": "i"}}
+    )
 
 
 async def _guard_any_admin(user=Depends(get_current_user)) -> dict:
@@ -225,13 +254,9 @@ async def request_code(body: RequestCode, request: Request):
     except Exception:
         ip = ""
     rl_key = f"{ident}|{ip}"
-    now = time.time()
-    hits = [t for t in _otp_rl.get(rl_key, []) if now - t < OTP_RL_WINDOW]
-    if len(hits) >= OTP_RL_COUNT:
+    if not _otp_rl_allow(rl_key):
         raise HTTPException(status_code=429,
                             detail="تعداد درخواست زیاد است؛ چند دقیقه دیگر تلاش کنید.")
-    hits.append(now)
-    _otp_rl[rl_key] = hits
 
     user = await _resolve_user(ident)
     if user and user.get("approved") and not user.get("suspended"):
@@ -265,11 +290,21 @@ async def request_code(body: RequestCode, request: Request):
 async def verify_code(body: VerifyCode, request: Request, response: Response):
     user = await _resolve_user(body.identifier)
     if not user:
-        raise HTTPException(status_code=401, detail="کد یا شناسه نامعتبر است.")
+        # 🛡 AUDIT-R7 (§۱۸) — این شاخه قبلاً متن خطای متفاوتی داشت و هیچ
+        # مقایسه‌ای انجام نمی‌داد ⇒ هم بدنه و هم زمان پاسخ، «بود/نبودِ حساب»
+        # را لو می‌داد. حالا دقیقاً مثل «کد غلط» رفتار می‌کند: مقایسه‌ی صوری
+        # روی یک هش جعلی + همان status/detail. (وضعیت «کد منقضی‌شده» عمداً
+        # حفظ شده: آن شاخه برای هر حسابِ دارای کد مصرف‌شده یکسان است و
+        # اطلاعات تازه‌ای درباره‌ی وجود حساب نمی‌دهد.)
+        _fake = hashlib.sha256(f"{'0' * 32}:{(body.code or '').strip()}".encode()).hexdigest()
+        secrets.compare_digest(_fake, "0" * 64)
+        raise HTTPException(status_code=401, detail="کد نامعتبر است.")
     uid = int(user.get("user_id"))
     otp = await db.web_admin_otps.find_one({"uid": uid})
     if not otp or expiry_is_past(otp.get("expires_at")):
-        raise HTTPException(status_code=401, detail="کد منقضی شده؛ دوباره درخواست بدهید.")
+        # 🛡 AUDIT-R7 — این شاخه هم دقیقاً مثل «حساب ناموجود» پاسخ می‌دهد؛
+        # وگرنه تفاوتِ بدنه، بودنِ یک حسابِ ادمین را لو می‌دهد.
+        raise HTTPException(status_code=401, detail="کد نامعتبر است.")
     if (otp.get("attempts") or 0) >= OTP_MAX_ATTEMPTS:
         raise HTTPException(status_code=429, detail="تلاش‌های ناموفق زیاد بود؛ دوباره درخواست کد بدهید.")
     raw_code = (body.code or "").strip()
@@ -2628,7 +2663,9 @@ async def exams_delete(sid: str, user=Depends(_perm("schedules.manage"))):
     old = await db.get_schedule_by_id(sid)
     if not old or old.get("type") != "exam":
         raise HTTPException(404, "آزمون یافت نشد")
-    await db.delete_schedule(sid)
+    _res = await db.delete_schedule(sid)
+    if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+        raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
     notice = await db.schedule_notify_event(old, "cancelled")
     await _audit(user["id"], "حذف آزمون", severity="HIGH",
                  target_id=sid, target_type="exam",
@@ -3033,7 +3070,9 @@ async def content_items_bulk(body: ItemsBulk,
     if body.action == "delete":
         for cid in ids:
             if await db.bs_get_content_item(cid):
-                await db.bs_delete_content(cid)
+                _res = await db.bs_delete_content(cid)
+                if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+                    raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
                 done += 1
     elif body.action == "move":
         ts = (body.target_session or "").strip()
@@ -3904,7 +3943,8 @@ async def wa_ticket_note(
     actor = user.get("_db") or await db.get_user(user["id"]) or {}
     note = {"id": secrets.token_hex(8), "text": text, "actor_id": user["id"],
             "actor_name": actor.get("name", str(user["id"])), "at": _now()}
-    await db.tickets.update_one({"ticket_id": tid}, {"$push": {"internal_notes": note}})
+    await db._push_capped("tickets", {"ticket_id": tid}, "internal_notes",
+                          note, db.NOTE_INLINE_CAP, archive_kind="notes")
     await _audit(user["id"], "افزودن یادداشت داخلی تیکت", severity="INFO",
                  target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
                  after={"note_id": note["id"]}, tags=["تیکت", "یادداشت_داخلی", "پنل_وب"])

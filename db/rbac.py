@@ -585,10 +585,12 @@ class DBRbac:
             count_ar += 1
 
         count_ur = 0
-        legacy = await self.users.find(
+        # 🛡 AUDIT-V4 — مهاجرت legacy نباید همه‌ی کاربران را یک‌جا در RAM
+        # بگذارد؛ روی cursor پیمایش می‌کنیم (تعداد پردازش‌شده عیناً همان).
+        legacy_cursor = self.users.find(
             {'role': {'$in': ['content_admin', 'support']}}
-        ).to_list(None)
-        for u in legacy:
+        ).batch_size(500)
+        async for u in legacy_cursor:
             role_key = u.get('role')
             if role_key in ('content_admin', 'support'):
                 await self._add_role_key(u['user_id'], role_key)
@@ -665,7 +667,7 @@ class DBRbac:
 
     async def list_roles(self) -> list:
         """همه‌ی نقش‌ها — مرتب: priority ↑ سپس برچسب (منبع UI/API)."""
-        docs = await self.roles.find({}).to_list(None)
+        docs = await self.roles.find({}).to_list(1000)   # 🛡 AUDIT-V4 کرانه
         return sorted(
             docs,
             key=lambda d: (d.get('priority', 99), d.get('label', '')),
@@ -719,7 +721,7 @@ class DBRbac:
 
 
     async def _valid_perm_keys(self) -> set:
-        docs = await self.perm_catalog.find({}).to_list(None)
+        docs = await self.perm_catalog.find({}).to_list(1000)   # 🛡 AUDIT-V4
         if not docs:
             return {k for k, _, _ in self.PERMISSION_CATALOG}
         return {d['_id'] for d in docs}
@@ -813,7 +815,7 @@ class DBRbac:
         rows = await self.user_roles.aggregate([
             {'$unwind': '$roles'},
             {'$group': {'_id': '$roles', 'count': {'$sum': 1}}},
-        ]).to_list(None)
+        ]).to_list(500)          # 🛡 AUDIT-V4 — خروجی به تعداد نقش‌هاست
         return {str(row.get('_id')): int(row.get('count') or 0)
                 for row in rows if row.get('_id')}
 
@@ -1251,10 +1253,12 @@ class DBRbac:
             })
             await self.users.update_one(
                 {'user_id': uid},
-                {'$push': {'nickname_history': {
+                # 🛡 AUDIT-V3 — کرانه (تغییر لقب cooldown دارد؛ ۵۰ مورد یعنی
+                # سال‌ها سابقه). رکوردِ دائمی در _audit_nickname/audit_logs است.
+                {'$push': {'nickname_history': {'$each': [{
                     'old': old_nick, 'new': None, 'at': now,
                     'by': changed_by, 'reason': reason or 'clear',
-                }}},
+                }], '$slice': -50}}},
             )
             await self._audit_nickname(uid, user, old_nick, None,
                                        changed_by, 'حذف لقب')
@@ -1289,10 +1293,10 @@ class DBRbac:
         })
         await self.users.update_one(
             {'user_id': uid},
-            {'$push': {'nickname_history': {
+            {'$push': {'nickname_history': {'$each': [{
                 'old': old_nick, 'new': clean, 'at': now,
                 'by': changed_by, 'reason': reason or 'set',
-            }}},
+            }], '$slice': -50}}},
         )
         await self._audit_nickname(uid, user, old_nick, clean,
                                    changed_by, 'تغییر لقب')

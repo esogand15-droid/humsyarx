@@ -24,6 +24,7 @@ from broadcast_service import (
 )
 from utils import (
     main_keyboard, content_admin_keyboard, safe_send,
+    esc as _esc,                                  # 🛡 AUDIT-A6 — escape مرکزی پروژه
     send_audit_log, get_keyboard_for_user, fmt_jalali_dt, now_tehran, now_tehran_str,
 )
 from time_utils import format_time_fa, now_utc, parse_machine_datetime
@@ -520,7 +521,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rep = await db.prestige_backfill()
         if rep.get('fatal'):
             await query.edit_message_text(
-                f"❌ خطای DB در Backfill:\n<code>{rep['fatal']}</code>",
+                f"❌ خطای DB در Backfill:\n<code>{_esc(str(rep['fatal'])[:300])}</code>",
                 parse_mode='HTML'); return
         lines = [
             "🏅 <b>نتیجه‌ی Backfill Prestige</b>\n━━━━━━━━━━━━━━━━\n",
@@ -605,7 +606,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'set_poll_channel':
         context.user_data['mode'] = 'set_poll_channel'
         current = await db.get_setting('poll_channel_id', None)
-        current_txt = f"\n\n📌 تنظیم فعلی: <code>{current}</code>" if current else ""
+        current_txt = f"\n\n📌 تنظیم فعلی: <code>{_esc(current)}</code>" if current else ""
         await query.edit_message_text(
             f"📊 <b>تنظیم کانال نظرسنجی / اطلاع‌رسانی</b>{current_txt}\n\n"
             "آیدی عددی کانال (با <code>-100</code>) را ارسال کنید.\n\n"
@@ -645,7 +646,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'set_donation_link':
         context.user_data['mode'] = 'set_donation_link'
         current = await db.get_setting('donation_link', None)
-        current_txt = f"\n\n📌 لینک فعلی:\n<code>{current}</code>" if current else ""
+        current_txt = f"\n\n📌 لینک فعلی:\n<code>{_esc(current)}</code>" if current else ""
         await query.edit_message_text(
             f"💙 <b>تنظیم لینک حمایت مالی</b>{current_txt}\n\n"
             "لینک صفحه حمایت مالی را ارسال کنید (مثلاً لینک صفحه پروژه در reymit.org).\n\n"
@@ -2371,7 +2372,7 @@ async def _show_blacklist(query):
         reason = e.get('reason', '') or 'بدون دلیل ثبت‌شده'
         by     = e.get('blocked_by_name', '')
         when   = fmt_jalali_dt(e.get('blocked_at', '') or '', with_time=False)
-        lines.append(f"🆔 <code>{target_uid}</code> — {when}" + (f" — توسط {by}" if by else ''))
+        lines.append(f"🆔 <code>{target_uid}</code> — {_esc(when)}" + (f" — توسط {_esc(by)}" if by else ''))
         keyboard.append([
             InlineKeyboardButton(f"↩️ رفع بلاک {target_uid}", callback_data=f'admin:unblock_user:{target_uid}')
         ])
@@ -2448,6 +2449,8 @@ async def _handle_notif_force_send(query):
                f"ارسال شد (ناموفق: {result['users_failed']}).")
     elif result.get('reason') == 'no_items':
         msg = "ℹ️ چیزی در صف نیست که ارسال بشه."
+    elif result.get('reason') == 'already_running':
+        msg = "⚠️ یک دور ارسال قبلاً همین حالا در جریان است؛ صبر کن یا بعداً دوباره بزن."
     elif result.get('reason') == 'error':
         msg = f"❌ خطا در ارسال: {result.get('error','نامشخص')[:200]}"
     else:
@@ -2507,7 +2510,7 @@ async def _show_notif_history(query, job_name: str = None):
             sent    = r.get('sent', 0)
             failed  = r.get('failed', 0)
             lines.append(
-                f"\n{icon} <code>{started}</code>\n"
+                f"\n{icon} <code>{_esc(started)}</code>\n"
                 f"   ✅ موفق: {sent}  |  ❌ ناموفق: {failed}"
             )
             if failed > 0:
@@ -2594,8 +2597,8 @@ async def _show_settings(query):
     maint_status = "🔧 فعال (ربات در دسترس کاربران عادی نیست)" if maint else "✅ غیرفعال (ربات عادی کار می‌کند)"
     maint_toggle  = "🟢 خاموش کردن حالت تعمیر" if maint else "🔴 روشن کردن حالت تعمیر"
     admin_grp_txt = f"<code>{log_admin}</code>" if log_admin else "تنظیم نشده"
-    content_grp_txt = f"<code>{log_content}</code>" if log_content else "تنظیم نشده"
-    poll_channel_txt = f"<code>{poll_channel}</code>" if poll_channel else "⚠️ تنظیم نشده"
+    content_grp_txt = f"<code>{_esc(log_content)}</code>" if log_content else "تنظیم نشده"
+    poll_channel_txt = f"<code>{_esc(poll_channel)}</code>" if poll_channel else "⚠️ تنظیم نشده"
 
     text = (
         "⚙️ <b>تنظیمات ربات</b>\n━━━━━━━━━━━━━━━━\n\n"
@@ -2648,7 +2651,7 @@ async def _test_log_groups(query, context):
             results.append(f"{label}: ✅ پیام تست ارسال شد (<code>{chat_id}</code>)")
         except Exception as e:
             results.append(
-                f"{label}: ❌ خطا در ارسال\n<code>{str(e)[:150]}</code>\n"
+                f"{label}: ❌ خطا در ارسال\n<code>{_esc(str(e)[:150])}</code>\n"
                 f"💡 ربات را دوباره به گروه اضافه/ادمین کن یا آیدی را دوباره تنظیم کن."
             )
     results.append(
@@ -2888,7 +2891,7 @@ async def _poll_main(query, context):
     """صفحه اصلی نظرسنجی — نمایش وضعیت کانال + دکمه ساخت"""
     channel_id = await db.get_setting('poll_channel_id', None)
     if channel_id:
-        channel_txt = f"✅ کانال تنظیم شده: <code>{channel_id}</code>"
+        channel_txt = f"✅ کانال تنظیم شده: <code>{_esc(channel_id)}</code>"
         keyboard = [
             [InlineKeyboardButton("📊 ساخت نظرسنجی جدید", callback_data='admin:poll_create')],
             [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_comm')],
@@ -2922,7 +2925,7 @@ async def _poll_preview(query, context):
         await query.answer("❌ ابتدا سوال را وارد کنید", show_alert=True)
         return
 
-    opts_txt = '\n'.join(f"  {i+1}. {o}" for i, o in enumerate(options)) if options else "  (هنوز گزینه‌ای نیست)"
+    opts_txt = '\n'.join(f"  {i+1}. {_esc(o)}" for i, o in enumerate(options)) if options else "  (هنوز گزینه‌ای نیست)"
     can_send = len(options) >= 2
 
     keyboard = []
@@ -2936,7 +2939,9 @@ async def _poll_preview(query, context):
 
     await query.edit_message_text(
         f"📊 <b>پیش‌نمایش نظرسنجی</b>\n━━━━━━━━━━━━━━━━\n\n"
-        f"❓ <b>سوال:</b> {question}\n\n"
+        # 🛡 AUDIT-A6 — سوال/گزینه‌ها متنِ تایپ‌شده‌اند؛ «نمره < ۱۰؟» قبلاً
+        # پیش‌نمایش را می‌شکست (BadRequest در edit_message_text ⇒ پنل قفل).
+        f"❓ <b>سوال:</b> {_esc(question)}\n\n"
         f"📋 <b>گزینه‌ها:</b>\n{opts_txt}\n\n"
         f"{'✅ آماده ارسال — نوع نظرسنجی را انتخاب کنید:' if can_send else '⚠️ حداقل ۲ گزینه لازم است.'}",
         parse_mode='HTML',
@@ -2953,12 +2958,12 @@ async def _poll_confirm(query, context):
     channel_id = await db.get_setting('poll_channel_id', None)
 
     type_label = "🔓 عمومی (رأی‌ها قابل مشاهده)" if ptype == 'regular' else "🔒 ناشناس"
-    opts_txt   = '\n'.join(f"  {i+1}. {o}" for i, o in enumerate(options))
+    opts_txt   = '\n'.join(f"  {i+1}. {_esc(o)}" for i, o in enumerate(options))
     ch_txt     = f"<code>{channel_id}</code>" if channel_id else "⚠️ تنظیم نشده"
 
     await query.edit_message_text(
         f"📊 <b>تأیید ارسال نظرسنجی</b>\n━━━━━━━━━━━━━━━━\n\n"
-        f"❓ <b>سوال:</b> {question}\n\n"
+        f"❓ <b>سوال:</b> {_esc(question)}\n\n"
         f"📋 <b>گزینه‌ها:</b>\n{opts_txt}\n\n"
         f"🔑 <b>نوع:</b> {type_label}\n"
         f"📡 <b>کانال:</b> {ch_txt}\n\n"
@@ -2997,8 +3002,8 @@ async def _poll_send(query, context):
         )
         await query.edit_message_text(
             f"✅ <b>نظرسنجی با موفقیت ارسال شد!</b>\n\n"
-            f"❓ {question}\n"
-            f"📡 کانال: <code>{channel_id}</code>",
+            f"❓ {_esc(question)}\n"
+            f"📡 کانال: <code>{_esc(channel_id)}</code>",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📊 نظرسنجی جدید", callback_data='admin:poll_create')],
@@ -3007,8 +3012,10 @@ async def _poll_send(query, context):
         )
     except Exception as e:
         await query.edit_message_text(
+            # 🛡 متن خطای تلگرام ممکن است `<` داشته باشد؛ بدون escape خودِ
+            # پیامِ خطا هم نمی‌رسید (همان کلاسی که در error_handler دیدیم).
             f"❌ <b>خطا در ارسال نظرسنجی</b>\n\n"
-            f"<code>{e}</code>\n\n"
+            f"<code>{_esc(str(e)[:300])}</code>\n\n"
             f"مطمئن شو ربات admin کانال است.",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
@@ -3031,7 +3038,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         opts = context.user_data['poll_data'].get('options', [])
         await update.message.reply_text(
             f"✅ سوال ثبت شد.\n\n"
-            f"❓ <b>{text}</b>\n\n"
+            f"❓ <b>{_esc(text)}</b>\n\n"
             f"➕ حالا گزینه اول را بنویس (حداقل ۲ گزینه لازم است، حداکثر ۱۰):",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='admin:poll_cancel')]])
@@ -3049,7 +3056,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.message.reply_text("❌ این گزینه قبلاً اضافه شده.")
             return True
         options.append(text)
-        opts_txt = '\n'.join(f"  {i+1}. {o}" for i, o in enumerate(options))
+        opts_txt = '\n'.join(f"  {i+1}. {_esc(o)}" for i, o in enumerate(options))
         remaining = 10 - len(options)
         keyboard = []
         if len(options) >= 2:
@@ -3058,7 +3065,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             keyboard.append([InlineKeyboardButton("➕ گزینه بعدی", callback_data='admin:poll_add_option')])
         keyboard.append([InlineKeyboardButton("❌ لغو", callback_data='admin:poll_cancel')])
         await update.message.reply_text(
-            f"✅ گزینه «{text}» اضافه شد.\n\n"
+            f"✅ گزینه «{_esc(text)}» اضافه شد.\n\n"
             f"📋 گزینه‌های فعلی:\n{opts_txt}\n\n"
             f"{'یک گزینه دیگر بنویس یا اتمام را بزن:' if remaining > 0 else '⚠️ به حداکثر ۱۰ گزینه رسیدی.'}",
             parse_mode='HTML',
@@ -3200,7 +3207,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "⚠️ کانال ذخیره شد، اما ربات نتوانست پیام تستی بفرستد — مطمئن شوید ربات admin کانال است."
             )
         await update.message.reply_text(
-            f"✅ کانال نظرسنجی با آیدی <code>{channel_id}</code> ذخیره شد.", parse_mode='HTML',
+            f"✅ کانال نظرسنجی با آیدی <code>{_esc(channel_id)}</code> ذخیره شد.", parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')]])
         )
         return True
@@ -3249,7 +3256,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             tags=['حمایت_مالی']
         )
         await update.message.reply_text(
-            f"✅ لینک حمایت مالی ذخیره شد:\n<code>{text}</code>",
+            f"✅ لینک حمایت مالی ذخیره شد:\n<code>{_esc(text)}</code>",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💙 بازگشت به مدیریت حمایت مالی", callback_data='admin:donation_manage')]])
         )
@@ -3397,8 +3404,7 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context.user_data.pop('dm_target_name', None)
 
         # بدنه‌ی پیام ادمین escape می‌شود: نه HTML تزریقی کار می‌کند،
-        # نه کاراکترهایی مثل «<» ارسال را می‌شکنند.
-        from html import escape as _esc
+        # نه کاراکترهایی مثل «<» ارسال را می‌شکنند.  🛡 AUDIT-A6
         body = (
             "📩 <b>پیام از مدیریت هامزیار</b>\n"
             "━━━━━━━━━━━━━━━━\n\n"

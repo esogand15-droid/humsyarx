@@ -6,7 +6,7 @@
 """
 import os
 import logging
-from html import escape
+from utils import esc as escape   # 🛡 AUDIT-A6 —escape مرکزی
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db

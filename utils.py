@@ -328,8 +328,131 @@ async def cancel_handler(update, context):
 
 
 # ══════════════════════════════════════════════════
+#  🛡 AUDIT-A6 — escape مرکزی HTML برای تلگرام
+# ══════════════════════════════════════════════════
+
+def esc(value, dash: str = '', quote: bool = True) -> str:
+    """تنها پیاده‌سازی مورد استنادِ escape در پروژه (ربات).
+
+    چرا مرکزی: هر مسیر ربات که ورودیِ کاربر/ادمین را داخل `parse_mode='HTML'`
+    می‌گذارد با یکی از دو خطر روبه‌روست — (۱) تزریق markup به مخاطب بعدی
+    (لینک جعلی در پیام ادمین) و (۲) `Bad Request: can't parse entities` که
+    پیام/پیش‌نمایش را کامل از کار می‌اندازد (مثلاً سوال نظرسنجی «نمره < ۱۰؟»).
+    این تابع هر دو را می‌بندد و بر خلاف `html.escape` خالص، داده‌ی ناهمگون
+    (None/int/خالی) را هم می‌بلعد و نمی‌ترکد.
+    """
+    if value is None or value == '':
+        return dash
+    return html.escape(str(value), quote=quote)
+
+
+# ══════════════════════════════════════════════════
+#  🛡 AUDIT-M1 — مالکیت تسک‌های «آتش‌وبفراموش»
+# ══════════════════════════════════════════════════
+
+_BG_TASKS: set = set()
+
+
+def spawn_bg(coro, name: str = 'bg'):
+    """`asyncio.create_task` با صاحب.
+
+    دو مشکل الگوی خام حل می‌شود:
+      ۱) اگر هیچ مرجعی به Task نماند، GC می‌تواند تسک را وسط کار بکشد
+         (سند رسمی asyncio) — کارهای طولانی مثل broadcast ناپدید می‌شدند.
+      ۲) خطای مدیریت‌نشده‌ی تسک فقط در `Task exception was never retrieved`
+         ظاهر می‌شد و در production گم می‌شد؛ اینجا warning می‌شود.
+    مرجع در ست نگه داشته و در پایان کار آزاد می‌شود ⇒ رشد بی‌نهایت ندارد (§۵۸).
+    """
+    import asyncio
+    task = asyncio.create_task(coro, name=name)
+    _BG_TASKS.add(task)
+
+    def _done(t) -> None:
+        _BG_TASKS.discard(t)
+        if t.cancelled():
+            logger.info(f"background task {name} cancelled")
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.warning(f"background task {name} failed: {type(exc).__name__}: {exc}")
+
+    task.add_done_callback(_done)
+    return task
+
+
+# ══════════════════════════════════════════════════
 #  ارسال امن پیام (بدون کرش روی Forbidden)
 # ══════════════════════════════════════════════════
+
+def safe_send_status(exc) -> str:
+    """طبقه‌بندی خطای ارسال — 🛡 AUDIT-A3 (برای صف‌ها).
+
+    بازگشت:
+      ``'permanent'`` — بلاک/حذف‌شدن کاربر، چت/پیام ناموجود، محتوای نامعتبر.
+                تلاش مجدد هیچ‌وقت جواب نمی‌دهد ⇒ صف باید سند را ببندد.
+      ``'backoff'``  — پنالتی تلگرام (RetryAfter); باید به‌مدت
+                ``exc.retry_after`` عقب بیفتد، نه اینکه دوباره کوبیده شود.
+      ``'retry'``    — شبکه/timeout؛ تلاش مجدد با تاخیر منطقی.
+
+    چرا: مرتب‌سازیِ retry در §۲۹ برای تک‌تک فرستنده‌ها لازم است؛ قبلاً هر
+    خطا یک «شکست» بود و صف‌های ماندگار (outbox/کمپین) یا تا ابد retry
+    می‌شدند یا پیام را برای همیشه دور می‌ریختند.
+    """
+    from telegram.error import RetryAfter, Forbidden, BadRequest, TimedOut, NetworkError
+    if isinstance(exc, RetryAfter):
+        return 'backoff'
+    # Forbidden فرزندِ BadRequest است؛ باید قبل از آن بررسی شود
+    if isinstance(exc, (Forbidden, BadRequest)):
+        return 'permanent'
+    if isinstance(exc, (TimedOut, NetworkError)):
+        return 'retry'
+    return 'retry'
+
+
+async def safe_send_ex(bot, uid: int, text: str, **kwargs):
+    """همان safe_send با جزئیات تشخیصی — ``(ok, error_text, exception)``.
+
+    صف‌های ماندگار برای تصمیم «بستن/عقب‌انداختن/تلاش مجدد» به خودِ خطا
+    نیاز دارند، نه فقط bool. safe_send روی همین تابع نشسته تا رفتار
+    همه‌ی صدازننده‌ها عوض نشود.
+    """
+    import asyncio
+    from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
+    last_err = None
+    for attempt in range(3):
+        try:
+            await bot.send_message(uid, text, **kwargs)
+            return True, "", None
+        except Exception as e:
+            # 🛡 AUDIT-S1b — در PTB خودِ `BadRequest` فرزندِ `NetworkError` است.
+            # الگوی قبلی («هر NetworkError ⇒ retry») باعث می‌شد هر خطای
+            # **دائمی** (bot kicked / chat not found / متن Too long / خطای
+            # پارس) سه بار با ۱.۵ ثانیه خواب تکرار شود و فالبکِ HTML هرگز
+            # اجرا نشود؛ پس رده‌بندی روی نوعِ مشخص انجام می‌شود.
+            if isinstance(e, RetryAfter):
+                last_err = e
+                await asyncio.sleep(min(e.retry_after, 30) + 0.5)
+                continue
+            if isinstance(e, (TimedOut, NetworkError)) and not isinstance(e, BadRequest):
+                last_err = e
+                await asyncio.sleep(1.5)
+                continue
+            # 🛡 AUDIT-S1 — «can't parse entities» تقصیر شبکه نیست: متنِ
+            # کاربر escape نشده تگ ناقص می‌سازد و پیام کامل دور ریخته
+            # می‌شد. یک بار بدون parse_mode بفرست تا محتوا نرسد به صفِ مرده.
+            if kwargs.get('parse_mode') and 'parse' in str(e).lower():
+                kw = {k: v for k, v in kwargs.items() if k != 'parse_mode'}
+                try:
+                    await bot.send_message(uid, text, **kw)
+                    logger.info(f"safe_send: parse خطای HTML داشت؛ متن ساده ارسال شد (uid={uid})")
+                    return True, "", None
+                except Exception as e2:
+                    logger.debug(f"safe_send fallback failed for {uid}: {e2}")
+                    return False, str(e2), e2
+            logger.debug(f"safe_send failed for {uid}: {e}")
+            return False, str(e), e
+    return False, str(last_err or "send retries exhausted"), last_err
+
 
 async def safe_send(bot, uid: int, text: str, **kwargs) -> bool:
     """
@@ -344,22 +467,8 @@ async def safe_send(bot, uid: int, text: str, **kwargs) -> bool:
     همه‌ی کانال‌های اعلان اثر می‌گذاشت. حالا RetryAfter و خطاهای موقت
     شبکه باعث یک صبر کوتاه و تلاش مجدد می‌شوند، نه از دست رفتن پیام.
     """
-    import asyncio
-    from telegram.error import RetryAfter, TimedOut, NetworkError
-    for attempt in range(3):
-        try:
-            await bot.send_message(uid, text, **kwargs)
-            return True
-        except RetryAfter as e:
-            await asyncio.sleep(min(e.retry_after, 30) + 0.5)
-            continue
-        except (TimedOut, NetworkError):
-            await asyncio.sleep(1.5)
-            continue
-        except Exception as e:
-            logger.debug(f"safe_send failed for {uid}: {e}")
-            return False
-    return False
+    ok, _err, _exc = await safe_send_ex(bot, uid, text, **kwargs)
+    return ok
 
 
 async def broadcast_message(bot, users: List[dict], text: str,

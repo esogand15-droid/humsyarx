@@ -83,7 +83,7 @@ async def _compensate_or_fail(restore, message: str):
 @router.get("/permissions")
 async def list_permissions(user=_roles_guard):
     """کاتالوگ کامل سوییچ‌های تکی — از کالکشن (نه ثابت کد)."""
-    docs = await db.perm_catalog.find({}).to_list(None)
+    docs = await db.perm_catalog.find({}).to_list(1000)   # 🛡 AUDIT-V4 کرانه
     if not docs:  # fallback اضطراری قبل از اجرای seed
         docs = [{"_id": k, "label": l, "category": c}
                 for k, l, c in db.PERMISSION_CATALOG]

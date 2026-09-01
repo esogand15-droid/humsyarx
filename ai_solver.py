@@ -18,7 +18,7 @@ import base64
 import random
 import asyncio
 import logging
-from html import escape as _esc
+from utils import esc as _esc   # 🛡 AUDIT-A6 —escape مرکزی (پارامتر quote حفظ است)
 from collections import deque, OrderedDict
 from datetime import datetime
 from time_utils import (

@@ -64,6 +64,9 @@ class DBCore:
         self.ref_files    = _db['ref_files']
         self.faq          = _db['faq']
         self.tickets      = _db['tickets']
+        # 🛡 AUDIT-V3 — مقصد بایگانی پاسخ/یادداشت‌هایی که از کرانه‌ی درون‌سند
+        # رد می‌شوند (جلوگیری از سقف ۱۶ مگابایت بدون حذف داده).
+        self.ticket_overflow = _db['ticket_overflow']
         self.intakes      = _db['intakes']
         self.settings     = _db['bot_settings']     # تنظیمات کلی + گروه‌های لاگ + maintenance
         self.notif_runs   = _db['notif_runs']       # FIX جدید: لاگ وضعیت ارسال نوتیف‌ها
@@ -100,6 +103,7 @@ class DBCore:
         # 🖥️ موج WA (Web Admin) — احراز هویت مستقل دسکتاپ: OTP تلگرامی +
         # سشن‌های HttpOnly. افزایشی است؛ هیچ مسیر فعلی تغییر نمی‌کند.
         self.web_admin_otps     = _db['web_admin_otps']
+        self.admin_op_locks     = _db['admin_op_locks']
         self.web_admin_sessions = _db['web_admin_sessions']
         # 🖥️🌊 موج WA2 — افزایشی: فیلترهای ذخیره‌شده‌ی وب‌ادمین (per-admin)
         # و متای آخرین تغییر تنظیمات (Last-Modified-By/At) برای Settings Center.
@@ -131,7 +135,15 @@ class DBCore:
 
     async def ensure_indexes(self):
         try:
-            await asyncio.gather(
+            # 🛡 AUDIT-R5 (§۶۲–§۶۴) — هر ایندکس مستقل سنجیده می‌شود.
+            # مشکل پیشین: یک gather بدون return_exceptions ⇒ با خطای *یک* ایندکس
+            # (مثلاً داده‌ی تکراری legacy مانع ساخت unique شود) ~۱۰۸ ایندکسِ بعدی
+            # ساخته نمی‌شد و تنها ردپا یک logger.warning بود؛ یعنی یکتاییِ
+            # tickets.ticket_id که در دور قبل به‌عنوان invariant اضافه شد، بی‌صدا
+            # غایب می‌ماند درحالی‌که ربات عادی به‌نظر می‌رسید.
+            # حالا: تفکیک CRITICAL (unique/TTL) از WARNING، شمارش دقیق،
+            # ثبت در settings برای /api/health/deep، و بدون crash (boot-loop نه).
+            coros = [
                 self.users.create_index('user_id', unique=True, background=True),
                 self.users.create_index('approved', background=True),
                 self.users.create_index('role', background=True),
@@ -142,6 +154,9 @@ class DBCore:
                 self.users.create_index([('intake', 1), ('group', 1), ('last_active', -1)], background=True),
                 self.users.create_index([('ai_banned', 1), ('name', 1)], background=True),
                 self.ai_reports.create_index([('created_at', -1)], background=True),
+                # 🛡 AUDIT-V3 — بازیابی آرشیو با (تیکت، نوع) انجام می‌شود
+                self.ticket_overflow.create_index([('ticket_ref', 1), ('kind', 1), ('seq', 1)],
+                                                  unique=True, background=True),
                 self.ai_reports.create_index([('user_id', 1), ('created_at', -1)], background=True),
                 # Question Bank v2 canonical and legacy-compatible query indexes.
                 self.questions.create_index('approved', background=True),
@@ -213,6 +228,7 @@ class DBCore:
                 self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
                 self.web_admin_sessions.create_index([('uid', 1), ('revoked', 1), ('created_at', -1)], background=True),
                 self.web_admin_sessions.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self.admin_op_locks.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self.web_admin_otps.create_index([('uid', 1)], background=True),
                 self.web_admin_otps.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self.wa_api_metrics.create_index([('at', 1)], expireAfterSeconds=2592000, background=True),
@@ -233,6 +249,9 @@ class DBCore:
                 self.sub_payments.create_index([('status', 1), ('submitted_at', -1)], background=True),
                 self.sub_payments.create_index([('user_id', 1), ('submitted_at', -1)], background=True),
                 self.subscriptions.create_index([('status', 1), ('end_date', 1)], background=True),
+                # 🛡 AUDIT-A5/P-9 — آدرس تیکت یکتا باشد و جست‌وجوی نام ایندکس
+                self.tickets.create_index([('user_name', 1), ('created_at', -1)], background=True),
+                self.tickets.create_index([('user_id', 1), ('created_at', -1)], background=True),
                 self.subscriptions.create_index([('user_id', 1), ('status', 1)], background=True),
                 # 🔔 موج ۴.۹۰ — کوئری داغ صندوق اعلان: فهرست کاربر به
                 # ترتیب زمان + شمارش خوانده‌نشده‌ها
@@ -262,18 +281,34 @@ class DBCore:
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
                 self.discount_uses.create_index([('code', 1), ('user_id', 1)], unique=True, background=True),
                 self.discount_bcasts.create_index([('code', 1), ('created_at', -1)], background=True),
-            )
-            # 💍 Ring Street — bootstrap ماژول اختیاری در try/_except جدا:
-            # اگر کالکشن‌های رینگ ساخته نشوند، ایندکس‌های هسته و بوت ربات
-            # نباید بشکند (ایزولاسیون §۵).
+            ]
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            failures = [(i, r) for i, r in enumerate(results) if isinstance(r, BaseException)]
+            created = len(coros) - len(failures)
+            critical_missing = []
+            for idx, err in failures:
+                spec = repr(coros[idx])
+                is_unique = 'unique=True' in spec or "'unique': True" in spec
+                msg = f"{type(err).__name__}: {err}"
+                if is_unique:
+                    logger.error(f"❌ CRITICAL index build failed [#{idx}] {spec[:140]} → {msg[:240]}")
+                    critical_missing.append({'index': f"#{idx}", 'error': msg[:200]})
+                else:
+                    logger.warning(f"⚠️ index build failed [#{idx}] {spec[:140]} → {msg[:240]}")
             try:
-                await self.ring_bootstrap()
-            except Exception as _ring_e:
-                logger.warning("⚠️ bootstrap رینگ استریت انجام نشد: %s", _ring_e)
-            logger.info("✅ ایندکس‌های MongoDB ایجاد شدند")
-            # 🎟 موج D1 — مهاجرت ایدمپوتنت: کدهای قدیمی فیلدهای جدید را
-            # ندارند؛ مقدار پیش‌فرض می‌نشانیم تا schema یکدست شود.
-            # اجرای مجدد بی‌ضرر است ($exists در هر دو کوئری).
+                await self.set_setting('index_status', {
+                    'created': created, 'failed': len(failures),
+                    'critical_missing': critical_missing, 'at': utc_now_iso()})
+            except Exception:
+                pass                     # 🛡 گزارش‌دهی هرگز boot را نمی‌شکند
+            if critical_missing:
+                logger.error(
+                    f"🛑 {len(critical_missing)} ایندکس بحرانی (unique) ساخته نشد ⇒ "
+                    "یکتایی‌ها در سطح Mongo enforce نمی‌شوند؛ داده‌ی تکراری legacy را "
+                    "ترمیم کنید (جزئیات: setting/index_status)")
+            else:
+                logger.info(f"✅ indexes: created={created} failed={len(failures)}")
+
             try:
                 await self.discount_codes.update_many(
                     {'target_plan_ids': {'$exists': False}},
@@ -514,9 +549,52 @@ class DBCore:
     #  تیکت‌ها
     # ══════════════════════════════════════════════════
 
+    async def _next_ticket_id(self) -> int:
+        """🛡 AUDIT-A5 — شماره‌ی تیکت با شمارنده‌ی اتمیک.
+
+        الگوی قبلی `count_documents({}) + 1` بود: دو تیکت هم‌زمان (دو کاربر،
+        یا دوبار زدن دکمه‌ی ارسال) همان شماره را می‌گرفتند و چون همه‌ی
+        آدرس‌دهی تیکت‌ها (مشاهده، پاسخ، دکمه‌ها) با `ticket_id` است، کاربر
+        دوم روی تیکت کاربر اول می‌نوشت و هر دو یک گفت‌وگو را می‌دیدند.
+        `$inc` روی سند شمارنده در `settings` همان ایدiomِ `_claim_global_first`
+        است و `$max` (در گام جدا) یک‌بار شمارنده را با داده‌های قدیمی هم‌تراز
+        می‌کند؛ `$inc` بعد از آن هرگز عدد تکراری تولید نمی‌کند.
+        """
+        from pymongo import ReturnDocument
+
+        async def _bump() -> int:
+            doc = await self.settings.find_one_and_update(
+                {'_id': 'ticket_id_counter'}, {'$inc': {'v': 1}},
+                upsert=True, return_document=ReturnDocument.AFTER)
+            return int((doc or {}).get('v') or 0)
+
+        nxt = await _bump()
+        top = await self.tickets.find_one(
+            sort=[('ticket_id', -1)], projection={'ticket_id': 1})
+        seed = int((top or {}).get('ticket_id') or 0)
+        if nxt <= seed:
+            # شمارنده از داده‌های موجود عقب‌تر است (نصب تازه روی DB قدیمی،
+            # بازیابی از بکاپ، یا حذف‌شدن سند شمارنده) ⇒ یک‌بار هم‌تراز با
+            # $max (هرگز کم نمی‌کند) و بعد شماره‌ی تازه بگیر.
+            await self.settings.update_one(
+                {'_id': 'ticket_id_counter'}, {'$max': {'v': seed}}, upsert=True)
+            nxt = await _bump()
+        return nxt
+
+
+    async def ticket_search_name(self, name: str, limit: int = 15) -> list:
+        """🛡 AUDIT-P-9 — جست‌وجوی نام در خودِ Mongo (ایندکس‌شده) به‌جای
+        فیلتر پایتونی روی ۱۰۰ تیکت آخر؛ قبلاً تیکت قدیمی‌تر «پیدا نشد» می‌داد."""
+        term = re.escape(str(name or '').strip())
+        if not term:
+            return []
+        return await self.tickets.find(
+            {'user_name': {'$regex': term, '$options': 'i'}}
+        ).sort('created_at', -1).to_list(limit)
+
+
     async def ticket_create(self, uid: int, name: str, subject: str, message: str) -> int:
-        count = await self.tickets.count_documents({})
-        tid   = count + 1
+        tid = await self._next_ticket_id()
         await self.tickets.insert_one({
             'ticket_id': tid, 'user_id': uid, 'user_name': name,
             'subject': subject, 'message': message, 'status': 'open',
@@ -543,13 +621,68 @@ class DBCore:
         return await self.tickets.find({'user_id': uid}).sort('created_at', -1).to_list(20)
 
 
+    # 🛡 AUDIT-V3 — کرانه‌ی آرایه‌های درون‌سندی (سقف ۱۶ مگابایت Mongo).
+    TICKET_INLINE_CAP = 400          # پاسخِ درون‌خطی هر تیکت
+    NOTE_INLINE_CAP   = 200          # یادداشت داخلی هر تیکت
+    ARCHIVE_COL       = 'ticket_overflow'
+    ARCHIVE_BATCH     = 500          # 🛡 حداکثر آیتم در هر سندِ آرشیو
+
+    async def _push_capped(self, col, query, field, item, cap, *, archive_kind=None):
+        """$push با کرانه؛ هر چه از کرانه رد شود **گم نمی‌شود**.
+
+        اگر طول آرایه به cap برسد، آیتم‌های قدیمی‌تر پیش از `$slice` به
+        کالکشن `ticket_overflow` منتقل می‌شوند (یک سند به‌ازای هر دسته).
+        خواننده‌های موجود بدون تغییر کار می‌کنند: آرایه‌ی درون‌خطی همیشه
+        «تازه‌ترین پنجره» را دارد و آرشیو فقط برای بازیابی سابقه لازم است.
+        """
+        doc = await getattr(self, col).find_one(query, {field: 1})
+        arr = (doc or {}).get(field) or []
+        ops = {'$push': {field: {'$each': [item], '$slice': -cap}}}
+        if len(arr) >= cap and archive_kind:
+            overflow = arr[:max(1, len(arr) - cap + 1)]
+            # 🛡 سند آرشیو هم کرانه دارد: دسته‌های ARCHIVE_BATCH تایی با
+            # شمارنده‌ی seq — وگرنه مشکل فقط از tickets به ticket_overflow
+            # منتقل می‌شد و همان سقف ۱۶ مگابایت را می‌خورد.
+            batch = max(10, int(self.ARCHIVE_BATCH))
+            _rows = await self.ticket_overflow.find(
+                {'ticket_ref': query.get('ticket_id'), 'kind': archive_kind},
+                {'seq': 1, 'items': 1}).sort('seq', -1).limit(1).to_list(1)
+            prev = _rows[0] if _rows else {}        # 🛡 find_one کرسر نمی‌دهد
+            have = len(prev.get('items') or [])
+            seq = int(prev.get('seq') or 0)
+            if have + len(overflow) > batch:
+                seq += 1
+                have = 0
+            await self.ticket_overflow.update_one(
+                {'ticket_ref': query.get('ticket_id'), 'kind': archive_kind, 'seq': seq},
+                {'$push': {'items': {'$each': overflow}},
+                 '$set': {'at': utc_now_iso(), 'field': field},
+                 '$inc': {'count': len(overflow)}},
+                upsert=True)
+            ops['$inc'] = {field + '_archived': len(overflow)}
+        await getattr(self, col).update_one(query, ops)
+
+    async def ticket_archived_replies(self, ticket_id: int) -> list:
+        """سابقه‌ی بایگانی‌شده‌ی پاسخ‌ها (برای نمایش در پنل/مینی‌اپ)."""
+        try:
+            rows = await self.ticket_overflow.find(
+                {'ticket_ref': ticket_id, 'kind': 'replies'},
+                {'items': 1}).sort('seq', 1).to_list(200)
+        except Exception:
+            return []
+        out = []
+        for r in rows or []:
+            out.extend(r.get('items') or [])
+        return out
+
     async def ticket_add_reply(self, ticket_id: int, reply_text: str):
+        await self._push_capped(
+            'tickets', {'ticket_id': ticket_id}, 'replies',
+            {'text': reply_text, 'at': utc_now_iso()}, self.TICKET_INLINE_CAP,
+            archive_kind='replies')
         await self.tickets.update_one(
             {'ticket_id': ticket_id},
-            {
-                '$push': {'replies': {'text': reply_text, 'at': utc_now_iso()}},
-                '$set':  {'last_reply_at': utc_now_iso()},
-            }
+            {'$set': {'last_reply_at': utc_now_iso()}}
         )
 
 

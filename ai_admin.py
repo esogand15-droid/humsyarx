@@ -11,7 +11,7 @@
 import json
 import logging
 from datetime import datetime
-from html import escape as _esc
+from utils import esc as _esc   # 🛡 AUDIT-A6 —escape مرکزی
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 

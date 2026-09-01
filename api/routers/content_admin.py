@@ -349,7 +349,9 @@ async def del_schedule(sid: str, admin=Depends(GLOBAL_USER)):
     old = await db.get_schedule_by_id(sid)
     if not old:
         raise HTTPException(404, "برنامه پیدا نشد")
-    await db.delete_schedule(sid)
+    _res = await db.delete_schedule(sid)
+    if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+        raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
     notice = await db.schedule_notify_event(old, "cancelled")
     await _audit(
         admin, "حذف و لغو برنامه آموزشی", "Schedules", severity="HIGH",
@@ -421,7 +423,9 @@ async def add_faq(body: FaqCreate, admin=Depends(get_content_admin_user)):
 async def del_faq(fid: str, admin=Depends(get_content_admin_user)):
     old = await db.faq_get(fid)
     if not old: raise HTTPException(404, "پرسش متداول پیدا نشد")
-    await db.faq_delete(fid)
+    _res = await db.faq_delete(fid)
+    if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+        raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
     await _audit(admin, "حذف پرسش متداول", "Content", severity="HIGH",
         target_id=fid, target_type="faq", target_label=old.get("question", "")[:300],
         before={"category": old.get("category")}, after={"deleted": True},
@@ -736,7 +740,9 @@ async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
     old = await db.bs_get_content_item(cid)
     if not old: raise HTTPException(404, "فایل پیدا نشد")
     await _deny_intake(await db.content_intake(cid), admin)
-    await db.bs_delete_content(cid)
+    _res = await db.bs_delete_content(cid)
+    if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+        raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
     await _audit(admin, "حذف فایل جلسه", "Content", severity="HIGH",
         target_id=cid, target_type="content_item", target_label=old.get("description", ""),
         before={"session_id": old.get("session_id"), "type": old.get("type")},

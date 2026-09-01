@@ -218,9 +218,13 @@ async def relay(update, context, *, entry: dict | None = None) -> dict:
         leak = M.has_leak(msg.text or "")
         if leak and not sess.get("leak_warned"):
             await db.ring_session_note(sid, {"leak_warned": True})
+            # 🛡 AUDIT-A6 — `leak` تکه‌ای از پیامِ خودِ کاربر است که داخل
+            # Markdown خام می‌رفت: هر `_`/`*`/`[` در شماره‌ی تلفنِ تایپ‌شده
+            # (مثلاً «0912_34_56») پارس را می‌شکست و **هشدار ایمنی ارسال نمی‌شد**.
+            from utils import esc as _esc
             await notify.send_text(
-                uid, f"🛡 هشدار: به‌نظر داری **{leak}** می‌فرستی. با غریبه‌ها "
-                     "شماره/آیدی/لینک نفرست؛ مسئولیتش با خودته.", parse_mode="Markdown")
+                uid, f"🛡 هشدار: به‌نظر داری <b>{_esc(leak)}</b> می‌فرستی. با غریبه‌ها "
+                     "شماره/آیدی/لینک نفرست؛ مسئولیتش با خودته.", parse_mode="HTML")
     if not sess.get("safety_shown") and kind == "text":
         await db.ring_session_note(sid, {"safety_shown": True})
     return {"handled": True, "why": "relayed", "kind": kind, "peer": peer}

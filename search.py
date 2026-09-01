@@ -78,7 +78,7 @@ async def _add_schedule(update, context, text):
                         f"📅 <b>{type_fa} جدید:</b> {lesson}\n👨‍🏫 {teacher} | {date_display} {time}",
                         parse_mode='HTML')
                     count += 1
-                except: pass
+                except Exception: pass   # 🛡 §۲۰ — همین الگوی resources.py (bare except ⇒ بلعیدن لغو)
 
         await update.message.reply_text(
             f"✅ برنامه اضافه شد!\n📌 {lesson} | {date_display} {time}\n🔔 {count} نفر مطلع شدند."

@@ -1,3 +1,4 @@
+import logging
 """🚩 Reports"""
 import os
 from datetime import datetime
@@ -39,7 +40,10 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
         await notif.insert_one({"type":"content_report","chat_id":int(os.getenv("ADMIN_ID","0")),
             "text":f"🚩 <b>گزارش #{rid}</b>\n👤 {db_user.get('name','')}\n📦 {target_label}\n⚠️ {reason_lbl}",
             "sent":False,"created_at":utc_now_iso()})
-    except Exception: pass
+    except Exception as _ne:
+        # 🛡 AUDIT-R6 — اگر درجِ صف اعلان شکست بخورد، ادمین هرگز از این گزارش
+        # باخبر نمی‌شود. درخواست کاربر را نمی‌شکنیم، ولی ردپا می‌ماند.
+        logging.getLogger(__name__).warning("notif enqueue failed (گزارش): %s", _ne)
     return {"ok":True,"message":"✅ گزارش ثبت شد."}
 
 @router.get("/my")

@@ -20,7 +20,15 @@ try:
 except (TypeError, ValueError):
     ADMIN_ID = 0
 
-INIT_DATA_MAX_AGE = 3600
+# 🛡 AUDIT-R1 — پنجره‌ی اعتبار امضا؛ به‌صورت env قابل تنظیم است تا در
+# محیط‌هایی که ساعت سرور کشیده است یا flowهای کُند، بدون دیپلوی تازه
+# بسته/باز شود. replay کامل در مدل Telegram WebApp حذف‌شدنی نیست (امضای
+# stateless)، پس این عدد خودش «پنجره‌ی replay» است و پیش‌فرض یک ساعت نگه
+# داشته شده تا سشن‌های وب‌ادمین نشکنند (sane ceiling = 24h).
+try:
+    INIT_DATA_MAX_AGE = max(30, min(int(os.getenv("INIT_DATA_MAX_AGE_SEC", "3600") or 3600), 86400))
+except (TypeError, ValueError):
+    INIT_DATA_MAX_AGE = 3600
 
 
 def _auth_error(detail: str = "invalid_init_data") -> HTTPException:

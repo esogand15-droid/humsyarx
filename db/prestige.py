@@ -892,8 +892,10 @@ class DBPrestige:
         if sets:
             try:
                 await self.users.update_one({'user_id': uid}, {'$set': sets})
-            except Exception:
-                pass
+            except Exception as _de:
+                # 🛡 AUDIT-R6 — decay تنبلی که نوشته نشود، رنک نمایشی با
+                # واقعیت زاویه می‌گیرد؛ لاگ می‌شود و دفعه‌ی بعد اعمال می‌شود.
+                logger.warning(f"prestige lazy-decay write failed uid={uid}: {_de}")
             u.update(sets)
         eff = max(u['prestige_xp'] - u['decay_penalty'], u['rank_floor_xp'])
         idx, div = self._rank_for(eff)
@@ -1215,7 +1217,11 @@ class DBPrestige:
                     pass
                 rep['founders'] += 1
                 rep['migrated'] += 1
-                migrated.append({'uid': uid, 'xp': xp, 'idx': idx, 'reg': reg,
+                # 🛡 AUDIT-B1 — `reg` هرگز تعریف نشده بود: NameError داخل این
+                # try بلافاصله به `except Exception: rep['errors'] += 1`
+                # می‌رفت، یعنی هر ردیف مهاجرت «خطا» حساب می‌شد و `migrated`
+                # خالی می‌ماند (Global Firsts پایین‌تر هیچ کاندیدی نمی‌دید).
+                migrated.append({'uid': uid, 'xp': xp, 'idx': idx, 'reg': registered_at,
                                  'total_answers': total_a, 'streak_best': best_run})
                 if pause:
                     await asyncio.sleep(pause)
@@ -1610,8 +1616,10 @@ class DBPrestige:
         if sets:
             try:
                 await self.users.update_one({'user_id': uid}, {'$set': sets})
-            except Exception:
-                pass
+            except Exception as _de:
+                # 🛡 AUDIT-R6 — decay تنبلی که نوشته نشود، رنک نمایشی با
+                # واقعیت زاویه می‌گیرد؛ لاگ می‌شود و دفعه‌ی بعد اعمال می‌شود.
+                logger.warning(f"prestige lazy-decay write failed uid={uid}: {_de}")
             u.update(sets)
         eff = max(u['prestige_xp'] - u['decay_penalty'], u['rank_floor_xp'])
         view = self._challenge_state_view(u, eff, today)
@@ -2195,8 +2203,8 @@ class DBPrestige:
         if incs:
             try:
                 await self.prestige_history.update_one(q, {'$inc': incs})
-            except Exception:
-                pass
+            except Exception as _re:
+                logger.warning(f"feed reaction counter update failed: {_re}")   # 🛡 AUDIT-R6
         try:
             # شمارنده‌ها بلافاصله تازه شوند — کش فید ۱۰دقیقه‌ای باطل می‌شود
             await self.settings.delete_many({'_id': 'feed_cache'})

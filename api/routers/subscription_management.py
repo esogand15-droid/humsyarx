@@ -1,5 +1,7 @@
 """Subscription administration endpoints."""
 
+import hashlib
+import json
 import logging
 import re
 
@@ -869,6 +871,32 @@ async def decide_payment(
                 ),
             )
 
+    # 🛡 AUDIT-A1 — «تصمیم» باید ادعا شود، نه فقط نوشته: گذار اتمیک
+    # pending→approved/rejected درون خودِ update است. اگر رسید را همان
+    # لحظه ادمین دیگری (یا ربات) بسته باشد، ۴۰۹ می‌دهیم و هیچ اثر مالی
+    # رخ نمی‌دهد — پیش از این check-then-act بود و دابل‌کلیک = دو دوره
+    # اشتراک برای یک رسید.
+    if not await db.sub_payment_decide(
+        payment_id,
+
+        approved=
+            body.approved,
+
+        admin_id=
+            admin["id"],
+
+        note=
+            body.note.strip(),
+    ):
+        raise HTTPException(
+            status_code=409,
+
+            detail=(
+                "این رسید هم‌زمان بررسی شد"
+            ),
+        )
+
+    if body.approved:
         await db.sub_activate(
             payment["user_id"],
 
@@ -888,20 +916,6 @@ async def decide_payment(
             extend=
                 True,
         )
-
-
-    await db.sub_payment_decide(
-        payment_id,
-
-        approved=
-            body.approved,
-
-        admin_id=
-            admin["id"],
-
-        note=
-            body.note.strip(),
-    )
 
 
     if not body.approved and payment.get("discount_code"):
@@ -1301,6 +1315,27 @@ async def search_users_for_grant(
     }
 
 
+def _grant_key(admin, uids, days, extend, plan_name: str = '') -> str:
+    """🛡 AUDIT-A1b — اثرانگشت پایدارِ یک اعطا برای «ادعای یکتا».
+
+    همان ادمین + همان مجموعه‌ی کاربران + همان مقدار = همان کلید؛ پس
+    دابل‌کلیک، رتریِ مرورگر یا «ارسال دوباره‌ی فرم بازمانده» اثر
+    دوم تولید نمی‌کند.
+    """
+    payload = json.dumps(
+        {
+            "a": int(admin["id"]),
+            "u": sorted(int(u) for u in uids),
+            "d": int(days),
+            "e": bool(extend),
+            "p": str(plan_name or "").strip(),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 @router.post(
     "/subscribers/grant"
 )
@@ -1323,6 +1358,29 @@ async def grant_subscription(
             detail="کاربر پیدا نشد",
         )
 
+    # 🛡 AUDIT-A1b — ادعای یکتا پیش از افزودن روز. کلید عمداً آزاد نمی‌شود:
+    # حالت واقعی «اعطا انجام شد و پاسخ در شبکه گم شد → کاربر دوباره می‌زند»
+    # دقیقاً همان چیزی است که باید خنثی شود؛ قفل با TTL (۲ دقیقه) پاک می‌شود.
+    if not await db.op_claim(
+        "sub_grant",
+
+        _grant_key(
+            admin,
+            [body.user_id],
+            body.days,
+            body.extend,
+            body.plan_name,
+        ),
+    ):
+        raise HTTPException(
+            status_code=409,
+
+            detail=(
+                "این اعطا همین حالا ثبت شده است "
+                "(کلیک تکراری؟) — از تاریخچه "
+                "مطمئن شوید."
+            ),
+        )
 
     end_date = (
         await db.sub_activate(
@@ -1410,6 +1468,18 @@ async def grant_subscription_bulk(
     target_ids = list(dict.fromkeys(target_ids))[:1000]
     if not target_ids:
         raise HTTPException(status_code=422, detail="هیچ کاربر معتبری برای اعطا پیدا نشد")
+
+    # 🛡 AUDIT-A1b — اعطای گروهی «یک‌بارمصرف»: تکرار درخواست = ۱۰۰۰ کاربر
+    # با دو برابر اعتبار، پس کلید مجموعه هدف + مقدار هم ادعا می‌شود.
+    if not await db.op_claim(
+        "sub_grant_bulk",
+        _grant_key(admin, target_ids, body.days, body.extend, body.plan_name),
+        ttl_seconds=600,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="این اعطای گروهی همین حالا ثبت شده است (کلیک تکراری؟) — لطفاً یک‌بار صبر کنید.",
+        )
 
     granted, failed = 0, []
     for uid in target_ids:
@@ -1858,7 +1928,10 @@ async def start_discount_broadcast(
                 tags=["broadcast", "discount"],
             )
 
-    _asyncio.create_task(_run())
+    # 🛡 AUDIT-M1 — مرجع نگه‌داشتن + ثبت خطا (قبلاً شکست broadcast فقط یک
+    # «Task exception was never retrieved» در stdout بود)
+    from utils import spawn_bg
+    spawn_bg(_run(), 'discount_broadcast_web')
     return {"ok": True, "broadcast_id": bid, "total": len(users)}
 
 

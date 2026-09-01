@@ -435,7 +435,13 @@ async def _admin_approve(query, context, pid: str):
     plan = await db.sub_plan_get(payment['plan_id'])
     days = plan['days'] if plan else 30
 
-    await db.sub_payment_decide(pid, approved=True, admin_id=ADMIN_ID)
+    # 🛡 AUDIT-A1 — اول «ادعا»ی تصمیم (گذار اتمیک pending→approved). اگر
+    # هم‌زمان کسی همان رسید را بسته باشد نباید حتی یک روز اضافه شود؛
+    # پیش از این، چکِ status و نوشتن دو فرمان جدا بودند و دو تأیید
+    # پشت‌سرهم = دو دوره اشتراک برای یک رسید.
+    if not await db.sub_payment_decide(pid, approved=True, admin_id=ADMIN_ID):
+        await query.answer("این رسید هم‌زمان بررسی و بسته شد.", show_alert=True)
+        return
     end_date = await db.sub_activate(
         payment['user_id'], days, payment['plan_name'],
         source='payment', granted_by=ADMIN_ID, extend=True
@@ -486,7 +492,11 @@ async def admin_reject_reason_handler(update: Update, context: ContextTypes.DEFA
     if not payment or payment.get('status') != 'pending':
         await update.message.reply_text("این رسید قبلاً بررسی شده.")
         return
-    await db.sub_payment_decide(pid, approved=False, admin_id=update.effective_user.id, note=note)
+    # 🛡 AUDIT-A1 — ادعای اتمیک؛ بازنده هیچ اثر جانبی ندارد، وگرنه یک کد
+    # تخفیف دو بار آزاد می‌شود (ظرفیت جعلی).
+    if not await db.sub_payment_decide(pid, approved=False, admin_id=update.effective_user.id, note=note):
+        await update.message.reply_text("این رسید هم‌زمان بررسی و بسته شد.")
+        return
     # 🎟 موج D1 — کد تخفیف در ثبت رسید مصرف شد؛ در رد، ظرفیت به کاربر
     # برمی‌گردد تا بتواند با رسید درست دوباره از همان کد استفاده کند
     if payment.get('discount_code'):

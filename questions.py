@@ -11,7 +11,7 @@
 """
 import os, io, asyncio, logging, time
 from datetime import datetime
-from html import escape
+from utils import esc as escape   # 🛡 AUDIT-A6 —escape مرکزی
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
@@ -19,7 +19,9 @@ from utils import send_audit_log, fmt_jalali_dt
 from time_utils import now_tehran, utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
-from question_bank.contracts import DIFFICULTY_LABELS, canonical_difficulty
+from question_bank.contracts import (
+    DIFFICULTY_LABELS, canonical_difficulty, canonical_status,
+)
 
 logger     = logging.getLogger(__name__)
 ADMIN_ID   = int(os.getenv('ADMIN_ID', '0'))
@@ -43,8 +45,13 @@ def _back(label: str, cb: str) -> list:
 
 
 def _h(value) -> str:
-    """Escape domain/user text before Telegram HTML rendering."""
-    return escape(str(value or ""))
+    """Escape domain/user text before Telegram HTML rendering.
+
+    🛡 AUDIT-A6 — به هلپر مرکزی واگذار شد؛ رفتار قبلی `str(value or "")` بود که
+    عدد صفر را به رشته‌ی خالی تبدیل می‌کرد (شماره‌ی جلسه/سوال صفر «گم» می‌شد).
+    """
+    from utils import esc as _central
+    return _central(value)
 
 
 # ══════════════════════════════════════════════════════════

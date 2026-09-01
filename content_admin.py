@@ -1678,7 +1678,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:lesson:{lid}'))
             return CA_WAITING_TEXT
         try:    number = int(ps[0])
-        except: number = await db.bs_next_session_number(lid, _child or None)
+        except (ValueError, IndexError):
+            # 🛡 §۲۰ — خطای تبدیل عدد، نه «هر چیزی» (bare except لغو/shutdown را می‌بلعد)
+            number = await db.bs_next_session_number(lid, _child or None)
         topic = ps[1]; teacher = ps[2] if len(ps) > 2 else ''
         await db.bs_add_session(lid, number, topic, teacher, intake=_child or None)
         _clear(context)

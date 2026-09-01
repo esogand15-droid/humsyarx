@@ -7,7 +7,18 @@
   ✅ تیکت باز = کانال گفتگو، نه یک پیام
 """
 import os
+import re
 import logging
+
+
+def _h(value, dash: str = '') -> str:
+    """escape با تحمل داده‌ی ناهمگون — 🛡 AUDIT-T1.
+
+    فیلدهای پروفایل لگسی ممکن است int (شماره دانشجویی) یا None باشند؛
+    `html.escape(123)` می‌ترکد، پس اول رشته/خط‌تیره می‌شود بعد escape.
+    """
+    from utils import esc as _central          # 🛡 AUDIT-A6 — یک پیاده‌سازی مرکزی
+    return _central(value, dash)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes
 from database import db
@@ -349,10 +360,14 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['ticket_mode']  = 'awaiting_confirm'
 
         await update.message.reply_text(
+            # 🛡 AUDIT-T1 — موضوع/متن، ورودیِ خودِ کاربر است: بدون escape،
+            # رشته‌ای مثل <a href="…"> در پیش‌نمایش/نوتیف ادمین تگ زنده می‌شد
+            # (فیشینگ داخل چت ادمین) یا تگِ ناقص باعث خطای پارس و رد شدن
+            # کل پیام می‌گشت.
             f"👁 <b>پیش‌نمایش تیکت</b>\n\n"
-            f"📋 موضوع: <b>{subject}</b>\n"
+            f"📋 موضوع: <b>{_h(subject)}</b>\n"
             f"━━━━━━━━━━━━━━━━\n\n"
-            f"💬 {text}\n\n"
+            f"💬 {_h(text)}\n\n"
             f"━━━━━━━━━━━━━━━━\n"
             "آیا این تیکت را ارسال می‌کنید؟",
             parse_mode='HTML',
@@ -394,9 +409,9 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
             await context.bot.send_message(
                 ADMIN_ID,
                 f"💬 <b>پیام جدید در تیکت #{tid}</b>\n"
-                f"👤 {name}\n"
+                f"👤 {_h(name)}\n"
                 f"━━━━━━━━━━━━━━━━\n"
-                f"{text}",
+                f"{_h(text)}",
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(f"✏️ پاسخ تیکت #{tid}", callback_data=f'ticket:admin_view:{tid}')
@@ -458,9 +473,9 @@ async def _send_ticket_reply(bot, tid: int, text: str) -> None:
             await bot.send_message(
                 ticket['user_id'],
                 f"📨 <b>پاسخ به تیکت #{tid}</b>\n"
-                f"📋 {ticket.get('subject','')}\n"
+                f"📋 {_h(ticket.get('subject',''))}\n"
                 f"━━━━━━━━━━━━━━━━\n\n"
-                f"💬 {text}\n\n"
+                f"💬 {_h(text)}\n\n"
                 "<i>برای ادامه گفتگو می‌توانید پاسخ دهید.</i>",
                 parse_mode='HTML',
                 reply_markup=_tk_kb([[
@@ -568,15 +583,15 @@ async def _do_create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             ADMIN_ID,
             f"🔔 <b>تیکت جدید #{tid}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>نام:</b> {name}\n"
-            f"🎓 <b>شماره دانشجویی:</b> {sid or '—'}\n"
-            f"📅 <b>ورودی:</b> {intake or '—'}\n"
-            f"👥 <b>گروه:</b> {group or '—'}\n"
-            f"📱 <b>یوزرنیم:</b> {uname}\n"
+            f"👤 <b>نام:</b> {_h(name)}\n"
+            f"🎓 <b>شماره دانشجویی:</b> {_h(sid) or '—'}\n"
+            f"📅 <b>ورودی:</b> {_h(intake) or '—'}\n"
+            f"👥 <b>گروه:</b> {_h(group) or '—'}\n"
+            f"📱 <b>یوزرنیم:</b> {_h(uname)}\n"
             f"🆔 <b>آیدی:</b> <code>{uid}</code>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"📋 <b>موضوع:</b> {subject}\n\n"
-            f"💬 <b>متن تیکت:</b>\n{text}",
+            f"📋 <b>موضوع:</b> {_h(subject)}\n\n"
+            f"💬 <b>متن تیکت:</b>\n{_h(text)}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"✏️ پاسخ به تیکت #{tid}", callback_data=f'ticket:admin_view:{tid}')
@@ -687,12 +702,10 @@ async def _search_tickets(update: Update, query_text: str):
         if t:
             results = [t]
     else:
-        # جستجو با نام
-        all_tickets = await db.ticket_get_all()
-        results = [
-            t for t in all_tickets
-            if query_text.lower() in t.get('user_name', '').lower()
-        ]
+        # 🛡 AUDIT-P-9 — جست‌وجو در خودِ DB (ایندکس user_name) با سقف ۱۵؛
+        # قبلاً روی ticket_get_all (۱۰۰ تیکت آخر) فیلتر می‌شد و هر تیکت
+        # قدیمی‌تر عملاً «پیدا نشد» می‌گرفت.
+        results = await db.ticket_search_name(query_text, limit=15)
 
     if not results:
         await update.message.reply_text(
@@ -745,20 +758,20 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
             f"🎓 شماره: {sid or '—'}\n"
             f"📅 ورودی: {intake or '—'}\n"
             f"👥 گروه: {group or '—'}\n"
-            f"📋 موضوع: {ticket.get('subject','')}\n"
+            f"📋 موضوع: {_h(ticket.get('subject',''))}\n"
             f"🔘 وضعیت: {status_icon}\n"
             f"📅 تاریخ ثبت: {fmt_jalali_dt(ticket['created_at'])}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
-            f"💬 <b>پیام اولیه:</b>\n{ticket['message']}\n"
+            f"💬 <b>پیام اولیه:</b>\n{_h(ticket['message'])}\n"
         )
     else:
         text = (
             f"🎫 <b>تیکت #{tid}</b>\n"
-            f"📋 {ticket.get('subject','')}\n"
+            f"📋 {_h(ticket.get('subject',''))}\n"
             f"🔘 {status_icon}\n"
             f"📅 {fmt_jalali_dt(ticket['created_at'], with_time=False)}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
-            f"💬 <b>پیام شما:</b>\n{ticket['message']}\n"
+            f"💬 <b>پیام شما:</b>\n{_h(ticket['message'])}\n"
         )
 
     # نمایش همه پاسخ‌ها
@@ -773,7 +786,7 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
                 msg_txt = msg_txt[8:].strip()
             else:
                 sender = "🎓 پشتیبانی"
-            text += f"\n{sender}  <i>{at_str}</i>\n{msg_txt}\n"
+            text += f"\n{sender}  <i>{at_str}</i>\n{_h(msg_txt)}\n"
 
     keyboard = []
     if is_admin:
@@ -794,8 +807,22 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
             text[:4090], parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # 🛡 AUDIT-T1 — دو حالت قبلاً فقط «pass» می‌شد: (۱) محتوای یکسان
+        # («message is not modified») که واقعاً بی‌ضرر است؛ (۲) خطای پارس
+        # HTML وقتی برش ۴۰۹۰ کاراکتر یک تگ را نصف کرده یا متن کاربر
+        # کاراکتر رزرو دارد. برای (۲) همان متن را بدون مارک‌آپ نشان می‌دهیم
+        # تا تیکت باز شود، و ردپاش هم در لاگ می‌ماند (§۲۰).
+        _msg = str(e)
+        if 'not modified' in _msg.lower():
+            return
+        logger.warning(f"ticket view render failed (#{tid}): {_msg[:200]}")
+        try:
+            await query.edit_message_text(
+                re.sub(r'<[^>]+>', '', text)[:4090],
+                reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception as e2:
+            logger.warning(f"ticket view fallback failed (#{tid}): {str(e2)[:200]}")
 
 
 async def _ticket_main(query, uid: int):

@@ -5,6 +5,7 @@
 رفتار، همه‌ی importهای قبلی را سالم نگه می‌دارد.
 """
 import os
+import re
 import logging
 import asyncio
 from datetime import datetime, timedelta
@@ -361,10 +362,14 @@ class DBContent:
 
 
     async def bs_delete_content(self, cid: str):
+        # 🛡 AUDIT-R6 — خطای حذف نباید بلعیده شود: None = خطا، عدد = تعداد حذف‌شده
+        # (قبلاً پنل «موفق» گزارش می‌داد درحالی‌که آیتم سر جایش بود).
         try:
-            await self.bs_content.delete_one({'_id': ObjectId(cid)})
-        except Exception:
-            pass
+            r = await self.bs_content.delete_one({'_id': ObjectId(cid)})
+            return int(getattr(r, 'deleted_count', 0) or 0)
+        except Exception as e:
+            logger.error(f"bs_delete_content failed for {cid}: {e}")
+            return None
 
 
     async def bs_inc_download(self, cid: str, uid: int):
@@ -803,10 +808,14 @@ class DBContent:
 
 
     async def ref_delete_file(self, fid: str):
+        # 🛡 AUDIT-R6 — خطای حذف نباید بلعیده شود: None = خطا، عدد = تعداد حذف‌شده
+        # (قبلاً پنل «موفق» گزارش می‌داد درحالی‌که آیتم سر جایش بود).
         try:
-            await self.ref_files.delete_one({'_id': ObjectId(fid)})
-        except Exception:
-            pass
+            r = await self.ref_files.delete_one({'_id': ObjectId(fid)})
+            return int(getattr(r, 'deleted_count', 0) or 0)
+        except Exception as e:
+            logger.error(f"ref_delete_file failed for {fid}: {e}")
+            return None
 
 
     # ══════════════════════════════════════════════════
@@ -821,7 +830,9 @@ class DBContent:
         اضافه شد، باید student_intake_filter پاس بدهد."""
         if not query_text:
             return []
-        rx = {'$regex': query_text, '$options': 'i'}
+        # 🛡 AUDIT-R3 — ورودی کاربر «متن» است نه الگو: بدون escape، `.*` یک
+        # full-scan بی‌نهایت و `(` خطای Mongo می‌ساخت (نمونه‌ی global_search).
+        rx = {'$regex': re.escape(query_text), '$options': 'i'}
         return await self.questions.find(
             and_query(approved_query(), {'$or': [{'question': rx}, {'explanation': rx}]}, self._intake_q(intake))
         ).limit(limit).to_list(limit)
@@ -1156,9 +1167,14 @@ class DBContent:
 
 
     async def delete_schedule(self, sid: str):
+        # 🛡 AUDIT-R6 — خطای حذف نباید بلعیده شود: None = خطا، عدد = تعداد حذف‌شده
+        # (قبلاً پنل «موفق» گزارش می‌داد درحالی‌که آیتم سر جایش بود).
         try:
-            await self.schedules.delete_one({'_id': ObjectId(sid)})
-        except Exception: pass
+            r = await self.schedules.delete_one({'_id': ObjectId(sid)})
+            return int(getattr(r, 'deleted_count', 0) or 0)
+        except Exception as e:
+            logger.error(f"delete_schedule failed for {sid}: {e}")
+            return None
 
 
     async def schedule_notify_event(self, item: dict, event: str) -> dict:
@@ -1298,9 +1314,14 @@ class DBContent:
 
 
     async def faq_delete(self, fid: str):
+        # 🛡 AUDIT-R6 — خطای حذف نباید بلعیده شود: None = خطا، عدد = تعداد حذف‌شده
+        # (قبلاً پنل «موفق» گزارش می‌داد درحالی‌که آیتم سر جایش بود).
         try:
-            await self.faq.delete_one({'_id': ObjectId(fid)})
-        except Exception: pass
+            r = await self.faq.delete_one({'_id': ObjectId(fid)})
+            return int(getattr(r, 'deleted_count', 0) or 0)
+        except Exception as e:
+            logger.error(f"faq_delete failed for {fid}: {e}")
+            return None
 
 
     async def seed_subscription_copyright_faqs(self):
@@ -1674,7 +1695,9 @@ class DBContent:
         """جستجوی آزادِ متنی توی FAQ — برای Function Callingِ هوشیار."""
         if not query_text:
             return []
-        rx = {'$regex': query_text, '$options': 'i'}
+        # 🛡 AUDIT-R3 — ورودی کاربر «متن» است نه الگو: بدون escape، `.*` یک
+        # full-scan بی‌نهایت و `(` خطای Mongo می‌ساخت (نمونه‌ی global_search).
+        rx = {'$regex': re.escape(query_text), '$options': 'i'}
         return await self.faq.find(
             {'$or': [{'question': rx}, {'answer': rx}]}
         ).limit(limit).to_list(limit)

@@ -3,6 +3,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
+from utils import esc as _esc   # 🛡 AUDIT-A6
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
 RESOURCE_TYPES = ['📄 جزوه', '📊 پاورپوینت', '📝 نکات', '🧠 خلاصه', '🧪 تست', '🎙 ویس']
 
@@ -153,19 +154,24 @@ async def upload_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         path = context.user_data.get('upload_path', {})
         p = f"{path.get('term','؟')} ← {path.get('lesson','؟')} ← {path.get('topic','؟')} ← {path.get('type','؟')}"
         await update.message.reply_text(
-            f"📤 فایل دریافت شد.\n📌 مسیر: {p}\n\n"
-            "متادیتا:\n`نسخه, تگ‌ها, اهمیت(1-5), توضیحات`\n"
-            "مثال: `2.0, قلب عروق, 5, جزوه دکتر محمدی`",
-            parse_mode='Markdown'
+            # 🛡 AUDIT-A6 — `Markdown` + عنوان درس/تاپیکِ انتخابی: هر `_` یا `*`
+            # در نام محتوا پارس را می‌شکست و تأییدِ «فایل دریافت شد» هرگز
+            # نمایش داده نمی‌شد. به HTML + escape مرکزی منتقل شد (معنی بصری
+            # همان: کدِ راهنما داخل <code>).
+            f"📤 فایل دریافت شد.\n📌 مسیر: {_esc(p)}\n\n"
+            "متادیتا:\n<code>نسخه, تگ‌ها, اهمیت(1-5), توضیحات</code>\n"
+            "مثال: <code>2.0, قلب عروق, 5, جزوه دکتر محمدی</code>",
+            parse_mode='HTML'
         )
         return UPLOAD_METADATA
 
     elif mode == 'video':
         await update.message.reply_text(
+            # 🛡 AUDIT-A6 — همان دلیل بالا
             "📹 ویدیو دریافت شد.\n\n"
-            "اطلاعات:\n`استاد, تاریخ(YYYY-MM-DD), توضیح`\n"
-            "مثال: `دکتر محمدی, 2024-03-15, جلسه اول`",
-            parse_mode='Markdown'
+            "اطلاعات:\n<code>استاد, تاریخ(YYYY-MM-DD), توضیح</code>\n"
+            "مثال: <code>دکتر محمدی, 2024-03-15, جلسه اول</code>",
+            parse_mode='HTML'
         )
         return UPLOAD_METADATA
 
@@ -205,8 +211,8 @@ async def upload_metadata_handler(update: Update, context: ContextTypes.DEFAULT_
                         caption=f"📚 {path.get('lesson','')} — {path.get('topic','')}\n{path.get('type','')} v{version}",
                         parse_mode='HTML'
                     )
-                except:
-                    pass
+                except Exception:
+                    pass   # 🛡 §۲۰ — کاربر بلاک/پیام پاک‌شده؛ فقط حذفِ صدای لاگ، نه بلعیدن CancelledError
 
             users = await db.notif_users('new_resources')
             count = 0
@@ -219,8 +225,8 @@ async def upload_metadata_handler(update: Update, context: ContextTypes.DEFAULT_
                             parse_mode='HTML'
                         )
                         count += 1
-                    except:
-                        pass
+                    except Exception:
+                        pass   # 🛡 §۲۰
 
             await update.message.reply_text(
                 f"✅ منبع اضافه شد!\n🔔 {count} نفر مطلع شدند."

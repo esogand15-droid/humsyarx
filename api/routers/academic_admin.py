@@ -347,7 +347,9 @@ async def schedule_delete(
     old = await db.get_schedule_by_id(schedule_id)
     if not old:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
-    await db.delete_schedule(schedule_id)
+    _res = await db.delete_schedule(schedule_id)
+    if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
+        raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
     notice = await db.schedule_notify_event(old, "cancelled")
     await _audit(
         admin, "حذف و لغو برنامه آموزشی", "Schedules", severity="HIGH",

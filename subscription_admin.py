@@ -14,7 +14,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
-from utils import send_audit_log, safe_send
+from utils import send_audit_log, safe_send, spawn_bg   # 🛡 AUDIT-M1
 from time_utils import format_datetime_fa, now_utc, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -394,6 +394,18 @@ async def _show_user_detail(query, target_uid: int):
 
 
 async def _quick_activate(query, context, target_uid: int, days: int):
+    # 🛡 AUDIT-A1b — «ادعای یکتا» روی (ادمین، کاربر، مقدار). پنل بعد از اعطا
+    # همان دکمه‌ها را نگه می‌دارد، پس دابل‌تپ یا فشار یک دکمه‌ی کهنه (پیام
+    # قدیمیِ چند ساعت پیش) قبلاً یک بار دیگر +N روز اضافه می‌کرد. برای
+    # اعطای عمدیِ مجدد، مسیر «✍️ تعداد دلخواه» باز است (مصرف یک‌بارمصرف).
+    if not await db.op_claim('sub_quick_grant', f"{query.from_user.id}:{target_uid}:{days}",
+                             ttl_seconds=3600):
+        await query.answer(
+            "این اعطا (%s روز) همین حالا برای این کاربر ثبت شده بود.\n"
+            "اگر عمدی است از «✍️ تعداد دلخواه» استفاده کنید." % days,
+            show_alert=True,
+        )
+        return
     await db.sub_activate(target_uid, days, plan_name=f'فعال‌سازی دستی (+{days} روز)',
                            source='admin_manual', granted_by=query.from_user.id, extend=True)
     days_left = await db.sub_days_left(target_uid)
@@ -808,7 +820,9 @@ async def _execute_discount_broadcast(query, context, code: str, segment: str):
         except Exception:
             pass
 
-    asyncio.create_task(_run())
+    # 🛡 AUDIT-M1 — broadcast ربات: تسک طولانی بی‌مرجع ممکن است وسط کار
+    # جمع‌آوری شود و خطایش هرگز جایی ثبت نشود.
+    spawn_bg(_run(), 'discount_broadcast_bot')
 
 
 async def _show_discount_stats(query, code: str):
