@@ -127,12 +127,17 @@ def kb_queue(mode: str, cfg: dict, status: str = "waiting", position: int = 0) -
         rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")],
                 [B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
     elif status == "empty":
-        rows = [[B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")],
-                [B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq"),
+        # NO_MATCH: سه راهِ روشن — جست‌وجوی دوباره، بازترکردن معیارها، بازگشت
+        rows = [[B("🔎 جست‌وجوی دوباره", callback_data=f"{CB}go")],
+                [B("👤 ویرایش پروفایل", callback_data=f"{CB}profile"),
+                 B("⚙️ معیارها", callback_data=f"{CB}p:prefs")],
+                [B("📜 قوانین", callback_data=f"{CB}rules"),
                  B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
-    else:  # waiting
-        rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")],
-                [B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq"),
+    else:  # SEARCHING: «ادامه» = همین حالا دوباره تلاش کن (بیرون نمی‌زندش)
+        rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}go"),
+                 B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")],
+                [B("⚙️ معیارها", callback_data=f"{CB}p:prefs"),
+                 B("👤 پروفایل", callback_data=f"{CB}profile"),
                  B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
     if cfg.get("allow_topics"):
         rows.insert(0, [B("🗂 موضوع جلسه", callback_data=f"{CB}tp:0")])

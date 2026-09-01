@@ -81,7 +81,8 @@ async def ring_housekeeping_job(context) -> None:
                 continue
             await db.ring_queue_leave(uid)
             closed += 1
-            await notify.send_text(uid, texts.queue_empty(q.get("mode") or "fun", cfg))
+            await notify.send_text(uid, texts.queue_empty(
+                q.get("mode") or "fun", cfg, waited_s=int(cfg["queue_timeout_s"])))
         # ۲) claimهای یتیم (crash وسط match) — §۶۳
         repaired = await db.ring_queue_repair_claims(max(60, int(cfg["queue_timeout_s"]) // 4))
         # ۲.۵) جاروی صف (§۴۰): اگر زیر همزمانی، دو نفرِ آخر همدیگر را

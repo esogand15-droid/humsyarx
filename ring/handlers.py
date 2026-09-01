@@ -358,7 +358,7 @@ async def _r_next(q, context, uid, arg, parts):
 async def _do_search(q, context, uid) -> None:
     p = await _profile(uid) or {}
     mode = p.get("mode") or "fun"
-    await _show(q, texts.searching(p.get("mode") or "fun"), K.kb_searching(), md=True)
+    await _show(q, texts.searching(mode, p), K.kb_searching(), md=True)
     r = await service.search(uid)
     await _finish_search(q, context, uid, r)
 
@@ -366,19 +366,37 @@ async def _do_search(q, context, uid) -> None:
 async def _finish_search(q, context, uid, r) -> None:
     cfg = await S.get_cfg()
     kind = r.get("kind")
+    p = await _profile(uid) or {}
     if kind == "matched":
         sess, peer = r["session"], r["peer"]
+        if r.get("silent"):
+            # matcherِ دیگری کارت را برای هر دو فرستاده ⇒ فقط صفحه را ببند
+            await _show(q, "🎉 یک نفر پیدا شد! کارت گفت‌وگو همین بالا آمد.", None)
+            return
         await _announce_match(uid, peer, sess, cfg)
         return
     if kind == "waiting":
+        if r.get("reserving"):
+            await _show(q, texts.being_picked(r.get("mode") or "fun"),
+                        K.kb_queue(r.get("mode") or "fun", cfg, "waiting", 0), md=True)
+            return
         await _show(q, texts.still_waiting(int(r.get("queued") or 0),
-                                           r.get("mode") or "fun"),
+                                           r.get("mode") or "fun",
+                                           waited_s=int(r.get("waited_s") or 0), p=p),
                     K.kb_queue(r.get("mode") or "fun", cfg, "waiting",
                                int(r.get("queued") or 0)), md=True)
         return
     if kind == "empty":
-        await _show(q, texts.queue_empty(r.get("mode") or "fun", cfg),
+        await _show(q, texts.queue_empty(r.get("mode") or "fun", cfg,
+                                        why=r.get("why"),
+                                        waited_s=int(r.get("waited_s") or 0), p=p),
                     K.kb_queue(r.get("mode") or "fun", cfg, "empty"))
+        return
+    if kind == "busy":
+        # claimِ خودمان ناموفق بود و session هم ساخته نشد: یکی دیگری را
+        # انتخاب کرده و هنوز معلوم نیست چه می‌شود ⇒ همان پیام «در حال انتخاب»
+        await _show(q, texts.being_picked(r.get("mode") or "fun"),
+                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting", 0), md=True)
         return
     if kind == "maintenance":                        # §۴۵
         await _show(q, texts.maintenance(), K.kb_after_end())
@@ -974,9 +992,31 @@ class _RingRelayFilter(filters.MessageFilter):
         return hash(self.name)
 
 
+async def ring_reentry_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/start` و `/cancel` = خروج از جست‌وجو (§۴۴/§۶۴).
+
+    در `group=1` ثبت می‌شود: PTB برای هر گروه جدا تصمیم می‌گیرد، پس با
+    وجودِ بلاک‌بودنِ هندلر اصلی /start در group=0، این هم اجرا می‌شود و
+    هیچ‌کدام از جریان‌های فعلی ربات را عوض نمی‌کند. هیچ پیامی هم نمی‌فرستد
+    (وظیفه‌اش فقط پاک‌سازی حالت است).
+    """
+    try:
+        uid = update.effective_user.id
+    except Exception:
+        return
+    try:
+        if not S.flag_sync() and not await S.get_flag():
+            return
+        await service.cancel_search(uid)
+    except Exception as e:
+        logger.debug("ring re-entry cleanup نادیده گرفته شد: %s", e)
+
+
 def register(app) -> None:
     """همه‌ی هندلرهای رینگ. ترتیب = اولویت."""
     app.add_handler(CommandHandler("ring", ring_command))
+    app.add_handler(CommandHandler("start", ring_reentry_cleanup), group=1)
+    app.add_handler(CommandHandler("cancel", ring_reentry_cleanup), group=1)
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND & _RingFlowFilter(),
         ring_text_flow))

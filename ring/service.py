@@ -19,7 +19,7 @@ from time_utils import now_utc, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-MAX_CONTENTION_RETRIES = 4   # تلاش مجدد وقتی صف خالی نیست ولی همه claimed‌اند
+MAX_CONTENTION_RETRIES = 6   # تلاش مجدد وقتی صف خالی نیست ولی همه claimed‌اند
 MAX_ATTEMPTS = 16         # سقف تلاش برای یافتن کاندید در هر match — هر تلاش یک
                           # find_one_and_update ایندکس‌شده است؛ زیر طوفانِ همزمانی
                           # این عدد جفت‌شدن‌های از‌دست‌رفته را جبران می‌کند (§۴۰).
@@ -260,9 +260,34 @@ async def join_queue(uid: int, mode: str | None = None) -> Result:
     st = await db.ring_queue_join(uid, doc)
     if st == "already_in_chat":
         return Result.of("in_chat", session_id=(await db.ring_queue_get(uid) or {}).get("session_id"))
+    if st == "claimed":
+        # رزروِ matcherِ دیگر دست‌نخورده می‌ماند؛ kind=waiting ⇒ search()
+        # وارد try_match می‌شود و همان‌جا یا session را adopt می‌کند یا busy.
+        return Result.of("waiting", mode=mode, reserving=True, queued=0, waited_s=0)
     await db.ring_audit("user", "QUEUE_JOIN", str(uid), mode, {})
     await db.ring_bump(queue_join=1)
-    return Result.of("waiting", mode=mode)
+    mine = await db.ring_queue_get(uid)
+    return Result.of("waiting", mode=mode,
+                     queued=await db.ring_queue_waiting_count(mode, [uid]),
+                     waited_s=int(_waited_s(mine)))
+
+
+async def cancel_search(uid: int) -> Result:
+    """«از صف برو بیرون» بدون دست‌زدن به گفت‌وگو (§۴۴/§۶۴).
+
+    برای /start و /cancel: اگر کاربر جریان رینگ را ول کرد، نباید در صف
+    بماند و «در غیابش» match شود. اگر وسط گفت‌وگو باشد، چت دست‌نخورده است
+    (ردیف صف‌اش `in_chat` است و اصلاً پاک نمی‌شود تا end_session درست کار کند).
+    """
+    from database import db
+    q = await db.ring_queue_get(uid)
+    if not q:
+        return Result.of("ok", queued=False)
+    if q.get("status") == "in_chat":
+        return Result.of("in_chat", session_id=q.get("session_id"))
+    await db.ring_queue_leave(uid)
+    logger.info("[RING] user=%s search cancelled (left queue)", uid)
+    return Result.of("ok", queued=True)
 
 
 async def leave_queue(uid: int) -> Result:
@@ -279,76 +304,236 @@ async def search(uid: int) -> Result:
     return await try_match(uid)
 
 
-async def try_match(uid: int, *, announce: bool = False) -> Result:
+async def _adopt_existing(uid: int, token: str) -> Result | None:
+    """اگر matcherِ دیگری همین لحظه ما را برداشته، همان session را adopt کن.
+
+    بدون این، دو جست‌وجوی هم‌زمان به هر دو طرف «کسی پیدا نشد» می‌گفت در حالی
+    که یک session واقعی بین‌شان ساخته شده بود (§۹/§۱۰ race). کارت گفت‌وگو را
+    سمتِ برنده ارسال شده، پس اینجا `silent` است تا کارت دوتایی نشود.
+    """
     from database import db
-    from ring import state
+    # تا ۴ ثانیه (با بیرون‌آمدن زودهنگام) صبر می‌کنیم: طرفِ برنده همین حالا
+    # دارد session را می‌سازد؛ زیر بارِ ۲۰ جست‌وجوی هم‌زمان این کار می‌تواند
+    # بیشتر از یک دورِ event loop طول بکشد و بی‌صبر بودن یعنی «کسی پیدا نشد»
+    # برای کاربری که در واقعmatch شده است.
+    for _ in range(20):
+        sess = await db.ring_session_active_for(uid)
+        if sess:
+            peer = await db.ring_session_peer(sess, uid)
+            logger.info("RING_MATCH_ADOPTED uid=%s sid=%s", uid, sess["session_id"])
+            return Result.of("matched", session=sess, peer=peer, silent=True)
+        mine = await db.ring_queue_get(uid)
+        stt = (mine or {}).get("status")
+        if not mine or stt in ("waiting", "claiming"):
+            return None                      # رزور آزاد شد ⇒ منتظر نمی‌مانیم
+        # claimed (در حال ساخته‌شدنِ session) و in_chat (session همین حالا
+        # نوشته می‌شود) هر دو «صبر کن»‌اند؛ قبلاً in_chat را «آزاد» می‌شمرد
+        # و کاربرِ واقعاً-match‌شده «empty» می‌گرفت.
+        await asyncio.sleep(0.2)
+    logger.info("RING_MATCH_ADOPT_TIMEOUT uid=%s", uid)
+    return None
+
+
+def _reject_log(uid: int, cid: int, reason: str, cfg: dict) -> None:
+    """لاگ دلیل رد شدن — بدون هیچ محتوای خصوصی (§۷۵). uidها مگر در حالت
+    دیباگ، mask می‌شوند تا لاگ production قابل‌انتشار بماند."""
+    if cfg.get("debug_match_log"):
+        logger.info("[RING] candidate=%s rejected reason=%s user=%s", cid, reason, uid)
+    else:
+        logger.info("[RING] candidate=…%s rejected reason=%s", str(cid)[-4:], reason)
+
+
+async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
+                       cfg: dict, *, blocked: list[int], exclude: set[int],
+                       verify_recent: list[int], announce: bool) -> Result:
+    """یک دور جست‌وجو: کاندید از query (اتمیک claim) → سازگاری دوطرفه → session.
+
+    `exclude` فیلترِ *کوئری* است و `verify_recent` همان فهرست برای چکِ
+    نرم‌افزاری؛ تفکیکشان برای tier دوم (بازگشت به پارتنر اخیر) لازم است.
+    """
+    from database import db
+    tried: list[int] = []
+    contention = 0
+    for _ in range(MAX_ATTEMPTS):
+        cand = await db.ring_queue_find_candidate(
+            mode,
+            gender=(me_q.get("pref_gender")
+                    if me_q.get("pref_gender") not in (None, "any") else None),
+            age_range=_first_range(me_q.get("pref_age_ranges")),
+            exclude=sorted(exclude | set(tried)), token=token)
+        if not cand:
+            # دو حالت: صف واقعاً خالی است، یا همه‌ی کاندیدها همین لحظه
+            # توسط جست‌وجوگر دیگری claimed شده‌اند ⇒ تلاش کوتاه با backoff.
+            others = await db.ring_queue_waiting_count(
+                mode, sorted(exclude | set(tried)))
+            if others and contention < MAX_CONTENTION_RETRIES:
+                contention += 1
+                await asyncio.sleep(0.12 * contention)
+                continue
+            return Result.of("empty", waited_s=int(_waited_s(me_q)), queued=others)
+        cid = int(cand["user_id"])
+        tried.append(cid)
+        reason = await _verify(uid, cid, cand, mode, cfg, blocked, verify_recent)
+        if reason:
+            _reject_log(uid, cid, reason, cfg)
+            await db.ring_queue_release(cid)
+            continue
+        sess = await _open_session(uid, cid, me_p, mode, cfg)
+        if not sess:
+            # یا slot او پر شده، یا matcherِ دیگری همین pair را ساخته ⇒
+            # اگر session واقعیِ ما وجود دارد، همان را بگیر (نه «کسی نیست»)
+            won = await db.ring_session_active_for(uid)
+            if won:
+                peer = await db.ring_session_peer(won, uid)
+                if peer != cid:
+                    # cid را نگرفته‌ایم ⇒ رزروی روی او را پس بده، وگرنه
+                    # بی‌صدا یتیم می‌ماند تا repair (۱۵۰ ثانیه) آزادش کند
+                    await db.ring_queue_release(cid)
+                logger.info("RING_MATCH_STOLEN_TO_ADOPT uid=%s sid=%s peer=%s",
+                            uid, won["session_id"], peer)
+                return Result.of("matched", session=won,
+                                 peer=peer if peer is not None else cid,
+                                 silent=True)
+            _reject_log(uid, cid, "race", cfg)
+            await db.ring_queue_release(cid)
+            continue
+        await db.ring_report_recent(uid, cid, int(cfg["max_partners_history"]))
+        await db.ring_bump(match=1, wait_s=int(_waited_s(me_q)))
+        logger.info("RING_MATCH_CREATED uid=%s peer=%s sid=%s wait_s=%s",
+                    uid, cid, sess["session_id"], int(_waited_s(me_q)))
+        if announce:
+            # مسیر job (نه کاربر): کارت match را خودمان برای هر دو طرف
+            # می‌فرستیم، چون هندلری که منتظر پاسخ است وجود ندارد (§۴۰).
+            from ring import handlers as H
+            await H.announce_match(uid, cid, sess, cfg)
+        return Result.of("matched", session=sess, peer=cid)
+    return Result.of("empty", tried=len(tried))
+
+
+async def try_match(uid: int, *, announce: bool = False) -> Result:
+    """مراحل معماری: claim خود · کاندید · سازگاری دوطرفه · claim اتمیک ·
+    ساخت session · خروج هر دو از صف · اطلاع‌رسانی به هر دو.
+
+    سه چیزی که این نسخه درست کرد (ریشهٔ باگ «دو نفر در صف، هیچ match»):
+      1. «claiming» بودنِ طرف مقابل دیگر دلیل رد شدن نیست — دو کلیک هم‌زمان
+         یکدیگر را می‌بینند (قبلاً هر دو `empty` می‌گرفتند).
+      2. اگر matcherِ دیگری ما را بردارد، `empty` نمی‌گوییم؛ همان session را
+         adopt می‌کنیم (`silent` ⇒ بدون کارت تکراری).
+      3. اگر تنها سازگارهایِ صف «پارتنرهای اخیر» باشند، بعد از
+         `rematch_after_s` صبر tier دوم اجرا می‌شود تا صف‌های کوچک گرسنه
+         نمانند — ولی پارتنرِ گفت‌وگوی *همین لحظه* هرگز برنمی‌گردد.
+    """
+    from database import db
     token = new_token()
     me_q = await db.ring_queue_claim_self(uid, token)
     if not me_q:
         cur = await db.ring_queue_get(uid)
         if cur and cur.get("status") == "in_chat":
             return Result.of("in_chat", session_id=cur.get("session_id"))
+        taken = await _adopt_existing(uid, token)
+        if taken is not None:
+            return taken
+        cur2 = await db.ring_queue_get(uid)
+        if cur2 and cur2.get("status") == "waiting":
+            # رزروی که دیگری روی ما گرفته بود پس داده شد ⇒ ما دوباره آزادیم؛
+            # صادقانه «هنوز کسی پیدا نشده» را می‌گوییم، نه «داری انتخاب می‌شی».
+            md = cur2.get("mode") or "fun"
+            return Result.of("waiting", mode=md,
+                             queued=await db.ring_queue_waiting_count(md, [uid]),
+                             waited_s=int(_waited_s(cur2)))
         return Result.of("busy")
     try:
         cfg = await S.get_cfg()
         if not await S.get_flag():
-            await db.ring_queue_release(uid)
+            await db.ring_queue_release_self(uid, token)
             return Result.of("disabled")
         if await S.maintenance():                   # §۴۵
+            await db.ring_queue_release_self(uid, token)
             return Result.of("maintenance")
         me_p = await db.ring_profile(uid)
         if not me_p:
-            await db.ring_queue_release(uid)
+            await db.ring_queue_release_self(uid, token)
             return Result.of("no_profile")
         blocked = await db.ring_block_ids(uid)
-        recent = await recent_partners(me_p, int(cfg["skip_cooldown_s"]))
-        exclude = sorted({int(uid), *blocked, *recent})
+        pairs = await recent_pairs(me_p, int(cfg["skip_cooldown_s"]))
+        recent = [u for u, _ in pairs]
         mode = me_q.get("mode") or me_p.get("mode")
-        tried: list[int] = []
-        contention = 0
-        for _ in range(MAX_ATTEMPTS):
-            cand = await db.ring_queue_find_candidate(
-                mode,
-                gender=(me_q.get("pref_gender") if me_q.get("pref_gender") not in (None, "any") else None),
-                age_range=_first_range(me_q.get("pref_age_ranges")),
-                exclude=exclude + tried, token=token)
-            if not cand:
-                # دو حالت: صف واقعاً خالی است، یا همه‌ی کاندیدها همین لحظه
-                # توسط جست‌وجوگر دیگری claimed شده‌اند. در حالت دوم اگر
-                # بی‌خیال شویم، دو نفرِ آخرِ صف تا ابد waiting می‌مانند
-                # (trigger دیگری وارد نمی‌شود) ⇒ چند تلاش کوتاه با backoff.
-                others = await db.ring_queue_waiting_count(mode, exclude + tried)
-                if others and contention < MAX_CONTENTION_RETRIES:
-                    contention += 1
-                    await asyncio.sleep(0.12 * contention)
+        r = await _search_pass(uid, token, me_q, me_p, mode, cfg,
+                               blocked=blocked, exclude={uid, *blocked, *recent},
+                               verify_recent=recent, announce=announce)
+        if r.get("kind") != "empty":
+            return r
+        # ── tier 2: صف فقط از پارتنرهای اخیر پر است ⇒ بعد از صبر، آزادتر ──
+        guard = max(60, int(cfg.get("rematch_after_s") or 90))
+        waited = int(_waited_s(me_q))
+        relaxed = False
+        if recent and waited >= guard:
+            very = {u for u, at in pairs if at >= now_utc() - timedelta(seconds=guard)}
+            r2 = await _search_pass(uid, token, me_q, me_p, mode, cfg,
+                                    blocked=blocked, exclude={uid, *blocked, *very},
+                                    verify_recent=sorted(very), announce=announce)
+            if r2.get("kind") != "empty":
+                r2["relaxed"] = True
+                return r2
+            relaxed = True
+            r = r2
+        # هیچ‌چیز نشد ⇒ خودمان را آزاد کن (فقط اگر کسی ما را نبرده باشد)
+        released = await db.ring_queue_release_self(uid, token)
+        # ★ قفل نهایی (invariant): اگر کاربر عملاً در session فعال است، هیچ
+        # مسیری نباید «empty/busy» برگرداند — هر ترتیبی از claimها که پیش
+        # آمده باشد، اینجا به همان match تبدیل می‌شود.
+        if await db.ring_session_active_for(uid):
+            taken = await _adopt_existing(uid, token)
+            if taken is not None:
+                return taken
+        if not released:
+            # رزروی که دیگری روی ما گرفته بود بی‌صدا رها شده (matcher آن دور
+            # را با adopt/waiting تمام کرد). ما در `claimed` گیر می‌کردیم تا
+            # repairِ ۱۵۰ ثانیه‌ای — پس خودمان برمی‌گردیم توی صف؛ اگر آن
+            # matcher زنده باشد، into_chatِ خودش ما را دوباره می‌گیرد و
+            # unique index جلوی session دوتایی را می‌گیرد.
+            await db.ring_queue_release(uid)
+            logger.info("[RING] self-heal uid=%s رزروی بی‌صاحب آزاد شد", uid)
+        # ── settle: طرفِ مقابل چند میلی‌ثانیه *بعد از ما* join می‌کند ──
+        # بدون این، جست‌وجوگرِ زودتر-تمام‌شده «کسی نیست» می‌گوید و بیست
+        # میلی‌ثانیه بعد همان کاربر او را match می‌کند (پیام متناقض). دو چیز
+        # را دنبال می‌کند: (۱) sessionِ من ساخته شد؟ ⇒ همان را adopt کن؛
+        # (۲) کسی در صف ظاهر شد؟ ⇒ یک دورِ دیگر تلاش کن. سقف: ~۱.۲ ثانیه،
+        # فقط در مسیرِ شکست؛ جاروی ۳۰ ثانیه‌ایِ job همچنان تورِ نهایی است.
+        if r.get("kind") == "empty" and not r.get("relaxed"):
+            for _ in range(5):
+                await asyncio.sleep(0.25)
+                won = await db.ring_session_active_for(uid)
+                if won:
+                    peer = await db.ring_session_peer(won, uid)
+                    logger.info("RING_MATCH_SETTLED uid=%s sid=%s", uid, won["session_id"])
+                    return Result.of("matched", session=won,
+                                     peer=peer if peer is not None else -1,
+                                     silent=True)
+                me_now = await db.ring_queue_get(uid)
+                if not me_now or me_now.get("status") != "waiting":
+                    break                      # یا در چتیم (بالا چک شد) یا بیرون صفیم
+                if not await db.ring_queue_waiting_count(mode, [uid]):
                     continue
-                await db.ring_queue_release(uid)
-                return Result.of("empty", waited_s=0, queued=others)
-            cid = int(cand["user_id"])
-            tried.append(cid)
-            reason = await _verify(uid, cid, cand, mode, cfg, blocked, recent)
-            if reason:
-                await db.ring_queue_release(cid)
-                continue
-            sess = await _open_session(uid, cid, me_p, mode, cfg)
-            if not sess:                         # slot او پر شد (race) ⇒ ادامه
-                await db.ring_queue_release(cid)
-                continue
-            await db.ring_report_recent(uid, cid, int(cfg["max_partners_history"]))
-            await db.ring_bump(match=1, wait_s=int(_waited_s(me_q)))
-            logger.info("RING_MATCH_CREATED uid=%s peer=%s sid=%s", uid, cid, sess["session_id"])
-            if announce:
-                # مسیر job (نه کاربر): کارت match را خودمان برای هر دو طرف
-                # می‌فرستیم، چون هندلری که منتظر پاسخ است وجود ندارد (§۴۰).
-                from ring import handlers as H
-                await H.announce_match(uid, cid, sess, cfg)
-            return Result.of("matched", session=sess, peer=cid)
-        await db.ring_queue_release(uid)
-        return Result.of("empty", tried=len(tried))
+                await db.ring_queue_claim_self(uid, token)
+                r3 = await _search_pass(uid, token, me_q, me_p, mode, cfg,
+                                        blocked=blocked,
+                                        exclude={uid, *blocked, *recent},
+                                        verify_recent=recent, announce=announce)
+                await db.ring_queue_release_self(uid, token)
+                if r3.get("kind") != "empty":
+                    return r3
+                r = r3
+        if r.get("kind") == "empty" and not relaxed:
+            # چرا خالی؟ «کسی در صف نیست» با «همه را اخیراً دیدی» فرق دارد
+            fresh = await db.ring_queue_waiting_count(mode, sorted({uid, *blocked}))
+            if recent and fresh:
+                r["why"] = "recent_only"
+        return r
     except Exception as e:
         logger.exception("ring.try_match failed")
         try:
-            await db.ring_queue_release(uid)
+            await db.ring_queue_release_self(uid, token)
         except Exception:
             pass
         return Result.of("error", error=str(e)[:120])
@@ -498,6 +683,24 @@ async def next_partner(uid: int, session_id: str) -> Result:
         await notify.send_text(peer, texts.peer_next())
     out = await search(uid)
     return Result.of("ok", next=out)
+
+
+async def recent_pairs(profile: dict, cooldown_s: int) -> list[tuple[int, object]]:
+    """`(uid, لحظه‌ی پایان دیدار)` برای پارتنرهای داخل cooldown."""
+    out: list[tuple[int, object]] = []
+    if not cooldown_s:
+        return out
+    cutoff = now_utc() - timedelta(seconds=cooldown_s)
+    for row in (profile or {}).get("recent_partners") or []:
+        try:
+            at = now_utc().fromisoformat(str(row.get("at")))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=now_utc().tzinfo)
+            if at >= cutoff:
+                out.append((int(row["uid"]), at))
+        except Exception:
+            continue
+    return out
 
 
 async def recent_partners(profile: dict, cooldown_s: int) -> list[int]:

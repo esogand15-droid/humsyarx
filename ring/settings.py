@@ -48,6 +48,8 @@ SPEC: dict[str, tuple[str, object, float | None, float | None, str]] = {
     "max_profile_per_hour": ("سقف ویرایش پروفایل در ساعت", 12, 1, 100, "int"),
     "max_media_per_min":    ("سقف فایل/مدیا در دقیقه", 6, 0, 60, "int"),
     "skip_cooldown_s":      ("کول‌داون پس از نفر بعدی (ثانیه)", 86400, 0, 604800, "int"),
+    "rematch_after_s":      ("چقدر صبر کنیم تا پارتنرِ اخیر دوباره قابل انتخاب شود (ثانیه)", 90, 30, 3600, "int"),
+    "debug_match_log":      ("لاگ جزئیات رد شدن کاندید (بدون محتوای خصوصی)", False, None, None, "bool"),
     "report_cooldown_s":    ("کول‌داون پس از گزارش (ثانیه)", 3600, 0, 604800, "int"),
     "auto_mod_enabled":     ("میدان خودکار moderation", True, None, None, "bool"),
     "report_review_score":  ("آستانه‌ی بررسی گزارش", 3, 1, 50, "int"),

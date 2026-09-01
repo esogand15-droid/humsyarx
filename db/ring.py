@@ -40,7 +40,8 @@ ACTIVE = "active"
 ENDED = "ended"
 
 MAX_PARTNERS_CAP = 60      # سقف آرایه‌ی recent_partners (§۱۷)
-CAND_HEAD = 12             # چند سند از سر صف برای انتخاب تصادفی بررسی شود (§۱۰)
+CAND_HEAD = 12
+QUEUE_COUNT_CAP = 200      # سقف شمارش صف (§۵۳) — بالای آن «حداقل ۲۰۰ نفر»             # چند سند از سر صف برای انتخاب تصادفی بررسی شود (§۱۰)
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.]{4,16}$")
 
@@ -130,6 +131,10 @@ class DBRing:
         await c.profiles.create_index([("mode", 1), ("status", 1)], background=True)
         await c.profiles.create_index([("state", 1), ("pending_field", 1)], background=True)
         await c.queue.create_index([("status", 1), ("mode", 1), ("queued_at", 1)], background=True)
+        # کوئری کاندید حالا `status: {$in: [waiting, claiming]}` است؛ explain روی
+        # ۴۰۰۰ سند نشان داد که planner همان ایندکس status-first را با SORT_MERGE
+        # برای دو کرانهٔ $in استفاده می‌کند و docsExamined = limit ⇒ ایندکس
+        # اضافه لازم نیست (کمتر ایندکس = write کمتر و رول‌بک ساده‌تر).
         await c.queue.create_index([("status", 1), ("last_seen", 1)], background=True)
         await c.sessions.create_index("session_id", unique=True, background=True)
         # ★ تضمین اصلی: یک کاربر حداکثر یک session فعال
@@ -311,6 +316,11 @@ class DBRing:
         cur = await self.ring_cols.queue.find_one({"_id": uid})
         if cur and cur.get("status") == QUEUE_INCHAT:
             return "already_in_chat"
+        if cur and cur.get("status") == QUEUE_CLAIMED:
+            # یک matcherِ دیگر همین حالا ما را رزرو کرده (در فاصلهٔ «claim تا
+            # ساخت session»). clickِ خودِ کاربر نباید آن رزرو را پاک کند —
+            # وگرنه برنده session می‌سازد و ما بیرون می‌آییم و «empty» می‌خوانیم.
+            return "claimed"
         payload = dict(doc)
         payload["user_id"] = uid
         payload["status"] = QUEUE_WAITING
@@ -319,11 +329,12 @@ class DBRing:
             payload["queued_at"] = utc_now_iso()
         payload.setdefault("claim_token", None)
         try:
-            # فیلتر `$ne: in_chat` اتمیک است: اگر بین read و write کاربر وارد
-            # چت شد، این update چیزی را خراب نمی‌کند و upsert هم به دلیل
-            # تکرار _id می‌ترکد ⇒ همان «already_in_chat» برمی‌گردانیم (§۴۰).
+            # فیلترِ not-in / not-claimed اتمیک است: اگر بین read و write کاربر
+            # وارد چت شد یا توسط matcherِ دیگری claimed شد، این update چیزی را
+            # خراب نمی‌کند و upsert هم به دلیل تکرار _id می‌ترکد ⇒ همان
+            # «already_in_chat»/«claimed» برمی‌گردانیم (§۴۰).
             await self.ring_cols.queue.update_one(
-                {"_id": uid, "status": {"$ne": QUEUE_INCHAT}},
+                {"_id": uid, "status": {"$nin": [QUEUE_INCHAT, QUEUE_CLAIMED]}},
                 {"$set": payload}, upsert=True)
         except Exception as e:
             if "E11000" in str(e):
@@ -347,17 +358,25 @@ class DBRing:
             return_document=ReturnDocument.BEFORE,
         )
 
+    # صف‌هایی که «برای match شدن در دسترس»‌اند. CLAIMING یعنی «این کاربر
+    # همین حالا دارد می‌گردد» ⇒ بهترین کاندید ممکن، نه رقیب!
+    # CLAIMING را از این فهرست برداشتن دقیقاً همان باگی بود که دو کاربرِ
+    # هم‌زمان را برای همیشه از هم رد می‌کرد (هر دو empty می‌گرفتند).
+    MATCHABLE = (QUEUE_WAITING, QUEUE_CLAIMING)
+
     async def ring_queue_find_candidate(self, mode: str, *, gender: str | None,
                                         age_range: str | None,
-                                        exclude: list[int], token: str) -> dict | None:
+                                        exclude: list[int], token: str,
+                                        statuses: tuple | None = None) -> dict | None:
         """اتمیک‌ترین حالت: یک کاندیدِ منطبق را پیدا **و** قفل می‌کند.
 
         sort بر اساس queued_at ⇒ کسی که بیشتر منتظر است اول انتخاب می‌شود
         (§۱۰ fairness). `claimed_by_me` برای rollback لازم است.
         """
+        open_states = list(statuses or self.MATCHABLE)
         q: dict = {
             "mode": mode,
-            "status": QUEUE_WAITING,
+            "status": {"$in": open_states},
             "user_id": {"$nin": list(exclude) or [-1]},
         }
         if gender:
@@ -390,7 +409,7 @@ class DBRing:
         for cand in ordered:
             # claim اتمیک: اگر همین لحظه کسی دیگری برداشت، None ⇒ بعدی
             claimed = await col.find_one_and_update(
-                {"_id": cand["_id"], "status": QUEUE_WAITING},
+                {"_id": cand["_id"], "status": {"$in": open_states}},
                 {"$set": {"status": QUEUE_CLAIMED, "claimed_by_token": token,
                           "claimed_at": utc_now_iso()}},
                 return_document=ReturnDocument.BEFORE,
@@ -406,6 +425,32 @@ class DBRing:
             {"$set": {"status": QUEUE_WAITING, "claimed_by_token": None,
                       "claim_token": None}},
         )
+
+    async def ring_queue_release_self(self, uid: int, token: str) -> bool:
+        """آزادکردنِ claimِ **خودِ** کاربر، بدون دست‌زدن به رزروِ دیگری.
+
+        اگر در همین فاصله یک matcher دیگر ما را claimed کرده، release نباید
+        آن رزرو را باطل کند (وگرنه یک session بی‌صدا گم می‌شود).
+        """
+        r = await self.ring_cols.queue.update_one(
+            {"_id": int(uid),
+             "$or": [{"status": QUEUE_CLAIMING},
+                     {"status": QUEUE_CLAIMED, "claimed_by_token": token}]},
+            {"$set": {"status": QUEUE_WAITING, "claimed_by_token": None,
+                      "claim_token": None}},
+        )
+        return bool(r.modified_count)
+
+    async def ring_queue_taken_by_other(self, uid: int, token: str) -> dict | None:
+        """سند صفِ کاربر، اگر همین حالا توسط matcherِ دیگری claimed شده."""
+        d = await self.ring_cols.queue.find_one({"_id": int(uid)})
+        if not d:
+            return None
+        if d.get("status") == QUEUE_CLAIMED and d.get("claimed_by_token") not in (None, token):
+            return d
+        if d.get("status") == QUEUE_INCHAT:
+            return d
+        return None
 
     async def ring_queue_into_chat(self, uid: int, session_id: str) -> None:
         await self.ring_cols.queue.update_one(
@@ -426,15 +471,27 @@ class DBRing:
         return r.modified_count > 0
 
     async def ring_queue_waiting_count(self, mode: str | None = None,
-                                       exclude: list[int] | None = None) -> int:
-        """چند نفر (جز من) منتظرند — برای اینکه بفهمیم صف «خالی» است یا
-        فقط لحظه‌اً همه claimed‌اند (§۴۰)."""
-        q: dict = {"status": QUEUE_WAITING}
+                                       exclude: list[int] | None = None,
+                                       statuses: tuple | None = None,
+                                       cap: int = QUEUE_COUNT_CAP) -> int:
+        """چند نفر (جز من) «قابل match»‌اند — برای اینکه بفهمیم صف واقعاً
+        خالی است یا فقط لحظه‌اً claimed شده (§۴۰).
+
+        ⚠️ باید CLAIMING را هم بشمارد، وگرنه دو جست‌وجوی هم‌زمان «هیچ‌کس
+        نیست» می‌بینند و بی‌Retry رها می‌کنند (همان باگ گزارش‌شده).
+
+        `cap`: این شمارش در مسیرِ هر جست‌وجوی بی‌نتیجه صدا زده می‌شود، پس
+        حداکثر `cap` تا بررسی می‌شود (§۵۳ هزینهٔ محدود). مقدار برگشتی همیشه
+        «کرانهٔ پایینِ» واقعی است؛ مصرف‌کننده بالای cap می‌نویسد «حداقل».
+        """
+        q: dict = {"status": {"$in": list(statuses or self.MATCHABLE)}}
         if mode:
             q["mode"] = mode
         if exclude:
             q["user_id"] = {"$nin": [int(x) for x in exclude]}
-        return await self.ring_cols.queue.count_documents(q)
+        lim = int(cap) if cap else 0        # 0 = بدون سقف (پیامو PyMongo)
+        return await self.ring_cols.queue.count_documents(q, limit=lim) if lim \
+            else await self.ring_cols.queue.count_documents(q)
 
     async def ring_queue_stats(self) -> dict:
         out = {"waiting": 0, "claimed": 0, "in_chat": 0, "by_mode": {}, "by_gender": {}}

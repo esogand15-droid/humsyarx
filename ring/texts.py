@@ -242,13 +242,23 @@ def queue_waiting(mode: str, cfg: dict) -> str:
     )
 
 
-def queue_empty(mode: str, cfg: dict) -> str:
+def queue_empty(mode: str, cfg: dict, *, why: str | None = None,
+                waited_s: int = 0, p: dict | None = None) -> str:
+    if why == "recent_only":
+        return ("🙂 فعلاً فرد سازگارِ تازه‌ای پیدا نشد.\n\n"
+                "• همه‌ی کسانی که الان در این صف‌اند را اخیراً دیدی؛ برای اینکه "
+                "تکراری نشود، فعلاً کنارشان گذاشته‌ایم.\n"
+                f"• بعد از {hm_wait(int(cfg.get('rematch_after_s') or 90))} صبر، "
+                "همان‌ها هم دوباره قابل انتخاب می‌شوند.\n"
+                "• می‌توانی معیارهایت را بازتر کنی: «👤 پروفایل من → ⚙️ معیارها».")
     return (
-        "🙂 الان کسی در صف نیست که با معیارهای تو بخورد.\n\n"
+        "🙂 فعلاً فرد سازگارِ دیگری در صف نیست.\n\n"
+        f"⏱ {mmss(waited_s)} جست‌وجو کردیم.\n"
         "• چند دقیقه بعد دوباره امتحان کن؛\n"
-        f"• یا حلقه‌ی سنی/ترجیحاتت را در «👤 پروفایل» بازتر کن.\n"
+        "• یا حلقه‌ی سنی/ترجیحاتت را در «👤 پروفایل من → ⚙️ معیارها» بازتر کن.\n"
         f"• سقف انتظار {max(1, int(cfg['queue_timeout_s']) // 60)} دقیقه است و "
         "صف خودبه‌خود بسته می‌شود."
+        + (("\n\n🎯 معیارهای تو:\n" + prefs_line(p)) if p is not None else "")
     )
 
 
@@ -302,16 +312,71 @@ def chat_closed_by_you() -> str:
             "هر وقت خواستی «🔎 پیدا کردن نفر» را بزن.")
 
 
-def searching(mode: str) -> str:
-    return (f"💍 <b>رینگ استریت</b>\n\n🔎 در حال پیدا کردن نفر...\n\n"
-            f"حالت:\n{M.MODES.get(mode, '—')}\n\nکمی صبر کن...")
+QUEUE_COUNT_CAP = 200      # هم‌راستا با db.ring.QUEUE_COUNT_CAP
 
 
-def still_waiting(position: int, mode: str) -> str:
-    tail = (f"🎯 {position} نفر قبل از تو در صف‌اند." if position > 0
-            else "🎯 تنها نفرِ این صف هستی.")
-    return ("⏳ هنوز کسی مناسب پیدا نشده؛ به محض پیدا شدن، بهت اطلاع می‌دیم.\n\n"
-            f"{tail}\n   حالت: {M.MODES.get(mode, '—')}")
+def hm_wait(seconds: int) -> str:
+    """«۹۰ ثانیه» / «۲ دقیقه» — برای متن‌های زمان‌دارِ تقریبی."""
+    seconds = max(1, int(seconds))
+    return f"{seconds // 60} دقیقه" if seconds >= 60 else f"{seconds} ثانیه"
+
+
+def being_picked(mode: str = "fun") -> str:
+    """کاربر همین لحظه توسط جست‌وجویِ دیگری رزرو شده — باید بداند چه خبر است."""
+    return ("💍 <b>رینگ استریت</b>\n\n"
+            "⏳ یک نفر همین حالا دارد شما را انتخاب می‌کند؛ اگر انتخاب شد، "
+            "کارت گفت‌وگو خودبه‌خود می‌آید.\n\n"
+            "   لازم نیست دکمه را دوباره بزنی — اگر این انتخاب به نتیجه نرسید، "
+            f"همین‌جا در صف می‌مانی (حالت: {M.MODES.get(mode, '—')}).")
+
+
+def mmss(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def prefs_line(p: dict) -> str:
+    """خلاصهٔ معیارهای جاری — تا بداند «چرا» کسی پیدا نشد (§۱۳)."""
+    bits = []
+    g = (p or {}).get("pref_gender")
+    bits.append("👥 همه" if not g or g == "any" else M.GENDERS.get(g, g))
+    pr = (p or {}).get("pref_age_ranges")
+    if not pr or pr == "any":
+        bits.append("🎂 بدون محدودیت سنی")
+    else:
+        bits.append("🎂 " + "، ".join(M.AGE_LABELS.get(x.strip(), x.strip())
+                                     for x in str(pr).split(",") if x.strip()))
+    return "\n".join("   " + b for b in bits)
+
+
+def searching(mode: str, p: dict | None = None, waited_s: int = 0) -> str:
+    lines = [f"💍 <b>رینگ استریت</b>", "", "🔎 در حال پیدا کردن یک نفر...",
+             f"⏱ مدت انتظار: {mmss(waited_s)}", "", "🎯 معیارهای تو:"]
+    lines.append(prefs_line(p or {}) if p is not None else
+                 f"   حالت: {M.MODES.get(mode, '—')}")
+    lines.append("\nهر وقت فرد مناسب پیدا شود، خودکار به او متصل می‌شوی.")
+    return "\n".join(lines)
+
+
+def still_waiting(position: int, mode: str, *, waited_s: int = 0,
+                  p: dict | None = None) -> str:
+    if position > QUEUE_COUNT_CAP:
+        tail = f"🎯 حداقل {QUEUE_COUNT_CAP} نفر قبل از تو در صف‌اند."
+    elif position > 0:
+        tail = f"🎯 {position} نفر قبل از تو در صف‌اند."
+    else:
+        tail = "🎯 تنها نفرِ این صف هستی."
+    lines = ["💍 <b>رینگ استریت</b>", "",
+             "🔎 هنوز فرد سازگاری پیدا نشده؛ جست‌وجو ادامه دارد.",
+             f"⏱ مدت انتظار: {mmss(waited_s)}",
+             f"   {tail}",
+             f"   حالت: {M.MODES.get(mode, '—')}"]
+    if p is not None:
+        lines += ["", "🎯 معیارهای تو:"]
+        lines.append(prefs_line(p))
+    lines += ["", "هر وقت فرد مناسب پیدا شود، خودکار متصل می‌شوی — لازم نیست "
+                  "دوباره دکمه را بزنی."]
+    return "\n".join(lines)
 
 
 def chat_opened(mode: str) -> str:
