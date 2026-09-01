@@ -34,13 +34,15 @@ def kb_mode(cfg: dict) -> KB:
         rows.append([B(M.MODES["serious"], callback_data=f"{CB}m:serious")])
     if cfg.get("fun_enabled"):
         rows.append([B(M.MODES["fun"], callback_data=f"{CB}m:fun")])
-    rows.append([B("↩️ قبلی", callback_data=f"{CB}back:gender")])
+    rows.append([B("ℹ️ تفاوت این دو حالت", callback_data=f"{CB}mdiff")])
+    rows.append([B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
     return KB(rows)
 
 
-def kb_terms() -> KB:
+def kb_terms(version: int = 1) -> KB:
     return KB([[B("✅ می‌پذیرم", callback_data=f"{CB}t:yes"),
-                B("✋ نمی‌پذیرم", callback_data=f"{CB}t:no")]])
+                B("✋ نمی‌پذیرم", callback_data=f"{CB}t:no")],
+               [B(f"📜 متن کامل قوانین (نسخه {version})", callback_data=f"{CB}rules")]])
 
 
 def kb_profile_menu(p: dict, cfg: dict) -> KB:
@@ -56,8 +58,10 @@ def kb_profile_menu(p: dict, cfg: dict) -> KB:
              B("⚙️ ترجیحات", callback_data=f"{CB}p:prefs")]]
     if cfg.get("allow_rating"):
         rows.append([B("🌟 امتیازهای اخیر", callback_data=f"{CB}p:ratings")])
+    rows.append([B("👁 چه چیزهایی دیده شود", callback_data=f"{CB}view")])
     rows.append([B("💾 ذخیره و بازگشت", callback_data=f"{CB}p:done"),
                  B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")])
+    rows.append([B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
     return KB(rows)
 
 
@@ -112,35 +116,81 @@ def kb_pref_age(pick: list[str] | None = None) -> KB:
     return KB(rows)
 
 
-def kb_queue(mode: str, cfg: dict, status: str = "waiting") -> KB:
-    """صف (§۱۶): نفر بعدی / پایان / قوانین — در حالت waiting هم در دسترس."""
-    rows = [[B("🔎 " + ("جست‌وجوی دوباره" if status == "empty" else "نفر بعدی"),
-               callback_data=f"{CB}next"),
-             B("⛔ پایان", callback_data=f"{CB}stop")],
-            [B("👤 پروفایل", callback_data=f"{CB}profile"),
-             B("ℹ️ قوانین", callback_data=f"{CB}rules")]]
+def kb_queue(mode: str, cfg: dict, status: str = "waiting", position: int = 0) -> KB:
+    """دکمه‌های جست‌وجو (§۱۳..§۱۵).
+
+    ⚠️ «مکث/ادامه» عمداً نیامده: «⏸ توقف جست‌وجو» (=خروج از صف، پروفایل
+    می‌ماند) و «🔎 ادامه جست‌وجو» (=ورود دوباره به صف) هر دو کنشِ روشن‌اند و
+    هیچ‌کدام جلسه نمی‌سازند یا تمام نمی‌کنند.
+    """
+    if status == "paused":
+        rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")],
+                [B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
+    elif status == "empty":
+        rows = [[B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")],
+                [B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq"),
+                 B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
+    else:  # waiting
+        rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")],
+                [B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq"),
+                 B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
+    if cfg.get("allow_topics"):
+        rows.insert(0, [B("🗂 موضوع جلسه", callback_data=f"{CB}tp:0")])
     return KB(rows)
 
 
+def kb_searching() -> KB:
+    """صفحهٔ «در حال پیدا کردن…» (§۱۳) — یک راه فرارِ واقعی، نه دکمهٔ مرده."""
+    return KB([[B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")]])
+
+
+def kb_idle_prompt() -> KB:
+    """«⏳ هنوز اینجایی؟» (§۵۰) — ادامهٔ همان گفت‌وگو، نه ورود به صف."""
+    return KB([[B("▶️ ادامه گفتگو", callback_data=f"{CB}extend"),
+                B("⏹ پایان گفتگو", callback_data=f"{CB}end")],
+               [B("🚨 گزارش", callback_data=f"{CB}report")]])
+
+
 def kb_chat(mode: str, cfg: dict) -> KB:
-    """گفت‌وگوی فعال (§۱۶). بدون دکمه‌ی «معرفی» اگر پنل بسته باشد."""
+    """کیبورد چت (§۱۲/§۵۷).
+
+    عمداً «مکث/ادامه» ندارد — وسط گفت‌وگو معنا ندارد. دو کنشِ مجزا:
+    «🔄 نفر بعدی» = پایان این گفت‌وگو + ورود فوری به صف · «⏹ پایان گفتگو» =
+    فقط پایان و بازگشت به منوی رینگ. گزارش/مسدودسازی همیشه در دسترس (§۵۷).
+    """
     rows = [[B("🔄 نفر بعدی", callback_data=f"{CB}next"),
-             B("⛔ پایان", callback_data=f"{CB}stop")],
-            [B("🚫 بلاک", callback_data=f"{CB}block"),
-             B("⚠️ گزارش", callback_data=f"{CB}report")],
-            [B("ℹ️ قوانین", callback_data=f"{CB}rules"),
-             B("👤 پروفایل", callback_data=f"{CB}profile")]]
+             B("⏹ پایان گفتگو", callback_data=f"{CB}end")],
+            [B("🚨 گزارش", callback_data=f"{CB}report"),
+             B("🚫 مسدود کردن", callback_data=f"{CB}block")],
+            [B("🛡 امنیت و قوانین", callback_data=f"{CB}safety"),
+             B("👤 پروفایل من", callback_data=f"{CB}profile")]]
     if (mode == "serious") and cfg.get("allow_reveal"):
         rows.append([B("🤝 معرفی دوطرفه", callback_data=f"{CB}reveal:ask")])
     return KB(rows)
 
 
+def kb_after_end() -> KB:
+    """پس از پایان گفت‌وگو (§۱۷/§۷۱)."""
+    return KB([[B("🔎 پیدا کردن نفر جدید", callback_data=f"{CB}go")],
+               [B("💍 پروفایل من", callback_data=f"{CB}profile"),
+                B("🛡 امنیت و گزارش", callback_data=f"{CB}safety")],
+               [B("↩️ منوی رینگ", callback_data=f"{CB}menu")]])
+
+
+def kb_rules_back() -> KB:
+    """صفحهٔ قوانین: پذیرش + بازگشت (§۲۶/§۲۷)."""
+    return KB([[B("✅ می‌پذیرم", callback_data=f"{CB}t:yes"),
+                B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]])
+
+
 def kb_confirm_block() -> KB:
-    return KB([[B("✅ بله، بلاکش کن", callback_data=f"{CB}block:yes"),
+    """تأیید صریح پیش از مسدود کردن (§۲۰)."""
+    return KB([[B("🚫 بله، مسدودش کن", callback_data=f"{CB}block:yes"),
                 B("↩️ بی‌خیال", callback_data=f"{CB}chat")]])
 
 
 def kb_report_reasons() -> KB:
+    """۸ دلیل گزارش (§۲۲) — دو تا در هر ردیف تا صفحه کوتاه بماند."""
     rows, line = [], []
     for k, (lbl, _sev) in M.REPORT_REASONS.items():
         line.append(B(lbl, callback_data=f"{CB}r:{k}"))
@@ -149,23 +199,31 @@ def kb_report_reasons() -> KB:
             line = []
     if line:
         rows.append(line)
-    rows.append([B("↩️ بازگشت", callback_data=f"{CB}chat")])
+    rows.append([B("↩️ بازگشت به گفتگو", callback_data=f"{CB}chat"),
+                 B("🛡 امنیت", callback_data=f"{CB}safety")])
     return KB(rows)
 
 
 def kb_report_send() -> KB:
     return KB([[B("📨 ثبت گزارش", callback_data=f"{CB}r:send"),
-                B("🚫 گزارش + بلاک", callback_data=f"{CB}r:send_block")],
+                B("🚫 گزارش + مسدودسازی", callback_data=f"{CB}r:send_block")],
                [B("↩️ انصراف", callback_data=f"{CB}chat")]])
 
 
 def kb_rating() -> KB:
-    return KB([[B("😍 عالی", callback_data=f"{CB}rt:great"),
-                B("🙂 خوب", callback_data=f"{CB}rt:good"),
-                B("😐 متوسط", callback_data=f"{CB}rt:mid")],
-               [B("🙁 بد", callback_data=f"{CB}rt:bad"),
-                 B("😖 خیلی بد", callback_data=f"{CB}rt:worst")],
-               [B("↩️ بعداً", callback_data=f"{CB}chat")]])
+    """امتیاز پس از پایان گفت‌وگو (§۳۴).
+
+    callback فقط کلیدِ امتیاز را می‌برد (نه برچسب فارسی) تا با `M.RATINGS`
+    جور باشد. هیچ امتیازی هویت را افشا نمی‌کند و امتیاز منفی هرگز به‌طور
+    خودکار بن نمی‌سازد — فقط به تیم نظارت می‌رود.
+    """
+    rows = [[B(M.RATING_LABELS["great"], callback_data=f"{CB}rt:great"),
+             B(M.RATING_LABELS["good"], callback_data=f"{CB}rt:good")],
+            [B(M.RATING_LABELS["mid"], callback_data=f"{CB}rt:mid"),
+             B(M.RATING_LABELS["bad"], callback_data=f"{CB}rt:bad")],
+            [B("🚨 مشکل داشت (گزارش)", callback_data=f"{CB}report")],
+            [B("↩️ بعداً", callback_data=f"{CB}menu")]]
+    return KB(rows)
 
 
 def kb_reveal_ask() -> KB:
@@ -174,31 +232,70 @@ def kb_reveal_ask() -> KB:
 
 
 def kb_safety(blocks: list[dict]) -> KB:
-    rows = [[B("🚫 بلاکِ پارتنر فعلی", callback_data=f"{CB}block_now")],
-            [B("⚠️ گزارش بدون چت (با ناشناس‌آی‌دی)", callback_data=f"{CB}report_anon")]]
-    for b in (blocks or [])[:10]:
-        rows.append([B(f"🧷 {b.get('label') or b['anon'] or b['uid']} — بردارم",
-                       callback_data=f"{CB}unblock:{b['uid']}")])
-    rows.append([B("ℹ️ قوانین", callback_data=f"{CB}rules"),
-                 B("↩️ منوی رینگ", callback_data=f"{CB}menu")])
+    """مرکز امنیت (§۲۱/§۵۷): گزارش، مسدودسازی، قوانین — لیست مسدودشده‌ها
+    صفحهٔ جدا دارد (`kb_blocked`) تا این صفحه شلوغ نشود."""
+    rows = [[B("🚨 گزارش از گفت‌وگوی فعلی", callback_data=f"{CB}report"),
+             B("🚨 گزارش بدون چت", callback_data=f"{CB}report_anon")],
+            [B("🚫 مسدود کردن پارتنر فعلی", callback_data=f"{CB}block_now"),
+             B("🚫 مسدودشده‌ها", callback_data=f"{CB}blocked")]]
+    rows.append([B("📜 قوانین", callback_data=f"{CB}rules"),
+                 B("👤 پروفایل من", callback_data=f"{CB}profile")])
+    rows.append([B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
     return KB(rows)
 
 
+def kb_blocked(rows: list[dict]) -> KB:
+    kb = []
+    for r in (rows or [])[:10]:
+        code = str(r.get("anon") or "").lstrip("#")
+        kb.append([B(f"🧷 #{code or 'ناشناس'} — آزاد کردن",
+                     callback_data=f"{CB}unblock:{r.get('uid')}")])
+    if not kb:
+        kb.append([B("🙂 کسی را مسدود نکرده‌ای", callback_data=f"{CB}blocked")])
+    kb.append([B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
+    return KB(kb)
+
+
+def kb_view(cur: dict) -> KB:
+    """«چه چیزهایی از پروفایلم دیده شود» (§۳۵) — هر بخش جدا، پیش‌فرض روشن."""
+    rows = []
+    for k, label in M.PROFILE_VIEW.items():
+        rows.append([B(("✅ " if M.view_on(cur, k) else "⬜ ") + label,
+                       callback_data=f"{CB}view:{k}")])
+    rows.append([B("↩️ بازگشت به پروفایل من", callback_data=f"{CB}profile")])
+    return KB(rows)
+
+
+def kb_delete_confirm() -> KB:
+    """حذف پروفایل فقط با تأیید صریح (§۳۶)."""
+    return KB([[B("⚠️ بله، پروفایل رینگ حذف شود", callback_data=f"{CB}del:yes"),
+                B("↩️ بی‌خیال", callback_data=f"{CB}menu")]])
+
+
 def kb_menu(view: dict) -> KB:
-    """منوی /ring (§۴۱) — فقط گزینه‌هایی که برای این کاربر معنا دارند."""
+    """منوی /ring = داشبورد کوچک (§۲۸/§۴۱/§۶۹).
+
+    «مکث/ادامه/برگشتی» حذف شده (§۵۸)؛ ردیف بالا با وضعیت کاربر عوض می‌شود و
+    بقیه جای ثابت دارند تا کاربر هر بار دکمه را پیدا کند.
+    """
     rows = []
     if view.get("in_chat"):
-        rows.append([B("💬 ادامه‌ی گفت‌وگو", callback_data=f"{CB}chat")])
-    if view.get("in_queue"):
-        rows.append([B("🔄 نفر بعدی", callback_data=f"{CB}next"),
-                     B("⛔ پایان صف", callback_data=f"{CB}stop")])
-    if not view.get("in_chat"):
+        rows.append([B("💬 ادامه‌ی گفت‌وگو", callback_data=f"{CB}chat"),
+                     B("⏹ پایان گفتگو", callback_data=f"{CB}end")])
+    elif view.get("paused"):
+        rows.append([B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")])
+    elif view.get("in_queue"):
+        rows.append([B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq"),
+                     B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")])
+    elif view.get("mode_missing"):
+        rows.append([B("💍 انتخاب حالت", callback_data=f"{CB}m:fun")])
+    else:
         rows.append([B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")])
-    rows.append([B("👤 پروفایل", callback_data=f"{CB}profile"),
-                 B("🛡 امنیت", callback_data=f"{CB}safety")])
-    rows.append([B("⏸ مکث", callback_data=f"{CB}pause"),
-                 B("▶️ ادامه", callback_data=f"{CB}resume")])
-    rows.append([B("ℹ️ قوانین", callback_data=f"{CB}rules"),
+    rows.append([B("👤 پروفایل من", callback_data=f"{CB}profile"),
+                 B("🛡 امنیت و قوانین", callback_data=f"{CB}safety")])
+    rows.append([B("🚫 مسدودشده‌ها", callback_data=f"{CB}blocked"),
                  B("🗑 حذف پروفایل", callback_data=f"{CB}del")])
+    rows.append([B("📜 قوانین", callback_data=f"{CB}rules"),
+                 B("🌟 امتیاز دادن", callback_data=f"{CB}rate")])
     rows.append([B("↩️ منوی اصلی ربات", callback_data="main")])
     return KB(rows)

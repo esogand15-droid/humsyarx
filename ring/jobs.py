@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import logging
 
+from telegram.constants import ParseMode
+
 from ring import models as M
 from ring import notify
+from ring import keyboards as K
 from ring import service
 from ring import settings as S
 from ring import state
@@ -24,6 +27,11 @@ from time_utils import now_utc
 logger = logging.getLogger(__name__)
 
 _WARNED: set[str] = set()        # sidهایی که هشدار «نزدیک به پایان» گرفته‌اند (best-effort)
+
+
+def forget_warning(session_id: str) -> None:
+    """«▶️ ادامه گفتگو» ⇒ کاربر برگشته؛ هشدار بعدی هم فرستاده می‌شود."""
+    _WARNED.discard(session_id)
 
 
 SWEEP_LIMIT = 12
@@ -95,8 +103,12 @@ async def ring_housekeeping_job(context) -> None:
                 closed += 1
             elif sid not in _WARNED and grace > 0:
                 _WARNED.add(sid)
+                # §۵۰ — یادآوری بی‌فعالی با دو دکمهٔ روشن: «ادامه گفتگو»
+                # (همان چت) و «پایان گفتگو». هیچ دکمه‌ای فقط «متن» نیست.
                 for u in (sess.get("slots") or []):
-                    await notify.send_text(int(u), texts.ending_soon(max(1, int((idle_s - age) / 60))))
+                    await notify.send_text(
+                        int(u), texts.idle_prompt(max(1, int((idle_s - age) / 60))),
+                        parse_mode=ParseMode.HTML, reply_markup=K.kb_idle_prompt())
                 warned += 1
         # ۴) هم‌سان‌سازی RAM با DB
         rows = await db.ring_cols.sessions.find({"status": "active"},

@@ -75,7 +75,9 @@ async def report(uid: int, session_id: str | None, reason_key: str,
     rl = await db.ring_limit_hit("report", uid, int(cfg["max_report_per_day"]), 86400)
     if not rl["ok"]:
         return {"ok": False, "why": "rate_limited", "retry_after": rl["retry_after"]}
-    reason = M.norm_choice(reason_key, M.REPORT_REASONS, "other")
+    # §۲۲ — دلیل با نگاشت کلیدهای قدیمی (sexual_content/scam/suspicious)
+    # نرمال می‌شود تا گزارش‌های وزن‌دارِ انباشته از دست نروند.
+    reason = M.norm_choice(M.reason_key(reason_key), M.REPORT_REASONS, "other")
     severity = int(M.REPORT_REASONS[reason][1])
     sess = await db.ring_session(session_id) if session_id else None
     peer = await db.ring_session_peer(sess, uid) if sess else None

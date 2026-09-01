@@ -199,6 +199,11 @@ class DBRing:
                         "consent_terms_at": None,
                         "age_confirmed_at": None,
                         "banned_until": None,
+                        # «چه چیزهایی دیده شود» (§۳۵) — opt-out، نه opt-in، تا
+                        # رفتار کاربران فعلی عوض نشود؛ صریح در doc ذخیره می‌شود.
+                        "show_age": True, "show_gender": True, "show_field": True,
+                        "show_university": True, "show_city": True, "show_bio": True,
+                        "rules_version": 0, "rules_accepted_at": None,
                         **{k: v for k, v in seed.items() if v is not None},
                     }},
                     upsert=True,
@@ -432,7 +437,7 @@ class DBRing:
         return await self.ring_cols.queue.count_documents(q)
 
     async def ring_queue_stats(self) -> dict:
-        out = {"waiting": 0, "claimed": 0, "in_chat": 0, "by_mode": {}}
+        out = {"waiting": 0, "claimed": 0, "in_chat": 0, "by_mode": {}, "by_gender": {}}
         async for d in self.ring_cols.queue.aggregate([
             {"$group": {"_id": {"status": "$status", "mode": "$mode"}, "n": {"$sum": 1}}}
         ]):
@@ -441,6 +446,12 @@ class DBRing:
             if st in ("waiting", QUEUE_CLAIMED, QUEUE_INCHAT):
                 out[{"waiting": "waiting", QUEUE_CLAIMED: "claimed",
                      QUEUE_INCHAT: "in_chat"}[st]] += d["n"]
+        # تفکیک جنسیتیِ منتظرها (§۴۶ — «صف چند نفر است و چه ترکیبی؟»)
+        async for d in self.ring_cols.queue.aggregate([
+            {"$match": {"status": "waiting"}},
+            {"$group": {"_id": "$gender", "n": {"$sum": 1}}},
+        ]):
+            out["by_gender"][str(d.get("_id") or "unknown")] = int(d["n"])
         return out
 
     async def ring_queue_list(self, mode: str | None = None, limit: int = 200) -> list[dict]:
@@ -657,6 +668,10 @@ class DBRing:
                 {"$or": [{"_id": f"{a}:{b}"},
                         {"user_id": a, "blocked_user_id": b}]})
 
+    async def ring_blocks_recent(self, limit: int = 100) -> list[dict]:
+        """تازه‌ترین مسدودسازی‌ها (برای پنل؛ بدون هیچ محتوای گفت‌وگو)."""
+        return await self.ring_cols.blocks.find({}).sort("created_at", -1).to_list(int(limit))
+
     async def ring_blocks_list(self, uid: int) -> list[dict]:
         return await self.ring_cols.blocks.find({"user_id": int(uid)}).to_list(200)
 
@@ -664,8 +679,12 @@ class DBRing:
     #  reports
     # ══════════════════════════════════════════════════════════
 
-    SEVERITY = {"spam": 1, "insult": 1, "harassment": 2,
-                "sexual_content": 3, "scam": 4, "suspicious": 2, "other": 1}
+    # §۲۲ — severity برای وزن‌دهی به گزارش‌ها. دیکشنری در `ring.models`
+    # منبعِ یکتا است؛ اینجا فقط aliasهای کلیدهای قدیمی نگه داشته می‌شود تا
+    # گزارش‌های ذخیره‌شده قبل از این تغییر هم درست وزن بگیرند.
+    SEVERITY = {"harassment": 2, "insult": 1, "sexual": 3, "money": 4,
+                "offapp": 3, "spam": 1, "doxxing": 4, "other": 1,
+                "sexual_content": 3, "scam": 4, "suspicious": 2}
 
     async def ring_report_create(self, rep: dict) -> int:
         seq_doc = await self.ring_cols.counters.find_one_and_update(

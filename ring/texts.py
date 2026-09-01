@@ -20,23 +20,63 @@ SAFETY_NOTES = [
     "🛡 هر وقت خواستی با /ring یا دکمه‌ی «پایان» خارج شو.",
 ]
 
-RULES_SERIOUS = (
-    "💍 <b>قوانین آشنایی جدی</b>\n\n"
-    "• احترام در اولویت است؛ توهین، تبعیض و آزار = محدودیت.\n"
-    "• خبری از عکس پروفایل و نام نیست — اول آدم‌ها را بشناس.\n"
-    "• شماره/آیدی/لینک نفرست؛ معرفی فقط با <b>موافقت دوطرفه</b>.\n"
-    "• محتوای جنسی، تبلیغات و درخواست پول ممنوع.\n"
-    "• سن پایین‌تر از {min_age} وارد نمی‌شود (خوداظهاری).\n"
-    "• هر لحظه می‌توانی «نفر بعدی» بزنی، بلاک یا گزارش کنی."
+# ── قوانین (§۲۶) — نسخه‌دار (§۲۷) ──────────────────────────────
+# متن پیش‌فرض همین‌جاست؛ ادمین می‌تواند از پنل متن جایگزین بگذارد
+# (کلید تنظیمات `rules_text_override`) و با `rules_version` همه را مجبور
+# به پذیرش دوباره کند.
+RULES_BODY = (
+    "🛡 <b>قوانین رینگ استریت</b>\n\n"
+    "رینگ استریت فضای گفت‌وگوی <b>ناشناس</b> برای افراد {min_age} سال به بالاست. "
+    "برای اینکه این فضا برای همه امن بماند، رعایت این بندها الزامی است.\n\n"
+    "<b>۱. 👤 ناشناس بودن</b>\n"
+    "هویت کسی نباید افشا یا درخواست شود. ارسال یا درخواست شمارهٔ تلفن، آیدی و "
+    "یوزرنیم شخصی، لینک پروفایل، آدرس خانه یا محل کار، لوکیشن دقیق، اطلاعات "
+    "بانکی، رمز عبور و هر دادهٔ هویتی حساس ممنوع است.\n\n"
+    "<b>۲. 🤝 احترام</b>\n"
+    "توهین، تحقیر، تهدید، آزار، زورگویی و مزاحمت ممنوع است. ناشناس بودن به معنی "
+    "بی‌قانون بودن نیست.\n\n"
+    "<b>۳. 🔞 محتوای جنسی و نامناسب</b>\n"
+    "ارسال یا درخواست محتوای جنسی یا صریح ممنوع؛ اصرار برای فرستادن عکس خصوصی، "
+    "تماس تصویری یا هر محتوای خصوصی هم ممنوع.\n\n"
+    "<b>۴. 💰 پول و کلاهبرداری</b>\n"
+    "درخواست پول، قرض، انتقال وجه، سرمایه‌گذاری، خریدوفروش یا هر پیشنهاد مالی "
+    "مشکوک ممنوع. اگر کسی از تو پول خواست، گزارشش کن.\n\n"
+    "<b>۵. 📞 بردن گفت‌وگو به بیرون از رینگ</b>\n"
+    "هیچ‌کس نباید تو را تحت فشار بگذارد که شماره بدهی، تماس بگیری، تماس تصویری "
+    "برقرار کنی یا به شبکهٔ اجتماعی دیگری بروی. اگر نمی‌خواهی، «نه» کافی است.\n\n"
+    "<b>۶. 🕵️ تلاش برای شناسایی</b>\n"
+    "تلاش برای پیدا کردن هویت واقعی طرف مقابل، استخراج اطلاعات شخصی، تعقیب، "
+    "doxxing یا تهدید به افشا ممنوع.\n\n"
+    "<b>۷. 📢 تبلیغات و اسپم</b>\n"
+    "تبلیغ، ارسال مکرر لینک، دعوت به کانال‌ها، فروش خدمات و اسپم ممنوع.\n\n"
+    "<b>۸. 🚫 دور زدن محدودیت‌ها</b>\n"
+    "استفاده از حساب‌های متعدد یا هر روش دیگر برای دور زدن محدودیت‌های رینگ "
+    "استریت ممنوع.\n\n"
+    "<b>۹. 👋 پایان گفت‌وگو</b>\n"
+    "اگر طرف مقابل «🔄 نفر بعدی» را زد یا گفت‌وگو را تمام کرد، به تصمیمش احترام "
+    "بگذار؛ اصرار، تعقیب و ایجاد مزاحمت ممنوع.\n\n"
+    "<b>۱۰. 🚨 گزارش</b>\n"
+    "هر رفتار ناراحت‌کننده، تهدیدآمیز یا خلاف قوانین را با «🚨 گزارش» ثبت کن؛ "
+    "گزارش‌ها بررسی می‌شوند.\n\n"
+    "<b>۱۱. ⚠️ قرار حضوری</b>\n"
+    "تصمیم برای ملاقات حضوری کاملاً با خودت است: جای عمومی انتخاب کن، اطلاعات "
+    "غیرضروری نده، یک نفر قابل‌اعتماد را در جریان بگذار و در صورت احساس خطر "
+    "لغوش کن.\n\n"
+    "<b>۱۲. 🔐 مسئولیت</b>\n"
+    "رینگ استریت فقط بستری برای گفت‌وگو و آشنایی است؛ اطلاعات حساس خودت را به "
+    "افراد ناشناس نده.\n\n"
+    "<b>احترام + احتیاط = رینگ بهتر برای همه 💍</b>"
 )
-RULES_FUN = (
-    "🎭 <b>قوانین رینگ فان</b>\n\n"
-    "• فقط گپ سبک و محترمانه؛ فحاشی و آزار = محدودیت.\n"
-    "• هویتت مخفی می‌ماند؛ شماره/آیدی/لوکیشن نفرست.\n"
-    "• محتوای جنسی و تبلیغات ممنوع.\n"
-    "• سن پایین‌تر از {min_age} وارد نمی‌شود (خوداظهاری).\n"
-    "• «نفر بعدی» یعنی خداحافظی مؤدبانه؛ گیر نده."
-)
+RULES_FOOT = {
+    "serious": "\n\n💍 در حالت <b>آشنایی جدی</b> اطلاعات پروفایل (رشته، دانشگاه، "
+               "شهر و «دربارهٔ من») فقط در حدی نمایش داده می‌شود که خودت در "
+               "«👤 پروفایل من → چه چیزهایی دیده شود» اجازه داده باشی. معرفی "
+               "هویت فقط با موافقت <b>دوطرفه</b> ممکن است.",
+    "fun": "\n\n🎭 در حالت <b>فان</b> فقط حلقهٔ سنی و جنسیت نمایش داده می‌شود؛ "
+           "پروفایل سنگین لازم نیست.",
+}
+
+
 TERMS_TEXT = (
     "📜 <b>قبل از شروع، این را بخوان</b>\n\n"
     "۱) رینگ استریت فضایی <b>ناشناس</b> برای گفت‌وگوی {mode} است.\n"
@@ -70,24 +110,32 @@ def privacy_intro() -> str:
     )
 
 
-def age_gate() -> str:
+def _fa(v) -> str:
+    """عدد لاتین → فارسی (متن‌های فارسی نباید عدد لاتین وسطشان داشته باشند)."""
+    return "".join("۰۱۲۳۴۵۶۷۸۹"[int(c)] if c.isdigit() else c for c in str(v))
+
+
+def age_gate(min_age: int = 18) -> str:
     return (
         "💍 <b>رینگ استریت</b>\n\n"
-        "این فضا فقط برای افراد ۱۸ سال به بالاست.\n"
-        "سن شما <b>خوداظهاری</b> است و احراز هویت نمی‌شود، اما درایه‌ی نادرست "
-        "همان لحظه دسترسی را می‌بندد و قابل پیگیری است.\n\n"
-        "حلقه‌ی سنی‌ات کدام است؟"
+        "قبل از ورود، چند اطلاعات کوتاه ازت می‌گیریم.\n"
+        "اول بگو چند سالته؟\n\n"
+        f"• سن <b>خوداظهاری</b> است و احراز هویت نمی‌شود؛ سن مجاز فقط {_fa(min_age)}+ است.\n"
+        f"• سن دقیقت هیچ‌جا نمایش داده نمی‌شود — فقط حلقهٔ سنی.\n\n"
+        f"اگر زیر {_fa(min_age)} هستی، گزینهٔ «🔞 زیر ۱۸ سال» را بزن."
     )
 
 
 def too_young() -> str:
-    return ("⛔ متأسفم — رینگ استریت فقط برای ۱۸+ است و پروفایلی برایت "
-            "ساخته نمی‌شود.\nبقیه‌ی قابلیت‌های ربات هم مثل قبل در دسترس است: /start")
+    return ("⛔ رینگ استریت فقط برای افراد ۱۸ سال به بالا فعال است.\n"
+            "پروفایلی برایت ساخته نمی‌شود. بقیهٔ بخش‌های همیار مثل قبل در "
+            "دسترس است: /start")
 
 
 def gender_ask() -> str:
-    return ("👤 با چه جنسیتی در این فضا حضور داری؟\n"
-            "(فقط برای تطبیق استفاده می‌شود؛ جای دیگر نشان داده نمی‌شود.)")
+    return ("👤 حالا خودت رو چطور معرفی می‌کنی؟\n\n"
+            "این انتخاب فقط برای تطبیق استفاده می‌شود و جای دیگری "
+            "نشان داده نمی‌شود.")
 
 
 def mode_ask(cfg: dict) -> str:
@@ -99,7 +147,9 @@ def mode_ask(cfg: dict) -> str:
         lines[2] = "💍 آشنایی جدی — فعلاً غیرفعال است"
     if not cfg.get("fun_enabled"):
         lines[3] = "🎭 رینگ فان — فعلاً غیرفعال است"
-    lines.append("\nهیچ‌وقت هر دو را هم‌زمان نداشته باشی؛ هر لحظه قابل تغییر است.")
+    lines.append("\n• این دو صف هیچ‌وقت با هم مخلوط نمی‌شوند.\n"
+                 "• هر لحظه می‌توانی حالت را عوض کنی.\n"
+                 "• با «ℹ️ تفاوت این دو حالت» می‌توانی اول بخوانی.")
     return "\n".join(lines)
 
 
@@ -110,8 +160,19 @@ def terms(mode: str, cfg: dict) -> str:
 
 
 def rules(mode: str, cfg: dict) -> str:
-    txt = RULES_SERIOUS if mode == "serious" else RULES_FUN
-    return txt.format(min_age=cfg.get("min_age", 18))
+    """متن قوانین — اگر ادمین از پنل متن جایگزین گذاشته، همان (و در غیر
+    این صورت RULES_BODY). `mode` فقط به پاورقی اضافه می‌شود."""
+    over = (cfg or {}).get("rules_text_override") or ""
+    body = over.strip() or RULES_BODY
+    try:
+        body = body.format(min_age=int((cfg or {}).get("min_age", 18)))
+    except (KeyError, IndexError, ValueError):
+        pass                                  # متن ادمین نباید crash بدهد
+    return body + RULES_FOOT.get(mode, RULES_FOOT["fun"])
+
+
+def rules_version_line(cfg: dict) -> str:
+    return f"نسخهٔ قوانین: {int((cfg or {}).get('rules_version', 1))}"
 
 
 def declined_terms() -> str:
@@ -142,20 +203,29 @@ def profile_summary(p: dict, *, for_whom: str = "self") -> str:
     if for_whom == "self":
         out.append(f"   {g} · {age} · {mode}")
     else:
-        out.append(f"   {g} · {age}")
-    for k in ("city", "university", "major"):
-        v = (p.get(k) or "").strip()
-        if v:
-            out.append(f"   • {M.PROFILE_FIELDS[k][0]}: {_e(v)}")
-    bio = (p.get("bio") or "").strip()
-    if bio:
-        out.append(f"\n📝 {_e(bio)}")
-    it = (p.get("interests") or "").strip()
-    if it:
-        out.append(f"🌱 {_e(it)}")
-    tp = p.get("topics") or []
-    if tp:
-        out.append("🏷 " + "، ".join(M.TOPICS.get(t, t) for t in tp))
+        # «پیش‌نمایش آنچه طرف مقابل می‌بیند» — فقط با اجازهٔ خود کاربر (§۳۵)
+        bits = [x for x, on in ((g, M.view_on(p, "show_gender")),
+                                (age, M.view_on(p, "show_age"))) if on and x != "—"]
+        if bits:
+            out.append("   " + " · ".join(bits))
+        for k, flag in (("city", "show_city"), ("university", "show_university"),
+                        ("major", "show_field")):
+            v = (p.get(k) or "").strip()
+            if v and M.view_on(p, flag):
+                out.append(f"   • {M.PROFILE_FIELDS[k][0]}: {_e(v)}")
+        if M.view_on(p, "show_bio"):
+            bio = (p.get("bio") or "").strip()
+            if bio:
+                out.append(f"\n📝 {_e(bio)}")
+            it = (p.get("interests") or "").strip()
+            if it:
+                out.append(f"🌱 {_e(it)}")
+            tp = p.get("topics") or []
+            if tp:
+                out.append("🏷 " + "، ".join(M.TOPICS.get(x, x) for x in tp))
+        hidden = [lbl for key, lbl in M.PROFILE_VIEW.items() if not M.view_on(p, key)]
+        if hidden:
+            out.append("🙈 مخفی: " + "، ".join(h.split(" ", 1)[-1] for h in hidden))
     if for_whom == "self":
         st = int(p.get("report_score") or 0)
         if st:
@@ -185,26 +255,33 @@ def queue_empty(mode: str, cfg: dict) -> str:
 def match_card(sess: dict, peer: dict, cfg: dict, *, session_no: int = 1) -> str:
     mode = sess.get("mode") or "fun"
     lines = [f"✨ <b>یک همراه پیدا شد!</b> ({'آشنایی جدی' if mode == 'serious' else 'رینگ فان'})", ""]
-    who = f"👤 ناشناس #{str((peer or {}).get('anon_id') or '').lstrip('#')}"
-    lines.append(who)
+    peer = peer or {}
+    code = str(peer.get("anon_id") or "").lstrip("#")
+    lines.append(f"👤 <b>ناشناس #{code}</b>" if code else "👤 <b>ناشناس</b>")
     body = []
-    for k in ("age_range", "city", "university", "major"):
-        if k == "age_range":
-            body.append(M.AGE_LABELS.get((peer or {}).get("age_range"), "—"))
-        else:
-            v = ((peer or {}).get(k) or "").strip()
-            if v:
-                body.append(_e(v[:60]))
+    if M.view_on(peer, "show_age"):
+        body.append(M.AGE_LABELS.get(peer.get("age_range"), "—"))
+    if M.view_on(peer, "show_gender"):
+        body.append(M.GENDERS.get(peer.get("gender"), "—").split(" ")[-1])
+    if mode == "serious":
+        if M.view_on(peer, "show_field") and (peer.get("major") or "").strip():
+            body.append(f"📚 {_e(peer['major'].strip()[:40])}")
+        if M.view_on(peer, "show_university") and (peer.get("university") or "").strip():
+            body.append(f"🎓 {_e(peer['university'].strip()[:40])}")
+        if M.view_on(peer, "show_city") and (peer.get("city") or "").strip():
+            body.append(f"🏙 {_e(peer['city'].strip()[:30])}")
     if body:
-        lines.append("   " + " · ".join(str(b) for b in body))
-    bio = ((peer or {}).get("bio") or "").strip()
-    if bio:
-        lines.append(f"\n{_e(bio[:200])}")
-    it = ((peer or {}).get("interests") or "").strip()
-    if it:
-        lines.append(f"🌱 {_e(it[:120])}")
-    lines.append("\n🗣 از همین چت بنویس؛ هر پیامی که بفرستی برای او می‌رود.")
-    lines.append("🔎 «نفر بعدی» یعنی تمام؛ «پایان» یعنی بستن گفت‌وگو.")
+        lines.append("   " + " · ".join(str(x) for x in body))
+    if mode == "serious" and M.view_on(peer, "show_bio"):
+        bio = (peer.get("bio") or "").strip()
+        if bio:
+            lines.append(f"\n{_e(bio[:200])}")
+        it = (peer.get("interests") or "").strip()
+        if it:
+            lines.append(f"🌱 {_e(it[:120])}")
+    lines.append("\n💬 گفت‌وگو از همین‌جا شروع می‌شود؛ هر پیامی بفرستی برای او می‌رود.")
+    lines.append("🔄 نفر بعدی = پایان این گفت‌وگو و ورود دوباره به صف · "
+                 "⏹ پایان گفتگو = فقط بستن گفت‌وگو")
     every = int(cfg.get("safety_note_every", 3)) or 3
     if every <= 0 or session_no % every == 0:
         lines.append("\n" + SAFETY_NOTES[(session_no - 1) % len(SAFETY_NOTES)])
@@ -216,8 +293,68 @@ def controls_note() -> str:
 
 
 def peer_ended() -> str:
-    return ("🔚 طرف مقابل گفت‌وگو را بست.\n"
-            "اگر دوست داری دوباره وارد شوی: «🔎 پیدا کردن نفر» در /ring.")
+    return ("👋 طرف مقابل گفتگو را به پایان رساند.\n\n"
+            "می‌توانی دوباره وارد جست‌وجو شوی.")
+
+
+def chat_closed_by_you() -> str:
+    return ("⏹ گفت‌وگو بسته شد و به منوی رینگ برگشتی.\n"
+            "هر وقت خواستی «🔎 پیدا کردن نفر» را بزن.")
+
+
+def searching(mode: str) -> str:
+    return (f"💍 <b>رینگ استریت</b>\n\n🔎 در حال پیدا کردن نفر...\n\n"
+            f"حالت:\n{M.MODES.get(mode, '—')}\n\nکمی صبر کن...")
+
+
+def still_waiting(position: int, mode: str) -> str:
+    tail = (f"🎯 {position} نفر قبل از تو در صف‌اند." if position > 0
+            else "🎯 تنها نفرِ این صف هستی.")
+    return ("⏳ هنوز کسی مناسب پیدا نشده؛ به محض پیدا شدن، بهت اطلاع می‌دیم.\n\n"
+            f"{tail}\n   حالت: {M.MODES.get(mode, '—')}")
+
+
+def chat_opened(mode: str) -> str:
+    return ("💍 <b>گفت‌وگوی جدید شروع شد.</b>\n\n"
+            "هویت هر دو نفر ناشناس است.\n"
+            "لطفاً محترمانه گفت‌وگو کنید و اطلاعات شخصی ارسال نکنید.\n\n"
+            "⏹ پایان گفتگو · 🚨 گزارش · 🚫 مسدود کردن")
+
+
+def search_paused() -> str:
+    return ("⏸ جست‌وجو متوقف شد و از صف خارج شدی.\n"
+            "پروفایلت دست‌نخورده مانده؛ با «🔎 ادامه جست‌وجو» برمی‌گردی.")
+
+
+def idle_prompt(mins: int) -> str:
+    return (f"⏳ هنوز اینجایی؟\n\nاگر تا {mins} دقیقه چیزی نفرستی، این گفت‌وگو "
+            "بسته می‌شود.")
+
+
+def delete_confirm() -> str:
+    return ("⚠️ با حذف پروفایل رینگ استریت:\n\n"
+            "• اطلاعات پروفایل، سابقهٔ match و تنظیمات این بخش حذف می‌شود\n"
+            "• اگر در صف یا گفت‌وگو باشی، همان لحظه بسته می‌شود\n"
+            "• گزارش‌های ثبت‌شده برای سوابق نظارت می‌مانند\n\n"
+            "مطمئنی؟")
+
+
+def mode_diff() -> str:
+    return ("ℹ️ <b>تفاوت این دو حالت</b>\n\n"
+            "💍 <b>آشنایی جدی</b> — برای کسانی که قصد آشنایی جدی/ازدواج دارند:\n"
+            "   پروفایل کامل‌تر (رشته، دانشگاه، هدف، «دربارهٔ من»)، فیلتر سنی\n"
+            "   و امکان معرفی دوطرفه با موافقت هر دو نفر.\n\n"
+            "🎭 <b>گفت‌وگوی فان</b> — گپ سبک و کاملاً ناشناس:\n"
+            "   فقط حلقهٔ سنی و جنسیت نمایش داده می‌شود؛ بدون معرفی.\n\n"
+            "دو صف هیچ‌وقت با هم مخلوط نمی‌شوند.")
+
+
+def maintenance() -> str:
+    return ("💍 رینگ استریت موقتاً در دسترس نیست.\n"
+            "به‌زودی دوباره برمی‌گردیم.\n\n"
+            "اگر همین الان در گفت‌وگویی، می‌توانی تمامش کنی؛ اما match تازه "
+            "ساخته نمی‌شود.")
+
 
 
 def peer_next() -> str:
@@ -228,10 +365,6 @@ def peer_next() -> str:
 def admin_ended() -> str:
     return "🛠 گفت‌وگو توسط تیم نظارت بسته شد. برای ادامه: /ring"
 
-
-def ending_soon(mins: int) -> str:
-    return (f"⌛ اگر تا {mins} دقیقه پاسخی نیاید، گفت‌وگو بسته می‌شود.\n"
-            "با «🔎 نفر بعدی» می‌توانی زودتر تمامش کنی.")
 
 
 def blocked() -> str:
@@ -308,8 +441,8 @@ def help_ring() -> str:
     return (
         "ℹ️ <b>رینگ استریت</b> — گفت‌وگوی ناشناس با افراد هم‌سن‌وسال.\n\n"
         "💍 آشنایی جدی · 🎭 رینگ فان\n"
-        "🔎 «نفر بعدی» تا آدم مناسب را پیدا کنی\n"
-        "🚫 بلاک و ⚠️ گزارش در هر لحظه\n\n"
+        "🔎 «پیدا کردن نفر» تا آدم مناسب را پیدا کنی · 🔄 «نفر بعدی» وسط گفت‌وگو\n"
+        "🚨 گزارش و 🚫 مسدود کردن در هر لحظه\n\n"
         "🔒 هویت تو (آیدی، نام، عکس، شماره) به طرف مقابل نشان داده نمی‌شود و "
         "متن گفت‌وگو ذخیره نمی‌شود.\n\n"
         "برای شروع: /ring")

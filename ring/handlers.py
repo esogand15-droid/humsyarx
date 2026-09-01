@@ -33,7 +33,7 @@ from ring import service
 from ring import settings as S
 from ring import state
 from ring import texts
-from time_utils import now_utc
+from time_utils import now_utc, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,11 @@ async def _show(q, text: str, kb=None, *, alert: str | None = None,
                 logger.debug("ring show failed: %s", e)
     except Exception as e:
         logger.debug("ring show failed: %s", e)
+
+
+async def _age_text() -> str:
+    """متن درِ سن، با `min_age` واقعیِ تنظیمات (نه عدد hard-code)."""
+    return texts.age_gate(int((await S.get_cfg()).get("min_age", 18)))
 
 
 async def _guard(update, context):
@@ -171,7 +176,7 @@ async def _menu(msg, uid: int, context) -> None:
     p = await db.ring_profile(uid) or {}
     if not p:
         await _set_st(uid, M.IDLE)
-        await msg.reply_text(texts.age_gate(), reply_markup=K.kb_age(),
+        await msg.reply_text(await _age_text(), reply_markup=K.kb_age(),
                              parse_mode=ParseMode.HTML)
         await _set_st(uid, M.AGE_GATE)
         return
@@ -184,26 +189,37 @@ async def _menu(msg, uid: int, context) -> None:
     view = {
         "in_chat": bool(sess),
         "in_queue": bool(q and q.get("status") in ("waiting", "claimed", "claiming")),
+        "paused": p.get("status") == "paused",
+        "mode_missing": not p.get("mode"),
     }
     head = _menu_head(p, q, sess)
+    if await S.maintenance():                       # §۴۵ — بنر وضعیت، نه خطا
+        head += "\n\n🟡 رینگ استریت موقتاً در حالت نگهداری است: گفت‌وگوهای جاری " \
+                "باز می‌مانند، ولی جفت‌تازگی ساخته نمی‌شود."
     await msg.reply_text(head, reply_markup=K.kb_menu(view), parse_mode=ParseMode.HTML)
 
 
-def _menu_head(p: dict, q: dict | None, sess: dict | None) -> str:
+def _menu_head(p: dict, q: dict | None, sess: dict | None, *,
+               ready: bool = True) -> str:
+    """خط وضعیت بالای منو — اول می‌گوید کاربر کجاست، بعد چه می‌تواند بکند."""
     if sess:
-        return ("💬 یک گفت‌وگوی فعال داری:\n"
-                f"   {M.MODES.get(sess.get('mode'), '')}\n"
-                "   ادامه بده یا «نفر بعدی» را بزن.")
+        return ("💍 <b>رینگ استریت</b>\n\n"
+                "💬 <b>در حال گفتگو</b>\n"
+                f"   حالت: {M.MODES.get(sess.get('mode'), '—')}\n\n"
+                "«🔄 نفر بعدی» این گفت‌وگو را می‌بندد و تو را به صف برمی‌گرداند؛\n"
+                "«⏹ پایان گفتگو» فقط گفت‌وگو را می‌بندد.")
     if q and q.get("status") == "waiting":
-        return f"⏳ در صف هستی ({M.MODES.get(q.get('mode'), '')})."
-    if q and q.get("status") == "in_chat":
-        return "💬 در گفت‌وگو هستی."
-    who = (f"👤 ناشناس #{p.get('anon_id')}" if p.get("anon_id") else "👤 هنوز پروفایلی نداری")
+        return ("💍 <b>رینگ استریت</b>\n\n🔎 <b>در حال جست‌وجو</b>\n"
+                f"   حالت: {M.MODES.get(q.get('mode'), '—')}\n\n"
+                "به محض پیدا شدنِ نفر مناسب، همین‌جا پیام می‌دهیم.")
+    who = (f"👤 ناشناس #{str(p.get('anon_id') or '').lstrip('#')}"
+           if p.get("anon_id") else "👤 هنوز پروفایلی نداری")
     mode = M.MODES.get(p.get("mode"), "—")
-    return (f"💍 رینگ استریت — {who}\n"
+    tail = ("   با «🔎 پیدا کردن نفر» وارد صف می‌شوی." if ready
+            else "   اول چند سؤال کوتاه را جواب بده.")
+    return (f"💍 <b>رینگ استریت</b> — {who}\n"
             f"   حالت: {mode}\n"
-            + ("   با «پیدا کردن نفر» وارد صف می‌شوی." if p.get("mode")
-               else "   اول چند سؤال کوتاه را جواب بده."))
+            + ("🟢 آمادهٔ جست‌وجو\n" + tail if p.get("mode") else "📝 هنوز آماده نیستی\n" + tail))
 
 
 async def _status_card(update: Update, context) -> None:
@@ -290,9 +306,15 @@ async def _r_mode(q, context, uid, arg, parts):
     if r["kind"] == "mode_off":
         await _show(q, texts.feature_off(M.MODES.get(arg, arg)))
         return
-    await _set_st(uid, M.TERMS)
     cfg = await S.get_cfg()
-    await _show(q, texts.terms(arg, cfg), K.kb_terms(), md=True)
+    if not await service.rules_pending(uid):
+        # §۲۷ — این کاربر نسخهٔ فعلی قوانین را پذیرفته ⇒ نگهش نداریم
+        await _set_st(uid, M.IDLE)
+        await _menu(q.message, uid, context)
+        return
+    await _set_st(uid, M.TERMS)
+    await _show(q, texts.terms(arg, cfg) + "\n\n" + texts.rules_version_line(cfg),
+                K.kb_terms(int(cfg.get("rules_version") or M.RULES_VERSION)), md=True)
 
 
 async def _r_terms(q, context, uid, arg, parts):
@@ -326,7 +348,7 @@ async def _r_next(q, context, uid, arg, parts):
     sess = await db.ring_session_active_for(uid)
     if sess:
         r = await service.next_partner(uid, sess["session_id"])
-        await _show(q, "🔄 نفر قبلی بسته شد…", None)
+        await _show(q, "🔄 گفت‌وگو بسته شد؛ دوباره در صف هستی…", None)
         r = r.get("next") or service.Result.of("empty")
         await _finish_search(q, context, uid, r)
         return
@@ -334,8 +356,9 @@ async def _r_next(q, context, uid, arg, parts):
 
 
 async def _do_search(q, context, uid) -> None:
-    await _show(q, "⏳ دارم کسی را پیدا می‌کنم…", K.KB(
-        [[K.B("⛔ انصراف", callback_data=f"{CB}stop")]]))
+    p = await _profile(uid) or {}
+    mode = p.get("mode") or "fun"
+    await _show(q, texts.searching(p.get("mode") or "fun"), K.kb_searching(), md=True)
     r = await service.search(uid)
     await _finish_search(q, context, uid, r)
 
@@ -348,12 +371,25 @@ async def _finish_search(q, context, uid, r) -> None:
         await _announce_match(uid, peer, sess, cfg)
         return
     if kind == "waiting":
-        await _show(q, texts.queue_waiting(r.get("mode") or "fun", cfg),
-                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting"))
+        await _show(q, texts.still_waiting(int(r.get("queued") or 0),
+                                           r.get("mode") or "fun"),
+                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting",
+                               int(r.get("queued") or 0)), md=True)
         return
     if kind == "empty":
         await _show(q, texts.queue_empty(r.get("mode") or "fun", cfg),
                     K.kb_queue(r.get("mode") or "fun", cfg, "empty"))
+        return
+    if kind == "maintenance":                        # §۴۵
+        await _show(q, texts.maintenance(), K.kb_after_end())
+        return
+    if kind == "rules_outdated":                     # §۲۷
+        p = await _profile(uid) or {}
+        await _set_st(uid, M.TERMS)
+        cfg2 = await S.get_cfg()
+        await _show(q, texts.rules(p.get("mode") or "fun", cfg2)
+                    + "\n\nقوانین به‌روز شده؛ برای ادامه باید دوباره بپذیری.",
+                    K.kb_terms(int(cfg2.get("rules_version") or M.RULES_VERSION)), md=True)
         return
     if kind == "in_chat":
         await _show(q, "💬 هنوز در گفت‌وگویی؛ اول تمامش کن.", await _controls(uid, None))
@@ -363,15 +399,105 @@ async def _finish_search(q, context, uid, r) -> None:
         return
     if kind in ("too_young", "no_gender", "no_mode", "no_terms"):
         await _set_st(uid, M.AGE_GATE if kind == "too_young" else M.TERMS)
-        await _show(q, texts.age_gate(), K.kb_age(), md=True)
+        await _show(q, await _age_text(), K.kb_age(), md=True)
         return
     if kind in ("banned", "paused"):
-        await _show(q, texts.ban_notice() if kind == "banned" else "⏸ پروفایلت روی مکث است.")
+        await _show(q, texts.ban_notice() if kind == "banned"
+                    else "⛔ دسترسی‌ات موقتاً محدود است؛ از بخش «🛡 امنیت و قوانین» "
+                         "می‌توانی وضعیتت را ببینی.")
         return
     if kind == "mode_off":
         await _show(q, texts.feature_off("این حالت"))
         return
     await _show(q, "🙂 الان چیزی دستم نیست؛ کمی بعد دوباره امتحان کن.")
+
+
+async def _r_stopq(q, context, uid, arg, parts):
+    """⏸ توقف جست‌وجو: خروج از صف · بدون بستن/ساختن session · پروفایل می‌ماند."""
+    p = await _profile(uid) or {}
+    await service.pause_search(uid)
+    await _show(q, texts.search_paused(),
+                K.kb_queue(p.get("mode") or "fun", await S.get_cfg(), "paused"))
+
+
+async def _r_resq(q, context, uid, arg, parts):
+    """🔎 ادامه جست‌وجو: ورود دوباره به همان صف (اگر در چت باشد، در چت می‌ماند)."""
+    await _do_search(q, context, uid)
+
+
+async def _r_end(q, context, uid, arg, parts):
+    """⏹ پایان گفتگو: فقط پایان session، بازگشت به منوی رینگ، بدون ورود به صف."""
+    from database import db
+    _flow_clear(context)
+    sess = await db.ring_session_active_for(uid)
+    if not sess:
+        await service.leave_queue(uid)
+        await _show(q, texts.bye(), K.kb_menu({}))
+        return
+    await service.stop(uid, sess["session_id"])
+    await _show(q, "⏹ گفت‌وگو بسته شد. اگر خواستی، با «🔎 پیدا کردن نفر» "
+                    "دوباره وارد صف می‌شوی.", K.kb_after_end())
+
+
+async def _r_extend(q, context, uid, arg, parts):
+    """«▶️ ادامه گفتگو» در یادآوری بی‌فعالی — فقط گفت‌وگو را زنده نگه می‌دارد."""
+    from database import db
+    sess = await db.ring_session_active_for(uid)
+    if not sess:
+        await _show(q, texts.no_session(), K.kb_menu({}))
+        return
+    sid = sess["session_id"]
+    try:
+        await db.ring_cols.sessions.update_one(
+            {"session_id": sid, "status": "active"},
+            {"$set": {"last_activity_at": utc_now_iso()}})
+    except Exception as e:
+        logger.debug("ring extend touch failed: %s", e)
+    from ring import jobs
+    jobs.forget_warning(sid)
+    await _show(q, "👌 گفت‌وگو باز است؛ هر وقت خواستی بنویس.", await _controls(uid, sess))
+
+
+async def _r_blocked(q, context, uid, arg, parts):
+    """🚫 مسدودشده‌ها (§۲۱) — صفحهٔ جدا برای آزاد کردن."""
+    from database import db
+    rows = await db.ring_blocks_list(uid)
+    out = [{"uid": int(r["blocked_user_id"]),
+            "anon": (await db.ring_profile(int(r["blocked_user_id"])) or {}).get("anon_id")}
+           for r in rows]
+    await _show(q, ("🚫 مسدودشده‌ها\n\n"
+                    + (f"• {len(out)} نفر را مسدود کرده‌ای؛ با «آزاد کردن» دوباره "
+                       "می‌توانید جفت شوید." if out else
+                       "کسی را مسدود نکرده‌ای.")),
+                K.kb_blocked(out))
+
+
+async def _r_view(q, context, uid, arg, parts):
+    """👁 «چه چیزهایی از پروفایلم دیده شود» (§۳۵)."""
+    from database import db
+    if arg and arg in M.PROFILE_VIEW:
+        cur = await db.ring_profile(uid) or {}
+        await service.set_view(uid, arg, not M.view_on(cur, arg))
+    p = await db.ring_profile_ensure(uid)
+    preview = texts.profile_summary(p, for_whom="peer")
+    await _show(q, "👁 <b>چه چیزهایی از پروفایلم دیده شود</b>\n\n"
+                   "هر کدام را که خاموش کنی، طرف مقابل آن بخش را نمی‌بیند.\n"
+                   "هیچ‌وقت آیدی، نام، شماره یا شناسۀ تلگرامی تو نمایش داده "
+                   "نمی‌شود.\n\n"
+                   "👀 <b>آنچه طرف مقابل می‌بیند:</b>\n" + preview,
+                K.kb_view(p), md=True)
+
+
+async def _r_rate(q, context, uid, arg, parts):
+    """🌟 امتیاز دادن (از منو): برای آخرین گفت‌وگوی تمام‌شده."""
+    from database import db
+    sess = await db.ring_last_ended_session(uid)
+    if not sess:
+        await _show(q, "🌟 گفت‌وگوی تمام‌شدۀ تازه‌ای نداری که به آن امتیاز بدهی.",
+                    K.kb_menu({}))
+        return
+    await _show(q, "🌟 این گفت‌وگو چطور بود؟\n\nامتیاز فقط ناشناس ثبت می‌شود و "
+                   "هویت هیچ‌کس را افشا نمی‌کند.", K.kb_rating())
 
 
 async def _r_stop(q, context, uid, arg, parts):
@@ -380,7 +506,7 @@ async def _r_stop(q, context, uid, arg, parts):
     sess = await db.ring_session_active_for(uid)
     if sess:
         await service.stop(uid, sess["session_id"])
-        await _show(q, texts.peer_ended(), K.kb_menu({"in_chat": False, "in_queue": False}))
+        await _show(q, texts.chat_closed_by_you(), K.kb_after_end())
         return
     await service.leave_queue(uid)
     await _show(q, texts.bye(), K.kb_menu({}))
@@ -389,17 +515,31 @@ async def _r_stop(q, context, uid, arg, parts):
 async def _r_chat(q, context, uid, arg, parts):
     from database import db
     sess = await db.ring_session_active_for(uid)
-    await _show(q, ("💬 هنوز در گفت‌وگویی؛ ادامه بده." if sess
-                    else texts.no_session()),
-                await _controls(uid, sess) if sess else K.kb_menu({"in_chat": bool(sess)}))
+    if not sess:
+        await _show(q, texts.no_session(), K.kb_menu({}))
+        return
+    await _show(q, texts.chat_opened(sess.get("mode") or "fun"),
+                await _controls(uid, sess), md=True)
 
 
 async def _r_rules(q, context, uid, arg, parts):
     p = await _profile(uid) or {}
     cfg = await S.get_cfg()
-    await _show(q, texts.rules(p.get("mode") or "fun", cfg)
-                + "\n\n🛡 " + " · ".join(texts.SAFETY_NOTES[:3]),
-                K.KB([[K.B("↩️ بازگشت", callback_data=f"{CB}menu")]]), md=True)
+    body = texts.rules(p.get("mode") or "fun", cfg)
+    body += "\n\n🛡 " + "\n🛡 ".join(texts.SAFETY_NOTES[:3])
+    body += "\n\n" + texts.rules_version_line(cfg)
+    if await service.rules_pending(uid):
+        await _show(q, body + "\n\nبرای ادامه، «✅ می‌پذیرم» را بزن.",
+                    K.kb_rules_back(), md=True)
+        return
+    await _show(q, body, K.KB([[K.B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]),
+                md=True)
+
+
+async def _r_mdiff(q, context, uid, arg, parts):
+    """«ℹ️ تفاوت این دو حالت» (§۵) — توضیح، بدون تغییر وضعیت."""
+    cfg = await S.get_cfg()
+    await _show(q, texts.mode_diff(), K.kb_mode(cfg), md=True)
 
 
 async def _r_profile(q, context, uid, arg, parts):
@@ -527,10 +667,12 @@ async def _r_safety(q, context, uid, arg, parts):
                "label": None} for r in rows]
     for b in blocks:
         b["label"] = f"🧷 بلاک‌شده {'#' + b['anon'].lstrip('#') if b.get('anon') else ''}".strip()
-    await _show(q, "🛡 امنیت و بلاک‌ها\n"
-                    "• هر وقت خواستی پارتنر فعلی را بلاک کن.\n"
-                    "• اگر ناشناس‌آی‌دی کسی را داری، با «گزارش بدون چت» می‌توانی گزارش بدهی.",
-                K.kb_safety(blocks))
+    await _show(q, "🛡 <b>امنیت و قوانین</b>\n\n"
+                   "• هر وقت اذیت شدی: 🚫 مسدود کردن (دیگر جفت نمی‌شوید) و "
+                   "🚨 گزارش (تیم نظارت بررسی می‌کند).\n"
+                   "• اگر ناشناس‌آی‌دی کسی را داری، «گزارش بدون چت» هم کار می‌کند.\n"
+                   "• هیچ‌کس به شماره، آیدی یا لوکیشن تو دسترسی ندارد.",
+                K.kb_safety(blocks), md=True)
 
 
 async def _r_block(q, context, uid, arg, parts):
@@ -619,40 +761,59 @@ async def _r_reveal(q, context, uid, arg, parts):
     await _show(q, "🤔 دستور ناشناخته.")
 
 
+_RATING_BY_LABEL = {lbl.split(" ")[-1]: k for k, lbl in M.RATING_LABELS.items()}
+
+
 async def _r_rating(q, context, uid, arg, parts):
+    """امتیاز پس از پایان (§۳۴). پیام‌های قدیمی برچسب فارسی می‌فرستادند ⇒
+    هر دو قالب پذیرفته می‌شود. امتیاز منفی هیچ‌وقت بن نمی‌سازد."""
     from database import db
     sess = await db.ring_last_ended_session(uid)
     if not sess:
-        await _show(q, "🌟 الان گفت‌وگوی تمام‌شدۀ تازه‌ای نداری.")
+        await _show(q, "🌟 الان گفت‌وگوی تمام‌شدۀ تازه‌ای نداری.", K.kb_menu({}))
         return
-    r = await moderation.rating(uid, sess["session_id"], arg)
-    await _show(q, "🌟 ممنون! بازخوردت فقط به‌صورت ناشناس ثبت شد."
-                if r.get("ok") else "🤔 امتیاز برای این گفت‌وگو ثبت شده بود.")
+    key = arg if arg in M.RATINGS else _RATING_BY_LABEL.get(str(arg).strip(), "")
+    if not key:
+        await _show(q, "🤔 نشناختم؛ دوباره از روی دکمه‌ها انتخاب کن.", K.kb_rating())
+        return
+    r = await moderation.rating(uid, sess["session_id"], key)
+    if r.get("ok") and not r.get("duplicate"):
+        await _show(q, "🌟 ممنون! بازخوردت فقط به‌صورت ناشناس ثبت شد.", K.kb_after_end())
+    else:
+        await _show(q, "🤔 امتیاز برای این گفت‌وگو قبلاً ثبت شده بود.", K.kb_after_end())
+
+
+async def _r_report_anon(q, context, uid, arg, parts):
+    """🚨 گزارش بدون چت — با ناشناس‌آی‌دی (§۵۷)."""
+    await _r_report(q, context, uid, "anon", parts)
 
 
 async def _r_restricted(q, context, uid, arg, parts):
+    """جایگزین «مکث/ادامه» برای پیام‌های قدیمی (§۳/§۶۶) — دیگر از منو نیست."""
     r = await service.set_paused(uid, arg == "pause")
-    await _show(q, "⏸ در صف نیستی تا خودت را برگردانی." if arg == "pause"
-                else "▶️ برگشتی.")
+    await _show(q, "⛔ تا خودت برنگردانی در صف نمی‌شوی." if arg == "pause"
+                else "✅ برگشتی؛ با «🔎 پیدا کردن نفر» دوباره در صف بگذار.",
+                K.kb_menu({}))
 
 
 async def _r_delete(q, context, uid, arg, parts):
+    if arg == "no":
+        await _show(q, "🙂 حذف نشد.", K.kb_menu({}))
+        return
     if arg != "yes":
-        await _show(q, "🗑 با حذف پروفایل، صف/جلسه/بلاک‌های رینگ پاک می‌شود. "
-                       "گزارش‌های تأییدشده در سوابق نظارت می‌ماند.\n"
-                       "برای اطمینان «بله، حذف کن» را بزن.",
-                    K.KB([[K.B("🗑 بله، حذف کن", callback_data=f"{CB}del:yes"),
-                           K.B("↩️ بی‌خیال", callback_data=f"{CB}menu")]]))
+        await _show(q, texts.delete_confirm(), K.kb_delete_confirm())
         return
     await service.delete_all(uid)
     _flow_clear(context)
-    await _show(q, "🗑 پروفایل رینگ حذف شد. هر وقت خواستی با /ring از نو.")
+    await _show(q, "🗑 پروفایل رینگ حذف شد. هر وقت خواستی با /ring از نو.\n"
+                   "سوابق نظارتیِ گزارش‌های تأییدشده (برای الزامات حقوقی) "
+                   "مطابق سیاست نگهداری نگه داشته می‌شود.")
 
 
 async def _r_back(q, context, uid, arg, parts):
     step = arg or ""
     if step == "age":
-        await _show(q, texts.age_gate(), K.kb_age(), md=True)
+        await _show(q, await _age_text(), K.kb_age(), md=True)
     elif step == "gender":
         await _show(q, texts.gender_ask(), K.kb_gender())
     else:
@@ -670,8 +831,13 @@ _ROUTES = {
     "p": _r_field,
     "i": _r_intent, "tp": _r_topic, "pg": _r_pref_gender, "pa": _r_pref_age,
     "block": _r_block, "block_now": _r_block, "unblock": _r_unblock,
-    "r": _r_report, "report": _r_report, "report_anon": _r_report,
+    # §۱۴/§۱۵/§۱۷ — سه کنش جدا (قبلاً «مکث/ادامه/پایان» مبهم بود)
+    "stopq": _r_stopq, "resq": _r_resq, "end": _r_end, "extend": _r_extend,
+    "mdiff": _r_mdiff, "blocked": _r_blocked, "view": _r_view, "rate": _r_rate,
+    "r": _r_report, "report": _r_report, "report_anon": _r_report_anon,
     "reveal": _r_reveal, "rt": _r_rating, "del": _r_delete, "back": _r_back,
+    # سازگاری با پیام‌های قدیمی (§۳/§۶۶): دکمه‌های «مکث/ادامه/پایان» دیگر در
+    # کیبوردها نیستند، ولی روی پیام‌های روی صفحهٔ کاربر همچنان کار می‌کنند.
     "pause": _r_restricted, "resume": _r_restricted,
 }
 

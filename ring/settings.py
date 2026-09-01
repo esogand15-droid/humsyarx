@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 PREFIX = "ring_"
 FLAG_KEY = "ring_enabled"
 CFG_KEY = "ring_cfg"
+# 🟡 حالت سوم (§۴۵ Maintenance): فیچر «روشن» است ولی match تازه ساخته نمی‌شود
+# و چت‌های جاری می‌توانند تمام شوند. حرفه‌ای‌تر از disable کامل.
+MAINT_KEY = "ring_maintenance"
 CACHE_TTL = 10          # ثانیه — کش read-side
 FLAG_REFRESH_MAX = 60   # حداکثر فاصله‌ی تازه‌سازی flag در حالت عادی
 
@@ -66,6 +69,9 @@ SPEC: dict[str, tuple[str, object, float | None, float | None, str]] = {
     "evidence_ttl_days":    ("ماندگاری شواهد (روز)", 7, 7, 30, "int"),   # §۳۵: ۷ تا ۳۰ روز
     "warn_personal_data":   ("هشدار ارسال اطلاعات شخصی", True, None, None, "bool"),
     "safety_note_every":    ("نمایش یادآوری ایمنی هر چند جلسه", 3, 1, 100, "int"),
+    "rules_version":        ("نسخهٔ قوانین (با تغییرش همه باید دوباره بپذیرند)", 1, 1, 99, "int"),
+    "rules_text_override":  ("متن جایگزین قوانین (خالی = متن پیش‌فرض ۱۲بندی)", "",
+                             None, 3500, "text"),
     "max_partners_history": ("تعداد پارتنرهای اخیر برای کول‌داون", 40, 1, 500, "int"),
 }
 
@@ -74,7 +80,7 @@ MEDIA_KINDS = {                        # کلید تنظیمات ← نوع پی
     "voice": "voice", "video": "video", "document": "document",
 }
 
-_cfg_cache: dict = {"data": None, "at": 0.0, "flag": None, "flag_at": 0.0}
+_cfg_cache: dict = {"data": None, "at": 0.0, "flag": None, "flag_at": 0.0, "maint": None}
 
 
 def defaults() -> dict:
@@ -93,6 +99,9 @@ def clamp(name: str, value):
         if isinstance(value, str):
             value = value.strip().lower() not in ("0", "false", "no", "off", "")
         return bool(value)
+    if kind == "text":
+        txt = "" if value is None else str(value)
+        return txt.strip()[: (int(hi) if hi else 3500)]
     if kind.startswith("choice:"):
         opts = kind.split(":", 1)[1].split(",")
         v = str(value).strip()
@@ -129,6 +138,10 @@ async def get_flag() -> bool:
         return False
     _cfg_cache["flag"] = bool(val)
     _cfg_cache["flag_at"] = time.monotonic()
+    try:
+        _cfg_cache["maint"] = bool(await db.get_setting(MAINT_KEY, False))
+    except Exception:
+        pass
     return bool(val)
 
 
@@ -196,6 +209,35 @@ async def set_cfg(admin_id: int, updates: dict) -> dict:
     return merged
 
 
+async def maintenance() -> bool:
+    """حالت زرد (§۴۵): صف و match جدید بسته، چت‌های جاری باز."""
+    from database import db
+    try:
+        return bool(await db.get_setting(MAINT_KEY, False))
+    except Exception as e:
+        logger.warning("ring maintenance read failed → عادی: %s", e)
+        return False
+
+
+def maintenance_sync() -> bool:
+    return bool(_cfg_cache.get("maint"))
+
+
+async def set_maintenance(admin_id: int, on: bool) -> None:
+    from database import db
+    await db.set_setting(MAINT_KEY, bool(on))
+    await db.ring_audit(admin_id, "RING_MAINTENANCE_ON" if on else "RING_MAINTENANCE_OFF",
+                        "global", "", {"maintenance": bool(on)})
+    _cfg_cache["maint"] = bool(on)
+
+
+async def ui_state() -> str:
+    """🟢 active / 🟡 maintenance / 🔴 disabled — تنها منبع وضعیت برای پنل و منو."""
+    if not await get_flag():
+        return "disabled"
+    return "maintenance" if await maintenance() else "active"
+
+
 def flag_sync() -> bool:
     """سمک — برای کیبورد. اگر هیچ‌وقت read نشده، «خاموش» (امن‌ترین حالت:
     دکمه‌ای که فیچرش خاموش است نمایش داده نمی‌شود)."""
@@ -211,6 +253,7 @@ def flag_stale() -> bool:
 def invalidate() -> None:
     _cfg_cache["data"] = None
     _cfg_cache["at"] = 0.0
+    _cfg_cache["maint"] = None
 
 
 def set_flag_sync(value: bool) -> None:

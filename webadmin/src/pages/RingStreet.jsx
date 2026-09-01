@@ -12,13 +12,25 @@ import {
 
 const TABS = [
   ['overview', '📊 نمای کلی'], ['queue', '⏳ صف'], ['chats', '💬 گفت‌وگوها'],
-  ['reports', '🚩 گزارش‌ها'], ['users', '👤 کاربران'], ['settings', '⚙️ تنظیمات'],
-  ['analytics', '📈 تحلیل'], ['audit', '🧭 حسابرسی'],
+  ['reports', '🚩 گزارش‌ها'], ['blocks', '🚫 مسدودسازی‌ها'], ['users', '👤 کاربران'],
+  ['rules', '📜 قوانین'],
+  ['settings', '⚙️ تنظیمات'], ['analytics', '📈 تحلیل'], ['audit', '🧭 حسابرسی'],
 ];
+
+// §۴۵ — سه حالت از یک منبع حقیقت (Mongo)؛ هیچ flag سخت‌کدشده‌ای در UI نیست
+const STATE_OPTS = [
+  ['active', '🟢 فعال'], ['maintenance', '🟡 نگهداری'], ['disabled', '🔴 غیرفعال'],
+];
+const STATE_HINT = {
+  active: 'صف و گفت‌وگوها عادی کار می‌کنند.',
+  maintenance: 'گفت‌وگوهای جاری تمام می‌شوند؛ جفت تازه ساخته نمی‌شود.',
+  disabled: 'دکمهٔ رینگ از منوی همه حذف می‌شود و /ring پیام خاموشی می‌دهد.',
+};
 
 const fa = (n) => Number(n || 0).toLocaleString('fa-IR');
 const MODE = { serious: '💍 جدی', fun: '🎭 فان' };
-const PSTATUS = { active: 'فعال', paused: 'مکث', banned: 'بن', deleted: 'حذف‌شده' };
+const PSTATUS = { active: 'فعال', paused: '⛔ محدود', banned: 'بن', deleted: 'حذف‌شده' };
+const GENDER = { female: 'دختر', male: 'پسر', undisclosed: 'نامشخص' };
 
 function Kpi({ icon, label, value, hint }) {
   return <div className="panel panel-pad" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -62,6 +74,8 @@ export default function RingStreet({ me }) {
       else if (tab === 'chats') setBox(await api.ringSessions({ status: 'active', page, size: 25 }));
       else if (tab === 'reports') setBox(await api.ringReports({ status: rStat || '', page, size: 25 }));
       else if (tab === 'users') setBox(await api.ringProfiles({ q, page, size: 25 }));
+      else if (tab === 'blocks') setBox(await api.ringBlocks({ limit: 150 }));
+      else if (tab === 'rules') setBox(await api.ringRules());
       else if (tab === 'settings') setBox(await api.ringSettings());
       else if (tab === 'analytics') setBox(await api.ringAnalytics(7));
       else if (tab === 'audit') setBox(await api.ringAuditList(120));
@@ -81,7 +95,7 @@ export default function RingStreet({ me }) {
     finally { setBusy(false); }
   };
 
-  const rows = box.sessions || box.reports || box.profiles || box.queue || box.audit || [];
+  const rows = box.sessions || box.reports || box.profiles || box.queue || box.blocks || box.audit || [];
 
   const cols = useMemo(() => {
     if (tab === 'queue') return [
@@ -112,6 +126,15 @@ export default function RingStreet({ me }) {
       { k: 'x', label: 'بررسی', render: r => <button className="btn sm" disabled={busy}
         onClick={() => act(async () => setDrawer({ kind: 'report', body: await api.ringReport(r.report_id) }), '')}>🔎</button> },
     ];
+    if (tab === 'blocks') return [
+      { k: 'pair', label: 'چه کسی ← چه کسی', render: r => <div className="row" style={{ gap: 4 }}>
+        <span className="code">{fa(r.user_id)}</span><span className="muted">را مسدود کرد</span>
+        <span className="code">{fa(r.blocked_user_id)}</span></div> },
+      { k: 'anons', label: 'ناشناس‌‌آی‌دی‌ها', render: r => <B kind="acc">{`#${r.user_anon || '—'} → #${r.blocked_anon || '—'}`}</B> },
+      { k: 'src', label: 'منبع', render: r => (String(r.source || '').startsWith('report')
+          ? <B kind="bad">🚨 گزارش</B> : <B>👤 کاربر</B>) },
+      { k: 'at', label: 'زمان', render: r => <FaDateTime value={r.created_at} /> },
+    ];
     if (tab === 'users') return [
       { k: 'uid', label: 'آیدی تلگرام', render: r => <span className="code">{fa(r.user_id ?? r._id)}</span> },
       { k: 'anon', label: 'ناشناس', render: r => <B kind="acc">#{r.anon_id || '—'}</B> },
@@ -137,21 +160,29 @@ export default function RingStreet({ me }) {
 
   const live = ov.live || {};
   const qs = ov.queue || {};
+  const state = ov.state || (ov.maintenance ? 'maintenance' : (ov.flag ? 'active' : 'disabled'));
 
   return <>
     <PageHeader
       eyebrow="💍 ماژول گفت‌وگوی ناشناس"
       title="رینگ استریت"
       description="صف تطبیق، گفت‌وگوها، نظارت و تنظیمات. هیچ پیام گفت‌وگویی اینجا نمایش داده نمی‌شود."
-      actions={<div className="row" style={{ gap: 8 }}>
-        <Field label="فیچر فعال"><Switch on={!!ov.flag} disabled={busy}
-          onChange={v => act(() => api.ringFlag(v, killMode), v ? 'رینگ روشن شد' : `رینگ خاموش شد (${killMode})`)} /></Field>
-        <Field label="نوع خاموشی"><select value={killMode} onChange={e => setKillMode(e.target.value)}>
-          <option value="soft">soft — جلسات موجود تمام شوند</option>
-          <option value="hard">hard — همه را ببند</option>
+      actions={<div className="row" style={{ gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <Field label="وضعیت رینگ استریت"><div className="row" style={{ gap: 6 }}>
+          {STATE_OPTS.map(([v, lbl]) => <button key={v} className="btn sm" disabled={busy}
+            onClick={() => act(() => api.ringSetState(v, killMode), `وضعیت: ${lbl}`)}
+            style={state === v ? { outline: '2px solid var(--acc, #3b82f6)', fontWeight: 700 } : undefined}>{lbl}</button>)}
+        </div></Field>
+        <Field label="نوع خاموشی (برای 🔴)"><select value={killMode} onChange={e => setKillMode(e.target.value)}>
+          <option value="soft">soft — گفت‌وگوهای موجود تمام شوند</option>
+          <option value="hard">hard — همه را همین حالا ببند</option>
         </select></Field>
       </div>}
     />
+
+    <div className="muted" style={{ fontSize: 12.5, margin: '6px 2px 0' }}>
+      {STATE_HINT[state] || ''}{state === 'maintenance' ? ' — کاربر هیچ خطایی نمی‌بیند؛ فقط «جفت تازه ساخته نمی‌شود».' : ''}
+    </div>
 
     <Tabs items={TABS} value={tab} onChange={t => { setTab(t); setPage(1); setDrawer(null); }} />
 
@@ -169,6 +200,10 @@ export default function RingStreet({ me }) {
           <Stat label="کمترین سن" value={fa(ov.settings?.min_age)} />
           <Stat label="سقف پیام/دقیقه" value={fa(ov.settings?.max_msg_per_min)} />
           <Stat label="ثبت محتوا" value={ov.settings?.evidence_mode} />
+          <Stat label="وضعیت" value={ov.state_label || (ov.flag ? '🟢 فعال' : '🔴 غیرفعال')} />
+          <Stat label="نسخهٔ قوانین" value={fa(ov.rules_version || 1)} />
+          <Stat label="ترکیب جنسیتی صف" value={Object.entries(qs.by_gender || {}).length
+            ? Object.entries(qs.by_gender).map(([k, n]) => `${GENDER[k] || k}: ${fa(n)}`).join(' · ') : '—'} />
           <Stat label="به‌روزرسانی" value={<FaDateTime value={live.last_updated} />} />
         </div>
         <div className="row" style={{ gap: 8, marginTop: 10 }}>
@@ -182,7 +217,7 @@ export default function RingStreet({ me }) {
       </div>
     </div>}
 
-    {(tab === 'queue' || tab === 'chats' || tab === 'reports' || tab === 'users' || tab === 'audit') && <>
+    {(tab === 'queue' || tab === 'chats' || tab === 'reports' || tab === 'users' || tab === 'blocks' || tab === 'audit') && <>
       <div className="row" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
         {tab === 'users' && <input style={{ minWidth: 200 }} placeholder="جست‌وجو با آیدی تلگرام یا #ناشناس"
           value={q} onChange={e => { setQ(e.target.value); setPage(1); }} />}
@@ -191,12 +226,17 @@ export default function RingStreet({ me }) {
           <option value="action_taken">اقدام شد</option><option value="resolved">حل‌شده</option>
           <option value="dismissed">رد‌شده</option><option value="">همه</option>
         </select>}
-        {['users', 'reports'].includes(tab) && <Stat label="کل" value={fa(box.total)} />}
+        {['users', 'reports', 'blocks'].includes(tab) && <Stat label="کل" value={fa(box.total)} />}
       </div>
       <DataTable columns={cols} rows={rows} rowKey={r => r.session_id || r.report_id || r._id || r.uid || r.user_id || Math.random()}
         loading={!box} onRow={tab === 'chats' ? (r => setDrawer({ kind: 'session', body: r })) : undefined}
         pager={{ page, pages: Math.max(1, Math.ceil((box.total || rows.length) / (box.size || 25))), total: fa(box.total || rows.length), onPage: setPage }} />
     </>}
+
+    {tab === 'rules' && <RulesPanel box={box} busy={busy}
+      onSave={(text, bump) => act(() => api.ringSaveRules(text, bump),
+        bump ? 'قوانین ذخیره شد و نسخه بالا رفت (همه دوباره می‌پذیرند)' : 'قوانین ذخیره شد')}
+      onReset={() => act(() => api.ringSaveRules('', false), 'متن پیش‌فرض برگشت')} />}
 
     {tab === 'settings' && <SettingsPanel box={box} edit={edit} setEdit={setEdit} busy={busy}
       onSave={() => act(() => api.ringSaveSettings(edit), 'تنظیمات ذخیره شد')} />}
@@ -217,8 +257,8 @@ export default function RingStreet({ me }) {
         onReview={a => act(() => api.ringReview(drawer.body.report.report_id, a, ''), `اقدام «${a}» ثبت شد`)}
         onBan={uid => act(() => api.ringBan({ user_id: uid, kind: 'temporary', hours: 24, reason: 'report' }), '۲۴ ساعت بن شد')}
         onLift={uid => act(() => api.ringUnban(uid), 'محدودیت برداشته شد')}
-        onPause={uid => act(() => api.ringPause(uid), 'کاربر به مکث رفت')}
-        onResume={uid => act(() => api.ringResume(uid), 'کاربر برگشت')}
+        onPause={uid => act(() => api.ringPause(uid), 'کاربر محدود شد (خارج از صف)')}
+        onResume={uid => act(() => api.ringResume(uid), 'محدودیت کاربر برداشته شد')}
         onEnd={sid => act(() => api.ringEndSession(sid, 'admin_panel'), 'جلسه بسته شد')} />
     </Modal>}
   </>;
@@ -360,4 +400,46 @@ function ForceMatch({ busy, onClose, onSubmit }) {
       </div>
     </div>
   </Modal>;
+}
+
+
+function RulesPanel({ box, busy, onSave, onReset }) {
+  // §۲۶/§۲۷ — متن ۱۲بندی پیش‌فرض در بک‌اند است؛ اینجا فقط جایگزینِ ادمین و
+  // «بالا بردن نسخه» که همه را مجبور به پذیرش دوباره می‌کند.
+  const [txt, setTxt] = useState(null);
+  const [bump, setBump] = useState(true);
+  if (!box) return <Loading rows={3} />;
+  const val = txt === null ? (box.text || '') : txt;
+  return <div className="panel panel-pad" style={{ display: 'grid', gap: 10 }}>
+    <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
+      <Stat label="نسخهٔ فعلی" value={fa(box.version)} />
+      <Stat label="پذیرفته‌اند" value={fa(box.accepted)} />
+      <Stat label="در انتظار پذیرش" value={fa(box.pending)} />
+      <Stat label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۲ بند)'} />
+      <Stat label="حداقل سن" value={fa(box.min_age)} />
+    </div>
+    {box.pending > 0 && <div className="muted" style={{ fontSize: 12.5 }}>
+      ⚠️ {fa(box.pending)} کاربر فعال نسخهٔ فعلی قوانین را نپذیرفته؛ تا پذیرش وارد
+      صف نمی‌شوند (پیام «قوانین به‌روز شده» را می‌بینند، نه خطا).
+    </div>}
+    <textarea dir="rtl" style={{ minHeight: 320, width: '100%', fontFamily: 'inherit', lineHeight: 1.8 }}
+      value={val} maxLength={3500} disabled={busy}
+      onChange={e => setTxt(e.target.value)}
+      placeholder="متن پیش‌فرض ۱۲بندی را اینجا ویرایش کنید… {min_age} با حداقل سن جایگزین می‌شود." />
+    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <input type="checkbox" checked={bump} disabled={busy} onChange={e => setBump(e.target.checked)} />
+        بالا بردن نسخه (همه باید دوباره بپذیرند)
+      </label>
+      <span className="muted" style={{ fontSize: 12 }}>{fa(val.length)} / ۳۵۰۰</span>
+      <button className="btn sm" disabled={busy || !val.trim()} onClick={() => onSave(val, bump)}>💾 ذخیره</button>
+      <button className="btn sm" disabled={busy} onClick={() => setTxt(box.default_text || '')}>📋 بارگذاری متن پیش‌فرض</button>
+      <button className="btn sm danger" disabled={busy || !box.overridden} onClick={onReset}>↩️ حذف متن جایگزین</button>
+    </div>
+    <div className="muted" style={{ fontSize: 12 }}>
+      🛡 متن جایگزین فقط «بدنه» را عوض می‌کند؛ پاورقیِ حالت‌ها و یادآوری‌های ایمنی
+      سرِ جایشان می‌مانند. اگر نگارش curly-brace داخل متن خراب باشد، همان متن
+      بدون جایگزینی نمایش داده می‌شود و صفحه نمی‌شکند.
+    </div>
+  </div>;
 }

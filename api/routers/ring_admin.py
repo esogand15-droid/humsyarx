@@ -60,6 +60,17 @@ class EndBody(BaseModel):
     reason: str = "admin"
 
 
+class StateBody(BaseModel):
+    """§۴۵ — سه حالت از یک منبع حقیقت (Mongo)، بدون flag سخت‌کدشده."""
+    state: str = Field(pattern="^(active|maintenance|disabled)$")
+    disable_mode: str = Field(default="soft", pattern="^(soft|hard)$")
+
+
+class RulesBody(BaseModel):
+    text: str = ""
+    bump_version: bool = True
+
+
 def _wait_s(iso) -> int | None:
     """مدت انتظار از `queued_at` (برای مانیتور صف) — بدون query اضافه."""
     try:
@@ -108,6 +119,10 @@ async def overview(user=_guard):
     return {
         "flag": await S.get_flag(),
         "disable_mode": await S.disable_mode(),
+        "maintenance": await S.maintenance(),
+        "state": await S.ui_state(),
+        "state_label": _STATE_LABELS.get(await S.ui_state(), "—"),
+        "rules_version": int((await S.get_cfg()).get("rules_version") or 1),
         "live": await db.ring_overview(),
         "queue": await db.ring_queue_stats(),
         "settings": cfg,
@@ -115,6 +130,85 @@ async def overview(user=_guard):
         "ram": {"in_chat": ring_state.count()},
         "server_time": utc_now_iso(),
     }
+
+
+# ══════════════════════════════════════════════════════════════
+#  وضعیت فیچر (§۴۵) و قوانین (§۲۶/§۲۷)
+# ══════════════════════════════════════════════════════════════
+
+_STATE_LABELS = {"active": "🟢 فعال", "maintenance": "🟡 نگهداری",
+                 "disabled": "🔴 غیرفعال"}
+
+
+@router.get("/state")
+async def state_get(user=_guard):
+    st = await S.ui_state()
+    return {"state": st, "state_label": _STATE_LABELS.get(st, "—"),
+            "enabled": await S.get_flag(), "maintenance": await S.maintenance(),
+            "disable_mode": await S.disable_mode()}
+
+
+@router.post("/state")
+async def state_post(body: StateBody, user=_guard):
+    """تک‌نقطهٔ تغییر وضعیت: active / maintenance / disabled.
+
+    maintenance یعنی «چت‌های جاری تمام شوند، جفت تازه ساخته نشود» — پس نه
+    sessionی بسته می‌شود و نه پیامی به کاربران می‌پرد؛ فقط join_queue و
+    try_match دروازه دارند. تغییر وضعیت هیچ callback قدیمی را نمی‌شکند
+    (§۳/§۶۶) چون کلیدها در `ring/handlers.py` همچنان ثبت‌اند.
+    """
+    want, mode = body.state, body.disable_mode
+    await S.set_enabled(_admin(user), want != "disabled", mode)
+    await S.set_maintenance(_admin(user), want == "maintenance")
+    S.invalidate()
+    if want == "disabled" and mode == "hard":
+        from ring import jobs as ring_jobs
+        await ring_jobs._hard_disable(db)
+    await _audit(user, "RING_STATE", want, mode)
+    return {"ok": True, "state": want, "state_label": _STATE_LABELS.get(want, "—"),
+            "enabled": want != "disabled", "maintenance": want == "maintenance",
+            "disable_mode": mode}
+
+
+@router.get("/rules")
+async def rules_get(user=_guard):
+    """متن قوانین (پیش‌فرض/جایگزین ادمین) + چند نفر نسخهٔ فعلی را پذیرفته‌اند."""
+    from ring import models as ring_models
+    from ring import texts as ring_texts
+    cfg = await S.get_cfg(force=True)
+    ver = int(cfg.get("rules_version") or ring_models.RULES_VERSION)
+    accepted = await db.ring_cols.profiles.count_documents(
+        {"rules_version": {"$gte": ver}})
+    total = await db.ring_cols.profiles.count_documents({"status": "active"})
+    return {
+        "version": ver,
+        "text": (cfg.get("rules_text_override") or "").strip()
+                or ring_texts.RULES_BODY,
+        "default_text": ring_texts.RULES_BODY,
+        "overridden": bool((cfg.get("rules_text_override") or "").strip()),
+        "min_age": int(cfg.get("min_age", 18)),
+        "accepted": accepted, "active_profiles": total,
+        "pending": max(0, total - accepted),
+    }
+
+
+@router.post("/rules")
+async def rules_post(body: RulesBody, user=_guard):
+    """ذخیرهٔ متن (و در صورت درخواست، بالا بردن نسخه ⇒ همه دوباره می‌پذیرند)."""
+    from ring import models as ring_models
+    cfg = await S.get_cfg(force=True)
+    cur_ver = int(cfg.get("rules_version") or ring_models.RULES_VERSION)
+    text = (body.text or "").strip()
+    if len(text) > 3500:
+        raise HTTPException(status_code=422, detail="متن قوانین بیش از ۳۵۰۰ کاراکتر است")
+    updates = {"rules_text_override": text, "rules_version": cur_ver + 1
+               if body.bump_version else cur_ver}
+    merged = await S.set_cfg(_admin(user), updates)
+    S.invalidate()
+    await _audit(user, "RING_RULES", f"v{updates['rules_version']}",
+                 f"{len(text)} کاراکتر", {"bump": bool(body.bump_version)})
+    return {"ok": True, "version": updates["rules_version"],
+            "overridden": bool(text), "settings": merged}
 
 
 @router.get("/queue")
@@ -260,9 +354,25 @@ async def queue_remove(uid: int, user=_guard):
 
 
 @router.get("/blocks")
-async def blocks(uid: int, user=_guard):
-    return {"blocks": await db.ring_blocks_list(uid),
-            "blocked_by_me_count": len(await db.ring_block_ids(uid))}
+async def blocks(uid: int | None = Query(default=None),
+                 limit: int = Query(default=100, ge=1, le=500), user=_guard):
+    """مسدودسازی‌ها (§۴۶) — با `uid` فهرست یک کاربر، بدون آن فهرست سراسری."""
+    if uid is not None:
+        rows = await db.ring_blocks_list(uid)
+    else:
+        rows = await db.ring_blocks_recent(limit=limit)
+    out = []
+    for r in rows:
+        a_uid = int(r.get("user_id") or 0)
+        b_uid = int(r.get("blocked_user_id") or 0)
+        pa = await db.ring_profile(a_uid) or {}
+        pb = await db.ring_profile(b_uid) or {}
+        out.append({"user_id": a_uid, "blocked_user_id": b_uid,
+                    "user_anon": pa.get("anon_id"), "blocked_anon": pb.get("anon_id"),
+                    "source": r.get("source") or ("report" if r.get("from_report") else "user"),
+                    "created_at": r.get("created_at") or r.get("at")})
+    total = await db.ring_cols.blocks.count_documents({})
+    return {"blocks": out, "total": total}
 
 
 @router.get("/bans")

@@ -89,11 +89,47 @@ async def set_mode(uid: int, mode: str) -> Result:
     return Result.of("ok", mode=m)
 
 
-async def accept_terms(uid: int) -> Result:
+async def accept_terms(uid: int, *, version: int | None = None) -> Result:
+    """پذیرش قوانین (§۲۷): نسخه و زمانش هم ذخیره می‌شود تا با تغییر نسخهٔ
+    قوانین، کاربر دوباره بپرسیم (بدون این، پذیرش همیشگی می‌ماند)."""
     from database import db
-    await db.ring_profile_update(uid, {"consent_terms_at": utc_now_iso()})
+    cfg = await S.get_cfg()
+    stamp = utc_now_iso()
+    await db.ring_profile_update(uid, {
+        "consent_terms_at": stamp, "rules_accepted_at": stamp,
+        "rules_version": int(version or cfg.get("rules_version") or M.RULES_VERSION)})
     await db.ring_bump(consents=1)
-    return Result.of("ok")
+    return Result.of("ok", version=int(version or cfg.get("rules_version")
+                                       or M.RULES_VERSION))
+
+
+async def set_view(uid: int, key: str, on: bool) -> Result:
+    """«چه چیزهایی از پروفایلم دیده شود» (§۳۵) — فقط کلیدهای مجاز."""
+    from database import db
+    if key not in M.PROFILE_VIEW:
+        return Result.of("bad_input")
+    await db.ring_profile_update(uid, {key: bool(on)})
+    return Result.of("ok", key=key, on=bool(on))
+
+
+async def rules_pending(uid: int) -> bool:
+    """آیا کاربر باید دوباره قوانین را بپذیرد؟ (§۲۷)"""
+    from database import db
+    cfg = await S.get_cfg()
+    p = await db.ring_profile(uid) or {}
+    want = int(cfg.get("rules_version") or M.RULES_VERSION)
+    return int(p.get("rules_version") or 0) < want
+
+
+async def pause_search(uid: int) -> Result:
+    """«⏸ توقف جست‌وجو» (§۱۴/§۷۰): خروج از صف، بدون/session و بدون دست‌زدن
+    به پروفایل — اگر وسط گفت‌وگو باشد، چیزی را نمی‌بندد."""
+    from database import db
+    q = await db.ring_queue_get(uid)
+    if q and q.get("status") == "in_chat":
+        return Result.of("in_chat")
+    await db.ring_queue_leave(uid)
+    return Result.of("paused")
 
 
 async def ready(uid: int) -> tuple[bool, str]:
@@ -120,6 +156,13 @@ async def ready(uid: int) -> tuple[bool, str]:
         return False, "mode_off"
     if not p.get("consent_terms_at"):
         return False, "no_terms"
+    # §۲۷ — با بالا رفتن نسخهٔ قوانین، پذیرش قبلی دیگر کافی نیست
+    want = int(cfg.get("rules_version") or M.RULES_VERSION)
+    if int(p.get("rules_version") or 0) < want:
+        return False, "rules_outdated"
+    # §۴۵ — حالت زرد: پروفایل و چت‌ها سالم، ولی match تازه ساخته نمی‌شود
+    if await S.maintenance():
+        return False, "maintenance"
     return True, ""
 
 
@@ -202,6 +245,8 @@ async def join_queue(uid: int, mode: str | None = None) -> Result:
     mode = mode or p.get("mode")
     if not await S.mode_enabled(mode):
         return Result.of("mode_off", mode=mode)
+    if await S.maintenance():                       # §۴۵ — match تازه ممنوع
+        return Result.of("maintenance")
     cfg = await S.get_cfg()
     rl = await db.ring_limit_hit("search", uid, int(cfg["max_search_per_min"]), 60)
     if not rl["ok"]:
@@ -249,6 +294,8 @@ async def try_match(uid: int, *, announce: bool = False) -> Result:
         if not await S.get_flag():
             await db.ring_queue_release(uid)
             return Result.of("disabled")
+        if await S.maintenance():                   # §۴۵
+            return Result.of("maintenance")
         me_p = await db.ring_profile(uid)
         if not me_p:
             await db.ring_queue_release(uid)

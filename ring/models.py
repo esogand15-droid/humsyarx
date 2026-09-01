@@ -20,7 +20,8 @@ AGE_RANGES = [
 AGE_INDEX = {k: (lo, hi) for k, _, lo, hi in AGE_RANGES}
 AGE_LABELS = {k: lbl for k, lbl, _, _ in AGE_RANGES}
 
-GENDERS = {"male": "👨 پسر", "female": "👩 دختر"}
+GENDERS = {"male": "👨 پسر", "female": "👩 دختر",
+           "undisclosed": "🤐 ترجیح می‌دم بگم نه"}
 MODES = {"serious": "💍 آشنایی جدی", "fun": "🎭 رینگ فان"}
 INTENTS = {"marriage": "💍 ازدواج", "serious": "❤️ رابطه جدی", "first": "🤝 آشنایی اولیه"}
 TOPICS = {
@@ -35,15 +36,65 @@ PROFILE_FIELDS = {
     "major":      ("رشته", 80),
 }
 REPORT_REASONS = {                      # کلید → (برچسب، severity §۲۳)
-    "insult":         ("🚫 توهین و ناسزا", 1),
-    "sexual_content": ("🔞 محتوای جنسی", 3),
-    "spam":           ("📢 تبلیغات / اسپم", 1),
-    "harassment":     ("😡 آزار و اذیت", 2),
-    "scam":           ("🎣 کلاهبرداری / سوءاستفاده", 4),
-    "suspicious":     ("⚠️ رفتار مشکوک", 2),
-    "other":          ("📝 سایر", 1),
+    "harassment":  ("🚨 آزار و مزاحمت", 2),
+    "insult":      ("🤬 توهین و فحاشی", 1),
+    "sexual":      ("🔞 محتوای نامناسب", 3),
+    "money":       ("💰 درخواست پول / کلاهبرداری", 4),
+    "offapp":      ("📞 اصرار به ارتباط خارج از ربات", 3),
+    "spam":        ("🎯 تبلیغات / اسپم", 1),
+    "doxxing":     ("🕵️ تلاش برای افشای هویت", 4),
+    "other":       ("⚠️ سایر", 1),
 }
+# گزارش‌های قدیمی با کلیدهای قبلی در DB ممکن است بمانند ⇒ هنگام خواندن
+# نگاشت می‌شوند (نه migration مخرب).
+REASON_ALIAS = {"sexual_content": "sexual", "scam": "money", "suspicious": "other"}
+
+
+def reason_key(raw: str | None) -> str:
+    k = str(raw or "other").strip()
+    k = REASON_ALIAS.get(k, k)
+    return k if k in REPORT_REASONS else "other"
+
+
+def reason_sev(raw: str | None) -> int:
+    return int(REASONS_SEVERITY.get(reason_key(raw), 1))
+
+
+REASONS_SEVERITY = {k: v[1] for k, v in REPORT_REASONS.items()}
+REASONS_LABELS = {k: v[0] for k, v in REPORT_REASONS.items()}
+
+# ── نسخه‌ی قوانین (§۲۷) ────────────────────────────────────────
+# با تغییر این عدد، همهٔ کاربران باید نسخهٔ جدید را دوباره بپذیرند
+# (در پروفایل `rules_version` ذخیره می‌شود).
+RULES_VERSION = 1
+
+# ── «چه چیزی از پروفایلم دیده شود» (§۳۵ — opt-in/opt-out) ─────
+# پیش‌فرض = همان رفتار فعلی (هرچه کاربر نوشته نمایش داده می‌شود)، ولی
+# کاربر می‌تواند تک‌تک خاموشش کند؛ هیچ فیلدی که کاربر ننوشته نمایش
+# داده نمی‌شود و هیچ شناسهٔ تلگرامی در این فهرست نیست.
+PROFILE_VIEW = {
+    "show_age":        "🎂 سن/حلقهٔ سنی",
+    "show_gender":     "👤 جنسیت",
+    "show_field":      "📚 رشتهٔ تحصیل",
+    "show_university": "🎓 دانشگاه",
+    "show_city":       "🏙 شهر",
+    "show_bio":        "📝 دربارهٔ من و علایق",
+}
+VIEW_DEFAULT = {k: True for k in PROFILE_VIEW}
+
+
+def view_on(profile: dict | None, key: str) -> bool:
+    """آیا این بخش از پروفایل برای طرف مقابل قابل نمایش است؟"""
+    p = profile or {}
+    if key not in PROFILE_VIEW:
+        return False
+    v = p.get(key)
+    return VIEW_DEFAULT[key] if v is None else bool(v)
+
+
 RATINGS = {"great": 5, "good": 4, "mid": 3, "bad": 2, "worst": 1}
+RATING_LABELS = {"great": "😍 عالی", "good": "🙂 خوب", "mid": "😐 معمولی",
+                 "bad": "😕 بد", "worst": "🚨 مشکل داشت"}
 ICEBREAKERS = [
     "🎓 رشته‌ات چیه؟", "🎵 آخرین آهنگی که گوش دادی؟", "🎬 فیلم محبوبت؟",
     "☕ قهوه یا چای؟", "😂 عجیب‌ترین اتفاق دانشگاه؟", "💭 یک سوال تصادفی",
