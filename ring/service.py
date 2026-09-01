@@ -89,6 +89,16 @@ async def set_mode(uid: int, mode: str) -> Result:
     return Result.of("ok", mode=m)
 
 
+def rules_want(cfg: dict | None = None) -> int:
+    """نسخه‌ای از قوانین که کاربر باید پذیرفته باشد (§۲۷/§۴۰).
+
+    `max` یعنی نسخهٔ موجود در **کد** کفِ الزامی است: ریلاسی که متن قوانین را
+    عوض می‌کند (RULES_VERSION بالا می‌رود) همه را یک‌بار دوباره می‌پرسد، حتی
+    اگر ادمین در پنل عددِ کمتری تنظیم کرده باشد. ادمین فقط می‌تواند بیشتر کند.
+    """
+    return max(int((cfg or {}).get("rules_version") or 0), M.RULES_VERSION)
+
+
 async def accept_terms(uid: int, *, version: int | None = None) -> Result:
     """پذیرش قوانین (§۲۷): نسخه و زمانش هم ذخیره می‌شود تا با تغییر نسخهٔ
     قوانین، کاربر دوباره بپرسیم (بدون این، پذیرش همیشگی می‌ماند)."""
@@ -97,10 +107,9 @@ async def accept_terms(uid: int, *, version: int | None = None) -> Result:
     stamp = utc_now_iso()
     await db.ring_profile_update(uid, {
         "consent_terms_at": stamp, "rules_accepted_at": stamp,
-        "rules_version": int(version or cfg.get("rules_version") or M.RULES_VERSION)})
+        "rules_version": int(version or rules_want(cfg))})
     await db.ring_bump(consents=1)
-    return Result.of("ok", version=int(version or cfg.get("rules_version")
-                                       or M.RULES_VERSION))
+    return Result.of("ok", version=int(version or rules_want(cfg)))
 
 
 async def set_view(uid: int, key: str, on: bool) -> Result:
@@ -117,19 +126,82 @@ async def rules_pending(uid: int) -> bool:
     from database import db
     cfg = await S.get_cfg()
     p = await db.ring_profile(uid) or {}
-    want = int(cfg.get("rules_version") or M.RULES_VERSION)
+    want = rules_want(cfg)
     return int(p.get("rules_version") or 0) < want
 
 
 async def pause_search(uid: int) -> Result:
-    """«⏸ توقف جست‌وجو» (§۱۴/§۷۰): خروج از صف، بدون/session و بدون دست‌زدن
-    به پروفایل — اگر وسط گفت‌وگو باشد، چیزی را نمی‌بندد."""
+    """«⏸ توقف جست‌وجو» (§۱۴/§۲۳/§۷۰): خروج از صف، بدون/session و بدون
+    دست‌زدن به پروفایل — اگر وسط گفت‌وگو باشد، چیزی را نمی‌بندد.
+
+    §۲۳ — «توقف» یک حالتِ *ماندگار* است (نه فقط نبودنِ ردیف در صف): فلگ روی
+    پروفایل می‌نشیند تا بعد از ری‌استارتِ پروسه هم `state_of` همان PAUSED را
+    بدهد و کاربر ناخودآگاه دوباره در صف نیفتد.
+    """
     from database import db
     q = await db.ring_queue_get(uid)
     if q and q.get("status") == "in_chat":
         return Result.of("in_chat")
     await db.ring_queue_leave(uid)
+    await db.ring_profile_update(uid, {"search_paused": True})
     return Result.of("paused")
+
+
+async def resume_search(uid: int) -> Result:
+    """«▶️ ادامه جست‌وجو» — فلگ توقف را پاک می‌کند و کاربر دوباره آماده است."""
+    from database import db
+    await db.ring_profile_update(uid, {"search_paused": False})
+    return await join_queue(uid)
+
+
+async def state_of(uid: int) -> str:
+    """§۵/§۱۲ — حالتِ واحدِ کاربر از همان سه منبعِ موجود (بدون فیلد جدید).
+
+    تنها جایی که «من کجا هستم؟» تعیین می‌شود: صفحهٔ رینگ، فیلترِ رله،
+    /ring status و پنل ادمین همه همین را می‌خوانند.
+    """
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    q = await db.ring_queue_get(uid)
+    sess = await db.ring_session_active_for(uid)
+    ended = False
+    if not sess and not q and (p.get("recent_partners") or []):
+        cfg = await S.get_cfg()
+        ended = bool(await recent_pairs(
+            p, int(cfg.get("rematch_after_s") or cfg.get("skip_cooldown_s") or 0)))
+    return M.user_state(p, q, sess, banned=bool(await db.ring_ban_active(uid)),
+                        ended_recently=ended)
+
+
+async def pair_diagnose(uid: int, cid: int) -> dict:
+    """§۳۷/§۳۸ — «چرا این دو نفر به هم مچ نشدند؟» با همان الگوریتمِ واقعی.
+
+    از پنل ادمین صدا زده می‌شود و *هیچ* مسیر جدیدی برای تصمیم نمی‌سازد:
+    دقیقاً `_verdict` (همان که حلقهٔ مچ اجرا می‌کند) اجرا می‌شود.
+    """
+    from database import db
+    cfg = await S.get_cfg()
+    me_p = await db.ring_profile(uid) or {}
+    cand_q = await db.ring_queue_get(cid)
+    cand_p = await db.ring_profile(cid) or {}
+    mode = (cand_q or {}).get("mode") or cand_p.get("mode") or me_p.get("mode") or "fun"
+    v = await _verdict(uid, cid, {**(cand_q or {}), **cand_p, "user_id": cid},
+                       mode, cfg, [], [], me={**me_p, "user_id": uid})
+    q = await db.ring_queue_get(uid)
+    return {
+        "ok": bool(v["ok"]), "reason": v.get("reason") or "",
+        "checks": v.get("checks") or {}, "hints": v.get("hints") or {},
+        "mode": mode,
+        "a": {"state": await state_of(uid),
+              "in_queue": bool(q and q.get("status") in ("waiting", "claiming", "claimed")),
+              "queue_status": (q or {}).get("status"),
+              "state_label": M.US_LABELS.get(await state_of(uid), "—")},
+        "b": {"state": await state_of(cid),
+              "in_queue": bool(cand_q and cand_q.get("status") in
+                               ("waiting", "claiming", "claimed")),
+              "queue_status": (cand_q or {}).get("status"),
+              "state_label": M.US_LABELS.get(await state_of(cid), "—")},
+    }
 
 
 async def ready(uid: int) -> tuple[bool, str]:
@@ -157,7 +229,7 @@ async def ready(uid: int) -> tuple[bool, str]:
     if not p.get("consent_terms_at"):
         return False, "no_terms"
     # §۲۷ — با بالا رفتن نسخهٔ قوانین، پذیرش قبلی دیگر کافی نیست
-    want = int(cfg.get("rules_version") or M.RULES_VERSION)
+    want = rules_want(cfg)
     if int(p.get("rules_version") or 0) < want:
         return False, "rules_outdated"
     # §۴۵ — حالت زرد: پروفایل و چت‌ها سالم، ولی match تازه ساخته نمی‌شود
@@ -238,6 +310,9 @@ async def join_queue(uid: int, mode: str | None = None) -> Result:
     from database import db
     if not await S.get_flag():
         return Result.of("disabled")
+    # §۲۳ — «توقف» با ورود دوباره به صف لغو می‌شود (وگرنه PAUSED چسبناک می‌ماند)
+    if (await db.ring_profile(uid) or {}).get("search_paused"):
+        await db.ring_profile_update(uid, {"search_paused": False})
     ok, why = await ready(uid)
     if not ok:
         return Result.of(why)
@@ -334,13 +409,22 @@ async def _adopt_existing(uid: int, token: str) -> Result | None:
     return None
 
 
-def _reject_log(uid: int, cid: int, reason: str, cfg: dict) -> None:
-    """لاگ دلیل رد شدن — بدون هیچ محتوای خصوصی (§۷۵). uidها مگر در حالت
-    دیباگ، mask می‌شوند تا لاگ production قابل‌انتشار بماند."""
+def _reject_log(uid: int, cid: int, reason: str, cfg: dict,
+                verdict: dict | None = None) -> None:
+    """لاگِ ساختارمندِ تلاشِ مچ (§۳۷/§۳۸).
+
+    یک خطِ کلید=مقدار که با grep پیدا می‌شود و هیچ محتوای خصوصی ندارد؛ uidها
+    فقط در حالت دیباگ کامل نوشته می‌شوند تا لاگ production قابل‌انتشار بماند.
+    """
+    v = (verdict or {}).get("checks", {}) or {}
+    tags = " ".join(f"{k}=0" for k, ok in v.items() if not ok) or "-"
+    line = (f"RING_MATCH_ATTEMPT reason={reason or 'ok'} result="
+            f"{'MATCH' if (verdict or {}).get('ok', True) else 'REJECT'} "
+            f"failed=[{tags}]")
     if cfg.get("debug_match_log"):
-        logger.info("[RING] candidate=%s rejected reason=%s user=%s", cid, reason, uid)
+        logger.info("%s user_id=%s candidate_id=%s", line, uid, cid)
     else:
-        logger.info("[RING] candidate=…%s rejected reason=%s", str(cid)[-4:], reason)
+        logger.info("%s user_id=…%s candidate_id=…%s", line, str(uid)[-4:], str(cid)[-4:])
 
 
 async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
@@ -373,9 +457,13 @@ async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
             return Result.of("empty", waited_s=int(_waited_s(me_q)), queued=others)
         cid = int(cand["user_id"])
         tried.append(cid)
-        reason = await _verify(uid, cid, cand, mode, cfg, blocked, verify_recent)
+        v = await _verdict(uid, cid, cand, mode, cfg, blocked, verify_recent,
+                           me={**me_q, **me_p, "user_id": uid})
+        reason = "" if v["ok"] else (v["reason"] or "incompat")
         if reason:
-            _reject_log(uid, cid, reason, cfg)
+            _reject_log(uid, cid, reason, cfg, v)
+            from ring import analytics as _A
+            _A.note_reject(reason.split(":")[-1])          # §۳۹
             await db.ring_queue_release(cid)
             continue
         sess = await _open_session(uid, cid, me_p, mode, cfg)
@@ -399,6 +487,8 @@ async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
             continue
         await db.ring_report_recent(uid, cid, int(cfg["max_partners_history"]))
         await db.ring_bump(match=1, wait_s=int(_waited_s(me_q)))
+        # §۳۹ — بیشترین انتظار روزانه با $max (رایگان، بدون read-modify-write)
+        await db.ring_bump_max("max_wait_s", int(_waited_s(me_q)))
         logger.info("RING_MATCH_CREATED uid=%s peer=%s sid=%s wait_s=%s",
                     uid, cid, sess["session_id"], int(_waited_s(me_q)))
         if announce:
@@ -474,6 +564,7 @@ async def try_match(uid: int, *, announce: bool = False) -> Result:
                                     verify_recent=sorted(very), announce=announce)
             if r2.get("kind") != "empty":
                 r2["relaxed"] = True
+                await db.ring_bump(rematch=1)     # §۳۹ — چند مچ از پارتنرِ اخیر؟
                 return r2
             relaxed = True
             r = r2
@@ -559,34 +650,46 @@ def _first_range(pref) -> str | None:
     return parts[0] if len(parts) == 1 else None
 
 
-async def _verify(uid: int, cid: int, cand: dict, mode: str, cfg: dict,
-                  blocked: list[int], recent: list[int]) -> str:
-    """چک‌های بعد از رزرو (اتمامِ efi­cient در query ممکن نیستند)."""
+async def _verdict(uid: int, cid: int, cand: dict, mode: str, cfg: dict,
+                   blocked: list[int], recent: list[int],
+                   me: dict | None = None) -> dict:
+    """دکمه‌ی واقعیِ «چرا نشد» — همه‌ی چک‌های بعد از رزرو، در یک dict (§۳۶).
+
+    هم مسیرِ داغِ مچ و هم endpoint عیب‌یابی پنل همین را صدا می‌زنند، پس هیچ‌وقت
+    «تصمیم» و «توضیحِ تصمیم» از هم جدا نمی‌شوند. `me` همان سندِ من است که در
+    حلقه‌ی داغ از قبل خوانده شده (برای پرهیز از دو query اضافه به‌ازای هر کاندید).
+    """
     from database import db
-    if cid == uid:
-        return "self"
-    if cid in blocked or cid in recent:
-        return "blocked_or_recent"
-    if not await S.mode_enabled(mode):
-        return "mode_off"
+    me_doc = me if me is not None else {
+        **(await db.ring_queue_get(uid) or {}),
+        **(await db.ring_profile(uid) or {}), "user_id": uid}
     cp = await db.ring_profile(cid)
-    if not cp:
-        return "no_profile"
-    if cp.get("status") in ("banned", "paused"):
-        return "unavailable"
-    if await db.ring_ban_active(cid):
-        return "banned"
-    if await db.ring_session_active_for(cid):
-        return "in_chat"
-    if await db.ring_blocked_between(uid, cid):
-        return "blocked"
-    me_q = await db.ring_queue_get(uid)
-    me_p = await db.ring_profile(uid)
-    ok, why = matcher.hard_ok({**(me_q or {}), **(me_p or {}), "user_id": uid},
-                              {**cand, **{k: cp.get(k) for k in
-                                          ("bio", "interests", "city", "university", "major", "topics")}},
-                              mode=mode, cfg=cfg)
-    return "" if ok else f"compat:{why}"
+    cand_q = await db.ring_queue_get(cid)
+    cand_sess = await db.ring_session_active_for(cid)
+    block_hit = bool(await db.ring_blocked_between(uid, cid)) or cid in blocked
+    # کول‌داونِ rematch دوطرفه است: اگر او من را دیروز دیده، pair تکراری نشدنی‌ست
+    # `recent` خالی = caller چکِ کول‌داون را خاموش کرده (tier دوم دقیقاً برای
+    # همان ساخته شده که پارتنرِ اخیر دوباره کاندید باشد) ⇒ چک دوطرفه هم خاموش.
+    peers_of_cand: set[int] = set()
+    if recent:
+        cool = int(cfg.get("skip_cooldown_s") or 0)
+        peers_of_cand = {u for u, _at in await recent_pairs(cp or {}, cool)}
+    v = matcher.verdict(
+        {**me_doc, "user_id": uid},
+        {**cand, **{k: (cp or {}).get(k) for k in
+                    ("bio", "interests", "city", "university", "major", "topics")},
+         "user_id": cid},
+        mode=mode, cfg=cfg,
+        blocked=block_hit, recent=cid in recent or uid in peers_of_cand,
+        my_session=bool(await db.ring_session_active_for(uid)),
+        cand_session=bool(cand_sess),
+        cand_available=bool(cp) and (cp or {}).get("status") not in ("banned", "paused")
+                         and not await db.ring_ban_active(cid),
+        # ⚠️ کاندید همین لحظه قفلِ ماست ⇒ ردیفش claimed است؛ تنها حالتی
+        # که واقعاً مانع است in_chat بودنِ اوست (وگرنه هر مچی رد می‌شد!)
+        queue_ok=bool(cand_q) and cand_q.get("status") != "in_chat",
+        mode_enabled=await S.mode_enabled(mode))
+    return v
 
 
 async def _open_session(uid: int, cid: int, me_p: dict, mode: str, cfg: dict) -> dict | None:

@@ -366,6 +366,8 @@ export const api = {
   ringBan: (body) => req('/api/ring/bans', { method: 'POST', body }),
   ringUnban: (uid) => req(`/api/ring/bans/${uid}`, { method: 'DELETE' }),
   ringForceMatch: (user_a, user_b) => req('/api/ring/force-match', { method: 'POST', body: { user_a, user_b } }),
+  // §۳۷/§۳۸ (V4) — «چرا این دو مچ نشدند؟» با همان الگوریتمِ زنده
+  ringDebugMatch: (a, b) => req(`/api/ring/debug-match?${_ringQ({ a, b })}`),
   ringSettings: () => req('/api/ring/settings'),
   ringSaveSettings: (updates) => req('/api/ring/settings', { method: 'POST', body: { updates } }),
   ringFlag: (enabled, disable_mode = 'soft') => req('/api/ring/flag', { method: 'POST', body: { enabled, disable_mode } }),

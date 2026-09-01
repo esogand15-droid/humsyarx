@@ -26,6 +26,7 @@ COUNTERS = {
     "matches": "match", "ends": "session_end", "messages": "messages",
     "reports": "report", "blocks": "blocks", "rated": "rating",
     "wait_s": "wait_s", "session_s": "session_seconds", "bans": "bans",
+    "rematch": "rematch", "max_wait_s": "max_wait_s",
 }
 
 
@@ -130,6 +131,49 @@ async def top_topics(days: int = 30, limit: int = 8) -> list[dict]:
         return []
 
 
+# §۳۹ (V4) — «چرا مچ نشد؟» باید اندازه‌گیری شود، نه فقط در لاگ دیده شود.
+# شمارش در RAM نگه داشته می‌شود (هر رد = یک $inc اضافه در مسیر داغ نزنیم) و
+# در همان job دوره‌ای که صف را جارو می‌کند روی دیسک می‌نشیند.
+_rejects: dict[str, int] = {}
+
+
+def note_reject(reason: str) -> None:
+    """از حلقهٔ مچ صدا زده می‌شود؛ async نیست و نباید منتظر DB بماند."""
+    if not reason:
+        return
+    _rejects[reason] = _rejects.get(reason, 0) + 1
+
+
+async def flush_rejects() -> int:
+    """شمارنده‌های RAM را در `ring_stats_daily.c.reject_*` می‌نویسد."""
+    if not _rejects:
+        return 0
+    snap = dict(_rejects)
+    _rejects.clear()
+    from database import db
+    try:
+        await db.ring_bump(**{f"reject_{k}": v for k, v in snap.items()})
+    except Exception as e:
+        logger.debug("ring reject counters flush failed: %s", e)
+    return sum(snap.values())
+
+
+async def reject_reasons(days: int = 7) -> dict:
+    """تفکیک دلایل رد — برای کارت «چرا مچ نمی‌شوند؟» در پنل (§۳۹)."""
+    from database import db
+    out: dict[str, int] = {}
+    try:
+        for r in await db.ring_daily(days):
+            for k, v in (r.get("c") or {}).items():
+                if k.startswith("reject_"):
+                    out[k[len("reject_"):]] = out.get(k[len("reject_"):], 0) + int(v or 0)
+    except Exception as e:
+        logger.debug("ring reject counters read failed: %s", e)
+    for k, v in _rejects.items():                       # آنچه هنوز تخلیه نشده
+        out[k] = out.get(k, 0) + int(v)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
 async def summary(days: int = 7) -> dict:
     """پاسخ `/api/ring/analytics` و کارت «📊» پنل."""
     from database import db
@@ -138,6 +182,32 @@ async def summary(days: int = 7) -> dict:
         ov = await db.ring_overview()
     except Exception as e:
         logger.debug("ring overview failed: %s", e)
-    return {"funnel": await funnel(days), "modes": await mode_split(days),
+    fun = await funnel(days)
+    fun["max_wait_s"] = int(await _max_wait(days))
+    return {"funnel": fun, "modes": await mode_split(days),
             "moderation": await moderation_stats(days), "topics": await top_topics(days),
+            "reject_reasons": await reject_reasons(days),
+            "paused": await _paused_count(),
             "live": ov}
+
+
+async def _max_wait(days: int = 7) -> int:
+    """بیشترین انتظار ثبت‌شده (§۳۹) — از شمارندهٔ `$max` روزانه."""
+    from database import db
+    best = 0
+    try:
+        for r in await db.ring_daily(days):
+            best = max(best, int((r.get("c") or {}).get("max_wait_s") or 0))
+    except Exception:
+        pass
+    return best
+
+
+async def _paused_count() -> int:
+    """چند نفر «⏸ توقف جست‌وجو» زده‌اند (§۲۳/§۳۹)."""
+    from database import db
+    try:
+        return await db.ring_cols.profiles.count_documents(
+            {"search_paused": True, "status": "active"}, limit=5000)
+    except Exception:
+        return 0

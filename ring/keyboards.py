@@ -12,6 +12,109 @@ from ring import models as M
 
 CB = "ring:"
 
+# ══════════════════════════════════════════════════════════════
+#  §۲۰/§۲۱/§۴۶/§۴۷/§۵۸ (V4) — کیبوردِ گفت‌وگو فقط Inline است، و *هیچ*
+#  برچسبِ دکمه‌ای نباید به‌عنوان پیام به پارتنر رله شود.
+#
+#  دو خانواده برچسب داریم:
+#   • CONTROL_LABELS — دکمه‌های کنترلیِ خودِ رینگ. اگر کسی این متن‌ها را
+#     تایپ هم کرد، رله نمی‌شوند (§۲۱: کنترل = کاربر→بات، نه کاربر→پارتنر).
+#   • main_menu_labels() — برچسب‌های کیبوردِ اصلیِ ربات (ReplyKeyboard).
+#     این‌ها وقتی در چت زده می‌شوند که کاربر دکمهٔ منوی اصلی را زده باشد؛
+#     باید از رله خارج و به هندلرهای خودِ ربات برسند (§۱۲/§۴۷).
+# ══════════════════════════════════════════════════════════════
+
+L_NEXT = "⏭ نفر بعدی"
+L_END = "❌ پایان گفتگو"
+L_REPORT = "🛡 گزارش"
+L_BLOCK = "🚫 بلاک"
+L_SAFETY = "🛡 امنیت و قوانین"
+L_PROFILE = "👤 پروفایل من"
+L_REVEAL = "🤝 معرفی دوطرفه"
+L_STOPQ = "⏸ توقف جست‌وجو"
+L_RESQ = "▶️ ادامه جست‌وجو"
+L_YES = "✅ بله، نفر بعدی"
+L_NO = "↩️ نه، ادامه بده"
+
+CONTROL_LABELS = frozenset({
+    L_NEXT, L_END, L_REPORT, L_BLOCK, L_SAFETY, L_PROFILE, L_REVEAL,
+    L_STOPQ, L_RESQ, L_YES, L_NO,
+    "🔄 نفر بعدی", "⏹ پایان گفتگو", "🚨 گزارش", "🚫 مسدود کردن",
+    "🔎 ادامه جست‌وجو", "⏸ توقف جست‌وجو", "💬 ادامه‌ی گفت‌وگو",
+    "🔎 پیدا کردن نفر", "🔎 جست‌وجوی دوباره", "▶️ ادامه گفتگو",
+    "🚫 بله، مسدودش کن", "↩️ بی‌خیال", "✅ می‌پذیرم", "↩️ بازگشت به رینگ",
+    "👤 پروفایل", "⚙️ معیارها", "📜 قوانین", "↩️ منوی رینگ", "↩️ منوی اصلی ربات",
+    "🗑 حذف پروفایل", "🚫 مسدودشده‌ها", "🌟 امتیاز دادن", "💍 انتخاب حالت",
+    "💍 رینگ استریت", "🗂 موضوع جلسه",
+})
+
+# اگر `import utils` جایی بترکد (تست/محیط ناقص) همین فهرستِ دستی مانع نشت
+# دکمه‌ها به گفت‌وگو می‌شود — همان کاری که §۴۷明确要求: هیچ برچسبِ منویی رله نشود.
+_MAIN_FALLBACK = (
+    "🩺 داشبورد", "📚 منابع", "🧪 بانک سوال", "❓ سوالات متداول", "🤖 هوشیار",
+    "📅 برنامه", "👤 پروفایل", "💎 اشتراک ویژه", "💙 حمایت مالی", "🔔 اعلان‌ها",
+    "🎫 پشتیبانی", "🎓 پنل محتوا", "👨\u200d⚕️ پنل ادمین", "💍 رینگ استریت",
+)
+
+_MAIN_LABELS: frozenset | None = None
+
+
+def main_menu_labels() -> frozenset:
+    """برچسب‌های همهٔ کیبوردهای اصلیِ ربات (ReplyKeyboard) — یک‌بار ساخته و
+    کش می‌شود. `import utils` داخل تابع است تا circular import نشود."""
+    global _MAIN_LABELS
+    if _MAIN_LABELS is not None:
+        return _MAIN_LABELS
+    out: set[str] = set()
+    try:
+        import utils
+        for name in ("main_keyboard", "content_admin_keyboard", "admin_keyboard",
+                     "sub_admin_keyboard"):
+            fn = getattr(utils, name, None)
+            if not fn:
+                continue
+            try:
+                kb = fn()
+            except Exception:
+                continue
+            for row in (getattr(kb, "keyboard", None) or []):
+                for bt in row:
+                    t = str(getattr(bt, "text", "") or "").strip()
+                    if t:
+                        out.add(t)
+    except Exception:
+        pass
+    out |= {"💍 رینگ استریت"}
+    if len(out) < 5:                       # utils در دسترس نبود ⇒ فهرست دستی
+        out |= set(_MAIN_FALLBACK)
+    _MAIN_LABELS = frozenset(out)
+    return _MAIN_LABELS
+
+
+def _norm(text) -> str:
+    # ZWJ/ZWSP/BOM و فاصله‌های اضافه: کاربر ممکن است برچسب را تایپ کند
+    return (str(text or "").replace("\u200c", "").replace("\u200b", "")
+            .replace("\ufeff", "").replace("\u200e", "").strip())
+
+
+_CONTROL_NORM: frozenset | None = None
+_MAIN_NORM: frozenset | None = None
+
+
+def is_control_label(text) -> bool:
+    global _CONTROL_NORM
+    if _CONTROL_NORM is None:
+        _CONTROL_NORM = frozenset(_norm(x) for x in CONTROL_LABELS)
+    return _norm(text) in _CONTROL_NORM
+
+
+def is_main_menu_label(text) -> bool:
+    """دکمهٔ منوی اصلی که وسط چت زده شده (§۴۷) — نباید رله شود."""
+    global _MAIN_NORM
+    if _MAIN_NORM is None:
+        _MAIN_NORM = frozenset(_norm(x) for x in main_menu_labels())
+    return _norm(text) in _MAIN_NORM
+
 
 def _row(*btns, w: int = 2):
     return list(btns)[:w] if w else list(btns)
@@ -58,7 +161,9 @@ def kb_profile_menu(p: dict, cfg: dict) -> KB:
              B("⚙️ ترجیحات", callback_data=f"{CB}p:prefs")]]
     if cfg.get("allow_rating"):
         rows.append([B("🌟 امتیازهای اخیر", callback_data=f"{CB}p:ratings")])
-    rows.append([B("👁 چه چیزهایی دیده شود", callback_data=f"{CB}view")])
+    # §۴۲/§۴۳ — لیبل می‌گوید «اینجا هم پیش‌نمایش می‌بینی هم اجازهٔ دیدن را
+    # تعیین می‌کنی»؛ کاربر قبل از زدن دکمه می‌داند چه اتفاقی می‌افتد.
+    rows.append([B("👁 پیش‌نمایش و «چه چیزی دیده شود»", callback_data=f"{CB}view")])
     rows.append([B("💾 ذخیره و بازگشت", callback_data=f"{CB}p:done"),
                  B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")])
     rows.append([B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
@@ -124,7 +229,8 @@ def kb_queue(mode: str, cfg: dict, status: str = "waiting", position: int = 0) -
     هیچ‌کدام جلسه نمی‌سازند یا تمام نمی‌کنند.
     """
     if status == "paused":
-        rows = [[B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")],
+        # §۲۳ — لیبل همین ردیف با متن «جست‌وجو متوقف شد» یکی است: ▶️ ادامه
+        rows = [[B(L_RESQ, callback_data=f"{CB}resq")],
                 [B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]]
     elif status == "empty":
         # NO_MATCH: سه راهِ روشن — جست‌وجوی دوباره، بازترکردن معیارها، بازگشت
@@ -163,15 +269,21 @@ def kb_chat(mode: str, cfg: dict) -> KB:
     «🔄 نفر بعدی» = پایان این گفت‌وگو + ورود فوری به صف · «⏹ پایان گفتگو» =
     فقط پایان و بازگشت به منوی رینگ. گزارش/مسدودسازی همیشه در دسترس (§۵۷).
     """
-    rows = [[B("🔄 نفر بعدی", callback_data=f"{CB}next"),
-             B("⏹ پایان گفتگو", callback_data=f"{CB}end")],
-            [B("🚨 گزارش", callback_data=f"{CB}report"),
-             B("🚫 مسدود کردن", callback_data=f"{CB}block")],
-            [B("🛡 امنیت و قوانین", callback_data=f"{CB}safety"),
-             B("👤 پروفایل من", callback_data=f"{CB}profile")]]
+    rows = [[B(L_NEXT, callback_data=f"{CB}next"),
+             B(L_END, callback_data=f"{CB}end")],
+            [B(L_REPORT, callback_data=f"{CB}report"),
+             B(L_BLOCK, callback_data=f"{CB}block")],
+            [B(L_SAFETY, callback_data=f"{CB}safety"),
+             B(L_PROFILE, callback_data=f"{CB}profile")]]
     if (mode == "serious") and cfg.get("allow_reveal"):
-        rows.append([B("🤝 معرفی دوطرفه", callback_data=f"{CB}reveal:ask")])
+        rows.append([B(L_REVEAL, callback_data=f"{CB}reveal:ask")])
     return KB(rows)
+
+
+def kb_next_confirm() -> KB:
+    """§۲۴ — «نفر بعدی» یک‌بار تأیید می‌خواهد، چون گفت‌وگو را می‌بندد."""
+    return KB([[B(L_YES, callback_data=f"{CB}next:yes")],
+               [B(L_NO, callback_data=f"{CB}chat")]])
 
 
 def kb_after_end() -> KB:
@@ -288,9 +400,9 @@ def kb_menu(view: dict) -> KB:
         rows.append([B("💬 ادامه‌ی گفت‌وگو", callback_data=f"{CB}chat"),
                      B("⏹ پایان گفتگو", callback_data=f"{CB}end")])
     elif view.get("paused"):
-        rows.append([B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq")])
+        rows.append([B(L_RESQ, callback_data=f"{CB}resq")])
     elif view.get("in_queue"):
-        rows.append([B("🔎 ادامه جست‌وجو", callback_data=f"{CB}resq"),
+        rows.append([B(L_RESQ, callback_data=f"{CB}resq"),
                      B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")])
     elif view.get("mode_missing"):
         rows.append([B("💍 انتخاب حالت", callback_data=f"{CB}m:fun")])

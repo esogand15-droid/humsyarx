@@ -12,25 +12,61 @@ from __future__ import annotations
 from ring import models as M
 
 
+def verdict(me: dict, cand: dict, *, mode: str, cfg: dict,
+            blocked: bool = False, recent: bool = False,
+            my_session: bool = False, cand_session: bool = False,
+            cand_available: bool = True, queue_ok: bool = True,
+            mode_enabled: bool = True) -> dict:
+    """تک‌منبعِ حقیقتِ «چرا مچ شد / چرا نشد» (§۸ §۹ §۱۰ §۱۳ §۳۶ §۳۷).
+
+    هر چک یک بولتین دارد و `reason` = اولین چکِ نقض‌شده؛ همان چیزی که لاگ
+    `[RING] … rejected reason=` و بخش «🔍 بررسی مچ» پنل نشان می‌دهند، پس
+    عیب‌یابی هرگز از تصمیمِ واقعی جدا نمی‌افتد. hard constraint ها قبل از
+    هر امتیازی اعمال می‌شوند (§۱۱).
+    """
+    checks: list[tuple[str, bool, str]] = [
+        ("self", int(cand.get("user_id", 0)) != int(me.get("user_id", -1)),
+         "خودِ کاربر نمی‌تواند کاندید باشد"),
+        ("mode", cand.get("mode") == mode and me.get("mode") == mode,
+         "حالت (💍 جدی / 🎭 فان) باید در هر دو طرف یکی باشد (§۱۰)"),
+        ("mode_enabled", bool(mode_enabled), "این حالت فعلاً در پنل خاموش است"),
+        ("gender_of_me", M.gender_matches(cand.get("gender"), me.get("pref_gender")),
+         "جنسیتِ کاندید با ترجیح من نمی‌خواند (§۹)"),
+        ("age_of_me", M.pref_allows(cand.get("age"), cand.get("age_range"),
+                                    me.get("pref_age_ranges")),
+         "سنِ کاندید در بازهٔ سنیِ من نیست (§۸)"),
+        ("gender_of_cand", M.gender_matches(me.get("gender"), cand.get("pref_gender")),
+         "من در ترجیح جنسیتیِ او نیستم (چک دوطرفه §۳۶)"),
+        ("age_of_cand", M.pref_allows(me.get("age"), me.get("age_range"),
+                                      cand.get("pref_age_ranges")),
+         "سنِ من در بازهٔ سنیِ او نیست (چک دوطرفه §۳۶)"),
+        ("min_age", (not int(cfg.get("min_age", 18))) or
+                    M.age_ok(cand.get("age"), int(cfg["min_age"])),
+         "کاندید زیر حداقل سن است (§۴۰ بند ۱)"),
+        ("blocked", not blocked, "بلاک (در هر دو جهت) hard constraint است (§۱۳)"),
+        ("recent", not recent, "این کاربر را اخیراً دیده‌ای — کول‌داونِ rematch (§۱۲)"),
+        ("my_session", not my_session, "من هنوز گفت‌وگوی فعال دارم (§۵۹)"),
+        ("cand_session", not cand_session, "کاندید داخل گفت‌وگوی فعال است (§۶)"),
+        ("cand_available", bool(cand_available), "پروفایل کاندید نیست یا محدود شده"),
+        ("queue_valid", bool(queue_ok), "ردیف صفِ کاندید معتبر نیست"),
+    ]
+    reason = ""
+    for name, ok, _hint in checks:
+        if not ok and not reason:
+            reason = name
+    return {"ok": not reason, "reason": reason,
+            "checks": {n: bool(v) for n, v, _ in checks},
+            "hints": {n: h for n, v, h in checks if not v}}
+
+
 def hard_ok(me: dict, cand: dict, *, mode: str, cfg: dict) -> tuple[bool, str]:
-    """بررسی دوطرفه‌ی سازگاری. دلیل اولِ نقض را برمی‌گرداند."""
-    if int(cand.get("user_id", 0)) == int(me.get("user_id", -1)):
-        return False, "self"
-    if cand.get("mode") != mode or me.get("mode") != mode:
-        return False, "mode"
-    # ← preference من
-    if not M.gender_matches(cand.get("gender"), me.get("pref_gender")):
-        return False, "gender_of_me"
-    if not M.age_range_matches(cand.get("age_range"), me.get("pref_age_ranges")):
-        return False, "age_of_me"
-    # ← preference او (دوطرفه — §۶)
-    if not M.gender_matches(me.get("gender"), cand.get("pref_gender")):
-        return False, "gender_of_cand"
-    if not M.age_range_matches(me.get("age_range"), cand.get("pref_age_ranges")):
-        return False, "age_of_cand"
-    if int(cfg.get("min_age", 18)) and not M.age_ok(cand.get("age"), int(cfg["min_age"])):
-        return False, "min_age"
-    return True, ""
+    """بررسی دوطرفه‌ی سازگاری. دلیل اولِ نقض را برمی‌گرداند.
+
+    §۸/§۳۶ — فقط «سازگاری»؛ بلاک/کول‌داون/session‌های فعال را `_verdict` روی
+    همان `verdict()` می‌سنجد تا الگوریتم یکی بماند.
+    """
+    v = verdict(me, cand, mode=mode, cfg=cfg)
+    return v["ok"], v["reason"]
 
 
 def score(me: dict, cand: dict, *, waited_s: float = 0.0) -> float:

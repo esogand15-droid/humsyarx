@@ -60,6 +60,7 @@ async def _sweep(db, cfg: dict) -> int:
 
 
 async def ring_housekeeping_job(context) -> None:
+    """§۳۵/§۴۹/§۵۱ + §۳۹ — جاروی صف و تخلیهٔ شمارنده‌های آن‌مِوری."""
     """timeoutها + reconcile. هزینه‌ی هر دور: ۴ query محدود (§۵۳)."""
     from database import db
     try:
@@ -111,6 +112,10 @@ async def ring_housekeeping_job(context) -> None:
                         int(u), texts.idle_prompt(max(1, int((idle_s - age) / 60))),
                         parse_mode=ParseMode.HTML, reply_markup=K.kb_idle_prompt())
                 warned += 1
+        # ۳.۵) §۳۹ — شمارنده‌های «چرا مچ نشد» که در RAM جمع شده‌اند، همین‌جا
+        # روی دیسک می‌نشینند (یک $inc دسته‌ای، نه به‌ازای هر رد).
+        from ring import analytics as _A
+        await _A.flush_rejects()
         # ۴) هم‌سان‌سازی RAM با DB
         rows = await db.ring_cols.sessions.find({"status": "active"},
                                                 {"session_id": 1}).to_list(1000)

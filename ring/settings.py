@@ -66,12 +66,16 @@ SPEC: dict[str, tuple[str, object, float | None, float | None, str]] = {
     "media_voice":          ("اجازه‌ی ویس", False, None, None, "bool"),
     "media_video":          ("اجازه‌ی ویدیو", False, None, None, "bool"),
     "media_document":       ("اجازه‌ی فایل", False, None, None, "bool"),
+    # §۱۸ — مخاطب/موقعیت سیاستِ *مجزا* دارند: هر دو هویت لو می‌دهند
+    # (شمارهٔ تماس در contact، مختصات خانه/دانشگاه در location) ⇒ پیش‌فرض خاموش.
+    "media_contact":        ("اجازه‌ی فرستادن مخاطب (شمارهٔ تماس)", False, None, None, "bool"),
+    "media_location":       ("اجازه‌ی فرستادن موقعیت مکانی", False, None, None, "bool"),
     "evidence_mode":        ("ثبت محتوای پیام", "report_only", None, None,
                              "choice:report_only,all,off"),
     "evidence_ttl_days":    ("ماندگاری شواهد (روز)", 7, 7, 30, "int"),   # §۳۵: ۷ تا ۳۰ روز
     "warn_personal_data":   ("هشدار ارسال اطلاعات شخصی", True, None, None, "bool"),
     "safety_note_every":    ("نمایش یادآوری ایمنی هر چند جلسه", 3, 1, 100, "int"),
-    "rules_version":        ("نسخهٔ قوانین (با تغییرش همه باید دوباره بپذیرند)", 1, 1, 99, "int"),
+    "rules_version":        ("نسخهٔ قوانین (با تغییرش همه باید دوباره بپذیرند)", 2, 1, 99, "int"),
     "rules_text_override":  ("متن جایگزین قوانین (خالی = متن پیش‌فرض ۱۲بندی)", "",
                              None, 3500, "text"),
     "max_partners_history": ("تعداد پارتنرهای اخیر برای کول‌داون", 40, 1, 500, "int"),

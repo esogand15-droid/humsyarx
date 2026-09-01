@@ -922,6 +922,14 @@ class DBRing:
             {"date": day}, {"$inc": inc, "$set": {"updated_at": utc_now_iso()}},
             upsert=True)
 
+    async def ring_bump_max(self, key: str, value: int) -> None:
+        """بیشترین مقدارِ دیده‌شده در روز (§۳۹ — max wait). `$max` idempotent است."""
+        day = now_utc().date().isoformat()
+        await self.ring_cols.daily.update_one(
+            {"date": day},
+            {"$max": {f"c.{key}": int(value)}, "$set": {"updated_at": utc_now_iso()}},
+            upsert=True)
+
     async def ring_daily(self, days: int = 14) -> list[dict]:
         since = (now_utc() - timedelta(days=days)).date().isoformat()
         return await self.ring_cols.daily.find({"date": {"$gte": since}}).sort("date", 1).to_list(days + 2)

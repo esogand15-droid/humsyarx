@@ -186,13 +186,18 @@ async def _menu(msg, uid: int, context) -> None:
         state.attach(uid, await db.ring_session_peer(sess, uid) or uid,
                      sess["session_id"], sess.get("mode", "fun"),
                      sess.get("alias_a", ""), sess.get("alias_b", ""))
+    # §۵/§۱۲ — همه‌ی نمای‌ها از یک تابع: state_of (پروفایل + ردیف صف + session)
+    st = await service.state_of(uid)
     view = {
         "in_chat": bool(sess),
         "in_queue": bool(q and q.get("status") in ("waiting", "claimed", "claiming")),
-        "paused": p.get("status") == "paused",
+        "paused": st == M.US_PAUSED,
+        "restricted": st == M.US_RESTRICTED,
         "mode_missing": not p.get("mode"),
+        "state": st,
     }
     head = _menu_head(p, q, sess)
+    head += f"\n\n📍 وضعیت شما: {M.US_LABELS.get(st, '—')}"
     if await S.maintenance():                       # §۴۵ — بنر وضعیت، نه خطا
         head += "\n\n🟡 رینگ استریت موقتاً در حالت نگهداری است: گفت‌وگوهای جاری " \
                 "باز می‌مانند، ولی جفت‌تازگی ساخته نمی‌شود."
@@ -228,7 +233,7 @@ async def _status_card(update: Update, context) -> None:
     p = await db.ring_profile(uid) or {}
     q = await db.ring_queue_get(uid)
     sess = await db.ring_session_active_for(uid)
-    st = "در گفت‌وگو" if sess else ("در صف" if q and q.get("status") == "waiting" else "آزاد")
+    st = M.US_LABELS.get(await service.state_of(uid), "—")   # §۵ — همان حالتِ واحد
     await update.message.reply_text(
         f"📋 وضعیت رینگ: {st}\n"
         f"   حالت: {M.MODES.get(p.get('mode'), '—')}\n"
@@ -344,21 +349,38 @@ async def _r_go(q, context, uid, arg, parts):
 
 
 async def _r_next(q, context, uid, arg, parts):
+    """⏭ نفر بعدی — اول تأیید (§۲۴)، بعد پایانِ *همین* session و ورود دوباره
+    به صف. پارتنر فقط یک اطلاعیه می‌بیند، نه پیامِ ساختگی در گفت‌وگو (§۱۰)."""
     from database import db
     sess = await db.ring_session_active_for(uid)
-    if sess:
-        r = await service.next_partner(uid, sess["session_id"])
-        await _show(q, "🔄 گفت‌وگو بسته شد؛ دوباره در صف هستی…", None)
-        r = r.get("next") or service.Result.of("empty")
-        await _finish_search(q, context, uid, r)
+    if not sess:
+        await _do_search(q, context, uid)
         return
-    await _do_search(q, context, uid)
+    if arg != "yes":
+        await _show(q, texts.next_confirm(), K.kb_next_confirm())
+        return
+    r = await service.next_partner(uid, sess["session_id"])
+    await _show(q, "⏭ گفت‌وگو بسته شد و دوباره در صف نشستی. "
+                   "به او هم گفته شد که تو رفتی.", None)
+    r = r.get("next") or service.Result.of("empty")
+    await _finish_search(q, context, uid, r)
 
 
 async def _do_search(q, context, uid) -> None:
+    from database import db
     p = await _profile(uid) or {}
     mode = p.get("mode") or "fun"
-    await _show(q, texts.searching(mode, p), K.kb_searching(), md=True)
+    qrow = None
+    queue_n = None
+    try:                     # شمارشِ bounded (§۵۳) — خطا نباید جست‌وجو را بخواباند
+        qrow = await db.ring_queue_get(uid)
+        queue_n = await db.ring_queue_waiting_count(mode, [int(uid)], cap=200)
+    except Exception:
+        pass
+    # §۳۴ — «چقدر است» + «چند نفر در صف‌اند» روی همان صفحهٔ جست‌وجو
+    waited = int(service._waited_s(qrow))
+    await _show(q, texts.searching(mode, p, waited_s=waited, queue_n=queue_n),
+                K.kb_searching(), md=True)
     r = await service.search(uid)
     await _finish_search(q, context, uid, r)
 
@@ -954,7 +976,27 @@ async def ring_text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def _relay_filter(update) -> bool:
-    return bool(state.in_chat(_uid_of(update))) if _uid_of(update) else False
+    """آیا این پیام *محتوایِ کاربر* است که باید به پارتنر برود؟ (§۲۰/§۲۱/§۴۶/§۵۸)
+
+    رله فقط کانال «کاربر → پارتنر» است؛ کنترل‌ها «کاربر → بات»‌اند. پس:
+      • هیچ برچسبِ دکمهٔ منوی اصلی (ReplyKeyboard) رله نمی‌شود — تپ‌های منو
+        باید به هندلرهای خودِ ربات برسند و فقط برای همین کاربر کار کنند (§۱۲/§۴۷)؛
+      • برچسبِ کنترل‌های رینگ اگر تایپ شود وارد relay نمی‌شود، ولی هندلر
+        خودش راهنمای محلی می‌دهد (§۲۱)؛
+      • دستور/کماند هرگز رله نمی‌شود (با `~filters.COMMAND` در register) §۲۸/§۵۳.
+    """
+    uid = _uid_of(update)
+    if not uid or not state.in_chat(uid):
+        return False
+    msg = getattr(update, "effective_message", None) or getattr(update, "message", None)
+    txt = (getattr(msg, "text", None) if msg is not None else None)
+    if not txt:                       # مدیا ⇒ محتوای کاربر است (§۱۸)
+        return True
+    # اولویت با منوی اصلی است: «👤 پروفایل» هم دکمهٔ ربات است هم رینگ ⇒ بگذار
+    # به هندلر خودِ ربات برسد (برای همین کاربر کار می‌کند، برای پارتنر هیچ)
+    if K.is_main_menu_label(txt):
+        return False
+    return not K.is_control_label(txt)     # relay خودش راهنمای محلی می‌دهد (§۲۱)
 
 
 async def ring_relay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

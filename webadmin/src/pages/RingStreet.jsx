@@ -13,7 +13,7 @@ import {
 const TABS = [
   ['overview', '📊 نمای کلی'], ['queue', '⏳ صف'], ['chats', '💬 گفت‌وگوها'],
   ['reports', '🚩 گزارش‌ها'], ['blocks', '🚫 مسدودسازی‌ها'], ['users', '👤 کاربران'],
-  ['rules', '📜 قوانین'],
+  ['debug', '🔍 بررسی مچ'], ['rules', '📜 قوانین'],
   ['settings', '⚙️ تنظیمات'], ['analytics', '📈 تحلیل'], ['audit', '🧭 حسابرسی'],
 ];
 
@@ -241,6 +241,9 @@ export default function RingStreet({ me }) {
     {tab === 'settings' && <SettingsPanel box={box} edit={edit} setEdit={setEdit} busy={busy}
       onSave={() => act(() => api.ringSaveSettings(edit), 'تنظیمات ذخیره شد')} />}
 
+    {tab === 'debug' && <DebugMatch busy={busy} onForce={(a, b) => act(
+      () => api.ringForceMatch(a, b), 'match دستی ساخته شد')} />}
+
     {tab === 'analytics' && <AnalyticsPanel box={box} />}
 
     {confirmEnd && <Confirm text={`جلسه‌ی ${confirmEnd} بسته شود؟ هر دو طرف اطلاع می‌گیرند.`}
@@ -297,8 +300,77 @@ function SettingsPanel({ box, edit, setEdit, onSave, busy }) {
   </div>;
 }
 
+function DebugMatch({ busy, onForce }) {
+  // §۳۷/§۳۸ — پاسخ همین کارت، دقیقاً همان دلیلی است که در لاگ
+  // RING_MATCH_ATTEMPT … reason= می‌آید (یک الگوریتم، دو نمایش).
+  const [a, setA] = useState('');
+  const [b, setB] = useState('');
+  const [res, setRes] = useState(null);
+  const [err, setErr] = useState('');
+  const [run, setRun] = useState(false);
+  const go = async () => {
+    setRun(true); setErr('');
+    try { setRes(await api.ringDebugMatch(Number(a), Number(b))); }
+    catch (e) { setErr(errText(e)); setRes(null); }
+    finally { setRun(false); }
+  };
+  const checks = (res && res.checks) || {};
+  const hints = (res && res.hints) || {};
+  const LABEL = {
+    self: 'خودت نباشی', mode: 'یکی‌بودن حالت', mode_enabled: 'حالت روشن در پنل',
+    gender_of_me: 'جنسیت او ← ترجیح من', age_of_me: 'سن او ← بازهٔ من',
+    gender_of_cand: 'جنسیت من ← ترجیح او', age_of_cand: 'سن من ← بازهٔ او',
+    min_age: 'حداقل سن', blocked: 'بلاک دوطرفه', recent: 'کول‌داون rematch',
+    my_session: 'جلسهٔ فعال من', cand_session: 'جلسهٔ فعال او',
+    cand_available: 'پروفایل او فعال است', queue_valid: 'ردیف صف او معتبر است',
+  };
+  return <div className="grid" style={{ display: 'grid', gap: 10 }}>
+    <div className="panel panel-pad" style={{ display: 'grid', gap: 10 }}>
+      <SectionHeader title="🔍 بررسی مچ (§۳۷)"
+        description="دو uid بده: می‌گوید چرا این دو به هم مچ نمی‌شوند — با همان چک‌های مسیرِ واقعی." />
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <Field label="آیدی تلگرام A"><input value={a} onChange={e => setA(e.target.value)} /></Field>
+        <Field label="آیدی تلگرام B"><input value={b} onChange={e => setB(e.target.value)} /></Field>
+        <button className="btn" disabled={busy || run || !a || !b} onClick={go}>
+          {run ? '…' : 'بررسی کن'}</button>
+        {res && res.ok && <button className="btn sm" disabled={busy}
+          onClick={() => onForce(Number(a), Number(b))}>🎯 ساخت جلسه</button>}
+      </div>
+      {err && <ErrorState error={err} onRetry={go} />}
+      {!res && !err && <Empty icon="🔍" text="دو آیدی را وارد کن تا چک‌ها را ببینی." />}
+      {res && <div style={{ display: 'grid', gap: 8 }}>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          {res.ok
+            ? <B kind="ok">✅ این دو با هم سازگارند — اگر مچ نشدند، صف/زمان‌بندی را ببین</B>
+            : <B kind="bad">⛔ دلیل: {LABEL[String(res.reason).split(':').pop()] || res.reason}</B>}
+          <span className="muted">حالت بررسی‌شده: {MODE[res.mode] || res.mode || '—'}</span>
+        </div>
+        <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
+          <Stat label="وضعیت A" value={`${res.a?.state_label || '—'} (${res.a?.queue_status || 'خارج از صف'})`} />
+          <Stat label="وضعیت B" value={`${res.b?.state_label || '—'} (${res.b?.queue_status || 'خارج از صف'})`} />
+        </div>
+        <DataTable rowKey={r => r.k}
+          rows={Object.keys(checks).map(k => ({ k, ok: checks[k], hint: hints[k] }))}
+          columns={[
+            { k: 'k', label: 'چک', render: r => LABEL[r.k] || r.k },
+            { k: 'ok', label: '', render: r => r.ok ? <B kind="ok">✓</B> : <B kind="bad">✗</B> },
+            { k: 'hint', label: 'توضیح', render: r => <span className="muted">{r.hint || '—'}</span> },
+          ]} />
+        <div className="muted" style={{ fontSize: 12 }}>
+          📌 این کارت هیچ محتوای گفت‌وگو یا اطلاعات خصوصی نشان نمی‌دهد؛ فقط نتیجهٔ
+          چک‌ها. اگر «✅ سازگار» دیدی و مچ نشد، یعنی یا کسی در صف نمانده (توقف
+          جست‌وجو/پایان)، یا claim زنده است، یا کول‌داون rematch (§۱۲) — لاگ
+          `RING_MATCH_ATTEMPT` همان لحظه را ثبت کرده.
+        </div>
+      </div>}
+    </div>
+  </div>;
+}
+
+
 function AnalyticsPanel({ box }) {
   const f = box.funnel || {}, m = box.modes || {}, mo = box.moderation || {};
+  const rr = box.reject_reasons || {};   // §۳۹ — «چرا مچ نشد»
   const pct = x => `${fa(Math.round((x || 0) * 100))}٪`;
   return <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' }}>
     <div className="panel panel-pad">
@@ -308,6 +380,8 @@ function AnalyticsPanel({ box }) {
       <Stat label="matchها" value={fa(f.matches)} />
       <Stat label="نرخ match" value={pct(f.match_rate)} />
       <Stat label="میانگین انتظار" value={`${fa(Math.round(f.avg_wait_s || 0))} ثانیه`} />
+      <Stat label="بیشترین انتظار" value={`${fa(Math.round(f.max_wait_s || 0))} ثانیه`} />
+      <Stat label="rematch بعد از کول‌داون" value={fa(f.rematch)} />
       <Stat label="میانگین طول گفت‌وگو" value={`${fa(Math.round(f.avg_session_s || 0))} ثانیه`} />
       <Stat label="پیام به ازای match" value={fa(f.msgs_per_match)} />
     </div>
@@ -318,6 +392,16 @@ function AnalyticsPanel({ box }) {
         <b>{MODE[k] || k}</b>
         <div className="muted">جلسه: {fa(v.sessions)} · پیام: {fa(v.messages)} · مدت: {fa(v.avg_duration_s)}s</div>
       </div>)}
+    </div>
+    <div className="panel panel-pad">
+      <SectionHeader title="🔍 چرا مچ نمی‌شوند؟ (§۳۸/§۳۹)"
+        description="تفکیک دلیلِ ردِ کاندیدوها در ۷ روز گذشته" />
+      {Object.keys(rr).length === 0 && <Empty icon="✅" text="هیچ ردی ثبت نشده" />}
+      {Object.entries(rr).map(([k, v]) => <div key={k} className="row"
+        style={{ gap: 8, justifyContent: 'space-between' }}>
+        <span className="muted">{k}</span><b>{fa(v)}</b>
+      </div>)}
+      <Stat label="متوقف‌های جست‌وجو (§۲۳)" value={fa(box.paused)} />
     </div>
     <div className="panel panel-pad">
       <SectionHeader title="مدیریت ریسک" description="گزارش‌ها، تکراری‌ها و بن‌ها" />
@@ -404,7 +488,7 @@ function ForceMatch({ busy, onClose, onSubmit }) {
 
 
 function RulesPanel({ box, busy, onSave, onReset }) {
-  // §۲۶/§۲۷ — متن ۱۲بندی پیش‌فرض در بک‌اند است؛ اینجا فقط جایگزینِ ادمین و
+  // §۲۶/§۲۷/§۴۰ — متن ۱۱بندی پیش‌فرض در بک‌اند است؛ اینجا فقط جایگزینِ ادمین و
   // «بالا بردن نسخه» که همه را مجبور به پذیرش دوباره می‌کند.
   const [txt, setTxt] = useState(null);
   const [bump, setBump] = useState(true);
@@ -415,7 +499,7 @@ function RulesPanel({ box, busy, onSave, onReset }) {
       <Stat label="نسخهٔ فعلی" value={fa(box.version)} />
       <Stat label="پذیرفته‌اند" value={fa(box.accepted)} />
       <Stat label="در انتظار پذیرش" value={fa(box.pending)} />
-      <Stat label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۲ بند)'} />
+      <Stat label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۱ بند)'} />
       <Stat label="حداقل سن" value={fa(box.min_age)} />
     </div>
     {box.pending > 0 && <div className="muted" style={{ fontSize: 12.5 }}>
@@ -425,7 +509,7 @@ function RulesPanel({ box, busy, onSave, onReset }) {
     <textarea dir="rtl" style={{ minHeight: 320, width: '100%', fontFamily: 'inherit', lineHeight: 1.8 }}
       value={val} maxLength={3500} disabled={busy}
       onChange={e => setTxt(e.target.value)}
-      placeholder="متن پیش‌فرض ۱۲بندی را اینجا ویرایش کنید… {min_age} با حداقل سن جایگزین می‌شود." />
+      placeholder="متن پیش‌فرض ۱۱بندی را اینجا ویرایش کنید… {min_age} با حداقل سن جایگزین می‌شود." />
     <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
       <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <input type="checkbox" checked={bump} disabled={busy} onChange={e => setBump(e.target.checked)} />

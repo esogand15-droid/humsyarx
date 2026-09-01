@@ -66,7 +66,7 @@ REASONS_LABELS = {k: v[0] for k, v in REPORT_REASONS.items()}
 # ── نسخه‌ی قوانین (§۲۷) ────────────────────────────────────────
 # با تغییر این عدد، همهٔ کاربران باید نسخهٔ جدید را دوباره بپذیرند
 # (در پروفایل `rules_version` ذخیره می‌شود).
-RULES_VERSION = 1
+RULES_VERSION = 2      # §۴۰ (V4): متن قوانین بازنویسی شد ⇒ همه یک‌بار دوباره می‌پذیرند
 
 # ── «چه چیزی از پروفایلم دیده شود» (§۳۵ — opt-in/opt-out) ─────
 # پیش‌فرض = همان رفتار فعلی (هرچه کاربر نوشته نمایش داده می‌شود)، ولی
@@ -121,6 +121,78 @@ TRANSITIONS: dict[str, set[str]] = {
 }
 
 
+# ══════════════════════════════════════════════════════════════
+#  §۵ (V4) — ماشین حالتِ واحدِ کاربر
+#
+#  حالت‌های جریانِ تعامل (IDLE/AGE_GATE/… بالا) دست‌نخورده می‌مانند؛ این‌جا
+#  نمایِ *چرخهٔ مچ* از همان سه منبعِ موجود (پروفایل · ردیف صف · session فعال)
+#  ساخته می‌شود — هیچ فیلد/کالکشن جدیدی لازم نیست، پس migration هم لازم نیست
+#  (§۴۸). همه‌ی مصرف‌کننده‌ها (صفحهٔ رینگ، /ring status، فیلترِ رله، پنل ادمین،
+#  endpoint عیب‌یابی) همین یک تابع را صدا می‌زنند تا منبع حقیقت یکی بماند (§۱۲).
+# ══════════════════════════════════════════════════════════════
+
+(US_IDLE, US_PROFILE, US_READY, US_WAITING, US_MATCHED, US_PAUSED,
+ US_ENDED, US_RESTRICTED) = (
+    "IDLE", "PROFILE_REQUIRED", "READY", "WAITING", "MATCHED", "PAUSED",
+    "ENDED", "RESTRICTED")
+
+US_LABELS = {
+    US_IDLE: "⚪ آزاد",
+    US_PROFILE: "📝 پروفایل ناقص",
+    US_READY: "🟢 آمادهٔ جست‌وجو",
+    US_WAITING: "⏳ در صف جست‌وجو",
+    US_MATCHED: "💬 در گفت‌وگو",
+    US_PAUSED: "⏸ جست‌وجو متوقف",
+    US_ENDED: "🔚 گفت‌وگوی اخیر تمام شده",
+    US_RESTRICTED: "⛔ محدود",
+}
+
+# ماشینِ چرخهٔ مچ — برای مستندسازی/اعتبارسنجی؛ گذارِ واقعی را دیتابیس
+# (ردیف صف + session) تعیین می‌کند تا زیر هم‌زمانی نشکند (§۶).
+USER_STATE_FLOW = {
+    US_IDLE: {US_PROFILE, US_READY, US_RESTRICTED},
+    US_PROFILE: {US_READY, US_IDLE, US_RESTRICTED},
+    US_READY: {US_WAITING, US_PAUSED, US_MATCHED, US_RESTRICTED, US_IDLE},
+    US_WAITING: {US_MATCHED, US_PAUSED, US_READY, US_IDLE, US_RESTRICTED},
+    US_MATCHED: {US_ENDED, US_RESTRICTED},
+    US_ENDED: {US_WAITING, US_READY, US_PAUSED, US_IDLE, US_RESTRICTED},
+    US_PAUSED: {US_READY, US_WAITING, US_IDLE, US_RESTRICTED},
+    US_RESTRICTED: {US_IDLE},
+}
+
+# statusِ ردیف صف ⇒ حالت (ماشینِ §۱۱ V3: waiting → claiming → claimed → in_chat)
+_QUEUE_STATE = {
+    "waiting": US_WAITING, "claiming": US_WAITING, "claimed": US_WAITING,
+    "in_chat": US_MATCHED,
+}
+
+
+def user_state(profile: dict | None, queue_row: dict | None, session: dict | None,
+               *, banned: bool = False, ended_recently: bool = False) -> str:
+    """حالتِ واحدِ کاربر — اولویت: محدودیت › گفت‌وگو › صف › پروفایل.
+
+    ⚠️ اگر session فعال باشد هرگز WAITING گزارش نمی‌کنیم، حتی اگر ردیف صف
+    به‌خاطر race هنوز `waiting` باشد (§۹/§۵۹: «مچ‌شده در صف نمی‌ماند»).
+    """
+    if profile is None and not banned:
+        return US_IDLE                       # هنوز هیچ پروفایلی نساخته (§۴۲)
+    p = profile or {}
+    if banned or p.get("status") in ("banned", "restricted", "paused"):
+        return US_RESTRICTED
+    if session and session.get("status") == "active":
+        return US_MATCHED
+    st = (queue_row or {}).get("status")
+    if st in _QUEUE_STATE:
+        return _QUEUE_STATE[st]
+    if p.get("search_paused"):
+        return US_PAUSED
+    if not p.get("age") or not p.get("gender") or not p.get("mode"):
+        return US_PROFILE
+    if ended_recently:
+        return US_ENDED
+    return US_READY
+
+
 def can_move(frm: str | None, to: str) -> bool:
     """ترنزیشن مجاز است؟ حالت ناشناخته ⇒ فقط به IDLE برگردیم (fail-safe)."""
     if not frm or frm == to:
@@ -150,6 +222,29 @@ def ranges_overlap(a: str | None, b: str | None) -> bool:
     alo, ahi = AGE_INDEX.get(a, (0, 0))
     blo, bhi = AGE_INDEX.get(b, (0, 0))
     return not (ahi < blo or bhi < alo)
+
+
+def bucket_of(age) -> str | None:
+    """بازهٔ سنیِ استاندارد از روی **عددِ** سن (§۸/§۳۶).
+
+    اگر فیلدِ `age_range` ذخیره‌شده با `age` می‌خواند، فرقی نمی‌کند؛ اما اگر
+    جایی stale بماند (ویرایش سن، ری‌استارت، دادهٔ دستی ادمین) سنجش باید از
+    عدد واقعی انجام شود، وگرنه کاربر «ظاهراً سازگار» رد می‌شود — همان کلاسی
+    که در گزارشِ «دو نفر در صف و هیچ مچ» دیده شد.
+    """
+    try:
+        a = int(age)
+    except (TypeError, ValueError):
+        return None
+    for key, _lbl, lo, hi in AGE_RANGES:
+        if lo <= a <= hi:
+            return key
+    return None
+
+
+def pref_allows(age, age_range, pref_key: str | None) -> bool:
+    """آیا `age` داخل بازه‌های انتخابیِ `pref_key` می‌افتد؟ (دوطرفه، §۸/§۳۶)"""
+    return age_range_matches(bucket_of(age) or age_range, pref_key)
 
 
 def age_range_matches(cand_range: str | None, pref_key: str | None) -> bool:

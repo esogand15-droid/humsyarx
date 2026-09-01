@@ -122,7 +122,7 @@ async def overview(user=_guard):
         "maintenance": await S.maintenance(),
         "state": await S.ui_state(),
         "state_label": _STATE_LABELS.get(await S.ui_state(), "—"),
-        "rules_version": int((await S.get_cfg()).get("rules_version") or 1),
+        "rules_version": service.rules_want(await S.get_cfg()),
         "live": await db.ring_overview(),
         "queue": await db.ring_queue_stats(),
         "settings": cfg,
@@ -176,7 +176,9 @@ async def rules_get(user=_guard):
     from ring import models as ring_models
     from ring import texts as ring_texts
     cfg = await S.get_cfg(force=True)
-    ver = int(cfg.get("rules_version") or ring_models.RULES_VERSION)
+    # نسخهٔ *الزامی* (کفِ کد + عددِ پنل) — وگرنه پنل عددی را نشان می‌دهد که
+    # عملاً از کاربر خواسته نشده (§۴۰/§۲۷)
+    ver = service.rules_want(cfg)
     accepted = await db.ring_cols.profiles.count_documents(
         {"rules_version": {"$gte": ver}})
     total = await db.ring_cols.profiles.count_documents({"status": "active"})
@@ -197,7 +199,7 @@ async def rules_post(body: RulesBody, user=_guard):
     """ذخیرهٔ متن (و در صورت درخواست، بالا بردن نسخه ⇒ همه دوباره می‌پذیرند)."""
     from ring import models as ring_models
     cfg = await S.get_cfg(force=True)
-    cur_ver = int(cfg.get("rules_version") or ring_models.RULES_VERSION)
+    cur_ver = service.rules_want(cfg)
     text = (body.text or "").strip()
     if len(text) > 3500:
         raise HTTPException(status_code=422, detail="متن قوانین بیش از ۳۵۰۰ کاراکتر است")
@@ -408,6 +410,23 @@ async def force_match(body: ForceMatchBody, user=_guard):
 # ══════════════════════════════════════════════════════════════
 #  تنظیمات / آمار / حسابرسی
 # ══════════════════════════════════════════════════════════════
+
+@router.get("/debug-match")
+async def debug_match(a: int = Query(..., ge=1), b: int = Query(..., ge=1),
+                      user=_guard):
+    """§۳۷/§۳۸ — «چرا این دو نفر به هم مچ نشدند؟» با *همان* الگوریتمِ زنده.
+
+    هیچ تصمیمِ دیگری ساخته نمی‌شود: `service.pair_diagnose` دقیقاً `_verdict`
+    را اجرا می‌کند، پس چیزی که پنل نشان می‌دهد با لاگ
+    `RING_MATCH_ATTEMPT … reason=` یکی است. داده‌ی خصوصی (بیو/علاقه‌مندی)
+    برگردانده نمی‌شود — فقط بولتینِ چک‌ها و دلیل.
+    """
+    if a == b:
+        raise HTTPException(422, "دو uid متفاوت لازم است")
+    out = await service.pair_diagnose(int(a), int(b))
+    await _audit(user, "RING_DEBUG_MATCH", f"{a},{b}", out.get("reason") or "ok")
+    return out
+
 
 @router.get("/settings")
 async def settings_get(user=_guard):
