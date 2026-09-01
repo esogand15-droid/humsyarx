@@ -662,7 +662,12 @@ async def _r_back(q, context, uid, arg, parts):
 _ROUTES = {
     "": _r_menu, "menu": _r_menu, "go": _r_go, "next": _r_next, "stop": _r_stop,
     "chat": _r_chat, "rules": _r_rules, "profile": _r_profile, "safety": _r_safety,
-    "a": _r_age, "g": _r_gender, "m": _r_mode, "t": _r_terms, "p": _r_field,
+    # ⚠️ هر دو شکلِ کلید ثبت می‌شود: کیبوردها `ring:age:24-26` می‌فرستند
+    # و تست‌ها/مستندات `ring:a:24-26` — قبلاً فقط `a` بود ⇒ دکمه‌های بازهٔ
+    # سن (و «زیر ۱۸») هیچ هندلری نداشتند و کاربر در مرحلهٔ سن گیر می‌کرد.
+    "a": _r_age, "age": _r_age, "gender": _r_gender, "g": _r_gender,
+    "mode": _r_mode, "m": _r_mode, "terms": _r_terms, "t": _r_terms,
+    "p": _r_field,
     "i": _r_intent, "tp": _r_topic, "pg": _r_pref_gender, "pa": _r_pref_age,
     "block": _r_block, "block_now": _r_block, "unblock": _r_unblock,
     "r": _r_report, "report": _r_report, "report_anon": _r_report,

@@ -101,7 +101,16 @@ async def get_keyboard_for_user(user: dict, uid: int) -> ReplyKeyboardMarkup:
     """
     کیبورد مناسب بر اساس نقش کاربر — FIX جدید: حالا async است تا
     بتواند نقش‌های فرعی ادمین (admin_roles) را هم چک کند.
+
+    🔧 FIX (باگ واقعی گزارش‌شده): دکمهٔ «💍 رینگ استریت» باید به **همهٔ**
+    نسخه‌های منوی اصلی اضافه شود. قبلاً فقط شاخهٔ آخر (کاربر عادی) آن را
+    داشت، پس ادمین/مالک که فیچر را روشن می‌کرد در /start دکمه را نمی‌دید.
     """
+    return await ring_aware_keyboard(await _role_keyboard(user, uid))
+
+
+async def _role_keyboard(user: dict, uid: int) -> ReplyKeyboardMarkup:
+    """انتخاب کیبورد بر اساس نقش (بدون در نظر گرفتن فیچر رینگ)."""
     if uid == ADMIN_ID:
         return admin_keyboard()
     role = user.get('role', 'student') if user else 'student'
@@ -122,7 +131,7 @@ async def get_keyboard_for_user(user: dict, uid: int) -> ReplyKeyboardMarkup:
         return content_admin_keyboard()
     if await db.has_perm(uid, 'tickets.reply'):
         return sub_admin_keyboard()
-    return await ring_aware_keyboard(main_keyboard())
+    return main_keyboard()
 
 
 async def ring_aware_keyboard(kb: ReplyKeyboardMarkup) -> ReplyKeyboardMarkup:
@@ -136,8 +145,10 @@ async def ring_aware_keyboard(kb: ReplyKeyboardMarkup) -> ReplyKeyboardMarkup:
     """
     try:
         from ring import settings as _rs
-        if not _rs.flag_sync():
-            await _rs.get_flag()
+        # یک query ارزان روی bot_settings/_id=global (فقط در /start) ⇒
+        # روشن/خاموش‌کردن از پنل در همان لحظه در منو اثر می‌کند، نه تا
+        # ۳۰ ثانیه بعد (job). اگر DB خطا داد: دکمه نباشد (fail-safe).
+        await _rs.get_flag()
         if not _rs.flag_sync():
             return kb
         # ⚠️ کیبورد reply آتریبیوت `keyboard` دارد (نه `inline_keyboard`)؛
@@ -309,7 +320,9 @@ async def cancel_handler(update, context):
 
     await update.message.reply_text(
         "✅ عملیات لغو شد.\n\nاز دکمه‌های منو استفاده کنید.",
-        reply_markup=main_keyboard()
+        # فقط ردیف رینگ به همان کیبورد قبلی اضافه می‌شود (منطق نقش‌ها
+        # در /cancel عوض نشود) — وگرنه /cancel منوی ادمین را عوض می‌کرد.
+        reply_markup=await ring_aware_keyboard(main_keyboard())
     )
     return ConversationHandler.END
 
