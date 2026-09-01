@@ -20,6 +20,7 @@ const Settings = lazy(() => import('./pages/Settings.jsx'));
 const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const TransferCenter = lazy(() => import('./pages/TransferCenter.jsx'));
 const Operations = lazy(() => import('./pages/Operations.jsx'));
+const RingStreet = lazy(() => import('./pages/RingStreet.jsx'));
 
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
@@ -39,6 +40,7 @@ const NAV_GROUPS = [
   ] },
   { sec: 'هوش مصنوعی', items: [
     { path: '/ai', icon: '🤖', label: 'هوشیار', any: ['ai.manage'] },
+    { path: '/ring', icon: '💍', label: 'رینگ استریت', any: ['ring.manage'] },
   ] },
   { sec: 'ارتباطات', items: [
     { path: '/tickets', icon: '🎫', label: 'تیکت‌ها', any: ['tickets.reply', 'tickets.manage'] },
@@ -64,6 +66,7 @@ const PAGES = {
   '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   '/transfer': TransferCenter, '/operations': Operations,
+  '/ring': RingStreet,
 };
 
 const routeBase = route => route.split('?')[0];

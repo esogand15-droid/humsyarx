@@ -32,6 +32,7 @@ from api.routers import (
     registration,
     reports,
     resources,
+    ring_admin,
     schedule,
     subscription,
     subscription_management,
@@ -307,6 +308,14 @@ app.include_router(
     rbac.router,
     prefix="/api/admin/rbac",
     tags=["rbac"],
+)
+
+# 💍 Ring Street — API ادمینِ رینگ استریت (افزودنی خالص؛ هیچ route
+# قدیمی جابه‌جا یا تغییر نکرده). همه‌ی اندپوینت‌ها پشت مجوز ring.manage‌اند.
+app.include_router(
+    ring_admin.router,
+    prefix="/api/ring",
+    tags=["ring"],
 )
 
 # 🖥️ موج WA — Web Admin API (احراز هویت OTP + سشن، داشبورد و اکشن‌های وب)

@@ -21,5 +21,6 @@ from .content import DBContent
 from .rbac import DBRbac
 from .prestige import DBPrestige
 from .finance import DBFinance
+from .ring import DBRing
 
-__all__ = ['DBCore', 'DBContent', 'DBRbac', 'DBPrestige', 'DBFinance']
+__all__ = ['DBCore', 'DBContent', 'DBRbac', 'DBPrestige', 'DBFinance', 'DBRing']

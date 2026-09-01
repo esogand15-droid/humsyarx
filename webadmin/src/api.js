@@ -74,6 +74,10 @@ async function downloadFile(path, filename) {
   return { ok: true, streamed: true };
 }
 
+// 💍 Ring Street — helper کوچکِ query (فقط برای متدهای رینگ؛ بقیه دست‌نخورده)
+const _ringQ = (p = {}) => new URLSearchParams(
+  Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)).toString();
+
 export const api = {
   // ── auth ──
   requestCode: (identifier) => req('/api/web-admin/auth/request-code', { method: 'POST', body: { identifier } }),
@@ -343,6 +347,31 @@ export const api = {
   aiUsers: (q) => req('/api/web-admin/ai/users?q=' + encodeURIComponent(q)),
   aiBan: (uid) => req('/api/web-admin/ai/users/ban', { method: 'POST', body: { user_id: uid } }),
   aiResetQuota: (uid) => req('/api/web-admin/ai/users/reset-quota', { method: 'POST', body: { user_id: uid } }),
+  // ── 💍 Ring Street (admin) ──
+  ringOverview: () => req('/api/ring/overview'),
+  ringQueue: (p = {}) => req(`/api/ring/queue?${_ringQ(p)}`),
+  ringSessions: (p = {}) => req(`/api/ring/sessions?${_ringQ(p)}`),
+  ringSession: (sid) => req(`/api/ring/sessions/${encodeURIComponent(sid)}`),
+  ringEndSession: (sid, reason = 'admin') => req(`/api/ring/sessions/${encodeURIComponent(sid)}/end`, { method: 'POST', body: { reason } }),
+  ringReports: (p = {}) => req(`/api/ring/reports?${_ringQ(p)}`),
+  ringReport: (rid) => req(`/api/ring/reports/${rid}`),
+  ringReview: (rid, action, note = '') => req(`/api/ring/reports/${rid}/review`, { method: 'POST', body: { action, note } }),
+  ringProfiles: (p = {}) => req(`/api/ring/profiles?${_ringQ(p)}`),
+  ringProfile: (uid) => req(`/api/ring/profiles/${uid}`),
+  ringPause: (uid) => req(`/api/ring/profiles/${uid}/pause`, { method: 'POST' }),
+  ringResume: (uid) => req(`/api/ring/profiles/${uid}/resume`, { method: 'POST' }),
+  ringQueueRemove: (uid) => req(`/api/ring/profiles/${uid}/queue/remove`, { method: 'POST' }),
+  ringBans: () => req('/api/ring/bans'),
+  ringBan: (body) => req('/api/ring/bans', { method: 'POST', body }),
+  ringUnban: (uid) => req(`/api/ring/bans/${uid}`, { method: 'DELETE' }),
+  ringForceMatch: (user_a, user_b) => req('/api/ring/force-match', { method: 'POST', body: { user_a, user_b } }),
+  ringSettings: () => req('/api/ring/settings'),
+  ringSaveSettings: (updates) => req('/api/ring/settings', { method: 'POST', body: { updates } }),
+  ringFlag: (enabled, disable_mode = 'soft') => req('/api/ring/flag', { method: 'POST', body: { enabled, disable_mode } }),
+  ringAnalytics: (days = 7) => req(`/api/ring/analytics?days=${days}`),
+  ringAuditList: (limit = 60) => req(`/api/ring/audit?limit=${limit}`),
+  ringReconcile: () => req('/api/ring/maintenance/reconcile', { method: 'POST' }),
+  ringPurge: () => req('/api/ring/maintenance/purge-evidence', { method: 'POST' }),
 };
 
 export function errText(e) {

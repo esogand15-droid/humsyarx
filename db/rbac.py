@@ -418,6 +418,7 @@ class DBRbac:
         ('stats.view',           'آمار و داشبورد مدیریتی',      'stats'),
         # 🌊 موج Analytics-Filters — گیت دومرحله‌ای تحلیل بازه‌ای (bundle)
         ('stats.deep',           'تحلیل عمیق بازه‌ای',           'stats'),
+        ('ring.manage',          'مدیریت رینگ استریت',            'ring'),
         ('prestige.manage',      'تنظیمات پرستیژ',              'prestige'),
         ('settings.manage',      'تنظیمات سیستم',               'settings'),
         ('backup.manage',        'بکاپ و بازیابی',              'backup'),
@@ -514,6 +515,11 @@ class DBRbac:
             'questions.review', 'questions.reject', 'questions.edit']}}})
         await self.roles.update_one({'_id': 'content_scoped'}, {'$addToSet': {'perms': {'$each': [
             'questions.review_scoped', 'questions.reject', 'questions.edit']}}})
+        # 💍 Ring Street — مجوز فیچر به نقش‌های مرتبط (idempotent، درست مثل
+        # قرارداد Question Bank). این‌جا لازم است چون `ring_bootstrap` از
+        # ensure_indexes *قبل* از ساخت نقش‌ها اجرا می‌شود.
+        await self.roles.update_one({'_id': 'bot_admin'}, {'$addToSet': {'perms': 'ring.manage'}})
+        await self.roles.update_one({'_id': 'reviewer'}, {'$addToSet': {'perms': 'ring.manage'}})
         roles_after = await self.roles.count_documents({})
         return {
             'roles_seeded': max(0, roles_after - roles_before),

@@ -257,6 +257,13 @@ class DBCore:
                 self.discount_uses.create_index([('code', 1), ('user_id', 1)], unique=True, background=True),
                 self.discount_bcasts.create_index([('code', 1), ('created_at', -1)], background=True),
             )
+            # 💍 Ring Street — bootstrap ماژول اختیاری در try/_except جدا:
+            # اگر کالکشن‌های رینگ ساخته نشوند، ایندکس‌های هسته و بوت ربات
+            # نباید بشکند (ایزولاسیون §۵).
+            try:
+                await self.ring_bootstrap()
+            except Exception as _ring_e:
+                logger.warning("⚠️ bootstrap رینگ استریت انجام نشد: %s", _ring_e)
             logger.info("✅ ایندکس‌های MongoDB ایجاد شدند")
             # 🎟 موج D1 — مهاجرت ایدمپوتنت: کدهای قدیمی فیلدهای جدید را
             # ندارند؛ مقدار پیش‌فرض می‌نشانیم تا schema یکدست شود.

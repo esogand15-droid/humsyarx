@@ -1,0 +1,900 @@
+"""💍 Ring Street — لایه‌ی داده (mixin)
+
+قاعده‌ی این فایل: هر عمل اتمیک باید با *خودِ Mongo* تضمین شود، نه با
+RAM و نه با «اول بخوان بعد بنویس». سه تضمین ساختاری:
+
+  ۱) صف = یک سند به‌ازای هر کاربر (`_id = user_id`) ⇒ عضویت دوبل در صف
+     از نظر فیزیکِ دیتابیس ناممکن است (join_queue idempotent).
+  ۲) «حداکثر یک گفت‌وگوی فعال به‌ازای هر کاربر» با **unique index روی
+     فیلد آرایه‌ای `slots`** + `partialFilterExpression={status:'active'}`
+     تضمین می‌شود: ایندکس روی آرایه، هر عضو را به‌تنهایی کلید می‌کند؛
+     پس درج دومین سندِ active با همان uid خطای E11000 می‌دهد — و
+     چون `slots=[uid, uid]` هم تکلیرو تکراری است، match با خودِ شخص
+     هم در سطح دیتابیس بسته می‌شود.
+  ۳) برداشتن کاندید از صف با `find_one_and_update` اتمیک است ⇒ دو
+     matcher همزمان یک کاندید را نمی‌گیرند (بدون transaction).
+
+هیچ‌جا پیام کاربران به‌صورت پیش‌فرض ذخیره نمی‌شود؛ `ring_message_evidence`
+فقط snapshot گزارش‌شده (یا حالتِ log_all) است و با TTL خودش می‌سوزد.
+"""
+from __future__ import annotations
+
+import logging
+import random
+import re
+from datetime import timedelta
+
+from pymongo import ReturnDocument
+
+from time_utils import now_utc, utc_now_iso
+
+logger = logging.getLogger(__name__)
+
+ANON_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # بدون I/O/0/1 — خوانا در کپی
+ANON_LEN = 4
+QUEUE_WAITING = "waiting"
+QUEUE_CLAIMING = "claiming"        # در حال match شدن (توسط خود کاربر)
+QUEUE_CLAIMED = "claimed"          # توسط یک matcher دیگر رزرو شده
+QUEUE_INCHAT = "in_chat"
+ACTIVE = "active"
+ENDED = "ended"
+
+MAX_PARTNERS_CAP = 60      # سقف آرایه‌ی recent_partners (§۱۷)
+CAND_HEAD = 12             # چند سند از سر صف برای انتخاب تصادفی بررسی شود (§۱۰)
+
+_ID_RE = re.compile(r"^[A-Za-z0-9_.]{4,16}$")
+
+
+def new_anon_id() -> str:
+    return "".join(random.choice(ANON_ALPHABET) for _ in range(ANON_LEN))
+
+
+def _ago(iso: str | None, seconds: float) -> bool:
+    """آیا timestamp ایزوِ داده‌شده قدیمی‌تر از `seconds` است؟ (بدون فرض timezone)"""
+    if not iso:
+        return True
+    try:
+        t = now_utc().fromisoformat(str(iso))
+    except Exception:
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=now_utc().tzinfo)
+    return (now_utc() - t).total_seconds() > seconds
+
+
+class _RingCols:
+    """دسته‌ی کلکشن‌های Ring.
+
+    نام دیتابیس از خودِ دایورِ `bot_settings` خوانده می‌شود تا اگر روزی
+    `medicalbot` عوض شد، این ماژول hard-code نمانده باشد (تطبیق با
+    `DBCore.__init__`)."""
+
+    def __init__(self, core) -> None:
+        try:
+            d = core.settings.database
+        except Exception:
+            d = core.client["medicalbot"]
+        self.profiles  = d["ring_profiles"]
+        self.queue     = d["ring_queue"]
+        self.sessions  = d["ring_sessions"]
+        self.blocks    = d["ring_blocks"]
+        self.reports   = d["ring_reports"]
+        self.bans      = d["ring_bans"]
+        self.ratings   = d["ring_ratings"]
+        self.evidence  = d["ring_message_evidence"]
+        self.audit     = d["ring_admin_audit"]
+        self.limits    = d["ring_limits"]
+        self.daily     = d["ring_stats_daily"]
+        self.counters  = d["ring_counters"]
+
+
+class DBRing:
+    """همه‌ی عملیات داده‌ی Ring. از DBCore جدا تا ماژول قابل خاموش‌کردن بماند."""
+
+    _ring_cols = None
+
+    @property
+    def ring_cols(self) -> _RingCols:
+        if self._ring_cols is None:
+            self._ring_cols = _RingCols(self)
+        return self._ring_cols
+
+    # ══════════════════════════════════════════════════════════
+    #  bootstrap — ایندکس‌ها + بذرِ مجوز/تنظیمات
+    #  توسط DBCore.ensure_indexes() صدا زده می‌شود (خطا آن را نمی‌شکند)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_bootstrap(self) -> None:
+        await self.ring_indexes()
+        # مجوز جدید، هم‌سبک «stats.deep»: $setOnInsert ⇒ هیچ ویرایش دستی پاک نمی‌شود
+        try:
+            await self.perm_catalog.update_one(
+                {"_id": "ring.manage"},
+                {"$setOnInsert": {"_id": "ring.manage",
+                                  "label": "مدیریت رینگ استریت",
+                                  "category": "ring"}},
+                upsert=True,
+            )
+            for role in ("bot_admin", "reviewer", "admin"):   # admin ممکن است نباشد
+                await self.roles.update_one(
+                    {"_id": role}, {"$addToSet": {"perms": "ring.manage"}})
+        except Exception as e:                       # نقش‌ها هنوز ساخته نشده‌اند
+            logger.debug("ring perm seed skipped: %s", e)
+
+    async def ring_indexes(self) -> None:
+        c = self.ring_cols
+        await c.profiles.create_index("anon_id", unique=True, background=True,
+                                name="uq_ring_anon_id",
+                                partialFilterExpression={"anon_id": {"$type": "string"}})
+        await c.profiles.create_index("status", background=True)
+        await c.profiles.create_index([("mode", 1), ("status", 1)], background=True)
+        await c.profiles.create_index([("state", 1), ("pending_field", 1)], background=True)
+        await c.queue.create_index([("status", 1), ("mode", 1), ("queued_at", 1)], background=True)
+        await c.queue.create_index([("status", 1), ("last_seen", 1)], background=True)
+        await c.sessions.create_index("session_id", unique=True, background=True)
+        # ★ تضمین اصلی: یک کاربر حداکثر یک session فعال
+        await c.sessions.create_index(
+            "slots", unique=True, background=True, name="uq_ring_one_active_per_user",
+            partialFilterExpression={"status": ACTIVE})
+        await c.sessions.create_index([("status", 1), ("last_activity_at", -1)], background=True)
+        await c.sessions.create_index([("slots", 1), ("ended_at", -1)], background=True)
+        await c.sessions.create_index([("mode", 1), ("created_at", -1)], background=True)
+        await c.blocks.create_index([("user_id", 1), ("blocked_user_id", 1)], background=True)
+        await c.blocks.create_index("blocked_user_id", background=True)
+        await c.reports.create_index([("status", 1), ("created_at", -1)], background=True)
+        await c.reports.create_index([("reported_uid", 1), ("created_at", -1)], background=True)
+        await c.reports.create_index("session_id", background=True)
+        await c.bans.create_index([("user_id", 1), ("until", 1)], background=True)
+        await c.bans.create_index([("active", 1), ("until", 1)], background=True)
+        await c.ratings.create_index([("rated_uid", 1), ("created_at", -1)], background=True)
+        await c.evidence.create_index([("session_id", 1), ("seq", 1)], background=True)
+        await c.evidence.create_index("expires_at", expireAfterSeconds=0, background=True)
+        await c.audit.create_index([("created_at", -1)], background=True)
+        await c.audit.create_index([("admin_id", 1), ("created_at", -1)], background=True)
+        await c.limits.create_index("expires_at", expireAfterSeconds=0, background=True)
+        await c.daily.create_index("date", unique=True, background=True)
+        # کالکشن شمارنده‌ها lazily ساخته می‌شود؛ یک سند bootstrap تا در
+        # listCollections و مانیتورینگ پنل، هر ۱۲ کالکشن دیده شوند.
+        try:
+            await c.counters.insert_one({"_id": "bootstrap", "created_at": utc_now_iso()})
+        except Exception:
+            pass   # از قبل وجود دارد
+
+    # ══════════════════════════════════════════════════════════
+    #  profiles
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_profile(self, uid: int) -> dict | None:
+        return await self.ring_cols.profiles.find_one({"_id": int(uid)})
+
+    async def ring_profile_by_anon(self, anon_id: str) -> dict | None:
+        return await self.ring_cols.profiles.find_one({"anon_id": anon_id})
+
+    async def ring_profile_touch(self, uid: int) -> None:
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$set": {"last_seen_at": utc_now_iso()}},
+        )
+
+    async def ring_profile_ensure(self, uid: int, **seed) -> dict:
+        """ساخت پروفایل با anon_id یکتا (تلاش مجدد روی تصادف).
+
+        `$setOnInsert` ⇒ فراخوانی دوباره هیچ فیلدی را بازنویسی نمی‌کند
+        (idempotent — §۶۲).
+        """
+        col = self.ring_cols.profiles
+        uid = int(uid)
+        for _ in range(8):
+            anon = new_anon_id()
+            try:
+                await col.update_one(
+                    {"_id": uid},
+                    {"$setOnInsert": {
+                        "anon_id": f"#{anon}",
+                        "created_at": utc_now_iso(),
+                        "last_seen_at": utc_now_iso(),
+                        "status": "active",
+                        "report_score": 0,
+                        "warnings": 0,
+                        "consent_terms_at": None,
+                        "age_confirmed_at": None,
+                        "banned_until": None,
+                        **{k: v for k, v in seed.items() if v is not None},
+                    }},
+                    upsert=True,
+                )
+                doc = await col.find_one({"_id": uid})
+                if doc:
+                    return doc
+            except Exception as e:                    # E11000 روی anon_id
+                if "E11000" not in str(e):
+                    raise
+        raise RuntimeError("ring anon_id generation failed")
+
+    async def ring_profile_update(self, uid: int, fields: dict,
+                                  unset: list | None = None) -> None:
+        """`upsert=True` + بذرِanon_id: هیچ نوشتی در onboarding بی‌صدا
+        گم نمی‌شود حتی اگر کاربر هنوز `ensure` نشده باشد."""
+        sets = dict(fields or {})
+        sets["updated_at"] = utc_now_iso()
+        seed = {"anon_id": new_anon_id(), "status": "active",
+                "report_score": 0, "warnings": 0, "created_at": utc_now_iso(),
+                "last_seen_at": utc_now_iso(), "consent_terms_at": None,
+                "age_confirmed_at": None, "banned_until": None}
+        # Mongo هرگونه هم‌پوشانی مسیر بین $set و $setOnInsert را رد می‌کند
+        seed = {k: v for k, v in seed.items() if k not in sets}
+        upd = {"$set": sets, "$setOnInsert": seed}
+        if unset:
+            upd["$unset"] = {k: "" for k in unset}
+        for _ in range(3):
+            try:
+                await self.ring_cols.profiles.update_one({"_id": int(uid)}, upd, upsert=True)
+                return
+            except Exception as e:
+                if "E11000" not in str(e):
+                    raise
+                upd["$setOnInsert"]["anon_id"] = new_anon_id()   # تصادف نادر
+
+    async def ring_profile_status(self, uid: int, status: str) -> None:
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$set": {"status": status, "updated_at": utc_now_iso()}},
+        )
+
+    async def ring_report_recent(self, uid: int, peer: int, cap: int = 40) -> None:
+        """ثبت پارتنر اخیر (برای cooldown «همان نفر دوباره نه» — §۱۷).
+
+        `$position:0` + `$slice` ⇒ آرایه هیچ‌وقت بی‌نهایت رشد نمی‌کند و
+        تازه‌ترین‌ها اول می‌مانند. فقط شناسه نگه داشته می‌شود، نه بیشتر.
+        """
+        cap = max(4, min(int(cap or 40), MAX_PARTNERS_CAP))
+        for a, b in ((int(uid), int(peer)), (int(peer), int(uid))):
+            await self.ring_cols.profiles.update_one(
+                {"_id": a},
+                {"$push": {"recent_partners": {
+                    "$each": [{"uid": int(b), "at": utc_now_iso()}],
+                    "$position": 0, "$slice": cap}}},
+            )
+
+    async def ring_profile_score(self, uid: int, delta: int, *,
+                                 warnings: int = 0) -> int:
+        """report score با severity weighting (±). خروجی = امتیاز جدید."""
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$inc": {"report_score": int(delta), "warnings": int(warnings)},
+             "$set": {"updated_at": utc_now_iso()},
+             "$setOnInsert": {"anon_id": new_anon_id(), "status": "active"}},
+            upsert=True,
+        )
+        doc = await self.ring_cols.profiles.find_one({"_id": int(uid)}, {"report_score": 1})
+        return int((doc or {}).get("report_score", 0))
+
+    async def ring_profile_delete(self, uid: int) -> dict:
+        """حذف پروفایل با «anonymize باقی‌مانده‌ها» — گزارش‌ها می‌مانند ولی
+        هویت قابل‌بازگشت نباشد (§۷۶)."""
+        uid = int(uid)
+        removed = {"profile": 0, "queue": 0, "ratings": 0, "anonymized_reports": 0}
+        r = await self.ring_cols.profiles.delete_one({"_id": uid})
+        removed["profile"] = r.deleted_count
+        r = await self.ring_cols.queue.delete_one({"_id": uid})
+        removed["queue"] = r.deleted_count
+        r = await self.ring_cols.ratings.delete_many({"rater_uid": uid})
+        removed["ratings"] = r.deleted_count
+        await self.ring_cols.reports.update_many(
+            {"reporter_uid": uid}, {"$set": {"reporter_uid": 0, "reporter_anon": "#deleted"}})
+        await self.ring_cols.blocks.delete_many(
+            {"$or": [{"user_id": uid}, {"blocked_user_id": uid}]})
+        for s in await self.ring_cols.sessions.find(
+                {"status": ACTIVE, "slots": uid}).to_list(5):
+            await self.ring_session_end(s["session_id"], "profile_deleted", None)
+        removed["anonymized_reports"] = 1
+        await self.ring_audit("system", "DELETE_PROFILE", str(uid), "درخواست کاربر", {})
+        return removed
+
+    # ══════════════════════════════════════════════════════════
+    #  queue — یک سند به‌ازای کاربر (`_id = uid`)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_queue_join(self, uid: int, doc: dict) -> str:
+        """ok | already_in_chat | waiting
+
+        idempotent: ورود دوباره فقط `queued_at` را نو نمی‌کند مگر وقتی
+        کاربر واقعاً بیرون صف بوده — وگرنه fairness (اول صبر=اولویت)
+        با هر بار «next» ریست می‌شد و starvatioan الکی.
+        """
+        uid = int(uid)
+        cur = await self.ring_cols.queue.find_one({"_id": uid})
+        if cur and cur.get("status") == QUEUE_INCHAT:
+            return "already_in_chat"
+        payload = dict(doc)
+        payload["user_id"] = uid
+        payload["status"] = QUEUE_WAITING
+        payload["last_seen"] = utc_now_iso()
+        if not cur or cur.get("status") != QUEUE_WAITING:
+            payload["queued_at"] = utc_now_iso()
+        payload.setdefault("claim_token", None)
+        try:
+            # فیلتر `$ne: in_chat` اتمیک است: اگر بین read و write کاربر وارد
+            # چت شد، این update چیزی را خراب نمی‌کند و upsert هم به دلیل
+            # تکرار _id می‌ترکد ⇒ همان «already_in_chat» برمی‌گردانیم (§۴۰).
+            await self.ring_cols.queue.update_one(
+                {"_id": uid, "status": {"$ne": QUEUE_INCHAT}},
+                {"$set": payload}, upsert=True)
+        except Exception as e:
+            if "E11000" in str(e):
+                return "already_in_chat"
+            raise
+        return "waiting"
+
+    async def ring_queue_leave(self, uid: int) -> None:
+        await self.ring_cols.queue.delete_one({"_id": int(uid)})
+
+    async def ring_queue_get(self, uid: int) -> dict | None:
+        return await self.ring_cols.queue.find_one({"_id": int(uid)})
+
+    async def ring_queue_claim_self(self, uid: int, token: str) -> dict | None:
+        """waiting → claiming. اگر None برگشت، کاربر یا در صف نیست یا
+        هم‌زمان یک «next» دیگر در حال پردازش است (§۶۳)."""
+        return await self.ring_cols.queue.find_one_and_update(
+            {"_id": int(uid), "status": QUEUE_WAITING},
+            {"$set": {"status": QUEUE_CLAIMING, "claim_token": token,
+                      "claim_at": utc_now_iso()}},
+            return_document=ReturnDocument.BEFORE,
+        )
+
+    async def ring_queue_find_candidate(self, mode: str, *, gender: str | None,
+                                        age_range: str | None,
+                                        exclude: list[int], token: str) -> dict | None:
+        """اتمیک‌ترین حالت: یک کاندیدِ منطبق را پیدا **و** قفل می‌کند.
+
+        sort بر اساس queued_at ⇒ کسی که بیشتر منتظر است اول انتخاب می‌شود
+        (§۱۰ fairness). `claimed_by_me` برای rollback لازم است.
+        """
+        q: dict = {
+            "mode": mode,
+            "status": QUEUE_WAITING,
+            "user_id": {"$nin": list(exclude) or [-1]},
+        }
+        if gender:
+            q["gender"] = gender
+        if age_range:
+            q["age_range"] = age_range
+        col = self.ring_cols.queue
+        # سرِ صف = کسانی که بیشتر صبر کرده‌اند (§۱۰ fairness) — حداکثر CAND_HEAD
+        # سند، با sort روی همین ایندکس ⇒ کوئری همیشه bound است.
+        head = await col.find(q).sort([("queued_at", 1)]).limit(CAND_HEAD).to_list(CAND_HEAD)
+        if not head:
+            return None
+        # tie-break تصادفی (§۱۰): اگر همه در یک ثانیه صف شده باشند، بدون
+        # shuffled همهٔ جست‌وجوگران روی یک سند می‌کوبیدند و match‌ها دور
+        # می‌رفتند (تست طوفان ۲۰تایی این را ثابت کرد).
+        # tie-break فقط «درونِ» برابرهای queued_at — وگرنه fairness (§۱۰
+        # «هرکس بیشتر صبر کرده اول») از بین می‌رود. DB سرتاسر را مرتب
+        # داده، پس فقط گروه‌های متوالیِ هم‌مقدار را shuffle می‌کنیم.
+        ordered: list[dict] = []
+        i = 0
+        while i < len(head):
+            j = i
+            while j < len(head) and head[j].get("queued_at") == head[i].get("queued_at"):
+                j += 1
+            grp = head[i:j]
+            if len(grp) > 1:
+                random.shuffle(grp)
+            ordered.extend(grp)
+            i = j
+        for cand in ordered:
+            # claim اتمیک: اگر همین لحظه کسی دیگری برداشت، None ⇒ بعدی
+            claimed = await col.find_one_and_update(
+                {"_id": cand["_id"], "status": QUEUE_WAITING},
+                {"$set": {"status": QUEUE_CLAIMED, "claimed_by_token": token,
+                          "claimed_at": utc_now_iso()}},
+                return_document=ReturnDocument.BEFORE,
+            )
+            if claimed:
+                return claimed
+        return None
+
+    async def ring_queue_release(self, uid: int) -> None:
+        """claimed/claiming → waiting (بدون تغییر queued_at ⇒ fairness حفظ می‌شود)"""
+        await self.ring_cols.queue.update_one(
+            {"_id": int(uid), "status": {"$in": [QUEUE_CLAIMED, QUEUE_CLAIMING]}},
+            {"$set": {"status": QUEUE_WAITING, "claimed_by_token": None,
+                      "claim_token": None}},
+        )
+
+    async def ring_queue_into_chat(self, uid: int, session_id: str) -> None:
+        await self.ring_cols.queue.update_one(
+            {"_id": int(uid)},
+            {"$set": {"status": QUEUE_INCHAT, "session_id": session_id,
+                      "in_chat_since": utc_now_iso()}},
+        )
+
+    async def ring_queue_requeue(self, uid: int, mode: str | None = None) -> bool:
+        """خروج از چت → دوباره در دسترس برای match شدن (فقط اگر درخواست داده باشد)."""
+        sets: dict = {"status": QUEUE_WAITING, "queued_at": utc_now_iso(),
+                      "session_id": None}
+        if mode:
+            sets["mode"] = mode
+        r = await self.ring_cols.queue.update_one(
+            {"_id": int(uid), "status": QUEUE_INCHAT}, {"$set": sets},
+        )
+        return r.modified_count > 0
+
+    async def ring_queue_waiting_count(self, mode: str | None = None,
+                                       exclude: list[int] | None = None) -> int:
+        """چند نفر (جز من) منتظرند — برای اینکه بفهمیم صف «خالی» است یا
+        فقط لحظه‌اً همه claimed‌اند (§۴۰)."""
+        q: dict = {"status": QUEUE_WAITING}
+        if mode:
+            q["mode"] = mode
+        if exclude:
+            q["user_id"] = {"$nin": [int(x) for x in exclude]}
+        return await self.ring_cols.queue.count_documents(q)
+
+    async def ring_queue_stats(self) -> dict:
+        out = {"waiting": 0, "claimed": 0, "in_chat": 0, "by_mode": {}}
+        async for d in self.ring_cols.queue.aggregate([
+            {"$group": {"_id": {"status": "$status", "mode": "$mode"}, "n": {"$sum": 1}}}
+        ]):
+            st, md = (d["_id"].get("status"), d["_id"].get("mode"))
+            out["by_mode"][f"{md}:{st}"] = d["n"]
+            if st in ("waiting", QUEUE_CLAIMED, QUEUE_INCHAT):
+                out[{"waiting": "waiting", QUEUE_CLAIMED: "claimed",
+                     QUEUE_INCHAT: "in_chat"}[st]] += d["n"]
+        return out
+
+    async def ring_queue_list(self, mode: str | None = None, limit: int = 200) -> list[dict]:
+        q = {} if not mode else {"mode": mode}
+        return await self.ring_cols.queue.find(q).sort("queued_at", 1).to_list(limit)
+
+    async def ring_queue_stale(self, timeout_s: int) -> list[int]:
+        ids = []
+        async for d in self.ring_cols.queue.find({"status": QUEUE_WAITING}).limit(2000):
+            if _ago(d.get("last_seen"), timeout_s):
+                ids.append(int(d["user_id"]))
+        return ids
+
+    async def ring_queue_repair_claims(self, stale_s: int = 120) -> int:
+        """claim‌های یتیم (matcher کرش کرد / تلگرام وسط کار مُرد) را آزاد می‌کند.
+
+        §۴۰/§۴۵ — این job باید idempotent باشد: فقط سندی که واقعاً
+        timeout خورده برگردانده می‌شود.
+        """
+        n = 0
+        async for d in self.ring_cols.queue.find({
+                "status": {"$in": [QUEUE_CLAIMED, QUEUE_CLAIMING]}}).limit(500):
+            when = d.get("claimed_at") if d["status"] == QUEUE_CLAIMED else d.get("claim_at")
+            if _ago(when, stale_s):
+                await self.ring_queue_release(d["user_id"])
+                n += 1
+        return n
+
+    async def ring_queue_drop_user(self, uid: int) -> None:
+        await self.ring_cols.queue.delete_one({"_id": int(uid)})
+
+    # ══════════════════════════════════════════════════════════
+    #  sessions
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_session_create(self, sess: dict) -> str | None:
+        """درج session فعال. اگر یکی از دو نفر همین حالا چت فعال دارد،
+        unique index روی `slots` می‌ترکد ⇒ None برمی‌گردانیم (race با
+        یک matcher دیگر باخته شد؛ صداکننده rollback می‌کند)."""
+        sid = sess["session_id"]
+        slots = [int(u) for u in (sess.get("slots") or [])]
+        if len(slots) != 2 or len(set(slots)) != 2:
+            # self-match یا سند ناقص — ایندکس یکتا فقط بین اسناد مقایسه
+            # می‌کند، پس این گارد اینجا لازم است (§۶۵).
+            return None
+        sess["slots"] = slots
+        try:
+            await self.ring_cols.sessions.insert_one(sess)
+            return sid
+        except Exception as e:
+            if "E11000" in str(e):
+                return None
+            raise
+
+    async def ring_session(self, session_id: str) -> dict | None:
+        return await self.ring_cols.sessions.find_one({"session_id": session_id})
+
+    async def ring_session_active_for(self, uid: int) -> dict | None:
+        return await self.ring_cols.sessions.find_one(
+            {"status": ACTIVE, "slots": int(uid)})
+
+    async def ring_session_peer(self, sess: dict | None, uid: int) -> int | None:
+        """`sess` می‌تواند None باشد (جلسه‌ای که همین حالا بسته شده) —
+        فراخواننده‌های moderation این حالت را دارند.
+
+        برای جلسات ended، `slots` عمداً null شده (تا unique index آزاد شود)
+        ⇒ مرجع دوم `user_a`/`user_b` است؛ بدون آن «امتیازدهی پس از گفت‌وگو»
+        (§۲۴) هیچ‌وقت peer نداشت و بی‌صدا می‌مرد.
+        """
+        uid = int(uid)
+        d = sess or {}
+        slots = d.get("slots") or [x for x in (d.get("user_a"), d.get("user_b"))
+                                   if x is not None]
+        for s in slots:
+            if int(s) != uid:
+                return int(s)
+        return None
+
+    async def ring_session_touch(self, session_id: str, *, media: bool = False,
+                                 inc_messages: int = 1) -> None:
+        upd = {"$inc": {"messages_count": inc_messages},
+               "$set": {"last_activity_at": utc_now_iso()}}
+        if media:
+            upd["$inc"]["media_count"] = 1
+        await self.ring_cols.sessions.update_one({"session_id": session_id}, upd)
+
+    async def ring_session_end(self, session_id: str, reason: str,
+                               ended_by: int | None) -> dict | None:
+        """اتمام — و *در همان update* آزادکردن slot.
+
+        مستند «قبل» از به‌روزرسانی برمی‌گردد (slots/status قدیمی) چون
+        فراخواننده برای اطلاع‌رسانی به طرف مقابل به uidها نیاز دارد؛
+        برای وضعیت نهایی `ring_session()` را بخوانید.
+
+        `slots: None` عمداً آرایه را از ایندکس partial بیرون می‌اندازد
+        تا کاربر دوباره بتواند عضو یک active session شود.
+        """
+        doc = await self.ring_cols.sessions.find_one_and_update(
+            {"session_id": session_id, "status": ACTIVE},
+            {"$set": {
+                "status": ENDED, "ended_at": utc_now_iso(),
+                "termination_reason": reason,
+                "ended_by": int(ended_by) if ended_by is not None else None,
+                "slots": None,
+            }},
+            return_document=ReturnDocument.BEFORE,
+        )
+        return doc
+
+    async def ring_last_ended_session(self, uid: int) -> dict | None:
+        """آخرین session تمام‌شده‌ی کاربر (برای امتیازدهی §۲۴) — یک‌بار مصرف:
+        با `rating_done` علامت می‌خورد تا دو بار پرسیده نشود."""
+        # `slots` بعد از end حذف می‌شود ⇒ جست‌وجو باید روی user_a/user_b
+        # هم باشد، وگرنه هیچ‌وقت چیزی پیدا نمی‌شود (§۲۴).
+        return await self.ring_cols.sessions.find_one_and_update(
+            {"$or": [{"slots": int(uid)}, {"user_a": int(uid)}, {"user_b": int(uid)}],
+             "status": ENDED, "rating_done": {"$ne": True}},
+            {"$set": {"rating_done": True}},
+            sort=[("ended_at", -1)],
+            return_document=ReturnDocument.BEFORE,
+        )
+
+    async def ring_session_note(self, session_id: str, fields: dict) -> None:
+        await self.ring_cols.sessions.update_one(
+            {"session_id": session_id}, {"$set": fields})
+
+    async def ring_session_idle(self, idle_s: int, limit: int = 500) -> list[dict]:
+        cutoff = (now_utc() - timedelta(seconds=idle_s)).isoformat(timespec="seconds")
+        return await self.ring_cols.sessions.find(
+            {"status": ACTIVE, "last_activity_at": {"$lt": cutoff}}
+        ).to_list(limit)
+
+    async def ring_session_list(self, *, status: str | None = ACTIVE, mode: str | None = None,
+                                uid: int | None = None, page: int = 1,
+                                per: int = 25) -> tuple[list[dict], int]:
+        q: dict = {}
+        if status:
+            q["status"] = status
+        if mode:
+            q["mode"] = mode
+        if uid is not None:
+            q["slots"] = int(uid)
+        col = self.ring_cols.sessions
+        total = await col.count_documents(q)
+        rows = await col.find(q).sort("created_at", -1).skip((page - 1) * per).to_list(per)
+        return rows, total
+
+    async def ring_reconcile(self) -> dict:
+        """تعمیمِ ناسازگاری‌ها (§۴۵): هر کاربری که active session ندارد ولی
+        در صف با status=in_chat قفل شده، آزاد می‌شود؛ و برعکس."""
+        freed = dup = 0
+        async for d in self.ring_cols.queue.find({"status": QUEUE_INCHAT}).limit(2000):
+            s = await self.ring_session_active_for(d["user_id"])
+            if not s or (s.get("session_id") != d.get("session_id")):
+                # release فقط claimed را آزاد می‌کند؛ اینجا کاربر هیچ چت
+                # فعالی ندارد پس سند صف باید کلاً برود (§۴۵).
+                await self.ring_queue_leave(d["user_id"])
+                freed += 1
+        # دو active session با یک کاربر (فقط اگر ایندکس از هر دو side رد شده باشد)
+        seen: dict[int, str] = {}
+        async for s in self.ring_cols.sessions.find({"status": ACTIVE}).limit(2000):
+            for u in s.get("slots") or []:
+                u = int(u)
+                if u in seen:
+                    await self.ring_session_end(s["session_id"], "reconcile_duplicate", None)
+                    dup += 1
+                    break
+                seen[u] = s["session_id"]
+        return {"freed": freed, "duplicate_sessions_closed": dup}
+
+    # ══════════════════════════════════════════════════════════
+    #  blocks
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_block(self, blocker: int, blocked: int, reason: str = "") -> None:
+        # رابطه دوطرفه «ممنوعه» است ⇒ هر دو جهت ثبت می‌شود تا
+        # find_one_and_update بتواند با یک $O(1) lookup فیلتر کند.
+        now = utc_now_iso()
+        for a, b in ((int(blocker), int(blocked)), (int(blocked), int(blocker))):
+            await self.ring_cols.blocks.update_one(
+                {"_id": f"{a}:{b}"},
+                {"$setOnInsert": {"user_id": a, "blocked_user_id": b,
+                                  "reason": reason[:200], "created_at": now}},
+                upsert=True)
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(blocked)}, {"$inc": {"block_count": 1}})
+
+    async def ring_block_ids(self, uid: int) -> list[int]:
+        """هر دو جهت بلاک (§۱۹): کسانی که من بلاک کردم + کسانی که مرا بلاک
+        کرده‌اند — اگر فقط یک سمت را برگردانیم، طرفِ بلاک‌کننده می‌تواند
+        دوباره با من matched شود و وعده‌ی «دیگر هیچ‌وقت» نقض می‌شود."""
+        ids: set[int] = set()
+        me = int(uid)
+        async for d in self.ring_cols.blocks.find(
+                {"$or": [{"user_id": me}, {"blocked_user_id": me}]},
+                {"user_id": 1, "blocked_user_id": 1}).limit(3000):
+            if int(d.get("user_id", -1)) == me:
+                other = d.get("blocked_user_id")
+            else:
+                other = d.get("user_id")
+            if other is not None:
+                ids.add(int(other))
+        ids.discard(me)
+        return sorted(ids)
+
+    async def ring_blocked_between(self, a: int, b: int) -> bool:
+        d = await self.ring_cols.blocks.find_one(
+            {"_id": {"$in": [f"{int(a)}:{int(b)}", f"{int(b)}:{int(a)}"]}})
+        return bool(d)
+
+    async def ring_unblock(self, uid: int, other: int) -> None:
+        for a, b in ((int(uid), int(other)), (int(other), int(uid))):
+            await self.ring_cols.blocks.delete_many(
+                {"$or": [{"_id": f"{a}:{b}"},
+                        {"user_id": a, "blocked_user_id": b}]})
+
+    async def ring_blocks_list(self, uid: int) -> list[dict]:
+        return await self.ring_cols.blocks.find({"user_id": int(uid)}).to_list(200)
+
+    # ══════════════════════════════════════════════════════════
+    #  reports
+    # ══════════════════════════════════════════════════════════
+
+    SEVERITY = {"spam": 1, "insult": 1, "harassment": 2,
+                "sexual_content": 3, "scam": 4, "suspicious": 2, "other": 1}
+
+    async def ring_report_create(self, rep: dict) -> int:
+        seq_doc = await self.ring_cols.counters.find_one_and_update(
+            {"_id": "ring_reports"}, {"$inc": {"seq": 1}}, upsert=True)
+        rid = int((seq_doc or {}).get("seq", 0)) + 1
+        rep["report_id"] = rid
+        rep["status"] = "pending"
+        rep["created_at"] = utc_now_iso()
+        rep.setdefault("severity", self.SEVERITY.get(rep.get("reason", "other"), 1))
+        await self.ring_cols.reports.insert_one(rep)
+        return rid
+
+    async def ring_report_get(self, rid: int) -> dict | None:
+        return await self.ring_cols.reports.find_one({"report_id": int(rid)})
+
+    async def ring_report_list(self, status: str | None = None, page: int = 1,
+                               per: int = 25) -> tuple[list[dict], int]:
+        q = {} if not status else {"status": status}
+        col = self.ring_cols.reports
+        total = await col.count_documents(q)
+        rows = await col.find(q).sort("created_at", -1).skip((page - 1) * per).to_list(per)
+        return rows, total
+
+    async def ring_report_set_status(self, rid: int, status: str, admin_id: int,
+                                     note: str = "") -> None:
+        await self.ring_cols.reports.update_one(
+            {"report_id": int(rid)},
+            {"$set": {"status": status, "handled_by": int(admin_id),
+                      "handled_at": utc_now_iso(), "admin_note": note[:500]}},
+        )
+
+    async def ring_reports_against(self, uid: int, within_days: int = 30) -> list[dict]:
+        since = (now_utc() - timedelta(days=within_days)).isoformat(timespec="seconds")
+        return await self.ring_cols.reports.find(
+            {"reported_uid": int(uid), "created_at": {"$gte": since}}).to_list(100)
+
+    async def ring_report_duplicate(self, uid: int, rid: int, dup_ids: list[int]) -> None:
+        await self.ring_cols.reports.update_many(
+            {"report_id": {"$in": [int(r) for r in dup_ids]}},
+            {"$set": {"status": "merged", "duplicate_of": int(rid)}})
+
+    # ══════════════════════════════════════════════════════════
+    #  bans (مستقل از بن سراسری ربات — §۳۷)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_ban_create(self, uid: int, kind: str, until_iso: str | None,
+                              reason: str, admin_id: int, scope: str = "ring") -> None:
+        await self.ring_cols.bans.insert_one({
+            "user_id": int(uid), "kind": kind, "scope": scope,
+            "until": until_iso, "reason": (reason or "")[:300],
+            "admin_id": int(admin_id), "created_at": utc_now_iso(), "active": True,
+        })
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$set": {"status": "banned", "banned_until": until_iso}})
+        await self.ring_queue_drop_user(uid)
+
+    async def ring_ban_active(self, uid: int) -> dict | None:
+        """بنِ فعال (temp با expiry لحاظ می‌شود؛ permanent تا lift)."""
+        now = utc_now_iso()
+        d = await self.ring_cols.bans.find_one({
+            "user_id": int(uid), "active": True,
+            "$or": [{"until": None}, {"until": {"$gt": now}}]},
+            sort=[("created_at", -1)])
+        if not d:
+            # انقضا: flag را تمیز کن تا profile هم آزاد شود
+            exp = await self.ring_cols.bans.find_one(
+                {"user_id": int(uid), "active": True,
+                 "kind": "temporary", "until": {"$lte": now}})
+            if exp:
+                await self.ring_ban_lift(uid, "expired")
+        return d
+
+    async def ring_ban_lift(self, uid: int, note: str = "") -> None:
+        await self.ring_cols.bans.update_many(
+            {"user_id": int(uid), "active": True},
+            {"$set": {"active": False, "lifted_at": utc_now_iso(), "lift_note": note[:200]}})
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$set": {"status": "active", "banned_until": None}})
+
+    async def ring_ban_list(self, limit: int = 100) -> list[dict]:
+        return await self.ring_cols.bans.find({}).sort("created_at", -1).to_list(limit)
+
+    # ══════════════════════════════════════════════════════════
+    #  ratings (§۲۴ — anonymous، فقط امتیاز)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_rating_add(self, session_id: str, rater: int, rated: int,
+                              score: int) -> bool:
+        """یک rating به‌ازای هر (session, rater) — `$setOnInsert` ⇒ دوباره‌زنی
+        دکمه هیچ اثری ندارد (§۶۲)."""
+        r = await self.ring_cols.ratings.update_one(
+            {"_id": f"{session_id}:{int(rater)}"},
+            {"$setOnInsert": {"session_id": session_id, "rater_uid": int(rater),
+                              "rated_uid": int(rated), "score": int(score),
+                              "created_at": utc_now_iso()}},
+            upsert=True)
+        return r.upserted_id is not None
+
+    async def ring_rating_stats(self, uid: int) -> dict:
+        out = {"n": 0, "avg": None}
+        async for d in self.ring_cols.ratings.aggregate([
+                {"$match": {"rated_uid": int(uid)}},
+                {"$group": {"_id": None, "n": {"$sum": 1}, "avg": {"$avg": "$score"}}}]):
+            out = {"n": d["n"], "avg": round(d["avg"], 2) if d.get("avg") is not None else None}
+        return out
+
+    # ══════════════════════════════════════════════════════════
+    #  evidence (snapshot محدود + TTL)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_evidence_put(self, doc: dict) -> None:
+        doc.setdefault("created_at", utc_now_iso())
+        await self.ring_cols.evidence.update_one(
+            {"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+
+    async def ring_evidence_for(self, session_id: str, limit: int = 60) -> list[dict]:
+        return await self.ring_cols.evidence.find({"session_id": session_id}).sort("seq", 1).to_list(limit)
+
+    async def ring_evidence_purge(self) -> int:
+        """پاک‌سازی دستی (TTL monitor هم خودش انجام می‌دهد — این برای admin)"""
+        r = await self.ring_cols.evidence.delete_many({"expires_at": {"$lte": now_utc()}})
+        return r.deleted_count
+
+    # ══════════════════════════════════════════════════════════
+    #  rate limit — bucket‌های شمارشی با TTL (§۲۲)
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_limit_hit(self, scope: str, uid: int, limit: int,
+                             window_s: int) -> dict:
+        """atomic counter در بازهٔ زمانی. برمی‌گرداند {ok, n, retry_after}."""
+        uid = int(uid)
+        if limit <= 0:
+            return {"ok": True, "n": 0, "retry_after": 0}
+        ts = now_utc()
+        bucket = int(ts.timestamp() // window_s)
+        _id = f"{scope}:{uid}:{bucket}"
+        expires = ts.replace(microsecond=0) + timedelta(
+            seconds=(bucket + 1) * window_s - int(ts.timestamp()) + 5)
+        doc = await self.ring_cols.limits.find_one_and_update(
+            {"_id": _id},
+            {"$inc": {"n": 1}, "$set": {"expires_at": expires, "scope": scope,
+                                        "user_id": uid, "window": window_s}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+        n = int((doc or {}).get("n", 1))
+        if n > limit:
+            # retry_after = زمان تا ابتدای باکت بعدی (نه TTL که ۵ ثانیه
+            # حاشیه دارد) ⇒ هیچ‌وقت بیشتر از خود window نمی‌شود.
+            retry = (bucket + 1) * window_s - int(ts.timestamp())
+            return {"ok": False, "n": n, "retry_after": max(1, int(retry))}
+        return {"ok": True, "n": n, "retry_after": 0}
+
+    # ══════════════════════════════════════════════════════════
+    #  audit + daily stats
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_audit(self, admin_id: int | str, action: str, target: str,
+                         reason: str, meta: dict | None) -> None:
+        try:
+            await self.ring_cols.audit.insert_one({
+                "admin_id": str(admin_id), "action": action, "target": str(target),
+                "reason": (reason or "")[:300], "meta": meta or {},
+                "created_at": utc_now_iso()})
+        except Exception as e:                        # هرگز اقدام اصلی را نشکند
+            logger.debug("ring_audit failed: %s", e)
+
+    async def ring_audit_list(self, limit: int = 100) -> list[dict]:
+        return await self.ring_cols.audit.find({}).sort("created_at", -1).to_list(limit)
+
+    async def ring_bump(self, **counters: int) -> None:
+        """شمارنده‌ی روزانه برای نمودارها (users/day, sessions/day, reports/day)."""
+        day = now_utc().date().isoformat()
+        inc = {f"c.{k}": int(v) for k, v in counters.items() if v}
+        if not inc:
+            return
+        await self.ring_cols.daily.update_one(
+            {"date": day}, {"$inc": inc, "$set": {"updated_at": utc_now_iso()}},
+            upsert=True)
+
+    async def ring_daily(self, days: int = 14) -> list[dict]:
+        since = (now_utc() - timedelta(days=days)).date().isoformat()
+        return await self.ring_cols.daily.find({"date": {"$gte": since}}).sort("date", 1).to_list(days + 2)
+
+    # ══════════════════════════════════════════════════════════
+    #  admin helpers
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_admin_profiles(self, *, status: str | None = None, q: str | None = None,
+                                  mode: str | None = None, page: int = 1,
+                                  per: int = 25) -> tuple[list[dict], int]:
+        """جست‌وجوی ادمین (§۷۰): فقط با آیدی عددی تلگرام یا ناشناس‌آی‌دی.
+
+        عمداً جست‌وجوی «نام/بیو» وجود ندارد — تبدیل پنل به دایرکتوری
+        هویت، کل وعده‌ی ناشناس‌بودن را باطل می‌کند (§۳۱)."""
+        query: dict = {}
+        if status:
+            query["status"] = status
+        if mode:
+            query["mode"] = mode
+        if q:
+            s = str(q).strip()
+            if s.lstrip("#").isdigit():
+                # _id پروفایل همان user_id است (فیلد جدا نداریم)
+                query["_id"] = int(s.lstrip("#"))
+            elif s:
+                query["anon_id"] = {"$regex": re.escape(s.lstrip("#").upper()),
+                                    "$options": "i"}
+        col = self.ring_cols.profiles
+        total = await col.count_documents(query)
+        rows = await col.find(query).sort("created_at", -1).skip((page - 1) * per).to_list(per)
+        return rows, total
+
+    async def ring_overview(self) -> dict:
+        c = self.ring_cols
+        now = utc_now_iso()
+        today = now_utc().date().isoformat()
+        return {
+            "profiles": await c.profiles.count_documents({}),
+            "active_profiles": await c.profiles.count_documents({"status": "active"}),
+            "paused": await c.profiles.count_documents({"status": "paused"}),
+            "banned": await c.profiles.count_documents({"status": "banned"}),
+            "waiting": await c.queue.count_documents({"status": QUEUE_WAITING}),
+            "in_chat": await c.sessions.count_documents({"status": ACTIVE}),
+            "sessions_today": await c.sessions.count_documents({"created_at": {"$gte": today}}),
+            "sessions_total": await c.sessions.count_documents({}),
+            "reports_pending": await c.reports.count_documents({"status": "pending"}),
+            "reports_today": await c.reports.count_documents({"created_at": {"$gte": today}}),
+            "blocks": await c.blocks.count_documents({}),
+            "bans_active": await c.bans.count_documents({"active": True}),
+            "last_updated": now,
+        }

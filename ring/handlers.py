@@ -1,0 +1,823 @@
+"""💍 Ring Street — هندلرها (§۴، §۷..§۱۱، §۱۶..§۲۱، §۴۲)
+
+چرا `ConversationHandler` نه؟
+  • ربات از قبل چند ConversationHandler دارد و stateهای آن‌ها در
+    `application` نگه داشته می‌شود؛ اضافه‌کردن یک گفت‌وگوی جدید یعنی
+    احتمال دعوای state روی متن آزاد کاربر (ریسک شکستن `/start`).
+  • ماشین حالت ما در **دیتابیس** می‌ماند (`ring_profiles.state`) ⇒ بعد از
+    ری‌استارت هم دقیقاً همان‌جا هستیم که بودیم (§۴۳)، در حالی که
+    ConversationHandler در RAM می‌مرد.
+
+اولویت ثبت handler (§۴۲): هندلرهای رینگ *قبل* از مسیریاب یکپارچه‌ی
+ر بات ثبت می‌شوند و فیلترشان «کاربر در رجیستری رینگ است» ⇒ وقتی رینگ
+خاموش است یا کاربر در flow نیست، هیچupdate‌ای دست‌نخورده به مسیر قبلی
+می‌رود (isolation).
+"""
+from __future__ import annotations
+
+import logging
+import re
+
+from telegram import Message, Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes,
+                          MessageHandler, filters)
+
+from ring import keyboards as K
+from ring import models as M
+from ring import moderation
+from ring import notify
+from ring import relay
+from ring import service
+from ring import settings as S
+from ring import state
+from ring import texts
+from time_utils import now_utc
+
+logger = logging.getLogger(__name__)
+
+CB = "ring:"
+FLOW_TEXT_FIELDS = set(M.PROFILE_FIELDS)          # فیلدهایی که متن آزاد می‌گیرند
+
+
+# ══════════════════════════════════════════════════════════════
+#  کمک‌متدها
+# ══════════════════════════════════════════════════════════════
+
+async def _set_st(uid: int, to: str, *, field: str | None = None) -> bool:
+    """ماشین حالت در DB (`ring_profiles.state`) — تا ری‌استارت، کاربر
+    دقیقاً همان‌جا باشد که بود (§۴۳)."""
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    cur = p.get("state") or M.IDLE
+    if not M.can_move(cur, to):
+        logger.debug("ring illegal transition %s → %s (uid=%s)", cur, to, uid)
+        if to != M.IDLE:
+            return False
+    await db.ring_profile_update(uid, {"state": to, "pending_field": field})
+    return True
+
+
+def _flow(context) -> dict:
+    f = context.user_data.get("ring_flow")
+    return f if isinstance(f, dict) else {}
+
+
+def _flow_set(context, **kw) -> None:
+    f = dict(context.user_data.get("ring_flow") or {})
+    f.update(kw)
+    context.user_data["ring_flow"] = f
+
+
+def _flow_clear(context) -> None:
+    context.user_data.pop("ring_flow", None)
+
+
+async def _show(q, text: str, kb=None, *, alert: str | None = None,
+                md: bool = False) -> None:
+    """ویرایش پیام دکمه؛ اگر نشد (قدیمی/تکراری) پیام جدید می‌فرستد."""
+    if alert:
+        try:
+            await q.answer(alert, show_alert=True)
+        except Exception:
+            pass
+    kw = {"reply_markup": kb} if kb else {}
+    if md:
+        kw["parse_mode"] = ParseMode.HTML
+    try:
+        await q.edit_message_text(text, **kw)
+    except BadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            try:
+                await q.message.reply_text(text, **kw)
+            except Exception:
+                logger.debug("ring show failed: %s", e)
+    except Exception as e:
+        logger.debug("ring show failed: %s", e)
+
+
+async def _guard(update, context):
+    """دروازه‌ی ورودی: فیچر روشن + کاربر approved + بن. خروجی: None ادامه."""
+    uid = update.effective_user.id
+    if not S.flag_sync():
+        if not await S.get_flag():
+            return "disabled"
+    from database import db
+    if await db.ring_ban_active(uid):
+        return "banned"
+    return None
+
+
+async def _controls(uid: int, sess: dict | None) -> "K.KB | None":
+    cfg = await S.get_cfg()
+    mode = (sess or {}).get("mode") or (await _profile(uid) or {}).get("mode") or "fun"
+    return K.kb_chat(mode, cfg)
+
+
+async def _profile(uid: int) -> dict | None:
+    from database import db
+    return await db.ring_profile(uid)
+
+
+async def _announce_match(uid: int, peer: int, sess: dict, cfg: dict) -> None:
+    """کارت match برای هر دو طرف (§۱۲ — فقط آنچه کاربر اجازه داده)."""
+    from database import db
+    for a, b in ((uid, peer), (peer, uid)):
+        other = await db.ring_profile(b) or {}
+        n = int((await db.ring_cols.profiles.find_one({"_id": a},
+                                                     {"sessions_count": 1}) or {}).get("sessions_count", 0)) + 1
+        await db.ring_cols.profiles.update_one({"_id": a}, {"$inc": {"sessions_count": 1}})
+        await notify.send_text(
+            a, texts.match_card(sess, other, cfg, session_no=max(1, n)),
+            parse_mode=ParseMode.HTML,
+            reply_markup=K.kb_chat(sess.get("mode", "fun"), cfg))
+
+
+# ══════════════════════════════════════════════════════════════
+#  ورودی‌ها: /ring و دکمه‌ی منوی اصلی
+# ══════════════════════════════════════════════════════════════
+
+announce_match = _announce_match   # برای job جاروی صف (ring/jobs.py)
+
+
+async def ring_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    args = [a.lower() for a in (context.args or [])]
+    if args and args[0] == "status":
+        await _status_card(update, context)
+        return
+    if not await S.get_flag():
+        await update.message.reply_text(texts.disabled())
+        return
+    if await _guard(update, context) == "banned":
+        await update.message.reply_text(texts.ban_notice())
+        return
+    await _menu(update.effective_message, uid, context)
+
+
+async def ring_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دکمه‌ی «💍 رینگ استریت» در کیبورد اصلی (§۴۱)."""
+    uid = update.effective_user.id
+    if not S.flag_sync():
+        await update.message.reply_text(texts.disabled())
+        return
+    await _menu(update.effective_message, uid, context)
+
+
+async def _menu(msg, uid: int, context) -> None:
+    """منوی /ring — وضعیت فعلی کاربر را از DB می‌خواند (§۴۳)."""
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    if not p:
+        await _set_st(uid, M.IDLE)
+        await msg.reply_text(texts.age_gate(), reply_markup=K.kb_age(),
+                             parse_mode=ParseMode.HTML)
+        await _set_st(uid, M.AGE_GATE)
+        return
+    q = await db.ring_queue_get(uid)
+    sess = await db.ring_session_active_for(uid)
+    if sess:
+        state.attach(uid, await db.ring_session_peer(sess, uid) or uid,
+                     sess["session_id"], sess.get("mode", "fun"),
+                     sess.get("alias_a", ""), sess.get("alias_b", ""))
+    view = {
+        "in_chat": bool(sess),
+        "in_queue": bool(q and q.get("status") in ("waiting", "claimed", "claiming")),
+    }
+    head = _menu_head(p, q, sess)
+    await msg.reply_text(head, reply_markup=K.kb_menu(view), parse_mode=ParseMode.HTML)
+
+
+def _menu_head(p: dict, q: dict | None, sess: dict | None) -> str:
+    if sess:
+        return ("💬 یک گفت‌وگوی فعال داری:\n"
+                f"   {M.MODES.get(sess.get('mode'), '')}\n"
+                "   ادامه بده یا «نفر بعدی» را بزن.")
+    if q and q.get("status") == "waiting":
+        return f"⏳ در صف هستی ({M.MODES.get(q.get('mode'), '')})."
+    if q and q.get("status") == "in_chat":
+        return "💬 در گفت‌وگو هستی."
+    who = (f"👤 ناشناس #{p.get('anon_id')}" if p.get("anon_id") else "👤 هنوز پروفایلی نداری")
+    mode = M.MODES.get(p.get("mode"), "—")
+    return (f"💍 رینگ استریت — {who}\n"
+            f"   حالت: {mode}\n"
+            + ("   با «پیدا کردن نفر» وارد صف می‌شوی." if p.get("mode")
+               else "   اول چند سؤال کوتاه را جواب بده."))
+
+
+async def _status_card(update: Update, context) -> None:
+    from database import db
+    uid = update.effective_user.id
+    p = await db.ring_profile(uid) or {}
+    q = await db.ring_queue_get(uid)
+    sess = await db.ring_session_active_for(uid)
+    st = "در گفت‌وگو" if sess else ("در صف" if q and q.get("status") == "waiting" else "آزاد")
+    await update.message.reply_text(
+        f"📋 وضعیت رینگ: {st}\n"
+        f"   حالت: {M.MODES.get(p.get('mode'), '—')}\n"
+        f"   وضعیت پروفایل: {p.get('status', 'active')}\n"
+        f"   جلسه‌های تمام‌شده: {int(p.get('sessions_count') or 0)}\n"
+        "🔒 اطلاعات هویتی تو جایی ذخیره/نمایش داده نمی‌شود.")
+
+
+# ══════════════════════════════════════════════════════════════
+#  dispatcher اصلی callback‌ها
+# ══════════════════════════════════════════════════════════════
+
+async def ring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    uid = update.effective_user.id
+    data = q.data or ""
+    if not data.startswith(CB):
+        return
+    key = data[len(CB):]
+    parts = key.split(":")
+    head = parts[0]
+    arg = parts[1] if len(parts) > 1 else ""
+    try:
+        if head == "home":
+            _flow_clear(context)
+            await _show(q, "↩️ برای منوی اصلی ربات /start را بزن.")
+            return
+        blocked = await _guard(update, context)
+        if blocked == "disabled":
+            await _show(q, texts.disabled())
+            return
+        if blocked == "banned":
+            await _show(q, texts.ban_notice())
+            return
+        handler = _ROUTES.get(head)
+        if handler is None:
+            await q.answer()
+            return
+        await handler(q, context, uid, arg, parts)
+    except Exception as e:
+        logger.exception("ring callback failed (%s)", key[:40])
+        try:
+            await _show(q, "⚠️ یک خطای لحظه‌ای رخ داد؛ کمی بعد دوباره امتحان کن.")
+        except Exception:
+            pass
+    finally:
+        try:
+            await q.answer()
+        except Exception:
+            pass
+
+
+async def _r_age(q, context, uid, arg, parts):
+    if arg == "under":
+        await _set_st(uid, M.IDLE)
+        await _show(q, texts.too_young())
+        return
+    r = await service.set_age(uid, M.AGE_INDEX.get(arg, (0, 0))[0])
+    if r["kind"] != "ok":
+        await _show(q, texts.too_young())
+        return
+    await _set_st(uid, M.GENDER_PICK)
+    await _show(q, texts.gender_ask(), K.kb_gender())
+
+
+async def _r_gender(q, context, uid, arg, parts):
+    await service.set_gender(uid, arg)
+    await _set_st(uid, M.MODE_PICK)
+    cfg = await S.get_cfg()
+    await _show(q, texts.mode_ask(cfg), K.kb_mode(cfg), md=True)
+
+
+async def _r_mode(q, context, uid, arg, parts):
+    r = await service.set_mode(uid, arg)
+    if r["kind"] == "mode_off":
+        await _show(q, texts.feature_off(M.MODES.get(arg, arg)))
+        return
+    await _set_st(uid, M.TERMS)
+    cfg = await S.get_cfg()
+    await _show(q, texts.terms(arg, cfg), K.kb_terms(), md=True)
+
+
+async def _r_terms(q, context, uid, arg, parts):
+    if arg != "yes":
+        await _set_st(uid, M.IDLE)
+        await _show(q, texts.declined_terms())
+        return
+    await service.accept_terms(uid)
+    p = await _profile(uid) or {}
+    if (p.get("bio") or "").strip():
+        await _set_st(uid, M.IDLE)
+        await _show(q, "✅ موافقت ثبت شد.", K.kb_menu({"in_chat": False}))
+        return
+    await _set_st(uid, M.PROFILE, field="bio")
+    _flow_set(context, field="bio")
+    flow_mark(uid, "bio")
+    await _show(q, texts.profile_ask("bio") + "\n\nمی‌توانی «رد» را بزنی.",
+                K.KB([[K.B("⏭ رد کردن", callback_data=f"{CB}p:skip")]]))
+
+
+async def _r_menu(q, context, uid, arg, parts):
+    await _menu(q.message, uid, context)
+
+
+async def _r_go(q, context, uid, arg, parts):
+    await _do_search(q, context, uid)
+
+
+async def _r_next(q, context, uid, arg, parts):
+    from database import db
+    sess = await db.ring_session_active_for(uid)
+    if sess:
+        r = await service.next_partner(uid, sess["session_id"])
+        await _show(q, "🔄 نفر قبلی بسته شد…", None)
+        r = r.get("next") or service.Result.of("empty")
+        await _finish_search(q, context, uid, r)
+        return
+    await _do_search(q, context, uid)
+
+
+async def _do_search(q, context, uid) -> None:
+    await _show(q, "⏳ دارم کسی را پیدا می‌کنم…", K.KB(
+        [[K.B("⛔ انصراف", callback_data=f"{CB}stop")]]))
+    r = await service.search(uid)
+    await _finish_search(q, context, uid, r)
+
+
+async def _finish_search(q, context, uid, r) -> None:
+    cfg = await S.get_cfg()
+    kind = r.get("kind")
+    if kind == "matched":
+        sess, peer = r["session"], r["peer"]
+        await _announce_match(uid, peer, sess, cfg)
+        return
+    if kind == "waiting":
+        await _show(q, texts.queue_waiting(r.get("mode") or "fun", cfg),
+                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting"))
+        return
+    if kind == "empty":
+        await _show(q, texts.queue_empty(r.get("mode") or "fun", cfg),
+                    K.kb_queue(r.get("mode") or "fun", cfg, "empty"))
+        return
+    if kind == "in_chat":
+        await _show(q, "💬 هنوز در گفت‌وگویی؛ اول تمامش کن.", await _controls(uid, None))
+        return
+    if kind == "rate_limited":
+        await _show(q, f"🐢 زیاد سریع بود — {r.get('retry_after', 30)} ثانیه بعد دوباره.")
+        return
+    if kind in ("too_young", "no_gender", "no_mode", "no_terms"):
+        await _set_st(uid, M.AGE_GATE if kind == "too_young" else M.TERMS)
+        await _show(q, texts.age_gate(), K.kb_age(), md=True)
+        return
+    if kind in ("banned", "paused"):
+        await _show(q, texts.ban_notice() if kind == "banned" else "⏸ پروفایلت روی مکث است.")
+        return
+    if kind == "mode_off":
+        await _show(q, texts.feature_off("این حالت"))
+        return
+    await _show(q, "🙂 الان چیزی دستم نیست؛ کمی بعد دوباره امتحان کن.")
+
+
+async def _r_stop(q, context, uid, arg, parts):
+    from database import db
+    _flow_clear(context)
+    sess = await db.ring_session_active_for(uid)
+    if sess:
+        await service.stop(uid, sess["session_id"])
+        await _show(q, texts.peer_ended(), K.kb_menu({"in_chat": False, "in_queue": False}))
+        return
+    await service.leave_queue(uid)
+    await _show(q, texts.bye(), K.kb_menu({}))
+
+
+async def _r_chat(q, context, uid, arg, parts):
+    from database import db
+    sess = await db.ring_session_active_for(uid)
+    await _show(q, ("💬 هنوز در گفت‌وگویی؛ ادامه بده." if sess
+                    else texts.no_session()),
+                await _controls(uid, sess) if sess else K.kb_menu({"in_chat": bool(sess)}))
+
+
+async def _r_rules(q, context, uid, arg, parts):
+    p = await _profile(uid) or {}
+    cfg = await S.get_cfg()
+    await _show(q, texts.rules(p.get("mode") or "fun", cfg)
+                + "\n\n🛡 " + " · ".join(texts.SAFETY_NOTES[:3]),
+                K.KB([[K.B("↩️ بازگشت", callback_data=f"{CB}menu")]]), md=True)
+
+
+async def _r_profile(q, context, uid, arg, parts):
+    from database import db
+    p = await db.ring_profile_ensure(uid)
+    cfg = await S.get_cfg()
+    _flow_set(context, view="profile")
+    await _show(q, texts.profile_summary(p) + "\n\nچه چیزی را ویرایش کنم؟",
+                K.kb_profile_menu(p, cfg), md=True)
+
+
+async def _r_field(q, context, uid, arg, parts):
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    if arg == "skip":
+        await _set_st(uid, M.IDLE)
+        flow_mark(uid, None)
+        _flow_set(context, field=None)
+        await _show(q, "⏭ رد شد. هر وقت خواستی از «👤 پروفایل».",
+                    K.kb_menu({}))
+        return
+    if arg == "done":
+        await _set_st(uid, M.IDLE)
+        flow_mark(uid, None)
+        _flow_clear(context)
+        await _r_profile_done_edit(q, context, uid)
+        return
+    if arg == "ratings":
+        st = await db.ring_rating_stats(uid)
+        avg = st.get("avg")
+        await _show(q, f"🌟 میانگین: {(str(avg).replace('.', '٫')) if avg is not None else '—'} از ۵ · {st.get('n', 0)} نفر",
+                    K.KB([[K.B("↩️ پروفایل", callback_data=f"{CB}profile")]]))
+        return
+    if arg == "intent":
+        await _show(q, "🎯 هدفت از این فضا چیست؟", K.kb_intent())
+        return
+    if arg == "topics":
+        await _show(q, "🏷 موضوع‌های مورد علاقه (حداکثر ۶ تا):",
+                    K.kb_topics(p.get("topics")))
+        return
+    if arg == "prefs":
+        await _show(q, "⚙️ با چه کسانی حاضری گفت‌وگو کنی؟", K.kb_prefs(p))
+        return
+    if arg in FLOW_TEXT_FIELDS:
+        await _set_st(uid, M.PROFILE, field=arg)
+        _flow_set(context, field=arg)
+        flow_mark(uid, arg)
+        await _show(q, texts.profile_ask(arg) + "\n\n(برای خالی‌کردن «-» را بفرست.)",
+                    K.KB([[K.B("⏭ رد کردن", callback_data=f"{CB}p:skip")]]))
+        return
+    await _show(q, "🤔 این گزینه در دسترس نیست.", K.kb_menu({}))
+
+
+async def _r_profile_done_edit(q, context, uid) -> None:
+    """بازگشت به منوی پروفایل بدون تغییر متن (یک refresh ساده)."""
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    cfg = await S.get_cfg()
+    await _show(q, texts.profile_summary(p), K.kb_profile_menu(p, cfg), md=True)
+
+
+async def _r_intent(q, context, uid, arg, parts):
+    await service.update_profile(uid, {"intent": arg})
+    await _show(q, "✅ ثبت شد.", K.KB([[K.B("↩️ پروفایل", callback_data=f"{CB}profile")]]))
+
+
+async def _r_topic(q, context, uid, arg, parts):
+    from database import db
+    if arg == "done":
+        sel = _flow(context).get("topics") or []
+        await service.update_profile(uid, {"topics": sel})
+        _flow_set(context, topics=None)
+        await _show(q, "✅ موضوع‌ها ثبت شد.",
+                    K.KB([[K.B("↩️ پروفایل", callback_data=f"{CB}profile")]]))
+        return
+    p = await db.ring_profile(uid) or {}
+    cur = list(_flow(context).get("topics") if _flow(context).get("topics") is not None
+               else (p.get("topics") or []))
+    if arg in cur:
+        cur.remove(arg)
+    elif arg in M.TOPICS and len(cur) < 6:
+        cur.append(arg)
+    _flow_set(context, topics=cur)
+    await _show(q, f"🏷 انتخاب‌شده: {len(cur)}/6", K.kb_topics(cur))
+
+
+async def _r_pref_gender(q, context, uid, arg, parts):
+    await service.update_profile(uid, {"pref_gender": arg})
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    await _show(q, "✅ ترجیح جنسیت ثبت شد.", K.kb_prefs(p))
+
+
+async def _r_pref_age(q, context, uid, arg, parts):
+    from database import db
+    if arg == "open":
+        _flow_set(context, pa=list(str((await _profile(uid) or {}).get("pref_age_ranges") or "").split(",")))
+        await _show(q, "🎂 کدام حلقه‌های سنی؟ (چندتایی مجاز است)",
+                    K.kb_pref_age(_flow(context).get("pa")))
+        return
+    p = await db.ring_profile(uid) or {}
+    if arg == "any":
+        await service.update_profile(uid, {"pref_age_ranges": "any"})
+        await _show(q, "✅ بدون محدودیت سنی.", K.kb_prefs(await db.ring_profile(uid) or {}))
+        return
+    if arg == "done":
+        sel = [x for x in (_flow(context).get("pa") or []) if x in M.AGE_INDEX]
+        await service.update_profile(uid, {"pref_age_ranges": ",".join(sel) or "any"})
+        _flow_set(context, pa=None)
+        await _show(q, "✅ ثبت شد.", K.kb_prefs(await db.ring_profile(uid) or {}))
+        return
+    cur = list(_flow(context).get("pa") or [])
+    if arg in cur:
+        cur.remove(arg)
+    elif arg in M.AGE_INDEX:
+        cur.append(arg)
+    _flow_set(context, pa=cur)
+    await _show(q, f"🎂 انتخاب: {len(cur)} حلقه", K.kb_pref_age(cur))
+
+
+async def _r_safety(q, context, uid, arg, parts):
+    from database import db
+    rows = await db.ring_blocks_list(uid)
+    blocks = [{"uid": int(r["blocked_user_id"]), "anon": (await db.ring_profile(int(r["blocked_user_id"])) or {}).get("anon_id"),
+               "label": None} for r in rows]
+    for b in blocks:
+        b["label"] = f"🧷 بلاک‌شده {'#' + b['anon'].lstrip('#') if b.get('anon') else ''}".strip()
+    await _show(q, "🛡 امنیت و بلاک‌ها\n"
+                    "• هر وقت خواستی پارتنر فعلی را بلاک کن.\n"
+                    "• اگر ناشناس‌آی‌دی کسی را داری، با «گزارش بدون چت» می‌توانی گزارش بدهی.",
+                K.kb_safety(blocks))
+
+
+async def _r_block(q, context, uid, arg, parts):
+    from database import db
+    if arg == "yes":
+        sess = await db.ring_session_active_for(uid)
+        r = await moderation.block(uid, sess["session_id"] if sess else "")
+        if r.get("ok"):
+            await _show(q, texts.blocked(), K.kb_menu({}))
+        else:
+            await _show(q, "🙂 الان پارتنری نداری که بلاک شود.")
+        return
+    if arg == "now":
+        sess = await db.ring_session_active_for(uid)
+        r = await moderation.block(uid, sess["session_id"] if sess else "")
+        await _show(q, texts.blocked() if r.get("ok") else "🙂 در گفت‌وگو نیستی.")
+        return
+    await _show(q, "مطمئنی؟ او دیگر با تو جفت نمی‌شود و گفت‌وگو بسته می‌شود.",
+                K.kb_confirm_block())
+
+
+async def _r_unblock(q, context, uid, arg, parts):
+    if arg and arg.isdigit():
+        await moderation.unblock(uid, int(arg))
+        await _show(q, texts.unblocked(), K.kb_menu({}))
+    else:
+        await _show(q, "🤔 نشد.")
+
+
+async def _r_report(q, context, uid, arg, parts):
+    from database import db
+    if arg == "anon":
+        await _set_st(uid, M.REPORT_WHY, field="report_anon")
+        _flow_set(context, mode="anon")
+        flow_mark(uid, "report_anon")
+        await _show(q, "🔎 ناشناس‌آی‌دی طرف را بفرست (مثلاً #A7K3).")
+        return
+    if arg == "send" or arg == "send_block":
+        r = await _submit_report(uid, context, block_too=(arg == "send_block"))
+        if not r.get("ok"):
+            await _show(q, "⚠️ " + ("خیلی زود است؛ کمی صبر کن." if r.get("why") == "rate_limited"
+                                    else "گفت‌وگوی فعالی برای گزارش پیدا نشد."))
+            return
+        await _show(q, texts.report_done(r))
+        return
+    if arg and arg in M.REPORT_REASONS:
+        _flow_set(context, reason=arg, sid=(await db.ring_session_active_for(uid) or {}).get("session_id"))
+        await _set_st(uid, M.REPORT_WHY, field="report")
+        flow_mark(uid, "report")
+        await _show(q, f"⚠️ {M.REPORT_REASONS[arg][0]}\n"
+                        "چند خط توضیح بده (یا «رد» بفرست):",
+                    K.kb_report_send())
+        return
+    await _show(q, texts.report_ask(), K.kb_report_reasons())
+
+
+async def _submit_report(uid: int, context, *, block_too: bool) -> dict:
+    f = _flow(context)
+    sid = f.get("sid")
+    reason = f.get("reason") or "other"
+    details = f.get("details") or ""
+    if f.get("mode") == "anon":
+        anon = f.get("anon") or details
+        _flow_clear(context)
+        return await moderation.report(uid, None, reason, details,
+                                       block_too=block_too, target_anon=anon)
+    _flow_clear(context)
+    return await moderation.report(uid, sid, reason, details, block_too=block_too)
+
+
+async def _r_reveal(q, context, uid, arg, parts):
+    if arg == "ask":
+        r = await service.reveal_request(uid)
+        await _show(q, {"off": texts.feature_off("معرفی دوطرفه"),
+                        "serious_only": "🔒 معرفی فقط در حالت آشنایی جدی ممکن است.",
+                        "no_session": texts.no_session()}.get(r["kind"],
+                        "🤝 درخواست معرفی برای پارتنرت فرستاده شد."))
+        return
+    if arg in ("yes", "no"):
+        r = await service.reveal_answer(uid, arg == "yes")
+        if r["kind"] == "both_yes":
+            await _show(q, "🎉 معرفی انجام شد.")
+        else:
+            await _show(q, "✅ پاسخت ثبت شد." if arg == "yes" else "🙏 باشه، ناشناس می‌مانید.")
+        return
+    await _show(q, "🤔 دستور ناشناخته.")
+
+
+async def _r_rating(q, context, uid, arg, parts):
+    from database import db
+    sess = await db.ring_last_ended_session(uid)
+    if not sess:
+        await _show(q, "🌟 الان گفت‌وگوی تمام‌شدۀ تازه‌ای نداری.")
+        return
+    r = await moderation.rating(uid, sess["session_id"], arg)
+    await _show(q, "🌟 ممنون! بازخوردت فقط به‌صورت ناشناس ثبت شد."
+                if r.get("ok") else "🤔 امتیاز برای این گفت‌وگو ثبت شده بود.")
+
+
+async def _r_restricted(q, context, uid, arg, parts):
+    r = await service.set_paused(uid, arg == "pause")
+    await _show(q, "⏸ در صف نیستی تا خودت را برگردانی." if arg == "pause"
+                else "▶️ برگشتی.")
+
+
+async def _r_delete(q, context, uid, arg, parts):
+    if arg != "yes":
+        await _show(q, "🗑 با حذف پروفایل، صف/جلسه/بلاک‌های رینگ پاک می‌شود. "
+                       "گزارش‌های تأییدشده در سوابق نظارت می‌ماند.\n"
+                       "برای اطمینان «بله، حذف کن» را بزن.",
+                    K.KB([[K.B("🗑 بله، حذف کن", callback_data=f"{CB}del:yes"),
+                           K.B("↩️ بی‌خیال", callback_data=f"{CB}menu")]]))
+        return
+    await service.delete_all(uid)
+    _flow_clear(context)
+    await _show(q, "🗑 پروفایل رینگ حذف شد. هر وقت خواستی با /ring از نو.")
+
+
+async def _r_back(q, context, uid, arg, parts):
+    step = arg or ""
+    if step == "age":
+        await _show(q, texts.age_gate(), K.kb_age(), md=True)
+    elif step == "gender":
+        await _show(q, texts.gender_ask(), K.kb_gender())
+    else:
+        await _menu(q.message, uid, context)
+
+
+_ROUTES = {
+    "": _r_menu, "menu": _r_menu, "go": _r_go, "next": _r_next, "stop": _r_stop,
+    "chat": _r_chat, "rules": _r_rules, "profile": _r_profile, "safety": _r_safety,
+    "a": _r_age, "g": _r_gender, "m": _r_mode, "t": _r_terms, "p": _r_field,
+    "i": _r_intent, "tp": _r_topic, "pg": _r_pref_gender, "pa": _r_pref_age,
+    "block": _r_block, "block_now": _r_block, "unblock": _r_unblock,
+    "r": _r_report, "report": _r_report, "report_anon": _r_report,
+    "reveal": _r_reveal, "rt": _r_rating, "del": _r_delete, "back": _r_back,
+    "pause": _r_restricted, "resume": _r_restricted,
+}
+
+
+# ══════════════════════════════════════════════════════════════
+#  متن‌های flow (پروفایل / توضیح گزارش)
+# ══════════════════════════════════════════════════════════════
+
+def _uid_of(obj) -> int | None:
+    """هم `Update` (تست‌ها/فراخوانی مستقیم) و هم `Message` (فیلتر PTB)."""
+    try:
+        for attr in ("effective_user", "from_user"):
+            u = getattr(obj, attr, None)
+            uid = getattr(u, "id", None)
+            if uid is not None:
+                return int(uid)
+    except Exception:
+        return None
+    return None
+
+
+def _flow_filter(update) -> bool:
+    """سمک: آیا این کاربر در حالتِ منتظرِ متن است؟"""
+    uid = _uid_of(update)
+    if uid is None:
+        return False
+    if not S.flag_sync():
+        return False
+    return _FLOW_UIDS.get(uid) is not None
+
+
+_FLOW_UIDS: dict[int, str] = {}
+
+
+def flow_mark(uid: int, what: str | None) -> None:
+    if what:
+        _FLOW_UIDS[int(uid)] = what
+    else:
+        _FLOW_UIDS.pop(int(uid), None)
+
+
+async def ring_text_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """متن آزاد در حالت PROFILE/REPORT_WHY. اگر flow تمام شد، mark پاک می‌شود
+    و از این لحظه پیام‌ها دوباره به مسیریاب ربات می‌روند."""
+    uid = update.effective_user.id
+    msg = update.effective_message
+    what = _FLOW_UIDS.get(uid)
+    if not what:
+        return
+    txt = (msg.text or "").strip()
+    from database import db
+    if what == "report_anon":
+        if txt in ("رد", "skip", "-"):
+            _flow_clear(context)
+            flow_mark(uid, None)
+            await _set_st(uid, M.IDLE)
+            await msg.reply_text("🙏 باشه.")
+            return
+        f = dict(context.user_data.get("ring_flow") or {})
+        f["anon"] = txt[:16]
+        f["reason"] = f.get("reason") or "other"
+        context.user_data["ring_flow"] = f
+        flow_mark(uid, None)
+        await msg.reply_text("✅ حالا «ثبت گزارش» را بزن.")
+        return
+    if what == "report":
+        f = dict(context.user_data.get("ring_flow") or {})
+        if txt in ("رد", "skip", "-"):
+            txt = ""
+        f["details"] = M.clean_text(txt, 600)
+        context.user_data["ring_flow"] = f
+        flow_mark(uid, None)
+        await _set_st(uid, M.IDLE)
+        r = await _submit_report(uid, context, block_too=False)
+        await msg.reply_text(texts.report_done(r) if r.get("ok")
+                             else "⚠️ گزارش ثبت نشد (شاید گفت‌وگوی فعالی نباشد).")
+        return
+    field = what
+    if txt in ("رد", "skip", "-"):
+        flow_mark(uid, None)
+        await _set_st(uid, M.IDLE)
+        await msg.reply_text("⏭ رد شد.", reply_markup=K.kb_menu({}))
+        await _set_st(uid, M.IDLE)
+        return
+    r = await service.update_profile(uid, {field: txt})
+    flow_mark(uid, None)
+    await _set_st(uid, M.IDLE)
+    if r["kind"] == "rate_limited":
+        await msg.reply_text(f"🐢 زیاد شد؛ {r.get('retry_after', 3600)} ثانیه بعد.")
+        return
+    p = await db.ring_profile(uid) or {}
+    await msg.reply_text(f"✅ {M.PROFILE_FIELDS[field][0]} ذخیره شد.\n\n"
+                         + texts.profile_summary(p),
+                         reply_markup=K.kb_profile_menu(p, await S.get_cfg()),
+                         parse_mode=ParseMode.HTML)
+
+
+def _relay_filter(update) -> bool:
+    return bool(state.in_chat(_uid_of(update))) if _uid_of(update) else False
+
+
+async def ring_relay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """رله‌ی متن/مدیا به پارتنر. اگر رله نشد، چیزی نمی‌فرستیم و update به
+    هندلرهای بعدی می‌رسد (چون PTB فقط اولین هندلرِ منطبق را اجرا می‌کند،
+    اینجا عملاً «خوردن» پیام یعنی success)."""
+    res = await relay.relay(update, context)
+    if not res.get("handled"):
+        logger.debug("ring relay passed-through: %s", res.get("why"))
+
+
+# ══════════════════════════════════════════════════════════════
+#  ثبت هندلرها (§۴۲) — از bot.py صدا زده می‌شود
+# ══════════════════════════════════════════════════════════════
+
+class _RingFlowFilter(filters.MessageFilter):
+    """فیلتر سفارشی — در PTB 21.3 هیچ `filters.Function` عمومی وجود ندارد
+    (این باگ در boot ربات می‌ترکید؛ تست رجیستری گرفتش)."""
+    name = "ring_flow"
+
+    def filter(self, message: Message) -> bool:        # type: ignore[override]
+        return _flow_filter(message)
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+
+class _RingRelayFilter(filters.MessageFilter):
+    name = "ring_relay"
+
+    def filter(self, message: Message) -> bool:         # type: ignore[override]
+        return _relay_filter(message)
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+
+def register(app) -> None:
+    """همه‌ی هندلرهای رینگ. ترتیب = اولویت."""
+    app.add_handler(CommandHandler("ring", ring_command))
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND & _RingFlowFilter(),
+        ring_text_flow))
+    app.add_handler(MessageHandler(
+        filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & ~filters.COMMAND
+        & _RingRelayFilter(),
+        ring_relay))
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^💍 رینگ استریت$") & filters.ChatType.PRIVATE,
+        ring_menu_button))
+
+
+def handlers():
+    """برای ادغام در لیست `cbs` خودِ bot.py (الگوی فعلی ربات)."""
+    return [(ring_callback, rf"^{CB}")]
