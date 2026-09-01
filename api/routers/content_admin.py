@@ -41,7 +41,9 @@ async def _deny_intake(item_intake: str, admin: dict):
     if scope:
         if scope.get("kind") == "global":
             return
-        if (item_intake or "") == (scope.get("intake") or ""):
+        own = scope.get("intake") or ""
+        # 🛡 C3.1 — scope تنظیم‌نشده ⇒ هیچ سطلی برای نوشتن؛ سراسری هم نه
+        if own and (item_intake or "") == own:
             return
         raise HTTPException(403, "intake_out_of_scope")
     if not await db.can_access_intake(admin["id"], item_intake or ''):
@@ -55,7 +57,7 @@ async def _read_intake(item_intake: str, admin: dict) -> bool:
         if scope.get("kind") == "global":
             return False
         own = scope.get("intake") or ""
-        if (item_intake or "") == own:
+        if own and (item_intake or "") == own:
             return False
         if (item_intake or "") == "":
             return True
@@ -65,6 +67,22 @@ async def _read_intake(item_intake: str, admin: dict) -> bool:
     scope = admin.get("_scope") or {}
     if scope.get("kind") == "scoped" and (item_intake or '') == '':
         return True
+    raise HTTPException(403, "intake_out_of_scope")
+
+
+async def _deny_create_in(bucket: str, admin: dict):
+    """🛡 C3.1 — «آیا اجازه دارد *در این سطل* آیتم بسازد؟»
+
+    مسیرهای ساختِ آیتم‌های سطح‌بالا (درس، موضوع رفرنس) آیتمِ موجودی را
+    mutate نمی‌کنند، پس _deny_intake رویشان صدق نمی‌کند؛ بدون این گیت،
+    ادمین scopedِ بدون-scope با resolve_content_intake سطل '' (سراسری) را
+    تحویل می‌گرفت و روی هسته‌ی مشترک می‌نوشت. تصمیم از همان منبع واحد
+    (db.can_access_intake) گرفته می‌شود."""
+    if await db.can_access_intake(admin["id"], bucket or ''):
+        return
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped" and not (scope.get("intake") or ""):
+        raise HTTPException(403, "intake_not_configured")
     raise HTTPException(403, "intake_out_of_scope")
 
 
@@ -487,10 +505,17 @@ async def bs_lessons(term: str = Query(...), admin=Depends(get_content_admin_use
     # دیده می‌شوند (§۲۲ spec: Global=هسته‌ی پایه، فقط‌خواندنی)
     if scope.get("kind") == "scoped":
         items = await db.bs_get_lessons(term, intake=[iv, ''])
+        # 🛡 C3.1 — «ورودی من» تنها وقتی معنای نوشتن دارد که scope تنظیم شده
+        # باشد؛ برای scopedِ بدون-scope همه‌چیز فقط‌خواندنی است (iv='' و
+        # own='' نباید با «سطل سراسری مال من است» اشتباه گرفته شود).
+        own = scope.get("intake") or ""
+        # 🌊 C3 — روی درس سراسری «فقط‌خواندنی» است، ولی می‌تواند جلسه‌ی
+        # فقط-ورودی‌خودش را زیرش بسازد ⇒ UI باید دکمه‌ی افزودن را باز بگذارد.
         return {"intake": iv,
             "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),
                         "teacher":l.get("teacher",""),
-                        "readonly": (l.get("intake") or '') != iv} for l in items]}
+                        "readonly": not own or (l.get("intake") or '') != own,
+                        "can_create_sessions": bool(own) and (l.get("intake") or '') == ''} for l in items]}
     items = await db.bs_get_lessons(term, intake=iv)
     return {"intake": iv,
         "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),"teacher":l.get("teacher",""),
@@ -509,6 +534,7 @@ class BsLessonUpdate(BaseModel):
 async def bs_add_lesson_ep(body: BsLessonCreate, admin=Depends(get_content_admin_user)):
     if body.term not in TERMS: raise HTTPException(422, "ترم نامعتبر")
     iv = resolve_content_intake(admin, body.intake)
+    await _deny_create_in(iv, admin)
     r = await db.bs_add_lesson(body.term, body.name.strip(), body.teacher.strip(), intake=iv)
     if r is None: raise HTTPException(409, "این درس قبلاً در این ترم ثبت شده")
     await _audit(admin, "ایجاد درس علوم پایه", "Content", severity="INFO",
@@ -560,7 +586,8 @@ async def bs_del_lesson_ep(lid: str, admin=Depends(get_content_admin_user)):
 @router.get("/basic-science/lessons/{lid}/sessions")
 async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
     # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ جلساتِ درسِ سراسری برای scoped
-    ro = await _read_intake(await db.lesson_intake(lid), admin)
+    li = await db.lesson_intake(lid)
+    ro = await _read_intake(li, admin)
     scope = admin.get("_scope") or {}
     # 🍴 C2 — نمای مؤثر برای scoped روی درس سراسری: fork خودش جایگزین base
     if ro and scope.get("kind") == "scoped":
@@ -568,16 +595,29 @@ async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
             lid, [scope.get("intake") or '', ''])
     else:
         items = await db.bs_get_sessions(lid)
+    # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
+    child = await db.scoped_child_intake(admin["id"], li)
+    own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
+    next_number = await db.bs_next_session_number(lid, (child or None) if child else None)
     return {"readonly": ro,
+        # can_create_own: درس برای این کاربر فقط‌خواندنی است ولی می‌تواند
+        # جلسه‌ای که فقط برای ورودی خودش است اضافه کند (§۱۱ گزارش)
+        "can_create_own": bool(child not in (None, '')),
+        "next_number": next_number,
         "sessions":[{"id":str(s["_id"]),"number":s.get("number",0),"topic":s.get("topic",""),
         "teacher":s.get("teacher",""),
         # 🍴 C2 — متادیتای fork برای رندر دکمه‌های ✂️/↩️ و نشان ⭐ در مینی‌اپ
-        "intake":s.get("intake") or "", "is_fork":bool(s.get("fork_of"))} for s in items]}
+        "intake":s.get("intake") or "", "is_fork":bool(s.get("fork_of")),
+        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
+        "own": (not bool(s.get("fork_of"))) and bool(own_iv)
+                and (s.get("intake") or '') == own_iv} for s in items]}
 
 class BsSessionCreate(BaseModel):
     number: int = Field(ge=1, le=10000)
     topic: str = Field(min_length=1, max_length=200)
     teacher: str = Field(default="", max_length=120)
+    # 🌊 C3 — سطل فرزند؛ برای scoped همیشه scope خودش (ورودی کلاینت نادیده)
+    intake: Optional[str] = Field(default="", max_length=40)
 
 
 class BsSessionUpdate(BaseModel):
@@ -588,14 +628,31 @@ class BsSessionUpdate(BaseModel):
 
 @router.post("/basic-science/lessons/{lid}/sessions")
 async def bs_add_session_ep(lid: str, body: BsSessionCreate, admin=Depends(get_content_admin_user)):
-    await _deny_intake(await db.lesson_intake(lid), admin)
-    sid = await db.bs_add_session(lid, body.number, body.topic.strip(), body.teacher.strip())
+    li = await db.lesson_intake(lid)
+    # 🌊 C3 — دو حالت مجاز:
+    #  ۱) والد در scope کاربر است → رفتار قدیمی (فرزند بدون فیلد intake، از والد ارث می‌برد)
+    #  ۲) والد 🌐 سراسری و کاربر 📅 است → فرزند در سطل scope خودش؛ والد دست‌نخورده
+    child = await db.scoped_child_intake(admin["id"], li)
+    if child is None:
+        raise HTTPException(403, "intake_out_of_scope")
+    if body.intake and (body.intake or '') != (child or ''):
+        # body.intake خالی = «همان که سرور تصمیم گرفته» (مسیر عادی کلاینت‌های قدیمی).
+        # فقط وقتی intake صریح و *متفاوت* فرستاده شود بحث جعل intake است؛
+        # و آن هم تنها برای ادمین ارشد معنا دارد (scoped: scope خودش اجباری است)
+        if (admin.get("_scope") or {}).get("kind") != "global":
+            raise HTTPException(403, "intake_out_of_scope")
+        if body.intake not in await _intakes_active_codes():
+            raise HTTPException(422, "کد ورودی نامعتبر است")
+        child = body.intake
+    sid = await db.bs_add_session(lid, body.number, body.topic.strip(), body.teacher.strip(),
+                                  intake=(child or None))
     await _audit(admin, "ایجاد جلسه علوم پایه", "Content", severity="INFO",
         target_id=str(sid), target_type="session",
         target_label=f"جلسه {body.number} — {body.topic.strip()}",
-        after={"lesson_id": lid, "number": body.number, "teacher": body.teacher.strip()},
-        tags=["محتوا", "ایجاد_جلسه", "پنل_وب"])
-    return {"ok":True, "id":sid}
+        after={"lesson_id": lid, "number": body.number, "teacher": body.teacher.strip(),
+               "intake": child or ""},
+        tags=["محتوا", "ایجاد_جلسه", "پنل_وب"] + (["فرزند_ورودی"] if child else []))
+    return {"ok":True, "id":sid, "intake": child or ""}
 
 
 @router.patch("/basic-science/sessions/{sid}")
@@ -698,10 +755,12 @@ async def ref_subjects_ep(admin=Depends(get_content_admin_user),
     # 🌊 C1.5 — ادمین ورودی خاص: موضوعات سراسری هم با فلگ readonly (§۲۲)
     if scope.get("kind") == "scoped":
         items = await db.ref_get_subjects(intake=[iv, ''])
+        # 🛡 C3.1 — همان قاعده‌ی bs_lessons: بدون scope تنظیم‌شده همه‌چیز 🔒
+        own = scope.get("intake") or ""
         return {"intake": iv,
             "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
                          "intake": s.get("intake") or "",
-                         "readonly": (s.get("intake") or '') != iv} for s in items]}
+                         "readonly": not own or (s.get("intake") or '') != own} for s in items]}
     items = await db.ref_get_subjects(intake=iv)
     return {"intake": iv,
         "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
@@ -722,6 +781,7 @@ class ReorderBody(BaseModel):
 @router.post("/references/subjects")
 async def ref_add_subject_ep(body: RefSubjectCreate, admin=Depends(get_content_admin_user)):
     iv = resolve_content_intake(admin, body.intake)
+    await _deny_create_in(iv, admin)
     r = await db.ref_add_subject(body.name.strip(), intake=iv)
     if r is None: raise HTTPException(409, "این موضوع قبلاً ثبت شده")
     await _audit(admin, "ایجاد موضوع رفرنس", "Content", severity="INFO",
@@ -784,7 +844,8 @@ async def ref_del_subject_ep(sid: str, admin=Depends(get_content_admin_user)):
 @router.get("/references/subjects/{sid}/books")
 async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user)):
     # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ کتاب‌های موضوع سراسری برای scoped
-    ro = await _read_intake(await db.ref_subject_intake(sid), admin)
+    _si = await db.ref_subject_intake(sid)
+    ro = await _read_intake(_si, admin)
     scope = admin.get("_scope") or {}
     # 🍴 C2 — نمای مؤثر برای scoped روی موضوع سراسری: fork جایگزین base
     if ro and scope.get("kind") == "scoped":
@@ -792,21 +853,47 @@ async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user)):
             sid, [scope.get("intake") or '', ''])
     else:
         items = await db.ref_get_books(sid)
+    # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
+    child = await db.scoped_child_intake(admin["id"], _si)
+    own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
     return {"readonly": ro,
+        # can_create_own: موضوع فقط‌خواندنی است ولی کاربر می‌تواند کتابی که
+        # فقط برای ورودی خودش است اضافه کند (قرارداد هم‌نامِ bs_sessions_ep)
+        "can_create_own": bool(child not in (None, '')),
         "books":[{"id":str(b["_id"]),"name":b.get("name",""),
-        "intake":b.get("intake") or "", "is_fork":bool(b.get("fork_of"))} for b in items]}
+        "intake":b.get("intake") or "", "is_fork":bool(b.get("fork_of")),
+        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
+        "own": (not bool(b.get("fork_of"))) and bool(own_iv)
+                and (b.get("intake") or '') == own_iv} for b in items]}
 
 class RefBookCreate(BaseModel):
-    name: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=200)
+    # 🌊 C3 — سطل فرزند؛ برای scoped همیشه scope خودش (ورودی کلاینت نادیده)
+    intake: Optional[str] = Field(default="", max_length=40)
 
 @router.post("/references/subjects/{sid}/books")
 async def ref_add_book_ep(sid: str, body: RefBookCreate, admin=Depends(get_content_admin_user)):
-    await _deny_intake(await db.ref_subject_intake(sid), admin)
-    r = await db.ref_add_book(sid, body.name.strip())
+    # 🌊 C3 — دو حالت مجاز (قرارداد bs_add_session_ep):
+    #  ۱) والد در scope کاربر → رفتار قدیمی: فرزند بدون فیلد intake، از والد ارث می‌برد
+    #  ۲) والد 🌐 و کاربر 📅 → فرزند در سطل scope خودش؛ والد دست‌نخورده
+    _si = await db.ref_subject_intake(sid)
+    child = await db.scoped_child_intake(admin["id"], _si)
+    if child is None:
+        raise HTTPException(403, "intake_out_of_scope")
+    if body.intake and (body.intake or '') != (child or ''):
+        # intake خالی = «همان که سرور تصمیم گرفته»؛ صریح و متفاوت = جعل intake،
+        # که فقط برای ادمین ارشد معنا دارد
+        if (admin.get("_scope") or {}).get("kind") != "global":
+            raise HTTPException(403, "intake_out_of_scope")
+        if body.intake not in await _intakes_active_codes():
+            raise HTTPException(422, "کد ورودی نامعتبر است")
+        child = body.intake
+    r = await db.ref_add_book(sid, body.name.strip(), intake=(child or None))
     await _audit(admin, "ایجاد کتاب رفرنس", "Content", severity="INFO",
         target_id=str(r), target_type="reference_book", target_label=body.name.strip(),
-        after={"subject_id": sid}, tags=["رفرنس", "ایجاد", "پنل_وب"])
-    return {"ok":True, "id":str(r)}
+        after={"subject_id": sid, "intake": child or ""},
+        tags=["رفرنس", "ایجاد", "پنل_وب"] + (["فرزند_ورودی"] if child else []))
+    return {"ok":True, "id":str(r), "intake": child or ""}
 
 
 @router.patch("/references/books/{bid}")
@@ -837,15 +924,8 @@ async def ref_reorder_book_ep(bid: str, body: ReorderBody,
         raise HTTPException(404, "کتاب رفرنس پیدا نشد")
     await _deny_intake(await db.ref_book_intake(bid), admin)
     fn = db.reorder_up if body.direction == "up" else db.reorder_down
-    query = {"subject_id": item.get("subject_id", "")}
-    if item.get("fork_of") or (item.get("intake") or ""):
-        query["intake"] = item.get("intake") or ""
-    else:
-        # کتاب پایه با fork ورودی دیگر در یک ترتیب مشترک swap نمی‌شود.
-        query["fork_of"] = {"$in": [None, ""]}
-        query["$or"] = [{"intake": ""}, {"intake": None},
-                        {"intake": {"$exists": False}}]
-    ok = await fn("ref_books", bid, query)
+    # 🌊 C3 — قانون «هم‌سطل» به db منتقل شد تا ربات و وب یک رفتار داشته باشند
+    ok = await fn("ref_books", bid, db.ref_books_order_filter(item))
     if ok:
         await _audit(
             admin, "تغییر ترتیب کتاب رفرنس", "Content", severity="INFO",
@@ -947,6 +1027,12 @@ async def bs_fork_session_ep(sid: str, admin=Depends(get_content_admin_user),
     if not target:
         raise HTTPException(422,
             "سفارشی‌سازی روی سطل سراسری معنا ندارد؛ ابتدا یک ورودی را انتخاب کنید")
+    # 🌊 C3 — فورک فقط روی «پایه‌ی سراسری» معنا دارد؛ اگر جلسه خودش فرزندِ
+    # یک ورودی است (fork_of ندارد ولی intake دارد) پیام دقیق می‌دهیم —
+    # قبلاً 422 گمراه‌کننده‌ی «پایه یافت نشد» برمی‌گشت.
+    if await db.session_intake(sid) != '':
+        raise HTTPException(409,
+            "این جلسه نسخه‌ی سراسری نیست؛ همان را مستقیماً ویرایش کنید")
     new_sid = await db.bs_fork_session(sid, target)
     if not new_sid:
         raise HTTPException(422, "فقط جلسه‌ی سراسری قابل سفارشی‌سازی است")
@@ -988,6 +1074,10 @@ async def ref_fork_book_ep(bid: str, admin=Depends(get_content_admin_user),
     if not target:
         raise HTTPException(422,
             "سفارشی‌سازی روی سطل سراسری معنا ندارد؛ ابتدا یک ورودی را انتخاب کنید")
+    # 🌊 C3 — فورک فقط روی «پایه‌ی سراسری» معنا دارد (همان قاعده‌ی جلسات)
+    if await db.ref_book_intake(bid) != '':
+        raise HTTPException(409,
+            "این کتاب نسخه‌ی سراسری نیست؛ همان را مستقیماً ویرایش کنید")
     new_bid = await db.ref_fork_book(bid, target)
     if not new_bid:
         raise HTTPException(422, "فقط کتاب سراسری قابل سفارشی‌سازی است")

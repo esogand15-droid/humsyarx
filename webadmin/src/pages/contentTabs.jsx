@@ -41,6 +41,7 @@ export function RefsTab() {
   const [sub, setSub] = useState(null);
   const [books, setBooks] = useState(null);
   const [booksReadonly, setBooksReadonly] = useState(false);
+  const [booksCanCreate, setBooksCanCreate] = useState(false);  // 🌊 C3
   const [book, setBook] = useState(null);
   const [files, setFiles] = useState(null);
   const [filesPage, setFilesPage] = useState({ total: 0, hasMore: false });
@@ -65,7 +66,7 @@ export function RefsTab() {
   useEffect(() => { setSub(null); setBook(null); loadSubjects(); }, [intake]);
   const loadBooks = async (selectedSubject) => {
     setSub(selectedSubject); setBook(null); setBooks(null); setBooksErr(''); setFilesErr('');
-    try { const r = await api.refBooks(selectedSubject.id); setBooks(r.books || []); setBooksReadonly(!!r.readonly); }
+    try { const r = await api.refBooks(selectedSubject.id); setBooks(r.books || []); setBooksReadonly(!!r.readonly); setBooksCanCreate(!!r.can_create_own); }
     catch (e) { setBooksErr(errText(e)); }
   };
   const loadFiles = async (selectedBook, append = false) => {
@@ -126,12 +127,12 @@ export function RefsTab() {
           </ContentPane>
 
           <ContentPane icon="📚" title="کتاب‌ها" subtitle={sub?.name} count={books ? books.length.toLocaleString('fa') : null}
-            actions={sub && !sub.readonly ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })} aria-label={`افزودن کتاب به ${sub.name}`}>➕ کتاب</button> : null}>
+            actions={sub && (!sub.readonly || booksCanCreate) ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })} aria-label={`افزودن کتاب به ${sub.name}`}>{sub.readonly ? '➕ کتاب (ورودی من)' : '➕ کتاب'}</button> : null}>
             {!sub ? <ContentEmptyState icon="📚" title="موضوعی انتخاب نشده" description="یک موضوع را برای مشاهده کتاب‌های آن انتخاب کنید." />
               : booksErr ? <ContentErrorState title="کتاب‌ها بارگذاری نشد" error={booksErr} compact onRetry={() => loadBooks(sub)} />
                 : !books ? <ContentSkeleton panes={1} rows={5} />
                   : books.length === 0 ? <ContentEmptyState icon="📕" title="هنوز کتابی ثبت نشده" description="نخستین کتاب این موضوع را ایجاد کنید."
-                    action={!sub.readonly ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })}>افزودن کتاب</button> : null} />
+                    action={!sub.readonly || booksCanCreate ? <button className="btn sm primary" onClick={() => setAddModal({ kind: 'book' })}>{sub.readonly ? 'افزودن کتاب برای ورودی من' : 'افزودن کتاب'}</button> : null} />
                     : books.map((entry, index) => {
                       const editable = !booksReadonly || entry.is_fork || entry.intake === intake;
                       const scope = entry.is_fork ? 'override' : (entry.intake ? 'intake' : 'global');
@@ -187,6 +188,7 @@ export function RefsTab() {
       )}
 
       {addModal && <RefAddModal kind={addModal.kind} sub={sub} book={book} intake={intake}
+        ownOnly={!!(sub?.readonly && booksCanCreate)}
         onClose={(ok) => {
           const kind = addModal.kind; setAddModal(null);
           if (ok) { if (kind === 'subject') loadSubjects(); else if (kind === 'book') loadBooks(sub); else loadFiles(book); }
@@ -227,7 +229,7 @@ function RefNameModal({ kind, item, onClose }) {
   </Modal>;
 }
 
-function RefAddModal({ kind, sub, book, intake, onClose }) {
+function RefAddModal({ kind, sub, book, intake, ownOnly, onClose }) {
   const [name, setName] = useState('');
   const [lang, setLang] = useState('fa');
   const [volume, setVolume] = useState(1);
@@ -238,6 +240,10 @@ function RefAddModal({ kind, sub, book, intake, onClose }) {
   return (
     <Modal title={titles[kind]} onClose={() => onClose(false)}>
       <div className="grid content-modal-grid">
+        {kind === 'book' && ownOnly ? (
+          <div className="muted">📅 این کتاب فقط برای ورودی «{intake || '—'}» ساخته می‌شود؛
+            کتاب‌های سراسری این موضوع دست‌نخورده می‌مانند.</div>
+        ) : null}
         {kind !== 'file' && (
           <input className="inp" placeholder={kind === 'subject' ? 'نام موضوع (مثلاً آناتومی)…' : 'نام کتاب…'}
                  value={name} onChange={e => setName(e.target.value)} />

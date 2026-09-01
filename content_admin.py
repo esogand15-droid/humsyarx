@@ -55,7 +55,16 @@ async def _deny_scope(query, uid: int):
     """⛔ پیام استاندارد عدم دسترسی scope (§۲۷ spec) — بدون افشای جزئیات داخلی."""
     scope = await db.get_content_scope(uid)
     if scope and scope['kind'] == 'scoped':
-        label = await _intake_label(scope.get('intake') or '')
+        code = scope.get('intake') or ''
+        if not code:
+            # 🛡 C3.1 — نقش scoped با ورودی تنظیم‌نشده: نوشتن در هیچ سطلی
+            # مجاز نیست (قبلاً «سراسری» را ویرایش می‌کرد)
+            await query.answer(
+                "⛔ دسترسی غیرمجاز\nبرای نقش شما هنوز ورودی‌ای تنظیم نشده؛ "
+                "پس فقط مشاهده‌ی سراسری دارید.\nاز ادمین ارشد بخواهید ورودی‌تان را تعیین کند.",
+                show_alert=True)
+            return
+        label = await _intake_label(code)
         await query.answer(
             f"⛔ دسترسی غیرمجاز\nشما فقط به محتوای ورودی «{label}» دسترسی دارید.",
             show_alert=True)
@@ -93,6 +102,13 @@ ITEM_INTAKE_CHECKS = {
 ITEM_VIEW_ACTIONS = {'lesson', 'session', 'ref_subject', 'ref_book'}
 
 
+# 🌊 C3 — اکشن‌هایی که به‌جای ویرایشِ والد، «فرزند ورودی‌خاص» می‌سازند.
+# برای این‌ها والدِ سراسری قابل‌بازکردن است (فرم باز می‌شود) چون خودِ والد
+# تغییر نمی‌کند؛ تصمیم نهایی و نوشتن در db.scoped_child_intake گرفته می‌شود
+# و در لحظه‌ی ثبت هم یک بار دیگر سنجیده می‌شود (دفاع لایه‌ای).
+ITEM_CHILD_ACTIONS = {'add_session_prompt': 'lesson', 'add_ref_book_prompt': 'ref_subject'}
+
+
 async def _resolve_item_intake(kind: str, item_id: str) -> str:
     """intake واقعی آیتم از روی DB (زنجیره‌ی والد) — پیش‌فرض '' = سراسری."""
     try:
@@ -125,6 +141,10 @@ async def _enforce_item_scope(query, uid: int, action: str, parts) -> bool:
     if action in ITEM_VIEW_ACTIONS and item_intake == '':
         scope = await db.get_content_scope(uid)
         if scope and scope.get('kind') == 'scoped':
+            return True
+    # 🌊 C3 — ساخت «فرزند ورودی‌خاص» زیر والدِ سراسری (والد دست‌نخورده)
+    if action in ITEM_CHILD_ACTIONS and item_intake == '':
+        if await db.scoped_child_intake(uid, item_intake) is not None:
             return True
     await _deny_scope(query, uid)
     return False
@@ -322,11 +342,16 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await _show_intake_picker(query)
         return ConversationHandler.END
 
-    # 🌊 C1.5 — دکمه‌ی 🔒/جداکننده‌ی فقط‌خواندنی (بدون عملکرد نوشتاری)
+    # 🔒 C1.5/C3 — دکمه‌ی جداکننده‌ی «فقط‌خواندنی» (بدون عملکرد نوشتاری)
     elif action == 'ro_info':
+        # 🌊 C3 — به نماینده یادآوری می‌کنیم که ساختن «جلسه‌ی مخصوص ورودی خودش»
+        # آزاد است؛ وگرنه پیام ثابت «فقط‌خواندنی» فکر می‌دهد کل پنل قفل است.
+        can_child = await db.scoped_child_intake(uid, '') not in (None, '')
         await query.answer(
-            "🔒 محتوای سراسری — فقط‌خواندنی؛ "
-            "مدیریت آن نزد 🎓 ادمین ارشد محتواست.",
+            "🔒 محتوای سراسری — فقط‌خواندنی؛ مدیریت آن نزد 🎓 ادمین ارشد محتواست."
+            + ("\n\n➕ اما می‌توانید «جلسه» یا «کتاب رفرنس» جدید را با برچسب "
+               "«فقط ورودی خودم» داخل درس/موضوع سراسری بسازید."
+               if can_child else ""),
             show_alert=True)
         return ConversationHandler.END
 
@@ -375,6 +400,12 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ افزودن درس ─
     elif action == 'add_lesson_prompt':
         idx  = int(parts[2]); term = TERMS[idx]
+        # 🛡 C3.1 — بدون ورودیِ تنظیم‌شده، ساختن در سطل سراسری مجاز نیست
+        if not await db.can_access_intake(uid, context.user_data.get('ca_intake') or ''):
+            await query.answer(
+                "⛔ برای نقش شما هنوز ورودی‌ای تنظیم نشده — از ادمین ارشد بخواهید.\n"
+                "پیش از آن فقط مشاهده‌ی سراسری دارید.", show_alert=True)
+            return
         context.user_data.update({'ca_term_idx': idx, 'ca_term': term, 'ca_mode': 'add_lesson'})
         await query.edit_message_text(
             f"➕ <b>درس جدید — {term}</b>\n\n"
@@ -458,10 +489,17 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     elif action == 'add_session_prompt':
         lid = parts[2]
         context.user_data.update({'ca_lesson_id': lid, 'ca_mode': 'add_session'})
-        sessions = await db.bs_get_sessions(lid); next_n = len(sessions) + 1
-        lesson   = await db.bs_get_lesson(lid)
+        lesson = await db.bs_get_lesson(lid)
+        # 🌊 C3 — اگر والد سراسری است، فرزند در سطل scope خودِ actor نوشته می‌شود
+        _child = await db.scoped_child_intake(uid, (lesson or {}).get('intake') or '')
+        next_n = await db.bs_next_session_number(lid, _child or None)
+        scope_line = ""
+        if _child:
+            scope_line = (f"📅 <b>فقط برای ورودی «{await _intake_label(_child)}»</b> — "
+                          f"نسخه‌ی سراسری این درس تغییر نمی‌کند.\n\n")
         await query.edit_message_text(
             f"➕ <b>جلسه جدید — {lesson.get('name','') if lesson else ''}</b>\n\n"
+            f"{scope_line}"
             f"فرمت: <code>شماره, موضوع, استاد</code>\n"
             f"مثال: <code>{next_n}, فیزیولوژی کلیه, دکتر احمدی</code>\n"
             f"<i>شماره پیشنهادی: {next_n} — استاد اختیاری</i>\n\n⌨️ /cancel",
@@ -617,6 +655,12 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         await _show_ref_subjects(query, back=back, context=context)
 
     elif action == 'add_ref_subject_prompt':
+        # 🛡 C3.1 — بدون ورودیِ تنظیم‌شده، ساختن در سطل سراسری مجاز نیست
+        if not await db.can_access_intake(uid, context.user_data.get('ca_intake') or ''):
+            await query.answer(
+                "⛔ برای نقش شما هنوز ورودی‌ای تنظیم نشده — از ادمین ارشد بخواهید.\n"
+                "پیش از آن فقط مشاهده‌ی سراسری دارید.", show_alert=True)
+            return
         context.user_data['ca_mode'] = 'add_ref_subject'
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
@@ -660,14 +704,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ ترتیب کتاب‌های رفرنس ─
     elif action == 'ref_book_up':
         bid = parts[2]; sid = context.user_data.get('ca_ref_subject_id','')
-        await db.reorder_up('ref_books', bid, {'subject_id': sid})
+        # 🌊 C3 — فقط با هم‌سطل‌ها swap می‌شود (پیش از این، ترتیب پایه‌ی
+        # سراسری هم از جای خود کنده می‌شد — همان مسیر در API اصلاح شده بود)
+        _bkf = db.ref_books_order_filter(await db.ref_get_book(bid) or {'subject_id': sid})
+        await db.reorder_up('ref_books', bid, _bkf)
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_books(query, context, sid, back=back)
 
     elif action == 'ref_book_down':
         bid = parts[2]; sid = context.user_data.get('ca_ref_subject_id','')
-        await db.reorder_down('ref_books', bid, {'subject_id': sid})
+        _bkf = db.ref_books_order_filter(await db.ref_get_book(bid) or {'subject_id': sid})
+        await db.reorder_down('ref_books', bid, _bkf)
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_books(query, context, sid, back=back)
@@ -675,8 +723,16 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     elif action == 'add_ref_book_prompt':
         sid = parts[2]
         context.user_data.update({'ca_ref_subject_id': sid, 'ca_mode': 'add_ref_book'})
+        # 🌊 C3 — اگر موضوع سراسری است، فرزند در سطل scope خودِ actor نوشته می‌شود
+        _subj  = await db.ref_get_subject(sid)
+        _child = await db.scoped_child_intake(uid, (_subj or {}).get('intake') or '')
+        scope_line = ""
+        if _child:
+            scope_line = (f"📅 <b>فقط برای ورودی «{await _intake_label(_child)}»</b> — "
+                          f"کتاب‌های سراسری این موضوع تغییر نمی‌کنند.\n\n")
         await query.edit_message_text(
-            "➕ <b>کتاب جدید</b>\n\nنام کتاب را بنویسید:\n⌨️ /cancel",
+            f"➕ <b>کتاب جدید</b>\n\n{scope_line}"
+            "نام کتاب را بنویسید:\n⌨️ /cancel",
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_subject:{sid}'))
 
     elif action == 'edit_ref_book_prompt':
@@ -1033,9 +1089,13 @@ async def _show_lessons(query, context, term, back='ca:terms'):
     idx     = context.user_data.get('ca_term_idx', 0)
     kb = []
 
-    if is_scoped:
+    if is_scoped and ctx:
         own_items  = [l for l in lessons if (l.get('intake') or '') == ctx]
         glob_items = [l for l in lessons if (l.get('intake') or '') != ctx]
+    elif is_scoped:
+        # 🛡 C3.1 — scoped بدون ورودیِ تنظیم‌شده: هیچ سطلی «مال من» نیست،
+        # پس همه‌چیز در گروه فقط‌خواندنی می‌نشیند (نه زیر دکمه‌های ✏️/🗑).
+        own_items, glob_items = [], lessons
     else:
         own_items, glob_items = lessons, []
 
@@ -1067,10 +1127,14 @@ async def _show_lessons(query, context, term, back='ca:terms'):
             kb.append([InlineKeyboardButton(
                 f"🌐 {l['name']}{t}", callback_data=f'ca:lesson:{lid}')])
 
-    kb.append([InlineKeyboardButton("➕ درس جدید", callback_data=f'ca:add_lesson_prompt:{idx}')])
+    if not (is_scoped and not ctx):
+        kb.append([InlineKeyboardButton("➕ درس جدید", callback_data=f'ca:add_lesson_prompt:{idx}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
     ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
                if glob_items else '')
+    if is_scoped and not ctx:
+        ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
+                    "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
     await query.edit_message_text(
         f"📘 <b>{term}</b> — {len(lessons)} درس\n"
         f"<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب</i>{ro_line}",
@@ -1083,23 +1147,31 @@ async def _show_sessions(query, context, lid):
     idx      = context.user_data.get('ca_term_idx', 0)
     uid      = query.from_user.id
     # 🌊 C1.5 — درس سراسری برای ادمین ورودی خاص: فقط‌خواندنی
-    writable = await db.can_access_intake(
-        uid, (lesson or {}).get('intake') or '')
+    _li      = (lesson or {}).get('intake') or ''
+    writable = await db.can_access_intake(uid, _li)
     # 🍴 C2 — نمای مؤثر برای scoped روی درس سراسری: fork خودش جایگزین base
     _cscope    = await db.get_content_scope(uid)
     is_scoped  = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx        = context.user_data.get('ca_intake', '')
+    # 🌊 C3 — نماینده روی درس 🌐: «جلسه‌ی فقط‌ورودی‌خودم» ساختنی است (والد قفل)
+    can_child  = (not writable and
+                  await db.scoped_child_intake(uid, _li) not in (None, ''))
     if not writable and is_scoped:
         sessions = await db.bs_get_sessions_effective(lid, [ctx, ''])
     kb = []
     for s in sessions:
         sid = str(s['_id'])
         is_fork  = bool(s.get('fork_of'))
-        own_fork = is_scoped and is_fork and (s.get('intake') or '') == ctx
+        # 🌊 C3 — فرزند ورودی‌خاص (جلسه‌ای که فقط برای ورودی من ساخته شده)
+        own_child = bool(is_scoped and ctx and not is_fork
+                         and (s.get('intake') or '') == ctx)
+        own_fork  = is_scoped and is_fork and (s.get('intake') or '') == ctx
         if writable:
             badge = ''
             if is_fork:  # ادمین ارشد: forkهای هر ورودی با نشان دیده می‌شوند
                 badge = f" ⭐({await _intake_label(s.get('intake') or '')})"
+            elif s.get('intake'):  # 🌊 C3 — فرزند اختصاصی یک ورودی
+                badge = f" 📅({await _intake_label(s.get('intake'))})"
             kb.append([
                 InlineKeyboardButton(
                     f"📌 {s['number']} — {s.get('topic','')[:20]}{badge}",
@@ -1114,23 +1186,39 @@ async def _show_sessions(query, context, lid):
                     callback_data=f'ca:session:{sid}'),
                 InlineKeyboardButton("↩️", callback_data=f'ca:unfork_session:{sid}'),
             ])
+        elif own_child:
+            kb.append([
+                InlineKeyboardButton(
+                    f"📅 {s['number']} — {s.get('topic','')[:20]} (ورودی من)",
+                    callback_data=f'ca:session:{sid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_session_menu:{sid}'),
+                InlineKeyboardButton("🗑",  callback_data=f'ca:del_session:{sid}'),
+            ])
         else:
             row = [InlineKeyboardButton(
                 f"🌐 {s['number']} — {s.get('topic','')[:20]}",
                 callback_data=f'ca:session:{sid}')]
-            if is_scoped:
+            if is_scoped and ctx:
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_session:{sid}'))
             kb.append(row)
     if writable:
         kb.append([InlineKeyboardButton("➕ جلسه جدید", callback_data=f'ca:add_session_prompt:{lid}')])
+    elif can_child:
+        # 🌊 C3 — جلسه برای سطل خودش؛ نه دست‌زدن به درس/جلسات سراسری
+        kb.append([InlineKeyboardButton(
+            "➕ جلسه جدید (فقط ورودی خودم)",
+            callback_data=f'ca:add_session_prompt:{lid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=f'ca:term:{idx}')])
     lname = lesson.get('name','') if lesson else ''
     if writable:
         ro_line = "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>"
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
-                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه</i>")
+                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
+                   "📅=کتاب اختصاصی ورودی خودم</i>")
+        if can_child:
+            ro_line += "\n<i>📅=جلسه‌ی اختصاصی ورودی خودم (قابل ویرایش خودتان)</i>"
     else:
         ro_line = "🔒 🌐 سراسری — فقط‌خواندنی"
     await query.edit_message_text(
@@ -1179,7 +1267,7 @@ async def _show_session_content(query, context, sid):
     elif not (session or {}).get('fork_of'):
         # 🍴 C2 — روی جلسه‌ی سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
         _cs2 = await db.get_content_scope(query.from_user.id)
-        if _cs2 and _cs2.get('kind') == 'scoped':
+        if _cs2 and _cs2.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
             _ctx2 = context.user_data.get('ca_intake', '')
             _fk2 = await db.session_superseded_by_fork(sid, _ctx2)
             if _fk2:
@@ -1223,9 +1311,12 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
         is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     subjects = await db.ref_get_subjects(
         intake=[intake, ''] if is_scoped else intake)
-    if is_scoped:
+    if is_scoped and intake:
         own_items  = [s for s in subjects if (s.get('intake') or '') == intake]
         glob_items = [s for s in subjects if (s.get('intake') or '') != intake]
+    elif is_scoped:
+        # 🛡 C3.1 — بدون ورودیِ تنظیم‌شده چیزی «مال من» نیست؛ همه فقط‌خواندنی
+        own_items, glob_items = [], subjects
     else:
         own_items, glob_items = subjects, []
     kb = []
@@ -1251,10 +1342,14 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
             kb.append([InlineKeyboardButton(
                 f"🌐 {s['name']}",
                 callback_data=f'ca:ref_subject:{str(s["_id"])}')])
-    kb.append([InlineKeyboardButton("➕ درس جدید", callback_data='ca:add_ref_subject_prompt')])
+    if not (is_scoped and not intake):
+        kb.append([InlineKeyboardButton("➕ درس جدید", callback_data='ca:add_ref_subject_prompt')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
     ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
                if glob_items else '')
+    if is_scoped and not intake:
+        ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
+                    "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
     await query.edit_message_text(
         f"📚 <b>رفرنس‌ها</b> — {len(subjects)} درس\n<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب</i>{ro_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
@@ -1271,6 +1366,10 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     _cscope   = await db.get_content_scope(uid)
     is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx       = context.user_data.get('ca_intake', '')
+    # 🌊 C3 — نماینده روی موضوع 🌐: «کتاب فقط‌ورودی‌خودم» ساختنی است (والد قفل)
+    can_child  = (not writable and
+                  await db.scoped_child_intake(uid, (subj or {}).get('intake') or '')
+                  not in (None, ''))
     if not writable and is_scoped:
         books = await db.ref_get_books_effective(sid, [ctx, ''])
     kb = []
@@ -1278,10 +1377,15 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
         bid = str(b['_id'])
         is_fork  = bool(b.get('fork_of'))
         own_fork = is_scoped and is_fork and (b.get('intake') or '') == ctx
+        # 🌊 C3 — فرزندِ ورودی‌خاص (کتابی که فقط برای ورودی من ساخته شده)
+        own_child = bool(is_scoped and ctx and not is_fork
+                         and (b.get('intake') or '') == ctx)
         if writable:
             badge = ''
             if is_fork:
                 badge = f" ⭐({await _intake_label(b.get('intake') or '')})"
+            elif b.get('intake'):
+                badge = f" 📅({await _intake_label(b.get('intake'))})"
             kb.append([
                 InlineKeyboardButton(f"📘 {b['name']}{badge}", callback_data=f'ca:ref_book:{bid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_book_prompt:{bid}'),
@@ -1301,22 +1405,35 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
                     callback_data=f'ca:ref_book:{bid}'),
                 InlineKeyboardButton("↩️", callback_data=f'ca:unfork_book:{bid}'),
             ])
+        elif own_child:
+            kb.append([
+                InlineKeyboardButton(
+                    f"📅 {b['name']} (ورودی من)", callback_data=f'ca:ref_book:{bid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_book_prompt:{bid}'),
+                InlineKeyboardButton("🗑",  callback_data=f'ca:del_ref_book:{bid}'),
+            ])
         else:
             row = [InlineKeyboardButton(
                 f"🌐 {b['name']}", callback_data=f'ca:ref_book:{bid}')]
-            if is_scoped:
+            if is_scoped and ctx and not b.get('intake'):
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_book:{bid}'))
             kb.append(row)
     if writable:
         kb.append([InlineKeyboardButton("➕ کتاب جدید", callback_data=f'ca:add_ref_book_prompt:{sid}')])
+    elif can_child:
+        # 🌊 C3 — کتاب برای سطل خودش؛ هسته‌ی سراسری دست‌نخورده
+        kb.append([InlineKeyboardButton(
+            "➕ کتاب جدید (فقط ورودی خودم)",
+            callback_data=f'ca:add_ref_book_prompt:{sid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=back)])
     name = subj.get('name','') if subj else ''
     if writable:
         ro_line = "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>"
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
-                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه</i>")
+                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
+                   "📅=کتاب اختصاصی ورودی خودم</i>")
     else:
         ro_line = "🔒 🌐 سراسری — فقط‌خواندنی"
     await query.edit_message_text(
@@ -1363,7 +1480,7 @@ async def _show_ref_book_files(query, context, bid):
     elif not (book or {}).get('fork_of'):
         # 🍴 C2 — روی کتاب سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
         _cs3 = await db.get_content_scope(query.from_user.id)
-        if _cs3 and _cs3.get('kind') == 'scoped':
+        if _cs3 and _cs3.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
             _ctx3 = context.user_data.get('ca_intake', '')
             _fk3 = await db.book_superseded_by_fork(bid, _ctx3)
             if _fk3:
@@ -1499,6 +1616,15 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ps = [p.strip() for p in text.split(',')]
         name = ps[0]; teacher = ps[1] if len(ps) > 1 else ''
         term = context.user_data.get('ca_term',''); idx = context.user_data.get('ca_term_idx',0)
+        # 🛡 C3.1 — سطل مقصد ساخت باید واقعاً نوشتنی باشد (scoped بدونِ scope
+        # سراسری را نوشتنی نیست؛ قبلاً دقیقاً همان‌جا می‌نوشت)
+        if not await db.can_access_intake(uid, _ctx_intake):
+            _clear(context)
+            await update.message.reply_text(
+                "⛔ ساخت درس مجاز نیست — برای نقش شما هنوز ورودی‌ای تنظیم نشده.\n"
+                "از ادمین ارشد بخواهید ورودی شما را تعیین کند.",
+                reply_markup=_back_btn("🔙 برگشت", f'ca:term:{idx}'))
+            return ConversationHandler.END
         # 🌊 C1 — درس جدید دقیقاً در scope جاری context ساخته می‌شود
         result = await db.bs_add_lesson(term, name, teacher, intake=_ctx_intake)
         _clear(context)
@@ -1538,7 +1664,11 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif ca_mode == 'add_session':
         ps  = [p.strip() for p in text.split(',')]
         lid = context.user_data.get('ca_lesson_id','')
-        if not await db.can_access_intake(uid, await db.lesson_intake(lid)):
+        _lesson = await db.bs_get_lesson(lid)
+        # 🌊 C3 — «فرزند ورودی‌خاص»: scoped روی درس 🌐 مجاز است جلسه‌ی فقط-ورودیِ
+        # خودش را بسازد؛ هر حالت دیگر (ورودی دیگر / بدون scope) همچنان ⛔.
+        _child = await db.scoped_child_intake(uid, (_lesson or {}).get('intake') or '')
+        if _child is None:
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این درس در scope شما نیست.")
             return ConversationHandler.END
@@ -1548,17 +1678,23 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:lesson:{lid}'))
             return CA_WAITING_TEXT
         try:    number = int(ps[0])
-        except:
-            sessions = await db.bs_get_sessions(lid); number = len(sessions) + 1
+        except: number = await db.bs_next_session_number(lid, _child or None)
         topic = ps[1]; teacher = ps[2] if len(ps) > 2 else ''
-        await db.bs_add_session(lid, number, topic, teacher)
+        await db.bs_add_session(lid, number, topic, teacher, intake=_child or None)
         _clear(context)
+        _warn = ""
+        if _child and await db.bs_session_number_taken(lid, number):
+            _warn = ("\n⚠️ نسخه‌ی سراسری با همین شماره وجود دارد؛ در لیست دانشجو "
+                     "هر دو دیده می‌شوند (برای جایگزینی از ✂️ استفاده کنید).")
         await _audit(context, uid, "ایجاد جلسه جدید",
             severity='INFO',
             target_type='session',
             target_label=f"جلسه {number} — {topic}",
-            tags=['ایجاد_جلسه'])
-        await update.message.reply_text(f"✅ جلسه {number} — «{topic}» اضافه شد!",
+            details=f"📅 فقط ورودی {await _intake_label(_child)}" if _child else "",
+            tags=['ایجاد_جلسه'] + ([f"ورودی_{_child}"] if _child else []))
+        await update.message.reply_text(
+            f"✅ جلسه {number} — «{topic}» اضافه شد!"
+            + (f"\n📅 فقط برای ورودی «{await _intake_label(_child)}».{_warn}" if _child else ""),
             reply_markup=_back_btn("🔙 برگشت", f'ca:lesson:{lid}'))
 
     elif ca_mode == 'edit_session':
@@ -1618,6 +1754,15 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
 
     elif ca_mode == 'add_ref_subject':
+        # 🛡 C3.1 — سطل مقصد باید نوشتنی باشد (scoped بدونِ scope ⇒ نه سراسری)
+        if not await db.can_access_intake(uid, _ctx_intake):
+            _clear(context)
+            fa = context.user_data.get('ca_ref_from_admin', False)
+            await update.message.reply_text(
+                "⛔ ساخت موضوع مجاز نیست — برای نقش شما هنوز ورودی‌ای تنظیم نشده.\n"
+                "از ادمین ارشد بخواهید ورودی شما را تعیین کند.",
+                reply_markup=_back_btn("🔙 برگشت", 'ca:refs_admin' if fa else 'ca:refs'))
+            return ConversationHandler.END
         # 🌊 C1 — موضوع جدید در scope جاری context
         result = await db.ref_add_subject(text, intake=_ctx_intake)
         fa = context.user_data.get('ca_ref_from_admin', False)
@@ -1640,13 +1785,26 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif ca_mode == 'add_ref_book':
         sid = context.user_data.get('ca_ref_subject_id','')
-        if not await db.can_access_intake(uid, await db.ref_subject_intake(sid)):
+        _subj_bk = await db.ref_subject_intake(sid)
+        # 🌊 C3 — «فرزند ورودی‌خاص»: scoped زیر موضوع 🌐 مجاز است کتابِ فقط-ورودیِ
+        # خودش را بسازد؛ هر حالت دیگر (ورودی دیگر / بدون scope) همچنان ⛔.
+        _child = await db.scoped_child_intake(uid, _subj_bk)
+        if _child is None:
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این موضوع در scope شما نیست.")
             return ConversationHandler.END
-        await db.ref_add_book(sid, text)
+        _bk = await db.ref_add_book(sid, text, intake=_child or None)
         _clear(context)
-        await update.message.reply_text(f"✅ رفرنس «{text}» اضافه شد!",
+        await _audit(context, uid, "ایجاد کتاب رفرنس",
+            severity='INFO',
+            target_id=str(_bk or ''),
+            target_type='reference_book',
+            target_label=text,
+            details=f"📅 فقط ورودی {await _intake_label(_child)}" if _child else "",
+            tags=['ایجاد_رفرنس'] + ([f"ورودی_{_child}"] if _child else []))
+        await update.message.reply_text(
+            f"✅ رفرنس «{text}» اضافه شد!"
+            + (f"\n📅 فقط برای ورودی «{await _intake_label(_child)}»." if _child else ""),
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_subject:{sid}'))
 
     elif ca_mode == 'edit_ref_book':

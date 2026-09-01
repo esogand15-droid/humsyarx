@@ -766,7 +766,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     elif action == 'role_intake':
-        intake_code = parts[2]
+        intake_code = parts[2] if len(parts) > 2 else ''
+        if not intake_code:
+            # 🛡 C3.1 — کد خالی (= «سراسری») برای نقش ورودی‌محور مجاز نیست
+            await query.answer("❌ ورودی نامعتبر است.", show_alert=True)
+            return
         context.user_data['new_role_intake'] = intake_code
         context.user_data['mode'] = 'add_admin_role'
         role_type_label = db.ROLE_LABELS.get(context.user_data.get('new_role_type', ''), 'نقش محدود')
@@ -3262,6 +3266,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         role_type    = context.user_data.pop('new_role_type', '')
         scope_intake = context.user_data.pop('new_role_intake', None)
         context.user_data['mode'] = ''
+        # 🛡 C3.1 — نقش‌های ورودی‌محور بدون ورودی معنا ندارند؛ وگرنه حسابی
+        # «scoped بدون scope» ساخته می‌شد (و پیش از این موج، چنان حسابی روی
+        # هسته‌ی 🌐 سراسری write داشت). source: §۱۴.۱ گزارش
+        if role_type in ('content_scoped', 'grade_rep') and not (scope_intake or '').strip():
+            await update.message.reply_text(
+                "❌ این نقش حتماً باید به یک ورودی محدود شود.\n"
+                "اول از «مدیریت ورودی‌ها» ورودی بسازید، سپس دوباره اقدام کنید.")
+            return True
         admin_uid = update.effective_user.id
         ok = await db.add_admin_role(target_uid, role_type, admin_uid, scope_intake)
         if not ok:

@@ -2702,8 +2702,12 @@ async def content_tree(intake: Optional[str] = Query(None),
     sessions = await db.bs_sessions.find(
         {"lesson_id": {"$in": lesson_refs}}).to_list(2000) if lesson_refs else []
     if iv:
-        sessions = [s for s in sessions if str(s.get("intake") or "") in ("", iv)
-                    or not s.get("fork_of")]
+        # 🌊 C3-fix — فیلتر سطل باید دقیق باشد: عبارت قبلی («یا هر non-fork»)
+        # جلسه‌های «exclusive» ورودی‌های دیگر را هم وارد درخت می‌کرد. تا پیش از
+        # موج C3 چنین سندی وجود نداشت (هر non-fork یا سراسری است یا ارث‌بر از
+        # درس خودش)؛ حالا که نماینده می‌تواند جلسه‌ی فقط-ورودی بسازد، این
+        # نشت واقعی می‌شد ⇒ فقط سراسری + ورودی خودِ actor.
+        sessions = [s for s in sessions if str(s.get("intake") or "") in ("", iv)]
     else:
         sessions = [s for s in sessions if str(s.get("intake") or "") == ""
                     and not s.get("fork_of")]
@@ -2769,7 +2773,9 @@ async def content_tree(intake: Optional[str] = Query(None),
                     "kind": ("fork" if fork_of else
                              ("exclusive" if s_intake_effective else "global")),
                     "fork_of": fork_of,
-                    "readonly": bool(scoped_view and s_intake_effective != iv),
+                    # 🛡 C3.1 — اگر scope کاربر تنظیم نشده (iv='') هیچ سطلی
+                    # برای او نوشتنی نیست، حتی سراسری
+                    "readonly": bool(scoped_view and (not iv or s_intake_effective != iv)),
                     "content_count": counts.get(sid, {}).get("n", 0),
                     "types": counts.get(sid, {}).get("types", {}),
                 })
@@ -2778,7 +2784,9 @@ async def content_tree(intake: Optional[str] = Query(None),
                 "id": lid, "name": str(l.get("name") or ""),
                 "teacher": str(l.get("teacher") or ""),
                 "intake": lesson_intake,
-                "readonly": bool(scoped_view and lesson_intake != iv),
+                "readonly": bool(scoped_view and (not iv or lesson_intake != iv)),
+                # 🌊 C3 — والد قفل است ولی «جلسه‌ی فقط-ورودی-خودم» ساختنی است
+                "can_create_sessions": bool(scoped_view and iv and not lesson_intake),
                 "sessions": srows, "session_count": len(srows),
                 "content_count": sum(r["content_count"] for r in srows),
             })

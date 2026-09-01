@@ -82,7 +82,37 @@ class DBContent:
         return await self.bs_sessions.find({'lesson_id': lesson_id}).sort('number', 1).to_list(200)
 
 
-    async def bs_add_session(self, lesson_id: str, number: int, topic: str, teacher: str):
+    async def bs_add_session(self, lesson_id: str, number: int, topic: str, teacher: str,
+                             intake: str = None):
+        """🌊 موج C3 — پارامتر اختیاری intake:
+          • intake=None/'' → رفتار قدیمی (بدون فیلد intake؛ یکتایی lesson+number).
+          • intake=کد      → «فرزند ورودی‌خاص» زیر همان درس: فیلد intake روی سند
+             نوشته می‌شود و یکتایی داخل همان سطل سنجیده می‌شود.
+
+        ⚠️ چرا کلید یکتایی تغییر کرد: قبلاً find_one روی (lesson_id, number) بود،
+        پس یک جلسه‌ی ورودی‌خاص با شماره‌ی جلسه‌ی سراسری، *به‌جای درج*، topic/teacher
+        نسخه‌ی سراسری را بازنویسی می‌کرد (§۹.۵ گزارش). در حالت intake='' هم رفتار
+        قبلی حفظ شده تا اسناد legacy و مسیرهای 🎓 هیچ تغییری نکنند.
+
+        🧷 lesson_id به رشته نرمال می‌شود: همه‌ی خوانده‌ها (bs_get_sessions، نمای
+        مؤثر، API، ربات) با str(_id) می‌پرسند؛ اگر جایی ObjectId رد شود جلسه
+        یتیم می‌شود (در هیچ لیستی دیده نمی‌شود) — بی‌صدا و غیرقابل‌بازیابی."""
+        lesson_id = str(lesson_id or '')
+        if intake:
+            existing = await self.bs_sessions.find_one(
+                {'lesson_id': lesson_id, 'number': number, 'intake': intake})
+            if existing:
+                await self.bs_sessions.update_one(
+                    {'_id': existing['_id']},
+                    {'$set': {'topic': topic, 'teacher': teacher}}
+                )
+                return str(existing['_id'])
+            r = await self.bs_sessions.insert_one({
+                'lesson_id': lesson_id, 'number': number, 'topic': topic,
+                'teacher': teacher, 'intake': intake,
+                'created_at': utc_now_iso(),
+            })
+            return str(r.inserted_id)
         existing = await self.bs_sessions.find_one({'lesson_id': lesson_id, 'number': number})
         if existing:
             await self.bs_sessions.update_one(
@@ -95,6 +125,45 @@ class DBContent:
             'teacher': teacher, 'created_at': utc_now_iso(),
         })
         return str(r.inserted_id)
+
+
+    async def bs_next_session_number(self, lesson_id: str, intake: str = None) -> int:
+        """پیشنهاد شماره‌ی بعدی جلسه.
+        intake=None → ماکزیممِ *همه‌ی* جلسات درس (رفتار «len+۱» را با ماکزیمم
+          عوض می‌کند تا حذف‌شدن‌ها شماره‌ی تکراری نسازند).
+        intake=کد   → ماکزیممِ (جلسات همان ورودی ∪ جلسات سراسری) تا در نمای
+          مؤثر دانشجو (سراسری + ورودی من) دو «جلسه‌ی n» نداشته باشیم.
+        ⚠️ یکتایی همچنان داخل سطل خودش است؛ این فقط UX شماره‌گذاری است."""
+        q = {'lesson_id': str(lesson_id or '')}
+        if intake:
+            q['$or'] = [
+                {'intake': intake},
+                {'intake': {'$in': ['', None]}},
+                {'intake': {'$exists': False}},
+            ]
+        mx = 0
+        async for s in self.bs_sessions.find(q, {'number': 1}):
+            try:
+                n = int(s.get('number') or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > mx:
+                mx = n
+        return mx + 1
+
+
+
+    async def bs_session_number_taken(self, lesson_id: str, number: int,
+                                      intake: str = None) -> bool:
+        """آیا این شماره‌ی جلسه گرفته شده است؟
+        intake=کد → فقط در سطل همان ورودی؛ intake=None/'' → در سطل سراسری
+        (اسناد legacy بدون فیلد intake هم «سراسری» حساب می‌شوند)."""
+        q = {'lesson_id': lesson_id, 'number': number}
+        if intake:
+            q['intake'] = intake
+        else:
+            q['$or'] = [{'intake': {'$in': ['', None]}}, {'intake': {'$exists': False}}]
+        return bool(await self.bs_sessions.find_one(q, {'_id': 1}))
 
 
     async def bs_get_session(self, sid: str):
@@ -581,14 +650,46 @@ class DBContent:
         return await self.ref_books.find({'subject_id': subject_id}).sort('order', 1).to_list(50)
 
 
-    async def ref_add_book(self, subject_id: str, name: str):
+    async def ref_add_book(self, subject_id: str, name: str, intake: str = None):
+        """🌊 C3 — ساخت کتاب رفرنس.
+
+        • intake=None/'' → رفتار پیشین، بیت‌به‌بیت (سند فیلد intake ندارد و
+          از موضوع ارث می‌برد — هیچ migration لازم نیست)
+        • intake='A'   → کتاب «فقط ورودی A» (فرزندِ scope‌دار زیر موضوع 🌐 یا
+          موضوع ورودیِ خودش)؛ کلید سطل روی خود سند نوشته می‌شود تا resolver
+          زنجیره‌ای (ref_book_intake) و نمای مؤثر (ref_get_books_effective)
+          همان چیزی را ببینند که برای جلسه‌های اختصاصی استفاده می‌شود.
+
+        subject_id همیشه به str نرمال می‌شود: خوانده‌ها با str(_id) کوئری
+        می‌زنند و ObjectIdِ خام، سند یتیم تولید می‌کرد (همان درس §۱۵.۵ب).
+        """
+        subject_id = str(subject_id or '')
+        intake = (intake or '').strip() or None
         count = await self.ref_books.count_documents({'subject_id': subject_id})
-        r = await self.ref_books.insert_one({
-            'subject_id': subject_id, 'name': name,
-            'order': count, 'created_at': utc_now_iso(),
-        })
+        doc = {'subject_id': subject_id, 'name': name,
+               'order': count, 'created_at': utc_now_iso()}
+        if intake:
+            doc['intake'] = intake
+        r = await self.ref_books.insert_one(doc)
         return r.inserted_id
 
+
+    @staticmethod
+    def ref_books_order_filter(book: dict) -> dict:
+        """🌊 C3 — فیلتر «هم‌سطل» برای جابه‌جایی ترتیب کتاب رفرنس.
+
+        ترتیب کتاب‌ها کلید مشترک `(subject_id, order)` است و در آن سطل‌ها
+        قاطی‌اند؛ بدون این فیلتر، ⬆️⬇️ روی یک سندِ ورودی‌خاص (fork یا فرزند
+        C3) ترتیبِ **پایه‌ی سراسری** را هم جابه‌جا می‌کرد — یعنی نشتِ نوشتن
+        به سطل دیگر. قانون: هر سطل فقط با همسطل‌های خودش swap می‌شود.
+        """
+        q = {'subject_id': str(book.get('subject_id') or '')}
+        if book.get('fork_of') or (book.get('intake') or ''):
+            q['intake'] = book.get('intake') or ''
+        else:
+            q['fork_of'] = {'$in': [None, '']}
+            q['$or'] = [{'intake': ''}, {'intake': None}, {'intake': {'$exists': False}}]
+        return q
 
     async def ref_get_book(self, bid: str):
         try:

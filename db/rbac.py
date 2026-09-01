@@ -273,20 +273,63 @@ class DBRbac:
             scope = await self.get_scoped_intake(uid)
             if scope:
                 return {'kind': 'scoped', 'intake': scope}
-            # مجوز scoped بدون scope تنظیم‌شده ⇒ legacy رفتار: فقط سراسری
+            # مجوز scoped بدون scope تنظیم‌شده ⇒ فقط مشاهده‌ی سراسری (🛡 C3.1:
+            # از can_access_intake جواب False می‌گیرد؛ چیزی برای ویرایش ندارد)
             return {'kind': 'scoped', 'intake': ''}
         return None
 
 
     async def can_access_intake(self, uid: int, intake: str) -> bool:
-        """enforce مدیریتی: آیا actor اجازه‌ی CRUD/مشاهده‌ی مدیریتی محتوای
-        این intake را دارد؟ global → همه؛ scoped → فقط دقیقاً scope خودش."""
+        """enforce مدیریتی: آیا actor اجازه‌ی CRUD روی محتوای این intake را
+        دارد؟ global → همه؛ scoped → فقط دقیقاً scope خودش.
+
+        🛡 C3.1 — ادمین scoped که هنوز برایش ورودی تنظیم نشده، سطلِ «تنظیم‌
+        نشده» ندارد: قبلاً «کد خالی == سراسری» با هم یکی گرفته می‌شدند و چنین
+        حسابی عملاً روی هسته‌ی 🌐 سراسری WRITE داشت. اکنون مقایسه فقط وقتی
+        انجام می‌شود که scope واقعاً تنظیم شده باشد؛ کاربرِ بدون scope محتوای
+        سراسری را فقط‌خواندنی می‌بیند (مسیرهای مشاهده از
+        get_content_scope/ITEM_VIEW_ACTIONS جدا از این گیت‌اند) و هیچ جایی
+        نمی‌تواند بنویسد.
+        """
         scope = await self.get_content_scope(uid)
         if not scope:
             return False
         if scope['kind'] == 'global':
             return True
-        return (intake or '') == (scope.get('intake') or '')
+        own = scope.get('intake') or ''
+        if not own:
+            return False
+        return (intake or '') == own
+
+
+    async def scoped_child_intake(self, uid: int, parent_intake: str):
+        """🌊 موج C3 — «فرزند ورودی‌خاص»: ساخت آیتم جدید *زیر* یک والد.
+
+        تک‌منبع تصمیم برای عملیاتی که والدش را تغییر نمی‌دهد بلکه فرزندِ
+        scope‌دار تولید می‌کند (مثلاً جلسه‌ای که فقط متعلق به ورودی X است
+        و زیر درسِ 🌐 سراسری آویزان شده). can_access_intake برای این کار
+        کافی نیست: آن «اجازه‌ی CRUD روی خودِ والد» را می‌سنجد.
+
+        خروجی (سه‌حالته — None با '' و با کد اشتباه نشود):
+          ''    → فرزند عادی؛ scope را از والد به ارث می‌برد (رفتار قبلی)
+          کد    → فرزند فقط برای آن ورودی (کلید سطل مقصد روی سند فرزند)
+          None  → اجازه ندارد
+        قواعد:
+          • هر کس که روی خودِ والد writable است → '' (هیچ رفتاری عوض نمی‌شود)
+          • scoped + والد سراسری ('') → کد scope خودش (اگر scope داشته باشد)
+          • scoped + والد ورودی دیگر → None
+          • global با والد سراسری → '' (او فرزندِ scope‌دار را با intake
+            صریح خودش می‌سازد، نه با اجبارِ scope؛ رفتار قدیمی دست‌نخورده)
+        """
+        if await self.can_access_intake(uid, parent_intake or ''):
+            return ''
+        scope = await self.get_content_scope(uid)
+        if not scope or scope.get('kind') != 'scoped':
+            return None
+        if (parent_intake or '') != '':
+            return None
+        own = scope.get('intake') or ''
+        return own or None
 
 
     # ── resolverهای زنجیره‌ای intake (پیش‌فرض '' = سراسری) ──

@@ -183,6 +183,12 @@ class DBCore:
                 self.ref_subjects.create_index([('intake', 1), ('order', 1)], background=True),
                 self.bs_lessons.create_index([('term', 1), ('order', 1)], background=True),
                 self.bs_sessions.create_index([('lesson_id', 1), ('number', 1)], background=True),
+                # 🌊 موج C3 — «فرزند ورودی‌خاص»: یکتایی/پیدا کردن جلسه داخل یک سطل
+                # (lesson_id, number, intake). عمداً غیر-yکتایی: داده‌ی legacy
+                # بدون فیلد intake دارد و یک unique جدید روی همان کلید، درج‌های
+                # قدیمیِ 🎓 را می‌شکست (§۱۳ گزارش). enforce در bs_add_session.
+                self.bs_sessions.create_index(
+                    [('lesson_id', 1), ('intake', 1), ('number', 1)], background=True),
                 self.bs_content.create_index([('session_id', 1), ('order', 1)], background=True),
                 self.ref_subjects.create_index('order', background=True),
                 self.ref_books.create_index([('subject_id', 1), ('order', 1)], background=True),

@@ -220,7 +220,7 @@ function BsTab({ initial = {} }) {
 
           {/* ── ستون ۲: جلسات درس منتخب ─────────────────── */}
           <ContentPane icon="🗂" title="جلسات" subtitle={selLesson?.name} count={selLesson ? fa(selLesson.sessions.length) : null}
-            actions={selLesson && !selLesson.readonly ? <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>➕ جلسه</button> : null}>
+            actions={selLesson && (!selLesson.readonly || selLesson.can_create_sessions) ? <button className="btn sm primary" onClick={() => setAddSes(selLesson)}>{selLesson.readonly ? '➕ جلسه (ورودی من)' : '➕ جلسه'}</button> : null}>
             <ContentBulkBar count={sel.length} onClear={() => setSel([])} actions={<>
               <button className="btn sm" onClick={() => bulk({ action: 'duplicate', ids: sel }).then(() => setSel([]))}>📄 کلون</button>
               <button className="btn sm" onClick={() => setMoveTo({ ids: sel })}>📦 انتقال</button>
@@ -234,7 +234,7 @@ function BsTab({ initial = {} }) {
             ) : visSessions.length === 0 ? (
               <ContentEmptyState icon="📭" title={deferredQ ? 'جلسه‌ای با این جست‌وجو نیست' : 'این درس هنوز جلسه‌ای ندارد'}
                 description={deferredQ ? 'عبارت جست‌وجو را تغییر دهید.' : 'برای شروع، نخستین جلسه را ایجاد کنید.'}
-                action={!deferredQ && !selLesson.readonly ? <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button> : null} />
+                action={!deferredQ && (!selLesson.readonly || selLesson.can_create_sessions) ? <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ نخستین جلسه</button> : null} />
             ) : visSessions.map(s => {
               const idx = selLesson.sessions.findIndex(x => x.id === s.id);
               return (
@@ -284,7 +284,10 @@ function BsTab({ initial = {} }) {
                   { value: fa(selLesson.sessions.filter(s => s.kind !== 'global').length), label: 'نسخه‌ی خاص' },
                 ]} />
                 <ContentActionGroup>
-                  {selLesson.readonly ? <B>🔒 این درس سراسری برای scope شما فقط‌خواندنی است</B> : <>
+                  {selLesson.readonly ? <>
+                    <B>🔒 این درس سراسری برای scope شما فقط‌خواندنی است</B>
+                    {selLesson.can_create_sessions && <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ جلسه برای ورودی من</button>}
+                  </> : <>
                     <button className="btn primary" onClick={() => setAddSes(selLesson)}>➕ جلسه‌ی جدید</button>
                     <button className="btn" onClick={() => setEditLes(selLesson)}>✏️ ویرایش درس</button>
                     <ContentMoreActions>
@@ -642,6 +645,8 @@ function EditSession({ s, onClose }) {
 }
 
 function AddSession({ lesson, onClose }) {
+  // 🌊 C3 — روی درس فقط‌خواندنی، سرور جلسه را در سطل scope کاربر می‌نویسد
+  const ownOnly = Boolean(lesson.readonly && lesson.can_create_sessions);
   const [number, setNumber] = useState((lesson.sessions?.length ? Math.max(...lesson.sessions.map(x => x.number || 0)) : 0) + 1);
   const [topic, setTopic] = useState('');
   const [teacher, setTeacher] = useState('');
@@ -649,6 +654,7 @@ function AddSession({ lesson, onClose }) {
   return (
     <Modal title={`➕ جلسه‌ی جدید — ${lesson.name}`} onClose={() => onClose(false)}>
       <div className="grid content-modal-grid">
+        {ownOnly && <p className="muted">📅 این جلسه فقط برای ورودی شما ساخته می‌شود؛ نسخه‌ی سراسریِ درس تغییر نمی‌کند.</p>}
         <input className="inp" type="number" min="1" value={number} onChange={e => setNumber(+e.target.value)} />
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />

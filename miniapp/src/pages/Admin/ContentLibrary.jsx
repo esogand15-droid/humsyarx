@@ -264,7 +264,7 @@ export function BasicScienceAdmin() {
 
 
   const {
-    data: sessions = [],
+    data: sessionsPayload,
     isLoading: sessionsLoading,
   } = useQuery({
     queryKey: [
@@ -280,13 +280,21 @@ export function BasicScienceAdmin() {
         )
         .then(
           (response) =>
-            response.data
-              ?.sessions || []
+            response.data || {}
         ),
 
     enabled:
       Boolean(lesson?.id),
   });
+
+  const sessions = sessionsPayload?.sessions || [];
+
+  /* 🌊 C3 — درس 🌐 سراسری برای ادمین ورودی خاص فقط‌خواندنی است،
+     ولی ساختن «جلسه‌ای که فقط برای ورودی خودش است» آزاد است؛
+     سرور تصمیم می‌گیرد (can_create_own) — فرانت فقط نمایش می‌دهد. */
+  const canAddOwnSession = Boolean(
+    sessionsPayload?.can_create_own
+  );
 
 
   const {
@@ -497,8 +505,10 @@ export function BasicScienceAdmin() {
         variables.type ===
         'session-add'
       ) {
+        // 🌊 C3 — سرور شماره‌ی بعدی را در همان سطل پیشنهاد می‌دهد
+        // (برای ادمین ورودی خاص: ماکزیمم «سراسری + ورودی خودش» + ۱)
         setSessionForm({
-          number: 1,
+          number: sessionsPayload?.next_number ?? 1,
           topic: '',
           teacher: '',
         });
@@ -865,8 +875,10 @@ export function BasicScienceAdmin() {
         {lesson &&
           !session && (
           <>
-            {/* 🌊 C1.5 — افزودن جلسه روی درس سراسری برای scoped مخفی */}
-            {!lessonRO && (
+            {/* 🌊 C1.5/C3 — افزودن جلسه روی درس سراسری برای scoped مخفی بود؛
+                حالا اگر سرور اجازه‌ی «فرزند ورودی‌خاص» را بدهد (can_create_own)
+                فرم باز می‌شود و جلسه فقط برای ورودی خودِ کاربر ساخته می‌شود. */}
+            {(!lessonRO || canAddOwnSession) && (
             <section
               className={
                 'card card-glow'
@@ -884,7 +896,23 @@ export function BasicScienceAdmin() {
             >
               <div className="sec-title">
                 ＋ جلسه جدید
+                {lessonRO && canAddOwnSession
+                  ? ' • فقط ورودی من'
+                  : ''}
               </div>
+
+              {lessonRO && canAddOwnSession ? (
+                <div
+                  style={{
+                    color: 'var(--txm)',
+
+                    fontSize: 'var(--fs-cap)',
+                  }}
+                >
+                  📅 این جلسه فقط برای ورودی شما ساخته می‌شود؛
+                  نسخه‌ی سراسریِ درس تغییر نمی‌کند.
+                </div>
+              ) : null}
 
               <div className="grid2">
                 <input
@@ -1075,14 +1103,22 @@ export function BasicScienceAdmin() {
                             {/* 🍴 C2 — نشان نسخه‌ی اختصاصی */}
                             {item.is_fork &&
                               ' • ⭐ نسخه‌ی اختصاصی'}
+
+                            {/* 🌊 C3 — جلسه‌ای که فقط برای ورودی
+                                خودِ کاربر است (فرزند، نه فورک) */}
+                            {item.own &&
+                              ' • 📅 فقط ورودی من'}
                           </span>
                         </button>
 
                         {/* 🍴 C2 — روی درس سراسری (فقط‌خواندنی برای
                              ادمین ورودی‌خاص): ✂️ ساخت نسخه‌ی اختصاصی
-                             برای ورودی خودش؛ ↩️ حذف نسخه‌ی من */}
+                             برای ورودی خودش؛ ↩️ حذف نسخه‌ی من
+                             🌊 C3 — روی «فرزند ورودی من» فورک معنا ندارد
+                             (مستقیماً ویرایش می‌شود) ⇒ دکمه مخفی */}
                         {lessonRO &&
-                          !item.is_fork && (
+                          !item.is_fork &&
+                          !item.own && (
                             <button
                               type="button"
                               title="سفارشی‌سازی برای ورودی من"
@@ -1161,8 +1197,9 @@ export function BasicScienceAdmin() {
                             </button>
                           )}
 
-                        {/* 🌊 C1.5 — حذف جلسه‌ی سراسری برای scoped مخفی */}
-                        {!lessonRO && (
+                        {/* 🌊 C1.5 — حذف جلسه‌ی سراسری برای scoped مخفی
+                            🌊 C3 — ولی «فرزند ورودی من» مالِ خود اوست ⇒ حذف‌پذیر */}
+                        {(!lessonRO || item.own) && (
                         <DeleteButton
                           pending={
                             mutation
@@ -1560,7 +1597,7 @@ export function ReferencesAdmin() {
 
 
   const {
-    data: books = [],
+    data: booksPayload,
   } = useQuery({
     queryKey: [
       'ref-admin-books',
@@ -1575,13 +1612,21 @@ export function ReferencesAdmin() {
         )
         .then(
           (response) =>
-            response.data
-              ?.books || []
+            response.data || {}
         ),
 
     enabled:
       Boolean(subject?.id),
   });
+
+  const books = booksPayload?.books || [];
+
+  /* 🌊 C3 — موضوع 🌐 سراسری برای ادمین ورودی خاص فقط‌خواندنی است، ولی
+     ساختن «کتابی که فقط برای ورودی خودش است» آزاد است؛ تصمیم با سرور
+     است (can_create_own) و فرانت فقط نمایش می‌دهد. */
+  const booksCanCreate = Boolean(
+    booksPayload?.can_create_own
+  );
 
 
   const {
@@ -1818,7 +1863,7 @@ export function ReferencesAdmin() {
         <ContentScopeBanner scope={cscope} />
         {/* 🍴 C2 — در سطح کتاب، قفل کتابِ انتخاب‌شده enforce می‌شود:
              fork روی موضوع سراسری برای مالک ورودی باز (آپلود جلد مجاز) */}
-        {(book ? !bookRO : !subjectRO) && (
+        {(book ? !bookRO : (!subjectRO || booksCanCreate)) && (
         <section
           className={
             'card card-glow'
@@ -1833,7 +1878,11 @@ export function ReferencesAdmin() {
               ? '📤 افزودن جلد'
 
               : subject
-                ? '＋ افزودن کتاب'
+                ? `＋ افزودن کتاب${
+                    subjectRO && booksCanCreate
+                      ? ' • فقط ورودی من'
+                      : ''
+                  }`
 
                 : '＋ افزودن موضوع'}
           </div>
@@ -2170,13 +2219,18 @@ export function ReferencesAdmin() {
                         {/* 🍴 C2 — نشان نسخه‌ی اختصاصی */}
                         {item.is_fork &&
                           ' ⭐'}
+
+                        {/* 🌊 C3 — کتابی که فقط برای ورودی خودِ کاربر است */}
+                        {item.own &&
+                          ' • 📅 فقط ورودی من'}
                       </b>
                     </button>
 
                     {/* 🍴 C2 — روی موضوع سراسری (فقط‌خواندنی برای
                          ادمین ورودی‌خاص): ✂️ fork / ↩️ unfork */}
                     {subjectRO &&
-                      !item.is_fork && (
+                      !item.is_fork &&
+                      !item.own && (
                         <button
                           type="button"
                           title="سفارشی‌سازی برای ورودی من"
@@ -2253,8 +2307,9 @@ export function ReferencesAdmin() {
                         </button>
                       )}
 
-                    {/* 🌊 C1.5 — حذف کتابِ سراسری برای scoped مخفی */}
-                    {!subjectRO && (
+                    {/* 🌊 C1.5/C3 — حذف کتابِ سراسری برای scoped مخفی؛
+                         فرزندِ «فقط ورودی من» خودِ کاربر می‌تواند حذف کند */}
+                    {(!subjectRO || item.own) && (
                     <DeleteButton
                       pending={
                         mutation
