@@ -88,6 +88,16 @@ logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('telegram').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+# 💍 Ring Street — ماژول افزودنی و ایزوله. اگر import آن (به هر دلیلی)
+# شکست بخورد، ربات مثل قبل بالا می‌آید و فقط رینگ ثبت نمی‌شود.
+try:
+    import ring as ring_street
+    from ring import handlers as ring_handlers
+    from ring import jobs as ring_jobs
+except Exception as _ring_import_error:          # pragma: no cover
+    ring_street = ring_handlers = ring_jobs = None
+    logger.warning("⚠️ ماژول رینگ استریت بارگذاری نشد: %s", _ring_import_error)
+
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TOKEN:
     logger.error("❌ TELEGRAM_TOKEN تنظیم نشده!")
@@ -1534,6 +1544,15 @@ def build_application() -> Application:
     # را با همان تابع قبلی (cancel_handler) پاک کند.
     app.add_handler(CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE))
 
+    # 💍 Ring Street — ثبت *قبل* از هندلرهای یکپارچه، چون در PTB
+    # «ترتیب ثبت = اولویت» است. فیلتر این هندلرها «کاربر در flow/چت
+    # رینگ است» ⇒ وقتی رینگ خاموش است یا کاربر در رینگ نیست، update
+    # دست‌نخورده به مسیرهای قبلی می‌رود (isolation §۵).
+    if ring_handlers is not None:
+        ring_handlers.register(app)
+        app.add_handler(CallbackQueryHandler(ring_handlers.ring_callback,
+                                             pattern=r'^ring:'))
+
     # ── File handler — همه انواع فایل ──
     # FIX باگ مهم: فقط در پیوی خصوصی فعال باشد — وگرنه فایل‌هایی
     # که در گروه‌های لاگ (ادمین/محتوا) فرستاده شوند هم پردازش می‌شدند.
@@ -1583,6 +1602,17 @@ async def post_init(application: Application):
 
     await db.ensure_indexes()
     logger.info("✅ ایندکس‌های دیتابیس آماده شدند")
+
+    # 💍 Ring Street — بازیابی گفت‌وگوهای فعال و flowهای معلق از دیتابیس
+    # (§۴۳: state هرگز فقط در RAM نیست). خطای این مرحله مانع بالا آمدن
+    # ربات نمی‌شود.
+    if ring_street is not None:
+        try:
+            _ring_rec = await ring_street.post_init(application.bot)
+            logger.info("💍 رینگ استریت: flag=%s بازیابی=%s",
+                        _ring_rec.get("flag"), _ring_rec.get("loaded"))
+        except Exception as e:
+            logger.error(f"ring post_init error: {e}")
 
     # FIX جدید: یک‌بار (idempotent) رفرنس‌های قدیمی را «قبلاً دیده‌شده»
     # علامت می‌زند تا با اضافه‌شدن ref_files به سیستم نوتیف منابع جدید،
@@ -1660,6 +1690,21 @@ async def post_init(application: Application):
             first=0,
             name='bot_heartbeat',
         )
+
+        # 💍 Ring Street — timeout صف/جلسه + ترمیم claimهای یتیم (§۲۲/§۶۴)
+        # و آمار روزانه (§۳۶). هر دو idempotent‌اند و با flag خاموش بی‌کارند.
+        if ring_jobs is not None:
+            application.job_queue.run_repeating(
+                ring_jobs.ring_housekeeping_job,
+                interval=30,
+                first=25,
+                name='ring_housekeeping'
+            )
+            application.job_queue.run_daily(
+                ring_jobs.ring_daily_job,
+                time=dtime(hour=4, minute=10, tzinfo=TEHRAN),
+                name='ring_daily'
+            )
 
         # FIX جدید: نوتیف منابع جدید — هر ساعت چک می‌شود، خودش تشخیص
         # می‌دهد آیا فاصله‌ی تنظیم‌شده (۲۴/۴۸/۷۲ ساعت) گذشته یا نه

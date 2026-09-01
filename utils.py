@@ -122,7 +122,34 @@ async def get_keyboard_for_user(user: dict, uid: int) -> ReplyKeyboardMarkup:
         return content_admin_keyboard()
     if await db.has_perm(uid, 'tickets.reply'):
         return sub_admin_keyboard()
-    return main_keyboard()
+    return await ring_aware_keyboard(main_keyboard())
+
+
+async def ring_aware_keyboard(kb: ReplyKeyboardMarkup) -> ReplyKeyboardMarkup:
+    """💍 رینگ استریت — اگر فیچر از پنل روشن باشد، دکمه‌ی «💍 رینگ استریت»
+    به کیبورد اصلی اضافه می‌شود (§۴۱ «منوی پویا»).
+
+    • کیبورد موجود mutate نمی‌شود (کالکشن‌های استاتیک این ماژول بین همهٔ
+      کاربران به‌اشتراک‌اند؛ پس شیء جدید می‌سازیم).
+    • flag از کش سمک خوانده می‌شود؛ اگر کش سرد بود یک refresh کوتاه از DB
+      می‌گیریم و خطا یعنی «دکمه نباشد» (fail-safe).
+    """
+    try:
+        from ring import settings as _rs
+        if not _rs.flag_sync():
+            await _rs.get_flag()
+        if not _rs.flag_sync():
+            return kb
+        # ⚠️ کیبورد reply آتریبیوت `keyboard` دارد (نه `inline_keyboard`)؛
+        # اشتباه در اینجا با except بلعیده می‌شد و دکمه هیچ‌وقت اضافه نمی‌شد.
+        rows = [[KeyboardButton("💍 رینگ استریت")]] + [list(r) for r in (kb.keyboard or [])]
+        return ReplyKeyboardMarkup(rows, resize_keyboard=True,
+                                   one_time_keyboard=getattr(kb, "one_time_keyboard", False),
+                                   input_field_placeholder=getattr(kb, "input_field_placeholder", None),
+                                   is_persistent=getattr(kb, "is_persistent", None))
+    except Exception:
+        logger.exception("ring_aware_keyboard failed — منوی بدون دکمهٔ رینگ")
+        return kb
 
 
 # ══════════════════════════════════════════════════
