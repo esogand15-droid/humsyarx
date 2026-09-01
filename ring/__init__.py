@@ -34,9 +34,29 @@ def register_handlers(app) -> None:
 
 
 async def post_init(bot=None) -> dict:
-    """at boot: flag را می‌خواند و sessionهای فعال را از DB برمی‌گرداند.
-    هیچ‌وقت raise نمی‌کند — رینگ نباید بوت ربات را بشکند."""
-    out = {"flag": False, "loaded": 0, "dropped": 0}
+    """at boot: بات را به لایهٔ اطلاعیه bind می‌کند، flag را می‌خواند و
+    sessionهای فعال را از DB برمی‌گرداند. هیچ‌وقت raise نمی‌کند.
+
+    §۱/§۴۵ (V6) — ریشهٔ باگِ زنده این‌جا بود: PTB ۲۱.۳ هیچ
+    `Application.get_current()` و `get_running_app()` ندارد، پس
+    `notify._bot()` همیشه None برمی‌گرداند و *هر* اطلاعیه/ویرایشِ تایمر بی‌صدا
+    دور ریخته می‌شد («MATCH CREATED ولی کاربر در SEARCHING ماند»). `bot.py`
+    همین `application.bot` را به این تابع می‌دهد؛ تا V۵ پارامتر `bot` بی‌استفاده
+    دور انداخته می‌شد. حالا همان منبع، bind می‌شود (و جست‌وجوی PTB فقط fallback).
+    """
+    out = {"flag": False, "loaded": 0, "dropped": 0, "notify": "unknown"}
+    try:
+        from ring import notify
+        if bot is not None:
+            notify.bind(bot)
+            out["notify"] = "bound"
+        else:
+            out["notify"] = str(notify.health().get("source"))
+            logger.warning("💍 post_init بدون بات صدا زده شد؛ اطلاعیه‌ها روی "
+                           "fallback می‌مانند: %s", out["notify"])
+    except Exception as e:
+        logger.warning("💍 bind بات رینگ ناموفق: %s", e)
+        out["notify"] = f"bind-error:{type(e).__name__}"
     try:
         from ring import jobs, settings as S, state
         out["flag"] = await S.get_flag()
@@ -53,6 +73,12 @@ async def post_init(bot=None) -> dict:
         out["dropped"] = int(rec.get("dropped") or 0)
         rep = await db_repair()
         out.update(rep)
+        # §۱۹/§۳۶ — بعد از بازیابی state، سه کار ناتمام را ببند (اطلاعیهٔ
+        # نرسیده، UI معلق، یتیم‌ها). شغلِ دوره‌ای هم همین را می‌کند؛ اینجا
+        # انجامش می‌دهیم تا کاربر معادلِ «یک‌دورهٔ ۳۰ ثانیه» معطل نشود.
+        from ring import service
+        out["boot_repair"] = await service.boot_repair()
+        logger.info("💍 notify: %s | boot_repair: %s", out["notify"], out["boot_repair"])
         return out
     except Exception as e:
         logger.warning("💍 post_init رینگ کامل نشد: %s", e)
@@ -71,9 +97,14 @@ async def db_repair() -> dict:
 
 
 async def pre_dispose() -> None:
-    """رجیستری RAM را پاک می‌کند تا در تست/ری‌استارت چیزی جا نماند."""
+    """رجیستری RAM و bind بات را پاک می‌کند تا در تست/ری‌استارت چیزی نماند.
+
+    V6: unbind عمدی است — اگر مرجعِ باتِ در حال خاموش‌شدن بماند، `send_text`
+    روی شیءِ مرده صدا زده می‌شود و خطا گم می‌شود.
+    """
     try:
-        from ring import state
+        from ring import notify, state
         state.clear()
-    except Exception:
-        pass
+        notify.unbind()
+    except Exception as e:
+        logger.warning("💍 pre_dispose ناتمام: %s", e)

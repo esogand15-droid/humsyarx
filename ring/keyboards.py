@@ -6,7 +6,13 @@
 """
 from __future__ import annotations
 
+import logging
+
 from telegram import InlineKeyboardButton as B, InlineKeyboardMarkup as KB
+
+# §۱۵ (V6) — این ماژول لاگر داشت ولی `except ...: pass`ها بی‌لاگ بودند؛ برای
+# همان هست که یک logger سطح ماژول اضافه شد (هیچ رفتاری عوض نمی‌شود).
+logger = logging.getLogger(__name__)
 
 from ring import models as M
 
@@ -82,8 +88,8 @@ def main_menu_labels() -> frozenset:
                     t = str(getattr(bt, "text", "") or "").strip()
                     if t:
                         out.add(t)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[RING] main menu labels unavailable: %s", e)
     out |= {"💍 رینگ استریت"}
     if len(out) < 5:                       # utils در دسترس نبود ⇒ فهرست دستی
         out |= set(_MAIN_FALLBACK)
@@ -132,9 +138,9 @@ def menu_tap_labels() -> frozenset:
     try:
         import bot                                  # lazy — در boot حلقه نسازد
         out |= {str(x) for x in (getattr(bot, "MENU_BUTTON_TEXTS", None) or ())}
-    except (Exception, SystemExit):
+    except (Exception, SystemExit) as e:
         # SystemExit: bot.py بدون TELEGRAM_TOKEN با sys.exit() می‌میرد (محیطِ تست)
-        pass
+        logger.debug("[RING] bot.MENU_BUTTON_TEXTS unavailable: %s", e)
     out -= set(_RING_OWN_LABELS)
     _TAP_NORM = frozenset(_norm(x) for x in out)
     return _TAP_NORM

@@ -63,6 +63,7 @@ export default function RingStreet({ me }) {
   const [edit, setEdit] = useState(null);
   const [force, setForce] = useState(null);
   const [confirmEnd, setConfirmEnd] = useState(null);
+  const [repairing, setRepairing] = useState('');
   const [killMode, setKillMode] = useState('soft');
 
   const load = useCallback(async () => {
@@ -77,7 +78,14 @@ export default function RingStreet({ me }) {
       else if (tab === 'blocks') setBox(await api.ringBlocks({ limit: 150 }));
       else if (tab === 'rules') setBox(await api.ringRules());
       else if (tab === 'settings') setBox(await api.ringSettings());
-      else if (tab === 'analytics') setBox(await api.ringAnalytics(7));
+      else if (tab === 'analytics') {
+        const base = await api.ringAnalytics(7);
+        // §۴۹ (V6) — اگر بک‌اندِ دیپلوی‌شده هنوز /api/ring/metrics را نداشته باشد،
+        // پنل نباید بشکند؛ فقط همان بخش مخفی می‌ماند.
+        let cycle = null;
+        try { cycle = await api.ringMetrics(7); } catch (_) { cycle = null; }
+        setBox({ ...base, cycle });
+      }
       else if (tab === 'audit') setBox(await api.ringAuditList(120));
       else setBox({});
       setEdit(null);
@@ -95,6 +103,8 @@ export default function RingStreet({ me }) {
     finally { setBusy(false); }
   };
 
+  const live0 = (ov && ov.live) || {};
+  const nh = live0.notify_health || {};
   const rows = box.sessions || box.reports || box.profiles || box.queue || box.blocks || box.audit || [];
 
   const cols = useMemo(() => {
@@ -112,8 +122,15 @@ export default function RingStreet({ me }) {
         {(r.slots || []).map(u => <B key={u} className="code">{fa(u)}</B>)}</div> },
       { k: 'msgs', label: 'پیام/مدیا', render: r => `${fa(r.messages_count)} / ${fa(r.media_count)}` },
       { k: 'at', label: 'آخرین فعالیت', render: r => <FaDateTime value={r.last_activity_at} /> },
-      { k: 'x', label: 'اقدام', render: r => <button className="btn sm" disabled={busy}
-        onClick={() => setConfirmEnd(r.session_id)}>⛔ بستن</button> },
+      { k: 'x', label: 'اقدام', render: r => <div className="row" style={{ gap: 4 }}>
+        <button className="btn sm" disabled={busy} title="سلامتِ چرخهٔ مچ این جلسه (§۴۶)"
+          onClick={() => act(async () => setDrawer({ kind: 'health',
+            body: await api.ringSessionHealth(r.session_id) }), '')}>🩺 سلامت</button>
+        <button className="btn sm" disabled={busy} title="فقط فلگ‌های جامانده را درست می‌کند (§۴۷)"
+          onClick={() => act(() => api.ringSessionRepair(r.session_id),
+            'ترمیمِ محافظه‌کارانه اعمال شد')}>🔧 ترمیم</button>
+        <button className="btn sm danger" disabled={busy} onClick={() => setConfirmEnd(r.session_id)}>⛔ بستن</button>
+      </div> },
     ];
     if (tab === 'reports') return [
       { k: 'id', label: 'کد', render: r => <span className="code">R{fa(r.report_id)}</span> },
@@ -193,6 +210,9 @@ export default function RingStreet({ me }) {
       <Kpi icon="🚩" label="گزارش باز" value={fa(live.reports_pending)} hint={`امروز: ${fa(live.reports_today)}`} />
       <Kpi icon="🧱" label="بلاک‌ها" value={fa(live.blocks)} />
       <Kpi icon="📅" label="جلسه‌ی امروز" value={fa(live.sessions_today)} hint={`کل: ${fa(live.sessions_total)}`} />
+      <Kpi icon={nh.bound ? '🟢' : '🔴'} label="لایهٔ ارسال پیام"
+        value={nh.bound ? 'آماده' : 'بدون بات'}
+        hint={nh.bound ? `منبع: ${nh.source || 'bind'}` : 'post_init بات را bind نکرده — اطلاعیه‌ها ارسال نمی‌شوند'} />
       <div className="panel panel-pad" style={{ gridColumn: '1 / -1' }}>
         <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
           <Stat label="حالت جدی" value={ov.settings?.serious_enabled ? '✅' : '⛔'} />
@@ -254,7 +274,8 @@ export default function RingStreet({ me }) {
       onSubmit={(a, b) => act(() => api.ringForceMatch(a, b), 'match دستی ساخته شد')} />}
 
     {drawer && <Modal title={drawer.kind === 'report' ? `گزارش R${fa(drawer.body.report?.report_id)}`
-                    : drawer.kind === 'profile' ? `پرونده‌ی ${fa(drawer.body.profile?._id)}` : 'جلسه'}
+                    : drawer.kind === 'profile' ? `پرونده‌ی ${fa(drawer.body.profile?._id)}`
+                    : drawer.kind === 'health' ? `سلامتِ جلسه ${drawer.body.session_id || ''}` : 'جلسه'}
       onClose={() => setDrawer(null)} wide>
       <ReportDrawerBody drawer={drawer} busy={busy}
         onReview={a => act(() => api.ringReview(drawer.body.report.report_id, a, ''), `اقدام «${a}» ثبت شد`)}
@@ -262,7 +283,11 @@ export default function RingStreet({ me }) {
         onLift={uid => act(() => api.ringUnban(uid), 'محدودیت برداشته شد')}
         onPause={uid => act(() => api.ringPause(uid), 'کاربر محدود شد (خارج از صف)')}
         onResume={uid => act(() => api.ringResume(uid), 'محدودیت کاربر برداشته شد')}
-        onEnd={sid => act(() => api.ringEndSession(sid, 'admin_panel'), 'جلسه بسته شد')} />
+        onEnd={sid => act(() => api.ringEndSession(sid, 'admin_panel'), 'جلسه بسته شد')}
+        onRepair={sid => act(async () => { await api.ringSessionRepair(sid);
+          setDrawer({ kind: 'health', body: await api.ringSessionHealth(sid) }); },
+          'ترمیم اعمال شد — سلامتِ تازه بارگذاری شد')}
+        repairing={repairing} />
     </Modal>}
   </>;
 }
@@ -368,11 +393,43 @@ function DebugMatch({ busy, onForce }) {
 }
 
 
+const CYCLE_LABELS = {
+  match_attempts: ['🎯', 'تلاش مچ'], candidate_found: ['🔎', 'کاندید پیدا شد'],
+  candidate_rejected: ['🚫', 'کاندید رد شد'], match_created: ['✅', 'match ساخته شد'],
+  notify_ok: ['📬', 'اطلاعیه رسید'], notify_fail: ['📵', 'اطلاعیه نرسید'],
+  search_ui_finalized: ['🖼', 'حباب جست‌وجو نهایی شد'],
+  state_transition: ['🔁', 'تغییر وضعیت'], queue_removed: ['🚪', 'خروج از صف'],
+  timer_cancelled: ['⏹', 'توقف تایمر'], orphan_matches: ['👻', 'match یتیم'],
+  queue_orphans: ['👻', 'یتیمِ صف'], timer_orphans: ['👻', 'یتیمِ تایمر'],
+  stuck_searches: ['⚠️', 'گیرکرده (کارت/پیام)'],
+};
+
+function CyclePanel({ c }) {
+  const nh = c.notify_health || {};
+  return <div className="panel panel-pad" style={{ gridColumn: '1 / -1' }}>
+    <SectionHeader title="چرخهٔ match (§۴۹ V6)"
+      description="هر حلقهٔ «match ساخته شد ولی کاربر در جست‌وجو ماند» با این شمارنده‌ها دیده می‌شود" />
+    <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))' }}>
+      {Object.keys(CYCLE_LABELS).map(k => <Kpi key={k} icon={CYCLE_LABELS[k][0]}
+        label={CYCLE_LABELS[k][1]} value={fa(c[k] || 0)} />)}
+    </div>
+    <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+      <B kind={nh.bound ? 'ok' : 'bad'}>{nh.bound ? `🟢 بات bind شده (${nh.source})` : '🔴 بات bind نشده'}</B>
+      <B kind="muted">ردشده: {fa(nh.drops || 0)}</B>
+      {c.window_days ? <B kind="muted">بازه: {fa(c.window_days)} روز</B> : null}
+    </div>
+    {nh.last_error ? <div style={{ marginTop: 6, fontSize: 12, opacity: .8 }}>
+      آخرین خطا: {String(nh.last_error).slice(0, 200)}</div> : null}
+    {c.live_error ? <div style={{ marginTop: 6, fontSize: 12 }}><B kind="warn">وضعیت زنده خوانده نشد: {String(c.live_error).slice(0, 120)}</B></div> : null}
+  </div>;
+}
+
 function AnalyticsPanel({ box }) {
   const f = box.funnel || {}, m = box.modes || {}, mo = box.moderation || {};
   const rr = box.reject_reasons || {};   // §۳۹ — «چرا مچ نشد»
-  const pct = x => `${fa(Math.round((x || 0) * 100))}٪`;
+  const pct = x => `${fa(Math.round((x || 0) * 100))}٪`;   // noqa: استفاده‌شده در پایین
   return <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' }}>
+    {box.cycle ? <CyclePanel c={box.cycle} /> : null}
     <div className="panel panel-pad">
       <SectionHeader title="قیف (§۳۶)" description="پروفایل ← صف ← match ← گفت‌وگو" />
       <Stat label="پروفایل‌ها" value={fa(f.profiles)} />
@@ -420,7 +477,66 @@ function AnalyticsPanel({ box }) {
   </div>;
 }
 
-function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onResume, onEnd }) {
+const HEALTH_STEPS = [
+  ['state', 'وضعیت کاربر (current_session)', 'پروفایل هر دو به این جلسه وصل است'],
+  ['queue', 'خروج از صف', 'هیچ‌کدام دوباره match نمی‌شوند'],
+  ['timer', 'توقف تایمر/حباب جست‌وجو', 'پیام «۰۰:۰۰» روی صفحه نمانده'],
+  ['notify', 'ارسال کارت مچ برای هر دو', 'هر دو طرف پیام را گرفته‌اند'],
+  ['relay', 'رجیستری رله (aliases)', 'پیام‌ها به هم می‌رسند'],
+];
+
+function HealthBody({ body, busy, onRepair, repairing }) {
+  const st = (body && body.steps) || {};
+  if (!body || body.found === false) {
+    return <div style={{ padding: 8 }}>
+      <B kind="bad">جلسه در دیتابیس پیدا نشد</B>
+      <div style={{ marginTop: 8, fontSize: 13 }}>اگر id را از لاگِ بات آورده‌اید، ممکن است
+        پاک شده یا archive شده باشد.</div>
+    </div>;
+  }
+  return <div style={{ padding: 4 }}>
+    <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+      <B kind={body.status === 'active' ? 'ok' : 'muted'}>{body.status === 'active' ? 'فعال' : body.status}</B>
+      <B kind="acc">{MODE[body.mode] || body.mode || '—'}</B>
+      {(body.slots || []).map(u => <B key={u} className="code">{fa(u)}</B>)}
+      {body.notify_health && <B kind={body.notify_health.bound ? 'ok' : 'bad'}>
+        {body.notify_health.bound ? '🟢 لایهٔ ارسال سالم' : '🔴 باتِ اطلاعیه bind نشده'}</B>}
+    </div>
+    {HEALTH_STEPS.map(([k, label, hint]) => {
+      const m = st[k] || {};
+      const vals = Object.values(m);
+      const allOk = vals.length > 0 && vals.every(Boolean);
+      const none = vals.length === 0;
+      return <div key={k} className="row" style={{ justifyContent: 'space-between', padding: '6px 0',
+        borderBottom: '1px solid rgba(255,255,255,.06)' }}>
+        <div>
+          <div style={{ fontSize: 13 }}>{label}</div>
+          <div style={{ fontSize: 11, opacity: .6 }}>{hint}</div>
+        </div>
+        <div className="row" style={{ gap: 4 }}>
+          {none ? <B kind="muted">—</B> : Object.entries(m).map(([u, v]) =>
+            <B key={u} kind={v ? 'ok' : 'bad'} className="code">{fa(u)}: {v ? '✓' : '✗'}</B>)}
+        </div>
+      </div>;
+    })}
+    {st.notify_tries && Object.keys(st.notify_tries).length > 0 && <div style={{ marginTop: 8, fontSize: 12, opacity: .75 }}>
+      تلاش‌های اطلاعیه: {Object.entries(st.notify_tries).map(([u, n]) => `${fa(u)}→${fa(n)}`).join(' · ')}
+      {' '} (سقف ۳ تلاش با backoff ۵/۱۵/۶۰ ثانیه)
+    </div>}
+    <div className="row" style={{ gap: 8, marginTop: 10 }}>
+      <button className="btn sm" disabled={busy || !body.needs_repair}
+        title="فقط فلگ‌ها/پیام‌های جامانده را درست می‌کند؛ جلسه را نمی‌بندد و پیام تکراری نمی‌فرستد"
+        onClick={() => onRepair(body.session_id)}>
+        {repairing === body.session_id ? 'در حال ترمیم…' : '🔧 ترمیم محافظه‌کارانه'}</button>
+      {!body.needs_repair && <B kind="ok">همهٔ مراحل کامل است — چیزی برای ترمیم نیست</B>}
+    </div>
+  </div>;
+}
+
+function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onResume, onEnd, onRepair, repairing }) {
+  if (drawer.kind === 'health') {
+    return <HealthBody body={drawer.body} busy={busy} onRepair={onRepair} repairing={repairing} />;
+  }
   if (drawer.kind === 'session') {
     const s = drawer.body || {};
     return <div style={{ padding: 4 }}>

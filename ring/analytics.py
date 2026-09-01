@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from time_utils import utc_now_iso   # §۴۹ (V6) — cycle_metrics به همین نیاز دارد
+
 import logging
 from datetime import timedelta
 
@@ -137,6 +139,70 @@ async def top_topics(days: int = 30, limit: int = 8) -> list[dict]:
 _rejects: dict[str, int] = {}
 
 
+# §۴۹ (V6) — شمارنده‌های *چرخهٔ* مچ، نه فقط دلایل رد. همان الگوی `note_reject`:
+# در RAM جمع می‌شوند و یک‌بار در هر دورِ housekeeping روی دیسک می‌نشینند، پس
+# hot path (کلیکِ «جست‌وجو») با هر attempt دو $inc به DB نمی‌زند.
+_metrics: dict[str, int] = {}
+
+
+def note_metric(key: str, n: int = 1) -> None:
+    """شمارندهٔ چرخه (match_attempts, candidate_found, notify_fail, …)."""
+    if not key:
+        return
+    _metrics[key] = _metrics.get(key, 0) + int(n or 0)
+
+
+async def flush_metrics() -> int:
+    """`_metrics` را در `ring_stats_daily.c.*` می‌نویسد (§۴۹)."""
+    if not _metrics:
+        return 0
+    snap = dict(_metrics)
+    _metrics.clear()
+    from database import db
+    try:
+        await db.ring_bump(**snap)
+    except Exception as e:
+        logger.warning("ring metric flush failed: %s", e)
+        return 0
+    return sum(snap.values())
+
+
+CYCLE_KEYS = ("match_attempts", "candidate_found", "candidate_rejected",
+              "match_created", "notify_ok", "notify_fail", "search_ui_finalized",
+              "state_transition", "queue_removed", "timer_cancelled",
+              "orphan_matches", "queue_orphans", "timer_orphans", "stuck_searches")
+
+
+async def cycle_metrics(days: int = 7) -> dict:
+    """جمعِ روزانهٔ شمارنده‌های چرخه + یتیم‌های *همین لحظه* (§۴۹/§۴۶).
+
+    یتیم‌ها از `ring_overview` خوانده می‌شوند (وضعیتِ زنده)، نه از آمارِ روزانه:
+    ادمین باید ببیند «الان» چیزی خراب است یا نه.
+    """
+    from database import db
+    out = {k: 0 for k in CYCLE_KEYS}
+    try:
+        for r in await db.ring_daily(days):
+            for k, v in (r.get("c") or {}).items():
+                if k in out:
+                    out[k] += int(v or 0)
+    except Exception as e:
+        logger.warning("ring cycle metrics read failed: %s", e)
+    out["window_days"] = int(days)
+    out["generated_at"] = utc_now_iso()
+    try:
+        ov = await db.ring_overview()
+        for k in ("orphan_matches", "queue_orphans", "timer_orphans",
+                  "pending_notify", "pending_ui", "notify_health", "errors"):
+            if k in ov:
+                out[k] = ov[k]
+        out["stuck_searches"] = int(out.get("pending_notify") or 0) + \
+            int(out.get("pending_ui") or 0)
+    except Exception as e:
+        out["live_error"] = str(e)[:160]
+    return out
+
+
 def note_reject(reason: str) -> None:
     """از حلقهٔ مچ صدا زده می‌شود؛ async نیست و نباید منتظر DB بماند."""
     if not reason:
@@ -145,7 +211,12 @@ def note_reject(reason: str) -> None:
 
 
 async def flush_rejects() -> int:
-    """شمارنده‌های RAM را در `ring_stats_daily.c.reject_*` می‌نویسد."""
+    """شمارنده‌های RAM را در `ring_stats_daily.c.reject_*` می‌نویسد.
+
+    §۴۹ (V6) — همین‌جا `flush_metrics()` هم صدا زده می‌شود: همان jobِ ۳۰ ثانیه‌ای
+    هر دو دسته را می‌شوید و لازم نیست شغلِ تازه‌ای به bot.py اضافه شود.
+    """
+    await flush_metrics()
     if not _rejects:
         return 0
     snap = dict(_rejects)
@@ -198,8 +269,8 @@ async def _max_wait(days: int = 7) -> int:
     try:
         for r in await db.ring_daily(days):
             best = max(best, int((r.get("c") or {}).get("max_wait_s") or 0))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("max_wait read failed: %s", e)     # §۱۵ (V6) — بی‌صدا نه
     return best
 
 

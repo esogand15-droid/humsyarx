@@ -378,10 +378,22 @@ async def cancel_search(uid: int) -> Result:
     from database import db
     q = await db.ring_queue_get(uid)
     if not q:
+        sess = await db.ring_session_active_for(uid)
+        if sess:
+            return Result.of("in_chat", session_id=sess.get("session_id"))
         return Result.of("ok", queued=False)
     if q.get("status") == "in_chat":
         return Result.of("in_chat", session_id=q.get("session_id"))
-    await db.ring_queue_leave(uid)
+    if q.get("status") == "claimed":
+        # §۳۹ (V6) — matcher همین لحظه او را برداشته؛ ردیف را پاک نکن که
+        # sessionِ دیگری بی‌صاحب می‌شود. برنده match است؛ cancelِ بعدی no-op.
+        logger.info("RING_SEARCH_CANCEL_DEFERRED uid=%s reason=claimed", uid)
+        return Result.of("busy", why="claimed")
+    if not await db.ring_queue_leave_if(uid, ("waiting", "claiming")):
+        sess = await db.ring_session_active_for(uid)
+        if sess:
+            return Result.of("matched", session_id=sess.get("session_id"))
+        return Result.of("busy", why="row-changed")
     await forget_search_msg(uid)          # §۱۲ — تایمرِ یتیم ممنوع
     logger.info("RING_SEARCH_CANCEL uid=%s mode=%s", uid, q.get("mode"))
     return Result.of("ok", queued=True)
@@ -479,6 +491,8 @@ async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
             return Result.of("empty", waited_s=int(_waited_s(me_q)), queued=others)
         cid = int(cand["user_id"])
         tried.append(cid)
+        from ring import analytics as _A
+        _A.note_metric("candidate_found")       # §۴۹ (V6)
         logger.debug("RING_CANDIDATE_FOUND uid=%s cand=…%s", uid, str(cid)[-4:])
         v = await _verdict(uid, cid, cand, mode, cfg, blocked, verify_recent,
                            me={**me_q, **me_p, "user_id": uid})
@@ -487,9 +501,12 @@ async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
             _reject_log(uid, cid, reason, cfg, v)
             from ring import analytics as _A
             _A.note_reject(reason.split(":")[-1])          # §۳۹
+            _A.note_metric("candidate_rejected")           # §۴۹ (V6)
             await db.ring_queue_release(cid)
             continue
         sess = await _open_session(uid, cid, me_p, mode, cfg)
+        if sess:
+            _A.note_metric("match_created")                 # §۴۹ (V6)
         if not sess:
             # یا slot او پر شده، یا matcherِ دیگری همین pair را ساخته ⇒
             # اگر session واقعیِ ما وجود دارد، همان را بگیر (نه «کسی نیست»)
@@ -523,6 +540,512 @@ async def _search_pass(uid: int, token: str, me_q: dict, me_p: dict, mode: str,
     return Result.of("empty", tried=len(tried))
 
 
+def _warn_no_bot_tick() -> None:
+    """§۴۵/§۵۸ — «بات نیست» را بگو، ولی لاگ را سیل نکن (هر ۵ دقیقه یک‌بار)."""
+    global _NOBOT_LOG_AT
+    now = now_utc().timestamp()
+    if now - float(_NOBOT_LOG_AT or 0.0) < 300.0:
+        return
+    _NOBOT_LOG_AT = now
+    logger.warning("RING_SEARCH_TICK_NOBOT — بات در دسترس نیست؛ تایمر ویرایش "
+                   "نمی‌کند (notify.bind در post_init را بررسی کن)")
+
+
+async def _finalize_dead(uid: int, q: dict | None) -> bool:
+    """§۸ (V6) — حبابِ «در حال جست‌وجو»ی یک کاربرِ دیگر-منتظر را نهایی می‌کند.
+
+    وضعیت از DB خوانده می‌شود (نه از RAM): اگر session فعال باشد پیام
+    «مچ شدی + کنترل‌های چت» و وگر نه «جست‌وجو تمام شد» می‌نشیند. اگر هیچ
+    پیامِ قابل‌ویرایشی نباشد False برمی‌گرداند تا فراخوان شناسه را پاک کند.
+    """
+    from database import db
+    from ring import keyboards as K, texts
+    p = await db.ring_profile(uid) or {}
+    sm = p.get("search_msg") or {}
+    if not (sm.get("m") and sm.get("c")):
+        return False
+    sess = await db.ring_session_active_for(uid)
+    cfg = await S.get_cfg()
+    if sess:
+        try:
+            kb = K.kb_chat(sess.get("mode") or p.get("mode") or "fun", cfg)
+        except Exception as e:
+            logger.warning("RING_KB_FAIL uid=%s err=%s", uid, str(e)[:120])
+            kb = None
+        r = await finalize_search_ui(uid, "🎉 مچ شدی! کارت گفت‌وگو همین پایین "
+                                          "آمده ✅ — دکمه‌های زیر گفت‌وگو را ببین.",
+                                     kind="plain", cfg=cfg)
+        if r == "edited" and kb is not None:
+            await db.ring_cols.profiles.update_one({"_id": int(uid)},
+                                                    {"$set": {"ring_last_ui": "chat"}})
+        return r in ("edited", "pending")
+    mode = (q or {}).get("mode") or p.get("mode") or "fun"
+    try:
+        text = texts.search_expired(mode, cfg, waited_s=int(_waited_s(q or {})), p=p)
+    except Exception:
+        text = "⌛ جست‌وجو به پایان رسید."
+    r = await finalize_search_ui(uid, text, kind="expired", cfg=cfg, sm=sm)
+    return r in ("edited", "pending")
+
+
+async def _heal_after_race(uid: int, chat_id: int, message_id: int) -> None:
+    """§۲۱ — editِ ما برندهٔ مسابقه نبود؛ متنِ نهایی را برگردان."""
+    from database import db
+    from ring import notify
+    sess = await db.ring_session_active_for(uid)
+    text = ("🎉 مچ شدی! کارت گفت‌وگو همین پایین آمده ✅" if sess
+            else "⌛ جست‌وجو به پایان رسید.")
+    bot = notify._bot()
+    if bot is None:
+        return
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+        logger.info("RING_SEARCH_UI_HEALED uid=%s reason=race to=%s",
+                    uid, "matched" if sess else "expired")
+    except Exception as e:
+        logger.warning("RING_SEARCH_UI_HEAL_FAIL uid=%s err=%s", uid, str(e)[:140])
+
+
+
+# ══════════════════════════════════════════════════════════
+#  §۳/§۲۴ (V6) — چرخهٔ کاملِ «match» در **یک** تابع
+#
+#  تا V۵ این پنج کار در چهار نقطه پخش بودند (service._open_session،
+#  handlers._announce_match، handlers._retire_wait، jobs.housekeeping) و هر
+#  مسیرِ تازه‌ای می‌توانست یکی را جا بیندازد. روی سرورِ زنده همان شد:
+#  session ساخته شد و رله کار کرد، ولی «توقف تایمر / نهایی‌کردن UI / اطلاعیه»
+#  همه بی‌صدا `return` کردند (notify._bot() هیچ‌وقت بات نداشت).
+# ══════════════════════════════════════════════════════════
+
+NOTIFY_BACKOFF_S = (5, 15, 60)      # §۳۲ — سه تلاش، نه حلقهٔ بی‌نهایت
+NOTIFY_MAX_TRIES = len(NOTIFY_BACKOFF_S)
+UI_PEND_MAX_TRIES = 5               # §۱۴ — پیامی که هرگز نمی‌آید، با لاگ رها می‌شود
+_NOBOT_LOG_AT = 0.0
+
+
+def _ago_s(iso) -> float:
+    """چند ثانیه از آن لحظه گذشته؟ (خطا ⇒ عددِ بزرگ، یعنی «همین حالا تلاش کن»)."""
+    if not iso:
+        return 1e9
+    try:
+        return max(0.0, (now_utc() - now_utc().fromisoformat(str(iso))).total_seconds())
+    except Exception:
+        return 1e9
+
+
+def _HTML():
+    from telegram.constants import ParseMode
+    return ParseMode.HTML
+
+
+async def _final_kb(kind, cfg: dict | None, p: dict):
+    """دکمه‌های پیامِ نهایی — تا بعد از edit صفحه بن‌بست نشود (§۹/§۱۰)."""
+    from ring import keyboards as K
+    if kind == "expired":
+        return K.kb_expired((p or {}).get("mode") or "fun", cfg or {})
+    return None
+
+
+_KB_DEFAULT = object()
+
+
+async def finalize_search_ui(uid: int, text: str, *, kind: str = "plain",
+                             cfg: dict | None = None,
+                             sm: dict | None = None, markup=_KB_DEFAULT) -> str:
+    """حبابِ «🔎 در حال جست‌وجو…» را با `text` جایگزین می‌کند (§۸/§۲۴ V6).
+
+    بازگشت: `edited` | `pending` | `none`
+
+    تفاوتِ مهم با V۵: اگر بات هنوز bind نشده باشد یا تلگرام edit را رد کند،
+    شناسه **پاک نمی‌شود**؛ متن در `search_msg.pend` می‌ماند و
+    `repair_search_ui` (از تیک / housekeeping / post_init) بعداً همان را
+    می‌نشاند. این راهِ برگشتِ «۰۰:۰۰ تا ابد» است (§۵۵: UI هرگز نباید گم شود).
+    """
+    from database import db
+    from ring import notify
+    p = await db.ring_profile(uid) or {}
+    have = p.get("search_msg") or {}
+    # `sm` snapshotِ فراخوان است: اگر شناسه را *قبل از* این تابع پاک کرده باشیم
+    # (مسیرِ انقضا آن را در کپی نگه می‌دارد تا تایمر نمیرد)، همان را مصرف می‌کنیم.
+    sm = have if (have.get("m") and have.get("c")) else (sm or {})
+    if not (sm.get("m") and sm.get("c")):
+        return "none"
+    bot = notify._bot()
+    if bot is not None:
+        kb = (await _final_kb(kind, cfg, p)) if markup is _KB_DEFAULT else markup
+        try:
+            await bot.edit_message_text(chat_id=int(sm["c"]), message_id=int(sm["m"]),
+                                        text=text, parse_mode=_HTML(), reply_markup=kb)
+            await db.ring_search_msg_clear(uid)
+            from ring import analytics as _A
+            _A.note_metric("search_ui_finalized")
+            logger.info("RING_SEARCH_UI_FINALIZED uid=%s result=edited kind=%s",
+                        uid, kind)
+            return "edited"
+        except Exception as e:
+            logger.warning("RING_SEARCH_UI_FINALIZED uid=%s result=retry err=%s",
+                           uid, str(e)[:140])
+    if await db.ring_search_msg_pend(uid, text, kind,
+                                     chat_id=sm.get("c"), message_id=sm.get("m")):
+        logger.info("RING_SEARCH_UI_FINALIZED uid=%s result=pending kind=%s",
+                    uid, kind)
+    else:
+        logger.warning("RING_SEARCH_UI_FINALIZED uid=%s result=lost kind=%s "
+                       "(پروفایلی برای ثبتِ pend نبود)", uid, kind)
+    return "pending"
+
+
+async def repair_search_ui(limit: int = 20) -> int:
+    """§۱۴ — `pend`های معوقه را اعمال می‌کند (ترمیم حبابِ یخ‌زده)."""
+    from database import db
+    from ring import notify
+    n = 0
+    cfg = await S.get_cfg()
+    for uid in await db.ring_search_msg_pend_ids(limit):
+        p = await db.ring_profile(uid) or {}
+        sm = p.get("search_msg") or {}
+        pend = str(sm.get("pend") or "").strip()
+        if not pend or not sm.get("m") or not sm.get("c"):
+            await db.ring_search_msg_clear(uid)
+            continue
+        bot = notify._bot()
+        if bot is None:
+            return n                          # هنوز باتی نیست؛ دورِ بعد
+        if int(sm.get("pt") or 0) >= UI_PEND_MAX_TRIES:
+            await db.ring_search_msg_clear(uid)
+            logger.warning("RING_SEARCH_UI_FINALIZED uid=%s result=dropped tries=%s "
+                           "(پیامِ روی صفحه پاک شده؟)", uid, sm.get("pt"))
+            continue
+        await db.ring_cols.profiles.update_one({"_id": int(uid)},
+                                               {"$inc": {"search_msg.pt": 1}})
+        try:
+            await bot.edit_message_text(chat_id=int(sm["c"]), message_id=int(sm["m"]),
+                                        text=pend, parse_mode=_HTML(),
+                                        reply_markup=await _final_kb(sm.get("pend_k"),
+                                                                     cfg, p))
+            await db.ring_search_msg_clear(uid)
+            from ring import analytics as _A
+            _A.note_metric("search_ui_finalized")
+            n += 1
+            logger.info("RING_SEARCH_UI_FINALIZED uid=%s result=edited-later", uid)
+        except Exception as e:
+            logger.warning("RING_SEARCH_UI_RETRY_FAIL uid=%s err=%s", uid, str(e)[:140])
+    return n
+
+
+async def notify_match_started(session_id: str, *, cfg: dict | None = None,
+                               reason: str = "match") -> dict:
+    """§۱۱/§۲ — کارت مچ برای هر دو طرف، **با ثبتِ نتیجه در DB** (idempotent).
+
+    تنها جایی است که کارت مچ ارسال می‌شود و از سه راه صدا زده می‌شود:
+      • بی‌درنگ بعد از match (`finalize_match`)          ⇒ §۱۸
+      • housekeeping برای ترمیم (`retry_pending_notify`) ⇒ §۱۹/§۳۱
+      • `post_init` بعد از ری‌استارت                      ⇒ §۳۶
+    `sessions.notify[uid].s` نشانهٔ «رسید» است؛ پس نه پیامی گم می‌شود و نه دو
+    تا می‌رود، حتی اگر پروسه میانِ کار بمیرد (§۱۲/§۳۴: source of truth = DB).
+    """
+    from database import db
+    from ring import notify, texts
+    out = {"sent": [], "failed": [], "skipped": [], "session_id": session_id}
+    from ring import notify as _N
+    if _N._bot() is None:
+        # §۳۲ (V6) — بدون بات، «تلاش» حساب نمی‌شود (وگرنه ۹۰ ثانیه بی‌باتی،
+        # بودجهٔ ۳ تلاشِ backoff را صفر می‌کرد و اطلاعیه برای همیشه می‌مرد).
+        out["skipped"].append("no-bot")
+        logger.warning("RING_MATCH_NOTIFY_DEFERRED sid=%s reason=no-bot", session_id)
+        return out
+    sess = await db.ring_session(session_id)
+    if not sess:
+        out["skipped"].append("no-session")
+        return out
+    if cfg is None:
+        cfg = await S.get_cfg()
+    slots = _sess_uids(sess)
+    nstate = sess.get("notify") or {}
+    seqs = sess.get("notify_seq") or {}
+    if sess.get("status") != "active" and reason == "retry":
+        # §۳۱/§۳۶ (V6) — جبرانی برای گفت‌وگویی که تمام شده فرستاده نمی‌شود
+        # (کارت مچ برای چتِ بسته، فقط گیج‌کننده است). UI/حباب در مسیرِ
+        # `repair_search_ui` همچنان ترمیم می‌شود.
+        out["skipped"].append("closed")
+        return out
+    for a in slots:
+        st = nstate.get(str(a)) or {}
+        if st.get("s"):
+            out["skipped"].append(a)                       # قبلاً رسیده (§۱۲)
+            continue
+        if int(st.get("t") or 0) >= NOTIFY_MAX_TRIES and reason == "retry":
+            out["skipped"].append(a)
+            continue
+        peers = [u for u in slots if u != int(a)]
+        b = peers[0] if peers else None
+        pb = await db.ring_profile(b) if b is not None else None
+        card = texts.match_card(sess, pb or {}, cfg,
+                                session_no=int(seqs.get(str(a)) or 1))
+        from ring import keyboards as K
+        try:
+            kb = K.kb_chat(sess.get("mode") or "fun", cfg)
+        except Exception as e:
+            logger.warning("RING_KB_FAIL sid=%s err=%s", session_id, str(e)[:120])
+            kb = None
+        ok = await notify.send_text(a, card, parse_mode=_HTML(), reply_markup=kb)
+        await db.ring_session_note_sent(session_id, a, sent=bool(ok),
+                                        err=None if ok else "send-failed")
+        from ring import analytics as _A
+        _A.note_metric("notify_ok" if ok else "notify_fail")   # §۴۹ (V6)
+        (out["sent"] if ok else out["failed"]).append(a)
+        logger.info("RING_MATCH_NOTIFY uid=%s sid=%s result=%s reason=%s",
+                    a, session_id, "sent" if ok else "failed", reason)
+    if out["sent"] or out["failed"]:
+        logger.info("RING_CHAT_READY sid=%s slots=%s notified=%s failed=%s",
+                    session_id, slots, out["sent"], out["failed"])
+    return out
+
+
+async def finalize_match(session_id: str, *, cfg: dict | None = None,
+                         ui_text: str | None = None) -> dict:
+    """§۲۴ — ترتیبِ اجباری: DB → state → queue → timer → UI → notify.
+
+    idempotent است، پس `jobs._sweep`، مسیرِ کاربر و روترِ ادمین همه همین یکی را
+    صدا می‌زنند (§۴: «notification نباید منطقِ پراکنده داشته باشد»).
+    """
+    from database import db
+    sess = await db.ring_session(session_id)
+    if not sess:
+        return {"ok": False, "why": "no-session"}
+    if cfg is None:
+        cfg = await S.get_cfg()
+    slots = _sess_uids(sess)
+    for u in slots:
+        q = await db.ring_queue_get(u)
+        if q and q.get("status") in ("waiting", "claiming"):
+            await db.ring_queue_into_chat(u, session_id)
+            logger.info("RING_QUEUE_REMOVED uid=%s sid=%s result=repaired",
+                        u, session_id)
+        logger.info("RING_TIMER_CANCELLED uid=%s sid=%s", u, session_id)
+    txt = ui_text or "🎉 مچ شدی! کارت گفت‌وگو همین پایین آمده ✅"
+    ui = {u: await finalize_search_ui(u, txt) for u in slots}
+    res = await notify_match_started(session_id, cfg=cfg)
+    res.update({"ok": True, "ui": ui, "slots": slots})
+    return res
+
+
+def _sess_uids(sess: dict) -> list[int]:
+    """اسلات‌های یک جلسه، با fallback به `user_a`/`user_b`.
+
+    لازم است چون `ring_session_end` عمداً `slots` را null می‌کند (تا unique
+    indexِ «یک جلسهٔ فعال به‌ازای هر کاربر» آزاد شود) — و ادمین دقیقاً همان
+    جلسه‌های تمام‌شده/گزارش‌شده را برای بازرسی باز می‌کند (§۴۶ V6). همان
+    fallbackی که `db.ring_session_peer` دارد، این‌جا هم لازم بود.
+    """
+    out: list[int] = []
+    for u in (sess.get("slots") or []):
+        try:
+            out.append(int(u))
+        except Exception:
+            continue
+    if out:
+        return out
+    for k in ("user_a", "user_b"):
+        try:
+            if sess.get(k):
+                out.append(int(sess[k]))
+        except Exception:
+            continue
+    return out
+
+
+async def session_health(session_id: str) -> dict:
+    """§۴۶ — «این match کدام مرحله‌اش کامل نشد؟» (برای پنل و برای دیباگِ زنده).
+
+    خروجی برای هر مرحله `dict[uid] = bool` است تا ادمین ببیند مشکل یک‌طرفه
+    است یا دوطرفه (در V5 دقیقاً همین را نمی‌شد فهمید؛ فقط «چیزی کار نمی‌کند»
+    دیده می‌شد). هیچ query سنگینی ندارد: پنج readِ کلیددار.
+    """
+    from database import db
+    from ring import notify as _N
+    out: dict = {"session_id": session_id, "found": False,
+                 "steps": {"state": {}, "queue": {}, "timer": {},
+                           "notify": {}, "relay": {}},
+                 "needs_repair": False, "notify_health": _N.health()}
+    sess = await db.ring_session(session_id)
+    if not sess:
+        out["error"] = "no-session"
+        return out
+    out["found"] = True
+    out["status"] = sess.get("status")
+    out["mode"] = sess.get("mode")
+    out["created_at"] = sess.get("created_at")
+    slots = _sess_uids(sess)
+    out["slots"] = slots
+    out["ended"] = sess.get("status") != "active"
+    nstate = sess.get("notify") or {}
+    al = sess.get("aliases") or {}
+    for u in slots:
+        p = await db.ring_profile(u) or {}
+        out["steps"]["state"][u] = p.get("current_session") == session_id
+        q = await db.ring_queue_get(u)
+        # «درست» یعنی: ردیفی که او را دوباره match کند وجود ندارد
+        out["steps"]["queue"][u] = not (q and q.get("status") in
+                                       ("waiting", "claiming", "claimed"))
+        out["steps"]["timer"][u] = not (p.get("search_msg") or {})
+        out["steps"]["notify"][u] = bool((nstate.get(str(u)) or {}).get("s"))
+        out["steps"]["relay"][u] = bool(al.get(str(u)))
+    out["steps"]["notify_tries"] = {u: int((nstate.get(str(u)) or {}).get("t") or 0)
+                                     for u in slots}
+    out["needs_repair"] = any(any(not v for v in d.values())
+                              for k, d in out["steps"].items()
+                              if k != "notify_tries" and isinstance(d, dict))
+    return out
+
+
+async def repair_session(session_id: str) -> dict:
+    """§۴۷ — ترمیمِ *محافظه‌کارانه* یک session.
+
+    فقط همان کاری را می‌کند که باید شده باشد و نشده: state را ست می‌کند،
+    ردیفِ جاماندهٔ صف را `in_chat` می‌کند، حبابِ یخ‌زده را نهایی می‌کند و
+    کارتِ نرسیده را می‌فرستد (idempotent). هیچ session را نمی‌بندد، هیچ
+    پیامِ کاربری را پاک نمی‌کند و چیزی را «از نو» match نمی‌کند.
+    """
+    from database import db
+    sess = await db.ring_session(session_id)
+    if not sess:
+        return {"ok": False, "why": "no-session"}
+    before = await session_health(session_id)
+    did: dict = {"state": {}, "queue": {}, "timer": {}, "notify": None}
+    for u, ok in (before["steps"]["state"] or {}).items():
+        if ok:
+            continue
+        await db.ring_cols.profiles.update_one({"_id": int(u)},
+                                               {"$set": {"current_session": session_id}})
+        did["state"][int(u)] = True
+        logger.warning("RING_REPAIR sid=%s step=state uid=%s", session_id, u)
+    for u, ok in (before["steps"]["queue"] or {}).items():
+        if ok:
+            continue
+        await db.ring_queue_into_chat(int(u), session_id)
+        did["queue"][int(u)] = True
+        logger.warning("RING_REPAIR sid=%s step=queue uid=%s", session_id, u)
+    txt = "🎉 مچ شدی! کارت گفت‌وگو همین پایین آمده ✅"
+    for u, ok in (before["steps"]["timer"] or {}).items():
+        if ok:
+            continue
+        did["timer"][int(u)] = await finalize_search_ui(int(u), txt)
+        logger.warning("RING_REPAIR sid=%s step=timer uid=%s result=%s",
+                       session_id, u, did["timer"][int(u)])
+    if any(not v for v in (before["steps"]["notify"] or {}).values()):
+        did["notify"] = await notify_match_started(session_id)
+    out = {"ok": True, "session_id": session_id, "repaired": did,
+           "after": await session_health(session_id)}
+    out["after"]["needs_repair"] = bool(out["after"]["needs_repair"])
+    return out
+
+
+async def boot_repair() -> dict:
+    """§۳۶ — بلافاصله بعد از بالا آمدن: کارهای ناتمامِ چرخهٔ match را ببند.
+
+    سه چیز، همه idempotent:
+      ۱) `notify` — کارت‌هایی که نرسیده‌اند (از DB خوانده می‌شوند، نه RAM)
+      ۲) `pend`  — پیام‌های جست‌وجویی که نهایی نشدند (حبابِ یخ‌زده)
+      ۳) یتیم‌ها  — session/queue/timerِ ناسازگار (§۴۸)
+    اگر رینگ خاموش باشد یا DB در دسترس نباشد، `{}` برمی‌گرداند و بوت را نمی‌شکند.
+    """
+    out: dict = {}
+    try:
+        from database import db  # noqa: F401  (نشان می‌دهد DB لازم است)
+    except Exception as e:
+        logger.warning("RING_BOOT_REPAIR skipped (db unavailable): %s", e)
+        return {}
+    for key, coro in (("notify", retry_pending_notify(limit=20)),
+                      ("ui", repair_search_ui(limit=20)),
+                      ("orphans", repair_orphans(limit=50))):
+        try:
+            r = await coro
+            out[key] = r if isinstance(r, (int,)) else r
+        except Exception as e:
+            out[f"{key}_error"] = str(e)[:140]
+            logger.warning("RING_BOOT_REPAIR %s failed err=%s", key, str(e)[:140])
+    logger.info("RING_BOOT_REPAIR %s", out)
+    return out
+
+
+async def retry_pending_notify(limit: int = 20) -> dict:
+    """§۳۱/§۳۲ — اطلاعیهٔ نرسیده را با backoff دوباره می‌فرستد (فقط fallback)."""
+    from database import db
+    cfg = await S.get_cfg()
+    tried = 0
+    for row in await db.ring_sessions_pending_notify(limit=limit):
+        nstate = row.get("notify") or {}
+        due = False
+        for u in row.get("missing") or []:
+            st = nstate.get(str(u)) or {}
+            tries = int(st.get("t") or 0)
+            if tries >= NOTIFY_MAX_TRIES:
+                continue
+            gap = NOTIFY_BACKOFF_S[min(tries, len(NOTIFY_BACKOFF_S) - 1)]
+            if _ago_s(st.get("at")) >= gap:
+                due = True
+                break
+        if not due:
+            continue
+        await notify_match_started(row["session_id"], cfg=cfg, reason="retry")
+        tried += 1
+    return {"retried": tried}
+
+
+async def repair_orphans(*, limit: int = 50) -> dict:
+    """§۴۸ — ناسازگاری‌ها را *محافظه‌کارانه* درست می‌کند (+شمارشِ متریک).
+
+      • session فعال دارد ولی `current_session` ندارد → ست می‌شود
+      • ردیف `waiting` دارد ولی session فعال دارد → از صف بیرون (یتیمِ صف)
+      • `search_msg` دارد ولی ردیفِ زنده ندارد → تایمر خاموش (یتیمِ تایمر)
+
+    هیچ session‌ای را نمی‌بندد و هیچ پیامِ کاربری را پاک نمی‌کند؛ فقط فلگ‌ها را
+    هم‌راستا می‌کند و در `ring_admin_audit` می‌نویسد تا قابل بازرسی بماند.
+    """
+    from database import db
+    rep = {"orphan_matches": 0, "queue_orphans": 0, "timer_orphans": 0}
+    try:
+        for sid, u in await db.ring_sessions_missing_current(limit=limit):
+            await db.ring_cols.profiles.update_one(
+                {"_id": int(u)}, {"$set": {"current_session": sid}})
+            rep["orphan_matches"] += 1
+            logger.warning("RING_ORPHAN_REPAIR type=match sid=%s uid=%s", sid, u)
+    except Exception as e:
+        logger.warning("RING_ORPHAN_REPAIR type=match skipped err=%s", str(e)[:140])
+    try:
+        for u in await db.ring_queue_orphans(limit=limit):
+            if not await db.ring_session_active_for(u):
+                continue
+            await db.ring_queue_leave(u)
+            rep["queue_orphans"] += 1
+            logger.warning("RING_ORPHAN_REPAIR type=queue uid=%s", u)
+    except Exception as e:
+        logger.warning("RING_ORPHAN_REPAIR type=queue skipped err=%s", str(e)[:140])
+    try:
+        for u in await db.ring_search_msg_orphans(limit):
+            q = await db.ring_queue_get(u)
+            if q and q.get("status") in ("waiting", "claiming", "claimed"):
+                continue
+            # §۸ (V6) — «پاک‌کردنِ شناسه» کافی نیست: اگر آن پیام هنوز روی صفحه
+            # باشد، کاربر تا ابد «🔎 در حال جست‌وجو…» می‌بیند. اول نهایی‌اش می‌کنیم
+            # (متنِ واقعی از DB)، و فقط اگر ویرایش ممکن نبود شناسه را رها می‌کنیم.
+            if await _finalize_dead(u, q):
+                rep["healed"] = int(rep.get("healed") or 0) + 1
+            else:
+                await db.ring_search_msg_clear(u)
+            rep["timer_orphans"] += 1
+            logger.warning("RING_ORPHAN_REPAIR type=timer uid=%s", u)
+    except Exception as e:
+        logger.warning("RING_ORPHAN_REPAIR type=timer skipped err=%s", str(e)[:140])
+    if any(rep.values()):
+        from ring import analytics as _A
+        for k, v in rep.items():
+            _A.note_metric(k, int(v or 0))
+    return rep
+
+
+
 async def remember_search_msg(uid: int, chat_id: int, message_id: int,
                               *, waited_s: int = 0) -> None:
     """§۴ (V5) — «این همان پیامی است که تایمر رویش edit می‌شود».
@@ -547,30 +1070,28 @@ async def forget_search_msg(uid: int, *, expired: bool = False) -> None:
 
 
 async def _render_search_final(uid: int, cfg: dict, text: str,
-                               sm: dict | None = None) -> None:
-    """پیامِ پایانِ جست‌وجو: edit روی همان پیام، وگر نه پیامِ تازه (§۱۰).
+                               sm: dict | None = None) -> str:
+    """پیامِ پایانِ جست‌وجو — از همان `finalize_search_ui` (§۱۰/§۱۴ V6).
 
-    ⚠️ `sm` (شناسهٔ پیامِ انتظار) باید *از قبل* خوانده شده باشد: فراخوان‌ها
-    پیش از این تابع `search_msg` را پاک می‌کنند تا تایمر نمیرد، پس اگر اینجا
-    دوباره از DB بخوانیم، همیشه «پیامِ تازه» می‌گیریم و §۱۰ نقض می‌شود.
+    V۵ برای این کار دو مسیرِ جدا داشت (edit اگر شد، وگر نه sendِ تازه) که در
+    حالتِ «بات نبود» پیامِ دوم می‌ساخت و بعد هم شناسه را پاک می‌کرد ⇒ حبابِ
+    یخ‌زده. حالا اگر edit ممکن نبود، متن در `pend` می‌ماند و دورِ بعد اعمال
+    می‌شود؛ پیامِ تازه فقط وقتی می‌رود که هیچ شناسه‌ای در کار نباشد
+    (کاربر پیامِ انتظار را پاک کرده) — و آن هم با لاگ اگر نرسید.
     """
     from database import db
-    from ring import keyboards as K, notify
-    from telegram.constants import ParseMode
-    bot = notify._bot()
-    p = await db.ring_profile(uid) or {}
-    sm = sm if sm is not None else (p.get("search_msg") or {})
-    kb = K.kb_expired(p.get("mode") or "fun", cfg)
-    if bot is not None and sm.get("m") and sm.get("c"):
-        try:
-            await bot.edit_message_text(chat_id=int(sm["c"]), message_id=int(sm["m"]),
-                                        text=text, parse_mode=ParseMode.HTML,
-                                        reply_markup=kb)
-            await db.ring_search_msg_clear(uid)
-            return
-        except Exception as e:              # پاک‌شده/دسترسی‌ندارد → fallback
-            logger.debug("[RING] expire-edit failed uid=%s: %s", uid, e)
-    await notify.send_text(uid, text, reply_markup=kb)
+    from ring import notify
+    if sm is None:
+        sm = (await db.ring_profile(uid) or {}).get("search_msg") or {}
+    r = await finalize_search_ui(uid, text, kind="expired", cfg=cfg, sm=sm)
+    if r == "none" and not (sm.get("m") and sm.get("c")):
+        from ring import keyboards as K
+        p = await db.ring_profile(uid) or {}
+        kb = K.kb_expired(p.get("mode") or "fun", cfg or {})
+        if not await notify.send_text(uid, text, parse_mode=_HTML(), reply_markup=kb):
+            logger.warning("RING_SEARCH_EXPIRE_UNDELIVERED uid=%s "
+                           "(نه پیامِ انتظار بود، نه ارسالِ تازه نشست)", uid)
+    return r
 
 
 async def expire_search(uid: int) -> bool:
@@ -588,12 +1109,14 @@ async def expire_search(uid: int) -> bool:
     timeout = max(30, int(cfg.get("queue_timeout_s") or 600))
     if int(_waited_s(q)) < timeout:
         return False
-    await _expire_search(uid, q, await db.ring_profile(uid) or {}, cfg, timeout)
-    return True
+    # §۵۳ (V6) — «انجام شد» فقط وقتی واقعاً انجام شده باشد: اگر `_expire_search`
+    # به‌دلیلِ matchedشدن یا تغییرِ ردیف abort کرد، ما هم False می‌گوییم (قبلاً
+    # همیشه True برمی‌گرداند و فراخوان — jobs/handlers — موفقیتِ ساختگی می‌دید).
+    return await _expire_search(uid, q, await db.ring_profile(uid) or {}, cfg, timeout)
 
 
 async def _expire_search(uid: int, q: dict, p: dict, cfg: dict,
-                         timeout_s: int) -> None:
+                         timeout_s: int) -> bool:
     """§۲/§۱۲/§۳۶ (V5) — پایانِ سقف انتظار.
 
     تنها جایی که «کسی پیدا نشد» گفته می‌شود؛ تا پیش از آن پیام فقط
@@ -602,15 +1125,24 @@ async def _expire_search(uid: int, q: dict, p: dict, cfg: dict,
     """
     from database import db
     from ring import texts
+    # §۳۸ (V6) — اگر matcher همین لحظه session ساخته، انقضا بازمی‌گردد؛
+    # ترکیبِ «A=EXPIRED و B=MATCHED» غیرممکن می‌شود.
+    if await db.ring_session_active_for(uid):
+        await db.ring_search_msg_clear(uid)
+        logger.info("RING_SEARCH_EXPIRE_ABORTED uid=%s reason=matched", uid)
+        return False
     waited = int(_waited_s(q))
     sm = dict(p.get("search_msg") or {})          # §۱۰ — اول کپی، بعد پاک‌کردن
-    await db.ring_queue_leave(uid)
+    if not await db.ring_queue_leave_if(uid, ("waiting", "claiming")):
+        logger.info("RING_SEARCH_EXPIRE_ABORTED uid=%s reason=row-changed", uid)
+        return False
     await db.ring_search_msg_clear(uid, expired_at=utc_now_iso())
     text = texts.search_expired(q.get("mode") or p.get("mode") or "fun", cfg,
                                 waited_s=waited, p=p)
-    await _render_search_final(uid, cfg, text, sm)
+    await _render_search_final(uid, cfg, text, sm)     # §۱۰ — با snapshot
     logger.info("RING_SEARCH_EXPIRED uid=%s waited_s=%s timeout_s=%s",
                 uid, waited, timeout_s)
+    return True
 
 
 async def search_tick(*, limit: int = 200, edit_every_s: int = 10) -> dict:
@@ -631,9 +1163,17 @@ async def search_tick(*, limit: int = 200, edit_every_s: int = 10) -> dict:
     from ring import keyboards as K, notify, texts
     from telegram.constants import ParseMode
     from telegram.error import BadRequest
-    stats = {"edited": 0, "expired": 0, "dropped": 0}
+    stats = {"edited": 0, "expired": 0, "dropped": 0, "skipped": 0, "ui": 0}
+    # §۱۴ — حباب‌های یخ‌زده (pend) اول از همه ترمیم می‌شوند؛ این راهِ برگشتِ
+    # «۰۰:۰۰ برای همیشه» است، چون ممکن است در لحظهٔ match بات bind نشده باشد.
+    try:
+        stats["ui"] = await repair_search_ui(limit=max(1, min(20, int(limit))))
+    except Exception as e:
+        logger.warning("RING_SEARCH_UI_REPAIR_FAIL err=%s", str(e)[:140])
     bot = notify._bot()
     if bot is None:
+        # §۵۸ — دیگر «خطای بی‌صدا» نیست: warningِ نرخ‌محدود در سطح INFO.
+        _warn_no_bot_tick()
         return stats
     cfg = await S.get_cfg()
     timeout = max(30, int(cfg.get("queue_timeout_s") or 600))
@@ -651,18 +1191,31 @@ async def search_tick(*, limit: int = 200, edit_every_s: int = 10) -> dict:
         try:
             q = await db.ring_queue_get(uid)
             if not q or q.get("status") not in ("waiting", "claiming"):
-                await db.ring_search_msg_clear(uid)      # یتیم (§۱۲)
+                # §۱۲/§۸ (V6) — در V۵ فقط شناسه پاک می‌شد؛ نتیجه: هر کاربری که
+                # match شده بود ولی `finalize_match` به‌دلیل باگِ بات به پیامش
+                # نرسیده بود، «🔎 در حال جست‌وجو…» یخ‌زده روی صفحه نگه می‌داشت.
+                # حالا همین‌جا همان پیام با متنِ وضعیتِ *واقعی* نهایی می‌شود.
+                if await _finalize_dead(uid, q):
+                    stats["healed"] = stats.get("healed", 0) + 1
+                else:
+                    await db.ring_search_msg_clear(uid)
                 stats["dropped"] += 1
                 continue
             if int(uid) in in_sess:                      # داخل چت — دست نزن
-                await db.ring_search_msg_clear(uid)
+                if await _finalize_dead(uid, q):
+                    stats["healed"] = stats.get("healed", 0) + 1
+                else:
+                    await db.ring_search_msg_clear(uid)
                 stats["dropped"] += 1
                 continue
             waited = int(_waited_s(q))
             p = await db.ring_profile(uid) or {}
             if waited >= timeout:
-                await _expire_search(uid, q, p, cfg, timeout)
-                stats["expired"] += 1
+                # §۳۸ — اگر انقضا به‌دلیل match برگشت، عددِ expired دروغ نمی‌گوید
+                if await _expire_search(uid, q, p, cfg, timeout):
+                    stats["expired"] += 1
+                else:
+                    stats["skipped"] += 1
                 continue
             sm = p.get("search_msg") or {}
             if not sm.get("m") or not sm.get("c"):
@@ -674,12 +1227,21 @@ async def search_tick(*, limit: int = 200, edit_every_s: int = 10) -> dict:
             text = texts.searching(mode, p, waited_s=waited,
                                    queue_n=max(0, int(n or 1) - 1),
                                    timeout_s=timeout)
+            # §۲۱/§۲ (V6) — اول «مجوزِ ویرایش» را با CAS بگیر. اگر در فاصلهٔ
+            # خواندن تا اینجا match/انقضا/لغو رخ داده باشد `rev` عوض شده و ما
+            # edit **نمی‌زنیم**؛ وگرنه کارتِ مچ زیرِ «در حال جست‌وجو…» گم می‌شود.
+            rev = int(sm.get("rev") or 1)
+            if not await db.ring_search_msg_bump(uid, waited, expect_rev=rev):
+                stats["skipped"] = stats.get("skipped", 0) + 1
+                continue
             try:
                 await bot.edit_message_text(chat_id=int(sm["c"]), message_id=int(sm["m"]),
                                             text=text, parse_mode=ParseMode.HTML,
                                             reply_markup=K.kb_searching())
-                await db.ring_search_msg_bump(uid, waited)
                 stats["edited"] += 1
+                after = (await db.ring_profile(uid) or {}).get("search_msg") or {}
+                if int(after.get("rev") or 0) != rev + 1:
+                    await _heal_after_race(uid, int(sm["c"]), int(sm["m"]))
             except BadRequest as e:
                 # پیام پاک یا غیرقابل‌ویرایش شده ⇒ تایمر باید با آن بمیرد (§۱۲)
                 logger.debug("[RING] search tick edit rejected uid=%s: %s", uid, e)
@@ -698,7 +1260,13 @@ async def search_tick(*, limit: int = 200, edit_every_s: int = 10) -> dict:
             q2 = await db.ring_queue_get(uid)
             if q2 and q2.get("status") in ("waiting", "claiming", "claimed"):
                 continue        # هنوز صاحبِ ردیفِ زنده است (یا مسابقه با join_queue)
-            await db.ring_search_msg_clear(uid)
+            # §۸ (V6) — «پاک‌کردنِ شناسه» تنها کافی نبود: روی سرورِ زنده همین
+            # مسیر باعث شد حبابِ «۰۰:۰۰» برای همیشه بماند (آدرسِ پیام رفت،
+            # متنِ نهایی هیچ‌وقت ننشست). اول نهایی می‌کنیم، وگرنه پاک می‌کنیم.
+            if await _finalize_dead(uid, q2):
+                stats["healed"] = stats.get("healed", 0) + 1
+            else:
+                await db.ring_search_msg_clear(uid)
             stats["dropped"] += 1
     except Exception as e:
         logger.debug("[RING] orphan sweep skipped: %s", e)
@@ -719,6 +1287,8 @@ async def try_match(uid: int, *, announce: bool = False) -> Result:
          نمانند — ولی پارتنرِ گفت‌وگوی *همین لحظه* هرگز برنمی‌گردد.
     """
     from database import db
+    from ring import analytics as _A
+    _A.note_metric("match_attempts")            # §۴۹ (V6)
     token = new_token()
     me_q = await db.ring_queue_claim_self(uid, token)
     if not me_q:
@@ -830,8 +1400,12 @@ async def try_match(uid: int, *, announce: bool = False) -> Result:
         logger.exception("ring.try_match failed")
         try:
             await db.ring_queue_release_self(uid, token)
-        except Exception:
-            pass
+        except Exception as e2:
+            # §۴۵/§۱۵ (V6) — اگر آزادکردنِ claim هم شکست، رزروی روی کاربر
+            # می‌ماند تا `repair_claims` (۱۵۰ ثانیه) پس بدهد؛ این باید در لاگ
+            # باشد، وگرنه «چرا این کاربر دیگر مچ نمی‌شود» بی‌جواب می‌ماند.
+            logger.warning("RING_RELEASE_AFTER_ERROR_FAILED uid=%s err=%s",
+                           uid, str(e2)[:140])
         return Result.of("error", error=str(e)[:120])
 
 
@@ -919,14 +1493,38 @@ async def _open_session(uid: int, cid: int, me_p: dict, mode: str, cfg: dict) ->
     if not got:
         return None
     for u, al in ((uid, my_alias), (cid, alias)):
+        # §۵/§۰ (V6) — state و شمارشِ جلسه همین‌جا نوشته می‌شوند، *پیش از* هر
+        # تماسِ تلگرامی. اگر لایهٔ ارسال بچکد (بات bind نشده، کاربر بلاک کرده،
+        # ۴۲۹)، DB همچنان می‌گوید «این دو در یک چت‌اند» و job ترمیم می‌کند:
+        # شکستِ notification ≠ شکستِ match.
         await db.ring_queue_into_chat(u, sid)
-        await db.ring_cols.profiles.update_one({"_id": u}, {"$set": {"current_session": sid}})
+        await db.ring_cols.profiles.update_one(
+            {"_id": u}, {"$inc": {"sessions_count": 1},
+                         "$set": {"current_session": sid}})
+        # §۷ (V6) — تایمر اینجا *پاک نمی‌شود*: شناسهٔ پیامِ انتظار لازم است تا
+        # `finalize_match` همان پیام را به «🎉 مچ شدی» تبدیل کند. ردیفِ صف
+        # `in_chat` شده، پس `search_tick` دیگر سراغش نمی‌آید؛ پاک‌کردن در
+        # `finalize_search_ui` انجام می‌شود (و اگر نشد، گامِ ترمیم/pend).
+        logger.info("RING_TIMER_STOP_REQUESTED uid=%s sid=%s", u, sid)
+        logger.info("RING_STATE_TRANSITION uid=%s from=searching to=chatting sid=%s",
+                    u, sid)
+        logger.info("RING_QUEUE_REMOVED uid=%s sid=%s", u, sid)
+        logger.info("RING_TIMER_CANCELLED uid=%s sid=%s", u, sid)
+    seqs: dict = {}
+    for u in (uid, cid):
+        d = await db.ring_cols.profiles.find_one({"_id": int(u)}, {"sessions_count": 1})
+        seqs[str(u)] = int((d or {}).get("sessions_count") or 1)
     await db.ring_cols.sessions.update_one(
         {"session_id": sid},
-        {"$set": {"aliases": {str(uid): my_alias, str(cid): alias}}})
+        {"$set": {"aliases": {str(uid): my_alias, str(cid): alias},
+                  "notify_seq": seqs}})
     state.attach(uid, cid, sid, mode, my_alias, alias)
+    from ring import analytics as _A
+    _A.note_metric("state_transition", 2)            # §۴۹ (V6) — در RAM، نه DB
+    _A.note_metric("queue_removed", 2)
+    _A.note_metric("timer_cancelled", 2)
     await db.ring_bump(session=1)
-    logger.info("RING_SESSION_STARTED sid=%s mode=%s", sid, mode)
+    logger.info("RING_SESSION_STARTED sid=%s mode=%s slots=%s", sid, mode, [uid, cid])
     return await db.ring_session(sid) or sess
 
 
@@ -960,8 +1558,9 @@ async def end_session(uid: int | None, session_id: str, reason: str, *,
     dur = 0
     try:
         dur = int((now_utc() - now_utc().fromisoformat(sess["created_at"])).total_seconds())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[RING] مدتِ جلسه خوانده نشد sid=%s: %s",
+                     sess.get("session_id"), e)   # §۱۵ — بی‌صدا نبودن
     await db.ring_bump(session_end=1, session_seconds=dur)
     logger.info("RING_SESSION_ENDED sid=%s reason=%s", session_id, reason)
     return {"session": sess, "uids": uids, "peer": peer}

@@ -37,6 +37,9 @@ def forget_warning(session_id: str) -> None:
 SWEEP_LIMIT = 12
 SEARCH_TICK_LIMIT = 200          # سقفِ سختِ هر دور (§۴۹ — هزینه ثابت بماند)
 SEARCH_TICK_EDIT_EVERY_S = 10    # §۵ — Telegram flood-safe؛ هر ۱ ثانیه نه
+NOTIFY_RETRY_LIMIT = 20          # §۳۱ (V6) — حداکثر ۲۰ session در هر دور
+UI_REPAIR_LIMIT = 20             # §۱۴ (V6) — حباب‌های یخ‌زده‌ای که ترمیم می‌شوند
+ORPHAN_LIMIT = 50                # §۴۸ (V6) — سقفِ ترمیم یتیم‌ها در هر دور
 
 
 async def ring_search_tick_job(context) -> None:
@@ -146,6 +149,29 @@ async def ring_housekeeping_job(context) -> None:
         # روی دیسک می‌نشینند (یک $inc دسته‌ای، نه به‌ازای هر رد).
         from ring import analytics as _A
         await _A.flush_rejects()
+        # ۳.۷) §۱۹/§۳۱/§۴۸ (V6) — «تورِ ایمنیِ» قیفِ match. مسیرِ اصلی همان
+        # لحظهٔ مچ‌شدن همه‌چیز را انجام می‌دهد؛ این سه فراخوانی فقط برای
+        # شکست‌های نیمه‌کاره‌اند (crash/ری‌استارت/۴۲۹/باتِ bind‌نشده):
+        #   • کارت مچی که نرسیده → با backoff ۵/۱۵/۶۰ و حداکثر ۳ تلاش
+        #   • حباب «در حال جست‌وجو»ی نهایی‌نشده (pend) → همان پیام edit می‌شود
+        #   • یتیم‌ها (session/queue/timer ناسازگار) → محافظه‌کارانه ترمیم
+        # هیچ‌کدام صف را دوباره پر نمی‌کند و پیام تکراری نمی‌فرستد (per-user
+        # «sent» flag در `sessions.notify`).
+        try:
+            n_not = (await service.retry_pending_notify(limit=NOTIFY_RETRY_LIMIT)).get("retried", 0)
+        except Exception as e:
+            n_not = 0
+            logger.warning("RING_NOTIFY_RETRY_FAIL err=%s", str(e)[:140])
+        try:
+            n_ui = await service.repair_search_ui(limit=UI_REPAIR_LIMIT)
+        except Exception as e:
+            n_ui = 0
+            logger.warning("RING_UI_REPAIR_FAIL err=%s", str(e)[:140])
+        try:
+            n_orph = await service.repair_orphans(limit=ORPHAN_LIMIT)
+        except Exception as e:
+            n_orph = {}
+            logger.warning("RING_ORPHAN_REPAIR_FAIL err=%s", str(e)[:140])
         # ۴) هم‌سان‌سازی RAM با DB
         rows = await db.ring_cols.sessions.find({"status": "active"},
                                                 {"session_id": 1}).to_list(1000)
@@ -153,9 +179,10 @@ async def ring_housekeeping_job(context) -> None:
         stale = state.drop_staleuids(valid)
         if stale:
             logger.info("ring: %d entry بیات از RAM حذف شد", stale)
-        if closed or warned or repaired or swept:
-            logger.info("💍 رینگ housekeeping: بسته=%s هشدار=%s ترمیم‌claim=%s جارو=%s",
-                        closed, warned, repaired, swept)
+        if closed or warned or repaired or swept or n_not or n_ui or any(n_orph.values()):
+            logger.info("💍 رینگ housekeeping: بسته=%s هشدار=%s ترمیم‌claim=%s جارو=%s "
+                        "اطلاعیه‌مجدد=%s ui-ترمیم=%s یتیم=%s",
+                        closed, warned, repaired, swept, n_not, n_ui, n_orph)
     except Exception as e:
         logger.warning("ring housekeeping ناتمام: %s", e)
 

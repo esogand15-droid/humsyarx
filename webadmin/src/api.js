@@ -365,6 +365,11 @@ export const api = {
   ringBans: () => req('/api/ring/bans'),
   ringBan: (body) => req('/api/ring/bans', { method: 'POST', body }),
   ringUnban: (uid) => req(`/api/ring/bans/${uid}`, { method: 'DELETE' }),
+  // §۴۶/§۴۷/§۴۹ (V6) — سلامتِ چرخهٔ مچ، سلامتِ یک جلسه، و ترمیمِ محافظه‌کارانه
+  ringMetrics: (days = 7) => req(`/api/ring/metrics?days=${encodeURIComponent(days)}`),
+  ringSessionHealth: (sid) => req(`/api/ring/sessions/${encodeURIComponent(sid)}/health`),
+  ringSessionRepair: (sid) => req(`/api/ring/sessions/${encodeURIComponent(sid)}/repair`,
+    { method: 'POST' }),
   ringForceMatch: (user_a, user_b) => req('/api/ring/force-match', { method: 'POST', body: { user_a, user_b } }),
   // §۳۷/§۳۸ (V4) — «چرا این دو مچ نشدند؟» با همان الگوریتمِ زنده
   ringDebugMatch: (a, b) => req(`/api/ring/debug-match?${_ringQ({ a, b })}`),

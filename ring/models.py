@@ -139,6 +139,11 @@ TRANSITIONS: dict[str, set[str]] = {
 # §۶ (V5) — «در حال جست‌وجو» و «کسی پیدا نشد» دو حالت جدا هستند. ردیفِ صف
 # یعنی SEARCHING؛ EXPIRED فقط وقتی ساخته می‌شود که سقف انتظار تمام شده باشد.
 US_SEARCHING = US_WAITING
+# §۴۱ (V6) — اسپکِ کاربر وضعیتِ «داخل گفت‌وگو» را CHATTING صدا می‌زند و
+# وضعیتِ انتظار را SEARCHING. V۵ فقط `US_SEARCHING` را alias کرد و کدِ
+# خوانا/قابل‌grep نبود (برای لاگ‌های RING_STATE_TRANSITION…to=chatting هم همین
+# نام مصرف می‌شود). هیچ مقدارِ تازه‌ای اضافه نشده: همان `US_MATCHED`.
+US_CHATTING = US_MATCHED
 
 US_LABELS = {
     US_IDLE: "⚪ آزاد",

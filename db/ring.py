@@ -350,6 +350,18 @@ class DBRing:
     async def ring_queue_leave(self, uid: int) -> None:
         await self.ring_cols.queue.delete_one({"_id": int(uid)})
 
+    async def ring_queue_leave_if(self, uid: int, statuses: tuple) -> bool:
+        """ترکِ مشروط (§۳۸/§۳۹ V6): فقط اگر هنوز در همان وضعیت‌هاست پاک کن.
+
+        اگر matcher همین لحظه کاربر را `claimed`/`in_chat` کرده باشد، این
+        حذف nothing می‌شود و `False` برمی‌گرداند ⇒ فراخوان‌کننده (expire/cancel)
+        نباید ادعای «از صف بیرون رفتی» بکند؛ نتیجه‌اش این است که هیچ‌وقت
+        `A=EXPIRED` و `B=MATCHED` نداریم.
+        """
+        r = await self.ring_cols.queue.delete_one(
+            {"_id": int(uid), "status": {"$in": list(statuses)}})
+        return bool(getattr(r, "deleted_count", 0))
+
     async def ring_queue_get(self, uid: int) -> dict | None:
         return await self.ring_cols.queue.find_one({"_id": int(uid)})
 
@@ -530,18 +542,78 @@ class DBRing:
 
     async def ring_search_msg_set(self, uid: int, chat_id: int, message_id: int,
                                   shown_s: int = 0) -> None:
-        await self.ring_cols.profiles.update_one({"_id": int(uid)}, {"$set": {
-            "search_msg": {"c": int(chat_id), "m": int(message_id),
-                           "s": int(shown_s or 0), "at": utc_now_iso()}}})
+        """§۴/§۵۴ (V6) — یک «نسل» شمارنده هم دارد: `rev`.
 
-    async def ring_search_msg_bump(self, uid: int, shown_s: int) -> None:
-        """فقط «چند ثانیه از جست‌وجو نمایش داده شد» را جابه‌جا می‌کند."""
+        هر بازنویسی/پاک‌کردن `rev` را بالا می‌برد، پس ویرایشِ در راهِ tick که
+        با `expect_rev` صدا زده شده، اگر در فاصله‌ی خواندن تا نوشتن match یا
+        لغو رخ داده باشد، **باخت می‌کند** (CAS) ⇒ پیامِ چت/کارت مچ روی صفحه
+        با «🔎 در حال جست‌وجو…» بازنویسی نمی‌شود (§۲۱/§۲۲/§۲۳).
+        """
         await self.ring_cols.profiles.update_one(
-            {"_id": int(uid), "search_msg": {"$exists": True}},
-            {"$set": {"search_msg.s": int(shown_s or 0)}})
+            {"_id": int(uid)},
+            {"$set": {"search_msg": {"c": int(chat_id), "m": int(message_id),
+                                     "s": int(shown_s or 0), "rev": 1,
+                                     "at": utc_now_iso()}}})
+
+    async def ring_search_msg_bump(self, uid: int, shown_s: int,
+                                   expect_rev: int | None = None) -> bool:
+        """CAS: فقط اگر هنوز همان «نسلِ» جست‌وجو جاری است، ساطیه را جابه‌جا کن.
+
+        `expect_rev=None` ⇒ رفتار قدیمی (بدون CAS). وقتی `False` برگردد یعنی
+        در فاصلهٔ خواندن→ویرایش، جست‌وجو عوض/تمام شده ⇒ فراخوان‌کننده **نباید**
+        edit بزند (§۲۱).
+        """
+        filt: dict = {"_id": int(uid), "search_msg": {"$exists": True}}
+        if expect_rev is not None:
+            filt["search_msg.rev"] = int(expect_rev)
+        r = await self.ring_cols.profiles.update_one(
+            filt, {"$set": {"search_msg.s": int(shown_s or 0)},
+                   "$inc": {"search_msg.rev": 1}})
+        return bool(getattr(r, "modified_count", 0))
+
+    async def ring_search_msg_pend(self, uid: int, text: str,
+                                   kind: str = "plain", *,
+                                   chat_id=None, message_id=None) -> bool:
+        """§۸/§۱۰/§۱۴ (V6) — پیامی که *باید* جای حبابِ انتظار بنشیند ولی نشست.
+
+        این‌جا شناسه پاک **نمی‌شود**: `search_tick` (و گامِ ترمیمِ housekeeping)
+        همین `pend` را روی همان پیام می‌نویسد. با این کار «پیام یخ‌زدهٔ 00:00»
+        دیگر وضعیتِ ماندگار نیست؛ نهایتاً یک دور دیرتر درست می‌شود.
+
+        `chat_id`/`message_id` برای حالتی است که شناسه را *همان لحظه* unset
+        کرده‌ایم (انقضا و مچ‌شدن اول تایمر را می‌بندند) ولی edit هنوز ننشسته:
+        آن‌ها را برمی‌گردانیم تا `repair_search_ui` بداند کدام پیام را عوض کند —
+        وگرنه هیچ‌کس آدرسِ حباب را ندارد و برای همیشه می‌ماند (§۵۵).
+        """
+        set_: dict = {"search_msg.pend": str(text or "")[:700],
+                      "search_msg.pend_k": str(kind or "plain")[:12]}
+        if chat_id and message_id:
+            set_["search_msg.c"] = int(chat_id)
+            set_["search_msg.m"] = int(message_id)
+        r = await self.ring_cols.profiles.update_one(
+            {"_id": int(uid)},
+            {"$set": set_, "$inc": {"search_msg.rev": 1}})
+        return bool(r.matched_count)
+
+    async def ring_search_msg_pend_ids(self, limit: int = 50) -> list[int]:
+        """uidهایی که پیامِ قطعی‌شان در صفِ اعمال مانده (`search_msg.pend`).
+
+        از همان ایندکس sparse `search_msg.m` استفاده می‌کند ⇒ پیمایش فقط روی
+        کسانِ دارای پیامِ انتظار، نه کل پروفایل‌ها. شرط `m > 0` هم لازم است:
+        بدون آدرسِ پیام، `pend` فقط زباله است و باید پاک شود (نه بده‌بده).
+        """
+        cur = self.ring_cols.profiles.find(
+            {"search_msg.pend": {"$exists": True, "$nin": [None, ""]},
+             "search_msg.m": {"$gt": 0}},
+            {"_id": 1}).to_list(int(limit))
+        return [int(d["_id"]) for d in await cur]
 
     async def ring_search_msg_clear(self, uid: int, *, expired_at=None) -> None:
         """تایمر را خاموش می‌کند؛ `expired_at` فقط برای حالت EXPIRED نوشته می‌شود."""
+        # `$inc` روی `rev` قبل از `$unset`: هر editِ در راهی که با expect_rev
+        # قفل شده، بعد از این پاک‌کردن **باید** شکست بخورد (§۲۱).
+        await self.ring_cols.profiles.update_one({"_id": int(uid)},
+                                                 {"$inc": {"search_msg.rev": 1}})
         upd: dict = {"$unset": {"search_msg": ""}}
         if expired_at:
             upd["$set"] = {"search_expired_at": expired_at}
@@ -578,6 +650,57 @@ class DBRing:
         cur = self.ring_cols.profiles.find({"search_msg": {"$exists": True}},
                                            {"_id": 1}).to_list(int(limit))
         return [int(d["_id"]) for d in await cur]
+
+    async def ring_sessions_missing_current(self, limit: int = 50) -> list[tuple]:
+        """§۴۸ (V6) — (session_id, uid)هایی که sessionِ فعال دارند ولی
+        `profiles.current_session`شان ست نشده (crash بین ساخت session و attach).
+
+        بدون این، کاربر «در جست‌وجو» می‌ماند در حالی که رله فعال است — دقیقاً
+        همان چیزی که کاربر گزارش داد. فقط ۱۰۰×limit سندِ فعالِ تازه خوانده می‌شود.
+        """
+        out: list[tuple] = []
+        cap = int(limit) * 4
+        cur = self.ring_cols.sessions.find({"status": ACTIVE},
+                                           {"session_id": 1, "slots": 1}).sort(
+            "created_at", -1).to_list(cap)
+        for s in await cur or []:
+            sid = s.get("session_id")
+            if not sid:
+                continue
+            for u in (s.get("slots") or []):
+                try:
+                    uid = int(u)
+                except Exception:
+                    continue
+                p = await self.ring_cols.profiles.find_one({"_id": uid},
+                                                            {"current_session": 1})
+                if (p or {}).get("current_session") != sid:
+                    out.append((sid, uid))
+                    if len(out) >= int(limit):
+                        return out
+        return out
+
+    async def ring_queue_orphans(self, limit: int = 50) -> list[int]:
+        """§۴۸ — ردیف‌های `waiting` که صاحبشان الان sessionِ فعال دارد.
+
+        این‌ها «یتیمِ صف»اند: match شده‌اند ولی ردیفشان پاک/به‌روزرسانی نشده ⇒
+        matcherِ بعدی آن‌ها را دوباره برمی‌دارد و ممکن است sessionِ دوم بسازد.
+        """
+        out: list[int] = []
+        rows = await self.ring_cols.queue.find(
+            {"status": QUEUE_WAITING}, {"user_id": 1}).to_list(int(limit) * 4)
+        for d in rows or []:
+            try:
+                uid = int(d.get("user_id") or 0)
+            except Exception:
+                continue
+            if not uid:
+                continue
+            if await self.ring_session_active_for(uid):
+                out.append(uid)
+                if len(out) >= int(limit):
+                    return out
+        return out
 
     async def ring_queue_searching_ids(self, limit: int = 200) -> list[int]:
         """ردیف‌های «هنوز منتظر» با `queued_at` قدیمی‌تر اول (§۴ fairness).
@@ -712,6 +835,69 @@ class DBRing:
             sort=[("ended_at", -1)],
             return_document=ReturnDocument.BEFORE,
         )
+
+    # ══════════════════════════════════════════════════════════
+    #  §۱۰..§۱۳/§۳۰/§۳۶ (V6) — «آیا هر دو طرف واقعاً خبردار شدند؟»
+    #
+    #  notification یک *اثر جانبی* است؛ منبع حقیقت session است. پس نتیجهٔ هر
+    #  ارسال روی خودِ سند نگه داشته می‌شود:
+    #      sessions.notify = {"<uid>": {"s": sent_at, "t": tries,
+    #                                   "at": last_try_at, "e": error}}
+    #  نبودِ `s` = «هنفرستاده». این تنها چیزی است که بعد از ری‌استارت یا
+    #  خرابیِ تلگرام لازم است تا نه پیامی گم شود، نه دوتا برود.
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_session_notify_state(self, session_id: str) -> dict:
+        sess = await self.ring_cols.sessions.find_one(
+            {"session_id": session_id}, {"notify": 1, "slots": 1, "status": 1})
+        return ((sess or {}).get("notify") or {})
+
+    async def ring_session_note_sent(self, session_id: str, uid: int, *,
+                                     sent: bool | None = None,
+                                     err: str | None = None,
+                                     tried: bool = True) -> None:
+        """ثبت نتیجهٔ ارسال برای یک کاربر (idempotent: `s` فقط یک‌بار نوشته می‌شود)."""
+        setd: dict = {}
+        if sent is True:
+            setd["notify.%s.s" % uid] = utc_now_iso()
+            setd["notify.%s.e" % uid] = None
+        elif sent is False:
+            setd["notify.%s.e" % uid] = (str(err) if err else "failed")[:200]
+        if tried:
+            setd["notify.%s.at" % uid] = utc_now_iso()
+        upd: dict = {}
+        if setd:
+            upd["$set"] = setd
+        if tried:
+            upd["$inc"] = {"notify.%s.t" % uid: 1}
+        if not upd:
+            return
+        await self.ring_cols.sessions.update_one({"session_id": session_id}, upd)
+
+    async def ring_sessions_pending_notify(self, limit: int = 20,
+                                           window_s: int = 1800) -> list[dict]:
+        """sessionهای فعال که اطلاعیهٔ مچِ یک یا هر دو طرف نرسیده است.
+
+        پنجرهٔ زمانی (§۳۲): فقط نیم ساعتِ آخر — بعد از آن کاربر خودش
+          `/ring` را می‌زند و مسیرِ adopt همان کارت را می‌گیرد؛ ما برای یک
+          چتِ پنج‌روزهٔ تمام‌شده پیام نمی‌فرستیم.
+        """
+        cutoff = (now_utc() - timedelta(seconds=int(window_s))).isoformat()
+        out: list[dict] = []
+        cur = self.ring_cols.sessions.find(
+            {"status": ACTIVE, "created_at": {"$gte": cutoff}}
+        ).sort("created_at", -1).to_list(int(limit) * 4)
+        for d in await cur:
+            notify = d.get("notify") or {}
+            slots = [int(x) for x in (d.get("slots") or [])]
+            missing = [u for u in slots if not (notify.get(str(u)) or {}).get("s")]
+            if missing:
+                out.append({"session_id": d.get("session_id"), "slots": slots,
+                            "notify": notify, "mode": d.get("mode"),
+                            "created_at": d.get("created_at"), "missing": missing})
+            if len(out) >= int(limit):
+                break
+        return out
 
     async def ring_session_note(self, session_id: str, fields: dict) -> None:
         await self.ring_cols.sessions.update_one(
@@ -1046,21 +1232,60 @@ class DBRing:
         return rows, total
 
     async def ring_overview(self) -> dict:
+        """داشبورد پنل. §۵۸ (V6) — هر شمارش در shell خودش.
+
+        روی سرورِ زنده پنل با بنر «بازیابی داده‌های رینگ ناموفق بود» مواجه شد؛
+        اگر حتی *یک* count_documents بدود (مثلاً در میانه‌ی restart)، پاسخ کل
+        درخواست ۵۰۰ می‌شد و کاربر هیچی نمی‌دید. حالا هر بخش جدا می‌شکند،
+        خطایش در `errors` می‌آید و بقیهٔ پنل رندر می‌شود.
+        """
         c = self.ring_cols
         now = utc_now_iso()
         today = now_utc().date().isoformat()
-        return {
-            "profiles": await c.profiles.count_documents({}),
-            "active_profiles": await c.profiles.count_documents({"status": "active"}),
-            "paused": await c.profiles.count_documents({"status": "paused"}),
-            "banned": await c.profiles.count_documents({"status": "banned"}),
-            "waiting": await c.queue.count_documents({"status": QUEUE_WAITING}),
-            "in_chat": await c.sessions.count_documents({"status": ACTIVE}),
-            "sessions_today": await c.sessions.count_documents({"created_at": {"$gte": today}}),
-            "sessions_total": await c.sessions.count_documents({}),
-            "reports_pending": await c.reports.count_documents({"status": "pending"}),
-            "reports_today": await c.reports.count_documents({"created_at": {"$gte": today}}),
-            "blocks": await c.blocks.count_documents({}),
-            "bans_active": await c.bans.count_documents({"active": True}),
-            "last_updated": now,
-        }
+        out: dict = {"errors": {}, "last_updated": now}
+
+        async def k(key, coro):
+            try:
+                out[key] = await coro
+            except Exception as e:
+                out["errors"][key] = str(e)[:160]
+
+        await k("profiles", c.profiles.count_documents({}))
+        await k("active_profiles", c.profiles.count_documents({"status": "active"}))
+        await k("paused", c.profiles.count_documents({"status": "paused"}))
+        await k("banned", c.profiles.count_documents({"status": "banned"}))
+        await k("waiting", c.queue.count_documents({"status": QUEUE_WAITING}))
+        await k("in_chat", c.sessions.count_documents({"status": ACTIVE}))
+        await k("sessions_today", c.sessions.count_documents({"created_at": {"$gte": today}}))
+        await k("sessions_total", c.sessions.count_documents({}))
+        await k("reports_pending", c.reports.count_documents({"status": "pending"}))
+        await k("reports_today", c.reports.count_documents({"created_at": {"$gte": today}}))
+        await k("blocks", c.blocks.count_documents({}))
+        await k("bans_active", c.bans.count_documents({"active": True}))
+        # ── V6: سلامتِ لایهٔ ارسال + کارهای معوقه (§۳۰/§۴۶) ──
+        try:
+            from ring import notify as _N
+            out["notify_health"] = _N.health()
+        except Exception as e:
+            out["errors"]["notify_health"] = str(e)[:160]
+        try:
+            out["pending_notify"] = len(await self.ring_sessions_pending_notify(limit=200))
+        except Exception as e:
+            out["errors"]["pending_notify"] = str(e)[:160]
+        try:
+            out["pending_ui"] = len(await self.ring_search_msg_pend_ids(limit=200))
+        except Exception as e:
+            out["errors"]["pending_ui"] = str(e)[:160]
+        try:
+            # §۴۸ (V6) — نشانهٔ واقعِ «یتیمِ تایمر»: پیامِ انتظار روی پروفایلی
+            # که داخل گفت‌وگو است (current_session دارد). کسی که *در صف است*
+            # و حباب دارد، یتیم نیست؛ با predicateِ قبلی هر منتظرِ سالمی هم
+            # شمرده می‌شد و پنل آمارِ خطای جعلی نشان می‌داد.
+            out["timer_orphans"] = await c.profiles.count_documents(
+                {"search_msg": {"$exists": True},
+                 "current_session": {"$nin": [None, ""]}})
+        except Exception as e:
+            out["errors"]["timer_orphans"] = str(e)[:160]
+        if not out["errors"]:
+            out.pop("errors")
+        return out

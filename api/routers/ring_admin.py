@@ -105,13 +105,47 @@ async def _audit(user: dict, action: str, target: str, note: str = "",
             action, "ring", target_type="ring", target_id=str(target),
             target_label=str(note)[:120], details=str(details or "")[:400],
             tags=["#پنل_وب", "#رینگ"])
-    except Exception:
-        pass
+    except Exception as e:
+        # §۵۸ (V6) — خطای *لاگِ ادمین* نباید بی‌صدا بماند: اگر چیزی ثبت نشود،
+        # بعداً نمی‌فهمیم چه کسی چه کرده. ولی نباید کل درخواست را هم بشکند.
+        logger.warning("ring admin audit write failed (%s): %s", action, str(e)[:140])
 
 
 # ══════════════════════════════════════════════════════════════
 #  داشبورد / صف / گفت‌وگوها
 # ══════════════════════════════════════════════════════════════
+
+@router.get("/metrics")
+async def metrics(days: int = Query(7, ge=1, le=90), user=_guard):
+    """§۴۹ — شمارنده‌های چرخهٔ مچ (attempts/candidates/created/notify/orphans).
+
+    فقط `$inc`های روزانه را از `ring_stats_daily` می‌خواند و یتیم‌های *الان* را
+    از `ring_overview`؛ هیچ کوئریِ تازه‌ای روی sessions/queue نمی‌زند.
+    """
+    from ring import analytics as A
+    await A.flush_metrics()                 # تا عددی که می‌بینید的最新ِ RAM هم باشد
+    return await A.cycle_metrics(days=days)
+
+
+@router.get("/sessions/{session_id}/health")
+async def session_health(session_id: str, user=_guard):
+    """§۴۶ — سلامتِ مرحله‌به‌مرحلهٔ یک match (state/queue/timer/notify/relay)."""
+    return await service.session_health(session_id)
+
+
+@router.post("/sessions/{session_id}/repair")
+async def session_repair(session_id: str, user=_guard):
+    """§۴۷ — ترمیمِ محافظه‌کارانه + گزارشِ «چه چیزی درست شد».
+
+    ایمن است: هیچ session را نمی‌بندد، پیامِ کاربری را پاک نمی‌کند و کارت
+    تکراری نمی‌فرستد (per-user sent flag). اگر همه‌چیز درست باشد no-op است.
+    """
+    from database import db
+    out = await service.repair_session(session_id)
+    await db.ring_audit(int(user.get("id") or 0), "RING_SESSION_REPAIR",
+                        session_id, str(out.get("repaired") or {})[:400], {})
+    return out
+
 
 @router.get("/overview")
 async def overview(user=_guard):

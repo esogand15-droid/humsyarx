@@ -85,8 +85,10 @@ async def _show(q, text: str, kb=None, *, alert: str | None = None,
     if alert:
         try:
             await q.answer(alert, show_alert=True)
-        except Exception:
-            pass
+        except Exception as e:
+            # alertِ روی callback بعد از چند ثانیه نامعتبر می‌شود؛ بی‌خطر است،
+            # ولی §۱۵ (V6): هیچ exceptی بی‌لاگ نمی‌ماند.
+            logger.debug("[RING] alert answer failed: %s", e)
     kw = {"reply_markup": kb} if kb else {}
     if md:
         kw["parse_mode"] = ParseMode.HTML
@@ -166,22 +168,22 @@ async def _profile(uid: int) -> dict | None:
     return await db.ring_profile(uid)
 
 
-async def _announce_match(uid: int, peer: int, sess: dict, cfg: dict) -> None:
-    """کارت match برای هر دو طرف (§۱۲ — فقط آنچه کاربر اجازه داده)."""
-    from database import db
-    for a, b in ((uid, peer), (peer, uid)):
-        other = await db.ring_profile(b) or {}
-        n = int((await db.ring_cols.profiles.find_one({"_id": a},
-                                                     {"sessions_count": 1}) or {}).get("sessions_count", 0)) + 1
-        await db.ring_cols.profiles.update_one({"_id": a}, {"$inc": {"sessions_count": 1}})
-        await notify.send_text(
-            a, texts.match_card(sess, other, cfg, session_no=max(1, n)),
-            parse_mode=ParseMode.HTML,
-            reply_markup=K.kb_chat(sess.get("mode", "fun"), cfg))
-        # §۸/§۱۰ (V5) — پیام «در حال جست‌وجو…» باید به همان کارت تبدیل شود تا
-        # صفحهٔ کاربر انباشته از پیام‌های مرده نشود؛ اگر edit نشد (پیام پاک
-        # شده) مهم نیست، کارت بالاتر رفته و شناسه هم پاک می‌شود.
-        await _retire_wait(a, "🎉 مچ شدی! کارت گفت‌وگو همین پایین آمده ✅")
+async def _announce_match(uid: int, peer: int, sess: dict, cfg: dict) -> dict:
+    """§۱۱/§۲/§۴ (V6) — دیگر اینجا منطقِ مستقلِ نیست: قیفِ مرکزی.
+
+    تا V۵ «کارت مچ + شمارشِ جلسه + نهایی‌کردن پیامِ انتظار» همین‌جا نوشته شده
+    بود و بیرون از `service`؛ نتیجه‌اش روی سرورِ زنده: `notify._bot()` None ⇒
+    کارت نرفت، شمارش هم نو نشد، ولی بدتر از همه state/UI که به همان تابع گره
+    خورده بودند فریز شدند. حالا: DB در `_open_session` نهایی می‌شود و این تابع
+    فقط `service.finalize_match` را صدا می‌زند (idempotent؛ شکستِ ارسال در
+    `sessions.notify` ثبت می‌شود تا housekeeping جبران کند).
+    """
+    from ring import service
+    sid = sess.get("session_id") or ""
+    if not sid:
+        logger.warning("RING_ANNOUNCE_NO_SID uid=%s peer=%s", uid, peer)
+        return {"ok": False, "why": "no-session-id"}
+    return await service.finalize_match(sid, cfg=cfg)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -331,13 +333,16 @@ async def ring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.exception("ring callback failed (%s)", key[:40])
         try:
             await _show(q, "⚠️ یک خطای لحظه‌ای رخ داد؛ کمی بعد دوباره امتحان کن.")
-        except Exception:
-            pass
+        except Exception as e2:
+            # §۴۴ (V6) — این یعنی کاربر *هیچ* بازخوردی نگرفته؛ باید در لاگِ
+            # warning بماند (روی سرورِ زنده دقیقاً همین گم شده بود).
+            logger.warning("RING_ERROR_NOTICE_UNDELIVERED uid=%s err=%s",
+                           uid, str(e2)[:140])
     finally:
         try:
             await q.answer()
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("[RING] callback answer failed: %s", e2)
 
 
 async def _r_age(q, context, uid, arg, parts):
@@ -455,8 +460,9 @@ async def _do_search(q, context, uid) -> None:
     try:                     # شمارشِ bounded (§۵۳) — خطا نباید جست‌وجو را بخواباند
         qrow = await db.ring_queue_get(uid)
         queue_n = await db.ring_queue_waiting_count(mode, [int(uid)], cap=200)
-    except Exception:
-        pass
+    except Exception as e:
+        # §۳۷ — عددِ مطمئن‌نبودنِ صف حذف می‌شود (نه ساختنِ آمار)، و لاگ می‌ماند
+        logger.debug("[RING] queue count unavailable uid=%s: %s", uid, e)
     # §۳۴ — «چقدر است» + «چند نفر در صف‌اند» روی همان صفحهٔ جست‌وجو
     waited = int(service._waited_s(qrow))
     await _show(q, texts.searching(mode, p, waited_s=waited, queue_n=queue_n),
@@ -547,6 +553,21 @@ async def _r_cancelq(q, context, uid, arg, parts):
         from database import db
         await _show(q, "💬 تو الان وسط گفت‌وگویی؛ جست‌وجویی باز نیست که لغو شود.",
                     await _controls(uid, await db.ring_session_active_for(uid)))
+        return
+    if r["kind"] == "matched":
+        # §۳۹ (V6) — دکمهٔ «لغو» درست لحظه‌ای خورد که مچ شدی؛ بگوییم چی شد
+        # (و نگوییم «لغو شد» که دروغ است) و همان کنترل‌های چت را نشان بدهیم.
+        from database import db
+        sess = await db.ring_session(r.get("session_id") or "")
+        await _show(q, "🎉 همین حالا مچ شدی! لغو نشد — گفت‌وگو از این‌پایین باز است ✅",
+                    K.kb_chat((sess or {}).get("mode") or "fun", await S.get_cfg()))
+        return
+    if r["kind"] == "busy":
+        # ردیف توسط matcher برداشته شده (claimed) یا همین حالا عوض شده؛
+        # «لغو شد» نشان دادن گمراه‌کننده است. یک دورِ try_match بعد از
+        # چند صدم‌ثانیه همه‌چیز را روشن می‌کند، پس فقط صادق‌انه می‌گوییم.
+        await _show(q, "⏳ یک لحظه صبر کن — همین الان داشتی مچ می‌شدی؛ نتیجه‌اش را "
+                       "همین‌جا می‌بینی.", K.kb_searching())
         return
     await _show(q, texts.search_cancelled(), K.kb_cancelled())
 
@@ -1139,8 +1160,8 @@ async def ring_menu_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             await update.effective_message.reply_text(
                 "ℹ️ این دکمه برای ربات است و داخل گفت‌وگوی رینگ ارسال نمی‌شود.")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("[RING] bypass notice failed: %s", e2)
         return
     await unified_text_handler(update, context)
 

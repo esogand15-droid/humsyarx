@@ -6,6 +6,11 @@
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)   # §۱۵ (V6) — برای همان که هیچ fallbackی
+                                        # بی‌لاگ نماند (متن ادمینِ قوانین)
+
 from html import escape as _e
 
 from ring import models as M
@@ -171,8 +176,9 @@ def rules(mode: str, cfg: dict) -> str:
     body = over.strip() or RULES_BODY
     try:
         body = body.format(min_age=int((cfg or {}).get("min_age", 18)))
-    except (KeyError, IndexError, ValueError):
-        pass                                  # متن ادمین نباید crash بدهد
+    except (KeyError, IndexError, ValueError) as e:
+        logger.warning("[RING] rules_text_override قابل‌format نبود: %s "
+                       "(متنِ پیش‌فرض می‌نشیند)", e)   # §۱۵ — crash نه، سکوت هم نه
     return body + RULES_FOOT.get(mode, RULES_FOOT["fun"])
 
 

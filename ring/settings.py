@@ -129,8 +129,8 @@ def _coerce(raw: dict) -> dict:
         if k in SPEC:
             try:
                 out[k] = clamp(k, v)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("[RING] cfg key %r ignored: %s", k, e)
     return out
 
 
@@ -146,8 +146,8 @@ async def get_flag() -> bool:
     _cfg_cache["flag_at"] = time.monotonic()
     try:
         _cfg_cache["maint"] = bool(await db.get_setting(MAINT_KEY, False))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[RING] maintenance read failed (fallback): %s", e)
     return bool(val)
 
 
@@ -168,8 +168,8 @@ async def get_cfg(force: bool = False) -> dict:
     try:
         _cfg_cache["flag"] = bool(await db.get_setting(FLAG_KEY, False))
         _cfg_cache["flag_at"] = now
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("[RING] settings cache invalidate failed: %s", e)
     return cfg
 
 
