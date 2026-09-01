@@ -75,8 +75,13 @@ def _flow_clear(context) -> None:
 
 
 async def _show(q, text: str, kb=None, *, alert: str | None = None,
-                md: bool = False) -> None:
-    """ویرایش پیام دکمه؛ اگر نشد (قدیمی/تکراری) پیام جدید می‌فرستد."""
+                md: bool = False):
+    """ویرایش پیام دکمه؛ اگر نشد (قدیمی/تکراری) پیام جدید می‌فرستد.
+
+    §۴ (V5) — *خودِ پیام* را برمی‌گرداند، چون صفحهٔ «در حال جست‌وجو» باید
+    شناسه‌اش را جا بیاندازد تا تایمر روی همان پیام edit بشود (نه پیامِ تازه).
+    «message is not modified» هم برداشت می‌شود: یعنی همان پیام روی صفحه است.
+    """
     if alert:
         try:
             await q.answer(alert, show_alert=True)
@@ -86,15 +91,51 @@ async def _show(q, text: str, kb=None, *, alert: str | None = None,
     if md:
         kw["parse_mode"] = ParseMode.HTML
     try:
-        await q.edit_message_text(text, **kw)
+        return await q.edit_message_text(text, **kw)
     except BadRequest as e:
-        if "message is not modified" not in str(e).lower():
-            try:
-                await q.message.reply_text(text, **kw)
-            except Exception:
-                logger.debug("ring show failed: %s", e)
+        if "message is not modified" in str(e).lower():
+            return getattr(q, "message", None)
+        try:
+            return await q.message.reply_text(text, **kw)
+        except Exception as e2:
+            logger.debug("ring show failed: %s", e2)
     except Exception as e:
         logger.debug("ring show failed: %s", e)
+    return None
+
+
+async def _capture_wait(q, uid: int, msg, *, waited_s: int = 0) -> None:
+    """§۴/§۵ (V5) — شناسهٔ پیامِ انتظار را می‌نویسد تا شغلِ تایمر رویش edit کند."""
+    if msg is None:
+        return
+    chat_id = getattr(msg, "chat_id", None) or getattr(
+        getattr(msg, "chat", None), "id", None)
+    mid = getattr(msg, "message_id", None) or getattr(msg, "id", None)
+    if not chat_id or not mid:
+        return
+    await service.remember_search_msg(uid, int(chat_id), int(mid),
+                                      waited_s=int(waited_s or 0))
+
+
+async def _retire_wait(uid: int, text: str = "✅ انجام شد.") -> None:
+    """§۱۰/§۱۲ (V5) — پیامِ «در حال جست‌وجو…» نباید پشتِ سرِ صفحه بماند.
+
+    اگر مچ شد، لغو کرد یا وقتش تمام شد، همان پیام را به یک خطِ بی‌دکمه
+    تبدیل می‌کنیم؛ اگر پیام را کاربر پاک کرده باشد، خطا را می‌خوریم (id هم
+    پاک شده و تایمر نمی‌ماند).
+    """
+    from database import db
+    p = await db.ring_profile(uid) or {}
+    sm = p.get("search_msg") or {}
+    await db.ring_search_msg_clear(uid)
+    bot = notify._bot()
+    if bot is None or not sm.get("m") or not sm.get("c"):
+        return
+    try:
+        await bot.edit_message_text(chat_id=int(sm["c"]), message_id=int(sm["m"]),
+                                    text=text)
+    except Exception as e:
+        logger.debug("[RING] retire wait msg failed uid=%s: %s", uid, e)
 
 
 async def _age_text() -> str:
@@ -137,6 +178,10 @@ async def _announce_match(uid: int, peer: int, sess: dict, cfg: dict) -> None:
             a, texts.match_card(sess, other, cfg, session_no=max(1, n)),
             parse_mode=ParseMode.HTML,
             reply_markup=K.kb_chat(sess.get("mode", "fun"), cfg))
+        # §۸/§۱۰ (V5) — پیام «در حال جست‌وجو…» باید به همان کارت تبدیل شود تا
+        # صفحهٔ کاربر انباشته از پیام‌های مرده نشود؛ اگر edit نشد (پیام پاک
+        # شده) مهم نیست، کارت بالاتر رفته و شناسه هم پاک می‌شود.
+        await _retire_wait(a, "🎉 مچ شدی! کارت گفت‌وگو همین پایین آمده ✅")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -210,20 +255,27 @@ def _menu_head(p: dict, q: dict | None, sess: dict | None, *,
     if sess:
         return ("💍 <b>رینگ استریت</b>\n\n"
                 "💬 <b>در حال گفتگو</b>\n"
-                f"   حالت: {M.MODES.get(sess.get('mode'), '—')}\n\n"
+                f"✅ حالت فعلی: {M.MODES.get(sess.get('mode'), '—')}\n\n"
                 "«🔄 نفر بعدی» این گفت‌وگو را می‌بندد و تو را به صف برمی‌گرداند؛\n"
                 "«⏹ پایان گفتگو» فقط گفت‌وگو را می‌بندد.")
     if q and q.get("status") == "waiting":
         return ("💍 <b>رینگ استریت</b>\n\n🔎 <b>در حال جست‌وجو</b>\n"
-                f"   حالت: {M.MODES.get(q.get('mode'), '—')}\n\n"
+                f"✅ حالت فعلی: {M.MODES.get(q.get('mode'), '—')}\n\n"
                 "به محض پیدا شدنِ نفر مناسب، همین‌جا پیام می‌دهیم.")
+    if p.get("search_expired_at") and not q and not sess:
+        # §۳۶ (V5) — صفحهٔ رینگ باید بگوید جست‌وجوی قبلی *تمام* شده، نه اینکه
+        # کاربر فرض کند هنوز در صف است.
+        return ("💍 <b>رینگ استریت</b>\n\n⌛ <b>زمان جست‌وجوی قبلی تمام شد</b>\n"
+                f"   حالت: {M.MODES.get(p.get('mode'), '—')}\n\n"
+                "کسی مطابق معیارهای آن زمان پیدا نشد. با «🔎 پیدا کردن نفر» "
+                "دوباره شروع کن یا معیارها را بازتر کن.")
     who = (f"👤 ناشناس #{str(p.get('anon_id') or '').lstrip('#')}"
            if p.get("anon_id") else "👤 هنوز پروفایلی نداری")
     mode = M.MODES.get(p.get("mode"), "—")
     tail = ("   با «🔎 پیدا کردن نفر» وارد صف می‌شوی." if ready
             else "   اول چند سؤال کوتاه را جواب بده.")
     return (f"💍 <b>رینگ استریت</b> — {who}\n"
-            f"   حالت: {mode}\n"
+            f"✅ حالت فعلی: {mode}\n"      # §۱۶ (V5) — کاربر باید بداند کجاست
             + ("🟢 آمادهٔ جست‌وجو\n" + tail if p.get("mode") else "📝 هنوز آماده نیستی\n" + tail))
 
 
@@ -258,8 +310,10 @@ async def ring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     arg = parts[1] if len(parts) > 1 else ""
     try:
         if head == "home":
-            _flow_clear(context)
-            await _show(q, "↩️ برای منوی اصلی ربات /start را بزن.")
+            # «↩️ فعلاً نه/بازگشت» روی صفحه‌هایی است که *قبل* از گاردها ساخته
+            # می‌شوند (مثل پرسش سن) ⇒ نباید پشت `disabled/banned` گیر کند؛
+            # بدنه در `_r_home` است تا route هم ثبت باشد (§۴۲ و تست رجیستری).
+            await _r_home(q, context, uid, "", parts)
             return
         blocked = await _guard(update, context)
         if blocked == "disabled":
@@ -287,6 +341,9 @@ async def ring_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _r_age(q, context, uid, arg, parts):
+    # §۶۳ (V5) — دکمهٔ «زیر ۱۸ سال» از کیبورد حذف شده، ولی این مسیر می‌ماند:
+    # پیام‌هایی که کاربر از قبل روی صفحه‌اش دارد آن دکمه را دارند و دکمهٔ مرده
+    # ممنوع (§۹). رفتار هم همان است: خروج بی‌پروفایل.
     if arg == "under":
         await _set_st(uid, M.IDLE)
         await _show(q, texts.too_young())
@@ -307,10 +364,27 @@ async def _r_gender(q, context, uid, arg, parts):
 
 
 async def _r_mode(q, context, uid, arg, parts):
+    # §۱۶/§۴۶ (V5) — «ring:mode» بدون آرگومان = صفحهٔ عوض‌کردن حالت با نشان‌دادنِ
+    # حالتِ فعلی؛ «ring:m:<mode>» = انتخاب. گاردِ «وسط جست‌وجو/چت ممنوع» داخل
+    # service.set_mode است، پس این UI فقط دلیل را نشان می‌دهد نه بیشتر.
+    if not arg:
+        p = await _profile(uid) or {}
+        await _show(q, texts.mode_switch(p, await S.get_cfg()),
+                    K.kb_mode_switch(p, await S.get_cfg()), md=True)
+        return
     r = await service.set_mode(uid, arg)
+    if r["kind"] == "locked":
+        why = r.get("why") or "searching"
+        await _show(q, texts.mode_locked(why, arg), K.kb_mode_locked(why), md=True)
+        return
     if r["kind"] == "mode_off":
         await _show(q, texts.feature_off(M.MODES.get(arg, arg)))
         return
+    if r["kind"] == "ok":
+        # §۱۹ — حالتِ تازه persist می‌شود و پیام بعدیِ رینگ همان را نشان می‌دهد
+        from database import db
+        await db.ring_profile_update(uid, {"search_expired_at": None})
+        await q.answer(f"🎭 حالت: {M.MODES.get(r['mode'], r['mode'])}")
     cfg = await S.get_cfg()
     if not await service.rules_pending(uid):
         # §۲۷ — این کاربر نسخهٔ فعلی قوانین را پذیرفته ⇒ نگهش نداریم
@@ -338,6 +412,12 @@ async def _r_terms(q, context, uid, arg, parts):
     flow_mark(uid, "bio")
     await _show(q, texts.profile_ask("bio") + "\n\nمی‌توانی «رد» را بزنی.",
                 K.KB([[K.B("⏭ رد کردن", callback_data=f"{CB}p:skip")]]))
+
+
+async def _r_home(q, context, uid, arg, parts):
+    """↩️ بازگشت از هر مرحلهٔ رینگ — فقط flow را پاک می‌کند، نه session/صف."""
+    _flow_clear(context)
+    await _show(q, "↩️ برای منوی اصلی ربات /start را بزن.")
 
 
 async def _r_menu(q, context, uid, arg, parts):
@@ -397,28 +477,25 @@ async def _finish_search(q, context, uid, r) -> None:
             return
         await _announce_match(uid, peer, sess, cfg)
         return
-    if kind == "waiting":
-        if r.get("reserving"):
-            await _show(q, texts.being_picked(r.get("mode") or "fun"),
-                        K.kb_queue(r.get("mode") or "fun", cfg, "waiting", 0), md=True)
-            return
-        await _show(q, texts.still_waiting(int(r.get("queued") or 0),
-                                           r.get("mode") or "fun",
-                                           waited_s=int(r.get("waited_s") or 0), p=p),
-                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting",
-                               int(r.get("queued") or 0)), md=True)
-        return
-    if kind == "empty":
-        await _show(q, texts.queue_empty(r.get("mode") or "fun", cfg,
-                                        why=r.get("why"),
-                                        waited_s=int(r.get("waited_s") or 0), p=p),
-                    K.kb_queue(r.get("mode") or "fun", cfg, "empty"))
-        return
-    if kind == "busy":
-        # claimِ خودمان ناموفق بود و session هم ساخته نشد: یکی دیگری را
-        # انتخاب کرده و هنوز معلوم نیست چه می‌شود ⇒ همان پیام «در حال انتخاب»
-        await _show(q, texts.being_picked(r.get("mode") or "fun"),
-                    K.kb_queue(r.get("mode") or "fun", cfg, "waiting", 0), md=True)
+    if kind in ("waiting", "empty", "busy"):
+        # §۲/§۳/§۳۶ (V5) — «جست‌وجو» یک *حالت* است، نه نتیجه. تا سقفِ انتظار
+        # (queue_timeout_s) تمام نشده هیچ‌وقت «کسی پیدا نشد» نمی‌نویسیم؛ پیام
+        # انتظار را نشان می‌دهیم و شناسه‌اش را نگه می‌داریم تا تایمرِ زنده
+        # (ring.jobs → service.search_tick) همان را 00:00 → 00:10 → … کند.
+        mode = r.get("mode") or p.get("mode") or "fun"
+        waited = int(r.get("waited_s") or 0)
+        if await service.expire_search(uid):
+            return                       # پیامِ «⌛ زمان جست‌وجو تمام شد» ارسال شد
+        if kind in ("busy", "waiting") and (r.get("reserving") or kind == "busy"):
+            # کاربر در فاصلهٔ claim تا session است؛ کارت دارد می‌آید
+            msg = await _show(q, texts.being_picked(mode), K.kb_searching(), md=True)
+        else:
+            msg = await _show(q, texts.searching(
+                mode, p, waited_s=waited, queue_n=r.get("queued"),
+                why=r.get("why"),
+                timeout_s=max(30, int(cfg.get("queue_timeout_s") or 600))),
+                K.kb_searching(), md=True)
+        await _capture_wait(q, uid, msg, waited_s=waited)
         return
     if kind == "maintenance":                        # §۴۵
         await _show(q, texts.maintenance(), K.kb_after_end())
@@ -455,9 +532,23 @@ async def _finish_search(q, context, uid, r) -> None:
 async def _r_stopq(q, context, uid, arg, parts):
     """⏸ توقف جست‌وجو: خروج از صف · بدون بستن/ساختن session · پروفایل می‌ماند."""
     p = await _profile(uid) or {}
-    await service.pause_search(uid)
+    await service.pause_search(uid)        # تایمرِ انتظار هم خاموش می‌شود (§۱۲)
     await _show(q, texts.search_paused(),
                 K.kb_queue(p.get("mode") or "fun", await S.get_cfg(), "paused"))
+
+
+async def _r_cancelq(q, context, uid, arg, parts):
+    """⏹ لغو جست‌وجو (§۱۴ V5) — فقط بیرون از صف؛ بر خلاف «توقف»، ماندگار نیست.
+
+    اگر کاربر وسط گفت‌وگو باشد `cancel_search` هیچی از چت نمی‌کشد (§۴۴).
+    """
+    r = await service.cancel_search(uid)
+    if r["kind"] == "in_chat":
+        from database import db
+        await _show(q, "💬 تو الان وسط گفت‌وگویی؛ جست‌وجویی باز نیست که لغو شود.",
+                    await _controls(uid, await db.ring_session_active_for(uid)))
+        return
+    await _show(q, texts.search_cancelled(), K.kb_cancelled())
 
 
 async def _r_resq(q, context, uid, arg, parts):
@@ -475,6 +566,7 @@ async def _r_end(q, context, uid, arg, parts):
         await _show(q, texts.bye(), K.kb_menu({}))
         return
     await service.stop(uid, sess["session_id"])
+    await _retire_wait(uid)                # §۱۲ — تایمرِ یتیم از جست‌وجوی قبلی
     await _show(q, "⏹ گفت‌وگو بسته شد. اگر خواستی، با «🔎 پیدا کردن نفر» "
                     "دوباره وارد صف می‌شوی.", K.kb_after_end())
 
@@ -621,7 +713,15 @@ async def _r_field(q, context, uid, arg, parts):
                     K.kb_topics(p.get("topics")))
         return
     if arg == "prefs":
-        await _show(q, "⚙️ با چه کسانی حاضری گفت‌وگو کنی؟", K.kb_prefs(p))
+        # §۱۴ (V5) — ردیفِ صف *اسنیپشات*ی از معیارهاست؛ اگر وسط جست‌وجو معیارها
+        # عوض شود، مچِ بعدی با دادهٔ کهنه ساخته می‌شود ⇒ اول از صف بیرون
+        # («لغو»، نه «توقف» ماندگار) و تایمر هم می‌میرد. اگر در چت باشد
+        # `cancel_search` هیچی از چت نمی‌کشد (§۴۴).
+        r = await service.cancel_search(uid)
+        note = ("\n\n🔎 جست‌وجو را موقتاً کنار گذاشتم تا معیارهایت کهنه "
+                "به کار نرود؛ بعد از تغییر، «🔎 پیدا کردن نفر» را بزن."
+                if r["kind"] == "ok" and r.get("queued") else "")
+        await _show(q, "⚙️ با چه کسانی حاضری گفت‌وگو کنی؟" + note, K.kb_prefs(p))
         return
     if arg in FLOW_TEXT_FIELDS:
         await _set_st(uid, M.PROFILE, field=arg)
@@ -666,9 +766,16 @@ async def _r_topic(q, context, uid, arg, parts):
     await _show(q, f"🏷 انتخاب‌شده: {len(cur)}/6", K.kb_topics(cur))
 
 
+async def _clear_expired(uid: int) -> None:
+    """§۳۶ — با عوض‌شدن معیار/حالت، «وقت قبلی تمام شد» معنا ندارد."""
+    from database import db
+    await db.ring_profile_update(uid, {"search_expired_at": None})
+
+
 async def _r_pref_gender(q, context, uid, arg, parts):
     await service.update_profile(uid, {"pref_gender": arg})
     from database import db
+    await _clear_expired(uid)
     p = await db.ring_profile(uid) or {}
     await _show(q, "✅ ترجیح جنسیت ثبت شد.", K.kb_prefs(p))
 
@@ -873,9 +980,11 @@ _ROUTES = {
     "block": _r_block, "block_now": _r_block, "unblock": _r_unblock,
     # §۱۴/§۱۵/§۱۷ — سه کنش جدا (قبلاً «مکث/ادامه/پایان» مبهم بود)
     "stopq": _r_stopq, "resq": _r_resq, "end": _r_end, "extend": _r_extend,
+    "cancelq": _r_cancelq,   # §۱۴ (V5) — «⏹ لغو جست‌وجو» روی همان پیامِ انتظار
     "mdiff": _r_mdiff, "blocked": _r_blocked, "view": _r_view, "rate": _r_rate,
     "r": _r_report, "report": _r_report, "report_anon": _r_report_anon,
     "reveal": _r_reveal, "rt": _r_rating, "del": _r_delete, "back": _r_back,
+    "home": _r_home,     # §۶۳ (V5) — «↩️ فعلاً نه» روی صفحهٔ سن
     # سازگاری با پیام‌های قدیمی (§۳/§۶۶): دکمه‌های «مکث/ادامه/پایان» دیگر در
     # کیبوردها نیستند، ولی روی پیام‌های روی صفحهٔ کاربر همچنان کار می‌کنند.
     "pause": _r_restricted, "resume": _r_restricted,
@@ -999,6 +1108,43 @@ def _relay_filter(update) -> bool:
     return not K.is_control_label(txt)     # relay خودش راهنمای محلی می‌دهد (§۲۱)
 
 
+def _menu_bypass_filter(update) -> bool:
+    """§۲۳..§۲۶/§۵۰..§۵۳ (V5) — «تپِ منوی اصلی» وسط چت، در *روتور* می‌پیچد.
+
+    چرا این‌جا و نه فقط با فیلترِ رله: فیلترِ رله پیام را «ول» می‌کند و
+    هندلرهای بعدیِ همان گروه شانس دوباره دارند؛ اگر روزی ترتیب ثبت عوض
+    شود، یک سوراخِ تازه باز می‌شود. این هندلر قبلِ رله ثبت می‌شود، پس
+    پیام‌های دکمهٔ ربات اصلاً به کانال «کاربر → پارتنر» نمی‌رسند.
+    """
+    uid = _uid_of(update)
+    if uid is None or not S.flag_sync():
+        return False
+    if not state.in_chat(uid):
+        return False                      # بیرون چت، رله‌ای در کار نیست
+    msg = getattr(update, "effective_message", None) or getattr(update, "message", None)
+    txt = (getattr(msg, "text", None) if msg is not None else None)
+    if not txt or K.is_control_label(txt):
+        return False                      # کنترل‌های رینگ هندلرِ خودشان را دارند
+    return K.is_menu_tap(txt)
+
+
+async def ring_menu_bypass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تپِ منو را به مسیریابِ خودِ ربات می‌دهد — برای همین کاربر، بدون رله."""
+    try:
+        from bot import unified_text_handler
+        # ⚠️ SystemExit هم گرفته می‌شود: اگر bot.py در محیطِ تست (بدون توکن)
+        # import نشود، `sys.exit(1)` می‌کند و آن جزو Exception نیست.
+    except (Exception, SystemExit) as e:
+        logger.debug("[RING] router bypass unavailable: %s", e)
+        try:
+            await update.effective_message.reply_text(
+                "ℹ️ این دکمه برای ربات است و داخل گفت‌وگوی رینگ ارسال نمی‌شود.")
+        except Exception:
+            pass
+        return
+    await unified_text_handler(update, context)
+
+
 async def ring_relay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """رله‌ی متن/مدیا به پارتنر. اگر رله نشد، چیزی نمی‌فرستیم و update به
     هندلرهای بعدی می‌رسد (چون PTB فقط اولین هندلرِ منطبق را اجرا می‌کند،
@@ -1019,6 +1165,17 @@ class _RingFlowFilter(filters.MessageFilter):
 
     def filter(self, message: Message) -> bool:        # type: ignore[override]
         return _flow_filter(message)
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+
+class _RingMenuBypass(filters.MessageFilter):
+    """فیلترِ گاردِ منو (همراه `ring_menu_bypass`)."""
+    name = "ring_menu_bypass"
+
+    def filter(self, message: Message) -> bool:        # type: ignore[override]
+        return _menu_bypass_filter(message)
 
     def __hash__(self) -> int:
         return hash(self.name)
@@ -1062,6 +1219,11 @@ def register(app) -> None:
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND & _RingFlowFilter(),
         ring_text_flow))
+    # §۵۰..§۵۳ (V5) — گاردِ منو باید *قبل* از رله باشد (PTB: ترتیب ثبت = اولویت)
+    app.add_handler(MessageHandler(
+        filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & ~filters.COMMAND
+        & _RingMenuBypass(),
+        ring_menu_bypass))
     app.add_handler(MessageHandler(
         filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & ~filters.COMMAND
         & _RingRelayFilter(),

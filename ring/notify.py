@@ -37,7 +37,11 @@ async def send_text(uid: int, text: str, **kw) -> bool:
         except RetryAfter as e:
             await asyncio.sleep(min(getattr(e, "retry_after", 3), 20) + 0.4)
         except Exception as e:
-            logger.debug("ring notify failed uid=%s: %s", uid, str(e)[:120])
+            # §۹ (V5) — «طرف مقابل اطلاعیه نگرفت» نباید در لاگ گم شود: قبلاً
+            # debug بود و در سطح INFO پروداکشن هیچ‌جا دیده نمی‌شد، برای همین
+            # نشانهٔ «بستن چت از یک طرف بدون اطلاعیهٔ طرف مقابل» قابل ردیابی
+            # نبود. حالا یک warning با برچسبِ grep‌پذیر می‌ماند.
+            logger.warning("RING_NOTIFY_FAIL uid=%s err=%s", uid, str(e)[:160])
             return False
     return False
 

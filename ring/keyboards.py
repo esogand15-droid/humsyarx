@@ -49,7 +49,7 @@ CONTROL_LABELS = frozenset({
 })
 
 # اگر `import utils` جایی بترکد (تست/محیط ناقص) همین فهرستِ دستی مانع نشت
-# دکمه‌ها به گفت‌وگو می‌شود — همان کاری که §۴۷明确要求: هیچ برچسبِ منویی رله نشود.
+# دکمه‌ها به گفت‌وگو می‌شود — §۴۷ (V4) و §۵۲ (V5): هیچ برچسبِ منویی رله نشود.
 _MAIN_FALLBACK = (
     "🩺 داشبورد", "📚 منابع", "🧪 بانک سوال", "❓ سوالات متداول", "🤖 هوشیار",
     "📅 برنامه", "👤 پروفایل", "💎 اشتراک ویژه", "💙 حمایت مالی", "🔔 اعلان‌ها",
@@ -116,13 +116,50 @@ def is_main_menu_label(text) -> bool:
     return _norm(text) in _MAIN_NORM
 
 
+# §۲۳..§۲۶ و §۵۰..§۵۳ (V5) — «تپ منو» باید *در روتر* جلویش گرفته شود، نه فقط
+# با نگاه‌کردن به برچسب. فهرست از سه منبع union می‌شود (کیبوردهای utils،
+# MENU_BUTTON_TEXTS خودِ bot.py و فهرست دستی)، چون در پروداکشنِ V۴ یک منبع
+# ناقص کافی بود تا پیامِ دکمه به پارتنر رله شود.
+_RING_OWN_LABELS = frozenset({"💍 رینگ استریت"})
+_TAP_NORM: frozenset | None = None
+
+
+def menu_tap_labels() -> frozenset:
+    global _TAP_NORM
+    if _TAP_NORM is not None:
+        return _TAP_NORM
+    out: set[str] = set(main_menu_labels()) | set(_MAIN_FALLBACK)
+    try:
+        import bot                                  # lazy — در boot حلقه نسازد
+        out |= {str(x) for x in (getattr(bot, "MENU_BUTTON_TEXTS", None) or ())}
+    except (Exception, SystemExit):
+        # SystemExit: bot.py بدون TELEGRAM_TOKEN با sys.exit() می‌میرد (محیطِ تست)
+        pass
+    out -= set(_RING_OWN_LABELS)
+    _TAP_NORM = frozenset(_norm(x) for x in out)
+    return _TAP_NORM
+
+
+def is_menu_tap(text) -> bool:
+    """آیا این متن، دقیقاً «فشاردادنِ یک دکمهٔ منوی اصلی» است؟"""
+    return _norm(text) in menu_tap_labels()
+
+
 def _row(*btns, w: int = 2):
     return list(btns)[:w] if w else list(btns)
 
 
 def kb_age() -> KB:
+    """پرسش سن (§۶۳ V5 و تصمیمِ محصول).
+
+    دکمهٔ «🔞 زیر ۱۸ سال» حذف شده — مخاطب همیار دانشجوهای ۱۸+ هستند و هیچ
+    مسیری نباید ساخت که کاربر *خودش* را زیر ۱۸ اعلام کند و پروفایل بسازد.
+    اعتبارسنجی عددی ۱۸+ در `service.set_age` (و `M.AGE_INDEX` که از ۱۸ شروع
+    می‌شود) همچنان برقرار است؛ مسیر `ring:age:under` هم برای پیام‌هایی که
+    کاربر *قبلاً* روی صفحه‌اش دارد باقی مانده (تا دکمهٔ مرده نشود).
+    """
     rows = [[B(lbl, callback_data=f"{CB}age:{k}")] for k, lbl, _, _ in M.AGE_RANGES]
-    rows.append([B("🔞 زیر ۱۸ سال", callback_data=f"{CB}age:under")])
+    rows.append([B("↩️ فعلاً نه", callback_data=f"{CB}home")])
     return KB(rows)
 
 
@@ -251,8 +288,60 @@ def kb_queue(mode: str, cfg: dict, status: str = "waiting", position: int = 0) -
 
 
 def kb_searching() -> KB:
-    """صفحهٔ «در حال پیدا کردن…» (§۱۳) — یک راه فرارِ واقعی، نه دکمهٔ مرده."""
-    return KB([[B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")]])
+    """صفحهٔ «در حال پیدا کردن…» (§۷/§۱۴/§۴۸ V5).
+
+    دو کنشِ مجزا که قبلاً با هم قاطی می‌شد: «⏹ لغو جست‌وجو» = فقط بیرون از صف
+    (حالت READY) · «⏸ توقف جست‌وجو» = بیرون + متوقفِ ماندگار تا خودت ادامه بدهی.
+    """
+    return KB([[B("⏹ لغو جست‌وجو", callback_data=f"{CB}cancelq"),
+                B(L_STOPQ, callback_data=f"{CB}stopq")],
+               [B("⚙️ معیارها", callback_data=f"{CB}p:prefs"),
+                B("🎭 تغییر حالت", callback_data=f"{CB}mode")],
+               [B("🛡 قوانین", callback_data=f"{CB}rules"),
+                B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]])
+
+
+def kb_cancelled(p: dict | None = None) -> KB:
+    """§۱۴ — بعد از لغو جست‌وجو، همان سه راهِ روشن."""
+    return KB([[B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")],
+               [B("🎭 تغییر حالت", callback_data=f"{CB}mode")],
+               [B("👤 پروفایل من", callback_data=f"{CB}profile"),
+                B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]])
+
+
+def kb_expired(mode: str, cfg: dict) -> KB:
+    """§۳۶ — پیامِ پایانِ انتظار هیچ‌وقت بن‌بست نیست (§۹)."""
+    return KB([[B("🔄 جست‌وجوی دوباره", callback_data=f"{CB}go")],
+               [B("⚙️ معیارها", callback_data=f"{CB}p:prefs"),
+                B("🎭 تغییر حالت", callback_data=f"{CB}mode")],
+               [B("↩️ رینگ استریت", callback_data=f"{CB}menu")]])
+
+
+def kb_mode_switch(p: dict, cfg: dict) -> KB:
+    """§۱۶ — حالت فعلی با ✅ مشخص است تا کاربر نداند کدام را زده."""
+    cur = (p or {}).get("mode")
+    def lbl(key):
+        name = M.MODES.get(key, key)
+        return ("✅ " + name) if cur == key else name
+    rows = []
+    if cfg.get("fun_enabled", True):
+        rows.append([B(lbl("fun"), callback_data=f"{CB}m:fun")])
+    if cfg.get("serious_enabled", True):
+        rows.append([B(lbl("serious"), callback_data=f"{CB}m:serious")])
+    rows.append([B("👤 پروفایل من", callback_data=f"{CB}profile"),
+                 B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")])
+    return KB(rows)
+
+
+def kb_mode_locked(why: str) -> KB:
+    """§۱۷ — «توقف کن، بعد عوض کن»؛ دکمهٔ انصراف هم باید راه برگشت باشد."""
+    if why == "searching":
+        return KB([[B(L_STOPQ, callback_data=f"{CB}stopq")],
+                   [B("❌ انصراف", callback_data=f"{CB}menu")]])
+    if why == "in_chat":
+        return KB([[B(L_END, callback_data=f"{CB}end")],
+                   [B("❌ انصراف", callback_data=f"{CB}chat")]])
+    return KB([[B("↩️ بازگشت به رینگ", callback_data=f"{CB}menu")]])
 
 
 def kb_idle_prompt() -> KB:
@@ -402,7 +491,8 @@ def kb_menu(view: dict) -> KB:
     elif view.get("paused"):
         rows.append([B(L_RESQ, callback_data=f"{CB}resq")])
     elif view.get("in_queue"):
-        rows.append([B(L_RESQ, callback_data=f"{CB}resq"),
+        # §۲ V5 — «در حال جست‌وجو» با «کسی نیست» یکی نیست: اینجا لغو/توقف کافی است
+        rows.append([B("⏹ لغو جست‌وجو", callback_data=f"{CB}cancelq"),
                      B("⏸ توقف جست‌وجو", callback_data=f"{CB}stopq")])
     elif view.get("mode_missing"):
         rows.append([B("💍 انتخاب حالت", callback_data=f"{CB}m:fun")])
@@ -410,6 +500,10 @@ def kb_menu(view: dict) -> KB:
         rows.append([B("🔎 پیدا کردن نفر", callback_data=f"{CB}go")])
     rows.append([B("👤 پروفایل من", callback_data=f"{CB}profile"),
                  B("🛡 امنیت و قوانین", callback_data=f"{CB}safety")])
+    # §۱۶/§۴۶ (V5) — «🎭 تغییر حالت» همیشه در خودِ منوی رینگ هست (نه فقط وسط
+    # onboarding)؛ اگر کاربر در جست‌وجو/چت باشد، هندلر با پیامِ دلیل ردش می‌کند.
+    rows.insert(-1, [B("🎭 تغییر حالت", callback_data=f"{CB}mode"),
+                     B("⚙️ معیارهای جست‌وجو", callback_data=f"{CB}p:prefs")])
     rows.append([B("🚫 مسدودشده‌ها", callback_data=f"{CB}blocked"),
                  B("🗑 حذف پروفایل", callback_data=f"{CB}del")])
     rows.append([B("📜 قوانین", callback_data=f"{CB}rules"),

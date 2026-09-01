@@ -130,6 +130,11 @@ class DBRing:
         await c.profiles.create_index("status", background=True)
         await c.profiles.create_index([("mode", 1), ("status", 1)], background=True)
         await c.profiles.create_index([("state", 1), ("pending_field", 1)], background=True)
+        # §۱۲ (V5) — جاروی «یتیم‌ها» روی پروفایل‌هایی که `search_msg` دارند؛
+        # sparse ⇒ اسنادِ بی‌search_msg وارد ایندکس نمی‌شوند (هزینه = تعدادِ
+        # منتظرها، نه اندازهٔ کل مجموعه). idempotent و بدون مهاجرت داده.
+        await c.profiles.create_index("search_msg.m", sparse=True, background=True,
+                                      name="ring_search_msg")
         await c.queue.create_index([("status", 1), ("mode", 1), ("queued_at", 1)], background=True)
         # کوئری کاندید حالا `status: {$in: [waiting, claiming]}` است؛ explain روی
         # ۴۰۰۰ سند نشان داد که planner همان ایندکس status-first را با SORT_MERGE
@@ -310,7 +315,7 @@ class DBRing:
 
         idempotent: ورود دوباره فقط `queued_at` را نو نمی‌کند مگر وقتی
         کاربر واقعاً بیرون صف بوده — وگرنه fairness (اول صبر=اولویت)
-        با هر بار «next» ریست می‌شد و starvatioan الکی.
+        با هر بار «next» ریست می‌شد و starvation الکی.
         """
         uid = int(uid)
         cur = await self.ring_cols.queue.find_one({"_id": uid})
@@ -514,6 +519,83 @@ class DBRing:
     async def ring_queue_list(self, mode: str | None = None, limit: int = 200) -> list[dict]:
         q = {} if not mode else {"mode": mode}
         return await self.ring_cols.queue.find(q).sort("queued_at", 1).to_list(limit)
+
+    # ══════════════════════════════════════════════════════════
+    #  §۳..§۱۲ (V5) — پیامِ «در حال جست‌وجو» و تایمر زنده‌اش
+    #
+    #  شناسهٔ پیام روی *سند پروفایل* نگه داشته می‌شود (نه RAM)، تا بعد از
+    #  ری‌استارتِ پروسه هم تایمر ادامه پیدا کند (§۳۵/§۴). مهاجرت لازم ندارد:
+    #  نبودِ `search_msg` فقط یعنی «پیامی برای ویرایش نیست».
+    # ══════════════════════════════════════════════════════════
+
+    async def ring_search_msg_set(self, uid: int, chat_id: int, message_id: int,
+                                  shown_s: int = 0) -> None:
+        await self.ring_cols.profiles.update_one({"_id": int(uid)}, {"$set": {
+            "search_msg": {"c": int(chat_id), "m": int(message_id),
+                           "s": int(shown_s or 0), "at": utc_now_iso()}}})
+
+    async def ring_search_msg_bump(self, uid: int, shown_s: int) -> None:
+        """فقط «چند ثانیه از جست‌وجو نمایش داده شد» را جابه‌جا می‌کند."""
+        await self.ring_cols.profiles.update_one(
+            {"_id": int(uid), "search_msg": {"$exists": True}},
+            {"$set": {"search_msg.s": int(shown_s or 0)}})
+
+    async def ring_search_msg_clear(self, uid: int, *, expired_at=None) -> None:
+        """تایمر را خاموش می‌کند؛ `expired_at` فقط برای حالت EXPIRED نوشته می‌شود."""
+        upd: dict = {"$unset": {"search_msg": ""}}
+        if expired_at:
+            upd["$set"] = {"search_expired_at": expired_at}
+        await self.ring_cols.profiles.update_one({"_id": int(uid)}, upd)
+
+    async def ring_sessions_uids(self, uids: list[int]) -> set[int]:
+        """zیر ۱۰+ uid ⇒ یک query (به‌جای N تا) برای «کی الان داخل session است».
+
+        برای tickِ تایمر (§۱۲ V5) استفاده می‌شود: ویرایش پیامِ انتظار برای کسی
+        که داخل گفت‌وگو ممنوع است، ولی نمی‌خواهیم به‌ازای هر کاربر دو query بزنیم.
+        """
+        want = {int(u) for u in uids}
+        if not want:
+            return set()
+        out: set[int] = set()
+        cur = self.ring_cols.sessions.find(
+            {"status": "active", "slots": {"$in": sorted(want)}},
+            {"slots": 1}).to_list(len(want) + 10)
+        for d in await cur:
+            for s in (d.get("slots") or []):
+                try:
+                    if int(s) in want:
+                        out.add(int(s))
+                except Exception:
+                    continue
+        return out
+
+    async def ring_search_msg_orphans(self, limit: int = 200) -> list[int]:
+        """uidهایی که `search_msg` دارند ولی دیگر در صف نیستند (§۱۲ V5).
+
+        ایندکسِ sparse روی `search_msg.m` ⇒ هزینه فقط به تعدادِ منتظرها،
+        نه به بزرگیِ کل مجموعهٔ پروفایل‌ها.
+        """
+        cur = self.ring_cols.profiles.find({"search_msg": {"$exists": True}},
+                                           {"_id": 1}).to_list(int(limit))
+        return [int(d["_id"]) for d in await cur]
+
+    async def ring_queue_searching_ids(self, limit: int = 200) -> list[int]:
+        """ردیف‌های «هنوز منتظر» با `queued_at` قدیمی‌تر اول (§۴ fairness).
+
+        از همان ایندکس `status_1_mode_1_queued_at_1` استفاده می‌کند؛ limit سخت
+        است تا هزینهٔ tick مستقل از بزرگی صف بماند (§۴۹).
+        """
+        cur = self.ring_cols.queue.find(
+            {"status": {"$in": [QUEUE_WAITING, QUEUE_CLAIMING]}}
+        ).sort("queued_at", 1).to_list(int(limit))
+        rows = await cur
+        out: list[int] = []
+        for d in rows or []:
+            try:
+                out.append(int(d["user_id"]))
+            except Exception:
+                continue
+        return out
 
     async def ring_queue_stale(self, timeout_s: int) -> list[int]:
         ids = []

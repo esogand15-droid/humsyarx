@@ -1198,11 +1198,34 @@ INTERRUPTIBLE_SIMPLE_MODES = {
     # FIX جدید: دستیارِ نوشتنِ اطلاعیه با هوشیار
     'bc_ai_notes',
 }
-MENU_BUTTON_TEXTS = {
-    '🩺 داشبورد', '📚 منابع', '🧪 بانک سوال', '❓ سوالات متداول',
-    '📅 برنامه', '👤 پروفایل', '🔔 اعلان‌ها', '🎫 پشتیبانی',
-    '🎓 پنل محتوا', '👨\u200d⚕️ پنل ادمین', '🤖 هوشیار',
-}
+def _menu_button_texts() -> set:
+    """برچسب‌های دکمه‌های کیبورد اصلی (ReplyKeyboard).
+
+    🔧 باگ واقعیِ پروداکشن: لیست دستیِ زیر «💎 اشتراک ویژه» و «💙 حمایت مالی»
+    رو نداشت — یعنی اگه کاربر وسط یه mode گیرکرده (مثلاً waiting_file) روی
+    یکی از این دو می‌زد، mode پاک نمی‌شد و کاربر گیر می‌موند. پس حالا لیست از
+    *خودِ کیبورد* ساخته می‌شه و مقدار دستی فقط fallback است (keyboards رینگ
+    هم از همین مجموعه برای گارد «تپ منو وسط چت رله نشه» استفاده می‌کنه).
+    """
+    base = {
+        '🩺 داشبورد', '📚 منابع', '🧪 بانک سوال', '❓ سوالات متداول',
+        '📅 برنامه', '👤 پروفایل', '🔔 اعلان‌ها', '🎫 پشتیبانی',
+        '🎓 پنل محتوا', '👨\u200d⚕️ پنل ادمین', '🤖 هوشیار',
+    }
+    try:
+        from utils import main_keyboard as _main_kb
+        for row in (getattr(_main_kb(), 'keyboard', None) or []):
+            for bt in row:
+                t = getattr(bt, 'text', None)
+                if t:
+                    base.add(str(t))
+    except Exception as _e:      # کیبورد در دسترس نبود ⇒ همان fallback
+        import logging
+        logging.getLogger(__name__).debug("MENU_BUTTON_TEXTS fallback: %s", _e)
+    return base
+
+
+MENU_BUTTON_TEXTS = _menu_button_texts()
 
 
 async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1705,6 +1728,18 @@ async def post_init(application: Application):
                 time=dtime(hour=4, minute=10, tzinfo=TEHRAN),
                 name='ring_daily'
             )
+            # 💍 V5 §۴/§۵ — «تیک» تایمرِ زندهٔ جست‌وجو (edit روی همان پیام، هر
+            # ~۱۰ ثانیه، حداکثر SEARCH_TICK_LIMIT کاربر). اگر نسخهٔ ring/jobs.py
+            # روی سرور قدیمی‌تر باشد و این تابع را نداشته باشد، ربات نباید در
+            # boot بمیرد — پس با hasattr (ریسکِ دیپلویِ ناقص = همان چیزی که
+            # باعث شد باگ‌های V۴ در پروداکشن زنده بمانند).
+            if hasattr(ring_jobs, 'ring_search_tick_job'):
+                application.job_queue.run_repeating(
+                    ring_jobs.ring_search_tick_job,
+                    interval=10,
+                    first=12,
+                    name='ring_search_tick'
+                )
 
         # FIX جدید: نوتیف منابع جدید — هر ساعت چک می‌شود، خودش تشخیص
         # می‌دهد آیا فاصله‌ی تنظیم‌شده (۲۴/۴۸/۷۲ ساعت) گذشته یا نه

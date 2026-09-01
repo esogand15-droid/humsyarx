@@ -35,6 +35,30 @@ def forget_warning(session_id: str) -> None:
 
 
 SWEEP_LIMIT = 12
+SEARCH_TICK_LIMIT = 200          # سقفِ سختِ هر دور (§۴۹ — هزینه ثابت بماند)
+SEARCH_TICK_EDIT_EVERY_S = 10    # §۵ — Telegram flood-safe؛ هر ۱ ثانیه نه
+
+
+async def ring_search_tick_job(context) -> None:
+    """§۴/§۵/§۱۲ (V5) — تایمرِ زندهٔ «در حال جست‌وجو».
+
+    چرا جدا از housekeeping: آن job هر ۳۰ ثانیه است و برای «تمام‌شدن وقت»
+    ساخته شده؛ شمارندهٔ ثانیه‌به‌ثانیه و اتمامِ دقیقِ ۱۰ دقیقه به ریتمِ تندتر
+    نیاز دارد. هر دور برای هر کاربرِ منتظر حداکثر **یک edit** می‌زند (نه یک
+    پیامِ تازه) و برای کسی که session فعال دارد اصلاً کاری نمی‌کند؛ خطای یک
+    کاربر بقیه را متوقف نمی‌کند (§۶۵). صفِ خالی = یک query.
+    """
+    try:
+        if not await S.get_flag():
+            return
+        st = await service.search_tick(limit=SEARCH_TICK_LIMIT,
+                                       edit_every_s=SEARCH_TICK_EDIT_EVERY_S)
+    except Exception as e:
+        logger.warning("ring search tick failed: %s", e)
+        return
+    if any(st.values()):
+        logger.info("RING_SEARCH_TICK edited=%s expired=%s dropped=%s",
+                    st.get("edited"), st.get("expired"), st.get("dropped"))
 
 
 async def _sweep(db, cfg: dict) -> int:
@@ -60,8 +84,9 @@ async def _sweep(db, cfg: dict) -> int:
 
 
 async def ring_housekeeping_job(context) -> None:
-    """§۳۵/§۴۹/§۵۱ + §۳۹ — جاروی صف و تخلیهٔ شمارنده‌های آن‌مِوری."""
-    """timeoutها + reconcile. هزینه‌ی هر دور: ۴ query محدود (§۵۳)."""
+    """§۳۵/§۴۹/§۵۱ + §۳۹ — جاروی صف و تخلیهٔ شمارنده‌های آن‌مِوری.
+
+    هزینه‌ی هر دور: ۴ query محدود (§۵۳)."""
     from database import db
     try:
         cfg = await S.get_cfg()
@@ -73,17 +98,22 @@ async def ring_housekeeping_job(context) -> None:
                     await _hard_disable(db)
             return
         closed = warned = repaired = swept = 0
-        # ۱) صف‌های کهنه (queue_timeout) — §۲۲
-        for uid in await db.ring_queue_stale(int(cfg["queue_timeout_s"])):
+        # ۱) صف‌های کهنه (queue_timeout) — §۲۲ + §۱۲ (V5).
+        # در V۵ این کار را `ring_search_tick_job` انجام می‌دهد (با دقت ~۱۰ ثانیه،
+        # و edit روی همان پیامِ انتظار)؛ اینجا فقط تورِ ایمنی است: اگر آن شغل
+        # مدتی نکارد (crash/تأخیرِ queue) یا کاربر پیامِ انتظار را پاک کرده
+        # باشد، *همان* تابع expire صدا زده می‌شود تا کاربر دو نسخهٔ «وقت تمام
+        # شد» نگیرد (§۱۰/§۳۶). سقف این‌جا +۶۰ ثانیه است تا با tick مسابقه ندهد.
+        for uid in await db.ring_queue_stale(int(cfg["queue_timeout_s"]) + 60):
             q = await db.ring_queue_get(uid)
-            if not q:
+            if not q or q.get("status") == "in_chat":
                 continue
-            if q.get("status") == "in_chat":
+            if await service.expire_search(uid):
+                closed += 1
                 continue
             await db.ring_queue_leave(uid)
+            await service.forget_search_msg(uid, expired=True)
             closed += 1
-            await notify.send_text(uid, texts.queue_empty(
-                q.get("mode") or "fun", cfg, waited_s=int(cfg["queue_timeout_s"])))
         # ۲) claimهای یتیم (crash وسط match) — §۶۳
         repaired = await db.ring_queue_repair_claims(max(60, int(cfg["queue_timeout_s"]) // 4))
         # ۲.۵) جاروی صف (§۴۰): اگر زیر همزمانی، دو نفرِ آخر همدیگر را

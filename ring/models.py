@@ -132,18 +132,23 @@ TRANSITIONS: dict[str, set[str]] = {
 # ══════════════════════════════════════════════════════════════
 
 (US_IDLE, US_PROFILE, US_READY, US_WAITING, US_MATCHED, US_PAUSED,
- US_ENDED, US_RESTRICTED) = (
+ US_ENDED, US_RESTRICTED, US_EXPIRED) = (
     "IDLE", "PROFILE_REQUIRED", "READY", "WAITING", "MATCHED", "PAUSED",
-    "ENDED", "RESTRICTED")
+    "ENDED", "RESTRICTED", "EXPIRED")
+
+# §۶ (V5) — «در حال جست‌وجو» و «کسی پیدا نشد» دو حالت جدا هستند. ردیفِ صف
+# یعنی SEARCHING؛ EXPIRED فقط وقتی ساخته می‌شود که سقف انتظار تمام شده باشد.
+US_SEARCHING = US_WAITING
 
 US_LABELS = {
     US_IDLE: "⚪ آزاد",
     US_PROFILE: "📝 پروفایل ناقص",
     US_READY: "🟢 آمادهٔ جست‌وجو",
-    US_WAITING: "⏳ در صف جست‌وجو",
+    US_WAITING: "🔎 در حال جست‌وجو…",
     US_MATCHED: "💬 در گفت‌وگو",
     US_PAUSED: "⏸ جست‌وجو متوقف",
     US_ENDED: "🔚 گفت‌وگوی اخیر تمام شده",
+    US_EXPIRED: "⌛ زمان جست‌وجو تمام شد",
     US_RESTRICTED: "⛔ محدود",
 }
 
@@ -153,7 +158,10 @@ USER_STATE_FLOW = {
     US_IDLE: {US_PROFILE, US_READY, US_RESTRICTED},
     US_PROFILE: {US_READY, US_IDLE, US_RESTRICTED},
     US_READY: {US_WAITING, US_PAUSED, US_MATCHED, US_RESTRICTED, US_IDLE},
-    US_WAITING: {US_MATCHED, US_PAUSED, US_READY, US_IDLE, US_RESTRICTED},
+    # SEARCHING می‌تواند به MATCHED برسد یا با لغو/توقف/اتمام وقت بیرون بیاید
+    US_WAITING: {US_MATCHED, US_PAUSED, US_READY, US_IDLE, US_RESTRICTED,
+                 US_EXPIRED},
+    US_EXPIRED: {US_WAITING, US_READY, US_PAUSED, US_IDLE, US_RESTRICTED},
     US_MATCHED: {US_ENDED, US_RESTRICTED},
     US_ENDED: {US_WAITING, US_READY, US_PAUSED, US_IDLE, US_RESTRICTED},
     US_PAUSED: {US_READY, US_WAITING, US_IDLE, US_RESTRICTED},
@@ -168,7 +176,8 @@ _QUEUE_STATE = {
 
 
 def user_state(profile: dict | None, queue_row: dict | None, session: dict | None,
-               *, banned: bool = False, ended_recently: bool = False) -> str:
+               *, banned: bool = False, ended_recently: bool = False,
+               expired_recently: bool = False) -> str:
     """حالتِ واحدِ کاربر — اولویت: محدودیت › گفت‌وگو › صف › پروفایل.
 
     ⚠️ اگر session فعال باشد هرگز WAITING گزارش نمی‌کنیم، حتی اگر ردیف صف
@@ -188,6 +197,8 @@ def user_state(profile: dict | None, queue_row: dict | None, session: dict | Non
         return US_PAUSED
     if not p.get("age") or not p.get("gender") or not p.get("mode"):
         return US_PROFILE
+    if expired_recently:
+        return US_EXPIRED                  # §۳۶ — «وقت تمام شد»، نه «آماده»
     if ended_recently:
         return US_ENDED
     return US_READY
