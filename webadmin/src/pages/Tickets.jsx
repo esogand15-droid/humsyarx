@@ -174,7 +174,7 @@ export default function Tickets({ go, me }) {
                        onClick={e => e.stopPropagation()}
                        onChange={() => setSel(x => x.includes(id) ? x.filter(i => i !== id) : [...x, id])} />}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ color: 'var(--txt)', fontSize: 'var(--fs-body)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.subject || `تیکت ${id}`}
                   </div>
                   <div className="muted">
@@ -204,7 +204,7 @@ export default function Tickets({ go, me }) {
           {detail && (
             <>
               <div className="panel-pad row" style={{ borderBottom: '1px solid var(--line)', padding: '10px 14px' }}>
-                <b style={{ color: 'var(--txt)', fontSize: 13 }}>{detail.subject || `تیکت ${detail.id}`}</b>
+                <b style={{ color: 'var(--txt)', fontSize: 'var(--fs-card)' }}>{detail.subject || `تیکت ${detail.id}`}</b>
                 <span className="muted">#{detail.id} · <FaDateTime value={detail.created_at} /></span>
                 <span className="spacer" />
                 <B kind={detail.status === 'open' ? 'bad' : detail.status === 'answered' ? 'warn' : 'ok'}>
@@ -255,7 +255,7 @@ export default function Tickets({ go, me }) {
           {detail && (
             <>
               <div className="row" style={{ flexWrap: 'nowrap' }}>
-                <div className="avatar" style={{ width: 38, height: 38, fontSize: 15 }}>
+                <div className="avatar" style={{ width: 38, height: 38, fontSize: 'var(--fs-section)' }}>
                   {(detail.user?.name || '?')[0]}
                 </div>
                 <div style={{ minWidth: 0 }}>
@@ -284,7 +284,7 @@ export default function Tickets({ go, me }) {
                   <dt>تیکت‌ها</dt>
                   <dd>{Number(ctx.counts?.tickets || 0).toLocaleString('fa')}</dd>
                 </dl>
-              ) : detail && <div className="muted" style={{ fontSize: 11 }}>در حال تکمیل کانتکست…</div>}
+              ) : detail && <div className="muted" style={{ fontSize: 'var(--fs-label)' }}>در حال تکمیل کانتکست…</div>}
               {canManage && <div className="grid" style={{ gap: 7, marginTop: 12 }}>
                 <b>مدیریت صف</b>
                 <div className="row"><select className="inp" style={{ flex: 1 }} value={detail.priority || 'normal'} onChange={e => patchMeta({ priority: e.target.value })}>

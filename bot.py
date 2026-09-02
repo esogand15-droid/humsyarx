@@ -1012,9 +1012,41 @@ SILENT_ERRORS = (
     'terminated by other getUpdates request',
 )
 
+# 🛡 AUDIT-§۷۸ — «نویزِ گذرا» با «خطای واقعی» قاطی نشود.
+# لاگ پروداکشن (Railway، ۱۴۰۵/۰۶/۱۱): برای uid 7101933086 یک
+# `⚠️ خطای ربات` رفت که متنش دقیقاً `httpx.ConnectError:` بود — یعنی
+# استثنای شبکه‌ی بدون‌پیام، با <code> خالی. دو ایراد یکی‌جا:
+#   ۱) این‌ها خطای برنامه نیستند (blip خروجیِ DNS/TLS روی پود؛ PTB خودش
+#      retry می‌کند) و در انبوه، خطای واقعی را در پیوی ادمین گم می‌کنند؛
+#   ۲) بعضی استثناها `str()` تهی دارند ⇒ هشدارِ بی‌محتوا.
+# رفتار جدید: لاگِ warning + شمارش، و به‌جای DMِ موردی، **یک خلاصه** در
+# هر پنجره — و متن هشدار همیشه `نامِ کلاس: پیام` است، حتی اگر پیام خالی باشد.
+TRANSIENT_ERRORS = (
+    "httpx.ConnectError", "httpx.ConnectTimeout", "httpx.ReadTimeout",
+    "httpx.WriteTimeout", "httpx.PoolTimeout", "httpx.RemoteProtocolError",
+    "httpx.ReadError", "httpx.WriteError", "Connection error",
+    "Server disconnected", "Temporary failure in name resolution",
+    "Network is unreachable", "Connection reset by peer", "timed out",
+)
+# نامِ کلاس‌هایی که همیشه گذرا هستند. عمداً isinstance نه: در PTB 21.3
+# `BadRequest ⊂ NetworkError` است و با isinstance، خطای منطقیِ API هم
+# «گذرا» برچسب می‌خورد و گم می‌شد.
+TRANSIENT_TYPES = {
+    "ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+    "RemoteProtocolError", "ReadError", "WriteError", "ProxyError", "TimedOut",
+    "ServerError",
+}
+TRANSIENT_WINDOW_S = 600          # هر ۱۰ دقیقه حداکثر یک خلاصه به ادمین
+_TRANSIENT_STATE = {"count": 0, "sample": "", "last_report": 0.0}
+
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     err_str = str(context.error)
+    # 🛡 AUDIT-§۷۸ — `httpx.ConnectError: ` در لاگ یعنی str() تهی بود؛ پس
+    # همیشه نامِ کلاس جلویش می‌آید و اگر متن نبود همان repr می‌نشیند.
+    err_name = type(context.error).__name__
+    err_body = err_str.strip() or (repr(context.error).strip() or "")
+    err_line = f"{err_name}: {err_body}" if err_body else (err_name or "Unknown error")
 
     # خطای بی‌خطر — فقط در لاگ سرور، بدون پیوی به ادمین
     if any(e in err_str for e in SILENT_ERRORS):
@@ -1026,8 +1058,34 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
                 pass
         return
 
+    # 🛡 AUDIT-§۷۸ — گذرا؟ لاگ + شمارش + خلاصه‌ی نرخ‌دار؛ بدون DMِ موردی
+    if err_name in TRANSIENT_TYPES or any(t in err_line for t in TRANSIENT_ERRORS):
+        _TRANSIENT_STATE["count"] = int(_TRANSIENT_STATE["count"]) + 1
+        _TRANSIENT_STATE["sample"] = err_line[:200]
+        logger.warning(f"🌐 خطای گذرای شبکه (PTB تلاش مجدد می‌کند): {err_line[:200]}")
+        if isinstance(update, Update) and update.callback_query:
+            try:
+                await update.callback_query.answer(
+                    text="⏳ اتصال کوتاه بود؛ یک لحظه دیگر دوباره بزن.", show_alert=False)
+            except Exception:
+                pass
+        now_ts = asyncio.get_running_loop().time()
+        if now_ts - float(_TRANSIENT_STATE["last_report"]) >= TRANSIENT_WINDOW_S:
+            _TRANSIENT_STATE["last_report"] = now_ts
+            n = int(_TRANSIENT_STATE["count"])
+            _TRANSIENT_STATE["count"] = 0
+            if ADMIN_ID and n:
+                await safe_send(
+                    context.bot, ADMIN_ID,
+                    f"🌐 <b>{n} خطای گذرای شبکه</b> در {TRANSIENT_WINDOW_S // 60} دقیقه‌ی اخیر\n"
+                    f"نمونه: <code>{html.escape(str(_TRANSIENT_STATE['sample']))}</code>\n"
+                    "خودِ ربات دوباره تلاش می‌کند؛ فقط اگر پیوسته تکرار شد "
+                    "خروجی شبکه‌ی سرویس (DNS/TLS) را بررسی کن.",
+                    parse_mode='HTML')
+        return
+
     # از اینجا به بعد فقط خطاهای واقعی
-    logger.error(f"Exception: {context.error}", exc_info=context.error)
+    logger.error(f"Exception: {err_line}", exc_info=context.error)
     if ADMIN_ID:
         try:
             uid_info = ""
@@ -1047,9 +1105,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             # تلگرام شامل متن ورودی)؛ escape نشسته بود و با «<» پیامِ هشدار
             # می‌ترکید و در `except: pass` گم می‌شد ⇒ ادمین هرگز از خطا خبردار
             # نمی‌شد. safe_send هم فالبکِ بدون HTML دارد.
+            # 🛡 AUDIT-§۷۸ — err_line (نه err_str خام): نامِ کلاس همیشه هست،
+            # پس «<code></code>» تهی دیگر تولید نمی‌شود.
             err_text = (
                 f"⚠️ <b>خطای ربات</b>{uid_info}{ctx_info}\n"
-                f"<code>{html.escape(err_str[:300])}</code>"
+                f"<code>{html.escape(err_line[:300])}</code>"
             )
             await safe_send(context.bot, ADMIN_ID, err_text, parse_mode='HTML')
         except Exception as _eh:
@@ -1783,6 +1843,16 @@ async def post_init(application: Application):
         logger.info(f"🌊 C1 migrate content-intake-scope: {c1}")
     except Exception as e:
         logger.error(f"C1 migrate error: {e}")
+
+    # 🛡 AUDIT-§۸۲ — طبقه‌بندی ترمِ نمرات: نمره‌های قدیمی `term` ندارند؛ اینجا
+    # یک‌بار از روی همان `bs_lessons` پر می‌شوند (idempotent: فقط رکوردهای
+    # بدون‌ترم؛ یک update_many به‌ازای هر درس، نه به‌ازای هر رکورد).
+    try:
+        tb = await db.grades_backfill_terms()
+        if tb.get("grades_updated") or tb.get("unmatched_lessons"):
+            logger.info(f"🎓 grades term backfill: {tb}")
+    except Exception as e:
+        logger.error(f"grades term backfill error: {e}")
 
     # FIX جدید: افزودن یک‌باره‌ی سؤالات FAQ اشتراک/کپی‌رایت
     try:

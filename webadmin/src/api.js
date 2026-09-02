@@ -93,7 +93,9 @@ export const api = {
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${fileDateStamp()}.csv`),
-  usersBulk: (action, ids, value) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value } }),
+  // 🛡 AUDIT-§۷۹ — `extra` برای اکشن‌هایی که پارامترِ ساختارمند می‌خواهند
+  // (مثل اشتراک گروهی: days/plan_name/extend) — بدنه همان endpoint می‌ماند.
+  usersBulk: (action, ids, value, extra = {}) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value, ...extra } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
   userAction: (uid, act) => req(`/api/admin/users/${uid}/${act}`, { method: 'POST' }),

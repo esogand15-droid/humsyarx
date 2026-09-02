@@ -261,17 +261,36 @@ async def show_my_grades_msg(update: Update):
     await update.message.reply_text(text, parse_mode='HTML')
 
 
-async def _build_my_grades_text(uid: int) -> str:
-    grades = await db.grade_list_for_student(uid)
+async def _build_my_grades_text(uid: int, term: str | None = None) -> str:
+    """🛡 AUDIT-§۸۲ — کارنامه‌ی ترم‌به‌ترم.
+
+    پیش‌تر همه‌ی نمره‌ها در یک لیست می‌آمدند و میانگینِ «کل» یعنی چیزی بین
+    ترم ۱ تا ۴؛ با درس‌های متفاوتِ هر ترم این عدد گمراه‌کننده بود. حالا هر
+    ترم بلوکِ خودش را دارد (میانگین جدا) و `term` در همین تابع، کارنامه را به
+    یک ترم محدود می‌کند (پنل و API از همین مسیر استفاده می‌کنند).
+    میانگین‌ها از `group_grades_by_term` می‌آیند — همان منطقِ
+    `summarize_grades` (نمره‌ی تهی در مخرج نیست).
+    """
+    grades = await db.grade_list_for_student(uid, term=term)
     if not grades:
-        return "📊 هنوز هیچ نمره‌ای برات ثبت نشده."
-    lines = ["📊 <b>نمرات من</b>\n━━━━━━━━━━━━━━━━"]
-    total = 0
-    for g in grades:
-        lines.append(f"📚 {g['lesson']} — {g['exam_title']}\n   🎯 <b>{g['score']}/20</b>  |  {fmt_jalali_dt(g.get('exam_date',''), with_time=False)}")
-        total += g['score']
-    avg = round(total / len(grades), 2)
-    lines.append(f"\n━━━━━━━━━━━━━━━━\n📈 میانگین کل: <b>{avg}/20</b>")
+        return ("📊 هنوز هیچ نمره‌ای برات ثبت نشده." if not term
+                else f"📊 برای «{term}» نمره‌ای ثبت نشده است.")
+    from grade_utils import group_grades_by_term, summarize_grades
+
+    lines = [f"📊 <b>نمرات من{' — ' + term if term else ''}</b>\n━━━━━━━━━━━━━━━━"]
+    for grp in group_grades_by_term(grades):
+        head = grp["label"]
+        avg = grp["avg"]
+        lines.append(f"\n🎓 <b>{head}</b> · {grp['total']} نمره"
+                     + (f" · میانگین <b>{avg}/20</b>" if avg is not None else ""))
+        for g in grp["grades"]:
+            lines.append(f"   📚 {g.get('lesson') or '—'} — {g.get('exam_title') or '—'}"
+                         f"\n      🎯 <b>{g.get('score') if g.get('score') is not None else '—'}/20</b>"
+                         f"  |  {fmt_jalali_dt(g.get('exam_date',''), with_time=False)}")
+    overall = summarize_grades(grades)
+    if not term and overall["avg"] is not None:
+        lines.append(f"\n━━━━━━━━━━━━━━━━\n📈 میانگین کل: <b>{overall['avg']}/20</b>"
+                     f"  ({overall['graded_count']} نمره‌ی دارا از {overall['total']})")
     return "\n".join(lines)
 
 

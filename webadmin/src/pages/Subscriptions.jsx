@@ -437,7 +437,7 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
         {data.subscription?.status === 'active' && <div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={reason}
           onChange={e => setReason(e.target.value)} placeholder="دلیل لغو…" /><button className="btn danger" disabled={reason.trim().length < 2} onClick={() => setConfirm(true)}>لغو اشتراک</button></div>}
       </div>
-      <div className="h1" style={{ fontSize: 14, marginTop: 16 }}>📜 تاریخچه پرداخت</div>
+      <div className="h1" style={{ fontSize: 'var(--fs-section)', marginTop: 16 }}>📜 تاریخچه پرداخت</div>
       {!(data.payments || []).length ? <Empty text="پرداختی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>
         {data.payments.map(p => <div key={p.id} className="panel panel-pad row"><B kind={p.status === 'approved' ? 'ok' : p.status === 'rejected' ? 'bad' : 'warn'}>{p.status}</B>
           <span style={{ flex: 1 }}>{p.plan_name}</span><span>{money(p.final_price)}</span><FaDateTime value={p.submitted_at} /></div>)}</div>}
@@ -464,7 +464,7 @@ function DiscountsPanel({ plans, refreshOverview }) {
       <div className="muted">هدف پلن، ظرفیت، محدودیت هر کاربر، آمار مالی و انتشار هدفمند</div></div><span className="spacer" />
       <button className="btn primary" onClick={() => { setCloneSeed(null); setAddOpen(true); }}>➕ کد جدید</button></div>
     {!items ? <Loading rows={5} /> : <div className="grid g2">{items.map(c => <div key={c.code} className="panel panel-pad">
-      <div className="row"><span className="code" style={{ fontSize: 15, fontWeight: 800 }}>{c.code}</span><B kind="purple">{fa(c.percent)}٪</B>
+      <div className="row"><span className="code" style={{ fontSize: 'var(--fs-section)', fontWeight: 800 }}>{c.code}</span><B kind="purple">{fa(c.percent)}٪</B>
         <span className="spacer" /><B kind={c.active ? 'ok' : 'bad'}>{c.active ? 'فعال' : 'غیرفعال'}</B></div>
       <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}><B>مصرف {fa(c.used_count)} / {c.max_uses ? fa(c.max_uses) : '∞'}</B>
         <B>هر کاربر: {c.per_user_limit ? fa(c.per_user_limit) : '∞'}</B><B>{c.expires_at ? <FaDateTime value={c.expires_at} /> : 'بدون انقضا'}</B></div>
@@ -539,7 +539,7 @@ function DiscountDrawer({ item, onClose }) {
           <input className="inp" style={{ flex: 1 }} value={title} onChange={e => setTitle(e.target.value)} placeholder="عنوان سفارشی (اختیاری)" /></div>
         <textarea className="inp" rows={2} style={{ width: '100%', marginTop: 8 }} value={description} onChange={e => setDescription(e.target.value)} placeholder="توضیح سفارشی (اختیاری)" />
         <button className="btn primary" style={{ marginTop: 8 }} disabled={busy || item.active === false} onClick={broadcast}>{busy ? '⏳ شروع…' : '📢 شروع انتشار'}</button></div>
-      <div className="row" style={{ marginTop: 16 }}><div className="h1" style={{ fontSize: 14 }}>تاریخچه انتشار</div>
+      <div className="row" style={{ marginTop: 16 }}><div className="h1" style={{ fontSize: 'var(--fs-section)' }}>تاریخچه انتشار</div>
         <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی وضعیت</button></div>
       {!(runs || []).length ? <Empty text="انتشاری ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{runs.map(r => <div key={r.broadcast_id} className="panel panel-pad">
         <div className="row"><B kind={r.status === 'completed' ? 'ok' : r.status === 'sending' ? 'warn' : 'bad'}>{r.status}</B><B>{r.target}</B>

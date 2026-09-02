@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from api.auth import require_perm
+from api.serialize import doc, docs, payload
 from database import db
 from ring import moderation, service
 from ring import settings as S
@@ -124,13 +125,13 @@ async def metrics(days: int = Query(7, ge=1, le=90), user=_guard):
     """
     from ring import analytics as A
     await A.flush_metrics()                 # تا عددی که می‌بینید的最新ِ RAM هم باشد
-    return await A.cycle_metrics(days=days)
+    return payload(await A.cycle_metrics(days=days))
 
 
 @router.get("/sessions/{session_id}/health")
 async def session_health(session_id: str, user=_guard):
     """§۴۶ — سلامتِ مرحله‌به‌مرحلهٔ یک match (state/queue/timer/notify/relay)."""
-    return await service.session_health(session_id)
+    return payload(await service.session_health(session_id))
 
 
 @router.post("/sessions/{session_id}/repair")
@@ -144,7 +145,7 @@ async def session_repair(session_id: str, user=_guard):
     out = await service.repair_session(session_id)
     await db.ring_audit(int(user.get("id") or 0), "RING_SESSION_REPAIR",
                         session_id, str(out.get("repaired") or {})[:400], {})
-    return out
+    return payload(out)
 
 
 @router.get("/overview")
@@ -157,8 +158,8 @@ async def overview(user=_guard):
         "state": await S.ui_state(),
         "state_label": _STATE_LABELS.get(await S.ui_state(), "—"),
         "rules_version": service.rules_want(await S.get_cfg()),
-        "live": await db.ring_overview(),
-        "queue": await db.ring_queue_stats(),
+        "live": payload(await db.ring_overview()),
+        "queue": payload(await db.ring_queue_stats()),
         "settings": cfg,
         "labels": S.labels(),
         "ram": {"in_chat": ring_state.count()},
@@ -259,7 +260,7 @@ async def queue(mode: str | None = Query(default=None, pattern="^(serious|fun)$"
                     "gender": r.get("gender"), "age_range": r.get("age_range"),
                     "queued_at": r.get("queued_at"),
                     "wait_s": _wait_s(r.get("queued_at"))})
-    return {"queue": out, "stats": await db.ring_queue_stats()}
+    return {"queue": out, "stats": payload(await db.ring_queue_stats())}
 
 
 @router.get("/sessions")
@@ -271,7 +272,8 @@ async def sessions(status: str | None = Query(default="active",
                    user=_guard):
     rows, total = await db.ring_session_list(status=status, mode=mode,
                                              page=page, per=size)
-    return {"sessions": rows, "total": total, "page": page, "size": size}
+    # 🛡 AUDIT-§۷۵ — سندِ خام = `_id` از نوع ObjectId ⇒ ۵۰۰ در سریال‌ساز
+    return {"sessions": docs(rows), "total": total, "page": page, "size": size}
 
 
 @router.get("/sessions/{sid}")
@@ -281,7 +283,7 @@ async def session_detail(sid: str, user=_guard):
         raise HTTPException(404, "session پیدا نشد")
     sess.pop("slots", None)                      # uidها در users هستند
     ev = await db.ring_evidence_for(sid, limit=50)
-    return {"session": sess, "evidence_count": len(ev),
+    return {"session": doc(sess), "evidence_count": len(ev),
             "reports": [r.get("report_id") for r in
                         await db.ring_cols.reports.find({"session_id": sid})
                         .to_list(20)]}
@@ -306,7 +308,10 @@ async def reports(status: str | None = None, page: int = Query(default=1, ge=1),
                   size: int = Query(default=25, ge=1, le=100),
                   user=_guard):
     rows, total = await db.ring_report_list(status=status, page=page, per=size)
-    return {"reports": rows, "total": total, "page": page, "size": size}
+    # 🛡 AUDIT-§۷۵ — ریشه‌ی ۵۰۰ پروداکشن: jsonable_encoder روی `_id` با
+    # `TypeError: 'ObjectId' object is not iterable` می‌ترکید. با فهرستِ خالی
+    # پاسخ ۲۰۰ بود؛ با اولین گزارشِ واقعی — و بعد از انجامِ effectها — ۵۰۰.
+    return {"reports": docs(rows), "total": total, "page": page, "size": size}
 
 
 @router.get("/reports/{rid}")
@@ -316,12 +321,12 @@ async def report_detail(rid: int, user=_guard):
         raise HTTPException(404, "گزارش پیدا نشد")
     ev = await db.ring_evidence_for(rep.get("session_id") or "", limit=60)
     target = await db.ring_profile(int(rep.get("reported_uid") or 0))
-    return {"report": rep, "evidence": ev,
+    return {"report": doc(rep), "evidence": docs(ev),
             "target": {"score": (target or {}).get("report_score"),
                        "warnings": (target or {}).get("warnings"),
                        "status": (target or {}).get("status"),
-                       "history": await db.ring_reports_against(int(rep["reported_uid"]), 30)
-                       if target else []}}
+                       "history": docs(await db.ring_reports_against(
+                           int(rep["reported_uid"]), 30)) if target else []}}
 
 
 @router.post("/reports/{rid}/review")
@@ -331,7 +336,7 @@ async def report_review(rid: int, body: ReviewBody, user=_guard):
         raise HTTPException(404, "گزارش پیدا نشد")
     await _audit(user, f"RING_REPORT_{body.action}", str(rid), body.note,
                  {"target": r.get("target")})
-    return r
+    return payload(r)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -345,7 +350,7 @@ async def profiles(q: str | None = None, status: str | None = None,
                    user=_guard):
     rows, total = await db.ring_admin_profiles(q=q, status=status, mode=mode,
                                                page=page, per=size)
-    return {"profiles": rows, "total": total, "page": page, "size": size}
+    return {"profiles": docs(rows), "total": total, "page": page, "size": size}
 
 
 @router.get("/profiles/{uid}")
@@ -356,16 +361,16 @@ async def profile_detail(uid: int, user=_guard):
     sess, _ = await db.ring_session_list(uid=uid, status=None, page=1, per=10)
     blocks = await db.ring_blocks_list(uid)
     return {
-        "profile": {k: p.get(k) for k in
+        "profile": doc({k: p.get(k) for k in
                     ("_id", "anon_id", "mode", "gender", "age_range", "status",
                      "report_score", "warnings", "sessions_count", "bio",
                      "interests", "city", "university", "major", "topics", "state",
-                     "created_at", "updated_at", "consent_terms_at")},
-        "sessions": sess,
+                     "created_at", "updated_at", "consent_terms_at")}),
+        "sessions": docs(sess),
         "blocks_given": len(blocks),
-        "reports_against": await db.ring_reports_against(uid, 30),
+        "reports_against": docs(await db.ring_reports_against(uid, 30)),
         "rating": await db.ring_rating_stats(uid),
-        "ban": await db.ring_ban_active(uid),
+        "ban": doc(await db.ring_ban_active(uid)),
     }
 
 
@@ -413,7 +418,7 @@ async def blocks(uid: int | None = Query(default=None),
 
 @router.get("/bans")
 async def bans(limit: int = Query(default=50, ge=1, le=200), user=_guard):
-    return {"bans": await db.ring_ban_list(limit=limit)}
+    return {"bans": docs(await db.ring_ban_list(limit=limit))}
 
 
 @router.post("/bans")
@@ -421,14 +426,14 @@ async def ban(body: BanBody, user=_guard):
     r = await moderation.admin_ban(_admin(user), body.user_id, body.kind,
                                    body.hours, body.reason, body.scope)
     await _audit(user, "RING_BAN", str(body.user_id), body.reason, r)
-    return r
+    return payload(r)
 
 
 @router.delete("/bans/{uid}")
 async def unban(uid: int, user=_guard):
     r = await moderation.admin_lift(_admin(user), uid, "panel")
     await _audit(user, "RING_UNBAN", str(uid))
-    return r
+    return payload(r)
 
 
 @router.post("/force-match")
@@ -438,7 +443,7 @@ async def force_match(body: ForceMatchBody, user=_guard):
     if r["kind"] not in ("ok",):
         raise HTTPException(400, f"ممکن نشد: {r.get('kind')}"
                             + (f" (uid={r['uid']})" if r.get("uid") else ""))
-    return {"ok": True, "session": r.get("session")}
+    return payload({"ok": True, "session": r.get("session")})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -459,7 +464,7 @@ async def debug_match(a: int = Query(..., ge=1), b: int = Query(..., ge=1),
         raise HTTPException(422, "دو uid متفاوت لازم است")
     out = await service.pair_diagnose(int(a), int(b))
     await _audit(user, "RING_DEBUG_MATCH", f"{a},{b}", out.get("reason") or "ok")
-    return out
+    return payload(out)
 
 
 @router.get("/settings")
@@ -484,18 +489,18 @@ async def flag(body: FlagBody, user=_guard):
 async def settings_post(body: SettingsBody, user=_guard):
     merged = await S.set_cfg(_admin(user), body.updates or {})
     await _audit(user, "RING_SETTINGS", "cfg", "", {"changed": list(body.updates or {})})
-    return {"ok": True, "settings": merged}
+    return payload({"ok": True, "settings": merged})
 
 
 @router.get("/analytics")
 async def analytics(days: int = Query(default=7, ge=1, le=180), user=_guard):
     from ring import analytics as A
-    return await A.summary(days)
+    return payload(await A.summary(days))
 
 
 @router.get("/audit")
 async def audit(limit: int = Query(default=60, ge=1, le=400), user=_guard):
-    return {"audit": await db.ring_audit_list(limit=limit)}
+    return {"audit": docs(await db.ring_audit_list(limit=limit))}
 
 
 @router.post("/maintenance/reconcile")

@@ -224,6 +224,9 @@ class DBCore:
                 self.grades.create_index([('student_id', 1), ('created_at', -1)], background=True),
                 self.grades.create_index([('lesson', 1), ('created_at', -1)], background=True),
                 self.grades.create_index([('exam_date', -1), ('lesson', 1)], background=True),
+                # 🛡 AUDIT-§۸۲ — فهرست/فیلتر ترم‌به‌ترمِ نمرات
+                self.grades.create_index([('student_id', 1), ('term', 1), ('exam_date', -1)], background=True),
+                self.grades.create_index([('term', 1), ('created_at', -1)], background=True),
                 self.wa_saved_filters.create_index([('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
                 self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
                 self.web_admin_sessions.create_index([('uid', 1), ('revoked', 1), ('created_at', -1)], background=True),
@@ -2516,15 +2519,35 @@ class DBCore:
         return [u for u in candidates if self._norm_name(u.get('name', '')) == target]
 
 
+    async def lesson_term(self, lesson_name) -> str:
+        """🛡 AUDIT-§۸۲ — ترمِ یک درس از همان `bs_lessons` خوانده می‌شود.
+
+        نمره ترم را «انتخاب» نمی‌کند؛ از منبعِ دروس می‌گیرد، پس اگر ادمین
+        اسم درس را درست نوشته باشد، طبقه‌بندی خودکار و یکپارچه است.
+        """
+        name = (lesson_name or '').strip()
+        if not name:
+            return ''
+        doc = await self.bs_lessons.find_one(
+            {'name': {'$regex': f'^{re.escape(name)}$', '$options': 'i'}}, {'term': 1})
+        return str((doc or {}).get('term') or '').strip()[:40]
+
+
     async def grade_bulk_upsert(self, entries: list, lesson: str, exam_title: str,
-                                 exam_date: str, entered_by: int) -> list:
+                                 exam_date: str, entered_by: int, term: str | None = None) -> list:
         """
         entries: [{'user_id': int, 'score': float}, ...]
         برای هر دانشجو، اگه نمره‌ی همین درس+امتحان از قبل ثبت شده بود
         آپدیت می‌شود (نه رکورد تکراری)، وگرنه درج می‌شود.
         خروجی: لیست رکوردهای نهایی ثبت‌شده (برای ارسال نوتیف).
+
+        §۸۲ — `term` اگر داده نشود از خودِ درس استخراج می‌شود و روی رکورد
+        می‌نشیند؛ برای رکوردِ قبلی هم اصلاح می‌شود (نه فقط درجِ تازه).
         """
         now = utc_now_iso()
+        if term is None:
+            term = await self.lesson_term(lesson)
+        term = str(term or '').strip()[:40]
         saved = []
         for e in entries:
             uid, score = e['user_id'], e['score']
@@ -2534,7 +2557,7 @@ class DBCore:
             doc = {
                 'student_id': uid, 'lesson': lesson, 'exam_title': exam_title,
                 'exam_date': exam_date, 'score': score, 'entered_by': entered_by,
-                'updated_at': now,
+                'term': term, 'updated_at': now,
             }
             if existing:
                 await self.grades.update_one({'_id': existing['_id']}, {'$set': doc})
@@ -2548,8 +2571,24 @@ class DBCore:
         return saved
 
 
-    async def grade_list_for_student(self, uid: int) -> list:
-        return await self.grades.find({'student_id': uid}).sort('exam_date', -1).to_list(200)
+    async def grade_list_for_student(self, uid: int, term: str | None = None) -> list:
+        q = {'student_id': int(uid)}
+        if term:
+            q['term'] = str(term).strip()[:40]
+        return await self.grades.find(q).sort('exam_date', -1).to_list(200)
+
+
+    async def grade_terms(self) -> list:
+        """همه‌ی ترم‌های دارای نمره (برای فهرستِ فیلترِ پنل/ربات)."""
+        from grade_utils import _term_rank
+        raw = await self.grades.distinct('term')
+        return sorted([str(t) for t in raw if t], key=_term_rank)
+
+
+    async def grade_terms_of_student(self, uid: int) -> list:
+        """تررم‌هایی که این دانشجو در آن‌ها نمره دارد (برای تب/فیلتر)."""
+        raw = await self.grades.distinct('term', {'student_id': int(uid)})
+        return sorted([str(t) for t in raw if t], key=lambda t: t)
 
 
     async def grade_get(self, grade_id: str):
@@ -2572,6 +2611,56 @@ class DBCore:
             return False
 
 
+    async def grade_term_breakdown(self, intake: str = None, group: str = None,
+                                   q: str = None, lesson: str = None,
+                                   date_from: str = None, date_to: str = None,
+                                   term: str = None) -> list:
+        """شمارش و میانگینِ هر ترم روی *همان* فیلترِ فهرست (§۸۲).
+
+        روی صفحه‌بندی حساب نمی‌شود (وگرنه «میانگین ترم ۲» با عوض‌شدن
+        صفحه عوض می‌شد)؛ خروجی برای سربرگ‌های پنل و نمای ربات یکی است.
+        """
+        query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson,
+                                              date_from=date_from, date_to=date_to, term=term)
+        out = []
+        async for d in self.grades.aggregate([
+            {'$match': query or {}},
+            {'$group': {'_id': '$term', 'n': {'$sum': 1},
+                        'avg': {'$avg': '$score'}, 'max': {'$max': '$score'}}},
+            {'$sort': {'_id': 1}},
+        ], allowDiskUse=True):
+            out.append({'term': str(d.get('_id') or ''), 'count': int(d.get('n') or 0),
+                        'avg': round(float(d['avg']), 2) if isinstance(d.get('avg'), (int, float)) else None})
+        return out
+
+
+    async def grades_backfill_terms(self, max_lessons: int = 500) -> dict:
+        """§۸۲ — پرکردن `term` نمره‌های قدیمی، از روی همان `bs_lessons`.
+
+        عمداً «برای هر نامِ درس یک update_many» است، نه یک کوئری برای هر
+        رکورد (قرارداد V4: بدون N+1 روی مجموعه‌های بزرگ). idempotent است و
+        در boot بی‌خطر چند بار اجرا می‌شود.
+        """
+        names = [n for n in await self.grades.distinct('lesson') if n][:max_lessons]
+        touched = updated = 0
+        unmatched = []
+        for name in names:
+            touched += 1
+            term = await self.lesson_term(name)
+            if not term:
+                unmatched.append(str(name)[:60])
+                continue
+            r = await self.grades.update_many(
+                {'lesson': name, '$or': [{'term': {'$exists': False}}, {'term': ''}, {'term': None}]},
+                {'$set': {'term': term}})
+            updated += int(r.modified_count or 0)
+        result = {'lessons_scanned': touched, 'grades_updated': updated,
+                  'unmatched_lessons': len(unmatched)}
+        await self.set_setting('grades_term_backfill',
+                               {**result, 'at': utc_now_iso(), 'unmatched': unmatched[:20]})
+        return result
+
+
     async def grade_delete(self, grade_id: str) -> bool:
         try:
             result = await self.grades.delete_one({'_id': ObjectId(grade_id)})
@@ -2582,7 +2671,8 @@ class DBCore:
 
     async def _grade_admin_query(self, intake: str = None, group: str = None,
                                  q: str = None, lesson: str = None,
-                                 date_from: str = None, date_to: str = None) -> dict:
+                                 date_from: str = None, date_to: str = None,
+                                 term: str = None) -> dict:
         """فیلتر مشترک Bot/Web برای فهرست نمره؛ join کاربر با distinct و بدون N+1."""
         clauses = []
         user_filter = {}
@@ -2596,6 +2686,9 @@ class DBCore:
             clauses.append({'student_id': {'$in': allowed_ids}})
         if lesson:
             clauses.append({'lesson': {'$regex': re.escape(lesson.strip()), '$options': 'i'}})
+        if term:
+            # 🛡 AUDIT-§۸۲ — «نمرات ترم ۲» یعنی فیلترِ روی همان طبقه‌بندی
+            clauses.append({'term': str(term).strip()[:40]})
         if date_from or date_to:
             dates = {}
             if date_from: dates['$gte'] = parse_gregorian_date(date_from).isoformat()
@@ -2618,17 +2711,19 @@ class DBCore:
     async def grade_list_recent(self, skip: int = 0, limit: int = 10,
                                 intake: str = None, group: str = None,
                                 q: str = None, lesson: str = None,
-                                date_from: str = None, date_to: str = None) -> list:
+                                date_from: str = None, date_to: str = None,
+                                term: str = None) -> list:
         query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson,
-                                              date_from=date_from, date_to=date_to)
+                                              date_from=date_from, date_to=date_to, term=term)
         return await self.grades.find(query).sort('created_at', -1).skip(skip).limit(limit).to_list(limit)
 
 
     async def grade_count_recent(self, intake: str = None, group: str = None,
                                  q: str = None, lesson: str = None,
-                                 date_from: str = None, date_to: str = None) -> int:
+                                 date_from: str = None, date_to: str = None,
+                                 term: str = None) -> int:
         query = await self._grade_admin_query(intake=intake, group=group, q=q, lesson=lesson,
-                                              date_from=date_from, date_to=date_to)
+                                              date_from=date_from, date_to=date_to, term=term)
         return await self.grades.count_documents(query)
 
 

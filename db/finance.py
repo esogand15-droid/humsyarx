@@ -422,8 +422,10 @@ class DBFinance:
         else:
             base = now
         end_date = (base + timedelta(days=days)).isoformat()
-        # total_days برای رسم نوار پیشرفت باقیمانده استفاده می‌شود
-        total_days = max(1, (parse_machine_datetime(end_date) - base).days) if not extend else days
+        # 🛡 AUDIT-§۸۳ — «total_days» محاسبه می‌شد و دور ریخته می‌شد؛ نوارِ
+        # پیشرفتِ واقعی (`subscription.py:550`) از `last_plan_days` می‌خواند و
+        # همان هم پایین‌تر ذخیره می‌شود. خطِ مرده حذف شد تا خواننده فرض نکند
+        # عددِ دوم هم جایی ذخیره می‌شود.
         await self.subscriptions.update_one(
             {'_id': user_id},
             {'$set': {
@@ -530,7 +532,24 @@ class DBFinance:
             })
             return True
         except DuplicateKeyError:
-            return False
+            # 🛡 AUDIT-§۸۳ — قفلِ *منقضی* را خودمان برمی‌داریم.
+            # اتکای صرف به TTL کافی است ولی درست نیست: مانیتور TTL در mongod
+            # هر ۶۰ ثانیه یک‌بار می‌چرخد و روی secondary کلاً خاموش است، پس یک
+            # رکوردِ مرده می‌تواند «اعطای ۳۰ روزه‌ی همان کاربر» را بی‌نهایت
+            # بلوکه کند. این یک attemptِ شرطی است (فقط اگر expires_at گذشته
+            # بود) و مسابقه را هم می‌بندد: برنده همان کسی است که modified_count
+            # را می‌بیند.
+            now = now_utc()
+            try:
+                takeover = await self.admin_op_locks.update_one(
+                    {'_id': f"{kind}:{key}",
+                     '$or': [{'expires_at': {'$lte': now}}, {'expires_at': {'$exists': False}}]},
+                    {'$set': {'expires_at': now + timedelta(seconds=ttl_seconds),
+                              'created_at': utc_now_iso()}})
+                return bool(takeover.modified_count)
+            except Exception as e:
+                logger.warning(f"op_claim({kind}) takeover failed: {e}")
+                return False
         except Exception as e:
             logger.warning(f"op_claim({kind}) degraded (fail-open): {e}")
             return True

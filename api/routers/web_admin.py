@@ -238,9 +238,15 @@ class VerifyCode(BaseModel):
 
 
 class BulkBody(BaseModel):
-    action: str            # approve | suspend | unsuspend | set_intake
+    action: str            # approve | suspend | unsuspend | set_intake | grant_subscription | renew_subscription
     ids: list[int]
     value: Optional[str] = None     # WA2.4 — مقدار جانبی (مثل intake)
+    # 🛡 AUDIT-§۷۹ — اشتراک گروهی: همان فیلدهای GrantBodyِ بخش مالی.
+    # هیچ فیلدِ «موازی» ساخته نمی‌شود؛ اعطا از همان endpoint تک‌موردی انجام
+    # می‌شود تا تاریخِ پایان، نوتیف، audit و ادعایِ یکتا یکی بماند.
+    days: Optional[int] = Field(default=None, ge=1, le=3650)
+    plan_name: Optional[str] = Field(default=None, max_length=100)
+    extend: Optional[bool] = None
 
 
 @router.post("/auth/request-code")
@@ -863,6 +869,10 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
         "set_group": "users.manage", "add_role": "users.manage",
         "remove_role": "users.manage", "suspend": "users.suspend",
         "unsuspend": "users.suspend", "message": "users.message", "block": "users.delete",
+        # 🛡 AUDIT-§۷۹ — اشتراک گروهی با همان مجوزِ «مرکز کنترل اشتراک»
+        # (subscription.manage)، نه users.manage: پول در این مسیر جابه‌جا می‌شود
+        # و گیت باید با گیتِ خودِ آن بخش یکی باشد.
+        "grant_subscription": "subscription.manage", "renew_subscription": "subscription.manage",
     }
     need = action_perm.get(body.action)
     if not need:
@@ -877,7 +887,22 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     if not ids:
         raise HTTPException(400, "لیست کاربران خالی است.")
     succeeded, skipped, failed = [], [], []
+    granted: list[dict] = []
     value = (body.value or "").strip()
+    # 🛡 AUDIT-§۷۹ — اشتراک گروهی: فقط orchestration؛ نوشتنِ واقعی با همان
+    # endpoint تک‌موردیِ مالی است (op_claim + sub_activate + نوتیف + audit).
+    sub_extend = None
+    sub_days = sub_plan = None
+    if body.action in ("grant_subscription", "renew_subscription"):
+        sub_extend = (body.extend if body.extend is not None
+                      else body.action == "renew_subscription")
+        try:
+            sub_days = int(body.days if body.days else (value or 0))
+        except (TypeError, ValueError):
+            raise HTTPException(422, "تعداد روز باید عدد صحیح باشد.")
+        if not (1 <= int(sub_days) <= 3650):
+            raise HTTPException(422, "تعداد روز نامعتبر است (۱ تا ۳۶۵۰ روز).")
+        sub_plan = (body.plan_name or "").strip()[:100] or "اشتراک دستی"
     if body.action in ("set_intake", "set_group", "add_role", "remove_role", "message", "block") and not value:
         raise HTTPException(422, "مقدار عملیات گروهی الزامی است")
     if body.action in ("add_role", "remove_role") and not await db.get_role(value):
@@ -929,6 +954,12 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
                 await wa_user_message(uid=uid, body=DmIn(text=value), user=user)
             elif body.action == "block":
                 await wa_user_action(uid=uid, body=UserActionIn(action="block", reason=value), user=user)
+            elif body.action in ("grant_subscription", "renew_subscription"):
+                r = await subscription_api.grant_subscription(
+                    body=subscription_api.GrantBody(
+                        user_id=uid, days=int(sub_days), plan_name=sub_plan, extend=bool(sub_extend)),
+                    admin=user)
+                granted.append({"id": uid, "end_date": (r or {}).get("end_date")})
             succeeded.append(uid)
         except HTTPException as exc:
             failed.append({"id": uid, "error": str(exc.detail or "operation_failed")[:160]})
@@ -941,17 +972,28 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
         "set_group": "تغییر گروه گروهی", "add_role": "افزودن نقش گروهی",
         "remove_role": "حذف نقش گروهی", "message": "پیام گروهی انتخابی",
         "block": "مسدودسازی گروهی",
+        "grant_subscription": "اعطای گروهی اشتراک", "renew_subscription": "تمدید گروهی اشتراک",
     }
     await _audit(
         actor, f"{labels[body.action]} کاربران ({len(succeeded)} موفق)",
-        severity="CRITICAL" if body.action == "block" else "HIGH" if body.action in ("suspend", "remove_role") else "INFO",
+        severity="CRITICAL" if body.action == "block" else "HIGH" if body.action in ("suspend", "remove_role", "grant_subscription", "renew_subscription") else "INFO",
         target_type="user_batch", target_label=f"{len(ids)} کاربر",
         after={"action": body.action, "requested": len(ids),
-               "succeeded": len(succeeded), "failed": len(failed), "skipped": len(skipped)},
-        tags=["bulk_users", "پنل_وب"],
+               "succeeded": len(succeeded), "failed": len(failed), "skipped": len(skipped),
+               **({"days": int(sub_days), "plan": sub_plan, "extend": bool(sub_extend)}
+                  if body.action in ("grant_subscription", "renew_subscription") else {})},
+        tags=["bulk_users", "اشتراک", "پنل_وب"] if body.action in
+        ("grant_subscription", "renew_subscription") else ["bulk_users", "پنل_وب"],
     )
-    return {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
-            "failed": failed, "skipped": skipped}
+    out = {"ok": not failed, "done": len(succeeded), "succeeded": succeeded,
+           "failed": failed, "skipped": skipped,
+           "action": body.action, "value": value or None}
+    if body.action in ("grant_subscription", "renew_subscription"):
+        out["granted"] = granted
+        out["days"] = int(sub_days)
+        out["plan_name"] = sub_plan
+        out["extend"] = bool(sub_extend)
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3574,6 +3616,8 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
         out["academic"] = {"grades_recent": [{
             "lesson": g.get("lesson", ""), "exam_title": g.get("exam_title", ""),
             "exam_date": g.get("exam_date", ""), "score": g.get("score", 0),
+            # 🛡 AUDIT-§۸۲ — ترم هم در کارنامه‌ی ۳۶۰ دیده می‌شود
+            "term": g.get("term", ""),
         } for g in gdocs]}
     except Exception:
         out.setdefault("academic", {"grades_recent": []})
@@ -5221,6 +5265,10 @@ async def wa_grades_recent(
     lesson: Optional[str] = Query(None, max_length=100),
     group: Optional[str] = Query(None, max_length=20), intake: Optional[str] = Query(None, max_length=80),
     date_from: Optional[str] = Query(None), date_to: Optional[str] = Query(None),
+    # 🛡 AUDIT-§۸۲ — پروکسیِ پنل باید پارامترِ تازه را *فروارد* کند؛ وگرنه
+    # فیلتر ترم در API کار می‌کند ولی از پنل بی‌اثر است (قرارداد §۳۴:
+    # هر پارامترِ تازه‌ای در هر لایه‌ی میانی باید عبور داده شود).
+    term: Optional[str] = Query(None, max_length=40),
     user=Depends(_perm_any("grades.manage", "grades.scoped")),
 ):
     requested_intake = intake if isinstance(intake, str) else None
@@ -5232,7 +5280,9 @@ async def wa_grades_recent(
     effective_intake = scoped_intake if scoped_intake is not None else requested_intake
     return await academic_api.grades_recent(
         skip=skip, limit=limit, intake=effective_intake, group=group,
-        q=q, lesson=lesson, date_from=date_from, date_to=date_to, admin=user)
+        q=q, lesson=lesson, date_from=date_from, date_to=date_to,
+        term=term.strip()[:40] if isinstance(term, str) and term.strip() else None,
+        admin=user)
 
 
 @router.get("/grades/intakes")

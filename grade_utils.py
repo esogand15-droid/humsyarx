@@ -143,6 +143,12 @@ def normalize_grade(
             record.get("_id")
         ),
 
+        # 🛡 AUDIT-§۸۲ — ترم، بخشی از هویتِ نمره است (نمره‌ی ترم ۱ با ترم ۲
+        # قاطی نشود); روی همه‌ی مسیرهای نمایش (پنل/مینی‌اپ/ربات) می‌رود.
+        "term": safe_text(
+            record.get("term")
+        ),
+
         "lesson": safe_text(
             record.get("lesson")
         ),
@@ -243,4 +249,73 @@ def summarize_grades(
 
         "graded_count":
             graded_count,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  §۸۲ — طبقه‌بندی نمرات به تفکیک ترم (ترم ۱ … ۵ جدا از هم)
+# ══════════════════════════════════════════════════════════════
+
+TERM_ORDER = ["ترم ۱", "ترم ۲", "ترم ۳", "ترم ۴", "ترم ۵", "ترم ۶", "ترم ۷", "ترم ۸"]
+
+
+def _term_rank(term) -> int:
+    """ترتیبِ ترم‌ها: همان ترتیبِ فهرست درسی؛ ناشناخته/خالی آخر."""
+    t = safe_text(term)
+    if t in TERM_ORDER:
+        return TERM_ORDER.index(t)
+    digits = "".join(ch for ch in t if ch.isdigit())
+    if digits:
+        return 100 + int(digits)
+    return 10_000 if not t else 1_000
+
+
+def term_label(term) -> str:
+    t = safe_text(term)
+    return t or "بدون ترم"
+
+
+def group_grades_by_term(
+    records: Iterable[Any] | None,
+) -> list[dict]:
+    """نمرات نرمال‌شده را به تفکیک ترم گروه می‌کند و میانگینِ هر ترم را می‌دهد.
+
+    میانگین عمداً همان منطق `summarize_grades` است (نمره‌ی تهی/نامعتبر
+    نادیده گرفته می‌شود، مخرج = تعدادِ نمره‌دارها) تا عددِ «میانگین ترم» با
+    «میانگین کل» و با عددی که ربات نشان می‌دهد یکی باشد — نه فرمول دوم.
+    """
+    grouped: dict[str, list] = {}
+    for record in (records or []):
+        grade = normalize_grade(record)
+        if grade is None:
+            continue
+        grouped.setdefault(safe_text(record.get("term") if isinstance(record, Mapping) else ""), []).append(grade)
+
+    out = []
+    for term in sorted(grouped, key=_term_rank):
+        grades = grouped[term]
+        scored = [g["normalized_score"] for g in grades if g.get("normalized_score") is not None]
+        for g in grades:
+            g.pop("normalized_score", None)
+        out.append({
+            "term": term or "",
+            "label": term_label(term),
+            "total": len(grades),
+            "graded_count": len(scored),
+            "avg": round(sum(scored) / len(scored), 2) if scored else None,
+            "grades": grades,
+        })
+    return out
+
+
+def summarize_grades_by_term(
+    records: Iterable[Any] | None,
+) -> dict:
+    """همان خلاصه‌ی کلی + تفکیک ترم‌به‌ترم (منبعِ یکتای API مینی‌اپ و پنل)."""
+    summary = summarize_grades(records)
+    by_term = group_grades_by_term(records)
+    return {
+        **summary,
+        "by_term": [{k: v for k, v in g.items() if k != "grades"} for g in by_term],
+        "terms": [g["term"] for g in by_term if g["term"]],
     }

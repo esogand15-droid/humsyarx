@@ -170,7 +170,7 @@ export default function Audit({ go }) {
       {detail && (
         <Drawer title="🔍 جزئیات و تغییرات رویداد" onClose={() => setDetail(null)} wide>
           <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-            <b style={{ fontSize: 14 }}>{detail.action}</b>
+            <b style={{ fontSize: 'var(--fs-section)' }}>{detail.action}</b>
             <B kind={SEV[detail.severity] || ''}>{SEV_ICON[detail.severity] || ''} {detail.severity || 'INFO'}</B>
             <B>{MOD_FA[detail.module] || detail.module || '—'}</B>
             {detail.category && <B kind="purple">{CAT_FA[detail.category] || detail.category}</B>}
@@ -185,9 +185,9 @@ export default function Audit({ go }) {
             <div className="ct3-kv"><span className="muted">هدف</span>
               <span>{targetLabel(detail) || '—'} {targetType(detail) && <span className="muted">({targetType(detail)})</span>}</span></div>
             <div className="ct3-kv"><span className="muted">شناسه‌ی هدف</span>
-              <span className="code" style={{ fontSize: 11 }}>{targetId(detail) || '—'}</span></div>
+              <span className="code" style={{ fontSize: 'var(--fs-label)' }}>{targetId(detail) || '—'}</span></div>
             <div className="ct3-kv"><span className="muted">Correlation ID</span>
-              <span className="code" style={{ fontSize: 11 }}>{detail.correlation_id || '—'}</span></div>
+              <span className="code" style={{ fontSize: 'var(--fs-label)' }}>{detail.correlation_id || '—'}</span></div>
           </div>
           <div className="row" style={{ marginTop: 8 }}>
             {actorId(detail) && <button className="btn sm" onClick={() => go?.(`/users?q=${actorId(detail)}`)}>👤 پرونده عامل</button>}
@@ -227,7 +227,7 @@ export default function Audit({ go }) {
           {detail.details && (
             <div style={{ marginTop: 12 }}>
               <b>📝 جزئیات</b>
-              <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 6, whiteSpace: 'pre-wrap', fontSize: 12.5 }}>
+              <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 6, whiteSpace: 'pre-wrap', fontSize: 'var(--fs-body)' }}>
                 {detail.details}
               </div>
             </div>
@@ -238,7 +238,7 @@ export default function Audit({ go }) {
             </div>
           )}
           {detail.correlation_id && (
-            <div className="muted" style={{ marginTop: 10, fontSize: 11 }}>
+            <div className="muted" style={{ marginTop: 10, fontSize: 'var(--fs-label)' }}>
               Correlation: <span className="code">{detail.correlation_id}</span>
             </div>
           )}

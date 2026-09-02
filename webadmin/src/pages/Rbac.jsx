@@ -105,8 +105,8 @@ function MatrixPreview({ roles, perms }) {
                 {perms.map(p => (
                   <tr key={p.key}>
                     <td style={{ position: 'sticky', right: 0, background: 'var(--panel)', zIndex: 1 }}>
-                      <div style={{ fontSize: 12 }}>{p.label || p.key}</div>
-                      <div className="muted code" style={{ fontSize: 10 }}>{p.key}</div>
+                      <div style={{ fontSize: 'var(--fs-body)' }}>{p.label || p.key}</div>
+                      <div className="muted code" style={{ fontSize: 'var(--fs-caption)' }}>{p.key}</div>
                     </td>
                     {roles.map(r => (
                       <td key={r.key} style={{ textAlign: 'center' }}>
@@ -120,7 +120,7 @@ function MatrixPreview({ roles, perms }) {
               </tbody>
             </table>
           </div>
-          <p className="muted" style={{ marginTop: 10, fontSize: 11 }}>
+          <p className="muted" style={{ marginTop: 10, fontSize: 'var(--fs-label)' }}>
             💡 برای تغییر مجوزها، از کارت نقش مربوط در همین صفحه استفاده کنید؛ این جدول فقط نمای است.
           </p>
         </Modal>

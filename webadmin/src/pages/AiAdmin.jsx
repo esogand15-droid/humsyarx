@@ -46,7 +46,7 @@ export default function AiAdmin({ me }) {
         <div key={r.user_id} className="minibar-row" style={{ marginTop: 8 }}>
           <B kind={i < 3 ? 'acc' : ''}>{Number(i + 1).toLocaleString('fa')}</B>
           <div style={{ minWidth: 0, flex: '0 0 44%' }}>
-            <div style={{ color: 'var(--txt)', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
+            <div style={{ color: 'var(--txt)', fontSize: 'var(--fs-body)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</div>
             <div className="muted code">#{r.user_id}</div>
           </div>
           <div className="minibar-track">

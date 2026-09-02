@@ -198,15 +198,15 @@ export default function Notify({ route = '', go }) {
       <div className="notify-layout">
       {/* ═══ جادوگر ═══ */}
       <div className="panel panel-pad">
-        <div className="h1" style={{ fontSize: 16 }}>📢 جادوگر ارسال همگانی</div>
+        <div className="h1" style={{ fontSize: 'var(--fs-section)' }}>📢 جادوگر ارسال همگانی</div>
         <div className="sub">از مسیر صف outbox ربات · ثبت در تاریخچه و مرکز اعلان مینی‌اپ</div>
 
         {denied ? (
           <NoPerm text="ارسال همگانی نیازمند مجوز broadcast.send است" />
         ) : sent ? (
           <div className="grid" style={{ gap: 12, marginTop: 14, textAlign: 'center', padding: '10px 0' }}>
-            <div style={{ fontSize: 42 }}>{sent.scheduled ? '🗓' : '✅'}</div>
-            <b style={{ fontSize: 15 }}>
+            <div style={{ fontSize: 'var(--fs-icon-xl)' }}>{sent.scheduled ? '🗓' : '✅'}</div>
+            <b style={{ fontSize: 'var(--fs-section)' }}>
               {sent.scheduled ? 'زمان‌بندی و در صف قرار گرفت' : 'ارسال به صف رفت'}
             </b>
             <div><B kind="acc">{fa(sent.queued)} گیرنده</B>{' '}
@@ -245,10 +245,10 @@ export default function Notify({ route = '', go }) {
                 ].map(([v, icon, title, desc]) => (
                   <label key={v} className={`pick ${scope === v ? 'on' : ''}`}>
                     <input type="radio" checked={scope === v} onChange={() => setScope(v)} />
-                    <span style={{ fontSize: 17 }}>{icon}</span>
+                    <span style={{ fontSize: 'var(--fs-icon)' }}>{icon}</span>
                     <span style={{ flex: 1 }}>
-                      <b style={{ display: 'block', fontSize: 13 }}>{title}</b>
-                      <span className="muted" style={{ fontSize: 11 }}>{desc}</span>
+                      <b style={{ display: 'block', fontSize: 'var(--fs-card)' }}>{title}</b>
+                      <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>{desc}</span>
                     </span>
                   </label>
                 ))}
@@ -292,7 +292,7 @@ export default function Notify({ route = '', go }) {
                   <div className="row"><button className="btn primary sm" disabled={!media || uploading} onClick={uploadMedia}>{uploading ? '⏳ آپلود…' : '⬆️ آپلود به تلگرام'}</button>{fileId && <B kind="ok">رسانه آماده است</B>}</div>
                 </>}
                 <div className="row">
-                  <span className="muted" style={{ fontSize: 11 }}>{messageType === 'text' ? `${fa(text.trim().length)} نویسه · HTML ساده پشتیبانی می‌شود` : `${fa(caption.length)} / ۱٬۰۲۴ نویسه Caption`}</span>
+                  <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>{messageType === 'text' ? `${fa(text.trim().length)} نویسه · HTML ساده پشتیبانی می‌شود` : `${fa(caption.length)} / ۱٬۰۲۴ نویسه Caption`}</span>
                   <span className="spacer" />
                   {messageType === 'text' && text.trim().length > 0 && text.trim().length < 5 && <B kind="bad">خیلی کوتاه</B>}
                 </div>
@@ -312,7 +312,7 @@ export default function Notify({ route = '', go }) {
                   <B kind={count ? 'acc' : 'bad'}>{count == null ? '…' : `${fa(count)} نفر`}</B>
                 </div>
                 <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
-                  <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>پیش‌نمایش همان فایل و payload ارسالی:</div>
+                  <div className="muted" style={{ fontSize: 'var(--fs-label)', marginBottom: 6 }}>پیش‌نمایش همان فایل و payload ارسالی:</div>
                   {messageType === 'photo' && mediaUrl && <img src={mediaUrl} alt="پیش‌نمایش عکس کمپین" style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 10 }} />}
                   {messageType === 'video' && mediaUrl && <video src={mediaUrl} controls style={{ maxWidth: '100%', maxHeight: 260 }} />}
                   {(messageType === 'audio' || messageType === 'voice') && mediaUrl && <audio src={mediaUrl} controls style={{ width: '100%' }} />}
@@ -320,7 +320,7 @@ export default function Notify({ route = '', go }) {
                   <div className="bubble user" style={{ maxWidth: '100%', whiteSpace: 'pre-wrap' }}>{messageType === 'text' ? text.trim() : `${{photo:'🖼 عکس',video:'🎥 ویدیو',document:'📎 فایل',voice:'🎙 ویس',audio:'🎵 صدا'}[messageType]}\n${caption.trim()}`}</div>
                 </div>
                 <button className="btn" onClick={testSend}>🧪 ارسال آزمایشی به تلگرام من</button>
-                <p className="muted" style={{ fontSize: 11, margin: 0 }}>
+                <p className="muted" style={{ fontSize: 'var(--fs-label)', margin: 0 }}>
                   📱 علاوه بر پیام تلگرام، در «مرکز اعلان» مینی‌اپ هم به‌عنوان اطلاعیه‌ی مدیریت ثبت می‌شود.
                 </p>
                 <div className="row">
@@ -334,18 +334,18 @@ export default function Notify({ route = '', go }) {
               <div className="grid" style={{ gap: 10 }}>
                 <label className={`pick ${mode === 'now' ? 'on' : ''}`}>
                   <input type="radio" checked={mode === 'now'} onChange={() => setMode('now')} />
-                  <span style={{ fontSize: 17 }}>⚡</span>
+                  <span style={{ fontSize: 'var(--fs-icon)' }}>⚡</span>
                   <span style={{ flex: 1 }}>
-                    <b style={{ display: 'block', fontSize: 13 }}>ارسال فوری</b>
-                    <span className="muted" style={{ fontSize: 11 }}>بلافاصله وارد صف ارسال می‌شود</span>
+                    <b style={{ display: 'block', fontSize: 'var(--fs-card)' }}>ارسال فوری</b>
+                    <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>بلافاصله وارد صف ارسال می‌شود</span>
                   </span>
                 </label>
                 <label className={`pick ${mode === 'later' ? 'on' : ''}`}>
                   <input type="radio" checked={mode === 'later'} onChange={() => setMode('later')} />
-                  <span style={{ fontSize: 17 }}>🗓</span>
+                  <span style={{ fontSize: 'var(--fs-icon)' }}>🗓</span>
                   <span style={{ flex: 1 }}>
-                    <b style={{ display: 'block', fontSize: 13 }}>ارسال زمان‌دار</b>
-                    <span className="muted" style={{ fontSize: 11 }}>تا زمان مقرر در صف می‌ماند</span>
+                    <b style={{ display: 'block', fontSize: 'var(--fs-card)' }}>ارسال زمان‌دار</b>
+                    <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>تا زمان مقرر در صف می‌ماند</span>
                   </span>
                 </label>
                 {mode === 'later' && (
@@ -357,7 +357,7 @@ export default function Notify({ route = '', go }) {
                       </div>
                     )}
                     {sendAt && !isFutureInstant(sendAt) &&
-                      <span className="muted" style={{ color: 'var(--c-bad)', fontSize: 11 }}>زمان انتخابی در گذشته است — زمان آینده برگزینید.</span>}
+                      <span className="muted" style={{ color: 'var(--c-bad)', fontSize: 'var(--fs-label)' }}>زمان انتخابی در گذشته است — زمان آینده برگزینید.</span>}
                   </>
                 )}
                 <div className="row">
@@ -373,10 +373,10 @@ export default function Notify({ route = '', go }) {
                 <div className="ct3-kv"><span className="muted">زمان</span>
                   {mode === 'now' ? <B kind="ok">⚡ فوری</B> : <B kind="warn">🗓 {sendAtFa}</B>}
                 </div>
-                <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 12.5, color: 'var(--txt2)', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
+                <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 'var(--fs-body)', color: 'var(--txt2)', whiteSpace: 'pre-wrap', maxHeight: 120, overflowY: 'auto' }}>
                   {messageType === 'text' ? text.trim() : `${messageType.toUpperCase()} · ${caption.trim() || 'بدون caption'}`}
                 </div>
-                <p className="muted" style={{ fontSize: 11, margin: 0 }}>
+                <p className="muted" style={{ fontSize: 'var(--fs-label)', margin: 0 }}>
                   ⚠️ این عمل در تاریخچه و حسابرسی (severity: HIGH) ثبت می‌شود و قابل بازگشت نیست.
                 </p>
                 <div className="row">
@@ -424,7 +424,7 @@ export default function Notify({ route = '', go }) {
                       <span className="spacer" />
                       <button className="btn sm danger" onClick={() => setCancelOf(it)}>🗑 لغو ارسال</button>
                     </div>
-                    <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>{it.payload?.text || it.payload?.caption || `[${it.message_type}]`}</div>
+                    <div style={{ marginTop: 6, fontSize: 'var(--fs-body)', color: 'var(--txt2)' }}>{it.payload?.text || it.payload?.caption || `[${it.message_type}]`}</div>
                   </div>
                 ))}
               </div>
@@ -461,7 +461,7 @@ export default function Notify({ route = '', go }) {
                     <div className="minibar-track" style={{ marginTop: 7 }}>
                       <div className="minibar-fill" style={{ width: `${pct}%` }} />
                     </div>
-                    <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--txt2)' }}>
+                    <div style={{ marginTop: 6, fontSize: 'var(--fs-body)', color: 'var(--txt2)' }}>
                       {(h.payload?.text || h.payload?.caption || `[${h.message_type}]`).slice(0, 120)}
                     </div>
                   </div>

@@ -647,11 +647,14 @@ async def grades_recent(
     lesson: str | None = Query(default=None, max_length=100),
     date_from: str | None = Query(default=None, max_length=10),
     date_to: str | None = Query(default=None, max_length=10),
+    # 🛡 AUDIT-§۸۲ — فیلتر ترم (§۸۲): «نمرات ترم ۲» جدا از ترم ۱/۳/۴
+    term: str | None = Query(default=None, max_length=40),
 
     admin=Depends(
         get_content_admin_user
     ),
 ):
+    term = term.strip()[:40] if isinstance(term, str) and term.strip() else None
     group = group if isinstance(group, str) else None
     q = q if isinstance(q, str) else None
     lesson = lesson if isinstance(lesson, str) else None
@@ -661,6 +664,7 @@ async def grades_recent(
         await db.grade_list_recent(
             skip=skip, limit=limit, intake=intake,
             group=group, q=q, lesson=lesson, date_from=date_from, date_to=date_to,
+            term=term,
         )
     )
 
@@ -670,9 +674,16 @@ async def grades_recent(
     total = (
         await db.grade_count_recent(
             intake=intake, group=group, q=q, lesson=lesson,
-            date_from=date_from, date_to=date_to,
+            date_from=date_from, date_to=date_to, term=term,
         )
     )
+
+    # تفکیک ترم روی *کل* فیلتر (نه فقط صفحه‌ی جاری) تا میانگین‌ها با
+    # صفحه‌بندی تغییر نکنند.
+    by_term = await db.grade_term_breakdown(
+        intake=intake, group=group, q=q, lesson=lesson,
+        date_from=date_from, date_to=date_to, term=None)
+    terms = await db.grade_terms()
 
     user_ids = list({
         item.get("student_id")
@@ -748,6 +759,10 @@ async def grades_recent(
         ),
 
         "grades": result,
+
+        # 🛡 AUDIT-§۸۲ — پنل با این دو، سربرگِ ترم و شمارش/میانگین می‌سازد
+        "by_term": by_term,
+        "terms": terms,
     }
 
 

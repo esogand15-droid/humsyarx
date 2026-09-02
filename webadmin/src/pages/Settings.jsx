@@ -96,7 +96,7 @@ export default function Settings() {
         <div className="grid" style={{ gap: 10 }}>
           {(filteredCats || [cur]).map(cc => (
           <React.Fragment key={cc.key}>
-          {q && <div className="h1" style={{ fontSize: 14, marginTop: 6 }}>{CATS[cc.key]?.icon} {CATS[cc.key]?.label || cc.key}</div>}
+          {q && <div className="h1" style={{ fontSize: 'var(--fs-section)', marginTop: 6 }}>{CATS[cc.key]?.icon} {CATS[cc.key]?.label || cc.key}</div>}
           {cc.items.map(it => (
             <div key={it.key} className="panel panel-pad">
               <div className="row" style={{ alignItems: 'flex-start' }}>
@@ -251,7 +251,7 @@ function ChannelLockPanel() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <b style={{ color: 'var(--txt)' }}>{c.title}</b>{' '}
               <span className="code muted">{c.id}</span>
-              {c.invite_link && <div className="muted code" dir="ltr" style={{ fontSize: 11 }}>{c.invite_link}</div>}
+              {c.invite_link && <div className="muted code" dir="ltr" style={{ fontSize: 'var(--fs-label)' }}>{c.invite_link}</div>}
             </div>
             <button className="btn sm danger" onClick={() => setDelId(c.id)}>🗑 حذف</button>
           </div>

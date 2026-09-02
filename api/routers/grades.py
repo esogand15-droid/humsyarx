@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from api.auth import get_current_user
 from database import db
-from grade_utils import summarize_grades
+from grade_utils import summarize_grades_by_term
 
 
 router = APIRouter()
@@ -21,4 +21,5 @@ async def get_grades(
     if not isinstance(records, list):
         records = []
 
-    return summarize_grades(records)
+    # 🛡 AUDIT-§۸۲ — تفکیک ترم هم در همین بدنه می‌آید (کلیدهای قبلی دست‌نخورده)
+    return summarize_grades_by_term(records)

@@ -121,17 +121,17 @@ export default function System({ me }) {
         actions={<StatusBadge status={botOk && dbOk && apiOk ? 'healthy' : 'critical'} label={botOk && dbOk && apiOk ? 'سامانه سالم' : 'نیازمند بررسی'} />} />
       <div className="grid g4">
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(52,211,153,.1)' }}>{health(botOk)[0]}</div>
+          <div className="ic ic-ok">{health(botOk)[0]}</div>
           <div><div className="v"><B kind={health(botOk)[1]}>{health(botOk)[2]}</B></div>
             <div className="l">process ربات تلگرام{bs.bot_pid ? ` · PID ${bs.bot_pid}` : ''}</div></div>
         </div>
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(56,182,255,.1)' }}>{health(dbOk)[0]}</div>
+          <div className="ic ic-acc">{health(dbOk)[0]}</div>
           <div><div className="v"><B kind={health(dbOk)[1]}>{health(dbOk)[2]}</B></div>
             <div className="l">پایگاه‌داده{bs.db_ping_ms != null ? ` · ${fa(bs.db_ping_ms)}ms` : ''}</div></div>
         </div>
         <div className="panel stat">
-          <div className="ic" style={{ background: 'rgba(167,139,250,.1)' }}>{health(apiOk)[0]}</div>
+          <div className="ic ic-purple">{health(apiOk)[0]}</div>
           <div><div className="v"><B kind={health(apiOk)[1]}>{health(apiOk)[2]}</B></div>
             <div className="l">API{bs.sys?.uptime ? ` · ${bs.sys.uptime}` : ''}</div></div>
         </div>
@@ -238,8 +238,8 @@ export default function System({ me }) {
           {SECTIONS.map(([key, icon, label, hint]) => (
             <div key={key} className="panel panel-pad bk-sec" style={{ background: 'var(--bg)' }}>
               <div className="row">
-                <span style={{ fontSize: 18 }}>{icon}</span>
-                <b style={{ fontSize: 13 }}>{label}</b>
+                <span style={{ fontSize: 'var(--fs-icon)' }}>{icon}</span>
+                <b style={{ fontSize: 'var(--fs-card)' }}>{label}</b>
               </div>
               <div className="muted" style={{ marginTop: 4, minHeight: 30 }}>{hint}</div>
               <button className={`btn sm ${key === 'all' ? 'primary' : ''}`} style={{ marginTop: 8, width: '100%' }}
@@ -431,7 +431,7 @@ function OwnerOpsPanel({ canPrestige, canForce, canLogTest }) {
           {logRes.map(r => (
             <div key={r.key} className="row" style={{ gap: 6 }}>
               <B kind={LOG_ST[r.status]?.[0] || ''}>{LOG_ST[r.status]?.[1] || r.status}</B>
-              <span style={{ fontSize: 12.5 }}>{r.label}</span>
+              <span style={{ fontSize: 'var(--fs-body)' }}>{r.label}</span>
               {r.ms != null && <span className="muted">({fa(r.ms)}ms)</span>}
               {r.error && <span className="muted code" title={r.error}>{r.error.slice(0, 60)}</span>}
             </div>

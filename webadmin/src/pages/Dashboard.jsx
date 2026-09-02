@@ -46,8 +46,10 @@ export default function Dashboard({ me, go }) {
   useEffect(() => {
     if (!prefsOpen) return;
     const h = (e) => { if (prefsRef.current && !prefsRef.current.contains(e.target)) setPrefsOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setPrefsOpen(false); };
     document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', h); document.removeEventListener('keydown', esc); };
   }, [prefsOpen]);
 
   // CSV به‌صورت stream از سرور می‌آید؛ dataset کامل وارد RAM مرورگر نمی‌شود.
@@ -89,25 +91,26 @@ export default function Dashboard({ me, go }) {
   return (
     <>
       <PageHeader title="داشبورد عملیات" description="وضعیت سامانه، صف‌های نیازمند اقدام و رخدادهای امروز"
-        actions={<div className="tbl-tools" ref={prefsRef}>
+        actions={<div className="menu-anchor" ref={prefsRef}>
           <button className="btn sm" title="سفارشی‌سازی ویجت‌ها" aria-label="سفارشی‌سازی داشبورد"
+                  aria-haspopup="true" aria-expanded={prefsOpen ? 'true' : 'false'}
                   onClick={() => setPrefsOpen(x => !x)}>⚙️ ویجت‌ها</button>
           {prefsOpen && (
-            <div className="colmenu" role="menu">
+            <div className="colmenu colmenu--end" role="menu">
               {WIDGETS.map(([k, label]) => (
                 <label key={k} className="colmenu-item">
                   <input type="checkbox" checked={won(k)} onChange={() => toggleW(k)} />
                   <span>{label}</span>
                 </label>
               ))}
-              <div className="muted" style={{ padding: '4px 8px', fontSize: 10 }}>ترجیح فقط روی همین مرورگر ذخیره می‌شود</div>
+              <div className="muted" style={{ padding: '4px 8px', fontSize: 'var(--fs-caption)' }}>ترجیح فقط روی همین مرورگر ذخیره می‌شود</div>
             </div>
           )}
         </div>} />
 
       {/* ⚠️ WA2.7 — نیازمند اقدام (کلیک → مستقیم به همان صف) */}
       {attn && won('attn') && (
-        <div className="panel panel-pad" style={{ marginBottom: 14, borderColor: attnItems.length ? 'rgba(251,191,36,.35)' : 'rgba(52,211,153,.35)' }}>
+        <div className={`panel panel-pad ${attnItems.length ? 'panel--attention' : 'panel--clear'}`} style={{ marginBottom: 14 }}>
           <div className="row">
             <b>⚠️ نیازمند اقدام</b>
             <span className="spacer" />
@@ -123,9 +126,9 @@ export default function Dashboard({ me, go }) {
             <div className="attn-grid" style={{ marginTop: 12 }}>
               {attnItems.map(i => (
                 <button type="button" key={i.key} className={`attn-item ${i.severity || ''}`} onClick={() => i.go && go(i.go)}>
-                  <span style={{ fontSize: 20 }}>{i.icon}</span>
+                  <span style={{ fontSize: 'var(--fs-icon)' }}>{i.icon}</span>
                   <div style={{ flex: 1 }}>
-                    <div className="row"><b style={{ color: 'var(--txt)', fontSize: 15 }}>{Number(i.count).toLocaleString('fa')}</b>
+                    <div className="row"><b style={{ color: 'var(--txt)', fontSize: 'var(--fs-section)' }}>{Number(i.count).toLocaleString('fa')}</b>
                       {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
                     <div className="muted">{i.label}</div>
                     {i.timestamp && <div className="muted" style={{ marginTop: 3 }}><FaDateTime value={i.timestamp} /></div>}
@@ -155,8 +158,8 @@ export default function Dashboard({ me, go }) {
                          onClick={() => ALERT_GO[a.action] && go(ALERT_GO[a.action])}>
                       <span>{a.icon}</span>
                       <div style={{ flex: 1 }}>
-                        <b style={{ fontSize: 12.5 }}>{a.title}</b>
-                        {a.detail && <div className="muted" style={{ fontSize: 11 }}>{a.detail}</div>}
+                        <b style={{ fontSize: 'var(--fs-body)' }}>{a.title}</b>
+                        {a.detail && <div className="muted" style={{ fontSize: 'var(--fs-label)' }}>{a.detail}</div>}
                       </div>
                       <span className="muted">‹</span>
                     </div>
@@ -177,7 +180,7 @@ export default function Dashboard({ me, go }) {
               {(ins.top_admins || []).length > 0 && (<>
                 <div className="muted" style={{ margin: '10px 0 6px' }}>👑 پرکارترین ادمین‌های فرعی (۷ روز)</div>
                 {ins.top_admins.slice(0, 5).map((a, i) => (
-                  <div key={i} className="row" style={{ fontSize: 12, padding: '2px 0' }}>
+                  <div key={i} className="row" style={{ fontSize: 'var(--fs-body)', padding: '2px 0' }}>
                     <span>{['🥇','🥈','🥉','4️⃣','5️⃣'][i]}</span>
                     <span style={{ flex: 1 }}>{a.name} {a.role ? <span className="muted">({a.role})</span> : ''}</span>
                     <B>{Number(a.count).toLocaleString('fa-IR')} کنش</B>
@@ -206,7 +209,7 @@ export default function Dashboard({ me, go }) {
         const delta = othersAvg > 0 ? Math.round((today - othersAvg) / othersAvg * 100) : null;
         return (
         <>
-          <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>شاخص‌های سامانه</div>
+          <div className="h1" style={{ marginTop: 22, fontSize: 'var(--fs-section)' }}>شاخص‌های سامانه</div>
           <div className="grid g4" style={{ marginTop: 10 }}>
             <Stat icon="📡" label="کاربران فعال امروز" delta={delta} hint="نسبت به میانگین ۶ روز قبل"
                   value={today.toLocaleString('fa')} tint="var(--ok)" />
@@ -221,7 +224,7 @@ export default function Dashboard({ me, go }) {
       {/* 🕓 WA2.7 — فید فعالیت واقعی */}
       {feed !== null && won('feed') && (
         <>
-          <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>🕓 جریان فعالیت</div>
+          <div className="h1" style={{ marginTop: 22, fontSize: 'var(--fs-section)' }}>🕓 جریان فعالیت</div>
           <div className="panel" style={{ marginTop: 10 }}>
             {feed.length === 0 && <div className="center-state">رویدادی نیست</div>}
             {feed.slice(0, 14).map(f => (
@@ -244,13 +247,13 @@ export default function Dashboard({ me, go }) {
       {/* 🌊 موج Export — خروجی داده (سمت مرورگر، از همان داده‌ی واقعی API) */}
       {me?.is_owner && (
         <>
-          <div className="h1" style={{ marginTop: 22, fontSize: 15 }}>📥 خروجی داده</div>
+          <div className="h1" style={{ marginTop: 22, fontSize: 'var(--fs-section)' }}>📥 خروجی داده</div>
           <div className="panel panel-pad" style={{ marginTop: 10 }}>
             <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
               <button className="btn" disabled={expBusy} onClick={exportUsers}>
                 {expBusy ? '⏳ در حال آماده‌سازی…' : '⬇️ کاربران (CSV کامل)'}
               </button>
-              <span className="muted" style={{ fontSize: 11 }}>
+              <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>
                 همان داده‌ی واقعی جدول کاربران با صفحه‌بندی خودکار · دانلود مستقیم مرورگر (بدون IDM) — برای خروجی اکسل گروهی، از بخش «سیستم → خروجی اکسل» استفاده کنید.
               </span>
             </div>

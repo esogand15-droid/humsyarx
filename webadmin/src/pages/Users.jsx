@@ -84,9 +84,15 @@ export default function Users({ go, me, route = '' }) {
   const [confirm, setConfirm] = useState(null);
   const [intakeModal, setIntakeModal] = useState(false);
   const [intakeVal, setIntakeVal] = useState('');
-  const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message
+  const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message | subscription
   const [bulkValue, setBulkValue] = useState('');
   const [bulkResult, setBulkResult] = useState(null);
+  // 🛡 AUDIT-§۷۹ — اشتراک گروهی: پلن‌ها از همان `subOverview` بخش مالی خوانده
+  // می‌شوند (منبع یکتا)، پس فهرست پلن/روز در دو جای پنل دوشعبه نمی‌شود.
+  const [subPlans, setSubPlans] = useState(null);
+  const [bulkSubDays, setBulkSubDays] = useState(30);
+  const [bulkSubPlan, setBulkSubPlan] = useState('اشتراک دستی');
+  const [bulkSubExtend, setBulkSubExtend] = useState(true);
   const [largeBatch, setLargeBatch] = useState(new URLSearchParams(route.split('?')[1] || '').get('batch') === '1');
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [blOpen, setBlOpen] = useState(false);      // 🌊 WA3 — مودال لیست سیاه
@@ -147,10 +153,15 @@ export default function Users({ go, me, route = '' }) {
   useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir]);
   useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart]);
 
-  const bulk = async (action, value, ids = sel) => {
+  const loadSubPlans = () => {
+    if (subPlans) return;
+    api.subOverview().then(r => setSubPlans(r.plans || [])).catch(() => setSubPlans([]));
+  };
+
+  const bulk = async (action, value, ids = sel, extra = {}) => {
     if (!ids.length) return toast('ابتدا کاربران را انتخاب کنید', 'err');
     try {
-      const r = await api.usersBulk(action, ids, value);
+      const r = await api.usersBulk(action, ids, value, extra);
       setBulkResult({ ...r, action, value });
       toast(`${faNum(r.done)} موفق · ${faNum(r.skipped?.length || 0)} ردشده · ${faNum(r.failed?.length || 0)} ناموفق`, r.failed?.length ? 'err' : 'ok');
       setSel([]); load();
@@ -254,6 +265,8 @@ export default function Users({ go, me, route = '' }) {
           {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>}
           {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>}
           {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>}
+          {has('subscription.manage') && <button className="btn sm" title="اعطا یا تمدید اشتراک برای کاربران انتخاب‌شده — از همان مسیر بخش مالی"
+                 onClick={() => { loadSubPlans(); setBulkModal('subscription'); }}>💎 اشتراک</button>}
           {has('users.message') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>}
           {has('users.delete') && <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>}
           <button className="btn sm" onClick={exportSel}>📥 CSV انتخاب</button>
@@ -344,7 +357,7 @@ export default function Users({ go, me, route = '' }) {
         </Modal>
       )}
       {bulkModal && (
-        <Modal title={{ set_group: '👥 تغییر گروه گروهی', add_role: '🛡 افزودن نقش گروهی', remove_role: '➖ حذف نقش گروهی', message: '📨 پیام به کاربران انتخاب‌شده', block: '⛔ مسدودسازی کاربران انتخاب‌شده' }[bulkModal]} onClose={() => setBulkModal(null)}>
+        <Modal title={{ set_group: '👥 تغییر گروه گروهی', add_role: '🛡 افزودن نقش گروهی', remove_role: '➖ حذف نقش گروهی', message: '📨 پیام به کاربران انتخاب‌شده', block: '⛔ مسدودسازی کاربران انتخاب‌شده', subscription: '💎 اعطا/تمدید اشتراک گروهی' }[bulkModal]} onClose={() => setBulkModal(null)}>
           <p className="muted" style={{ marginBottom: 10 }}>{faNum(sel.length)} کاربر انتخاب شده‌اند. نتیجه‌ی هر کاربر جداگانه گزارش می‌شود.</p>
           {bulkModal === 'set_group' && <select className="inp" style={{ width: '100%' }} value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
             <option value="">انتخاب گروه…</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option>
@@ -354,10 +367,34 @@ export default function Users({ go, me, route = '' }) {
           </select>}
           {(bulkModal === 'message' || bulkModal === 'block') && <textarea className="inp" rows={5} maxLength={1500} style={{ width: '100%' }}
             placeholder={bulkModal === 'block' ? 'دلیل مسدودسازی — کاربران از دیتابیس فعال حذف و به لیست سیاه منتقل می‌شوند…' : 'متن پیام از سمت پشتیبانی هامزیار…'} value={bulkValue} onChange={e => setBulkValue(e.target.value)} />}
+          {bulkModal === 'subscription' && <div className="grid" style={{ gap: 10 }}>
+            <div className="row">
+              {[7, 30, 90, 180, 365].map(d => <button key={d} type="button" className={`btn sm ${Number(bulkSubDays) === d ? 'primary' : ''}`}
+                       onClick={() => setBulkSubDays(d)}>{faNum(d)} روز</button>)}
+              <input className="inp" type="number" min="1" max="3650" style={{ width: 100 }} value={bulkSubDays}
+                     onChange={e => setBulkSubDays(e.target.value)} aria-label="تعداد روز اشتراک" />
+            </div>
+            <select className="inp" value={bulkSubPlan} onChange={e => setBulkSubPlan(e.target.value)} aria-label="پلن اشتراک">
+              <option value="اشتراک دستی">اشتراک دستی</option>
+              {(subPlans || []).map(p => <option key={p.id} value={p.name}>{p.name} — {faNum(p.days)} روز</option>)}
+            </select>
+            <label className="row"><Switch on={bulkSubExtend} onChange={setBulkSubExtend} label="تمدید روی اشتراک فعلی" />
+              <span>تمدید روی اشتراک فعلی (روزها جمع می‌شود؛ با خاموشی جایگزین می‌شود)</span></label>
+            <div className="muted">اعطا از همان مسیر «مرکز کنترل اشتراک» انجام می‌شود — نوتیف کاربر، تاریخ
+              پایان، ردپای مالی و ضدتکرارِ کلیک برای {faNum(sel.length)} کاربر. سقف هر درخواست ۱۰۰ کاربر است.</div>
+          </div>}
           <div className="row" style={{ marginTop: 12 }}>
-            <button className={`btn ${bulkModal === 'remove_role' || bulkModal === 'block' ? 'danger' : 'primary'}`} disabled={!bulkValue.trim()} onClick={async () => {
-              const action = bulkModal; const value = bulkValue; setBulkModal(null); await bulk(action, value);
-            }}>بازبینی شد؛ اجرا</button>
+            <button className={`btn ${bulkModal === 'remove_role' || bulkModal === 'block' ? 'danger' : 'primary'}`}
+              disabled={bulkModal === 'subscription' ? !(Number(bulkSubDays) >= 1 && Number(bulkSubDays) <= 3650) : !bulkValue.trim()}
+              onClick={async () => {
+                if (bulkModal === 'subscription') {
+                  const days = Number(bulkSubDays); const value = String(days); setBulkModal(null);
+                  await bulk(bulkSubExtend ? 'renew_subscription' : 'grant_subscription', value, sel,
+                             { days, plan_name: bulkSubPlan, extend: bulkSubExtend });
+                  return;
+                }
+                const action = bulkModal; const value = bulkValue; setBulkModal(null); await bulk(action, value);
+              }}>{bulkModal === 'subscription' ? `${bulkSubExtend ? 'تمدید' : 'اعطا'} اشتراک · ${faNum(sel.length)} کاربر` : 'بازبینی شد؛ اجرا'}</button>
             <button className="btn" onClick={() => setBulkModal(null)}>انصراف</button>
           </div>
         </Modal>
@@ -371,6 +408,8 @@ export default function Users({ go, me, route = '' }) {
             <div className="panel panel-pad"><b>{faNum(bulkResult.skipped?.length || 0)}</b><div className="muted">ردشده/بدون تغییر</div></div>
             <div className="panel panel-pad"><b className="bad-text">{faNum(bulkResult.failed?.length || 0)}</b><div className="muted">ناموفق</div></div>
           </div>
+          {!!bulkResult.granted?.length && <div className="grid" style={{ marginTop: 10, gap: 4 }}><b>اشتراک‌های ثبت‌شده</b>
+            {bulkResult.granted.slice(0, 20).map(g => <div key={`g-${g.id}`} className="row"><span className="code">{g.id}</span><span className="muted">پایان: <FaDate value={g.end_date} /></span></div>)}</div>}
           {!!bulkResult.skipped?.length && <div className="grid" style={{ marginTop: 10, gap: 4 }}><b>ردشده‌ها</b>
             {bulkResult.skipped.slice(0, 20).map(x => <div key={`s-${x.id}`} className="row"><span className="code">{x.id}</span><span className="muted">{x.reason}</span></div>)}</div>}
           {!!bulkResult.failed?.length && <div className="grid" style={{ marginTop: 10, gap: 4 }}><b>ناموفق‌ها</b>
@@ -536,7 +575,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
               <span>📚</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <b style={{ color: 'var(--txt)' }}>{g.lesson}</b>
-                <div className="muted">{g.exam_title} · <FaDate value={g.exam_date} /></div>
+                <div className="muted">{g.exam_title} · <FaDate value={g.exam_date} />{g.term ? ` · ${g.term}` : ''}</div>
               </div>
               <B kind={g.score >= 10 ? 'ok' : 'bad'}>{Number(g.score).toLocaleString('fa')}</B>
             </div>
@@ -660,7 +699,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           {!(d.activity || []).length && <Empty icon="🕓" text="فعالیتی ثبت نشده است" />}
           {(d.activity || []).map(event => <button key={event.id} className="panel panel-pad row" style={{ width: '100%', marginBottom: 6, color: 'inherit', textAlign: 'right' }}
             onClick={() => event.go && go(event.go)}>
-            <span style={{ fontSize: 18 }}>{event.icon || '•'}</span>
+            <span style={{ fontSize: 'var(--fs-icon)' }}>{event.icon || '•'}</span>
             <span style={{ flex: 1 }}><b>{event.title}</b>{event.description && <span className="muted" style={{ display: 'block' }}>{event.description}</span>}</span>
             <FaDateTime value={event.at} /><span className="muted">‹</span>
           </button>)}
@@ -940,7 +979,7 @@ function IntakesModal({ onClose }) {
               </div>
               <label className="row" style={{ gap: 5 }} title="پذیرش ورودی">
                 <Switch on={i.active !== false} onChange={() => toggle(i.code)} />
-                <span className="muted" style={{ fontSize: 11 }}>{i.active !== false ? 'فعال' : 'متوقف'}</span>
+                <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>{i.active !== false ? 'فعال' : 'متوقف'}</span>
               </label>
               <button className="btn sm danger" onClick={() => setDelCode(i.code)} aria-label={`حذف ورودی ${i.label || i.code}`}>🗑</button>
             </div>

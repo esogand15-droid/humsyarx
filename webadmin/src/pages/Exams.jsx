@@ -162,12 +162,12 @@ function ExamModal({ row, seed, onClose }) {
 
       {step === 1 && (
         <div className="grid" style={{ gap: 10 }}>
-          <label className="muted" style={{ fontSize: 11 }}>درس / عنوان آزمون *
+          <label className="muted" style={{ fontSize: 'var(--fs-label)' }}>درس / عنوان آزمون *
             <input className="inp" placeholder="مثلاً فیزیولوژی — آزمون میانترم قلب" value={f.lesson}
                    onChange={e => set('lesson', e.target.value)} autoFocus /></label>
-          <label className="muted" style={{ fontSize: 11 }}>استاد
+          <label className="muted" style={{ fontSize: 'var(--fs-label)' }}>استاد
             <input className="inp" placeholder="نام استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} /></label>
-          <label className="muted" style={{ fontSize: 11 }}>گروه هدف
+          <label className="muted" style={{ fontSize: 'var(--fs-label)' }}>گروه هدف
             <div className="row">
               {[
                 ['هر دو', '👥 هر دو گروه'],
@@ -188,9 +188,9 @@ function ExamModal({ row, seed, onClose }) {
       {step === 2 && (
         <div className="grid" style={{ gap: 10 }}>
           <div className="row">
-            <label className="muted" style={{ fontSize: 11, flex: 1 }}>تاریخ شمسی *
+            <label className="muted" style={{ fontSize: 'var(--fs-label)', flex: 1 }}>تاریخ شمسی *
               <PersianDatePicker value={f.date} onChange={value => set('date', value)} ariaLabel="تاریخ شمسی آزمون" /></label>
-            <label className="muted" style={{ fontSize: 11, width: 130 }}>ساعت
+            <label className="muted" style={{ fontSize: 'var(--fs-label)', width: 130 }}>ساعت
               <input className="inp" type="time" style={{ direction: 'ltr' }} value={f.time}
                      onChange={e => set('time', e.target.value)} /></label>
           </div>
@@ -200,12 +200,12 @@ function ExamModal({ row, seed, onClose }) {
             </div>
           )}
           {f.date && f.date < todayIso && !row && (
-            <span className="muted" style={{ color: 'var(--c-warn)', fontSize: 11 }}>
+            <span className="muted" style={{ color: 'var(--c-warn)', fontSize: 'var(--fs-label)' }}>
               ⚠️ تاریخ در گذشته است — آزمون «برگزارشده» ثبت می‌شود و اطلاع‌رسانی نخواهد داشت.</span>
           )}
-          <label className="muted" style={{ fontSize: 11 }}>مکان
+          <label className="muted" style={{ fontSize: 'var(--fs-label)' }}>مکان
             <input className="inp" placeholder="سایت امتحانات / سالن…" value={f.location} onChange={e => set('location', e.target.value)} /></label>
-          <label className="muted" style={{ fontSize: 11 }}>یادداشت (اختیاری)
+          <label className="muted" style={{ fontSize: 'var(--fs-label)' }}>یادداشت (اختیاری)
             <textarea className="inp" rows={2} placeholder="نکته‌ی تکمیلی برای دانشجویان…" value={f.notes}
                       onChange={e => set('notes', e.target.value)} /></label>
           <div className="row">
@@ -223,7 +223,7 @@ function ExamModal({ row, seed, onClose }) {
           <div className="ct3-kv"><span className="muted">زمان</span><span>{faDate}{f.time ? ` · ${formatFaTime(f.time)}` : ''}</span></div>
           <div className="ct3-kv"><span className="muted">مکان</span><span>{f.location || '—'}</span></div>
           {f.notes && <div className="ct3-kv"><span className="muted">یادداشت</span><span>{f.notes}</span></div>}
-          <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 12 }}>
+          <div className="panel panel-pad" style={{ background: 'var(--bg)', fontSize: 'var(--fs-body)' }}>
             🤖 پس از ثبت، ربات <b>۷، ۳ و ۱ روز قبل</b> به دانشجویانِ {f.group === 'هر دو' ? 'هر دو گروه' : `گروه ${f.group}`} خودکار یادآوری می‌کند.
           </div>
           <div className="row">
@@ -248,6 +248,8 @@ function GradesTab({ autoCreate = false, initial = {} }) {
   const [intake, setIntake] = useState(initial.intake || '');
   const [dateFrom, setDateFrom] = useState(initial.dateFrom || '');
   const [dateTo, setDateTo] = useState(initial.dateTo || '');
+  // 🛡 AUDIT-§۸۲ — ترم، یک محورِ فیلترِ واقعی است (نه فقط برچسبِ متنی)
+  const [term, setTerm] = useState(initial.term || '');
   const [intakes, setIntakes] = useState([]);
   const [visibleColumns, setVisibleColumns] = useState([]);
   const [data, setData] = useState(null);
@@ -262,12 +264,12 @@ function GradesTab({ autoCreate = false, initial = {} }) {
 
   const load = async () => {
     setErr('');
-    try { setData(await api.gradesRecent(skip, LIMIT, { q, lesson, group, intake, date_from: dateFrom, date_to: dateTo })); }
+    try { setData(await api.gradesRecent(skip, LIMIT, { q, lesson, group, intake, date_from: dateFrom, date_to: dateTo, term })); }
     catch (e) { if (e.status === 403) setPermErr(true); else setErr(errText(e)); }
   };
   useEffect(() => { const t = setTimeout(() => { setQ(search.trim()); setSkip(0); }, 350); return () => clearTimeout(t); }, [search]);
-  useEffect(() => { setData(null); load(); }, [skip, q, lesson, group, intake, dateFrom, dateTo]);
-  useEffect(() => { writeHashQuery('/exams', { tab: 'grades', q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo, page: skip ? Math.floor(skip / LIMIT) + 1 : '' }); }, [search, lesson, group, intake, dateFrom, dateTo, skip]);
+  useEffect(() => { setData(null); load(); }, [skip, q, lesson, group, intake, dateFrom, dateTo, term]);
+  useEffect(() => { writeHashQuery('/exams', { tab: 'grades', q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo, term, page: skip ? Math.floor(skip / LIMIT) + 1 : '' }); }, [search, lesson, group, intake, dateFrom, dateTo, term, skip]);
 
   if (permErr) return <NoPerm text="مدیریت نمرات نیازمند مجوز «مدیریت نمرات» (grades.manage) است" />;
   if (err) return <ErrorState error={err} onRetry={load} />;
@@ -280,6 +282,7 @@ function GradesTab({ autoCreate = false, initial = {} }) {
       <div><b style={{ color: 'var(--txt)' }}>{r.student_name || '—'}</b>
         <div className="muted code">{r.student_number || `#${r.student_id}`}</div></div>) },
     { k: 'lesson', label: 'درس' },
+    { k: 'term', label: 'ترم', render: r => (r.term ? <B kind="purple">{r.term}</B> : <span className="muted">—</span>) },
     { k: 'exam_title', label: 'عنوان آزمون' },
     { k: 'exam_date', label: 'تاریخ', render: r => <FaDate value={r.exam_date} /> },
     { k: 'score', label: 'نمره', render: r => (
@@ -302,13 +305,26 @@ function GradesTab({ autoCreate = false, initial = {} }) {
         <input className="inp" placeholder="فیلتر درس…" value={lesson} onChange={e => { setLesson(e.target.value); setSkip(0); }} />
         <select className="inp" value={group} onChange={e => { setGroup(e.target.value); setSkip(0); }}><option value="">همه گروه‌ها</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
         <select className="inp" value={intake} onChange={e => { setIntake(e.target.value); setSkip(0); }}><option value="">همه ورودی‌ها</option>{intakes.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}</select>
+        <select className="inp" value={term} onChange={e => { setTerm(e.target.value); setSkip(0); }} aria-label="فیلتر ترم">
+          <option value="">همه ترم‌ها</option>{(data?.terms || []).map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
         <label className="row"><span className="muted">از</span><PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setSkip(0); }} ariaLabel="از تاریخ شمسی" /></label>
         <label className="row"><span className="muted">تا</span><PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setSkip(0); }} ariaLabel="تا تاریخ شمسی" /></label>
       </div>
-      <SavedViews scope="grades" filters={{ q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setIntake(f.intake || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
+      <SavedViews scope="grades" filters={{ q: search, lesson, group, intake, date_from: dateFrom, date_to: dateTo, term }} columns={visibleColumns} onApply={(f, item) => { setSearch(f.q || ''); setLesson(f.lesson || ''); setGroup(f.group || ''); setIntake(f.intake || ''); setDateFrom(f.date_from || ''); setDateTo(f.date_to || ''); setTerm(f.term || ''); setVisibleColumns(item.columns || []); setSkip(0); }} label="نماهای نمره" />
 
       {!data ? <Loading /> : (
         <>
+          {(data.by_term || []).length > 0 && <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+            <button type="button" className={`btn sm ${term ? '' : 'primary'}`} onClick={() => { setTerm(''); setSkip(0); }}>همه · {Number(total).toLocaleString('fa')}</button>
+            {data.by_term.map(t => <button key={t.term || 'none'} type="button"
+                  className={`btn sm ${term === t.term ? 'primary' : ''}`}
+                  onClick={() => { setTerm(t.term); setSkip(0); }}
+                  title={t.term || 'نمره‌هایی که درسشان در فهرست دروسِ ترم پیدا نشد'}>
+              {t.term || 'بدون ترم'} · {Number(t.count).toLocaleString('fa')}
+              {t.avg != null ? ` · میانگین ${Number(t.avg).toLocaleString('fa')}` : ''}
+            </button>)}
+          </div>}
           <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
             <div className="center-state">نمره‌ای ثبت نشده</div>} />
           <div className="row" style={{ marginTop: 10 }}>

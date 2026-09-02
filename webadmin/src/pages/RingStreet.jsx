@@ -34,11 +34,11 @@ const GENDER = { female: 'دختر', male: 'پسر', undisclosed: 'نامشخص'
 
 function Kpi({ icon, label, value, hint }) {
   return <div className="panel panel-pad" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-    <div style={{ fontSize: 22 }}>{icon}</div>
+    <div style={{ fontSize: 'var(--fs-icon-lg)' }}>{icon}</div>
     <div style={{ minWidth: 0 }}>
-      <div className="muted" style={{ fontSize: 12 }}>{label}</div>
-      <div style={{ fontSize: 19, fontWeight: 700 }}>{value}</div>
-      {hint && <div className="muted" style={{ fontSize: 11.5 }}>{hint}</div>}
+      <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>{label}</div>
+      <div style={{ fontSize: 'var(--fs-page)', fontWeight: 700 }}>{value}</div>
+      {hint && <div className="muted" style={{ fontSize: 'var(--fs-label)' }}>{hint}</div>}
     </div>
   </div>;
 }
@@ -188,7 +188,7 @@ export default function RingStreet({ me }) {
         <Field label="وضعیت رینگ استریت"><div className="row" style={{ gap: 6 }}>
           {STATE_OPTS.map(([v, lbl]) => <button key={v} className="btn sm" disabled={busy}
             onClick={() => act(() => api.ringSetState(v, killMode), `وضعیت: ${lbl}`)}
-            style={state === v ? { outline: '2px solid var(--acc, #3b82f6)', fontWeight: 700 } : undefined}>{lbl}</button>)}
+            style={state === v ? { outline: '2px solid var(--c-acc)', fontWeight: 700 } : undefined}>{lbl}</button>)}
         </div></Field>
         <Field label="نوع خاموشی (برای 🔴)"><select value={killMode} onChange={e => setKillMode(e.target.value)}>
           <option value="soft">soft — گفت‌وگوهای موجود تمام شوند</option>
@@ -197,7 +197,7 @@ export default function RingStreet({ me }) {
       </div>}
     />
 
-    <div className="muted" style={{ fontSize: 12.5, margin: '6px 2px 0' }}>
+    <div className="muted" style={{ fontSize: 'var(--fs-body)', margin: '6px 2px 0' }}>
       {STATE_HINT[state] || ''}{state === 'maintenance' ? ' — کاربر هیچ خطایی نمی‌بیند؛ فقط «جفت تازه ساخته نمی‌شود».' : ''}
     </div>
 
@@ -381,7 +381,7 @@ function DebugMatch({ busy, onForce }) {
             { k: 'ok', label: '', render: r => r.ok ? <B kind="ok">✓</B> : <B kind="bad">✗</B> },
             { k: 'hint', label: 'توضیح', render: r => <span className="muted">{r.hint || '—'}</span> },
           ]} />
-        <div className="muted" style={{ fontSize: 12 }}>
+        <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>
           📌 این کارت هیچ محتوای گفت‌وگو یا اطلاعات خصوصی نشان نمی‌دهد؛ فقط نتیجهٔ
           چک‌ها. اگر «✅ سازگار» دیدی و مچ نشد، یعنی یا کسی در صف نمانده (توقف
           جست‌وجو/پایان)، یا claim زنده است، یا کول‌داون rematch (§۱۲) — لاگ
@@ -418,9 +418,9 @@ function CyclePanel({ c }) {
       <B kind="muted">ردشده: {fa(nh.drops || 0)}</B>
       {c.window_days ? <B kind="muted">بازه: {fa(c.window_days)} روز</B> : null}
     </div>
-    {nh.last_error ? <div style={{ marginTop: 6, fontSize: 12, opacity: .8 }}>
+    {nh.last_error ? <div style={{ marginTop: 6, fontSize: 'var(--fs-body)', opacity: .8 }}>
       آخرین خطا: {String(nh.last_error).slice(0, 200)}</div> : null}
-    {c.live_error ? <div style={{ marginTop: 6, fontSize: 12 }}><B kind="warn">وضعیت زنده خوانده نشد: {String(c.live_error).slice(0, 120)}</B></div> : null}
+    {c.live_error ? <div style={{ marginTop: 6, fontSize: 'var(--fs-body)' }}><B kind="warn">وضعیت زنده خوانده نشد: {String(c.live_error).slice(0, 120)}</B></div> : null}
   </div>;
 }
 
@@ -490,7 +490,7 @@ function HealthBody({ body, busy, onRepair, repairing }) {
   if (!body || body.found === false) {
     return <div style={{ padding: 8 }}>
       <B kind="bad">جلسه در دیتابیس پیدا نشد</B>
-      <div style={{ marginTop: 8, fontSize: 13 }}>اگر id را از لاگِ بات آورده‌اید، ممکن است
+      <div style={{ marginTop: 8, fontSize: 'var(--fs-card)' }}>اگر id را از لاگِ بات آورده‌اید، ممکن است
         پاک شده یا archive شده باشد.</div>
     </div>;
   }
@@ -507,11 +507,10 @@ function HealthBody({ body, busy, onRepair, repairing }) {
       const vals = Object.values(m);
       const allOk = vals.length > 0 && vals.every(Boolean);
       const none = vals.length === 0;
-      return <div key={k} className="row" style={{ justifyContent: 'space-between', padding: '6px 0',
-        borderBottom: '1px solid rgba(255,255,255,.06)' }}>
+      return <div key={k} className="row hairline-b" style={{ justifyContent: 'space-between', padding: '6px 0' }}>
         <div>
-          <div style={{ fontSize: 13 }}>{label}</div>
-          <div style={{ fontSize: 11, opacity: .6 }}>{hint}</div>
+          <div style={{ fontSize: 'var(--fs-card)' }}>{label}</div>
+          <div style={{ fontSize: 'var(--fs-label)', opacity: .6 }}>{hint}</div>
         </div>
         <div className="row" style={{ gap: 4 }}>
           {none ? <B kind="muted">—</B> : Object.entries(m).map(([u, v]) =>
@@ -519,7 +518,7 @@ function HealthBody({ body, busy, onRepair, repairing }) {
         </div>
       </div>;
     })}
-    {st.notify_tries && Object.keys(st.notify_tries).length > 0 && <div style={{ marginTop: 8, fontSize: 12, opacity: .75 }}>
+    {st.notify_tries && Object.keys(st.notify_tries).length > 0 && <div style={{ marginTop: 8, fontSize: 'var(--fs-body)', opacity: .75 }}>
       تلاش‌های اطلاعیه: {Object.entries(st.notify_tries).map(([u, n]) => `${fa(u)}→${fa(n)}`).join(' · ')}
       {' '} (سقف ۳ تلاش با backoff ۵/۱۵/۶۰ ثانیه)
     </div>}
@@ -618,7 +617,7 @@ function RulesPanel({ box, busy, onSave, onReset }) {
       <Stat label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۱ بند)'} />
       <Stat label="حداقل سن" value={fa(box.min_age)} />
     </div>
-    {box.pending > 0 && <div className="muted" style={{ fontSize: 12.5 }}>
+    {box.pending > 0 && <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>
       ⚠️ {fa(box.pending)} کاربر فعال نسخهٔ فعلی قوانین را نپذیرفته؛ تا پذیرش وارد
       صف نمی‌شوند (پیام «قوانین به‌روز شده» را می‌بینند، نه خطا).
     </div>}
@@ -631,12 +630,12 @@ function RulesPanel({ box, busy, onSave, onReset }) {
         <input type="checkbox" checked={bump} disabled={busy} onChange={e => setBump(e.target.checked)} />
         بالا بردن نسخه (همه باید دوباره بپذیرند)
       </label>
-      <span className="muted" style={{ fontSize: 12 }}>{fa(val.length)} / ۳۵۰۰</span>
+      <span className="muted" style={{ fontSize: 'var(--fs-body)' }}>{fa(val.length)} / ۳۵۰۰</span>
       <button className="btn sm" disabled={busy || !val.trim()} onClick={() => onSave(val, bump)}>💾 ذخیره</button>
       <button className="btn sm" disabled={busy} onClick={() => setTxt(box.default_text || '')}>📋 بارگذاری متن پیش‌فرض</button>
       <button className="btn sm danger" disabled={busy || !box.overridden} onClick={onReset}>↩️ حذف متن جایگزین</button>
     </div>
-    <div className="muted" style={{ fontSize: 12 }}>
+    <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>
       🛡 متن جایگزین فقط «بدنه» را عوض می‌کند؛ پاورقیِ حالت‌ها و یادآوری‌های ایمنی
       سرِ جایشان می‌مانند. اگر نگارش curly-brace داخل متن خراب باشد، همان متن
       بدون جایگزینی نمایش داده می‌شود و صفحه نمی‌شکند.
