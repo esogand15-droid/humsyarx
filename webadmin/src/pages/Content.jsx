@@ -453,6 +453,10 @@ function SessionFiles({ session, onTreeChanged }) {
   const [form, setForm] = useState({ ctype: 'pdf', description: '', extra_info: '' });
   const [file, setFile] = useState(null);
   const [sel, setSel] = useState([]);
+  // window.confirm پنجره‌ی بومیِ مرورگر است: از زبان/جهت و تم پنل پیروی
+  // نمی‌کند، قابل استایل‌دهی نیست و رشته‌ی فارسی را در دیالوگ LTR نشان
+  // می‌دهد. همان الگوی <Confirm> که بقیه‌ی صفحه استفاده می‌کند.
+  const [confirm, setConfirm] = useState(null);
   const fileRef = useRef(null);
 
   const load = async () => {
@@ -481,11 +485,15 @@ function SessionFiles({ session, onTreeChanged }) {
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
-  const del = async (cid) => {
+  const del = (cid) => {
     const item = (items || []).find(entry => entry.id === cid);
-    if (!window.confirm(`فایل «${item?.description || cid}» حذف شود؟ این عملیات قابل بازگشت نیست.`)) return;
-    try { await api.caDelContent(cid); toast('حذف شد'); changed(); }
-    catch (e) { toast(errText(e), 'err'); }
+    setConfirm({
+      text: `فایل «${item?.description || cid}» حذف شود؟ این عملیات قابل بازگشت نیست.`,
+      run: async () => {
+        try { await api.caDelContent(cid); toast('حذف شد'); changed(); }
+        catch (e) { toast(errText(e), 'err'); }
+      },
+    });
   };
   const reorderItem = async (cid, direction) => {
     try {
@@ -525,13 +533,15 @@ function SessionFiles({ session, onTreeChanged }) {
         {err ? <ContentErrorState title="فایل‌های جلسه بارگذاری نشد" error={err} compact onRetry={load} /> : !items ? <ContentSkeleton panes={1} rows={3} /> : (
           <>
             <ContentBulkBar count={sel.length} onClear={() => setSel([])} actions={<>
-              <button className="btn sm danger" onClick={async () => {
-                if (!window.confirm(`حذف ${fa(sel.length)} فایل انتخاب‌شده؟ این عملیات قابل بازگشت نیست.`)) return;
-                try {
-                  const r = await api.itemsBulk({ action: 'delete', ids: sel });
-                  toast(`${fa(r.done)} فایل حذف شد`); setSel([]); changed();
-                } catch (e) { toast(errText(e), 'err'); }
-              }}>🗑 حذف گروهی</button>
+              <button className="btn sm danger" onClick={() => setConfirm({
+                text: `حذف ${fa(sel.length)} فایل انتخاب‌شده؟ این عملیات قابل بازگشت نیست.`,
+                run: async () => {
+                  try {
+                    const r = await api.itemsBulk({ action: 'delete', ids: sel });
+                    toast(`${fa(r.done)} فایل حذف شد`); setSel([]); changed();
+                  } catch (e) { toast(errText(e), 'err'); }
+                },
+              })}>🗑 حذف گروهی</button>
               <MoveItemsButton sel={sel} sessionId={session.id} onDone={() => { setSel([]); changed(); }} />
             </>} />
             {items.length === 0 && <ContentEmptyState icon="📭" title="فایلی برای این جلسه نیست"
@@ -552,6 +562,9 @@ function SessionFiles({ session, onTreeChanged }) {
           </>
         )}
       </ContentSection>
+      {confirm && <Confirm text={confirm.text} danger
+        onYes={() => { const run = confirm.run; setConfirm(null); run(); }}
+        onNo={() => setConfirm(null)} />}
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText } from './api.js';
-import { ErrorState, Loading, Palette, ToastHost, toast } from './ui.jsx';
+import { ErrorState, Loading, Modal, Palette, ToastHost, toast } from './ui.jsx';
 import Login from './pages/Login.jsx';
+import ErrorBoundary from './ErrorBoundary.jsx';
 import { formatFaDate, formatFaDateTime } from './time.js';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
@@ -69,6 +70,16 @@ const PAGES = {
   '/ring': RingStreet,
 };
 
+// میانبرهای «g سپس کلید» — یک منبعِ واحد که هم handler و هم راهنما از آن
+// می‌خوانند تا مستندات و رفتار هرگز از هم جدا نشوند.
+const SHORTCUTS = [
+  ['d', '/dashboard', 'داشبورد'], ['u', '/users', 'کاربران'],
+  ['c', '/content', 'محتوا'], ['q', '/questions', 'سؤال‌ها'],
+  ['e', '/exams', 'آزمون‌ها'], ['g', '/exams?tab=grades', 'نمرات'],
+  ['t', '/tickets', 'تیکت‌ها'], ['n', '/notify', 'اعلان‌ها'],
+  ['s', '/subscriptions', 'اشتراک‌ها'], ['a', '/analytics', 'تحلیل‌ها'],
+];
+
 const routeBase = route => route.split('?')[0];
 const canSee = (item, me) => {
   if (me?.is_owner || !item.any?.length) return true;
@@ -109,6 +120,24 @@ function crumbFor(route, groups) {
   return { sec: 'نمای کلی', label: 'داشبورد', icon: '📊' };
 }
 
+// راهنمای میانبرها — میانبرها وجود داشتند اما هیچ‌جا اعلام نمی‌شدند،
+// یعنی عملاً فقط کسی که کد را خوانده بود از آن‌ها خبر داشت.
+function ShortcutHelp({ onClose }) {
+  return <Modal title="⌨️ میانبرهای صفحه‌کلید" onClose={onClose}>
+    <div className="shortcut-grid">
+      <div className="shortcut-row"><kbd className="kbd">Ctrl</kbd><kbd className="kbd">K</kbd>
+        <span>جست‌وجو و پنل فرمان</span></div>
+      <div className="shortcut-row"><kbd className="kbd">?</kbd><span>همین راهنما</span></div>
+      <div className="shortcut-row"><kbd className="kbd">Esc</kbd><span>بستن پنجره‌ی باز</span></div>
+    </div>
+    <div className="section-title" style={{ marginTop: 14 }}>پرش سریع — ابتدا <kbd className="kbd">g</kbd> سپس:</div>
+    <div className="shortcut-grid">
+      {SHORTCUTS.map(([key, , label]) => <div className="shortcut-row" key={key}>
+        <kbd className="kbd">{key}</kbd><span>{label}</span></div>)}
+    </div>
+  </Modal>;
+}
+
 function useHashRoute() {
   const [hash, setHash] = useState(window.location.hash.replace(/^#/, '') || '/dashboard');
   useEffect(() => {
@@ -125,6 +154,7 @@ export default function App() {
   const [route, go] = useHashRoute();
   const [mini, setMini] = useState(() => localStorage.getItem('wa_mini') === '1');
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [attention, setAttention] = useState(0);
   const [system, setSystem] = useState(null);
   const shortcutPrefix = useRef(false);
@@ -159,8 +189,7 @@ export default function App() {
   }, [!!me, route, hasAny]);
 
   useEffect(() => {
-    const map = { d: '/dashboard', u: '/users', c: '/content', q: '/questions', e: '/exams',
-      g: '/exams?tab=grades', t: '/tickets', n: '/notify', s: '/subscriptions', a: '/analytics' };
+    const map = Object.fromEntries(SHORTCUTS.map(([key, path]) => [key, path]));
     let timer;
     const handler = e => {
       const tag = e.target?.tagName?.toLowerCase();
@@ -168,6 +197,7 @@ export default function App() {
       if (shortcutPrefix.current && map[e.key.toLowerCase()]) {
         e.preventDefault(); shortcutPrefix.current = false; go(map[e.key.toLowerCase()]); return;
       }
+      if (e.key === '?') { e.preventDefault(); setHelpOpen(true); return; }
       if (e.key.toLowerCase() === 'g') {
         shortcutPrefix.current = true; window.clearTimeout(timer);
         timer = window.setTimeout(() => { shortcutPrefix.current = false; }, 900);
@@ -249,7 +279,7 @@ export default function App() {
         {groups.map(group => <React.Fragment key={group.sec}>
           <div className="nav-sec">{group.sec}</div>
           {group.items.map(n => <a key={n.path} className={`nav-item ${route === n.path || (routeBase(route) === n.path && !route.includes('?')) ? 'on' : ''}`}
-            href={`#${n.path}`} title={mini ? n.label : undefined} aria-current={route === n.path ? 'page' : undefined}>
+            href={`#${n.path}`} title={n.label} aria-label={n.label} aria-current={route === n.path ? 'page' : undefined}>
             <span className="ic" aria-hidden="true">{n.icon}</span><span className="nl">{n.label}</span>
             {n.path === '/dashboard' && attention > 0 && <span className="nav-badge">{attention > 99 ? '۹۹+' : attention.toLocaleString('fa')}</span>}
           </a>)}
@@ -267,6 +297,7 @@ export default function App() {
         </button>
         <div className="topbar-actions">
           {system && <button className={`btn sm topbar-action system-pill ${systemOk ? 'ok' : 'bad'}`} onClick={() => go('/system')} title="سلامت سامانه"><span>{systemOk ? 'سالم' : 'نیازمند بررسی'}</span></button>}
+          <button className="btn sm topbar-action" onClick={() => setHelpOpen(true)} aria-label="راهنمای میانبرها" title="میانبرهای صفحه‌کلید (؟)">⌨️</button>
           <button className="btn sm topbar-action" onClick={() => go('/dashboard')} aria-label="موارد نیازمند اقدام" title="موارد نیازمند اقدام">🔔{attention > 0 && <span className="topbar-count">{attention > 99 ? '99+' : attention}</span>}</button>
           {me.is_owner && <span className="badge purple">مالک</span>}
           <div className="who"><div className="profile-meta"><div className="profile-name">{me.nickname || me.name}</div><div className="muted">{me.role_label || ''}</div></div>
@@ -277,11 +308,14 @@ export default function App() {
       </div>
       <main className="content" id="main-content" tabIndex={-1}>
         <Suspense fallback={<Loading rows={5} variant="tree" label="در حال بارگذاری صفحه" />}>
-          <Page me={me} go={go} route={route} />
+          <ErrorBoundary resetKey={route}>
+            <Page me={me} go={go} route={route} />
+          </ErrorBoundary>
         </Suspense>
       </main>
     </div>
 
+    {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
     <Palette open={paletteOpen} onClose={setPaletteOpen} commands={commands} search={paletteSearch} go={go} />
     <ToastHost />
   </div></>;

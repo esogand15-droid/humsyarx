@@ -8,17 +8,35 @@ export function toast(msg, kind = 'ok') { _push && _push(msg, kind); }
 
 export function ToastHost() {
   const [items, setItems] = useState([]);
+  const timers = useRef(new Map());
+  const dismiss = useCallback(id => {
+    window.clearTimeout(timers.current.get(id));
+    timers.current.delete(id);
+    setItems(s => s.filter(t => t.id !== id));
+  }, []);
   useEffect(() => {
     _push = (msg, kind) => {
       const id = `toast-${++_toastSeq}`;
       setItems(s => [...s.slice(-3), { id, msg: String(msg || ''), kind }]);
-      window.setTimeout(() => setItems(s => s.filter(t => t.id !== id)), 3400);
+      // خطاها بیشتر می‌مانند: پیام خطا معمولاً باید خوانده و گاهی
+      // یادداشت شود، در حالی که تأیید موفقیت گذراست.
+      const ttl = kind === 'err' ? 7000 : 3400;
+      timers.current.set(id, window.setTimeout(() => dismiss(id), ttl));
     };
-    return () => { _push = undefined; };
-  }, []);
+    const map = timers.current;
+    return () => { _push = undefined; map.forEach(window.clearTimeout); map.clear(); };
+  }, [dismiss]);
+  // دو ناحیه‌ی جدا: خطا assertive اعلام می‌شود (بلافاصله)، بقیه polite.
+  // یک ناحیه‌ی مشترک باعث می‌شد خطاها پشت پیام‌های موفقیت صف بکشند.
+  const split = kind => items.filter(t => (kind === 'err' ? t.kind === 'err' : t.kind !== 'err'));
+  const render = t => <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'err' ? 'alert' : 'status'}>
+    <span className="toast-msg">{t.msg}</span>
+    <button type="button" className="toast-x" onClick={() => dismiss(t.id)} aria-label="بستن پیام">✕</button>
+  </div>;
   return (
-    <div className="toast-box" aria-live="polite" aria-atomic="false">
-      {items.map(t => <div key={t.id} className={`toast ${t.kind}`} role="status">{t.msg}</div>)}
+    <div className="toast-box">
+      <div aria-live="assertive" aria-atomic="false">{split('err').map(render)}</div>
+      <div aria-live="polite" aria-atomic="false">{split('ok').map(render)}</div>
     </div>
   );
 }
@@ -173,7 +191,8 @@ export function ScopeBadge({ scope, label }) {
 
 export function Switch({ on, onChange, disabled, label }) {
   return <button type="button" className={`switch ${on ? 'on' : ''}`} disabled={disabled}
-    onClick={() => onChange && onChange(!on)} aria-pressed={!!on} aria-label={label || (on ? 'روشن' : 'خاموش')}>
+    onClick={() => onChange && onChange(!on)} role="switch" aria-checked={!!on}
+    aria-label={label || (on ? 'روشن' : 'خاموش')}>
     <span className="knob" />
   </button>;
 }
@@ -449,6 +468,25 @@ export function ChartCard({ title, question, children, empty, actions }) {
 }
 
 // ── Command Palette ───────────────────────────────────────────────
+// جست‌وجوی فارسی با includes خام شکننده است: صفحه‌کلیدهای عربی «ي/ك» را
+// می‌فرستند، کاربر گاهی ارقام لاتین تایپ می‌کند، و «‌» (نیم‌فاصله) در
+// عبارت‌هایی مثل «سؤال‌ها» تطبیق را می‌شکند. همه به یک شکل نرمال می‌شوند.
+const FA_FOLD = {
+  '\u064a': '\u06cc', '\u0649': '\u06cc', '\u0643': '\u06a9',
+  '\u0623': '\u0627', '\u0625': '\u0627', '\u0622': '\u0627', '\u0629': '\u0647',
+  // همزه روی کرسی: کاربر «سوال/مسیول» تایپ می‌کند ولی متن «سؤال/مسئول» است.
+  '\u0624': '\u0648', '\u0626': '\u06cc', '\u0621': '',
+};
+function normalizeFa(value) {
+  return String(value ?? '')
+    .replace(/[\u064a\u0649\u0643\u0623\u0625\u0622\u0629\u0624\u0626\u0621]/g, ch => FA_FOLD[ch])
+    .replace(/[\u06f0-\u06f9]/g, ch => String(ch.charCodeAt(0) - 0x06f0))
+    .replace(/[\u0660-\u0669]/g, ch => String(ch.charCodeAt(0) - 0x0660))
+    .replace(/[\u200c\u200f\u200e]/g, '')
+    .replace(/[\u064b-\u0652]/g, '')
+    .toLowerCase()
+    .trim();
+}
 export function Palette({ open, onClose, commands, search, go }) {
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
@@ -478,7 +516,9 @@ export function Palette({ open, onClose, commands, search, go }) {
     return () => window.clearTimeout(debounce.current);
   }, [q, search]);
   if (!open) return null;
-  const local = commands.filter(c => !q || c.label.includes(q) || (c.hint || '').includes(q));
+  const nq = normalizeFa(q);
+  const local = commands.filter(c => !nq
+    || normalizeFa(c.label).includes(nq) || normalizeFa(c.hint || '').includes(nq));
   const list = q.trim().length >= 2 && results ? results : local;
   const runAt = i => {
     const it = list[i]; if (!it) return;

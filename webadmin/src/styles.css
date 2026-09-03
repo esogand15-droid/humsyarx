@@ -456,6 +456,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
 .toast.ok { border-color: rgba(58,210,155,.5); }
 .toast.err { border-color: rgba(248,113,113,.5); }
 
+/* toast حالا دکمه‌ی بستن دارد: پیش‌تر تنها راهِ خلاص‌شدن از یک خطای
+   طولانی، صبرکردن تا پایان تایمر بود. دو ناحیه‌ی live (assertive/polite)
+   داخل همین جعبه پشتِ‌سرهم می‌نشینند. */
+.toast-box > div { display: flex; flex-direction: column; gap: var(--sp2); }
+.toast { display: flex; align-items: flex-start; gap: var(--sp3); }
+.toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toast-x {
+  flex: 0 0 auto; padding: 0 2px; color: var(--c-txt3); background: none;
+  border: 0; border-radius: var(--r-sm); cursor: pointer; font-size: var(--fs-meta);
+}
+.toast-x:hover { color: var(--c-txt); }
+.toast-x:focus-visible { outline: 2px solid var(--c-acc); outline-offset: 2px; }
+
+/* راهنمای میانبرها */
+.shortcut-grid { display: grid; gap: var(--sp2); margin-top: var(--sp2); }
+.shortcut-row { display: flex; align-items: center; gap: var(--sp3); }
+.shortcut-row span { color: var(--c-txt2); font-size: var(--fs-body); }
+.shortcut-row .kbd { flex: 0 0 auto; }
+
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+
 /* ── 14) LOGIN ────────────────────────────────────────────────── */
 .login-hero {
   min-height: 100vh; display: grid; place-items: center;
