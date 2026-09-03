@@ -2778,9 +2778,16 @@ class DBCore:
 
 
     async def grade_terms_of_student(self, uid: int) -> list:
-        """تررم‌هایی که این دانشجو در آن‌ها نمره دارد (برای تب/فیلتر)."""
+        """ترم‌هایی که این دانشجو در آن‌ها نمره دارد (برای تب/فیلتر).
+
+        مرتب‌سازی با `_term_rank` انجام می‌شود، نه مقایسه‌ی رشته‌ای: با
+        مقایسه‌ی رشته‌ای «ترم ۱۰» بینِ «ترم ۱» و «ترم ۲» می‌نشست، چون
+        «۰» از «۲» کوچک‌تر است. همان کلیدی که `grade_terms` استفاده
+        می‌کند تا ترتیبِ تب‌های مینی‌اپ و فیلترِ پنل یکی باشد.
+        """
+        from grade_utils import _term_rank
         raw = await self.grades.distinct('term', {'student_id': int(uid)})
-        return sorted([str(t) for t in raw if t], key=lambda t: t)
+        return sorted([str(t) for t in raw if t], key=_term_rank)
 
 
     async def grade_get(self, grade_id: str):

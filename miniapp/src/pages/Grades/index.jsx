@@ -424,7 +424,65 @@ function GradeRow({
 }
 
 
+/* 🎓 ترم‌بندی — نوارِ انتخاب ترم.
+   کارنامه پیش‌تر همه‌ی ترم‌ها را در یک لیستِ صاف نشان می‌داد و «میانگین»
+   یعنی میانگینِ درس‌های ترم ۱ تا ۴ با هم؛ عددی که هیچ معنای تحصیلی ندارد.
+   حالا ترم واحدِ اصلیِ کارنامه است. */
+function TermTabs({ terms, active, onPick }) {
+  if (!terms.length) return null;
+  const items = [['', 'همه'], ...terms.map((t) => [t, t])];
+  return (
+    <div
+      className="tab-bar"
+      role="tablist"
+      aria-label="انتخاب ترم"
+    >
+      {items.map(([value, label]) => {
+        const on = active === value;
+        return (
+          <button
+            key={value || 'all'}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            className={
+              'tab-btn' + (on ? ' on' : '')
+            }
+            style={
+              on
+                ? {
+                    background:
+                      'var(--ovr)',
+
+                    color:
+                      'var(--tx)',
+                  }
+                : undefined
+            }
+            onClick={() => {
+              if (on) return;
+              haptic('light');
+              onPick(value);
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+
 export default function Grades() {
+  const [searchParams, setSearchParams] =
+    useSearchParams();
+
+  // ترمِ فعال در URL نگه داشته می‌شود تا back/deep-link و رفرش، انتخاب
+  // کاربر را از دست ندهند (همان الگوی `hl` که این صفحه از قبل داشت).
+  const activeTerm =
+    searchParams.get('term') || '';
+
   const {
     data,
     isLoading,
@@ -432,21 +490,56 @@ export default function Grades() {
     refetch,
     isRefetching,
   } = useQuery({
+    // ترم بخشی از کلید است، وگرنه react-query پاسخِ ترمِ قبلی را
+    // برای ترمِ جدید برمی‌گرداند.
     queryKey: [
       'grades',
+      activeTerm,
     ],
 
     queryFn: () =>
       api
-        .get('/api/grades')
+        .get('/api/grades', {
+          params: activeTerm
+            ? { term: activeTerm }
+            : undefined,
+        })
         .then(
           (response) =>
             response.data
         ),
 
+    // داده‌ی ترمِ قبلی تا رسیدنِ پاسخِ جدید نگه داشته می‌شود تا لیست
+    // موقع سوییچ‌کردنِ تب پرش نکند.
+    keepPreviousData: true,
+
     staleTime:
       5 * 60 * 1000,
   });
+
+  const pickTerm = (value) => {
+    const next = new URLSearchParams(
+      searchParams
+    );
+    if (value) next.set('term', value);
+    else next.delete('term');
+    // انتخاب ترم نباید یک ورودیِ جدید در history بسازد.
+    setSearchParams(next, {
+      replace: true,
+    });
+  };
+
+  const allTerms = Array.isArray(
+    data?.all_terms
+  )
+    ? data.all_terms
+    : [];
+
+  const byTerm = Array.isArray(
+    data?.by_term
+  )
+    ? data.by_term
+    : [];
 
 
   const grades =
@@ -459,7 +552,6 @@ export default function Grades() {
   /* 🧠 موج N3 — Deep Link برنامه/نمرات:
      /grades?hl=<درس> ⇒ اسکرول + فلش روی نمره‌ی همان درس */
   const [flashIdx, setFlashIdx] = useState(-1);
-  const [searchParams] = useSearchParams();
   const hlDone = useRef(false);
 
   useEffect(() => {
@@ -568,6 +660,59 @@ export default function Grades() {
     ).length;
 
 
+  /* گروه‌بندیِ نمرات برای نمایش: وقتی «همه» انتخاب است هر ترم بلوکِ
+     خودش را با میانگینِ خودش دارد؛ وقتی یک ترم انتخاب شده فقط همان بلوک.
+     میانگینِ هر بلوک از `by_term` سرور می‌آید (همان فرمولی که ربات و پنل
+     استفاده می‌کنند) تا سه جا سه عدد متفاوت نگویند. */
+  const termGroups = (() => {
+    const meta = new Map(
+      byTerm.map((t) => [
+        t.term || '',
+        t,
+      ])
+    );
+
+    const buckets = new Map();
+    grades.forEach((g) => {
+      const key = String(
+        g?.term || ''
+      );
+      if (!buckets.has(key))
+        buckets.set(key, []);
+      buckets.get(key).push(g);
+    });
+
+    // ترتیب از `by_term` سرور می‌آید که با _term_rank مرتب شده؛ ترم‌های
+    // بدون متادیتا (مثلاً نمره‌ی قدیمیِ بدون ترم) در انتها می‌آیند.
+    const ordered = [
+      ...byTerm.map(
+        (t) => t.term || ''
+      ),
+      ...[...buckets.keys()].filter(
+        (k) => !meta.has(k)
+      ),
+    ];
+
+    const seen = new Set();
+    return ordered
+      .filter((k) => {
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return buckets.has(k);
+      })
+      .map((k) => ({
+        term: k,
+        label:
+          meta.get(k)?.label ||
+          k ||
+          'بدون ترم',
+        avg:
+          meta.get(k)?.avg ?? null,
+        rows: buckets.get(k) || [],
+      }));
+  })();
+
+
   const best =
     grades.reduce(
       (
@@ -601,6 +746,17 @@ export default function Grades() {
       />
 
       <main className="page fade-up">
+        {/* تب‌ها بیرونِ شاخه‌ی خالی رندر می‌شوند: اگر ترمی انتخاب باشد که
+            نمره ندارد، کاربر باید همچنان بتواند به ترمِ دیگر برگردد. */}
+        {!isLoading &&
+          !isError && (
+            <TermTabs
+              terms={allTerms}
+              active={activeTerm}
+              onPick={pickTerm}
+            />
+          )}
+
         {isLoading ? (
           <GradesSkeleton />
         ) : isError ? (
@@ -627,7 +783,9 @@ export default function Grades() {
                   700,
               }}
             >
-              هنوز نمره‌ای ثبت نشده است
+              {activeTerm
+                ? `برای «${activeTerm}» نمره‌ای ثبت نشده است`
+                : 'هنوز نمره‌ای ثبت نشده است'}
             </div>
 
             <div
@@ -635,9 +793,9 @@ export default function Grades() {
                 fontSize: 'var(--fs-cap)',
               }}
             >
-              بعد از ثبت توسط ادمین محتوا،
-              نتیجه اینجا نمایش داده
-              می‌شود.
+              {activeTerm
+                ? 'می‌توانید ترم دیگری را از نوار بالا انتخاب کنید.'
+                : 'بعد از ثبت توسط ادمین محتوا، نتیجه اینجا نمایش داده می‌شود.'}
             </div>
           </div>
         ) : (
@@ -957,36 +1115,99 @@ export default function Grades() {
               📋 جزئیات نمرات
             </div>
 
-            <section
-              style={{
-                display:
-                  'grid',
+            {termGroups.map(
+              (group) => (
+                <section
+                  key={
+                    group.term || '_none'
+                  }
+                  style={{
+                    display:
+                      'grid',
 
-                gap:
-                  9,
-              }}
-            >
-              {grades.map(
-                (
-                  grade,
-                  index
-                ) => (
-                  <GradeRow
-                    key={
-                      grade.id ||
-                      `${
-                        grade.lesson
-                      }-${index}`
+                    gap:
+                      9,
+                  }}
+                >
+                  {/* سربرگِ ترم فقط وقتی معنا دارد که بیش از یک بلوک
+                      روی صفحه باشد؛ در نمای تک‌ترم تکراری است. */}
+                  {termGroups.length >
+                    1 && (
+                    <div
+                      style={{
+                        display:
+                          'flex',
+
+                        alignItems:
+                          'center',
+
+                        gap:
+                          8,
+
+                        marginTop:
+                          'var(--sp-1)',
+                      }}
+                    >
+                      <b
+                        style={{
+                          fontSize:
+                            'var(--fs-sm)',
+                        }}
+                      >
+                        🎓 {group.label}
+                      </b>
+
+                      <span
+                        style={{
+                          color:
+                            'var(--txm)',
+
+                          fontSize:
+                            'var(--fs-cap)',
+                        }}
+                      >
+                        {group.rows.length}{' '}
+                        نمره
+                        {group.avg !==
+                        null
+                          ? ` · میانگین ${group.avg}/20`
+                          : ''}
+                      </span>
+                    </div>
+                  )}
+
+                  {group.rows.map(
+                    (
+                      grade,
+                      index
+                    ) => {
+                      const globalIndex =
+                        grades.indexOf(
+                          grade
+                        );
+                      return (
+                        <GradeRow
+                          key={
+                            grade.id ||
+                            `${
+                              grade.lesson
+                            }-${index}`
+                          }
+                          grade={grade}
+                          index={
+                            globalIndex
+                          }
+                          flash={
+                            flashIdx ===
+                            globalIndex
+                          }
+                        />
+                      );
                     }
-                    grade={grade}
-                    index={index}
-                    flash={
-                      flashIdx === index
-                    }
-                  />
-                )
-              )}
-            </section>
+                  )}
+                </section>
+              )
+            )}
           </div>
         )}
       </main>
