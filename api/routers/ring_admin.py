@@ -94,10 +94,8 @@ def _admin(user: dict) -> int:
 async def _audit(user: dict, action: str, target: str, note: str = "",
                  details: dict | None = None) -> None:
     """double-write: تاریخچه‌ی رینگ + audit_logs عمومی پنل (§۷۳)."""
-    try:
-        await db.ring_audit(_admin(user), action, target, note, details or {})
-    except Exception as e:
-        logger.debug("ring_audit failed: %s", e)   # لاگ نباید اقدام ادمین را بشکند
+    if not await db.ring_audit(_admin(user), action, target, note, details or {}):
+        raise HTTPException(status_code=503, detail="ثبت حسابرسی رینگ انجام نشد؛ دوباره تلاش کنید")
     try:
         actor = user.get("_db") or {}
         await db.log_action(
@@ -107,9 +105,8 @@ async def _audit(user: dict, action: str, target: str, note: str = "",
             target_label=str(note)[:120], details=str(details or "")[:400],
             tags=["#پنل_وب", "#رینگ"])
     except Exception as e:
-        # §۵۸ (V6) — خطای *لاگِ ادمین* نباید بی‌صدا بماند: اگر چیزی ثبت نشود،
-        # بعداً نمی‌فهمیم چه کسی چه کرده. ولی نباید کل درخواست را هم بشکند.
-        logger.warning("ring admin audit write failed (%s): %s", action, str(e)[:140])
+        logger.exception("ring admin audit write failed (%s)", action)
+        raise HTTPException(status_code=503, detail="ثبت حسابرسی رینگ انجام نشد؛ دوباره تلاش کنید") from e
 
 
 # ══════════════════════════════════════════════════════════════

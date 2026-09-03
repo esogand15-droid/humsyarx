@@ -1701,3 +1701,64 @@ class DBContent:
         return await self.faq.find(
             {'$or': [{'question': rx}, {'answer': rx}]}
         ).limit(limit).to_list(limit)
+
+
+    # ══════════════════════════════════════════════════
+    #  بانک فایل سؤال — metadata روی Telegram file_id
+    # ══════════════════════════════════════════════════
+
+    async def qbank_file_list(self, intake: str = None, limit: int = 100) -> list:
+        """فهرست فایل‌های QBank با فیلتر صریح intake.
+
+        None یعنی caller عمدی همه‌ی سطل‌ها را خواسته؛ رشته‌ی خالی فقط
+        سطل سراسری است تا scope ناخواسته widen نشود.
+        """
+        query = {} if intake is None else {'intake': str(intake or '')}
+        return await self.qbank_files.find(query).sort('created_at', -1).limit(limit).to_list(limit)
+
+
+    async def qbank_file_get(self, file_id: str):
+        try:
+            return await self.qbank_files.find_one({'_id': ObjectId(file_id)})
+        except Exception:
+            return None
+
+
+    async def qbank_file_add(self, *, intake: str, lesson: str, topic: str,
+                             description: str, filename: str, mime_type: str,
+                             size: int, telegram_file_id: str, uploaded_by: int,
+                             file_type: str = 'document'):
+        document = {
+            'intake': str(intake or ''),
+            'lesson': str(lesson or '').strip()[:100],
+            'topic': str(topic or '').strip()[:100],
+            'description': str(description or '').strip()[:500],
+            'filename': str(filename or 'file')[:255],
+            'mime_type': str(mime_type or 'application/octet-stream')[:120],
+            'size': max(0, int(size or 0)),
+            'file_id': str(telegram_file_id),
+            'file_type': str(file_type or 'document')[:30],
+            'downloads': 0,
+            'uploaded_by': int(uploaded_by),
+            'created_at': utc_now_iso(),
+        }
+        result = await self.qbank_files.insert_one(document)
+        document['_id'] = result.inserted_id
+        return document
+
+
+    async def qbank_file_delete(self, file_id: str) -> bool:
+        try:
+            result = await self.qbank_files.delete_one({'_id': ObjectId(file_id)})
+            return bool(result.deleted_count)
+        except Exception:
+            return False
+
+
+    async def qbank_file_mark_downloaded(self, file_id: str) -> bool:
+        try:
+            result = await self.qbank_files.update_one(
+                {'_id': ObjectId(file_id)}, {'$inc': {'downloads': 1}})
+            return bool(result.matched_count)
+        except Exception:
+            return False

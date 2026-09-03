@@ -19,12 +19,12 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 
 async def _get_intake_scope(uid: int):
-    """None برای ADMIN_ID (بدون محدودیت) — کد ورودی برای نماینده"""
-    if uid == ADMIN_ID:
+    """Scope مشترک RBAC برای Bot grades؛ None فقط یعنی دسترسی global."""
+    if uid == ADMIN_ID or await db.has_permission(uid, 'grades.manage'):
         return None
-    role_doc = await db.get_admin_role(uid)
-    if role_doc and role_doc.get('role') == 'grade_rep':
-        return role_doc.get('scope_intake')
+    if await db.has_permission(uid, 'grades.scoped'):
+        scope = await db.get_scoped_intake(uid)
+        return scope or '__no_access__'
     return '__no_access__'
 
 
@@ -171,7 +171,18 @@ async def _confirm_and_save(query, context):
         return
 
     exam_date = today_tehran().isoformat()
+    scope = await _get_intake_scope(query.from_user.id)
+    if scope == '__no_access__':
+        await query.answer("❌ دسترسی نمرات شما منقضی یا حذف شده است.", show_alert=True)
+        return
     entries = [{'user_id': m['user_id'], 'score': m['score']} for m in matched]
+    if scope is not None:
+        allowed = await db.users.distinct(
+            'user_id', {'user_id': {'$in': [e['user_id'] for e in entries]},
+                        'approved': True, 'intake': scope})
+        if set(allowed) != {e['user_id'] for e in entries}:
+            await query.answer("❌ یکی از دانشجویان دیگر در scope شما نیست.", show_alert=True)
+            return
     saved = await db.grade_bulk_upsert(entries, lesson, exam_title, exam_date, query.from_user.id)
 
     # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (نمره → کارنامه) برای همه‌ی دانشجویان

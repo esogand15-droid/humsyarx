@@ -1318,34 +1318,12 @@ async def check_and_consume_quota(uid: int) -> tuple:
     یک واحد بالا می‌رود. اگه روز عوض شده باشه، ai_tokens_today هم صفر
     می‌شه (خودِ record_token_usage بعد از جواب گرفتن رویش $inc می‌زند).
     """
-    cfg   = await get_ai_config()
+    cfg = await get_ai_config()
     limit = cfg['daily_limit']
     today = today_tehran().isoformat()
-    user  = await db.get_user(uid) or {}
-    total_before = user.get('ai_total_usage', 0) or 0
-    is_new_day   = user.get('ai_usage_date') != today
-
-    if uid == ADMIN_ID or limit <= 0:
-        update = {'ai_total_usage': total_before + 1, 'ai_usage_date': today}
-        if is_new_day:
-            update['ai_tokens_today'] = 0
-        await db.update_user(uid, update)
-        return True, 0, 0
-
-    used = user.get('ai_usage_count', 0) if not is_new_day else 0
-
-    if used >= limit:
-        return False, used, limit
-
-    update = {
-        'ai_usage_date':  today,
-        'ai_usage_count': used + 1,
-        'ai_total_usage': total_before + 1,
-    }
-    if is_new_day:
-        update['ai_tokens_today'] = 0
-    await db.update_user(uid, update)
-    return True, used + 1, limit
+    # The DB conditional update is the source of truth; this remains correct
+    # when Bot and Mini App requests land on different processes.
+    return await db.ai_consume_quota(uid, limit, today)
 
 
 async def record_token_usage(uid: int, tokens: int) -> None:

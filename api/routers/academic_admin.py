@@ -13,7 +13,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from api.auth import get_content_admin_user
+from api.auth import get_current_user
 from api.routers.admin_panel import _audit
 from database import db
 from grade_utils import normalize_grade
@@ -38,6 +38,68 @@ FlexType = Literal[
     "fixed",
     "flexible",
 ]
+
+
+async def get_schedule_admin_user(user=Depends(get_current_user)) -> dict:
+    """Schedule is global, but may be managed by the dedicated Bot RBAC role.
+
+    A scoped content administrator must not gain access to the complete
+    schedule just because the old router used the broad content dependency.
+    """
+    if await db.has_permission(user["id"], "schedules.manage"):
+        return user
+    scope = await db.get_content_scope(user["id"])
+    if scope and scope.get("kind") == "global":
+        user["_scope"] = scope
+        return user
+    raise HTTPException(status_code=403, detail="schedule_admin_only")
+
+
+async def get_grade_admin_user(user=Depends(get_current_user)) -> dict:
+    """Return a grade actor with a mandatory global or intake scope."""
+    if await db.has_permission(user["id"], "grades.manage"):
+        user["_scope"] = {"kind": "global", "intake": None}
+        return user
+    content_scope = await db.get_content_scope(user["id"])
+    if content_scope and content_scope.get("kind") == "global":
+        user["_scope"] = content_scope
+        return user
+    if await db.has_permission(user["id"], "grades.scoped"):
+        intake = await db.get_scoped_intake(user["id"])
+        if intake:
+            user["_scope"] = {"kind": "scoped", "intake": intake}
+            return user
+    # Content-scoped operators historically had grade access. Keep that
+    # compatibility path, but attach their actual intake before every query.
+    if content_scope and content_scope.get("kind") == "scoped":
+        user["_scope"] = content_scope
+        return user
+    raise HTTPException(status_code=403, detail="grade_admin_only")
+
+
+def _academic_intake(admin: dict, requested=None) -> str | None:
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        own = scope.get("intake") or ""
+        if not own:
+            raise HTTPException(403, "intake_scope_not_configured")
+        if requested not in (None, "", own):
+            raise HTTPException(403, "intake_out_of_scope")
+        return own
+    return (requested or "") if requested is not None else None
+
+
+async def _assert_student_scope(admin: dict, student_ids) -> None:
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") != "scoped":
+        return
+    own = scope.get("intake") or ""
+    ids = [int(uid) for uid in student_ids if uid]
+    if not ids:
+        return
+    allowed = await db.users.distinct("user_id", {"user_id": {"$in": ids}, "intake": own})
+    if set(ids) != set(allowed):
+        raise HTTPException(403, "student_out_of_scope")
 
 
 def _clean(
@@ -252,7 +314,7 @@ async def schedule_list(
     ),
 
     admin=Depends(
-        get_content_admin_user
+        get_schedule_admin_user
     ),
 ):
     items = await db.get_schedules(
@@ -275,7 +337,7 @@ async def schedule_list(
 @router.post("/schedule")
 async def schedule_create(
     body: ScheduleCreate,
-    admin=Depends(get_content_admin_user),
+    admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
     time = _valid_time(body.time)
@@ -307,7 +369,7 @@ async def schedule_create(
 @router.patch("/schedule/{schedule_id}")
 async def schedule_update(
     schedule_id: str, body: ScheduleUpdate,
-    admin=Depends(get_content_admin_user),
+    admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
     time = _valid_time(body.time)
@@ -342,7 +404,7 @@ async def schedule_update(
 
 @router.delete("/schedule/{schedule_id}")
 async def schedule_delete(
-    schedule_id: str, admin=Depends(get_content_admin_user),
+    schedule_id: str, admin=Depends(get_schedule_admin_user),
 ):
     old = await db.get_schedule_by_id(schedule_id)
     if not old:
@@ -366,7 +428,7 @@ async def schedule_delete(
 )
 async def flexible_schedule_list(
     admin=Depends(
-        get_content_admin_user
+        get_schedule_admin_user
     ),
 ):
     items = await db.get_schedules(
@@ -393,7 +455,7 @@ async def flexible_schedule_list(
 @router.post("/schedule/{schedule_id}/flex-change")
 async def flexible_schedule_change(
     schedule_id: str, body: FlexChange,
-    admin=Depends(get_content_admin_user),
+    admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
     time = _valid_time(body.time)
@@ -465,7 +527,7 @@ async def grades_bulk_create(
     body: GradeBulkCreate,
 
     admin=Depends(
-        get_content_admin_user
+        get_grade_admin_user
     ),
 ):
     exam_date = _valid_date(
@@ -486,6 +548,7 @@ async def grades_bulk_create(
         entry.user_id
         for entry in body.entries
     ]
+    await _assert_student_scope(admin, user_ids)
 
     if (
         len(user_ids)
@@ -651,9 +714,10 @@ async def grades_recent(
     term: str | None = Query(default=None, max_length=40),
 
     admin=Depends(
-        get_content_admin_user
+        get_grade_admin_user
     ),
 ):
+    intake = _academic_intake(admin, intake)
     term = term.strip()[:40] if isinstance(term, str) and term.strip() else None
     group = group if isinstance(group, str) else None
     q = q if isinstance(q, str) else None
@@ -776,12 +840,16 @@ async def grades_find_student(
     ),
 
     admin=Depends(
-        get_content_admin_user
+        get_grade_admin_user
     ),
 ):
     users = await db.search_users(
         query.strip()
     )
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        own = scope.get("intake") or ""
+        users = [user for user in users if (user.get("intake") or "") == own]
 
     return {
         "students": [
@@ -824,11 +892,12 @@ async def grades_find_student(
 @router.patch("/grades/{grade_id}")
 async def grade_update(
     grade_id: str, body: GradeUpdate,
-    admin=Depends(get_content_admin_user),
+    admin=Depends(get_grade_admin_user),
 ):
     old = await db.grade_get(grade_id)
     if not old:
         raise HTTPException(status_code=404, detail="نمره پیدا نشد")
+    await _assert_student_scope(admin, [old.get("student_id")])
     ok = await db.grade_update_score(grade_id, body.score, admin["id"])
     if not ok:
         raise HTTPException(status_code=500, detail="اصلاح نمره انجام نشد")
@@ -854,11 +923,12 @@ async def grade_update(
 
 @router.delete("/grades/{grade_id}")
 async def grade_delete(
-    grade_id: str, admin=Depends(get_content_admin_user),
+    grade_id: str, admin=Depends(get_grade_admin_user),
 ):
     old = await db.grade_get(grade_id)
     if not old:
         raise HTTPException(status_code=404, detail="نمره پیدا نشد")
+    await _assert_student_scope(admin, [old.get("student_id")])
     ok = await db.grade_delete(grade_id)
     if not ok:
         raise HTTPException(status_code=500, detail="حذف نمره انجام نشد")

@@ -1,5 +1,6 @@
 """👑 Admin Panel"""
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +15,7 @@ from time_utils import day_bounds_utc, now_utc, parse_gregorian_date, utc_now_is
 
 router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
+logger = logging.getLogger(__name__)
 
 
 async def _notify(chat_id: int, text: str, ntype: str = "admin_notice"):
@@ -41,7 +43,8 @@ async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
     حالا متن با همان build_audit_log_text مشترکِ ربات ساخته می‌شود و به
     گروه log_group_admin صف می‌شود — قالب پیام در گروه برای هر دو کانال
     کاملاً یکدست است و لاگ‌های وب با تگ #پنل_وب مشخص می‌شوند.
-    هر خطایی در لاگ نباید اقدام اصلی را شکست دهد، پس در try/except است.
+    ثبت پایدار لاگ بخشی از invariant عملیات حساس است؛ شکست آن با 503
+    اعلام می‌شود (صف تلگرام اما وابستگی ثانویه و fail-open است).
     """
     try:
         actor = admin.get("_db") or {}
@@ -74,9 +77,15 @@ async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
                 )
                 await _notify(int(chat_id), text, "audit_log_web")
         except Exception:
-            pass
-    except Exception:
-        pass
+            # Telegram log delivery is secondary: the durable DB audit above
+            # is the invariant and should not depend on Bot API availability.
+            logger.warning("web audit notification enqueue failed for %s", action)
+    except Exception as exc:
+        # Mutations must not report success when their durable audit trail is
+        # unavailable. Callers receive a retryable 503 (sensitive move
+        # endpoints already rollback around this helper).
+        logger.exception("durable web audit write failed for %s", action)
+        raise HTTPException(status_code=503, detail="ثبت حسابرسی انجام نشد؛ دوباره تلاش کنید") from exc
 
 
 def _rp_mini(u: dict) -> dict:
