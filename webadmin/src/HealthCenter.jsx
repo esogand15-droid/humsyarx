@@ -1,30 +1,36 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, errText } from './api.js';
-import { Loading, ErrorState, FaDateTime, SectionHeader, B } from './ui.jsx';
+import { Loading, ErrorState, FaDateTime, B } from './ui.jsx';
 
 // 🩺 مرکز سلامت سامانه
 //
 // مصرف‌کننده‌ی `/api/health/deep` — این endpoint از قبل در backend وجود
-// داشت و هیچ‌جای پنل صدا زده نمی‌شد (endpoint یتیم). هیچ متریک تازه‌ای
-// اینجا اختراع نمی‌شود؛ فقط همان چیزی که سرور واقعاً می‌دهد نمایش داده
-// می‌شود. هر فیلدی که سرور نفرستد «—» می‌ماند، نه صفرِ گمراه‌کننده.
+// داشت و هیچ‌جای پنل صدا زده نمی‌شد (endpoint یتیم).
+//
+// 🛡 بازنویسی UI: نسخه‌ی اول این فایل inline style با نام‌توکن‌های
+// ساختگی (--bd, --card, --fg2, --fs1, --r2 …) داشت که هیچ‌کدام در
+// styles.css وجود نداشتند؛ عملاً روی fallbackهای hardcoded رندر می‌شد
+// و از تم پنل جدا بود. حالا فقط کلاس‌ها و توکن‌های واقعیِ پروژه.
+//
+// هیچ متریک تازه‌ای اختراع نمی‌شود؛ فقط آنچه سرور واقعاً می‌دهد. هر
+// فیلدی که نیاید «—» می‌ماند، نه صفرِ گمراه‌کننده.
 
 const fa = (n) => (n === null || n === undefined || n === '')
   ? '—'
   : Number(n).toLocaleString('fa-IR');
 
-// وضعیت → رنگ توکنی. هیچ hex خامی؛ فقط توکن‌های موجود.
+// وضعیت → کلاس تینتِ موجود در styles.css (.ic-ok / .ic-warn / .ic-bad)
 const TONE = {
-  ok:       { tint: 'var(--ok, #16a34a)',   icon: '🟢', label: 'سالم' },
-  degraded: { tint: 'var(--warn, #d97706)', icon: '🟡', label: 'نیمه‌فعال' },
-  down:     { tint: 'var(--bad, #dc2626)',  icon: '🔴', label: 'خطا' },
-  unknown:  { tint: 'var(--muted, #64748b)', icon: '⚪️', label: 'نامشخص' },
+  ok:      { cls: 'ic-ok',   kind: 'ok',   icon: '🟢', label: 'سالم' },
+  warn:    { cls: 'ic-warn', kind: 'warn', icon: '🟡', label: 'نیمه‌فعال' },
+  bad:     { cls: 'ic-bad',  kind: 'bad',  icon: '🔴', label: 'خطا' },
+  unknown: { cls: 'ic-acc',  kind: '',     icon: '⚪️', label: 'نامشخص' },
 };
 
 function toneOf(state) {
   if (state === true || state === 'ok' || state === 'ready') return TONE.ok;
-  if (state === false || state === 'down') return TONE.down;
-  if (state === 'degraded' || state === 'not_ready') return TONE.degraded;
+  if (state === false || state === 'down') return TONE.bad;
+  if (state === 'degraded' || state === 'not_ready') return TONE.warn;
   return TONE.unknown;
 }
 
@@ -43,53 +49,30 @@ function uptimeText(seconds) {
 function HealthCard({ icon, title, state, lines = [], error }) {
   const tone = toneOf(state);
   return (
-    <div
-      style={{
-        border: '1px solid var(--bd, #e2e8f0)',
-        borderRadius: 'var(--r2, 12px)',
-        padding: 'var(--sp3, 14px)',
-        background: 'var(--card, #fff)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--sp1, 6px)',
-        borderInlineStartWidth: 4,
-        borderInlineStartColor: tone.tint,
-      }}
+    <section
+      className={`panel panel-pad hc-card${error ? ' panel--attention' : ''}`}
+      aria-label={`${title} — ${tone.label}`}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp1, 6px)' }}>
-        <span aria-hidden="true">{icon}</span>
-        <strong style={{ fontSize: 'var(--fs2, 14px)' }}>{title}</strong>
-        <span style={{ marginInlineStart: 'auto', fontSize: 'var(--fs1, 12px)', color: tone.tint }}>
-          {tone.icon} {tone.label}
-        </span>
+      <div className="row">
+        <span className={`ic ${tone.cls} hc-ic`} aria-hidden="true">{icon}</span>
+        <b className="hc-title">{title}</b>
+        <span className="spacer" />
+        <B kind={tone.kind}>{tone.icon} {tone.label}</B>
       </div>
-      {lines.filter(Boolean).map(([k, v]) => (
-        <div
-          key={k}
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            fontSize: 'var(--fs1, 12px)',
-            color: 'var(--fg2, #475569)',
-          }}
-        >
-          <span>{k}</span>
-          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span>
-        </div>
-      ))}
-      {error ? (
-        <div
-          role="status"
-          style={{
-            fontSize: 'var(--fs1, 12px)',
-            color: 'var(--bad, #dc2626)',
-            wordBreak: 'break-word',
-          }}
-        >
-          {error}
-        </div>
-      ) : null}
-    </div>
+
+      {lines.filter(Boolean).length > 0 && (
+        <dl className="kv hc-kv">
+          {lines.filter(Boolean).map(([k, v]) => (
+            <React.Fragment key={k}>
+              <dt>{k}</dt>
+              <dd className="num">{v}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
+
+      {error ? <p className="hc-err" role="status">{error}</p> : null}
+    </section>
   );
 }
 
@@ -126,45 +109,44 @@ export default function HealthCenter() {
   const miniapp = data.miniapp || {};
   const webadmin = data.webadmin || {};
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp3, 14px)' }}>
-      <SectionHeader
-        title="🩺 سلامت سامانه"
-        description="دیاگنوستیک عمیق — هر بخش مستقل سنجیده می‌شود و خطای یکی بقیه را متوقف نمی‌کند."
-        actions={
-          <button type="button" className="btn" onClick={load} disabled={busy}>
-            {busy ? 'در حال بررسی…' : '🔄 بررسی مجدد'}
-          </button>
-        }
-      />
+  const flat = (obj, skip, max) => Object.entries(obj)
+    .filter(([k, v]) => k !== skip && typeof v !== 'object')
+    .slice(0, max)
+    .map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 'بله' : 'خیر') : String(v ?? '—')]);
 
-      <div style={{ display: 'flex', gap: 'var(--sp2, 10px)', flexWrap: 'wrap', alignItems: 'center' }}>
-        <B kind={data.status === 'ok' ? 'ok' : 'warn'}>
-          وضعیت کلی: {toneOf(data.status).label}
-        </B>
-        <span style={{ fontSize: 'var(--fs1, 12px)', color: 'var(--fg2, #475569)' }}>
+  return (
+    <div className="hc">
+      <div className="section-header">
+        <div>
+          <div className="section-title">🩺 سلامت سامانه</div>
+          <div className="section-description">
+            دیاگنوستیک عمیق — هر بخش مستقل سنجیده می‌شود و خطای یکی بقیه را متوقف نمی‌کند.
+          </div>
+        </div>
+        <span className="spacer" />
+        <button type="button" className="btn" onClick={load} disabled={busy}>
+          {busy ? 'در حال بررسی…' : '🔄 بررسی مجدد'}
+        </button>
+      </div>
+
+      <div className="row hc-summary">
+        <B kind={toneOf(data.status).kind}>وضعیت کلی: {toneOf(data.status).label}</B>
+        <span className="muted">
           نسخه {data.version || '—'} • آپ‌تایم {uptimeText(data.uptime_s)}
         </span>
+        <span className="spacer" />
         {at ? (
-          <span style={{ marginInlineStart: 'auto', fontSize: 'var(--fs1, 12px)', color: 'var(--fg2, #475569)' }}>
-            آخرین بررسی: <FaDateTime value={at} />
-          </span>
+          <span className="muted">آخرین بررسی: <FaDateTime value={at} /></span>
         ) : null}
       </div>
 
       {err ? (
-        <div role="alert" style={{ fontSize: 'var(--fs1, 12px)', color: 'var(--bad, #dc2626)' }}>
-          بروزرسانی ناموفق بود ({err}) — داده‌های نمایش‌داده‌شده مربوط به بررسی قبلی است.
-        </div>
+        <p className="hc-err" role="alert">
+          بروزرسانی ناموفق بود ({err}) — داده‌های زیر مربوط به بررسی قبلی است.
+        </p>
       ) : null}
 
-      <div
-        style={{
-          display: 'grid',
-          gap: 'var(--sp2, 10px)',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-        }}
-      >
+      <div className="grid g2 hc-grid">
         <HealthCard
           icon="⚙️"
           title="API"
@@ -196,30 +178,21 @@ export default function HealthCenter() {
           icon="🚀"
           title="راه‌اندازی"
           state={boot.ready}
-          lines={Object.entries(boot)
-            .filter(([k]) => k !== 'ready')
-            .slice(0, 4)
-            .map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 'بله' : 'خیر') : String(v ?? '—')])}
+          lines={flat(boot, 'ready', 4)}
         />
 
         <HealthCard
           icon="📱"
           title="Mini App"
           state={miniapp.built}
-          lines={Object.entries(miniapp)
-            .filter(([k]) => k !== 'built')
-            .slice(0, 3)
-            .map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 'بله' : 'خیر') : String(v ?? '—')])}
+          lines={flat(miniapp, 'built', 3)}
         />
 
         <HealthCard
           icon="🖥"
           title="وب‌ادمین"
           state={webadmin.built}
-          lines={Object.entries(webadmin)
-            .filter(([k]) => k !== 'built')
-            .slice(0, 3)
-            .map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 'بله' : 'خیر') : String(v ?? '—')])}
+          lines={flat(webadmin, 'built', 3)}
         />
 
         <HealthCard

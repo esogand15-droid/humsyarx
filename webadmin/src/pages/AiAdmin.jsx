@@ -105,7 +105,7 @@ function AiReports() {
       <input className="inp" dir="ltr" placeholder="User ID" value={userId} onChange={e => { setUserId(e.target.value.replace(/\D/g, '')); setPage(1); }} />
       <PersianDatePicker value={dateFrom} onChange={value => { setDateFrom(value); setPage(1); }} placeholder="از تاریخ شمسی" />
       <PersianDatePicker value={dateTo} onChange={value => { setDateTo(value); setPage(1); }} placeholder="تا تاریخ شمسی" />
-      <button className="btn sm" onClick={() => api.exportAiReports(params)}>📤 CSV</button>
+      <button className="btn sm" title="خروجی CSV از گزارش‌های هوش مصنوعی با همین فیلترها" onClick={() => api.exportAiReports(params)}>📤 CSV</button>
       {data && <B>{Number(data.total || 0).toLocaleString('fa')} گزارش</B>}
     </div>
     {!data ? <Loading rows={3} /> : !items.length ? <Empty icon="🎉" text="گزارشی با این فیلترها ثبت نشده" /> : <div className="grid" style={{ gap: 8 }}>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, Drawer, NoPerm, Empty, Timeline } from '../ui.jsx';
+import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, Drawer, NoPerm, Empty, Timeline, Modal, toast } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import SavedViews from '../SavedViews.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
@@ -54,13 +54,31 @@ export default function Audit({ go }) {
   const [denied, setDenied] = useState(false);
   const [detail, setDetail] = useState(null);
   const [inspect, setInspect] = useState(null);
+  // ↩️ §۸۸ — بازگردانی: {log, reason} تا تأیید صریح گرفته شود.
+  const [undoT, setUndoT] = useState(null);
   const [chain, setChain] = useState(null);
   const [visibleColumns, setVisibleColumns] = useState([]);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [csvBusy, setCsvBusy] = useState(false);
   const LIMIT = 25;
 
   useEffect(() => { const t = setTimeout(() => setFilters(f => ({ ...f, q: q2 })), 350); return () => clearTimeout(t); }, [q2]);
   useEffect(() => { writeHashQuery('/audit', { ...filters, q: q2, sort_dir: sortDir !== 'desc' ? sortDir : '', page: skip ? skip / 25 + 1 : '' }); }, [filters, q2, sortDir, skip]);
 
+  // ↩️ بازگردانی مخرب و برگشت‌ناپذیر است؛ بدون گاردِ همزمانی، دو کلیک
+  // سریع دو درخواست می‌فرستد و دومی روی رکوردِ همین‌حالا بازگردانده‌شده
+  // می‌افتد (۴۰۹ یا بدتر: drift). قفل در finally آزاد می‌شود تا حتی
+  // با خطای شبکه هم دکمه قفل نماند.
+  const runUndo = async () => {
+    if (!undoT || undoBusy) return;
+    setUndoBusy(true);
+    try {
+      await api.auditUndo(undoT.log._id || undoT.log.id, undoT.reason);
+      toast('تغییر بازگردانده شد ↩️');
+      setUndoT(null); setDetail(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setUndoBusy(false); }
+  };
   const load = async () => {
     setErr('');
     try {
@@ -104,7 +122,7 @@ export default function Audit({ go }) {
   return (
     <>
       <PageHeader title="لاگ حسابرسی" description="ردیابی اعمال حساس با عامل، هدف، شدت و تغییرات قبل/بعد"
-        actions={<>{rows && <B>{fa(total)} رویداد</B>}<button className="btn sm" onClick={() => api.exportAuditCsv({ ...filters, sort_dir: sortDir })}>📥 CSV همین فیلترها</button></>} />
+        actions={<>{rows && <B>{fa(total)} رویداد</B>}<button className="btn sm" title="خروجی CSV از همه‌ی رویدادهای فیلترشده" onClick={() => api.exportAuditCsv({ ...filters, sort_dir: sortDir })}>📥 CSV همین فیلترها</button></>} />
 
       {/* شمارنده‌ی سطوح (کلیک ⇒ فیلتر سریع) */}
       {counters && (
@@ -167,6 +185,31 @@ export default function Audit({ go }) {
 
       {inspect && <ObjectInspector type={inspect.type} id={inspect.id} go={go} onClose={() => setInspect(null)} />}
       {chain && <CorrelationDrawer id={chain} onClose={() => setChain(null)} />}
+      {undoT && <Modal title="↩️ بازگردانی تغییر" onClose={() => setUndoT(null)}>
+        <p className="muted" style={{ marginTop: 0 }}>
+          مقادیر پیشین این رویداد دوباره نوشته می‌شوند. اگر بعد از این
+          رویداد کسی همان فیلدها را عوض کرده باشد، بازگردانی انجام
+          <b> نمی‌شود</b> تا کارِ او بی‌صدا پاک نشود.
+        </p>
+        <div className="diff-tbl" style={{ marginBottom: 10 }}>
+          <div className="diff-head"><span>فیلد</span><span>اکنون</span><span /><span>بازگردانی به</span></div>
+          {(undoT.log.changes || []).map((c, i) => (
+            <div key={i} className="diff-row">
+              <span className="diff-f">{c.field}</span>
+              <span className="diff-v b">{valText(c.after)}</span>
+              <span className="diff-arrow">←</span>
+              <span className="diff-v a">{valText(c.before)}</span>
+            </div>
+          ))}
+        </div>
+        <input className="inp" placeholder="دلیل بازگردانی (اختیاری)"
+               value={undoT.reason}
+               onChange={e => setUndoT({ ...undoT, reason: e.target.value })} />
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn danger" disabled={undoBusy} onClick={runUndo}>{undoBusy ? '⏳ در حال بازگردانی…' : '↩️ بازگردانی کن'}</button>
+          <button className="btn" disabled={undoBusy} onClick={() => setUndoT(null)}>انصراف</button>
+        </div>
+      </Modal>}
       {detail && (
         <Drawer title="🔍 جزئیات و تغییرات رویداد" onClose={() => setDetail(null)} wide>
           <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
@@ -194,6 +237,14 @@ export default function Audit({ go }) {
             {objectRoute(targetType(detail), targetId(detail)) && <button className="btn sm primary" onClick={() => go?.(objectRoute(targetType(detail), targetId(detail)))}>بازکردن هدف ‹</button>}
             {targetType(detail) && targetId(detail) && <button className="btn sm" onClick={() => { setInspect({ type: targetType(detail), id: targetId(detail) }); setDetail(null); }}>▤ Object Inspector</button>}
             {detail.correlation_id && <button className="btn sm" onClick={() => { setChain(detail.correlation_id); setDetail(null); }}>🧬 زنجیره Correlation</button>}
+            {/* ↩️ §۸۸ — فقط برای رویدادهای بازگردانی‌پذیر و بازگردانی‌نشده. */}
+            {detail.undone_at
+              ? <B kind="ok">↩️ بازگردانده شده</B>
+              : (detail.target?.type === 'users' && (detail.changes || []).length > 0 &&
+                 <button className="btn sm danger"
+                         onClick={() => setUndoT({ log: detail, reason: '' })}>
+                   ↩️ بازگردانی
+                 </button>)}
           </div>
 
           {/* ── Diff قبل/بعد ── */}

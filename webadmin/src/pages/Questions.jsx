@@ -133,7 +133,7 @@ export default function Questions({ route = '', go }) {
     <PageHeader title="بازبینی سؤال‌ها" description="دامنه مشترک ربات، API و وب‌ادمین؛ رد بدون حذف داده و اصلاح با ارسال مجدد" actions={<>
       <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ پیشنهاد سؤال</button>
       <button className="btn" onClick={() => setImportOpen(true)}>📥 JSON نسخه‌دار</button>
-      <button className="btn" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
+      <button className="btn" title="خروجی CSV از سؤال‌های فیلترشده" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
       {status === 'pending' && selected.length > 0 && <>
         <B kind="acc">{fa(selected.length)} انتخاب</B>
         {selected.every(id => rows?.find(row => row.id === id)?.can_approve) && <button className="btn sm ok" onClick={bulkApprove}>✅ تأیید گروهی</button>}

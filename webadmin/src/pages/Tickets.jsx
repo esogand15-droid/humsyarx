@@ -108,7 +108,7 @@ export default function Tickets({ go, me }) {
   return (
     <>
       <PageHeader title="کنسول پشتیبانی" description="صف، گفت‌وگو و کانتکست کاربر بدون ترک صفحه"
-        actions={<><button className="btn sm" onClick={() => api.exportTicketsCsv({ status, q: search, intake, priority,
+        actions={<><button className="btn sm" title="خروجی CSV از تیکت‌های فیلترشده" onClick={() => api.exportTicketsCsv({ status, q: search, intake, priority,
           assignee_id: assignee, unanswered, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همین صف</button>
           {canManage && sel.length > 0 && <><B kind="acc">{sel.length} انتخاب‌شده</B>
           <button className="btn sm ok" onClick={() => setBulkConfirm('close')}>✅ بستن گروهی</button>

@@ -1452,3 +1452,35 @@ body.overlay-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .an-bar-fill, .an-day-bar { transition: none; animation: none; }
 }
+
+/* ── 🩺 HEALTH CENTER ──────────────────────────────────────────
+   مصرف‌کننده‌ی /api/health/deep. کلاس‌ها اینجا تعریف می‌شوند تا
+   کامپوننت هیچ inline style و هیچ نام‌توکنِ ساختگی نداشته باشد. */
+.hc { display: flex; flex-direction: column; gap: var(--sp4); }
+.hc-summary { gap: var(--sp3); }
+.hc-grid { margin-top: var(--sp1); }
+
+.hc-card { display: flex; flex-direction: column; gap: var(--sp2); }
+.hc-card .hc-ic {
+  width: 32px; height: 32px; border-radius: var(--r-md);
+  display: grid; place-items: center; font-size: var(--fs-icon);
+  flex: 0 0 auto;
+}
+.hc-title { font-size: var(--fs-card); }
+
+.hc-kv { margin: 0; }
+.hc-kv dt { color: var(--c-txt3); font-size: var(--fs-label); }
+.hc-kv dd {
+  margin: 0; font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+}
+
+.hc-err {
+  margin: 0; color: var(--c-bad); font-size: var(--fs-label);
+  line-height: var(--lh-body); overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .hc-summary { align-items: start; flex-direction: column; }
+  .hc-summary .spacer { display: none; }
+}
