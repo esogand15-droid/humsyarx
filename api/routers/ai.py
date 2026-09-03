@@ -21,7 +21,9 @@ from ai_solver import (
     MAX_INPUT_CHARS,
     MAX_MEDIA_BYTES,
     AIError,
-    _busy_users,
+    ai_claim_inflight,
+    ai_is_inflight,
+    ai_release_inflight,
     _clear_memory,
     _gemini_upload_file,
     _get_history,
@@ -403,8 +405,16 @@ def _validate_message(
     return text
 
 
-def _acquire_user(user_id: int) -> None:
-    if user_id in _busy_users:
+async def _acquire_user(user_id: int) -> None:
+    """ادعای «یک پرسشِ در جریان» — مشترک با پراسسِ ربات.
+
+    🔧 FIX: قبلاً فقط `_busy_users` (setِ همین پراسس) چک می‌شد، پس یک
+    کاربر می‌توانست هم‌زمان از ربات و از مینی‌اپ بپرسد و هر دو رد شوند.
+    حالا همان قفلِ دیتابیسیِ `ai_inflight` گرفته می‌شود که ربات هم
+    می‌گیرد ⇒ «یکی در لحظه» واقعاً سراسری است. رفتار روی خطا (۴۰۹ با
+    همان متن) دست‌نخورده مانده تا فرانت‌اند تغییری لازم نداشته باشد.
+    """
+    if not await ai_claim_inflight(user_id):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -412,8 +422,6 @@ def _acquire_user(user_id: int) -> None:
                 "در حال آماده‌شدن است"
             ),
         )
-
-    _busy_users.add(user_id)
 
 
 async def _ensure_available(user_id: int) -> dict:
@@ -1189,7 +1197,7 @@ async def ask(
     )
 
     await _ensure_available(user_id)
-    _acquire_user(user_id)
+    await _acquire_user(user_id)
 
     try:
         used, limit = await _consume_quota(
@@ -1259,7 +1267,7 @@ async def ask(
         ) from error
 
     finally:
-        _busy_users.discard(
+        await ai_release_inflight(
             user_id
         )
 
@@ -1284,7 +1292,7 @@ async def ask_media(
         user_id
     )
 
-    _acquire_user(user_id)
+    await _acquire_user(user_id)
 
     try:
         try:
@@ -1484,7 +1492,7 @@ async def ask_media(
         ) from error
 
     finally:
-        _busy_users.discard(
+        await ai_release_inflight(
             user_id
         )
 
@@ -1512,7 +1520,7 @@ async def upload_reference(
             ),
         )
 
-    _acquire_user(user_id)
+    await _acquire_user(user_id)
 
     try:
         try:
@@ -1576,7 +1584,7 @@ async def upload_reference(
         ) from error
 
     finally:
-        _busy_users.discard(
+        await ai_release_inflight(
             user_id
         )
 
@@ -1587,7 +1595,10 @@ async def clear_reference(
 ):
     user_id = user["id"]
 
-    if user_id in _busy_users:
+    # گاردِ مخرب: پاک‌کردن حافظه/سندِ مرجع وسطِ یک پاسخِ در جریان (که
+    # ممکن است در پراسسِ ربات باشد) باعث پاسخِ ناقص می‌شود ⇒ همان قفلِ
+    # مشترک خوانده می‌شود، نه فقط setِ همین پراسس.
+    if await ai_is_inflight(user_id):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -1623,7 +1634,10 @@ async def clear_history(
 ):
     user_id = user["id"]
 
-    if user_id in _busy_users:
+    # گاردِ مخرب: پاک‌کردن حافظه/سندِ مرجع وسطِ یک پاسخِ در جریان (که
+    # ممکن است در پراسسِ ربات باشد) باعث پاسخِ ناقص می‌شود ⇒ همان قفلِ
+    # مشترک خوانده می‌شود، نه فقط setِ همین پراسس.
+    if await ai_is_inflight(user_id):
         raise HTTPException(
             status_code=409,
             detail=(

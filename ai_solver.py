@@ -1632,6 +1632,72 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
 # ══════════════════════════════════════════════════
 _busy_users: set = set()
 
+#: TTL قفلِ «یک پرسشِ در جریان». از سقفِ منطقیِ یک پاسخِ استریمی بلندتر است
+#: تا پاسخ‌های کند قطع نشوند، ولی آن‌قدر کوتاه که کرشِ یک پراسس کاربر را
+#: بیش از این مدت قفل نکند (op_claim قفلِ منقضی را خودش تحویل می‌گیرد).
+AI_INFLIGHT_TTL = 180
+
+
+async def ai_claim_inflight(uid: int) -> bool:
+    """ادعای «این کاربر همین حالا یک پرسشِ در جریان دارد» — بین پراسس‌ها.
+
+    🔧 FIX هم‌زمانیِ واقعی: `_busy_users` یک set درون‌پراسسی است و طبق
+    supervisord، ربات و API دو پراسس جدا هستند. یعنی کاربر می‌توانست
+    هم‌زمان یکی از ربات و یکی از مینی‌اپ بفرستد و هر دو رد شوند از گاردِ
+    محلی — دو درخواستِ هم‌زمان به provider، دو بار هزینه، و در ربات دو
+    تسک روی یک پیامِ در حال ادیت. سقفِ روزانه از قبل اتمیک بود
+    (`db.ai_consume_quota`)، ولی «یکی در لحظه» نبود.
+
+    حالا set محلی به‌عنوان مسیرِ سریع می‌ماند و قفلِ مشترکِ دیتابیس
+    (همان `admin_op_locks` که قبلاً برای اشتراک استفاده می‌شد) تصمیمِ
+    نهایی است. اگر دیتابیس در دسترس نباشد `op_claim` عمداً fail-open است
+    ⇒ رفتار دقیقاً به حالتِ امروز برمی‌گردد، نه بدتر.
+    """
+    uid = int(uid)
+    if uid in _busy_users:
+        return False
+    try:
+        from database import db
+        if not await db.op_claim('ai_inflight', str(uid), ttl_seconds=AI_INFLIGHT_TTL):
+            return False
+    except Exception:
+        logger.exception("ai_claim_inflight degraded for %s", uid)
+    _busy_users.add(uid)
+    return True
+
+
+async def ai_is_inflight(uid: int) -> bool:
+    """آیا این کاربر همین حالا پرسشی در جریان دارد؟ (فقط خواندن)
+
+    برای گاردهای *مخرب* استفاده می‌شود (پاک‌کردن حافظه/سندِ مرجع وسطِ
+    استریم). چون قفل در `admin_op_locks` مشترک است، پاسخِ در جریان در
+    پراسسِ ربات هم دیده می‌شود — نه فقط درخواست‌های همین پراسس.
+    """
+    uid = int(uid)
+    if uid in _busy_users:
+        return True
+    try:
+        from database import db
+        doc = await db.admin_op_locks.find_one({'_id': f"ai_inflight:{uid}"})
+        if not doc:
+            return False
+        expires = doc.get('expires_at')
+        return not expires or expires > now_utc()
+    except Exception:
+        logger.exception("ai_is_inflight check degraded for %s", uid)
+        return False
+
+
+async def ai_release_inflight(uid: int) -> None:
+    """آزادسازی قفلِ پرسشِ در جریان — همیشه در finally صدا زده می‌شود."""
+    uid = int(uid)
+    _busy_users.discard(uid)
+    try:
+        from database import db
+        await db.op_release('ai_inflight', str(uid))
+    except Exception:
+        logger.exception("ai_release_inflight failed for %s", uid)
+
 
 async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
@@ -1656,27 +1722,29 @@ async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if uid in _busy_users:
+    # قفل *قبل* از مصرفِ سهمیه گرفته می‌شود: اگر بعد از کسرِ سهمیه رد
+    # می‌شدیم، درخواستِ دومِ هم‌زمان یک واحد از سهمیه را می‌سوزاند بدون
+    # اینکه هیچ پاسخی بگیرد.
+    if not await ai_claim_inflight(uid):
         await update.message.reply_text("⏳ صبر کن جواب سوال قبلی‌ت آماده بشه، بعد این یکی رو بفرست 🙂")
         return
 
-    allowed, used, limit = await check_and_consume_quota(uid)
-    if not allowed:
-        await update.message.reply_text(
-            f"⛔️ سقف روزانه‌ی سوال از هوشیار تموم شده ({used}/{limit}).\n"
-            "فردا دوباره امتحان کن."
-        )
-        return
-
-    _busy_users.add(uid)
     try:
+        allowed, used, limit = await check_and_consume_quota(uid)
+        if not allowed:
+            await update.message.reply_text(
+                f"⛔️ سقف روزانه‌ی سوال از هوشیار تموم شده ({used}/{limit}).\n"
+                "فردا دوباره امتحان کن."
+            )
+            return
+
         history = await _get_history(uid)
         await _answer_with_live_edit(
             update, context, ask_ai_stream(text=text, history=history, uid=uid),
             _footer(limit, used), uid, text,
         )
     finally:
-        _busy_users.discard(uid)
+        await ai_release_inflight(uid)
 
 
 MAX_MEDIA_BYTES = 15 * 1024 * 1024  # ⚠️ قابلیتِ جدید (PDF/صدا): سقفِ حجمِ فایلِ ورودی
@@ -1798,67 +1866,69 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if uid in _busy_users:
+    # قفلِ مشترکِ بین‌پراسسی از همین‌جا گرفته می‌شود تا دانلودِ فایل و
+    # transcode هم زیر همان ادعا باشند (این‌ها گران‌اند و نباید دوباره
+    # به‌ازای یک درخواستِ هم‌زمانِ مینی‌اپ تکرار شوند).
+    if not await ai_claim_inflight(uid):
         await update.message.reply_text("⏳ صبر کن جواب سوال قبلی‌ت آماده بشه، بعد این یکی رو بفرست 🙂")
         return
 
     try:
-        media_bytes = bytes(await tg_file.download_as_bytearray())
-    except Exception:
-        logger.exception("دانلود فایل هوشیار ناموفق بود")
-        await update.message.reply_text("⚠️ دانلودِ فایل ناموفق بود — دوباره امتحان کن.")
-        return
+        try:
+            media_bytes = bytes(await tg_file.download_as_bytearray())
+        except Exception:
+            logger.exception("دانلود فایل هوشیار ناموفق بود")
+            await update.message.reply_text("⚠️ دانلودِ فایل ناموفق بود — دوباره امتحان کن.")
+            return
 
-    # ⚠️ فیکسِ ارورِ ۴۰۰: پیام‌های صوتیِ تلگرام OGG/Opus هستن، ولی Gemini
-    # فقط OGG Vorbis رو قبول می‌کنه. قبل از فرستادن (و قبل از مصرفِ
-    # سهمیه‌ی روزانه) تبدیلش می‌کنیم — اگه تبدیل شکست بخوره، کاربر
-    # سهمیه‌شو الکی از دست نده.
-    if kind == 'audio' and 'ogg' in mime.lower():
-        wav_bytes = await _transcode_ogg_opus_to_wav(media_bytes)
-        if wav_bytes:
-            media_bytes, mime = wav_bytes, 'audio/wav'
-        else:
+        # ⚠️ فیکسِ ارورِ ۴۰۰: پیام‌های صوتیِ تلگرام OGG/Opus هستن، ولی Gemini
+        # فقط OGG Vorbis رو قبول می‌کنه. قبل از فرستادن (و قبل از مصرفِ
+        # سهمیه‌ی روزانه) تبدیلش می‌کنیم — اگه تبدیل شکست بخوره، کاربر
+        # سهمیه‌شو الکی از دست نده.
+        if kind == 'audio' and 'ogg' in mime.lower():
+            wav_bytes = await _transcode_ogg_opus_to_wav(media_bytes)
+            if wav_bytes:
+                media_bytes, mime = wav_bytes, 'audio/wav'
+            else:
+                await update.message.reply_text(
+                    "⚠️ فعلاً امکانِ پردازشِ این پیامِ صوتی نیست (مشکلِ سازگاریِ فرمت). "
+                    "لطفاً سوالتو تایپ کن یا عکس/PDF بفرست — یا به ادمین اطلاع بده."
+                )
+                return
+
+        # ⚠️ قابلیتِ جدید: «سندِ مرجعِ فعال» — به‌جای فرستادنِ PDF به‌صورتِ
+        # inline (که فقط برای همین یه سوال کار می‌کنه)، آپلودش می‌کنیم روی
+        # Gemini Files API (رایگان، ۴۸ ساعت نگه‌داری) و فقط یه اشاره‌گرِ
+        # کوچیک ذخیره می‌کنیم. این‌جوری سوالاتِ بعدیِ همین دانشجو هم خودکار
+        # به همین سند دسترسی دارن، بدون اینکه دوباره بفرستتش.
+        display_name = None
+        if update.message.document:
+            display_name = update.message.document.file_name
+        if kind == 'pdf':
+            try:
+                file_info = await _gemini_upload_file(cfg['api_key'], media_bytes, mime, display_name or 'جزوه.pdf')
+                await db.ai_set_doc(uid, file_info['uri'], file_info.get('mimeType', mime), display_name or 'جزوه')
+                media_bytes = None   # دیگه لازم نیست inline بفرستیمش؛ از طریقِ doc reference میره
+            except Exception:
+                logger.exception("آپلودِ PDF به Gemini Files API ناموفق بود")
+                await update.message.reply_text("⚠️ آپلودِ فایل ناموفق بود — دوباره امتحان کن.")
+                return
+
+        allowed, used, limit = await check_and_consume_quota(uid)
+        if not allowed:
             await update.message.reply_text(
-                "⚠️ فعلاً امکانِ پردازشِ این پیامِ صوتی نیست (مشکلِ سازگاریِ فرمت). "
-                "لطفاً سوالتو تایپ کن یا عکس/PDF بفرست — یا به ادمین اطلاع بده."
+                f"⛔️ سقف روزانه‌ی سوال از هوشیار تموم شده ({used}/{limit}).\n"
+                "فردا دوباره امتحان کن."
             )
             return
 
-    # ⚠️ قابلیتِ جدید: «سندِ مرجعِ فعال» — به‌جای فرستادنِ PDF به‌صورتِ
-    # inline (که فقط برای همین یه سوال کار می‌کنه)، آپلودش می‌کنیم روی
-    # Gemini Files API (رایگان، ۴۸ ساعت نگه‌داری) و فقط یه اشاره‌گرِ
-    # کوچیک ذخیره می‌کنیم. این‌جوری سوالاتِ بعدیِ همین دانشجو هم خودکار
-    # به همین سند دسترسی دارن، بدون اینکه دوباره بفرستتش.
-    display_name = None
-    if update.message.document:
-        display_name = update.message.document.file_name
-    if kind == 'pdf':
-        try:
-            file_info = await _gemini_upload_file(cfg['api_key'], media_bytes, mime, display_name or 'جزوه.pdf')
-            await db.ai_set_doc(uid, file_info['uri'], file_info.get('mimeType', mime), display_name or 'جزوه')
-            media_bytes = None   # دیگه لازم نیست inline بفرستیمش؛ از طریقِ doc reference میره
-        except Exception:
-            logger.exception("آپلودِ PDF به Gemini Files API ناموفق بود")
-            await update.message.reply_text("⚠️ آپلودِ فایل ناموفق بود — دوباره امتحان کن.")
-            return
+        labels = {
+            'image': "[یک سوال به‌صورت عکس فرستاد]",
+            'pdf':   f"[یک فایل PDF فرستاد: {display_name or 'جزوه'} — به‌عنوانِ سندِ مرجع ذخیره شد]",
+            'audio': "[یک پیام صوتی فرستاد]",
+        }
+        question_label = caption or labels.get(kind, "[یک فایل فرستاد]")
 
-    allowed, used, limit = await check_and_consume_quota(uid)
-    if not allowed:
-        await update.message.reply_text(
-            f"⛔️ سقف روزانه‌ی سوال از هوشیار تموم شده ({used}/{limit}).\n"
-            "فردا دوباره امتحان کن."
-        )
-        return
-
-    labels = {
-        'image': "[یک سوال به‌صورت عکس فرستاد]",
-        'pdf':   f"[یک فایل PDF فرستاد: {display_name or 'جزوه'} — به‌عنوانِ سندِ مرجع ذخیره شد]",
-        'audio': "[یک پیام صوتی فرستاد]",
-    }
-    question_label = caption or labels.get(kind, "[یک فایل فرستاد]")
-
-    _busy_users.add(uid)
-    try:
         history = await _get_history(uid)
         await _answer_with_live_edit(
             update, context,
@@ -1866,7 +1936,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _footer(limit, used), uid, question_label,
         )
     finally:
-        _busy_users.discard(uid)
+        await ai_release_inflight(uid)
 
 
 # ══════════════════════════════════════════════════
@@ -1906,24 +1976,23 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await db.ai_is_banned(uid):
             await query.answer("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.", show_alert=True)
             return
-        if uid in _busy_users:
+        if not await ai_claim_inflight(uid):
             await query.answer("⏳ صبر کن جوابِ قبلی آماده بشه.", show_alert=True)
             return
-        allowed, used, limit = await check_and_consume_quota(uid)
-        if not allowed:
-            await query.answer(f"⛔️ سقفِ روزانه تموم شده ({used}/{limit}).", show_alert=True)
-            return
-
-        await query.answer()
-        _busy_users.add(uid)
         try:
+            allowed, used, limit = await check_and_consume_quota(uid)
+            if not allowed:
+                await query.answer(f"⛔️ سقفِ روزانه تموم شده ({used}/{limit}).", show_alert=True)
+                return
+
+            await query.answer()
             history = await _get_history(uid)
             await _answer_with_live_edit(
                 update, context, ask_ai_stream(text=prompt, history=history, uid=uid),
                 _footer(limit, used), uid, prompt,
             )
         finally:
-            _busy_users.discard(uid)
+            await ai_release_inflight(uid)
         return
 
     if action == 'report':

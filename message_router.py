@@ -232,7 +232,18 @@ async def _route_menu_button(update, context, text: str, uid: int, user: dict):
             from admin import show_admin_main
             await show_admin_main(update.message, uid)
         else:
+            # 🛡 FIX پاریتیِ RBAC: این گیت فقط `admin_roles` میراثی را
+            # می‌دید، در حالی که `admin_callback` (همان پنل، یک لایه
+            # جلوتر) از مدت‌ها پیش نقش‌های دیتابیس‌محور را هم می‌پذیرد.
+            # نتیجه: نقشی که در پنل وب ساخته می‌شد و هنوز projection
+            # میراثی نداشت، اصلاً نمی‌توانست پنل ربات را باز کند — هرچند
+            # مجوزهایش کاملاً معتبر بود. حالا هر دو منبع پذیرفته می‌شوند
+            # (همان ترتیبِ admin_callback) تا Bot/Mini App/Web Admin یک
+            # تصمیم واحد بگیرند. منوی داخل _admin_menu از قبل بر اساس
+            # همین مجوزها فیلتر می‌شود، پس دسترسی اضافه‌ای باز نمی‌شود.
             role_doc = await db.get_admin_role(uid)
+            if not role_doc:
+                role_doc = bool(await db.get_user_perms(uid))
             if role_doc:
                 from admin import show_admin_main
                 await show_admin_main(update.message, uid)

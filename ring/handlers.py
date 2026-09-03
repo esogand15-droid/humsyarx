@@ -288,12 +288,25 @@ async def _status_card(update: Update, context) -> None:
     q = await db.ring_queue_get(uid)
     sess = await db.ring_session_active_for(uid)
     st = M.US_LABELS.get(await service.state_of(uid), "—")   # §۵ — همان حالتِ واحد
-    await update.message.reply_text(
-        f"📋 وضعیت رینگ: {st}\n"
-        f"   حالت: {M.MODES.get(p.get('mode'), '—')}\n"
-        f"   وضعیت پروفایل: {p.get('status', 'active')}\n"
-        f"   جلسه‌های تمام‌شده: {int(p.get('sessions_count') or 0)}\n"
-        "🔒 اطلاعات هویتی تو جایی ذخیره/نمایش داده نمی‌شود.")
+    # 🔧 FIX: `q` و `sess` واکشی می‌شدند (دو رفت‌وبرگشت به دیتابیس) ولی هیچ‌وقت
+    # در خروجی نمی‌آمدند — یعنی هزینه‌اش پرداخت می‌شد و سودش صفر بود، و
+    # کاربر در «/ring status» نمی‌فهمید که اصلاً در صف است یا چت فعال دارد.
+    # دقیقاً همان دو چیزی که برای این دستور مهم است. حالا نمایش داده می‌شوند
+    # و هیچ داده‌ی هویتیِ طرفِ مقابل هم فاش نمی‌شود (فقط وجود/نبودِ جلسه).
+    lines = [
+        f"📋 وضعیت رینگ: {st}",
+        f"   حالت: {M.MODES.get(p.get('mode'), '—')}",
+        f"   وضعیت پروفایل: {p.get('status', 'active')}",
+        f"   جلسه‌های تمام‌شده: {int(p.get('sessions_count') or 0)}",
+    ]
+    if sess:
+        lines.append("   💬 یک گفت‌وگوی فعال داری — پیام بفرستی همان‌جا می‌رود.")
+    elif q:
+        lines.append(f"   ⏳ در صف جست‌وجو هستی (وضعیت: {q.get('status', 'waiting')}).")
+    else:
+        lines.append("   ⚪️ نه در صفی، نه در گفت‌وگو.")
+    lines.append("🔒 اطلاعات هویتی تو جایی ذخیره/نمایش داده نمی‌شود.")
+    await update.message.reply_text("\n".join(lines))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -420,9 +433,29 @@ async def _r_terms(q, context, uid, arg, parts):
 
 
 async def _r_home(q, context, uid, arg, parts):
-    """↩️ بازگشت از هر مرحلهٔ رینگ — فقط flow را پاک می‌کند، نه session/صف."""
+    """↩️ بازگشت از هر مرحلهٔ رینگ — فقط flow را پاک می‌کند، نه session/صف.
+
+    🔧 FIX تجربهٔ کاربری: قبلاً فقط متنِ «/start را بزن» نمایش داده می‌شد و
+    کاربر باید دستی یک دستور تایپ می‌کرد؛ کیبورد اصلی هم اگر در جریان رینگ
+    برداشته شده بود برنمی‌گشت. حالا خودِ کیبورد اصلیِ متناسب با نقشِ کاربر
+    دوباره فرستاده می‌شود. اگر ساختنِ کیبورد به هر دلیلی شکست بخورد، رفتار
+    قبلی (پیام راهنما) به‌عنوان fallback حفظ می‌شود — هیچ مسیری بدتر نمی‌شود.
+    """
     _flow_clear(context)
-    await _show(q, "↩️ برای منوی اصلی ربات /start را بزن.")
+    await _show(q, "↩️ از رینگ خارج شدی.")
+    try:
+        from database import db
+        from utils import get_keyboard_for_user
+        user = await db.get_user(uid)
+        if user:
+            await q.message.reply_text(
+                "🏠 منوی اصلی ربات:",
+                reply_markup=await get_keyboard_for_user(user, uid),
+            )
+            return
+    except Exception as e:
+        logger.warning("[RING] home keyboard restore failed for %s: %s", uid, e)
+    await q.message.reply_text("↩️ برای منوی اصلی ربات /start را بزن.")
 
 
 async def _r_menu(q, context, uid, arg, parts):

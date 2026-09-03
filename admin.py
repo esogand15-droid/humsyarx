@@ -2427,7 +2427,16 @@ async def _show_blacklist(query):
         reason = e.get('reason', '') or 'بدون دلیل ثبت‌شده'
         by     = e.get('blocked_by_name', '')
         when   = fmt_jalali_dt(e.get('blocked_at', '') or '', with_time=False)
-        lines.append(f"🆔 <code>{target_uid}</code> — {_esc(when)}" + (f" — توسط {_esc(by)}" if by else ''))
+        # 🔧 FIX: `reason` خوانده می‌شد ولی هیچ‌وقت نمایش داده نمی‌شد
+        # (pyflakes هم آن را متغیرِ بی‌مصرف گزارش می‌کرد). دلیلِ مسدودی
+        # مهم‌ترین اطلاعِ این صفحه است: بدون آن، ادمینِ دوم نمی‌داند
+        # رفعِ بلاک درست است یا نه. پنل وب این فیلد را نشان می‌دهد؛
+        # حالا ربات هم همان را نشان می‌دهد (پاریتی).
+        lines.append(
+            f"🆔 <code>{target_uid}</code> — {_esc(when)}"
+            + (f" — توسط {_esc(by)}" if by else '')
+            + f"\n     └ 📝 {_esc(reason[:120])}"
+        )
         keyboard.append([
             InlineKeyboardButton(f"↩️ رفع بلاک {target_uid}", callback_data=f'admin:unblock_user:{target_uid}')
         ])

@@ -514,5 +514,10 @@ def kb_menu(view: dict) -> KB:
                  B("🗑 حذف پروفایل", callback_data=f"{CB}del")])
     rows.append([B("📜 قوانین", callback_data=f"{CB}rules"),
                  B("🌟 امتیاز دادن", callback_data=f"{CB}rate")])
-    rows.append([B("↩️ منوی اصلی ربات", callback_data="main")])
+    # 🔧 FIX دکمهٔ مرده: callback_data خام "main" هیچ هندلری در ربات ندارد
+    # (هیچ CallbackQueryHandler با pattern ^main ثبت نشده) ⇒ تپ روی این دکمه
+    # تا ابد بی‌اثر بود و حتی spinner تلگرام هم پاک نمی‌شد. حالا داخل namespace
+    # خودِ رینگ می‌ماند و `ring:home` (که در _ROUTES ثبت است و پیش از گاردها
+    # هم اجرا می‌شود) کاربر را با پیام روشن به منوی اصلی هدایت می‌کند.
+    rows.append([B("↩️ منوی اصلی ربات", callback_data=f"{CB}home")])
     return KB(rows)
