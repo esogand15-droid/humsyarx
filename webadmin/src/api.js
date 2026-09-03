@@ -321,8 +321,12 @@ export const api = {
   gradeIntakes: () => req('/api/web-admin/grades/intakes'),
   gradesRecent: (skip = 0, limit = 30, filters = {}) => req('/api/web-admin/grades/recent?' + new URLSearchParams({ skip, limit, ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== '' && v !== null && v !== undefined)) })),
   gradesFind: (name) => req(`/api/web-admin/grades/find-student?q=${encodeURIComponent(name)}`),
+  gradeTermOptions: () => req('/api/web-admin/grades/term-options'),
   gradesBulk: (body) => req('/api/web-admin/grades/bulk', { method: 'POST', body: {
     ...body, entries: (body.entries || []).map(e => ({ user_id: e.user_id ?? e.student_id, score: e.score })),
+    // 🛡 §۸۲-ب — ترمِ خالی اصلاً فرستاده نمی‌شود تا سرور حدسِ خودکار از روی
+    // نامِ درس را انجام دهد (رفتار قبلی) به‌جای ثبتِ ترمِ تهی.
+    ...(body.term ? { term: body.term } : {}),
   } }),
   gradeUpdate: (gid, score) => req(`/api/web-admin/grades/${gid}`, { method: 'PATCH', body: { score } }),
   gradeDelete: (gid) => req(`/api/web-admin/grades/${gid}`, { method: 'DELETE' }),

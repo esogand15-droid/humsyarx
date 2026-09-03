@@ -363,9 +363,14 @@ function GradeEditModal({ row, onClose }) {
 }
 
 function GradeBulkModal({ onClose }) {
-  const [meta, setMeta] = useState({ lesson: '', exam_title: '', exam_date: '' });
+  const [meta, setMeta] = useState({ lesson: '', exam_title: '', exam_date: '', term: '' });
   const [rows, setRows] = useState([{ q: '', hits: null, picked: null, score: '' }]);
   const [busy, setBusy] = useState(false);
+  // 🛡 §۸۲-ب — گزینه‌های ترم از سرور (تعریف‌شده‌ها + ترم‌های دارای نمره).
+  const [termOptions, setTermOptions] = useState([]);
+  useEffect(() => {
+    api.gradeTermOptions().then(r => setTermOptions(r.terms || [])).catch(() => setTermOptions([]));
+  }, []);
   const [importReport, setImportReport] = useState(null);
   const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
   const importCSV = async (file) => {
@@ -401,7 +406,8 @@ function GradeBulkModal({ onClose }) {
     setBusy(true);
     try {
       const r = await api.gradesBulk({ entries, lesson: meta.lesson.trim(),
-        exam_title: meta.exam_title.trim(), exam_date: meta.exam_date });
+        exam_title: meta.exam_title.trim(), exam_date: meta.exam_date,
+        term: meta.term });
       toast(`${r.updated} نمره ثبت شد و برای دانشجویان ارسال شد 📊`);
       onClose(true);
     } catch (e) { toast(errText(e), 'err'); setBusy(false); }
@@ -416,6 +422,16 @@ function GradeBulkModal({ onClose }) {
           <input className="inp" placeholder="عنوان آزمون *" value={meta.exam_title}
                  onChange={e => setMeta({ ...meta, exam_title: e.target.value })} />
           <PersianDatePicker value={meta.exam_date} onChange={value => setMeta({ ...meta, exam_date: value })} ariaLabel="تاریخ شمسی نمره" />
+        </div>
+        <div className="row">
+          <select className="inp" style={{ flex: 1 }} value={meta.term} aria-label="ترم نمره"
+                  onChange={e => setMeta({ ...meta, term: e.target.value })}>
+            <option value="">ترم: تشخیص خودکار از روی درس</option>
+            {termOptions.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <span className="muted" style={{ fontSize: 12 }}>
+            اگر درس در فهرست دروس نباشد، بدون انتخابِ ترم نمره «بدون ترم» ثبت می‌شود.
+          </span>
         </div>
         <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
           <div className="row"><div><b>درون‌ریزی CSV</b><div className="muted">دو ستون: Telegram ID و نمره؛ جداشده با comma، semicolon یا tab</div></div>

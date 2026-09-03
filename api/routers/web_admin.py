@@ -5285,6 +5285,18 @@ async def wa_grades_recent(
         admin=user)
 
 
+@router.get("/grades/term-options")
+async def wa_grades_term_options(
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    """🛡 §۸۲-ب — پروکسیِ گزینه‌های ترم برای فرمِ ثبتِ پنل وب.
+
+    قرارداد §۳۴: هر مسیرِ تازه باید در لایه‌ی میانی هم عبور داده شود، وگرنه
+    منوی ترم در پنل ۴۰۴ می‌گیرد و خالی می‌ماند.
+    """
+    return await academic_api.grades_term_options(admin=user)
+
+
 @router.get("/grades/intakes")
 async def wa_grades_intakes(user=Depends(_perm_any("grades.manage", "grades.scoped"))):
     scoped = await _grade_intake_scope(user)

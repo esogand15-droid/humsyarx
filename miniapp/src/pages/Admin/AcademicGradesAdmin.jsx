@@ -24,6 +24,8 @@ const EMPTY_EXAM = {
   lesson: '',
   exam_title: '',
   exam_date: '',
+  // 🛡 §۸۲-ب — ترمِ صریح. خالی = تشخیص خودکار از روی نام درس.
+  term: '',
 };
 
 const validScore = (value) => {
@@ -71,6 +73,11 @@ export default function AcademicGradesAdmin() {
   const [search, setSearch] =
     useState('');
 
+  // 🛡 AUDIT-§۸۲ — فیلتر ترم در پنل ادمینِ مینی‌اپ.
+  // خالی = همه‌ی ترم‌ها (رفتار قبلی، بدون تغییر).
+  const [termFilter, setTermFilter] =
+    useState('');
+
   const [entries, setEntries] =
     useState([]);
 
@@ -92,6 +99,7 @@ export default function AcademicGradesAdmin() {
   } = useQuery({
     queryKey: [
       'academic-grades',
+      termFilter,
     ],
 
     queryFn: () =>
@@ -101,6 +109,12 @@ export default function AcademicGradesAdmin() {
           {
             params: {
               limit: 100,
+
+              // ترمِ خالی اصلاً فرستاده نمی‌شود تا قرارداد قبلی
+              // (بدون فیلتر) دست‌نخورده بماند.
+              ...(termFilter
+                ? { term: termFilter }
+                : {}),
             },
           }
         )
@@ -110,7 +124,40 @@ export default function AcademicGradesAdmin() {
         ),
 
     enabled: view === 'list',
+
+    // موقع تعویض ترم لیست خالی-و-پُر نشود.
+    keepPreviousData: true,
   });
+
+  // 🛡 §۸۲-ب — گزینه‌های ترم برای فرمِ ثبت.
+  // جدا از data?.terms است: آن فقط ترم‌هایی را دارد که *از قبل* نمره دارند،
+  // پس ترمِ تازه هرگز قابل انتخاب نمی‌شد. این مسیر ترم‌های تعریف‌شده را هم
+  // برمی‌گرداند. فقط وقتی فرم باز است fetch می‌شود.
+  const { data: termOptionsData } = useQuery({
+    queryKey: [
+      'academic-grade-term-options',
+    ],
+
+    queryFn: () =>
+      api
+        .get(
+          '/api/academic-admin/grades/term-options'
+        )
+        .then(
+          (response) =>
+            response.data?.terms || []
+        ),
+
+    enabled: view === 'bulk',
+
+    staleTime: 300_000,
+  });
+
+  const entryTermOptions = Array.isArray(
+    termOptionsData
+  )
+    ? termOptionsData
+    : [];
 
   const {
     data: searchResults,
@@ -144,6 +191,9 @@ export default function AcademicGradesAdmin() {
     staleTime: 30_000,
   });
 
+  // invalidate روی prefix عمل می‌کند، پس همه‌ی ترم‌ها تازه می‌شوند —
+  // نه فقط ترمی که همین حالا باز است (وگرنه بعد از ثبت/حذف، ترم‌های
+  // دیگر داده‌ی کهنه نشان می‌دادند).
   const refresh = () =>
     queryClient.invalidateQueries({
       queryKey: [
@@ -164,6 +214,11 @@ export default function AcademicGradesAdmin() {
 
           exam_date:
             exam.exam_date,
+
+          // ترمِ خالی فرستاده نمی‌شود تا سرور مثل قبل از روی درس حدس بزند.
+          ...(exam.term
+            ? { term: exam.term }
+            : {}),
 
           entries: entries.map(
             (entry) => ({
@@ -282,6 +337,20 @@ export default function AcademicGradesAdmin() {
     data?.grades
   )
     ? data.grades
+    : [];
+
+  // فهرست ترم‌ها از سرور و *فیلترنشده* می‌آید تا با انتخاب یک ترم،
+  // بقیه‌ی چیپ‌ها ناپدید نشوند و راه برگشت بسته نشود.
+  const termOptions = Array.isArray(
+    data?.terms
+  )
+    ? data.terms
+    : [];
+
+  const termCounts = Array.isArray(
+    data?.by_term
+  )
+    ? data.by_term
     : [];
 
   const canSubmit =
@@ -450,6 +519,59 @@ export default function AcademicGradesAdmin() {
                 })
               }
             />
+
+            <label
+              style={{
+                display: 'block',
+                fontSize: 'var(--fs-meta)',
+                color: 'var(--txm)',
+                marginBottom: 5,
+                marginTop: 10,
+              }}
+            >
+              ترم
+            </label>
+
+            <select
+              className="inp"
+              aria-label="ترم نمره"
+              value={exam.term}
+              onChange={(event) =>
+                setExam({
+                  ...exam,
+
+                  term: event.target
+                    .value,
+                })
+              }
+            >
+              <option value="">
+                تشخیص خودکار از روی درس
+              </option>
+
+              {entryTermOptions.map(
+                (item) => (
+                  <option
+                    key={item}
+                    value={item}
+                  >
+                    {item}
+                  </option>
+                )
+              )}
+            </select>
+
+            <div
+              style={{
+                fontSize: 'var(--fs-meta)',
+                color: 'var(--txm)',
+                marginTop: 5,
+              }}
+            >
+              اگر درس در فهرست دروس نباشد، بدون
+              انتخاب ترم نمره «بدون ترم» ثبت
+              می‌شود.
+            </div>
           </div>
 
           <div
@@ -772,6 +894,64 @@ export default function AcademicGradesAdmin() {
           + ثبت دسته‌ای نمرات
         </button>
 
+        {termOptions.length > 0 && (
+          <div
+            className="tab-bar"
+            role="tablist"
+            aria-label="فیلتر ترم"
+            style={{
+              marginBottom: 'var(--sp-4)',
+            }}
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!termFilter}
+              className={`tab-btn${
+                termFilter ? '' : ' active'
+              }`}
+              onClick={() => {
+                haptic('light');
+                setTermFilter('');
+              }}
+            >
+              همه
+            </button>
+
+            {termOptions.map((item) => {
+              const stat = termCounts.find(
+                (row) => row.term === item
+              );
+
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  role="tab"
+                  aria-selected={
+                    termFilter === item
+                  }
+                  className={`tab-btn${
+                    termFilter === item
+                      ? ' active'
+                      : ''
+                  }`}
+                  onClick={() => {
+                    haptic('light');
+                    setTermFilter(item);
+                  }}
+                >
+                  {item}
+
+                  {stat?.avg != null
+                    ? ` · ${stat.avg}`
+                    : ''}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {isLoading ? (
           <GradesAdminSkeleton />
         ) : isError ? (
@@ -792,7 +972,9 @@ export default function AcademicGradesAdmin() {
           </div>
         ) : grades.length === 0 ? (
           <div className="empty">
-            هنوز نمره‌ای ثبت نشده است.
+            {termFilter
+              ? `برای «${termFilter}» نمره‌ای ثبت نشده است. ترم دیگری را انتخاب کنید.`
+              : 'هنوز نمره‌ای ثبت نشده است.'}
           </div>
         ) : (
           grades.map((grade) => (
@@ -850,6 +1032,10 @@ export default function AcademicGradesAdmin() {
 
                     {grade.exam_date ||
                       '—'}
+
+                    {grade.term
+                      ? ` • 🎓 ${grade.term}`
+                      : ''}
                   </div>
                 </div>
 

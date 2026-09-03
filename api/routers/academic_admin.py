@@ -514,6 +514,16 @@ class GradeBulkCreate(BaseModel):
         max_length=10,
     )
 
+    # 🛡 §۸۲-ب — ترمِ صریح.
+    # اختیاری است: خالی/None یعنی «از روی نامِ درس در bs_lessons حدس بزن»
+    # (رفتار قبلی، پس کلاینت‌های قدیمی نمی‌شکنند). اگر داده شود، برنده است —
+    # چون درس‌هایی مثل «فیزیولوژی» ممکن است در bs_lessons نباشند و بدون
+    # override نمره برای همیشه «بدون ترم» می‌ماند.
+    term: str | None = Field(
+        default=None,
+        max_length=40,
+    )
+
 
 class GradeUpdate(BaseModel):
     score: float = Field(
@@ -543,6 +553,11 @@ async def grades_bulk_create(
         body.exam_title,
         100,
     )
+
+    term = _clean(
+        body.term or "",
+        40,
+    ) or None
 
     user_ids = [
         entry.user_id
@@ -608,6 +623,11 @@ async def grades_bulk_create(
         exam_date=exam_date,
 
         entered_by=admin["id"],
+
+        # None را عمداً دست‌نخورده رد می‌کنیم تا لایه‌ی db حدسِ خودکار را
+        # انجام دهد؛ رشته‌ی خالی هم به None تبدیل می‌شود تا «انتخاب نکردم»
+        # با «ترمِ خالی» یکی رفتار کند.
+        term=term,
     )
 
     notified = 0
@@ -681,6 +701,10 @@ async def grades_bulk_create(
         admin, "ثبت گروهی نمره", "Grades", severity="WARNING",
         target_type="grades", target_label=f"{len(saved)} دانشجو",
         after={"lesson": lesson, "exam_title": exam_title,
+               # ترمِ نهایی از خودِ رکوردِ ذخیره‌شده خوانده می‌شود، نه از ورودی،
+               # تا لاگ حدسِ خودکار را هم ثبت کند نه فقط انتخابِ دستی را.
+               "term": (saved[0].get("term") if saved else term) or "",
+               "term_explicit": bool(term),
                "updated": len(saved), "notified": notified},
         tags=["نمرات", "ثبت_گروهی", "پنل_وب"],
     )
@@ -689,6 +713,37 @@ async def grades_bulk_create(
         "updated": len(saved),
         "notified": notified,
     }
+
+
+@router.get("/grades/term-options")
+async def grades_term_options(
+    admin=Depends(get_grade_admin_user),
+):
+    """🛡 §۸۲-ب — گزینه‌های ترم برای فرمِ ثبت نمره.
+
+    فقط `grade_terms()` کافی نیست: آن فقط ترم‌هایی را می‌دهد که *از قبل*
+    نمره دارند، پس ترمِ تازه هرگز در منو ظاهر نمی‌شد (مشکل مرغ‌وتخم‌مرغ).
+    اینجا ترم‌های تعریف‌شده‌ی برنامه‌ی درسی با ترم‌های دارای نمره ادغام
+    می‌شوند و با همان `_term_rank` مرتب می‌شوند تا «ترم ۱۰» بعد از «ترم ۲»
+    بیاید، نه بینِ ۱ و ۲.
+    """
+    from grade_utils import _term_rank
+
+    known: list[str] = []
+    try:
+        from api.routers.content_admin import TERMS as _TERMS
+        known = [str(t).strip() for t in (_TERMS or []) if str(t).strip()]
+    except Exception:
+        known = []
+
+    used: list[str] = []
+    try:
+        used = [str(t).strip() for t in (await db.grade_terms() or []) if str(t).strip()]
+    except Exception:
+        used = []
+
+    merged = sorted(set(known) | set(used), key=_term_rank)
+    return {"terms": merged, "defined": known, "used": used}
 
 
 @router.get("/grades/recent")
