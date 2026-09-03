@@ -1943,6 +1943,9 @@ async def wa_questions_list(
                   .skip(skip).limit(limit).to_list(limit))
     can_reject = await db.has_permission(user["id"], "questions.reject")
     can_edit = await db.has_permission(user["id"], "questions.edit")
+    # 🛡 §۸۴ — پرچمِ حذف، هم‌شکل با can_reject/can_edit تا UI خودش
+    # تصمیم نگیرد. سؤالِ تأییدشده قفل است، پس پرچم روی آن خاموش می‌ماند.
+    can_delete = await db.has_permission(user["id"], "questions.delete")
     rows = []
     for d in docs:
         attempts = int(d.get("attempt_count") or 0)
@@ -1966,6 +1969,7 @@ async def wa_questions_list(
             "can_approve": canonical_status(d) == "pending" and int(d.get("creator_id") or 0) != user["id"],
             "can_reject": canonical_status(d) == "pending" and can_reject,
             "can_edit": canonical_status(d) == "pending" and can_edit,
+            "can_delete": canonical_status(d) != "approved" and can_delete,
         })
     return {"questions": rows, "total": total, "skip": skip, "limit": limit,
             "pages": (total + limit - 1) // limit, "status": status, "intake": iv}
@@ -2106,6 +2110,17 @@ async def wa_question_needs_changes(
 ):
     return await content_api.needs_changes_question(qid=qid, body=body,
                                                      admin=await _question_admin(user))
+
+
+@router.delete("/questions/{qid}")
+async def wa_question_delete(
+    qid: str, reason: str = Query(default="", max_length=1000),
+    user=Depends(_perm_any("questions.delete")),
+):
+    """🛡 §۸۴ — حذف سخت سؤال. گیتِ لبه `questions.delete` است و همان مجوز
+    دوباره داخل `question_bank` هم بررسی می‌شود (دفاع در عمق)."""
+    return await content_api.delete_question(
+        qid=qid, reason=reason, admin=await _question_admin(user))
 
 
 @router.patch("/questions/{qid}")

@@ -6,6 +6,9 @@ import { Loading, ErrorState, Empty, B, PageHeader, Confirm, toast, Modal } from
 export default function Rbac({ me }) {
   const [roles, setRoles] = useState(null);
   const [perms, setPerms] = useState(null);
+  // 🛡 §۸۴ — برچسب فارسیِ دسته‌ها از سرور می‌آید (`/perms` → categories).
+  // پیش‌تر دور ریخته می‌شد و سرتیترها کلیدِ خام انگلیسی را نشان می‌دادند.
+  const [permCats, setPermCats] = useState([]);
   const [err, setErr] = useState('');
   const [create, setCreate] = useState(false);
   const [cloneRole, setCloneRole] = useState(null);
@@ -19,6 +22,7 @@ export default function Rbac({ me }) {
     try {
       const [r, p] = await Promise.all([api.roles(), api.perms()]);
       setRoles(r.roles || []); setPerms(p.permissions || []);
+      setPermCats(p.categories || []);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -26,12 +30,20 @@ export default function Rbac({ me }) {
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!roles || !perms) return <Loading rows={6} />;
 
-  // گروه‌بندی مجوزها بر اساس دسته‌ی واقعی کاتالوگ
+  // گروه‌بندی مجوزها بر اساس دسته‌ی واقعی کاتالوگ.
+  // ترتیب از PERM_CATEGORIES سرور می‌آید (نه ترتیب تصادفیِ کلیدها) و
+  // دسته‌ی ناشناخته آخر می‌آید تا هیچ مجوزی از ماتریس نیفتد.
+  const catLabel = Object.fromEntries(permCats.map(c => [c.key, c.label]));
+  const catOrder = permCats.map(c => c.key);
   const groups = {};
   perms.forEach(p => {
     const g = p.category || p.key.split('.')[0];
     (groups[g] = groups[g] || []).push({ key: p.key, label: p.label || p.key });
   });
+  const orderedGroups = Object.keys(groups).sort((a, b) => {
+    const ia = catOrder.indexOf(a), ib = catOrder.indexOf(b);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  }).map(key => [key, catLabel[key] || key, groups[key]]);
 
   return (
     <>
@@ -58,7 +70,7 @@ export default function Rbac({ me }) {
               )}
             </div>
             {r.desc && <p className="muted" style={{ margin: '8px 0' }}>{r.desc}</p>}
-            <PermMatrix roleKey={r.key} granted={r.perms || []} groups={groups}
+            <PermMatrix roleKey={r.key} granted={r.perms || []} groups={orderedGroups}
                         system={!!r.system} onChanged={load} />
           </div>
         ))}
@@ -139,9 +151,9 @@ function PermMatrix({ roleKey, granted, groups, onChanged }) {
   };
   return (
     <div className="grid" style={{ gap: 10, marginTop: 10 }}>
-      {Object.entries(groups).map(([grp, items]) => (
+      {groups.map(([grp, label, items]) => (
         <div key={grp}>
-          <div className="muted" style={{ marginBottom: 4 }}>{grp}</div>
+          <div className="muted" style={{ marginBottom: 4 }}>{label}</div>
           <div className="row" style={{ gap: 6 }}>
             {items.map(p => (
               <label key={p.key} className="badge" style={{ cursor: 'pointer', gap: 5 }}>

@@ -189,6 +189,37 @@ async def needs_changes_question(qid: str, body: QuestionReviewInput,
     return await _review_question(qid, "needs_changes", body.reason, admin)
 
 
+@router.delete("/questions/{qid}")
+async def delete_question(qid: str, reason: str = Query(default="", max_length=1000),
+                          admin=Depends(get_question_reviewer)):
+    """🛡 §۸۴ — حذفِ سختِ سؤال؛ تنها مسیرِ اعمالِ مجوز `questions.delete`.
+
+    این مجوز در کاتالوگ RBAC وجود داشت ولی هیچ کجا چک نمی‌شد (نه در پنل، نه
+    در ربات) — یعنی ادمین می‌توانست آن را به یک نقش بدهد یا از آن بگیرد
+    بدون کوچک‌ترین اثری. حالا این endpoint آن را واقعی می‌کند.
+
+    مجوزسنجی داخل `question_bank` انجام می‌شود (منبع یکتا)، نه اینجا؛
+    `_deny_intake` هم مثل بقیه‌ی مسیرها لایه‌ی دومِ scope است.
+    """
+    q = await db.get_question_by_id(qid)
+    if not q:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    await _deny_intake(q.get("intake", ""), admin)
+    try:
+        removed = await question_bank.delete_question(
+            question_id=qid, actor=admin, reason=reason)
+    except QuestionDomainError as exc:
+        _qerror(exc)
+    await _audit(admin, "حذف سؤال", "Questions", severity="CRITICAL",
+        target_id=qid, target_type="question",
+        target_label=f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
+        before={"status": removed.get("status"), "question": removed.get("question"),
+                "creator_id": removed.get("creator_id")},
+        after={"deleted": True, "reason": removed.get("reason")},
+        tags=["سؤال", "حذف", "پنل_وب"])
+    return {"ok": True, "deleted": True, "id": removed.get("id")}
+
+
 # ── 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit) ──
 class QuestionPatch(BaseModel):
     lesson_id: Optional[str] = None
@@ -451,18 +482,30 @@ async def bulk_grades(body: GradeBulk, admin=Depends(GLOBAL_USER)):
 
 @router.get("/grades/recent")
 async def grades_recent(admin=Depends(GLOBAL_USER), skip: int=Query(0), limit: int=Query(30),
-                         intake: Optional[str]=Query(None)):
-    items = await db.grade_list_recent(skip=skip, limit=limit, intake=intake)
-    total = await db.grade_count_recent(intake=intake)
+                         intake: Optional[str]=Query(None),
+                         # 🛡 AUDIT-§۸۲ — این روتر مصرف‌کننده‌ی صفحه‌ی «نمرات» در
+                         # مینی‌اپِ ادمین است. پنل وب از academic_admin ترم می‌گیرد
+                         # ولی این مسیر پارامتر را نداشت، پس ترم‌بندی از مینی‌اپ
+                         # بی‌اثر بود. طولِ ۴۰ و strip دقیقاً مثل academic_admin و
+                         # web_admin است تا هر سه لایه یک نرمال‌سازی داشته باشند.
+                         term: Optional[str]=Query(None, max_length=40)):
+    term = term.strip()[:40] if isinstance(term, str) and term.strip() else None
+    items = await db.grade_list_recent(skip=skip, limit=limit, intake=intake, term=term)
+    total = await db.grade_count_recent(intake=intake, term=term)
     # اسم دانشجوها رو batch می‌گیریم تا برای هر نمره کوئری جدا نزنیم
     uids = list({g.get("student_id") for g in items if g.get("student_id")})
     names = {}
     for uid in uids:
         u = await db.get_user(uid)
         names[uid] = u.get("name","") if u else f"#{uid}"
-    return {"total": total, "grades":[{"id":str(g["_id"]),"student_id":g.get("student_id"),
+    # فهرست ترم‌ها عمداً *فیلترنشده* است تا وقتی ادمین یک ترم را انتخاب کرد
+    # بقیه‌ی گزینه‌ها از منو ناپدید نشوند و راه برگشت بسته نشود.
+    terms = await db.grade_terms()
+    return {"total": total, "terms": terms, "active_term": term,
+        "grades":[{"id":str(g["_id"]),"student_id":g.get("student_id"),
         "student_name":names.get(g.get("student_id"),""),"lesson":g.get("lesson",""),
         "exam_title":g.get("exam_title",""),"exam_date":g.get("exam_date",""),
+        "term":g.get("term",""),
         "score":g.get("score",0)} for g in items]}
 
 @router.get("/grades/find-student")

@@ -44,6 +44,8 @@ export default function Questions({ route = '', go }) {
   const [detail, setDetail] = useState(null);
   const [review, setReview] = useState(null); // {action, ids, reason}
   const [bulkResult, setBulkResult] = useState(null);
+  // 🛡 §۸۴ — حذف سخت: برگشت‌ناپذیر است، پس تأیید صریح + دلیل اجباری.
+  const [delTarget, setDelTarget] = useState(null); // {id, question, reason}
   const [createOpen, setCreateOpen] = useState(new URLSearchParams(route.split('?')[1] || '').get('create') === '1');
   const [importOpen, setImportOpen] = useState(false);
   const LIMIT = 30;
@@ -74,6 +76,15 @@ export default function Questions({ route = '', go }) {
   const approve = async id => {
     try { await api.caQuestionApprove(id); toast('سؤال تأیید و منتشر شد ✅'); setDetail(null); load(); }
     catch (e) { toast(errText(e), 'err'); }
+  };
+  const runDelete = async () => {
+    const reason = (delTarget?.reason || '').trim();
+    if (!delTarget || reason.length < 3) return;
+    try {
+      await api.caQuestionDelete(delTarget.id, reason);
+      toast('سؤال برای همیشه حذف شد 🗑');
+      setDelTarget(null); setDetail(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
   };
   const runReview = async () => {
     const reason = (review?.reason || '').trim();
@@ -112,6 +123,9 @@ export default function Questions({ route = '', go }) {
       {row.can_approve && <button className="btn sm ok" aria-label="تأیید سؤال" onClick={() => approve(row.id)}>✅</button>}
       {row.can_reject && <button className="btn sm" aria-label="درخواست اصلاح" onClick={() => setReview({ action: 'needs_changes', ids: [row.id], reason: '' })}>✏️</button>}
       {row.can_reject && <button className="btn sm danger" aria-label="رد سؤال" onClick={() => setReview({ action: 'reject', ids: [row.id], reason: '' })}>❌</button>}
+      {row.can_delete && <button className="btn sm danger" aria-label="حذف کامل سؤال"
+        title="حذف همیشگی — برخلاف «رد»، داده بازیابی نمی‌شود"
+        onClick={() => setDelTarget({ id: row.id, question: row.question, reason: '' })}>🗑</button>}
     </div> },
   ];
 
@@ -152,6 +166,23 @@ export default function Questions({ route = '', go }) {
     {detail && <QuestionDrawer row={detail} onClose={() => setDetail(null)} onApprove={() => approve(detail.id)}
       onReview={action => setReview({ action, ids: [detail.id], reason: '' })} onSaved={() => { setDetail(null); load(); }} />}
     {review && <ReviewModal value={review} onChange={setReview} onClose={() => setReview(null)} onSubmit={runReview} />}
+    {delTarget && <Modal title="🗑 حذف همیشگی سؤال" onClose={() => setDelTarget(null)}>
+      <div className="panel panel-pad" style={{ background: 'var(--bg)', marginBottom: 10 }}>
+        <div style={{ maxHeight: 90, overflow: 'auto' }}>{delTarget.question}</div>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        این عملیات <b>برگشت‌ناپذیر</b> است و سؤال از پایگاه داده پاک می‌شود.
+        اگر فقط می‌خواهید سؤال از چرخه خارج شود، به‌جای حذف از «❌ رد با دلیل»
+        استفاده کنید — داده حفظ و برای طراح قابل اصلاح می‌ماند.
+      </p>
+      <input className="inp" placeholder="دلیل حذف (حداقل ۳ نویسه) *" value={delTarget.reason}
+             onChange={e => setDelTarget({ ...delTarget, reason: e.target.value })} />
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn danger" disabled={delTarget.reason.trim().length < 3}
+                onClick={runDelete}>حذف همیشگی</button>
+        <button className="btn" onClick={() => setDelTarget(null)}>انصراف</button>
+      </div>
+    </Modal>}
     {bulkResult && <Modal title="نتیجه عملیات گروهی" onClose={() => setBulkResult(null)}><div className="row"><B kind="ok">موفق {fa(bulkResult.succeeded?.length)}</B><B>ردشده {fa(bulkResult.skipped?.length)}</B><B kind="bad">ناموفق {fa(bulkResult.failed?.length)}</B></div>{[...(bulkResult.skipped || []), ...(bulkResult.failed || [])].slice(0, 30).map((item, i) => <div key={`${item.id}-${i}`} className="row"><span className="code">{item.id}</span><span className="muted">{item.reason || item.error}</span></div>)}</Modal>}
     {createOpen && <QuestionCreateModal intake={intake} onClose={ok => { setCreateOpen(false); if (ok) load(); }} />}
     {importOpen && <ImportWizard onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}

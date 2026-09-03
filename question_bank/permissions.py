@@ -74,6 +74,29 @@ class QuestionPermissionService:
             raise QuestionDomainError("self_approval_forbidden", "تأیید سؤال خودتان مجاز نیست", 409)
         return scope
 
+    async def authorize_delete(self, *, actor: Mapping, question: Mapping) -> dict:
+        """🛡 §۸۴ — حذفِ سختِ ادمین (تنها مسیرِ اعمالِ `questions.delete`).
+
+        پیش‌تر این کلید در REVIEW_ACTION_PERMISSIONS بود ولی `authorize_review`
+        اکشن «delete» را نمی‌پذیرفت، پس هیچ مسیری آن را چک نمی‌کرد: مجوزی که
+        روشن/خاموش کردنش در پنل هیچ اثری نداشت.
+
+        قواعد عمداً همان قواعد بررسی‌اند تا رفتار غافلگیرکننده نسازد:
+        دسترسی به صف لازم است، مجوزِ ریزدانه‌ی حذف هم جداگانه لازم است، و
+        ادمینِ scoped فقط داخل ورودی خودش حذف می‌کند.
+        """
+        uid = self.actor_id(actor)
+        scope = await self.review_scope(actor)
+        required = REVIEW_ACTION_PERMISSIONS["delete"]
+        if not await self.db.has_permission(uid, required):
+            raise QuestionDomainError("question_permission_denied",
+                                      "مجوز حذف سؤال را ندارید", 403,
+                                      {"required": required})
+        if scope["kind"] == "scoped" and clean_text(question.get("intake")) != scope["intake"]:
+            raise QuestionDomainError("question_out_of_scope",
+                                      "سؤال خارج از محدوده بررسی شماست", 403)
+        return scope
+
     async def authorize_import(self, actor: Mapping) -> None:
         uid = self.actor_id(actor)
         if not self.is_owner(actor):

@@ -281,6 +281,9 @@ export const api = {
   caQuestionApprove: (qid) => req(`/api/web-admin/questions/${qid}/approve`, { method: 'POST', body: { reason: '' } }),
   caQuestionReject: (qid, reason) => req(`/api/web-admin/questions/${qid}/reject`, { method: 'POST', body: { reason } }),
   caQuestionNeedsChanges: (qid, reason) => req(`/api/web-admin/questions/${qid}/needs-changes`, { method: 'POST', body: { reason } }),
+  // 🛡 §۸۴ — حذف سخت سؤال (مجوز questions.delete). دلیل در query می‌رود
+  // چون DELETE بدنه ندارد؛ همان قرارداد سرور.
+  caQuestionDelete: (qid, reason = '') => req(`/api/web-admin/questions/${qid}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' }),
   // 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit)
   caQuestionPatch: (qid, body) => req(`/api/web-admin/questions/${qid}`, { method: 'PATCH', body }),
   // ── 🌊 WA3 — مدیریت کامل کاربر (permission-based، آینه‌ی دقیق ربات) ──

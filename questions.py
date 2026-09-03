@@ -320,6 +320,13 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'ca_q_approve':
         await _h_ca_q_approve(query, context, uid, parts[2] if len(parts) > 2 else '')
 
+    # 🛡 §۸۴ — حذف سخت: دو مرحله‌ای، چون برگشت‌ناپذیر است.
+    elif action == 'ca_q_purge':
+        await _h_ca_q_purge_confirm(query, context, uid, parts[2] if len(parts) > 2 else '')
+
+    elif action == 'ca_q_purge_yes':
+        await _h_ca_q_purge(query, context, uid, parts[2] if len(parts) > 2 else '')
+
     elif action == 'ca_q_filter':
         ftype = parts[2] if len(parts) > 2 else 'all'
         fval  = parts[3] if len(parts) > 3 else ''
@@ -395,6 +402,47 @@ async def _h_ca_q_approve(query, context, uid: int, qid: str):
         "تأیید سؤال", module='Questions', severity='INFO',
         target_id=qid, target_type='question', target_label=question.get('question','')[:60],
         tags=['تأیید_سؤال'])
+    await _ca_question_list(query, uid, context)
+
+
+async def _h_ca_q_purge_confirm(query, context, uid: int, qid: str):
+    """گام ۱ — نمایش هشدار. هیچ تغییری در داده نمی‌دهد."""
+    if not await db.has_permission(uid, 'questions.delete'):
+        await query.answer("مجوز حذف سؤال را ندارید.", show_alert=True); return
+    question = await db.get_question_by_id(qid)
+    if not question:
+        await query.answer("سؤال پیدا نشد.", show_alert=True); return
+    await query.edit_message_text(
+        "🗑 <b>حذف همیشگی سؤال</b>\n\n"
+        f"❓ {_h((question.get('question') or '')[:200])}\n\n"
+        "⚠️ این کار <b>برگشت‌ناپذیر</b> است و سؤال از پایگاه داده پاک می‌شود.\n"
+        "اگر فقط می‌خواهید سؤال از چرخه خارج شود، «❌ رد با دلیل» را بزنید "
+        "تا داده حفظ و برای طراح قابل اصلاح بماند.",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑 بله، برای همیشه حذف کن",
+                                  callback_data=f'questions:ca_q_purge_yes:{qid}')],
+            _back("🔙 انصراف", f'questions:ca_q_view:{qid}'),
+        ]))
+
+
+async def _h_ca_q_purge(query, context, uid: int, qid: str):
+    """گام ۲ — حذف واقعی. مجوزسنجی در question_bank است (منبع یکتا)."""
+    question = await db.get_question_by_id(qid)
+    if not question:
+        await query.answer("سؤال پیدا نشد.", show_alert=True); return
+    try:
+        removed = await question_bank.delete_question(
+            question_id=qid, actor={'id': uid}, reason='حذف از ربات مدیر')
+    except QuestionDomainError as exc:
+        await query.answer(exc.message, show_alert=True); return
+    await query.answer("🗑 سؤال برای همیشه حذف شد.", show_alert=True)
+    await send_audit_log(context.bot, 'content', str(uid), uid,
+        "حذف سؤال", module='Questions', severity='CRITICAL',
+        target_id=qid, target_type='question',
+        target_label=(question.get('question') or '')[:60],
+        details=f"status={removed.get('status')} · creator={removed.get('creator_id')}",
+        tags=['حذف_سؤال'])
     await _ca_question_list(query, uid, context)
 
 
@@ -1422,6 +1470,11 @@ async def _ca_question_view(query, uid: int, qid: str):
                 InlineKeyboardButton("✏️ نیازمند اصلاح", callback_data=f'questions:ca_q_needs_changes:{qid}'),
                 InlineKeyboardButton("❌ رد با دلیل", callback_data=f'questions:ca_q_del:{qid}'),
             ])
+
+    # 🛡 §۸۴ — حذف سخت در هر وضعیتی جز «تأییدشده» (که قفل است).
+    if status_key != 'approved' and await db.has_permission(uid, 'questions.delete'):
+        keyboard.append([InlineKeyboardButton(
+            "🗑 حذف همیشگی", callback_data=f'questions:ca_q_purge:{qid}')])
 
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='questions:ca_q_list')])
 

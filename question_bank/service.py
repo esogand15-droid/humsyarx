@@ -494,6 +494,40 @@ class QuestionBankService:
             raise QuestionDomainError("withdraw_conflict", "وضعیت سؤال هم‌زمان تغییر کرده است", 409)
         return result
 
+    async def delete_question(self, *, question_id: str, actor: Mapping,
+                              reason: str = "") -> dict:
+        """🛡 §۸۴ — حذفِ سختِ ادمین؛ تنها مصرف‌کننده‌ی `questions.delete`.
+
+        عمداً *سخت* است و نه یک وضعیت دیگر: «برداشتِ» طراح از قبل با
+        `withdraw_contribution` پوشش داده شده و سؤالِ رد‌شده هم در آرشیو
+        می‌ماند. این مسیر برای محتوای اسپم/کپی‌رایت است که باید واقعاً برود.
+
+        سؤالِ تأییدشده قفل است — همان قاعده‌ی `transition`/`withdraw`، چون
+        ممکن است در آزمون‌ها و پاسخ‌های ثبت‌شده ارجاع داشته باشد.
+        """
+        if not ObjectId.is_valid(str(question_id)):
+            raise QuestionDomainError("invalid_question_id", "شناسه سؤال معتبر نیست")
+        document = await self.db.questions.find_one({"_id": ObjectId(str(question_id))})
+        if not document:
+            raise QuestionDomainError("question_not_found", "سؤال پیدا نشد", 404)
+        await self.permissions.authorize_delete(actor=actor, question=document)
+        if canonical_status(document) == "approved":
+            raise QuestionDomainError(
+                "approved_question_locked",
+                "سؤال تأییدشده قفل است؛ ابتدا آن را رد کنید", 409)
+        result = await self.db.questions.delete_one(
+            {"_id": document["_id"], "status": {"$ne": "approved"}})
+        if not getattr(result, "deleted_count", 0):
+            # بین خواندن و حذف، سؤال تأیید شده است.
+            raise QuestionDomainError("concurrent_review",
+                                      "وضعیت سؤال هم‌زمان تغییر کرده است", 409)
+        return {"id": str(document["_id"]),
+                "status": canonical_status(document),
+                "question": clean_text(document.get("question"))[:120],
+                "creator_id": int(document.get("creator_id") or 0),
+                "intake": clean_text(document.get("intake")),
+                "reason": clean_text(reason, 1000)}
+
     async def list_my_contributions(self, user_id: int, *, skip: int = 0, limit: int = 30) -> dict:
         query = {"creator_id": int(user_id)}
         total = await self.db.questions.count_documents(query)
