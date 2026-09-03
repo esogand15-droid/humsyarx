@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, FaDateTime, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
+import HealthCenter from '../HealthCenter.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DETAIL_LABELS = {
@@ -149,6 +150,15 @@ export default function System({ me }) {
           ))}
         </dl>
       </div>
+
+      {/* 🩺 دیاگنوستیک عمیق — مصرف‌کننده‌ی /api/health/deep.
+          مکمل کارت‌های بالا (که از system/status می‌آیند) است، نه جایگزین:
+          اینجا ضربان ربات، وضعیت بیلدها و فهرست مسیرها هم دیده می‌شود. */}
+      {canObserve && (
+        <div className="panel panel-pad" style={{ marginTop: 14 }}>
+          <HealthCenter />
+        </div>
+      )}
 
       {timeStandard && <section className="panel panel-pad" style={{ marginTop: 14 }} aria-labelledby="time-standard-title">
         <div className="row"><div><b id="time-standard-title">🕰 زمان و تاریخ سیستم</b><div className="muted">یک instant، نمایش تهران و تقویم رسمی شمسی</div></div><span className="spacer" /><B kind="acc">{timeStandard.timezone}</B><B>{timeStandard.calendar} · {timeStandard.locale}</B></div>

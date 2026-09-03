@@ -96,6 +96,8 @@ export const api = {
   // 🛡 AUDIT-§۷۹ — `extra` برای اکشن‌هایی که پارامترِ ساختارمند می‌خواهند
   // (مثل اشتراک گروهی: days/plan_name/extend) — بدنه همان endpoint می‌ماند.
   usersBulk: (action, ids, value, extra = {}) => req('/api/web-admin/users/bulk', { method: 'POST', body: { action, ids, value, ...extra } }),
+  // 🔍 §۸۷ — dry-run عملیات گروهی: همان بدنه، بدون هیچ نوشتنی.
+  usersBulkPreview: (action, ids, value, extra = {}) => req('/api/web-admin/users/bulk/preview', { method: 'POST', body: { action, ids, value, ...extra } }),
   userDetail: (uid) => req(`/api/admin/users/${uid}`),
   userPatch: (uid, body) => req(`/api/admin/users/${uid}`, { method: 'PATCH', body }),
   userAction: (uid, act) => req(`/api/admin/users/${uid}/${act}`, { method: 'POST' }),
@@ -173,6 +175,9 @@ export const api = {
   // ── admin panel (owner) ──
   stats: () => req('/api/admin/stats'),
   botStatus: () => req('/api/web-admin/system/status'),
+  // 🩺 دیاگنوستیک عمیق — API + ربات + Mongo + بیلدها + متریک مسیرها.
+  // این endpoint از قبل در backend وجود داشت ولی هیچ مصرف‌کننده‌ای نداشت.
+  healthDeep: () => req('/api/health/deep'),
   // 🛡 RBAC-Execution — عملیات System با مجوز دانه‌ای
   prestigeBackfill: () => req('/api/web-admin/system/prestige/backfill', { method: 'POST' }),
   prestigeConfig: () => req('/api/web-admin/system/prestige-config'),
@@ -214,6 +219,8 @@ export const api = {
   channelLockAdd: (body) => req('/api/admin/channel-lock', { method: 'POST', body }),
   channelLockDel: (id) => req(`/api/admin/channel-lock/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   auditLogs: (p) => req('/api/web-admin/audit-logs?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v))),
+  // ↩️ §۸۸ — بازگردانی یک تغییرِ ثبت‌شده (مجوز جدا: audit.undo).
+  auditUndo: (logId, reason = '') => req(`/api/web-admin/audit-logs/${logId}/undo`, { method: 'POST', body: { reason } }),
   exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v)), `humsyar-audit-${fileDateStamp()}.csv`),
   systemJobs: () => req('/api/web-admin/system/jobs'),
   systemTimeStandard: () => req('/api/web-admin/system/time-standard'),

@@ -468,6 +468,41 @@ async def health_deep():
     }
 
 
+# 📌 خط‌مبنای رگرسیون مسیرها.
+# قبلاً ۴۵۰ بود و با رشد API به ۴۹۴ رسید، اما چون هیچ تستی
+# routes_match_baseline را نمی‌خواند، گارد در سکوت False می‌ماند و
+# عملاً بی‌اثر بود. حالا tests/test_route_inventory.py آن را می‌خواند؛
+# تغییر عمدیِ سطح API باید همین عدد را هم آگاهانه به‌روز کند.
+_ROUTE_BASELINE = 494
+
+
+def _walk_included_routes(routes, prefix: str = "") -> list:
+    """فهرست واقعی (method, path) با بازکردن routerهای تنبل.
+
+    از FastAPI 0.141 به بعد `include_router` دیگر routeها را مسطح
+    داخل `app.routes` نمی‌ریزد؛ یک شیء `_IncludedRouter` می‌گذارد که
+    `path` آن "?" است و routerِ اصلی را تنبل نگه می‌دارد.
+
+    شمارشِ سطح‌بالا به همین دلیل ۴ می‌داد به‌جای ۵۱۰ — عددی که در
+    /api/health/deep نمایش داده می‌شد و کاملاً گمراه‌کننده بود.
+    """
+    out = []
+    for r in routes:
+        if type(r).__name__ == "_IncludedRouter":
+            ctx = getattr(r, "include_context", None)
+            pfx = getattr(ctx, "prefix", "") if ctx else ""
+            out += _walk_included_routes(
+                getattr(r.original_router, "routes", []),
+                prefix + (pfx or ""),
+            )
+            continue
+        path = prefix + (getattr(r, "path", "") or "")
+        for m in getattr(r, "methods", None) or []:
+            if m not in ("HEAD", "OPTIONS"):
+                out.append((m, path))
+    return out
+
+
 def _count_api_operations() -> dict:
     """شماریک خط‌مبِ رگرسیون: ۴۵۰ عملیات OpenAPI (بدون گاردهای schema-less).
 
@@ -482,9 +517,11 @@ def _count_api_operations() -> dict:
     ops = sum(len([m for m in v if m in
                    ("get", "post", "put", "patch", "delete", "head", "options")])
               for p, v in paths.items() if p.startswith("/api"))
-    routes = sum(1 for r in app.routes if getattr(r, "path", "").startswith("/api"))
+    routes = len([p for _, p in _walk_included_routes(app.routes)
+                  if p.startswith("/api")])
     return {"openapi_operations": ops, "api_route_objects": routes,
-            "baseline_expected": 450, "routes_match_baseline": ops == 450}
+            "baseline_expected": _ROUTE_BASELINE,
+            "routes_match_baseline": ops == _ROUTE_BASELINE}
 
 
 # ──────────────────────────────────────────────────────────
