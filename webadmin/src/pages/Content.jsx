@@ -600,7 +600,12 @@ function RootMoveModal({ item, intakes, onClose }) {
   const run = async () => { setBusy(true); try {
     if (item.kind === 'lesson') await api.caMoveLessonRoot(item.id, to);
     else if (item.kind === 'subject') await api.refSubjectMoveRoot(item.id, to);
-    else await api.caMoveQbankRoot(item.id, to);
+    // 🛡 شاخه‌ی سوم قبلاً api.caMoveQbankRoot را صدا می‌زد که نه در
+    // api.js تعریف شده و نه endpointی در بک‌اند دارد ⇒ TypeError خام.
+    // امروز غیرقابل‌دسترس است (فقط kind های lesson/subject ساخته
+    // می‌شوند) اما هر kind جدیدی مستقیم اینجا می‌افتاد. خطای صریح
+    // به‌جای کرش مبهم:
+    else throw new Error(`انتقال root برای نوع «${item.kind}» هنوز پشتیبانی نمی‌شود`);
     toast('انتقال root با موفقیت انجام شد ✅'); onClose(true);
   } catch (e) { let conflict = ''; if (e.status === 409) { try { const d = JSON.parse(e.technical || '{}'); conflict = `${d.reason || 'تعارض مقصد'}${d.existing_id ? ` · Existing: ${d.existing_id}` : ''}`; } catch {} } toast(conflict || errText(e), 'err'); setBusy(false); } };
   const fromLabel = item.from ? (intakes.find(x => (x.code || x) === item.from)?.label || item.from) : 'سراسری';

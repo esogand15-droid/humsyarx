@@ -205,7 +205,11 @@ function RootMoveControl({ item, intakes, onClose }) {
   const [to, setTo] = useState(item.from || ''); const [busy, setBusy] = useState(false);
   const run = async () => { setBusy(true); try {
     if (item.kind === 'subject') await api.refSubjectMoveRoot(item.id, to);
-    else await api.caMoveQbankRoot(item.id, to);
+    // 🛡 قبلاً به api.caMoveQbankRoot می‌خورد که وجود خارجی ندارد
+    // (نه در api.js، نه endpointی در بک‌اند) ⇒ TypeError خام.
+    // اینجا فقط kind='subject' ساخته می‌شود، پس شاخه غیرقابل‌دسترس
+    // است؛ اما خطای صریح بهتر از کرش مبهم برای kind های آینده است.
+    else throw new Error(`انتقال root برای نوع «${item.kind}» هنوز پشتیبانی نمی‌شود`);
     toast('انتقال root انجام شد ✅'); onClose(true);
   } catch (e) { let conflict = ''; if (e.status === 409) { try { const d = JSON.parse(e.technical || '{}'); conflict = `${d.reason || 'تعارض مقصد'}${d.existing_id ? ` · Existing: ${d.existing_id}` : ''}`; } catch {} } toast(conflict || errText(e), 'err'); setBusy(false); } };
   return <Modal title={`📦 انتقال «${item.label}»`} onClose={() => onClose(false)}><div className="muted">مبدأ: {item.from || 'سراسری'}؛ مقصد را انتخاب کنید. overwrite ضمنی انجام نمی‌شود.</div><select className="inp content-input-full content-row-top-sm" value={to} onChange={e => setTo(e.target.value)}><option value="">🌐 سراسری</option>{intakes.map(x => <option key={x.code || x} value={x.code || x}>{x.label || x.code || x}</option>)}</select><div className="row content-row-top"><button className="btn danger" disabled={busy || to === item.from} onClick={run}>تأیید انتقال</button><button className="btn" onClick={() => onClose(false)}>انصراف</button></div></Modal>;
