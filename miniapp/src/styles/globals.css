@@ -810,6 +810,9 @@ select.inp {
 
 .toggle-wrap {
   position: relative;
+  /* <label> به‌صورت پیش‌فرض inline است و width/height روی آن اثر ندارد؛
+     تا امروز فقط چون همه‌جا flex item بود تصادفاً درست دیده می‌شد. */
+  display: inline-block;
   flex-shrink: 0;
   width: var(--hy-switch-w);
   height: var(--hy-switch-h);
@@ -828,7 +831,7 @@ select.inp {
   box-sizing: border-box;
   cursor: pointer;
   background: var(--hy-switch-track-off);
-  border: 1px solid var(--hy-switch-border);
+  border: var(--hy-switch-bd-w) solid var(--hy-switch-border);
   border-radius: 999px;
   transition:
     background var(--hy-switch-dur) var(--ease-out),
@@ -839,7 +842,7 @@ select.inp {
   content: '';
   position: absolute;
   top: 50%;
-  inset-inline-end: var(--hy-switch-pad);
+  left: var(--hy-switch-pad);
   width: var(--hy-switch-thumb-size);
   height: var(--hy-switch-thumb-size);
   background: var(--hy-switch-thumb-off);
@@ -862,22 +865,7 @@ input:checked
 input:checked
 + .toggle-sl::after {
   background: var(--hy-switch-thumb-on);
-  transform: translate(
-    calc(-1 * (var(--hy-switch-w) - 2 * var(--hy-switch-pad)
-      - var(--hy-switch-thumb-size) - 2px)),
-    -50%
-  );
-}
-
-[dir='ltr']
-.toggle-wrap
-input:checked
-+ .toggle-sl::after {
-  transform: translate(
-    calc(var(--hy-switch-w) - 2 * var(--hy-switch-pad)
-      - var(--hy-switch-thumb-size) - 2px),
-    -50%
-  );
+  transform: translate(var(--hy-switch-travel), -50%);
 }
 
 .toggle-wrap
@@ -2364,10 +2352,25 @@ input:focus-visible
   --hy-switch-h: 25px;
   --hy-switch-pad: 3px;
   --hy-switch-thumb-size: 17px;
+  --hy-switch-bd-w: 1px;
+
+  /* مسافتِ حرکتِ نوب — از خودِ ابعاد مشتق می‌شود، نه عددِ ثابت.
+     نوب absolute است، پس containing block آن «padding box» دکمه است؛
+     یعنی بوردر از دو طرف کم می‌شود:
+       travel = W − ۲×border − ۲×pad − thumb = ۴۴ − ۲ − ۶ − ۱۷ = ۱۹px
+     با این فرمول اگر هر توکنی عوض شود، نوب باز هم داخل تراک می‌ماند. */
+  --hy-switch-travel: calc(
+    var(--hy-switch-w) - 2 * var(--hy-switch-bd-w)
+    - 2 * var(--hy-switch-pad) - var(--hy-switch-thumb-size)
+  );
 
   --hy-switch-track-off: var(--ovr);
+  /* ON عمداً کم‌جلوه‌تر از عنوانِ کارت است. نسبتِ کنتراستِ تراک با
+     پس‌زمینه‌ی کارت (#182235) از ۳٫۱۶ به ۲٫۶ کاهش یافت، در حالی که
+     نوبِ سفید روی آن ۶٫۱۳ می‌ماند؛ یعنی وضعیت کاملاً خواناست ولی
+     سوییچ دیگر اولین چیزی نیست که چشم می‌بیند (شکایتِ اسکرین‌شات). */
   --hy-switch-track-on:
-    linear-gradient(135deg, var(--acc-dim), var(--acc));
+    linear-gradient(135deg, #22509E, #2F6FD0);
   --hy-switch-track-on-danger:
     linear-gradient(135deg, #B91C1C, #DC2626);
 
@@ -2390,7 +2393,7 @@ input:focus-visible
   width: var(--hy-switch-w);
   height: var(--hy-switch-h);
   padding: 0;
-  border: 1px solid var(--hy-switch-border);
+  border: var(--hy-switch-bd-w) solid var(--hy-switch-border);
   border-radius: 999px;
   background: var(--hy-switch-track-off);
   cursor: pointer;
@@ -2412,10 +2415,23 @@ input:focus-visible
   transform: translate(-50%, -50%);
 }
 
+/* ⚠️ ریشه‌ی باگِ «نوب بیرونِ تراک» (اسکرین‌شات):
+   نسخه‌ی قبلی نوب را با `inset-inline-end` مهار می‌کرد. صفحه dir=rtl
+   است، پس inset-inline-end به `left: 3px` ترجمه می‌شد و نوب از همان
+   ابتدا به لبه‌ی چپ چسبیده بود؛ سپس حالت ON یک translateX **منفی**
+   اعمال می‌کرد و نوب را ۱۵px بیرون از تراک می‌برد.
+   (اندازه‌گیریِ واقعی مرورگر: track[207.2..251.2] thumb[192.2..209.2])
+
+   راه‌حل: لنگرِ فیزیکیِ `left` + جابه‌جاییِ همیشه مثبت. سوییچ یک
+   استعاره‌ی فیزیکی است و مثل متن قرینه نمی‌شود؛ در هر دو جهت
+   OFF=چپ و ON=راست است — دقیقاً همان چیزی که در RTL هم دیده می‌شد و
+   کاربر آن را درست تأیید کرده بود. چون هیچ‌کدام از لنگر و جهتِ حرکت
+   به `direction` وابسته نیستند، نتیجه در RTL و LTR یکسان و
+   deterministic است و دیگر امکانِ برگشتِ این باگ وجود ندارد. */
 .hy-switch__thumb {
   position: absolute;
   top: 50%;
-  inset-inline-end: var(--hy-switch-pad);
+  left: var(--hy-switch-pad);
   width: var(--hy-switch-thumb-size);
   height: var(--hy-switch-thumb-size);
   border-radius: 50%;
@@ -2446,21 +2462,7 @@ input:focus-visible
    ابعاد عوض شد، جای نوب خودبه‌خود درست بماند (نه عددِ جادوییِ ۱۹px). */
 .hy-switch--on .hy-switch__thumb {
   background: var(--hy-switch-thumb-on);
-  transform: translate(
-    calc(-1 * (var(--hy-switch-w) - 2 * var(--hy-switch-pad)
-      - var(--hy-switch-thumb-size) - 2px)),
-    -50%
-  );
-}
-
-/* RTL: صفحه dir=rtl است و inset-inline-end خودش قرینه می‌شود؛ اما جهتِ
-   translate باید هم قرینه شود وگرنه نوب از تراک بیرون می‌زند. */
-[dir='ltr'] .hy-switch--on .hy-switch__thumb {
-  transform: translate(
-    calc(var(--hy-switch-w) - 2 * var(--hy-switch-pad)
-      - var(--hy-switch-thumb-size) - 2px),
-    -50%
-  );
+  transform: translate(var(--hy-switch-travel), -50%);
 }
 
 .hy-switch:focus-visible {
