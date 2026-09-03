@@ -337,15 +337,17 @@ function unlockOverlayScroll() {
 function useDialog(onClose, active = true) {
   const ref = useRef(null);
   const previous = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!active) return;
     previous.current = document.activeElement;
     lockOverlayScroll();
     const root = ref.current;
     const focusables = () => [...(root?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])];
-    window.setTimeout(() => (focusables()[0] || root)?.focus({ preventScroll: true }), 0);
+    const focusTimer = window.setTimeout(() => (focusables()[0] || root)?.focus({ preventScroll: true }), 0);
     const key = e => {
-      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); }
       if (e.key === 'Tab') {
         const list = focusables(); if (!list.length) return;
         const first = list[0]; const last = list[list.length - 1];
@@ -355,11 +357,12 @@ function useDialog(onClose, active = true) {
     };
     document.addEventListener('keydown', key);
     return () => {
+      window.clearTimeout(focusTimer);
       document.removeEventListener('keydown', key);
       unlockOverlayScroll();
       previous.current?.focus?.({ preventScroll: true });
     };
-  }, [onClose, active]);
+  }, [active]);
   return ref;
 }
 
