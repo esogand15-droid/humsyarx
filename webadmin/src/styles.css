@@ -811,6 +811,51 @@ select:focus-visible, textarea:focus-visible {
 .section-title { color: var(--c-txt); font-size: var(--fs-section); font-weight: 750; }
 .section-description { color: var(--c-txt3); font-size: var(--fs-label); margin-top: 2px; }
 
+/* ── 🎛 Toolbar یکپارچه — گروه‌بندی اکشن‌ها با جداکنندهٔ نرم ───────── */
+.toolbar {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: var(--sp2) var(--sp3); justify-content: flex-end;
+}
+.toolbar-group {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp1);
+  padding: var(--sp1); border-radius: var(--r-md);
+  background: var(--c-bg2); border: 1px solid var(--c-line);
+}
+.toolbar-group > .btn.sm { border-color: transparent; background: transparent; }
+.toolbar-group > .btn.sm:hover { background: var(--c-surface2); border-color: var(--c-line2); }
+.toolbar-group > .btn.sm.ok,
+.toolbar-group > .btn.sm.warn,
+.toolbar-group > .btn.sm.danger,
+.toolbar-group > .btn.sm.primary { border-color: currentColor; }
+.toolbar-group > .btn.sm.primary { border-color: transparent; }
+
+/* ── نوار انتخاب گروهی — چسبان، جدا از هدر صفحه ──────────────────── */
+.selbar {
+  position: sticky; top: calc(var(--topbar-h) + var(--sp2)); z-index: var(--z-sticky);
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp2) var(--sp3);
+  margin-bottom: var(--sp3); padding: var(--sp2) var(--sp3);
+  border-radius: var(--r-xl); box-shadow: var(--sh-1);
+  background: color-mix(in srgb, var(--c-acc) 10%, var(--c-surface));
+  border: 1px solid color-mix(in srgb, var(--c-acc) 38%, var(--c-line));
+}
+.selbar-lead { display: flex; align-items: center; gap: var(--sp2); font-size: var(--fs-label); }
+.selbar-count {
+  min-width: 26px; padding: 2px 8px; border-radius: var(--r-pill);
+  background: var(--c-acc); color: #052c40; font-weight: 800; text-align: center;
+}
+.selbar-label { color: var(--c-txt2); }
+.selbar-actions {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: var(--sp2); margin-inline-start: auto;
+}
+.selbar .toolbar-group { background: color-mix(in srgb, var(--c-bg2) 82%, transparent); }
+@media (max-width: 760px) {
+  .selbar { position: static; }
+  .selbar-actions { margin-inline-start: 0; width: 100%; }
+  .selbar-actions .toolbar-group { flex: 1 1 100%; justify-content: center; }
+  .toolbar { justify-content: flex-start; }
+}
+
 .filter-bar {
   display: flex; align-items: flex-end; gap: var(--sp2); flex-wrap: wrap;
   padding: var(--sp3); margin-bottom: var(--sp3);

@@ -248,30 +248,53 @@ export default function Users({ go, me, route = '' }) {
 
   return (
     <>
-      <PageHeader title="مدیریت کاربران" description="جست‌وجو، فیلتر ذخیره‌شده، صفحه‌بندی سرورساید و عملیات گروهی" actions={<>
-        {me?.is_owner && <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>}
-        {me?.is_owner && <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>}
-        {has('users.view') && <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>}
-        <button className="btn sm" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
-          accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
-          smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
-        {canAnyBatch && <button className="btn sm" onClick={() => setLargeBatch(true)}>⚡ Batch با فهرست ID</button>}
-        {sel.length > 0 && <>
-          <span className="badge acc">{sel.length} انتخاب‌شده</span>
-          {has('users.manage') && <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>}
-          {has('users.suspend') && <button className="btn sm danger" onClick={() => setConfirm({ action: 'suspend', text: `تعلیق ${sel.length} کاربر؟` })}>⏸ تعلیق</button>}
-          {has('users.suspend') && <button className="btn sm" onClick={() => setConfirm({ action: 'unsuspend', text: `رفع تعلیق ${sel.length} کاربر؟` })}>🔓 رفع تعلیق</button>}
-          {has('users.manage') && <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>}
-          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>}
-          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>}
-          {has('users.manage') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>}
-          {has('subscription.manage') && <button className="btn sm" title="اعطا یا تمدید اشتراک برای کاربران انتخاب‌شده — از همان مسیر بخش مالی"
-                 onClick={() => { loadSubPlans(); setBulkModal('subscription'); }}>💎 اشتراک</button>}
-          {has('users.message') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>}
-          {has('users.delete') && <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>}
-          <button className="btn sm" onClick={exportSel}>📥 CSV انتخاب</button>
-        </>}
-      </>} />
+      {/* 🎛 UX — نوار ابزار یکپارچه: اکشن‌های صفحه در هدر، اکشن‌های گروهی در نوار انتخاب جدا */}
+      <PageHeader title="مدیریت کاربران" description="جست‌وجو، فیلتر ذخیره‌شده، صفحه‌بندی سرورساید و عملیات گروهی" actions={
+        <div className="toolbar" role="toolbar" aria-label="ابزارهای صفحه کاربران">
+          {(me?.is_owner || has('users.view')) && <div className="toolbar-group" aria-label="مدیریت">
+            {me?.is_owner && <button className="btn sm" title="مدیریت ورودی‌ها (افزودن/فعال‌سازی/حذف)" onClick={() => setIntOpen(true)}>📅 ورودی‌ها</button>}
+            {me?.is_owner && <button className="btn sm" title="ادمین‌های محتوا" onClick={() => setCaOpen(true)}>🎓 ادمین‌های محتوا</button>}
+            {has('users.view') && <button className="btn sm" title="کاربران مسدودشده" onClick={() => setBlOpen(true)}>⛔ لیست سیاه</button>}
+          </div>}
+          <div className="toolbar-group" aria-label="خروجی و عملیات انبوه">
+            <button className="btn sm" title="خروجی CSV از همه‌ی نتایج فیلترشده" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
+              accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
+              smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
+            {canAnyBatch && <button className="btn sm" title="اجرای عملیات روی فهرستی از شناسه‌ها" onClick={() => setLargeBatch(true)}>⚡ Batch با فهرست ID</button>}
+          </div>
+        </div>
+      } />
+
+      {sel.length > 0 && (
+        <div className="selbar" role="region" aria-label="عملیات گروهی روی کاربران انتخاب‌شده">
+          <div className="selbar-lead">
+            <span className="selbar-count">{faNum(sel.length)}</span>
+            <span className="selbar-label">کاربر انتخاب‌شده</span>
+          </div>
+          <div className="selbar-actions">
+            {(has('users.manage') || has('users.suspend')) && <div className="toolbar-group" aria-label="وضعیت حساب">
+              {has('users.manage') && <button className="btn sm ok" onClick={() => setConfirm({ action: 'approve', text: `تأیید ${sel.length} کاربر؟` })}>✅ تأیید</button>}
+              {has('users.suspend') && <button className="btn sm warn" onClick={() => setConfirm({ action: 'suspend', text: `تعلیق ${sel.length} کاربر؟` })}>⏸ تعلیق</button>}
+              {has('users.suspend') && <button className="btn sm" onClick={() => setConfirm({ action: 'unsuspend', text: `رفع تعلیق ${sel.length} کاربر؟` })}>🔓 رفع تعلیق</button>}
+            </div>}
+            {has('users.manage') && <div className="toolbar-group" aria-label="دسته‌بندی و نقش">
+              <button className="btn sm" onClick={() => { setIntakeVal(''); setIntakeModal(true); }}>🏷 تغییر ورودی</button>
+              <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('set_group'); }}>👥 تغییر گروه</button>
+              <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('add_role'); }}>🛡 افزودن نقش</button>
+              <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('remove_role'); }}>➖ حذف نقش</button>
+            </div>}
+            {(has('subscription.manage') || has('users.message')) && <div className="toolbar-group" aria-label="ارتباط و اشتراک">
+              {has('subscription.manage') && <button className="btn sm" title="اعطا یا تمدید اشتراک برای کاربران انتخاب‌شده — از همان مسیر بخش مالی"
+                     onClick={() => { loadSubPlans(); setBulkModal('subscription'); }}>💎 اشتراک</button>}
+              {has('users.message') && <button className="btn sm" onClick={() => { setBulkValue(''); setBulkModal('message'); }}>📨 پیام</button>}
+            </div>}
+            <div className="toolbar-group" aria-label="خروجی و اقدام خطرناک">
+              <button className="btn sm" onClick={exportSel}>📥 CSV انتخاب</button>
+              {has('users.delete') && <button className="btn sm danger" onClick={() => { setBulkValue(''); setBulkModal('block'); }}>⛔ مسدودسازی</button>}
+            </div>
+          </div>
+        </div>
+      )}
 
       <FilterBar>
         <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، نام‌نما، یوزرنیم، شماره دانشجویی یا Telegram ID…"
