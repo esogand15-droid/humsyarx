@@ -25,7 +25,7 @@ const RingStreet = lazy(() => import('./pages/RingStreet.jsx'));
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
     { path: '/dashboard', icon: '📊', label: 'داشبورد' },
-    { path: '/operations', icon: '🎛', label: 'مرکز عملیات' },
+    { path: '/operations', icon: '🎛', label: 'مرکز عملیات', any: ['system.manage'] },
   ] },
   { sec: 'افراد', items: [
     { path: '/users', icon: '👥', label: 'کاربران', any: ['users.view', 'users.manage'] },
@@ -81,6 +81,22 @@ function visibleGroups(me) {
   return NAV_GROUPS.map(g => ({ ...g, items: g.items.filter(i => canSee(i, me)) })).filter(g => g.items.length);
 }
 
+function canAccessRoute(route, me) {
+  const base = routeBase(route);
+  const query = route.includes('?') ? route.slice(route.indexOf('?') + 1) : '';
+  let required = null;
+  if (base === '/exams') required = query.includes('tab=grades')
+    ? ['grades.manage', 'grades.scoped'] : ['schedules.manage'];
+  else if (base === '/content' && query.includes('tab=schedule')) {
+    required = ['schedules.manage', 'content.manage'];
+  } else {
+    const item = NAV_GROUPS.flatMap(g => g.items).find(i => routeBase(i.path) === base);
+    if (!item || !item.any?.length) return true;
+    required = item.any;
+  }
+  return !!me?.is_owner || required.some(permission => (me?.perms || []).includes(permission));
+}
+
 function crumbFor(route, groups) {
   for (const group of groups) {
     const exact = group.items.find(n => n.path === route);
@@ -124,6 +140,11 @@ export default function App() {
     return () => window.removeEventListener('wa:unauthorized', unauthorized);
   }, []);
   useEffect(() => { localStorage.setItem('wa_mini', mini ? '1' : '0'); }, [mini]);
+  // Hash routes are client-controlled, so navigation visibility is not enough:
+  // direct links and manually edited hashes must be denied before a page mounts.
+  useEffect(() => {
+    if (me && !canAccessRoute(route, me)) go('/dashboard');
+  }, [me, route, go]);
 
   const groups = useMemo(() => visibleGroups(me), [me]);
   const flatNav = useMemo(() => groups.flatMap(g => g.items), [groups]);
@@ -210,6 +231,8 @@ export default function App() {
   if (me === null) return <><Login onDone={loadMe} /><ToastHost /></>;
 
   const base = routeBase(route);
+  const routeAllowed = canAccessRoute(route, me);
+  if (!routeAllowed) return <div className="login-hero"><Loading rows={1} variant="kpi" label="در حال انتقال به صفحه مجاز" /></div>;
   const Page = PAGES[base] || Dashboard;
   const crumb = crumbFor(route, groups);
   const systemOk = system && system.bot_ok === true && system.db_ok === true && system.api_ok === true;

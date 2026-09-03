@@ -45,6 +45,10 @@ class DBCore:
 
         self.users        = _db['users']
         self.questions    = _db['questions']
+        # Backward-compatible metadata store for the Mini App's file-bank UI.
+        # Question documents remain canonical; this collection only stores the
+        # uploaded Telegram file and its curator metadata.
+        self.qbank_files  = _db['qbank_files']
         # Question Bank v2 shared domain collections.
         self.question_progress = _db['question_progress']
         self.question_topic_stats = _db['question_topic_stats']
@@ -133,6 +137,16 @@ class DBCore:
     #  ایندکس‌ها
     # ══════════════════════════════════════════════════
 
+    @staticmethod
+    def _index(collection, *keys, **options):
+        """Return a structured index operation.
+
+        Keeping collection/keys/options beside the awaitable means a failed
+        unique or TTL index can be classified reliably; introspecting a
+        Motor coroutine's repr is not a runtime contract.
+        """
+        return collection, keys, options
+
     async def ensure_indexes(self):
         try:
             # 🛡 AUDIT-R5 (§۶۲–§۶۴) — هر ایندکس مستقل سنجیده می‌شود.
@@ -143,161 +157,171 @@ class DBCore:
             # غایب می‌ماند درحالی‌که ربات عادی به‌نظر می‌رسید.
             # حالا: تفکیک CRITICAL (unique/TTL) از WARNING، شمارش دقیق،
             # ثبت در settings برای /api/health/deep، و بدون crash (boot-loop نه).
-            coros = [
-                self.users.create_index('user_id', unique=True, background=True),
-                self.users.create_index('approved', background=True),
-                self.users.create_index('role', background=True),
-                self.users.create_index('registered_at', background=True),
-                self.users.create_index('intake', background=True),
-                self.users.create_index([('approved', 1), ('registered_at', -1)], background=True),
-                self.users.create_index([('intake', 1), ('approved', 1), ('registered_at', -1)], background=True),
-                self.users.create_index([('intake', 1), ('group', 1), ('last_active', -1)], background=True),
-                self.users.create_index([('ai_banned', 1), ('name', 1)], background=True),
-                self.ai_reports.create_index([('created_at', -1)], background=True),
+            index_specs = [
+                self._index(self.users, 'user_id', unique=True, background=True),
+                self._index(self.users, 'approved', background=True),
+                self._index(self.users, 'role', background=True),
+                self._index(self.users, 'registered_at', background=True),
+                self._index(self.users, 'intake', background=True),
+                self._index(self.users, [('approved', 1), ('registered_at', -1)], background=True),
+                self._index(self.users, [('intake', 1), ('approved', 1), ('registered_at', -1)], background=True),
+                self._index(self.users, [('intake', 1), ('group', 1), ('last_active', -1)], background=True),
+                self._index(self.users, [('ai_banned', 1), ('name', 1)], background=True),
+                self._index(self.ai_reports, [('created_at', -1)], background=True),
                 # 🛡 AUDIT-V3 — بازیابی آرشیو با (تیکت، نوع) انجام می‌شود
-                self.ticket_overflow.create_index([('ticket_ref', 1), ('kind', 1), ('seq', 1)],
+                self._index(self.ticket_overflow, [('ticket_ref', 1), ('kind', 1), ('seq', 1)],
                                                   unique=True, background=True),
-                self.ai_reports.create_index([('user_id', 1), ('created_at', -1)], background=True),
+                self._index(self.ai_reports, [('user_id', 1), ('created_at', -1)], background=True),
                 # Question Bank v2 canonical and legacy-compatible query indexes.
-                self.questions.create_index('approved', background=True),
-                self.questions.create_index([('status', 1), ('intake', 1), ('lesson_id', 1), ('topic_id', 1), ('difficulty', 1)], background=True),
-                self.questions.create_index([('status', 1), ('lesson_id', 1), ('topic_id', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('intake', 1), ('status', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('creator_id', 1), ('status', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('status', 1), ('intake', 1), ('source', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('status', 1), ('intake', 1), ('creator_id', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('status', 1), ('intake', 1), ('difficulty', 1), ('created_at', -1)], background=True),
-                self.questions.create_index([('content_hash', 1), ('intake', 1)], background=True),
-                self.questions.create_index('import_identity', unique=True, sparse=True, background=True),
+                self._index(self.questions, 'approved', background=True),
+                self._index(self.qbank_files, [('intake', 1), ('created_at', -1)], background=True),
+                self._index(self.qbank_files, [('uploaded_by', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('status', 1), ('intake', 1), ('lesson_id', 1), ('topic_id', 1), ('difficulty', 1)], background=True),
+                self._index(self.questions, [('status', 1), ('lesson_id', 1), ('topic_id', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('intake', 1), ('status', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('creator_id', 1), ('status', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('status', 1), ('intake', 1), ('source', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('status', 1), ('intake', 1), ('creator_id', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('status', 1), ('intake', 1), ('difficulty', 1), ('created_at', -1)], background=True),
+                self._index(self.questions, [('content_hash', 1), ('intake', 1)], background=True),
+                self._index(self.questions, 'import_identity', unique=True, sparse=True, background=True),
                 # Legacy read indexes stay until the explicit schema migration has been verified.
-                self.questions.create_index([('lesson', 1), ('topic', 1)], background=True),
-                self.questions.create_index([('intake', 1), ('approved', 1), ('created_at', -1)], background=True),
-                self.question_progress.create_index([('user_id', 1), ('question_id', 1)], unique=True, background=True),
-                self.question_progress.create_index([('user_id', 1), ('topic_id', 1), ('last_answered_at', -1)], background=True),
-                self.question_progress.create_index([('user_id', 1), ('lesson_id', 1), ('last_answered_at', -1)], background=True),
-                self.question_topic_stats.create_index([('user_id', 1), ('updated_at', -1)], background=True),
-                self.ai_practice_questions.create_index([('user_id', 1), ('generated_at', -1)], background=True),
-                self.ai_practice_questions.create_index([('user_id', 1), ('topic_id', 1), ('generated_at', -1)], background=True),
-                self.question_ai_quotas.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
-                self.question_import_jobs.create_index([('admin_id', 1), ('created_at', -1)], background=True),
-                self.question_import_jobs.create_index([('admin_id', 1), ('fingerprint', 1)], unique=True, background=True),
-                self.question_import_items.create_index([('job_id', 1), ('classification', 1), ('row', 1)], background=True),
-                self.question_import_items.create_index([('job_id', 1), ('external_id', 1)], unique=True, background=True),
-                self.question_migration_backups.create_index(
+                self._index(self.questions, [('lesson', 1), ('topic', 1)], background=True),
+                self._index(self.questions, [('intake', 1), ('approved', 1), ('created_at', -1)], background=True),
+                self._index(self.question_progress, [('user_id', 1), ('question_id', 1)], unique=True, background=True),
+                self._index(self.question_progress, [('user_id', 1), ('topic_id', 1), ('last_answered_at', -1)], background=True),
+                self._index(self.question_progress, [('user_id', 1), ('lesson_id', 1), ('last_answered_at', -1)], background=True),
+                self._index(self.question_topic_stats, [('user_id', 1), ('updated_at', -1)], background=True),
+                self._index(self.ai_practice_questions, [('user_id', 1), ('generated_at', -1)], background=True),
+                self._index(self.ai_practice_questions, [('user_id', 1), ('topic_id', 1), ('generated_at', -1)], background=True),
+                self._index(self.question_ai_quotas, [('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self._index(self.question_import_jobs, [('admin_id', 1), ('created_at', -1)], background=True),
+                self._index(self.question_import_jobs, [('admin_id', 1), ('fingerprint', 1)], unique=True, background=True),
+                self._index(self.question_import_items, [('job_id', 1), ('classification', 1), ('row', 1)], background=True),
+                self._index(self.question_import_items, [('job_id', 1), ('external_id', 1)], unique=True, background=True),
+                self._index(self.question_migration_backups,
                     [('migration', 1), ('question_id', 1)], unique=True,
                     partialFilterExpression={'question_id': {'$type': 'string'}},
                     name='uq_qbank_migration_question', background=True),
-                self.question_migration_backups.create_index(
+                self._index(self.question_migration_backups,
                     [('migration', 1), ('progress_id', 1)], unique=True,
                     partialFilterExpression={'progress_id': {'$type': 'string'}},
                     name='uq_qbank_migration_progress', background=True),
                 # 🍴 موج C2 — Fork/Override: یافتن fork یک base برای یک ورودی
-                self.bs_sessions.create_index([('fork_of', 1), ('intake', 1)], background=True),
-                self.ref_books.create_index([('fork_of', 1), ('intake', 1)], background=True),
-                self.bs_lessons.create_index([('intake', 1), ('term', 1), ('order', 1)], background=True),
-                self.ref_subjects.create_index([('intake', 1), ('order', 1)], background=True),
-                self.bs_lessons.create_index([('term', 1), ('order', 1)], background=True),
-                self.bs_sessions.create_index([('lesson_id', 1), ('number', 1)], background=True),
+                self._index(self.bs_sessions, [('fork_of', 1), ('intake', 1)], background=True),
+                self._index(self.ref_books, [('fork_of', 1), ('intake', 1)], background=True),
+                self._index(self.bs_lessons, [('intake', 1), ('term', 1), ('order', 1)], background=True),
+                self._index(self.ref_subjects, [('intake', 1), ('order', 1)], background=True),
+                self._index(self.bs_lessons, [('term', 1), ('order', 1)], background=True),
+                self._index(self.bs_sessions, [('lesson_id', 1), ('number', 1)], background=True),
                 # 🌊 موج C3 — «فرزند ورودی‌خاص»: یکتایی/پیدا کردن جلسه داخل یک سطل
                 # (lesson_id, number, intake). عمداً غیر-yکتایی: داده‌ی legacy
                 # بدون فیلد intake دارد و یک unique جدید روی همان کلید، درج‌های
                 # قدیمیِ 🎓 را می‌شکست (§۱۳ گزارش). enforce در bs_add_session.
-                self.bs_sessions.create_index(
+                self._index(self.bs_sessions,
                     [('lesson_id', 1), ('intake', 1), ('number', 1)], background=True),
-                self.bs_content.create_index([('session_id', 1), ('order', 1)], background=True),
-                self.ref_subjects.create_index('order', background=True),
-                self.ref_books.create_index([('subject_id', 1), ('order', 1)], background=True),
-                self.ref_files.create_index([('book_id', 1), ('lang', 1), ('volume', 1)], background=True),
-                self.schedules.create_index([('date', 1), ('type', 1)], background=True),
-                self.stats_col.create_index([('user_id', 1), ('timestamp', -1)], background=True),
-                self.tickets.create_index('ticket_id', unique=True, background=True),
-                self.tickets.create_index([('user_id', 1), ('status', 1)], background=True),
-                self.tickets.create_index([('status', 1), ('created_at', -1)], background=True),
-                self.tickets.create_index([('priority', 1), ('created_at', -1)], background=True),
-                self.tickets.create_index([('assignee_id', 1), ('status', 1), ('created_at', -1)], background=True),
-                self.audit_logs.create_index([('timestamp', -1)], background=True),
-                self.audit_logs.create_index([('category', 1), ('severity', 1), ('timestamp', -1)], background=True),
-                self.audit_logs.create_index([('module', 1), ('timestamp', -1)], background=True),
-                self.audit_logs.create_index([('actor.id', 1), ('timestamp', -1)], background=True),
-                self.audit_logs.create_index([('correlation_id', 1), ('timestamp', 1)], background=True),
-                self.audit_logs.create_index([('target.type', 1), ('target.id', 1), ('timestamp', -1)], background=True),
-                self.grades.create_index([('student_id', 1), ('created_at', -1)], background=True),
-                self.grades.create_index([('lesson', 1), ('created_at', -1)], background=True),
-                self.grades.create_index([('exam_date', -1), ('lesson', 1)], background=True),
+                self._index(self.bs_content, [('session_id', 1), ('order', 1)], background=True),
+                self._index(self.ref_subjects, 'order', background=True),
+                self._index(self.ref_books, [('subject_id', 1), ('order', 1)], background=True),
+                self._index(self.ref_files, [('book_id', 1), ('lang', 1), ('volume', 1)], background=True),
+                self._index(self.schedules, [('date', 1), ('type', 1)], background=True),
+                self._index(self.stats_col, [('user_id', 1), ('timestamp', -1)], background=True),
+                self._index(self.tickets, 'ticket_id', unique=True, background=True),
+                self._index(self.tickets, [('user_id', 1), ('status', 1)], background=True),
+                self._index(self.tickets, [('status', 1), ('created_at', -1)], background=True),
+                self._index(self.tickets, [('priority', 1), ('created_at', -1)], background=True),
+                self._index(self.tickets, [('assignee_id', 1), ('status', 1), ('created_at', -1)], background=True),
+                self._index(self.audit_logs, [('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('category', 1), ('severity', 1), ('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('module', 1), ('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('actor.id', 1), ('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('correlation_id', 1), ('timestamp', 1)], background=True),
+                self._index(self.audit_logs, [('target.type', 1), ('target.id', 1), ('timestamp', -1)], background=True),
+                self._index(self.grades, [('student_id', 1), ('created_at', -1)], background=True),
+                self._index(self.grades, [('lesson', 1), ('created_at', -1)], background=True),
+                self._index(self.grades, [('exam_date', -1), ('lesson', 1)], background=True),
                 # 🛡 AUDIT-§۸۲ — فهرست/فیلتر ترم‌به‌ترمِ نمرات
-                self.grades.create_index([('student_id', 1), ('term', 1), ('exam_date', -1)], background=True),
-                self.grades.create_index([('term', 1), ('created_at', -1)], background=True),
-                self.wa_saved_filters.create_index([('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
-                self.wa_saved_filters.create_index([('owner', 1), ('updated_at', -1)], background=True),
-                self.web_admin_sessions.create_index([('uid', 1), ('revoked', 1), ('created_at', -1)], background=True),
-                self.web_admin_sessions.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
-                self.admin_op_locks.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
-                self.web_admin_otps.create_index([('uid', 1)], background=True),
-                self.web_admin_otps.create_index([('expires_at', 1)], expireAfterSeconds=0, background=True),
-                self.wa_api_metrics.create_index([('at', 1)], expireAfterSeconds=2592000, background=True),
-                self.wa_api_metrics.create_index([('route', 1), ('at', -1)], background=True),
-                self.wa_api_metrics.create_index([('status', 1), ('at', -1)], background=True),
-                self.broadcast_campaigns.create_index([('created_at', -1)], background=True),
-                self.broadcast_campaigns.create_index([('status', 1), ('send_at', 1)], background=True),
-                self.bot_notifs.create_index([('campaign_id', 1), ('sent', 1)], background=True),
-                self.bot_notifs.create_index([('sent', 1), ('send_at', 1)], background=True),
-                self.intakes.create_index('code', unique=True, background=True),
+                self._index(self.grades, [('student_id', 1), ('term', 1), ('exam_date', -1)], background=True),
+                self._index(self.grades, [('term', 1), ('created_at', -1)], background=True),
+                self._index(self.wa_saved_filters, [('scope', 1), ('shared', 1), ('updated_at', -1)], background=True),
+                self._index(self.wa_saved_filters, [('owner', 1), ('updated_at', -1)], background=True),
+                self._index(self.web_admin_sessions, [('uid', 1), ('revoked', 1), ('created_at', -1)], background=True),
+                self._index(self.web_admin_sessions, [('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self._index(self.admin_op_locks, [('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self._index(self.web_admin_otps, [('uid', 1)], background=True),
+                self._index(self.web_admin_otps, [('expires_at', 1)], expireAfterSeconds=0, background=True),
+                self._index(self.wa_api_metrics, [('at', 1)], expireAfterSeconds=2592000, background=True),
+                self._index(self.wa_api_metrics, [('route', 1), ('at', -1)], background=True),
+                self._index(self.wa_api_metrics, [('status', 1), ('at', -1)], background=True),
+                self._index(self.broadcast_campaigns, [('created_at', -1)], background=True),
+                self._index(self.broadcast_campaigns, [('status', 1), ('send_at', 1)], background=True),
+                self._index(self.bot_notifs, [('campaign_id', 1), ('sent', 1)], background=True),
+                self._index(self.bot_notifs, [('sent', 1), ('send_at', 1)], background=True),
+                self._index(self.intakes, 'code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
                 # unique + sparse (فقط اسنادی که فیلد دارند/غیرnull)
-                self.users.create_index('nickname_normalized', unique=True, sparse=True, background=True),
+                self._index(self.users, 'nickname_normalized', unique=True, sparse=True, background=True),
                 # 🚀 موج ۴.۶۰ — پوشش کوئری‌های داغ پنل اشتراک:
                 # فیلتر status + مرتب‌سازی submitted_at/end_date و
                 # تاریخچه‌ی پرداخت هر کاربر. بدون این‌ها = Full
                 # Collection Scan + SORT در حافظه در هر درخواست پنل.
-                self.sub_payments.create_index([('status', 1), ('submitted_at', -1)], background=True),
-                self.sub_payments.create_index([('user_id', 1), ('submitted_at', -1)], background=True),
-                self.subscriptions.create_index([('status', 1), ('end_date', 1)], background=True),
+                self._index(self.sub_payments, [('status', 1), ('submitted_at', -1)], background=True),
+                self._index(self.sub_payments, [('user_id', 1), ('submitted_at', -1)], background=True),
+                self._index(self.subscriptions, [('status', 1), ('end_date', 1)], background=True),
                 # 🛡 AUDIT-A5/P-9 — آدرس تیکت یکتا باشد و جست‌وجوی نام ایندکس
-                self.tickets.create_index([('user_name', 1), ('created_at', -1)], background=True),
-                self.tickets.create_index([('user_id', 1), ('created_at', -1)], background=True),
-                self.subscriptions.create_index([('user_id', 1), ('status', 1)], background=True),
+                self._index(self.tickets, [('user_name', 1), ('created_at', -1)], background=True),
+                self._index(self.tickets, [('user_id', 1), ('created_at', -1)], background=True),
+                self._index(self.subscriptions, [('user_id', 1), ('status', 1)], background=True),
                 # 🔔 موج ۴.۹۰ — کوئری داغ صندوق اعلان: فهرست کاربر به
                 # ترتیب زمان + شمارش خوانده‌نشده‌ها
-                self.user_notifs.create_index([('user_id', 1), ('created_at', -1)], background=True),
-                self.user_notifs.create_index([('user_id', 1), ('read', 1)], background=True),
+                self._index(self.user_notifs, [('user_id', 1), ('created_at', -1)], background=True),
+                self._index(self.user_notifs, [('user_id', 1), ('read', 1)], background=True),
                 # 👑 موج P0 Prestige — قانون یک‌بارهرسؤال + بردها/رقیب + سفر/فید
-                self.answers.create_index([('user_id', 1), ('question_id', 1)], background=True),
-                self.answers.create_index([('user_id', 1), ('answered_at', 1)], background=True),
-                self.users.create_index([('approved', 1), ('effective_xp', -1)], background=True),
-                self.users.create_index([('approved', 1), ('intake', 1), ('effective_xp', -1)], background=True),
-                self.users.create_index([('approved', 1), ('group', 1), ('effective_xp', -1)], background=True),
-                self.users.create_index([('approved', 1), ('weekly_xp', -1)], background=True),
-                self.prestige_history.create_index([('uid', 1), ('at', -1)], background=True),
-                self.prestige_history.create_index([('at', -1)], background=True),
-                self.prestige_history.create_index([('type', 1), ('key', 1)], background=True),
+                self._index(self.answers, [('user_id', 1), ('question_id', 1)], background=True),
+                self._index(self.answers, [('user_id', 1), ('answered_at', 1)], background=True),
+                self._index(self.users, [('approved', 1), ('effective_xp', -1)], background=True),
+                self._index(self.users, [('approved', 1), ('intake', 1), ('effective_xp', -1)], background=True),
+                self._index(self.users, [('approved', 1), ('group', 1), ('effective_xp', -1)], background=True),
+                self._index(self.users, [('approved', 1), ('weekly_xp', -1)], background=True),
+                self._index(self.prestige_history, [('uid', 1), ('at', -1)], background=True),
+                self._index(self.prestige_history, [('at', -1)], background=True),
+                self._index(self.prestige_history, [('type', 1), ('key', 1)], background=True),
                 # 👑 موج P2 — ضدتکرار واکنش فید (هر کاربر یک واکنش per رویداد)
-                self.feed_reactions.create_index([('event_id', 1), ('uid', 1)], unique=True, background=True),
-                self.feed_reactions.create_index([('uid', 1)], background=True),
+                self._index(self.feed_reactions, [('event_id', 1), ('uid', 1)], unique=True, background=True),
+                self._index(self.feed_reactions, [('uid', 1)], background=True),
                 # 👑 موج P1 — جست‌وجوی جلسه‌ی چالش فعال کاربر
-                self.exam_sessions.create_index('session_id', unique=True, background=True),
-                self.exam_sessions.create_index([('user_id', 1), ('promotion', 1), ('status', 1)], background=True),
-                self.exam_sessions.create_index([('user_id', 1), ('status', 1), ('started_at', -1)], background=True),
-                self.exam_sessions.create_index([('output_mode', 1), ('created_at', -1)], background=True),
-                self.exam_sessions.create_index([('status', 1), ('deadline_ts', 1)], background=True),
-                self.question_pdf_generations.create_index([('session_id', 1), ('generated_at', -1)], background=True),
-                self.question_pdf_generations.create_index([('user_id', 1), ('generated_at', -1)], background=True),
+                self._index(self.exam_sessions, 'session_id', unique=True, background=True),
+                self._index(self.exam_sessions, [('user_id', 1), ('promotion', 1), ('status', 1)], background=True),
+                self._index(self.exam_sessions, [('user_id', 1), ('status', 1), ('started_at', -1)], background=True),
+                self._index(self.exam_sessions, [('output_mode', 1), ('created_at', -1)], background=True),
+                self._index(self.exam_sessions, [('status', 1), ('deadline_ts', 1)], background=True),
+                self._index(self.question_pdf_generations, [('session_id', 1), ('generated_at', -1)], background=True),
+                self._index(self.question_pdf_generations, [('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
-                self.discount_uses.create_index([('code', 1), ('user_id', 1)], unique=True, background=True),
-                self.discount_bcasts.create_index([('code', 1), ('created_at', -1)], background=True),
+                self._index(self.discount_uses, [('code', 1), ('user_id', 1)], unique=True, background=True),
+                self._index(self.discount_bcasts, [('code', 1), ('created_at', -1)], background=True),
+            ]
+            coros = [
+                collection.create_index(*keys, **options)
+                for collection, keys, options in index_specs
             ]
             results = await asyncio.gather(*coros, return_exceptions=True)
             failures = [(i, r) for i, r in enumerate(results) if isinstance(r, BaseException)]
             created = len(coros) - len(failures)
             critical_missing = []
             for idx, err in failures:
-                spec = repr(coros[idx])
-                is_unique = 'unique=True' in spec or "'unique': True" in spec
+                collection, keys, options = index_specs[idx]
+                label = f"{collection.name}:{keys}"
+                # unique and TTL indexes protect an invariant or cleanup
+                # contract, so their failure makes readiness degraded.
+                is_critical = bool(options.get('unique') or
+                                    'expireAfterSeconds' in options)
                 msg = f"{type(err).__name__}: {err}"
-                if is_unique:
-                    logger.error(f"❌ CRITICAL index build failed [#{idx}] {spec[:140]} → {msg[:240]}")
-                    critical_missing.append({'index': f"#{idx}", 'error': msg[:200]})
+                if is_critical:
+                    logger.error(f"❌ CRITICAL index build failed [{label}] → {msg[:240]}")
+                    critical_missing.append({'index': label, 'error': msg[:200]})
                 else:
-                    logger.warning(f"⚠️ index build failed [#{idx}] {spec[:140]} → {msg[:240]}")
+                    logger.warning(f"⚠️ index build failed [{label}] → {msg[:240]}")
             try:
                 await self.set_setting('index_status', {
                     'created': created, 'failed': len(failures),
@@ -312,6 +336,12 @@ class DBCore:
             else:
                 logger.info(f"✅ indexes: created={created} failed={len(failures)}")
 
+            index_result = {
+                'ready': not bool(critical_missing),
+                'created': created,
+                'failed': len(failures),
+                'critical_missing': critical_missing,
+            }
             try:
                 await self.discount_codes.update_many(
                     {'target_plan_ids': {'$exists': False}},
@@ -331,8 +361,87 @@ class DBCore:
                     )
             except Exception as _me:
                 logger.warning(f"D1/auth migration warning: {_me}")
+            return index_result
         except Exception as e:
             logger.warning(f"Index creation warning: {e}")
+            return {'ready': False, 'created': 0, 'failed': -1,
+                    'critical_missing': [{'index': 'ensure_indexes', 'error': str(e)[:200]}]}
+
+
+    async def bootstrap_shared(self) -> dict:
+        """Run the shared, idempotent startup contract for API and Bot.
+
+        A short Mongo lease prevents both supervised processes from racing
+        migrations. Individual migration methods are themselves rerunnable;
+        the lease only coordinates the lifecycle and records observability.
+        """
+        from pymongo import ReturnDocument
+        import uuid
+
+        owner = f"{os.getpid()}:{uuid.uuid4().hex}"
+        now = now_utc()
+        lock = None
+        # If Bot and API start together, wait briefly for the process that
+        # already owns the lease instead of declaring readiness prematurely.
+        for attempt in range(40):
+            try:
+                lock = await self.migrations.find_one_and_update(
+                    {'_id': 'shared_bootstrap_lock', '$or': [
+                        {'expires_at': {'$lte': now_utc()}},
+                        {'expires_at': {'$exists': False}},
+                    ]},
+                    {'$set': {'owner': owner, 'expires_at': now_utc() + timedelta(seconds=120)}},
+                    upsert=True, return_document=ReturnDocument.AFTER,
+                )
+            except Exception as exc:
+                logger.warning('shared bootstrap lock attempt %s failed: %s', attempt + 1, exc)
+                lock = None
+            if lock and lock.get('owner') == owner:
+                break
+            try:
+                status = await self.migrations.find_one({'_id': 'shared_bootstrap_status'})
+            except Exception:
+                status = None
+            if status and status.get('ready'):
+                return status
+            if attempt < 39:
+                await asyncio.sleep(0.25)
+        if not lock or lock.get('owner') != owner:
+            return {'ready': False, 'skipped': 'bootstrap lease unavailable'}
+
+        steps = {}
+        try:
+            operations = [
+                ('indexes', self.ensure_indexes),
+                ('mark_legacy_reference_files', self.migrate_mark_existing_ref_files_notified),
+                ('rbac_seed', self.ensure_rbac_seed),
+                ('rbac_migrate', self.rbac_migrate_users),
+                ('content_scope', self.migrate_content_intake_scope),
+                ('grades_terms', self.grades_backfill_terms),
+                ('ring', self.ring_bootstrap),
+                ('faq_seed', self.seed_subscription_copyright_faqs),
+            ]
+            for name, operation in operations:
+                try:
+                    result = await operation()
+                    step_ok = not (name == 'indexes' and isinstance(result, dict)
+                                   and result.get('ready') is False)
+                    steps[name] = {'ok': step_ok, 'result': result}
+                except Exception as exc:
+                    logger.exception('shared bootstrap step failed: %s', name)
+                    steps[name] = {'ok': False, 'error': f'{type(exc).__name__}: {str(exc)[:180]}'}
+            ready = all(item.get('ok') for item in steps.values())
+            status = {'ready': ready, 'steps': steps, 'at': utc_now_iso(), 'owner': owner}
+            await self.migrations.update_one(
+                {'_id': 'shared_bootstrap_status'}, {'$set': status}, upsert=True)
+            return status
+        finally:
+            try:
+                await self.migrations.update_one(
+                    {'_id': 'shared_bootstrap_lock', 'owner': owner},
+                    {'$set': {'expires_at': now_utc()}})
+            except Exception:
+                logger.exception('shared bootstrap lock release failed')
 
 
     # ══════════════════════════════════════════════════
@@ -417,8 +526,91 @@ class DBCore:
         await self.users.update_one({'user_id': uid}, {'$set': data})
 
 
-    async def delete_user(self, uid: int):
-        await self.users.delete_one({'user_id': uid})
+    async def delete_user(self, uid: int) -> dict:
+        """Idempotent account erasure with explicit retention policy.
+
+        Operational/session/learning data is removed. Support, audit and
+        financial records are retained but anonymised so accounting and
+        compliance history remain reconstructable without retaining PII.
+        Re-running the method is safe after a partial cleanup.
+        """
+        uid = int(uid)
+        deleted = {}
+
+        # Authentication, roles, inbox and ephemeral AI state.
+        delete_specs = [
+            ('web_admin_sessions', {'uid': uid}),
+            ('web_admin_otps', {'uid': uid}),
+            ('admin_roles', {'_id': uid}),
+            ('user_roles', {'_id': uid}),
+            ('user_notifs', {'user_id': uid}),
+            ('bot_notifs', {'$or': [{'chat_id': uid}, {'user_id': uid}],
+                             'type': {'$ne': 'user_deleted'}}),
+            ('answers', {'user_id': uid}),
+            ('stats_col', {'user_id': uid}),
+            ('question_progress', {'user_id': uid}),
+            ('question_topic_stats', {'user_id': uid}),
+            ('ai_practice_questions', {'user_id': uid}),
+            ('question_ai_quotas', {'user_id': uid}),
+            ('question_pdf_generations', {'user_id': uid}),
+            ('exam_sessions', {'user_id': uid}),
+            ('ai_conversations', {'user_id': uid}),
+            ('prestige_history', {'uid': uid}),
+            ('feed_reactions', {'uid': uid}),
+            ('discount_uses', {'user_id': uid}),
+        ]
+        for attr, query in delete_specs:
+            collection = getattr(self, attr, None)
+            if collection is None:
+                continue
+            result = await collection.delete_many(query)
+            deleted[attr] = int(getattr(result, 'deleted_count', 0) or 0)
+
+        # User-owned uploads stay available to the content domain, but the
+        # uploader is no longer identifiable.
+        if getattr(self, 'qbank_files', None) is not None:
+            await self.qbank_files.update_many(
+                {'uploaded_by': uid},
+                {'$set': {'uploaded_by': 0, 'uploader_deleted': True}})
+
+        # Support, moderation, audit and finance are retained with a stable
+        # tombstone instead of being hard-deleted.
+        tombstone = 'کاربر حذف‌شده'
+        for attr, query, update in [
+            ('tickets', {'user_id': uid},
+             {'$set': {'user_id': 0, 'user_name': tombstone, 'user_deleted': True}}),
+            ('content_reports', {'reporter_id': uid},
+             {'$set': {'reporter_id': 0, 'reporter_name': tombstone, 'reporter_deleted': True}}),
+            ('ai_reports', {'user_id': uid},
+             {'$set': {'user_id': 0, 'user_name': tombstone, 'user_deleted': True}}),
+            ('subscriptions', {'user_id': uid},
+             {'$set': {'user_name': tombstone, 'user_deleted': True}}),
+            ('sub_payments', {'user_id': uid},
+             {'$set': {'user_name': tombstone, 'user_deleted': True}}),
+        ]:
+            collection = getattr(self, attr, None)
+            if collection is not None:
+                result = await collection.update_many(query, update)
+                deleted[f'{attr}_anonymized'] = int(getattr(result, 'modified_count', 0) or 0)
+
+        # Audit IDs remain as stable references, while names/roles/labels no
+        # longer expose the erased account. Financial IDs above remain intact.
+        await self.audit_logs.update_many(
+            {'actor.id': uid},
+            {'$set': {'actor.name': tombstone, 'actor.role': 'deleted_user'}})
+        await self.audit_logs.update_many(
+            {'target.id': str(uid)},
+            {'$set': {'target.label': tombstone}})
+
+        try:
+            deleted['ring'] = await self.ring_profile_delete(uid)
+        except Exception:
+            logger.exception('Ring account cleanup failed for %s', uid)
+            deleted['ring'] = {'error': True}
+
+        result = await self.users.delete_one({'user_id': uid})
+        deleted['users'] = int(getattr(result, 'deleted_count', 0) or 0)
+        return deleted
 
 
     async def block_user(self, uid: int, reason: str = '', blocked_by: int = None,
@@ -2779,6 +2971,57 @@ class DBCore:
             'top_today': tuple_rows('top_today'),
             'top_alltime': tuple_rows('top_alltime'),
         }
+
+
+    async def ai_consume_quota(self, uid: int, daily_limit: int, today: str) -> tuple:
+        """Atomically reserve one AI request across all API/Bot workers.
+
+        The conditional update makes the daily counter a process-independent
+        invariant. A local busy set may still reduce duplicate work, but it is
+        not used as quota enforcement.
+        """
+        uid = int(uid)
+        limit = int(daily_limit or 0)
+        if uid == int(os.getenv('ADMIN_ID', '0')) or limit <= 0:
+            result = await self.users.update_one(
+                {'user_id': uid},
+                [{'$set': {
+                    'ai_usage_date': today,
+                    'ai_total_usage': {'$add': [{'$ifNull': ['$ai_total_usage', 0]}, 1]},
+                    'ai_tokens_today': {'$cond': [
+                        {'$eq': ['$ai_usage_date', today]},
+                        {'$ifNull': ['$ai_tokens_today', 0]}, 0]},
+                }}],
+            )
+            return bool(result.matched_count), 0, 0
+
+        from pymongo import ReturnDocument
+        # A new day resets the daily counter inside the same atomic update;
+        # an existing day is admitted only while count < limit.
+        result = await self.users.find_one_and_update(
+            {'user_id': uid, '$or': [
+                {'ai_usage_date': today, 'ai_usage_count': {'$lt': limit}},
+                {'ai_usage_date': {'$ne': today}},
+            ]},
+            [{'$set': {
+                'ai_usage_count': {'$cond': [
+                    {'$eq': ['$ai_usage_date', today]},
+                    {'$add': [{'$ifNull': ['$ai_usage_count', 0]}, 1]}, 1]},
+                'ai_usage_date': today,
+                'ai_total_usage': {'$add': [{'$ifNull': ['$ai_total_usage', 0]}, 1]},
+                'ai_tokens_today': {'$cond': [
+                    {'$eq': ['$ai_usage_date', today]},
+                    {'$ifNull': ['$ai_tokens_today', 0]}, 0]},
+            }}],
+            return_document=ReturnDocument.AFTER,
+        )
+        if result:
+            return True, int(result.get('ai_usage_count', 0) or 0), limit
+        current = await self.users.find_one({'user_id': uid}, {'ai_usage_date': 1, 'ai_usage_count': 1})
+        used = int((current or {}).get('ai_usage_count', 0) or 0)
+        if (current or {}).get('ai_usage_date') != today:
+            used = 0
+        return False, used, limit
 
 
     async def ai_inc_tokens(self, uid: int, tokens: int) -> None:

@@ -31,6 +31,17 @@ def _fa_time(value) -> str:
     return format_time_fa(value, fallback=str(value or '—'))
 
 
+async def _can_manage_schedule(uid: int) -> bool:
+    """گیت مشترک mutationهای schedule در Bot و Web Admin."""
+    if uid == ADMIN_ID:
+        return True
+    try:
+        return await db.has_permission(uid, 'schedules.manage')
+    except Exception:
+        logger.exception("schedule permission check failed for %s", uid)
+        return False
+
+
 async def _notify_schedule_deleted(context, item: dict):
     """
     FIX جدید: تکمیل چرخه‌ی نوتیف برنامه — تا امروز فقط «اضافه‌شدن» و
@@ -133,6 +144,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query  = update.callback_query
     await query.answer()
     uid    = update.effective_user.id
+    can_manage = await _can_manage_schedule(uid)
     parts  = query.data.split(':')
     action = parts[1] if len(parts) > 1 else 'main'
 
@@ -158,7 +170,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ══════════════════════════════════════════════
     # FIX جدید: فلوی پیش‌نمایش قبل از ثبت برنامه
     # ══════════════════════════════════════════════
-    elif action == 'flex' and uid == ADMIN_ID:
+    elif action == 'flex' and can_manage:
         flex_type = parts[2] if len(parts) > 2 else 'fixed'
         p = context.user_data.get('pending_schedule', {})
         if not p:
@@ -168,10 +180,10 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['pending_schedule'] = p
         await _show_schedule_preview(query, context, edit=True)
 
-    elif action == 'confirm_add' and uid == ADMIN_ID:
+    elif action == 'confirm_add' and can_manage:
         await _finalize_schedule_add(query, context)
 
-    elif action == 'edit_pending' and uid == ADMIN_ID:
+    elif action == 'edit_pending' and can_manage:
         p = context.user_data.get('pending_schedule', {})
         stype = p.get('stype', 'class')
         edit_sid = p.get('edit_sid')
@@ -192,7 +204,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action == 'cancel_pending' and uid == ADMIN_ID:
+    elif action == 'cancel_pending' and can_manage:
         p = context.user_data.get('pending_schedule', {})
         edit_sid = p.get('edit_sid')
         context.user_data.pop('pending_schedule', None)
@@ -242,7 +254,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif action == 'add_type' and uid == ADMIN_ID:
+    elif action == 'add_type' and can_manage:
         keyboard = [
             [InlineKeyboardButton("📖 کلاس",   callback_data='schedule:add_start:class')],
             [InlineKeyboardButton("📝 امتحان", callback_data='schedule:add_start:exam')],
@@ -255,7 +267,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif action == 'add_start' and uid == ADMIN_ID:
+    elif action == 'add_start' and can_manage:
         stype = parts[2] if len(parts) > 2 else 'class'
         context.user_data['schedule_type'] = stype
         context.user_data['mode']          = 'add_schedule'
@@ -277,10 +289,10 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action == 'del_list' and uid == ADMIN_ID:
+    elif action == 'del_list' and can_manage:
         await _show_delete_list(query)
 
-    elif action == 'del' and uid == ADMIN_ID:
+    elif action == 'del' and can_manage:
         sid = parts[2]
         # FIX جدید: گرفتن اطلاعات قبل از حذف برای ثبت در لاگ
         deleted_item = await db.schedules.find_one({'_id': ObjectId(sid)})
@@ -306,33 +318,33 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ══════════════════════════════════════════════
     # FIX جدید: اعلام تغییر زمان برای کلاس منعطف
     # ══════════════════════════════════════════════
-    elif action == 'flex_list' and uid == ADMIN_ID:
+    elif action == 'flex_list' and can_manage:
         await _show_flex_list(query)
 
     # ══════════════════════════════════════════════
     # بخش اول: قابلیت ویرایش برنامه‌ها
     # ══════════════════════════════════════════════
-    elif action == 'manage_types' and uid == ADMIN_ID:
+    elif action == 'manage_types' and can_manage:
         await _show_manage_types(query)
 
-    elif action == 'manage_list' and uid == ADMIN_ID:
+    elif action == 'manage_list' and can_manage:
         stype = parts[2] if len(parts) > 2 else 'class'
         await _show_manage_list(query, stype)
 
-    elif action == 'item' and uid == ADMIN_ID:
+    elif action == 'item' and can_manage:
         sid = parts[2]
         await _show_item_detail(query, sid)
 
-    elif action == 'edit_menu' and uid == ADMIN_ID:
+    elif action == 'edit_menu' and can_manage:
         sid = parts[2]
         await _show_edit_menu(query, sid)
 
-    elif action == 'edit_field' and uid == ADMIN_ID:
+    elif action == 'edit_field' and can_manage:
         sid   = parts[2]
         field = parts[3] if len(parts) > 3 else ''
         await _start_field_edit(query, context, sid, field)
 
-    elif action == 'edit_full' and uid == ADMIN_ID:
+    elif action == 'edit_full' and can_manage:
         sid = parts[2]
         item = await db.get_schedule_by_id(sid)
         if not item:
@@ -354,7 +366,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action == 'del_item' and uid == ADMIN_ID:
+    elif action == 'del_item' and can_manage:
         sid = parts[2]
         item = await db.schedules.find_one({'_id': ObjectId(sid)})
         stype = item.get('type', 'class') if item else 'class'
@@ -377,7 +389,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _notify_schedule_deleted(context, item)
         await _show_manage_list(query, stype)
 
-    elif action == 'flex_change' and uid == ADMIN_ID:
+    elif action == 'flex_change' and can_manage:
         sid = parts[2]
         context.user_data['flex_change_sid'] = sid
         context.user_data['mode'] = 'flex_time_change'

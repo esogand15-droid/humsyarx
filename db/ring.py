@@ -1168,14 +1168,16 @@ class DBRing:
     # ══════════════════════════════════════════════════════════
 
     async def ring_audit(self, admin_id: int | str, action: str, target: str,
-                         reason: str, meta: dict | None) -> None:
+                         reason: str, meta: dict | None) -> bool:
         try:
             await self.ring_cols.audit.insert_one({
                 "admin_id": str(admin_id), "action": action, "target": str(target),
                 "reason": (reason or "")[:300], "meta": meta or {},
                 "created_at": utc_now_iso()})
-        except Exception as e:                        # هرگز اقدام اصلی را نشکند
-            logger.debug("ring_audit failed: %s", e)
+            return True
+        except Exception as e:
+            logger.exception("ring_audit failed: %s", e)
+            return False
 
     async def ring_audit_list(self, limit: int = 100) -> list[dict]:
         return await self.ring_cols.audit.find({}).sort("created_at", -1).to_list(limit)

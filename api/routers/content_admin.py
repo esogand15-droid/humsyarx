@@ -1176,7 +1176,129 @@ async def ref_move_subject_ep(sid: str, body: MoveBody, admin=Depends(GLOBAL_USE
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ انتقال بازگردانده شد")
     return {"ok":True, "from":info, "to":iv}
 
-# Legacy uploaded file-bank routes retired; use structured questions + persistent PDF exams.
+# QBank file manager (additive compatibility API for the existing Mini App).
+# The files are stored as Telegram file_ids; question records remain the
+# canonical structured Question Bank source of truth.
+
+def _qbank_file_response(item: dict, *, readonly: bool = False) -> dict:
+    return {
+        "id": str(item.get("_id", "")),
+        "lesson": item.get("lesson", ""),
+        "topic": item.get("topic", ""),
+        "description": item.get("description", ""),
+        "filename": item.get("filename", ""),
+        "mime_type": item.get("mime_type", ""),
+        "size": int(item.get("size", 0) or 0),
+        "file_type": item.get("file_type", "document"),
+        "downloads": int(item.get("downloads", 0) or 0),
+        "upload_date": item.get("created_at", ""),
+        "readonly": readonly,
+    }
+
+
+@router.get("/qbank/files")
+async def qbank_files_list(
+    intake: Optional[str] = Query(None, max_length=50),
+    admin=Depends(get_content_admin_user),
+):
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        own = resolve_content_intake(admin, intake)
+        own_items = await db.qbank_file_list(own)
+        # Scoped users may read global material but never mutate it.
+        global_items = [] if own == "" else await db.qbank_file_list("")
+        items = [
+            *[_qbank_file_response(item, readonly=False) for item in own_items],
+            *[_qbank_file_response(item, readonly=True) for item in global_items],
+        ]
+    else:
+        target = resolve_content_intake(admin, intake)
+        items = [_qbank_file_response(item) for item in await db.qbank_file_list(target)]
+    return {"files": items}
+
+
+@router.get("/qbank/files/{file_id}")
+async def qbank_file_detail(file_id: str, admin=Depends(get_content_admin_user)):
+    item = await db.qbank_file_get(file_id)
+    if not item:
+        raise HTTPException(404, "فایل پیدا نشد")
+    scope = admin.get("_scope") or {}
+    item_intake = item.get("intake") or ""
+    if scope.get("kind") == "scoped" and item_intake not in ("", scope.get("intake")):
+        raise HTTPException(403, "intake_out_of_scope")
+    return {"file": _qbank_file_response(item, readonly=scope.get("kind") == "scoped" and item_intake == "")}
+
+
+@router.post("/qbank/files")
+async def qbank_file_upload(
+    lesson: str = Form(..., min_length=2, max_length=100),
+    topic: str = Form(..., min_length=2, max_length=100),
+    description: str = Form("", max_length=500),
+    intake: Optional[str] = Form(None, max_length=50),
+    file: UploadFile = File(...),
+    admin=Depends(get_content_admin_user),
+):
+    target = resolve_content_intake(admin, intake)
+    if target and target not in await _intakes_active_codes():
+        raise HTTPException(422, "کد ورودی نامعتبر است")
+    if not await db.can_access_intake(admin["id"], target):
+        raise HTTPException(403, "intake_out_of_scope")
+    raw = await file.read()
+    # Telegram Bot API's practical sendDocument limit is 50 MB. Rejecting
+    # before the network call also prevents an unbounded browser upload.
+    if not raw or len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل باید بین ۱ بایت و ۵۰ مگابایت باشد")
+    telegram_file_id = await upload_and_get_file_id(
+        admin["id"], file.filename or "file", raw,
+        file.content_type or "application/octet-stream")
+    if not telegram_file_id:
+        raise HTTPException(503, "آپلود فایل به تلگرام انجام نشد")
+    item = await db.qbank_file_add(
+        intake=target, lesson=lesson, topic=topic, description=description,
+        filename=file.filename or "file", mime_type=file.content_type or "application/octet-stream",
+        size=len(raw), telegram_file_id=telegram_file_id, uploaded_by=admin["id"],
+    )
+    try:
+        await _audit(
+            admin, "آپلود فایل بانک سؤال", "QuestionBank", severity="INFO",
+            target_id=str(item["_id"]), target_type="qbank_file",
+            target_label=f"{lesson} — {topic}",
+            after={"intake": target, "filename": item["filename"], "size": len(raw)},
+            tags=["بانک_سؤال", "آپلود", "پنل_وب"],
+        )
+    except Exception:
+        # The Telegram upload already succeeded, so compensate the metadata
+        # write when the mandatory durable audit is unavailable.
+        await db.qbank_file_delete(str(item["_id"]))
+        raise
+    return {"ok": True, "file": _qbank_file_response(item)}
+
+
+@router.delete("/qbank/files/{file_id}")
+async def qbank_file_remove(file_id: str, admin=Depends(get_content_admin_user)):
+    item = await db.qbank_file_get(file_id)
+    if not item:
+        raise HTTPException(404, "فایل پیدا نشد")
+    await _deny_intake(item.get("intake", ""), admin)
+    if not await db.qbank_file_delete(file_id):
+        raise HTTPException(500, "حذف فایل انجام نشد")
+    try:
+        await _audit(
+            admin, "حذف فایل بانک سؤال", "QuestionBank", severity="HIGH",
+            target_id=file_id, target_type="qbank_file", target_label=item.get("filename", ""),
+            before={"intake": item.get("intake", ""), "filename": item.get("filename", "")},
+            after={"deleted": True}, tags=["بانک_سؤال", "حذف", "پنل_وب"],
+        )
+    except Exception:
+        # Compensate the destructive mutation if its audit record cannot be
+        # persisted. The original _id is restored to keep links stable.
+        await db.qbank_files.insert_one(item)
+        raise
+    return {"ok": True}
+
+
+# Legacy structured-question import remains retired; QBank file metadata above
+# is kept only for the existing Mini App file-manager compatibility contract.
 
 # ══════════════════════════════════════════════
 # 🚩 گزارش‌های ایراد (سوال/جزوه)

@@ -44,12 +44,28 @@ from request_context import current_request_id
 from time_utils import now_utc
 
 
+_BOOTSTRAP_STATE = {"ready": False, "steps": {}, "started_at": None}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await asyncio.gather(
-        db.ensure_indexes(),
+    _BOOTSTRAP_STATE["started_at"] = now_utc().isoformat()
+    shared, question_indexes = await asyncio.gather(
+        db.bootstrap_shared(),
         questions.ensure_indexes(),
+        return_exceptions=True,
     )
+    if isinstance(shared, BaseException):
+        _BOOTSTRAP_STATE.update({"ready": False, "error": f"{type(shared).__name__}: {shared}"})
+    else:
+        _BOOTSTRAP_STATE.update(shared)
+    if isinstance(question_indexes, BaseException):
+        _BOOTSTRAP_STATE["ready"] = False
+        _BOOTSTRAP_STATE.setdefault("steps", {})["question_indexes"] = {
+            "ok": False, "error": f"{type(question_indexes).__name__}: {question_indexes}"
+        }
+    else:
+        _BOOTSTRAP_STATE.setdefault("steps", {})["question_indexes"] = {"ok": True}
 
     yield
 
@@ -389,6 +405,25 @@ async def health():
     }
 
 
+@app.get("/api/health/ready", include_in_schema=False)
+async def health_ready():
+    """Dependency-aware readiness probe; unlike /api/health it may fail."""
+    ready = bool(_BOOTSTRAP_STATE.get("ready"))
+    if ready:
+        try:
+            await db.client.admin.command("ping")
+        except Exception:
+            ready = False
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        "api": {"ok": True},
+        "bootstrap": dict(_BOOTSTRAP_STATE),
+    }
+    if not ready:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
 @app.get("/api/health/deep", include_in_schema=False)
 async def health_deep():
     """دیاگنوستیک کامل برای انسان: API + ربات + Mongo + بیلدها.
@@ -412,11 +447,13 @@ async def health_deep():
     except Exception as exc:
         db_error = f"{type(exc).__name__}: {str(exc)[:160]}"
 
+    deep_ok = db_ok and bool(_BOOTSTRAP_STATE.get("ready"))
     return {
-        "status": "ok",
+        "status": "ok" if deep_ok else "degraded",
         "version": "2.0.0",
         "uptime_s": round(time.monotonic() - _APP_STARTED_MONO, 1),
         "api": {"ok": True, "pid": os.getpid()},
+        "bootstrap": dict(_BOOTSTRAP_STATE),
         "bot": {
             "process_ok": _bot_process_ok()[0],
             "process_pid": _bot_process_ok()[1],

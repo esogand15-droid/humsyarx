@@ -569,29 +569,63 @@ function ScrollRestoration() {
 function AdminRoute({
   children,
 }) {
-  const user = useAuthStore(
-    (state) => state.user
-  );
+  const user = useAuthStore((state) => state.user);
+  const location = useLocation();
+  const path = location.pathname;
+  const requiredByRoute = [
+    ['/admin/subscription', ['subscription.manage']],
+    ['/admin/ai', ['ai.manage']],
+    ['/admin/analytics', ['stats.view']],
+    ['/admin/audit', ['audit.view']],
+    ['/admin/settings', ['settings.manage', 'notifications.manage', 'backup.manage']],
+    ['/admin/users', ['users.view', 'users.manage']],
+    ['/admin/roles', ['roles.manage']],
+    ['/admin/intakes', ['users.manage']],
+    ['/admin/content-admins', ['roles.manage', 'users.manage']],
+    ['/admin/blacklist', ['users.delete']],
+    ['/admin/tickets', ['tickets.reply', 'tickets.manage']],
+    ['/admin/broadcast', ['broadcast.send']],
+    ['/admin/poll', ['broadcast.send']],
+    ['/admin/notifications', ['notifications.manage', 'broadcast.send']],
+  ];
+  const required = requiredByRoute.find(([prefix]) => path === prefix
+    || path.startsWith(`${prefix}/`))?.[1] || [];
+  const legacy = {
+    content_admin: ['content.manage'],
+    content_scoped: ['content.scoped'],
+    bot_admin: ['users.view', 'schedules.manage', 'broadcast.send'],
+    broadcaster: ['broadcast.send'],
+    support: ['tickets.reply'],
+    reviewer: ['reports.review'],
+    grade_rep: ['grades.scoped'],
+  }[user?.role] || [];
+  const actual = new Set([...(user?.perms || []), ...legacy]);
+  const allowed = user?.role === 'admin'
+    || (required.length ? required.some((permission) => actual.has(permission)) : actual.size > 0);
 
-  /* 🛡 RBAC-W3 (افزایشی): گذر اگر نقش admin قدیمی
-     یا هر مجوز RBAC (perms از /api/profile) دارد —
-     سطح دسترسی واقعی هر صفحه را سرور با
-     require_perm اعمال می‌کند (§۸) */
-  const hasAnyPerm = (user?.perms || []).length > 0;
+  if (!user || !allowed) return <Navigate to="/" replace />;
+  return children;
+}
 
-  if (
-    !user ||
-    (user.role !== 'admin' &&
-      !hasAnyPerm)
-  ) {
-    return (
-      <Navigate
-        to="/"
-        replace
-      />
-    );
+
+function PermissionRoute({
+  children,
+  any = [],
+}) {
+  const user = useAuthStore((state) => state.user);
+  const perms = new Set(user?.perms || []);
+  const legacy = {
+    content_admin: ['content.manage'],
+    content_scoped: ['content.scoped'],
+    bot_admin: ['schedules.manage'],
+    grade_rep: ['grades.scoped'],
+  }[user?.role] || [];
+  const allowed = user?.role === 'admin'
+    || any.some((permission) => perms.has(permission) || legacy.includes(permission));
+
+  if (!user || !allowed) {
+    return <Navigate to="/" replace />;
   }
-
   return children;
 }
 
@@ -1228,18 +1262,18 @@ export default function App() {
         <Route
           path="/admin/content/schedule"
           element={
-            <ContentAdminRoute>
+            <PermissionRoute any={['schedules.manage', 'content.manage']}>
               <AcademicScheduleAdminScreen />
-            </ContentAdminRoute>
+            </PermissionRoute>
           }
         />
 
         <Route
           path="/admin/content/grades"
           element={
-            <ContentAdminRoute>
+            <PermissionRoute any={['grades.manage', 'grades.scoped', 'content.manage', 'content.scoped']}>
               <AcademicGradesAdminScreen />
-            </ContentAdminRoute>
+            </PermissionRoute>
           }
         />
 
@@ -1267,9 +1301,9 @@ export default function App() {
         <Route
           path="/admin/content/qbank"
           element={
-            <ContentAdminRoute>
+            <PermissionRoute any={['content.manage', 'content.scoped']}>
               <QbankAdminScreen />
-            </ContentAdminRoute>
+            </PermissionRoute>
           }
         />
 

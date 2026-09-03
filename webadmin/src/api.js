@@ -283,10 +283,6 @@ export const api = {
   caQuestionNeedsChanges: (qid, reason) => req(`/api/web-admin/questions/${qid}/needs-changes`, { method: 'POST', body: { reason } }),
   // 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit)
   caQuestionPatch: (qid, body) => req(`/api/web-admin/questions/${qid}`, { method: 'PATCH', body }),
-  // 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware)
-  caQuestionsImport: (items, approve, intake) =>
-    req('/api/web-admin/questions/bulk-import' + (intake ? `?intake=${encodeURIComponent(intake)}` : ''),
-      { method: 'POST', body: { items, approve: !!approve } }),
   // ── 🌊 WA3 — مدیریت کامل کاربر (permission-based، آینه‌ی دقیق ربات) ──
   waUserMessage: (uid, text) => req(`/api/web-admin/users/${uid}/message`, { method: 'POST', body: { text } }),
   waUserAction: (uid, action, reason = '') => req(`/api/web-admin/users/${uid}/action`, { method: 'POST', body: { action, reason } }),

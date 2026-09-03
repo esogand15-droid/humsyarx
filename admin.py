@@ -53,6 +53,11 @@ async def _admin_menu(query_or_msg, edit: bool = True, uid: int = None):
                 role = 'content_scoped'
             elif await db.has_perm(uid, 'tickets.reply'):
                 role = 'support'
+            elif (await db.has_perm(uid, 'schedules.manage')
+                  and await db.has_perm(uid, 'users.view')):
+                role = 'bot_admin'
+            elif await db.has_perm(uid, 'grades.scoped'):
+                role = 'grade_rep'
 
     # نقش پشتیبان: منوی بسیار محدود
     if role == 'support':
@@ -86,6 +91,26 @@ async def _admin_menu(query_or_msg, edit: bool = True, uid: int = None):
                 await msg.reply_text(text, parse_mode='HTML', reply_markup=markup)
         except Exception as e:
             logger.debug(f"_admin_menu(broadcaster): {e}")
+        return
+
+    # مدیر محتوای کلی هم نباید منوی تنظیمات/حذف کاربرِ مالک را ببیند؛
+    # فقط مسیرهای محتوایی و بازبینی سؤال در اختیار اوست.
+    if role == 'content_admin':
+        keyboard = [
+            [InlineKeyboardButton("🎓 رفتن به پنل محتوا", callback_data='ca:main')],
+            [InlineKeyboardButton("🧪 بازبینی سؤال‌ها", callback_data='questions:ca_q_list')],
+            [InlineKeyboardButton("⚠️ گزارشات سوال/جزوه", callback_data='report:manage:all')],
+        ]
+        text = "🎓 <b>پنل مدیر محتوا</b>\n━━━━━━━━━━━━━━━━\nدسترسی فقط به محتوای آموزشی و بازبینی سؤال‌ها."
+        markup = InlineKeyboardMarkup(keyboard)
+        try:
+            if edit and hasattr(query_or_msg, 'edit_message_text'):
+                await query_or_msg.edit_message_text(text, parse_mode='HTML', reply_markup=markup)
+            else:
+                msg = query_or_msg if hasattr(query_or_msg, 'reply_text') else query_or_msg.message
+                await msg.reply_text(text, parse_mode='HTML', reply_markup=markup)
+        except Exception as e:
+            logger.debug(f"_admin_menu(content_admin): {e}")
         return
 
     # FIX امنیتی: content_scoped باید به پنل محتوا هدایت شود،
@@ -149,7 +174,9 @@ async def _admin_menu(query_or_msg, edit: bool = True, uid: int = None):
             logger.debug(f"_admin_menu(grade_rep): {e}")
         return
 
-
+    # FIX RBAC: این منو فقط برای bot_admin است. بلوک قبلی بدون شرط بود و
+    # باعث می‌شد ADMIN_ID هم به‌جای منوی کامل، منوی نماینده را ببیند.
+    if role == 'bot_admin':
         keyboard = [
             [InlineKeyboardButton("👥 مدیریت کاربران",  callback_data='admin:users:0')],
             [
@@ -378,18 +405,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # FIX جدید: سطوح دسترسی چندگانه
     if uid != ADMIN_ID:
         role_doc = await db.get_admin_role(uid)
+        # New multi-role assignments may exist before a legacy projection is
+        # materialised. Resolve them from the shared permission source.
         if not role_doc:
-            await query.answer("❌ دسترسی ندارید!", show_alert=True)
-            return
+            shared_perms = await db.get_user_perms(uid)
+            if not shared_perms:
+                await query.answer("❌ دسترسی ندارید!", show_alert=True)
+                return
+            role_doc = {"role": "rbac"}
         if action in ROOT_ONLY_ACTIONS:
             await query.answer("❌ این بخش فقط در اختیار مدیر ارشد است.", show_alert=True)
             return
         role  = role_doc.get('role', '')
-        perms = db.ROLE_PERMISSIONS.get(role, set())
+        # تک‌منبع جدید RBAC؛ admin_roles/role فقط برای compatibility در
+        # شاخه‌های UI استفاده می‌شود، نه برای تصمیم permission.
+        perms = await db.get_user_perms(uid)
         # FIX امنیتی: محدودیت دقیق هر نقش فرعی به منوی خودش —
         # غیر از 'main' (که خودش منوی فیلترشده نشان می‌دهد)، فقط
         # عمل متناسب با مجوز همان نقش اجازه دارد.
-        if action == 'broadcast' and 'broadcast' not in perms:
+        if action == 'broadcast' and not ('broadcast.send' in perms or 'broadcast' in perms):
             await query.answer("❌ شما دسترسی ارسال همگانی ندارید.", show_alert=True)
             return
         if action != 'main':
@@ -441,6 +475,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     show_alert=True
                 )
                 return
+            if role == 'rbac':
+                user_actions = {
+                    'users', 'users_filter', 'uf_group', 'uf_intake', 'uf_clear',
+                    'user_detail', 'search_user', 'approve', 'reject', 'edit_group',
+                    'set_group', 'edit_intake', 'set_intake_user', 'pending',
+                }
+                if action in user_actions and not (
+                    'users.view' in perms or 'users.manage' in perms):
+                    await query.answer("❌ مجوز مشاهده کاربران را ندارید.", show_alert=True)
+                    return
+                if (action.startswith('bc_') or action == 'broadcast') and not (
+                        'broadcast.send' in perms or 'broadcast' in perms):
+                    await query.answer("❌ مجوز ارسال همگانی را ندارید.", show_alert=True)
+                    return
+                if action.startswith('stats') or action in ('insights', 'activity'):
+                    if 'stats.view' not in perms:
+                        await query.answer("❌ مجوز مشاهده آمار را ندارید.", show_alert=True)
+                        return
+                if action not in user_actions and not action.startswith('bc_') \
+                        and action not in ('broadcast', 'stats', 'stats_users', 'stats_content',
+                                           'stats_questions', 'stats_tickets', 'stats_notif',
+                                           'insights', 'activity'):
+                    await query.answer("❌ این عملیات برای نقش شما فعال نیست.", show_alert=True)
+                    return
 
     await query.answer()
 
@@ -1738,12 +1796,9 @@ async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_
     # مجوز broadcast دارند (مثلاً 'broadcaster' یا 'bot_admin') هیچ‌وقت
     # نمی‌تونستن واقعاً پیام همگانی بفرستن — متنشون گرفته نمی‌شد.
     if uid != ADMIN_ID:
-        role_doc = await db.get_admin_role(uid)
-        perms = db.ROLE_PERMISSIONS.get(role_doc.get('role', ''), set()) if role_doc else set()
-        # 🛡 RBAC-W3 — بای‌پس Permission-Driven برای نقش‌های جدید
-        if 'broadcast' not in perms:
-            perms = set() if not await db.has_perm(uid, 'broadcast.send') else {'broadcast'}
-        if 'broadcast' not in perms:
+        perms = await db.get_user_perms(uid)
+        # 🛡 RBAC-W3 — تصمیم نهایی فقط از permissionهای مشترک می‌آید.
+        if 'broadcast.send' not in perms and 'broadcast' not in perms:
             return
     if context.user_data.get('mode') != 'broadcast':
         return

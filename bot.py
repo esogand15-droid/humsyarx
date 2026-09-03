@@ -1803,8 +1803,8 @@ async def post_init(application: Application):
     from bot_heartbeat import write_heartbeat
     write_heartbeat({'phase': 'post_init', 'started_at': now_utc().isoformat()})
 
-    await db.ensure_indexes()
-    logger.info("✅ ایندکس‌های دیتابیس آماده شدند")
+    shared_bootstrap = await db.bootstrap_shared()
+    logger.info("✅ bootstrap مشترک: آماده=%s", shared_bootstrap.get("ready"))
 
     # 💍 Ring Street — بازیابی گفت‌وگوهای فعال و flowهای معلق از دیتابیس
     # (§۴۳: state هرگز فقط در RAM نیست). خطای این مرحله مانع بالا آمدن
@@ -1816,49 +1816,6 @@ async def post_init(application: Application):
                         _ring_rec.get("flag"), _ring_rec.get("loaded"))
         except Exception as e:
             logger.error(f"ring post_init error: {e}")
-
-    # FIX جدید: یک‌بار (idempotent) رفرنس‌های قدیمی را «قبلاً دیده‌شده»
-    # علامت می‌زند تا با اضافه‌شدن ref_files به سیستم نوتیف منابع جدید،
-    # اولین اجرای job یک‌جا سیل نوتیف قدیمی نفرستد. خطای احتمالی این
-    # مرحله نباید مانع بالا آمدن ربات شود.
-    try:
-        await db.migrate_mark_existing_ref_files_notified()
-    except Exception as e:
-        logger.error(f"migrate_mark_existing_ref_files_notified error: {e}")
-
-    # 🛡 موج RBAC-W1 — بذر + مهاجرت هر دو idempotent‌اند (§۱۰ قرارداد):
-    # اجرای تکراری هیچ داده/ویرایش دستی‌ای را بازنویسی نمی‌کند و خطای
-    # این مرحله نباید مانع بالا آمدن ربات شود.
-    try:
-        seeded = await db.ensure_rbac_seed()
-        migrated = await db.rbac_migrate_users()
-        logger.info(f"🛡 RBAC seed: {seeded} — migrate: {migrated}")
-    except Exception as e:
-        logger.error(f"rbac seed/migrate error: {e}")
-
-    # 🌊 موج C1 — مهاجرت scope ورودی محتوا (idempotent: backfill '' فقط
-    # روی اسناد فاقد فیلد + rename شرطی label). خطا مانع بوت نمی‌شود.
-    try:
-        c1 = await db.migrate_content_intake_scope()
-        logger.info(f"🌊 C1 migrate content-intake-scope: {c1}")
-    except Exception as e:
-        logger.error(f"C1 migrate error: {e}")
-
-    # 🛡 AUDIT-§۸۲ — طبقه‌بندی ترمِ نمرات: نمره‌های قدیمی `term` ندارند؛ اینجا
-    # یک‌بار از روی همان `bs_lessons` پر می‌شوند (idempotent: فقط رکوردهای
-    # بدون‌ترم؛ یک update_many به‌ازای هر درس، نه به‌ازای هر رکورد).
-    try:
-        tb = await db.grades_backfill_terms()
-        if tb.get("grades_updated") or tb.get("unmatched_lessons"):
-            logger.info(f"🎓 grades term backfill: {tb}")
-    except Exception as e:
-        logger.error(f"grades term backfill error: {e}")
-
-    # FIX جدید: افزودن یک‌باره‌ی سؤالات FAQ اشتراک/کپی‌رایت
-    try:
-        await db.seed_subscription_copyright_faqs()
-    except Exception as e:
-        logger.error(f"seed_subscription_copyright_faqs error: {e}")
 
     # FIX: گارد ایمن — اگر JobQueue نصب نباشد، ربات کرش نکند
     if application.job_queue is not None:

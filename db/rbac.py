@@ -227,7 +227,8 @@ class DBRbac:
         if uid == int(os.getenv('ADMIN_ID', '0')):
             return None
         doc = await self.get_admin_role(uid)
-        if doc and doc.get('role') == 'content_scoped':
+        if doc and doc.get('scope_intake') and doc.get('role') in (
+                'content_scoped', 'grade_rep'):
             return doc.get('scope_intake')
         # C1 — fallback: نقش دیتابیس‌محور با scope (میرور دوطرفه موجود،
         # ولی اگر user_roles جلوتر بود، scope از آنجا خوانده می‌شود)
@@ -235,10 +236,11 @@ class DBRbac:
         if ur and ur.get('scope_intake'):
             scope = ur.get('scope_intake')
             keys  = list(ur.get('roles') or [])
-            if 'content_scoped' in keys:
+            if 'content_scoped' in keys or 'grade_rep' in keys:
                 return scope
-            # نقش سفارشی دارای مجوز content.scoped
-            if await self.has_perm(uid, 'content.scoped'):
+            # نقش سفارشی دارای مجوز scoped محتوا/نمرات
+            if (await self.has_perm(uid, 'content.scoped')
+                    or await self.has_perm(uid, 'grades.scoped')):
                 return scope
         return None
 
@@ -620,7 +622,10 @@ class DBRbac:
         backfilled = {}
         for name, col in [('bs_lessons', self.bs_lessons),
                           ('ref_subjects', self.ref_subjects),
-                          ('questions', self.questions)]:
+                          ('questions', self.questions),
+                          # QBank file metadata was introduced additively;
+                          # existing documents (if any) inherit global scope.
+                          ('qbank_files', self.qbank_files)]:
             r = await col.update_many(
                 {'intake': {'$exists': False}},
                 {'$set': {'intake': ''}},
