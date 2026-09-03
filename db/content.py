@@ -80,7 +80,15 @@ class DBContent:
     # ══════════════════════════════════════════════════
 
     async def bs_get_sessions(self, lesson_id: str):
-        return await self.bs_sessions.find({'lesson_id': lesson_id}).sort('number', 1).to_list(200)
+        """🛡 §۸۳ — مرتب‌سازی با `order` (کلیدی که reorder می‌نویسد).
+
+        پیش‌تر با `number` مرتب می‌شد، پس دکمه‌های ↑↓ در پنل هیچ اثری
+        نداشتند: سرور order را جابه‌جا می‌کرد ولی خواندن همچنان بر اساس
+        شماره‌ی جلسه بود. `number` معیار دوم می‌ماند تا داکیومنت‌های قدیمی
+        که هنوز order ندارند (همه صفر) ترتیب طبیعیِ خودشان را حفظ کنند.
+        """
+        return await self.bs_sessions.find({'lesson_id': lesson_id}) \
+            .sort([('order', 1), ('number', 1)]).to_list(200)
 
 
     async def bs_add_session(self, lesson_id: str, number: int, topic: str, teacher: str,

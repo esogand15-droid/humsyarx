@@ -2831,9 +2831,15 @@ async def content_tree(intake: Optional[str] = Query(None),
         trow = {"term": term, "lessons": []}
         for l in t_lessons:
             lid = str(l.get("_id"))
+            # 🛡 §۸۳ — با `order` مرتب می‌شود، همان کلیدی که
+            # `/content/sessions/{id}/reorder` می‌نویسد. با `number` نتیجه‌ی
+            # جابه‌جایی هرگز در درخت دیده نمی‌شد. `number` معیار دوم است تا
+            # جلسه‌های قدیمیِ بدون order (همه order=0) ترتیب خودشان را
+            # نگه دارند.
             l_sessions = sorted(
                 [s for s in sessions if str(s.get("lesson_id") or "") == lid],
-                key=lambda x: (legacy_int(x.get("number")), str(x.get("_id"))),
+                key=lambda x: (legacy_int(x.get("order")),
+                               legacy_int(x.get("number")), str(x.get("_id"))),
             )
             srows = []
             for s in l_sessions:
