@@ -562,7 +562,7 @@ function NicknameCard({
 
         <Switch
           on={showReal}
-          disabled={
+          loading={
             privacyMutation
               .isPending
           }

@@ -14,6 +14,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import Switch from '../../components/shared/Switch';
 
 import {
   Spinner,
@@ -471,7 +472,10 @@ export default function AiAdmin() {
                   9,
               }}
             >
-              <label className="menu-row">
+              {/* label → div: کنترل حالا <button role="switch"> است و
+                  قراردادنِ button داخل label نه معتبر است نه کلیکِ
+                  label را به سوییچ می‌رساند. */}
+              <div className="menu-row">
                 <span
                   style={{
                     flex:
@@ -498,26 +502,17 @@ export default function AiAdmin() {
                   </span>
                 </span>
 
-                <span className="toggle-wrap">
-                  <input
-                    type="checkbox"
-                    checked={
-                      form.enabled
-                    }
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
+                <Switch
+                  on={form.enabled}
+                  onToggle={(next) =>
+                    setForm({
+                      ...form,
 
-                        enabled:
-                          event.target
-                            .checked,
-                      })
-                    }
-                  />
-
-                  <span className="toggle-sl" />
-                </span>
-              </label>
+                      enabled: next,
+                    })
+                  }
+                />
+              </div>
 
 
               <div className="grid2">

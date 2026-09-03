@@ -11,6 +11,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import Switch from '../../components/shared/Switch';
 
 import {
   Spinner,
@@ -28,34 +29,6 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
-
-/* ═══════════ سوییچ تاگل ═══════════ */
-
-function Toggle({
-  checked,
-  disabled,
-  danger,
-  onChange,
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      className={`switch ${
-        checked ? 'switch--on' : ''
-      } ${danger ? 'switch--danger' : ''}`}
-      onClick={() => {
-        haptic('light');
-        onChange(!checked);
-      }}
-    >
-      <span className="switch__nob" />
-    </button>
-  );
-}
 
 
 /* ═══════════ ردیف تنظیم ═══════════ */
@@ -124,15 +97,16 @@ function SettingRow({
         </span>
       </span>
 
-      {busy ? (
-        <Spinner size={16} />
-      ) : (
-        <Toggle
-          checked={checked}
-          danger={danger}
-          onChange={onToggle}
-        />
-      )}
+      {/* قبلاً هنگام ذخیره، خودِ سوییچ با یک Spinner جایگزین می‌شد:
+          عرضِ ردیف می‌پرید و کاربر لحظه‌ای وضعیت را گم می‌کرد. حالا
+          همان سوییچ در حالت loading می‌ماند (قفل + نبضِ ظریف) ⇒ بدون
+          layout shift و بدون امکانِ دابل‌کلیک. */}
+      <Switch
+        on={checked}
+        danger={danger}
+        loading={busy}
+        onToggle={onToggle}
+      />
     </div>
   );
 }

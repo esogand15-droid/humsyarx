@@ -574,7 +574,7 @@ select {
 .choice-card,
 .bottom-nav__item,
 .app-header__back,
-.switch,
+.hy-switch,
 .toggle-wrap {
   -webkit-user-select: none;
   user-select: none;
@@ -803,13 +803,16 @@ select.inp {
   color: var(--txm);
 }
 
-/* Toggle */
+/* Toggle — نگاشتِ سیستمِ دومِ قدیمی روی همان توکن‌های HumsYar Switch.
+   این بلاک عمداً حذف نشد: چند صفحه هنوز markup مبتنی بر checkbox دارند
+   و «یکسان دیده‌شدن» مهم‌تر از یکسان‌بودنِ markup است. ابعاد/رنگ/حرکت
+   دقیقاً از همان متغیرها می‌آید، پس دو ظاهرِ متفاوت ممکن نیست. */
 
 .toggle-wrap {
   position: relative;
   flex-shrink: 0;
-  width: 44px;
-  height: 24px;
+  width: var(--hy-switch-w);
+  height: var(--hy-switch-h);
 }
 
 .toggle-wrap input {
@@ -822,55 +825,82 @@ select.inp {
 .toggle-sl {
   position: absolute;
   inset: 0;
+  box-sizing: border-box;
   cursor: pointer;
-  background: var(--ovr);
-  border: 1px solid var(--bd);
+  background: var(--hy-switch-track-off);
+  border: 1px solid var(--hy-switch-border);
   border-radius: 999px;
-
   transition:
-    background .2s,
-    border-color .2s;
+    background var(--hy-switch-dur) var(--ease-out),
+    border-color var(--hy-switch-dur) var(--ease-out);
 }
 
 .toggle-sl::after {
   content: '';
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 16px;
-  height: 16px;
-  background: #fff;
+  top: 50%;
+  inset-inline-end: var(--hy-switch-pad);
+  width: var(--hy-switch-thumb-size);
+  height: var(--hy-switch-thumb-size);
+  background: var(--hy-switch-thumb-off);
   border-radius: 50%;
-
-  box-shadow:
-    0 2px 5px
-    rgba(0, 0, 0, .35);
-
+  box-shadow: var(--hy-switch-thumb-shadow);
+  transform: translate(0, -50%);
   transition:
-    transform .25s
-    var(--ease-spring);
+    transform var(--hy-switch-dur) var(--ease-out),
+    background var(--hy-switch-dur) var(--ease-out);
 }
 
 .toggle-wrap
 input:checked
 + .toggle-sl {
-  background: var(--grad-brand);
-  border-color: transparent;
+  background: var(--hy-switch-track-on);
+  border-color: var(--hy-switch-border-on);
 }
 
 .toggle-wrap
 input:checked
 + .toggle-sl::after {
-  transform: translateX(-20px);
+  background: var(--hy-switch-thumb-on);
+  transform: translate(
+    calc(-1 * (var(--hy-switch-w) - 2 * var(--hy-switch-pad)
+      - var(--hy-switch-thumb-size) - 2px)),
+    -50%
+  );
+}
+
+[dir='ltr']
+.toggle-wrap
+input:checked
++ .toggle-sl::after {
+  transform: translate(
+    calc(var(--hy-switch-w) - 2 * var(--hy-switch-pad)
+      - var(--hy-switch-thumb-size) - 2px),
+    -50%
+  );
+}
+
+.toggle-wrap
+input:disabled
++ .toggle-sl {
+  cursor: not-allowed;
+  opacity: .45;
 }
 
 .toggle-wrap
 input:focus-visible
 + .toggle-sl {
   outline:
-    2px solid var(--acc2);
+    2px solid var(--hy-switch-focus);
 
   outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle-sl,
+  .toggle-sl::after {
+    transition-duration: .01ms;
+  }
 }
 
 /* Tabs */
@@ -2320,57 +2350,164 @@ input:focus-visible
 }
 
 /* ═══════════════════════════════════════
-   ✅ NEW — سوییچ تاگل (تنظیمات ربات)
+   ✅ HumsYar Switch — تک‌منبعِ همه‌ی Toggleها
+   (جایگزینِ دو سیستمِ موازیِ قبلی: .switch و .toggle-wrap)
 ═══════════════════════════════════════ */
 
-.switch {
+/* توکن‌ها — تنها جایی که رنگ/اندازه‌ی سوییچ تعریف می‌شود.
+   نکته‌ی طراحی: ON عمداً از `--grad-brand` استفاده *نمی‌کند*. آن گرادیانِ
+   سه‌ایستگاهی برای CTAهای بزرگ ساخته شده و روی کنترلِ ۴۴px اشباع/نئون
+   خوانده می‌شود — همان چیزی که سوییچ را «وصله» نشان می‌داد. اینجا یک
+   گرادیانِ دو‌ایستگاهیِ کم‌دامنه از خودِ رنگ‌های برند استفاده می‌شود. */
+:root {
+  --hy-switch-w: 44px;
+  --hy-switch-h: 25px;
+  --hy-switch-pad: 3px;
+  --hy-switch-thumb-size: 17px;
+
+  --hy-switch-track-off: var(--ovr);
+  --hy-switch-track-on:
+    linear-gradient(135deg, var(--acc-dim), var(--acc));
+  --hy-switch-track-on-danger:
+    linear-gradient(135deg, #B91C1C, #DC2626);
+
+  --hy-switch-border: var(--bd);
+  --hy-switch-border-on: transparent;
+
+  --hy-switch-thumb-off: #94A3B8;
+  --hy-switch-thumb-on: #fff;
+  --hy-switch-thumb-shadow: 0 1px 3px rgba(3, 8, 20, .45);
+
+  --hy-switch-focus: var(--acc2);
+  --hy-switch-dur: .2s;
+}
+
+.hy-switch {
   position: relative;
   flex: 0 0 auto;
-  width: 46px;
-  height: 27px;
-  border: 1px solid var(--bd);
+  display: inline-block;
+  box-sizing: border-box;
+  width: var(--hy-switch-w);
+  height: var(--hy-switch-h);
+  padding: 0;
+  border: 1px solid var(--hy-switch-border);
   border-radius: 999px;
-  background: var(--ovr);
+  background: var(--hy-switch-track-off);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   transition:
-    background .22s var(--ease-out),
-    border-color .22s var(--ease-out);
+    background var(--hy-switch-dur) var(--ease-out),
+    border-color var(--hy-switch-dur) var(--ease-out),
+    opacity var(--hy-switch-dur) var(--ease-out);
 }
 
-.switch__nob {
+/* Touch target ≥44px بدون بزرگ‌کردنِ ظاهرِ سوییچ (بند ۱۰/۱۱ قرارداد).
+   شبه‌عنصر است تا layout کارت جابه‌جا نشود و overflow نسازد. */
+.hy-switch::before {
+  content: '';
   position: absolute;
-  top: 2.5px;
-  right: 3px;
-  width: 20px;
-  height: 20px;
+  inset: 50% auto auto 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  transform: translate(-50%, -50%);
+}
+
+.hy-switch__thumb {
+  position: absolute;
+  top: 50%;
+  inset-inline-end: var(--hy-switch-pad);
+  width: var(--hy-switch-thumb-size);
+  height: var(--hy-switch-thumb-size);
   border-radius: 50%;
-  background: #94A3B8;
+  background: var(--hy-switch-thumb-off);
+  box-shadow: var(--hy-switch-thumb-shadow);
+  /* حرکت با translate انجام می‌شود (نه left/right) تا layout shift و
+     بازمحاسبه‌ی چیدمان نداشته باشیم — فقط compositing. */
+  transform: translate(0, -50%);
   transition:
-    transform .22s var(--ease-spring),
-    background .22s var(--ease-out);
+    transform var(--hy-switch-dur) var(--ease-out),
+    background var(--hy-switch-dur) var(--ease-out);
 }
 
-.switch--on {
-  border-color: transparent;
-  background: var(--grad-brand);
+.hy-switch--on {
+  border-color: var(--hy-switch-border-on);
+  background: var(--hy-switch-track-on);
 }
 
-.switch--on .switch__nob {
-  background: #fff;
-  transform: translateX(-19px);
+.hy-switch--custom.hy-switch--on {
+  background: var(--hy-switch-track-on);
 }
 
-.switch--danger.switch--on {
-  background: linear-gradient(
-    135deg,
-    #DC2626,
-    #F87171
+.hy-switch--danger.hy-switch--on {
+  background: var(--hy-switch-track-on-danger);
+}
+
+/* مسافت = عرض − ۲×padding − قطرِ نوب. با متغیرها حساب می‌شود تا اگر
+   ابعاد عوض شد، جای نوب خودبه‌خود درست بماند (نه عددِ جادوییِ ۱۹px). */
+.hy-switch--on .hy-switch__thumb {
+  background: var(--hy-switch-thumb-on);
+  transform: translate(
+    calc(-1 * (var(--hy-switch-w) - 2 * var(--hy-switch-pad)
+      - var(--hy-switch-thumb-size) - 2px)),
+    -50%
   );
 }
 
-.switch:disabled {
-  opacity: .55;
+/* RTL: صفحه dir=rtl است و inset-inline-end خودش قرینه می‌شود؛ اما جهتِ
+   translate باید هم قرینه شود وگرنه نوب از تراک بیرون می‌زند. */
+[dir='ltr'] .hy-switch--on .hy-switch__thumb {
+  transform: translate(
+    calc(var(--hy-switch-w) - 2 * var(--hy-switch-pad)
+      - var(--hy-switch-thumb-size) - 2px),
+    -50%
+  );
+}
+
+.hy-switch:focus-visible {
+  outline: 2px solid var(--hy-switch-focus);
+  outline-offset: 3px;
+}
+
+.hy-switch:not(:disabled):active .hy-switch__thumb {
+  /* بازخوردِ لمسیِ ظریف — بدون bounce */
+  width: calc(var(--hy-switch-thumb-size) + 2px);
+}
+
+.hy-switch:disabled {
   cursor: not-allowed;
+  opacity: .45;
+}
+
+/* loading: کنترل قفل است ولی محو نمی‌شود (فرقِ «در حال ذخیره» با
+   «غیرفعال»)؛ نوب نبض می‌زند تا کاربر بداند درخواست در جریان است. */
+.hy-switch[data-loading] {
+  cursor: progress;
+  opacity: .8;
+}
+
+.hy-switch[data-loading] .hy-switch__thumb {
+  animation: hy-switch-pulse 1s ease-in-out infinite;
+}
+
+@keyframes hy-switch-pulse {
+  50% { opacity: .55; }
+}
+
+@media (hover: hover) {
+  .hy-switch:not(:disabled):hover {
+    border-color: var(--bdg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hy-switch,
+  .hy-switch__thumb {
+    transition-duration: .01ms;
+  }
+
+  .hy-switch[data-loading] .hy-switch__thumb {
+    animation: none;
+  }
 }
 
 /* ═══════════════════════════════════════

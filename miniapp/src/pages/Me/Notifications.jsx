@@ -6,6 +6,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import Switch from '../../components/shared/Switch';
 
 import {
   Spinner,
@@ -555,46 +556,29 @@ export function Notifications() {
                       </span>
                     </div>
 
-                    <label
-                      className="toggle-wrap"
-                      aria-label={
+                    <Switch
+                      on={Boolean(
+                        item.enabled
+                      )}
+                      loading={pending}
+                      label={
                         `تغییر ${
                           item.label
                         }`
                       }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={
-                          Boolean(
-                            item.enabled
-                          )
-                        }
-                        disabled={
-                          pending
-                        }
-                        onChange={(
-                          event
-                        ) => {
-                          haptic(
-                            'light'
-                          );
+                      onToggle={(
+                        next
+                      ) =>
+                        toggleMutation
+                          .mutate({
+                            key:
+                              item.key,
 
-                          toggleMutation
-                            .mutate({
-                              key:
-                                item.key,
-
-                              enabled:
-                                event
-                                  .target
-                                  .checked,
-                            });
-                        }}
-                      />
-
-                      <span className="toggle-sl" />
-                    </label>
+                            enabled:
+                              next,
+                          })
+                      }
+                    />
                   </div>
                 );
               }

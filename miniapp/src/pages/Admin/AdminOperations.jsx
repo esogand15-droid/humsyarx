@@ -16,6 +16,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import Switch from '../../components/shared/Switch';
 
 import {
   Spinner,
@@ -1670,7 +1671,9 @@ export function PollAdmin() {
             ＋ افزودن گزینه
           </button>
 
-          <label className="menu-row">
+          {/* label → div چون کنترل دیگر input نیست بلکه
+              <button role="switch"> است. */}
+          <div className="menu-row">
             <span
               style={{
                 flex:
@@ -1697,23 +1700,11 @@ export function PollAdmin() {
               </span>
             </span>
 
-            <span className="toggle-wrap">
-              <input
-                type="checkbox"
-                checked={
-                  anonymous
-                }
-                onChange={(event) =>
-                  setAnonymous(
-                    event.target
-                      .checked
-                  )
-                }
-              />
-
-              <span className="toggle-sl" />
-            </span>
-          </label>
+            <Switch
+              on={anonymous}
+              onToggle={setAnonymous}
+            />
+          </div>
         </section>
 
 
