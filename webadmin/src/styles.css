@@ -1331,12 +1331,25 @@ body.overlay-open { overflow: hidden; }
 .an-section-head { display: flex; align-items: end; justify-content: space-between; gap: var(--sp3); padding-block-end: var(--sp2); border-bottom: 1px solid var(--c-line); }
 .an-section-head h2 { margin: 0; color: var(--c-txt); font-size: var(--fs-section); line-height: 1.5; }
 .an-section-head p { margin: var(--sp1) 0 0; color: var(--c-txt3); font-size: var(--fs-meta); line-height: 1.7; }
-.an-metric-grid, .an-executive-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--sp3); min-width: 0; }
+/* §DW3 — `repeat(4, ...)` ثابت بود و در عرضِ کم کارتِ چهارم به سطرِ
+   بعد می‌افتاد و ردیف را می‌شکست (در بازبینیِ چشمی دیده شد). همان
+   رفتارِ auto-fit ردیفِ KPI مشترک اینجا هم اعمال می‌شود. */
+.an-metric-grid, .an-executive-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--sp3); min-width: 0; }
 .an-executive-grid { grid-template-columns: repeat(4, minmax(190px, 1fr)); }
 .an-metric-grid.secondary .an-metric { background: var(--c-bg2); }
 .an-metric { display: grid; align-content: start; gap: var(--sp2); min-width: 0; padding: var(--sp4); background: linear-gradient(145deg, color-mix(in srgb, var(--c-acc) 4%, var(--c-surface)), var(--c-surface)); border: 1px solid var(--c-line); border-radius: var(--r-xl); box-shadow: var(--sh-1); }
-.an-metric.warning { border-color: color-mix(in srgb, var(--c-warn) 42%, var(--c-line)); }
-.an-metric.danger { border-color: color-mix(in srgb, var(--c-bad) 52%, var(--c-line)); }
+/* §DW3 — نوارِ لهجهٔ بالای کارت، همان الگوی `.kpi`.
+   پیش‌تر وضعیت فقط با رنگِ حاشیه نشان داده می‌شد که هم کم‌پیدا بود و هم
+   با بقیهٔ پنل فرق داشت. حالا یک زبانِ واحد: نوارِ ۲ پیکسلی + حاشیه. */
+.an-metric { --an-accent: transparent; }
+.an-metric::before {
+  content: ""; position: absolute; inset-inline: 0; top: 0; height: 2px;
+  background: var(--an-accent);
+}
+.an-metric { position: relative; overflow: hidden; }
+.an-metric.warning { border-color: color-mix(in srgb, var(--c-warn) 42%, var(--c-line)); --an-accent: var(--c-warn); }
+.an-metric.danger { border-color: color-mix(in srgb, var(--c-bad) 52%, var(--c-line)); --an-accent: var(--c-bad); }
+.an-metric.ok { border-color: color-mix(in srgb, var(--c-ok) 42%, var(--c-line)); --an-accent: var(--c-ok); }
 .an-metric.muted-card { align-content: center; min-height: 140px; background: var(--c-bg2); }
 .an-metric-head { display: flex; align-items: center; gap: var(--sp2); min-width: 0; color: var(--c-txt2); font-size: var(--fs-body); font-weight: 750; }
 .an-metric-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 28px; color: var(--c-acc); background: color-mix(in srgb, var(--c-acc) 11%, var(--c-bg2)); border: 1px solid color-mix(in srgb, var(--c-acc) 30%, var(--c-line)); border-radius: var(--r-md); }
@@ -1434,12 +1447,14 @@ body.overlay-open { overflow: hidden; }
 .an-dict-mini span { color: var(--c-txt3); font-size: var(--fs-caption); }
 .an-dictionary > p { color: var(--c-txt3); }
 @media (max-width: 1400px) {
-  .an-metric-grid, .an-executive-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* §DW3 — override ستون‌های ثابت حذف شد: حالا `auto-fit` خودش تعداد
+     ستون را از عرضِ واقعی حساب می‌کند. با نسخهٔ قبلی، کارتِ چهارم در
+     عرضِ ۱۴۰۰ به سطرِ بعد می‌افتاد و ردیف می‌شکست (در بازبینیِ چشمی
+     دیده شد). `an-job-grid` دست‌نخورده می‌ماند چون auto-fit ندارد. */
   .an-job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1050px) {
   .an-nav-row { position: static; }
-  .an-metric-grid, .an-executive-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .an-chart-grid, .an-alert-list, .an-insights { grid-template-columns: 1fr; }
   .an-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .an-raw-grid { grid-template-columns: 1fr; }
@@ -1447,6 +1462,7 @@ body.overlay-open { overflow: hidden; }
 @media (max-width: 720px) {
   .an-header-actions, .an-range { justify-content: stretch; width: 100%; }
   .an-range .btn, .an-compare-select, .an-compare-select .inp { flex: 1; min-width: 0; }
+  /* در موبایل تک‌ستونه اجباری می‌ماند تا عدد بریده نشود */
   .an-metric-grid, .an-executive-grid, .an-job-grid, .an-health-grid { grid-template-columns: 1fr; }
   .an-section-head { align-items: start; flex-direction: column; }
   .an-alert { align-items: start; flex-wrap: wrap; }
@@ -1538,6 +1554,10 @@ body.overlay-open { overflow: hidden; }
   position: relative; overflow: hidden;
   display: flex; flex-direction: column; gap: var(--sp2h);
   padding: var(--sp3) var(--sp4);
+  /* §DW3 — گرادیانِ بسیار ملایمِ `.an-metric`. عمق می‌دهد بدونِ اینکه
+     کارت را از بقیهٔ پنل جدا کند. */
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--c-acc) 4%, var(--c-surface)), var(--c-surface));
   /* بازبینیِ چشمی نشان داد بدونِ ارتفاعِ حداقل، کارت‌های دارای
      sparkline بلندتر از بقیه می‌شدند و ردیف ناهموار می‌شد. */
   min-height: 118px;
@@ -1559,7 +1579,13 @@ body.overlay-open { overflow: hidden; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .kpi-value {
-  font-size: 23px; font-weight: 800; line-height: 1.25;
+  /* §DW3 — از `.an-metric-value` وام گرفته شد.
+     مقایسهٔ چشمیِ کنارِ‌هم نشان داد نسخهٔ Analytics خواناترِ عدد بود:
+     مقیاسِ سیّال به‌جای اندازهٔ ثابت، و مهم‌تر `tabular-nums` که ارقام
+     را هم‌عرض می‌کند تا ستونِ اعداد در ردیف نلرزد. */
+  font-size: clamp(21px, 1.6vw, 26px);
+  font-weight: 850; line-height: 1.3;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -.2px;
   /* بازبینیِ چشمیِ موجِ ۲: مقدارِ متنی («آماده») کنارِ مقدارِ عددی
      («۴۸») بیش‌ازحد درشت دیده می‌شد چون عرضِ حروف بیشتر است. کرانهٔ
