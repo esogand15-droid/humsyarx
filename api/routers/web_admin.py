@@ -195,7 +195,7 @@ def _perm_any(*permissions: str):
 async def _audit(actor_uid: int, action: str, *, severity: str = "INFO",
                  target_id: str = "", target_type: str = "",
                  target_label: str = "", tags=None,
-                 before: dict = None, after: dict = None):
+                 before: dict = None, after: dict = None, details: str = ""):
     """Mandatory WebAdmin audit persistence.
 
     Audit failures are no longer swallowed. Callers that need compensation can
@@ -209,7 +209,7 @@ async def _audit(actor_uid: int, action: str, *, severity: str = "INFO",
         action, "WebAdmin", category="admin", severity=severity,
         target_id=str(target_id), target_type=target_type,
         target_label=target_label, tags=tags or [],
-        before=before, after=after,
+        before=before, after=after, details=details,
     )
 
 
@@ -5216,9 +5216,12 @@ async def wa_dlq_requeue(body: WaDlqRequeue,
         {"_id": {"$in": ids}, "status": "dead"},
         {"$set": {"sent": False, "failed": False, "attempts": 0, "status": "queued"},
          "$unset": {"error": "", "sent_at": "", "send_at": ""}})
+    # details پاس داده می‌شود چون log_action مقدار `after` را فقط وقتی نگه
+    # می‌دارد که `before` هم بیاید؛ بدون این، شمارشِ بازپخش در لاگ گم می‌شد.
     await _audit(user["id"], "بازپخش پیام‌های مرده صف", severity="WARNING",
                  target_type="dlq", target_label="bot_outbox",
-                 after={"requeued": result.modified_count},
+                 details=f"{result.modified_count} پیام از {len(ids)} مورد به صف بازگشت",
+                 before={"requeued": 0}, after={"requeued": result.modified_count},
                  tags=["صف", "dlq", "پنل_وب"])
     return {"requeued": result.modified_count, "requested": len(ids)}
 
@@ -5249,7 +5252,8 @@ async def wa_dlq_discard(body: WaDlqRequeue,
                   "discarded_by": user["id"]}})
     await _audit(user["id"], "کنارگذاشتن پیام‌های مرده صف", severity="HIGH",
                  target_type="dlq", target_label="bot_outbox",
-                 after={"discarded": result.modified_count},
+                 details=f"{result.modified_count} پیام از {len(ids)} مورد کنار گذاشته شد",
+                 before={"discarded": 0}, after={"discarded": result.modified_count},
                  tags=["صف", "dlq", "پنل_وب"])
     return {"discarded": result.modified_count, "requested": len(ids)}
 

@@ -257,6 +257,10 @@ class DBCore:
                 self._index(self.broadcast_campaigns, [('status', 1), ('send_at', 1)], background=True),
                 self._index(self.bot_notifs, [('campaign_id', 1), ('sent', 1)], background=True),
                 self._index(self.bot_notifs, [('sent', 1), ('send_at', 1)], background=True),
+                # 💀 DLQ — بدون این، هم شمارش پیام‌های مرده در Job Center و هم
+                # فهرست صفحه‌بندی‌شده‌ی DLQ روی کل کالکشن اسکن می‌کنند.
+                # sent_at نزولی چون فهرست همیشه «تازه‌ترین مرگ» را اول می‌خواهد.
+                self._index(self.bot_notifs, [('status', 1), ('sent_at', -1)], background=True),
                 self._index(self.intakes, 'code', unique=True, background=True),
                 # 🏷 Identity v1 — یکتایی لقب case-insensitive:
                 # unique + sparse (فقط اسنادی که فیلد دارند/غیرnull)
@@ -1868,7 +1872,153 @@ class DBCore:
             'correlation_id': correlation_id or current_request_id.get(),
         }
         r = await self.audit_logs.insert_one(doc)
+        # 🚨 §۸۹ — هشدار فعال. داخل try تا هیچ‌وقت مسیر اصلی را نشکند:
+        # لاگ همین حالا ثبت شده و از دست نمی‌رود.
+        if severity in self.ALERT_SEVERITIES:
+            try:
+                await self.dispatch_critical_alert({**doc, '_id': r.inserted_id})
+            except Exception:
+                pass
         return str(r.inserted_id)
+
+
+    # ══════════════════════════════════════════════════════════
+    #  🚨 §۸۹ — هشدار فعال روی رویدادهای بحرانی
+    # ══════════════════════════════════════════════════════════
+    #  رویدادهای CRITICAL ثبت می‌شدند ولی کسی مطلع نمی‌شد مگر
+    #  تصادفی صفحه‌ی Audit را باز کند. حالا به دارندگانِ `audit.view`
+    #  اعلان می‌رود — از همان inbox موجود، با group_key تا طوفانِ
+    #  اعلان راه نیفتد.
+
+    ALERT_SEVERITIES = ('CRITICAL',)
+
+    async def alert_recipients(self) -> list:
+        """دارندگان `audit.view` + مالک، بدون تکرار."""
+        owner = int(os.getenv('ADMIN_ID', '0'))
+        uids = set()
+        if owner:
+            uids.add(owner)
+        try:
+            uids.update(await self.perm_holders('audit.view', exclude_owner=True))
+        except Exception:
+            pass          # هشدار هرگز نباید مسیر اصلی را بشکند
+        return sorted(uids)
+
+    async def dispatch_critical_alert(self, log: dict) -> int:
+        """اعلان برای یک رویداد بحرانی. خروجی: تعداد گیرندگان.
+
+        عمداً «بهترین تلاش» است: اگر ارسال شکست بخورد، عملیاتی که
+        باعثش شده *نباید* برگردد — لاگ از قبل ثبت شده است.
+        """
+        if (log or {}).get('severity') not in self.ALERT_SEVERITIES:
+            return 0
+        actor = (log.get('actor') or {})
+        target = (log.get('target') or {})
+        title = f"🚨 {log.get('action', 'رویداد بحرانی')}"
+        body = (f"{actor.get('name', 'نامشخص')} ({actor.get('role', '—')}) — "
+                f"{target.get('label') or target.get('id') or '—'}")
+        sent = 0
+        for uid in await self.alert_recipients():
+            if uid == actor.get('id'):
+                continue          # کسی که خودش انجامش داده، خبر دارد
+            try:
+                await self.inbox_add(
+                    uid, 'security', title, body, link='/audit',
+                    group_key=f"crit:{log.get('module', '')}",
+                    group_title='رویدادهای بحرانی')
+                sent += 1
+            except Exception:
+                continue
+        return sent
+
+
+    # ══════════════════════════════════════════════════════════
+    #  ↩️ §۸۸ — بازگردانی تغییرات از روی حسابرسی (Undo)
+    # ══════════════════════════════════════════════════════════
+    #  داده‌ی لازم (before/after) از قبل ثبت می‌شد و هیچ استفاده‌ای
+    #  نداشت. اینجا فقط از آن استفاده می‌کنیم.
+    #
+    #  ⚠️ عمداً *فهرست سفید* است، نه undoی عمومی. برگرداندنِ کورکورانه‌ی
+    #  هر رویدادی فاجعه‌بار است: حذف‌ها داده‌ی واقعی را برنمی‌گردانند،
+    #  عملیات مالی باید از مسیر خودش برگردد، و پیام‌های ارسال‌شده
+    #  بازگشت‌پذیر نیستند. فقط تغییرِ فیلدهای سادهٔ کاربر پشتیبانی می‌شود.
+    UNDOABLE = {
+        'users': {
+            'collection': 'users',
+            'key': 'user_id',
+            'fields': {'approved', 'suspended', 'intake', 'group_code',
+                       'name', 'blocked'},
+        },
+    }
+
+    def undo_plan(self, log: dict) -> dict:
+        """آیا این رویداد قابل بازگردانی است؟ اگر آری، دقیقاً چه چیزی.
+
+        تابع خالص و بدون نوشتن — همان چیزی که UI برای نمایش دکمه و
+        سرور برای اجرا استفاده می‌کند (یک منبع، بدون واگرایی).
+        """
+        target = (log or {}).get('target') or {}
+        spec = self.UNDOABLE.get(target.get('type'))
+        if not spec:
+            return {'undoable': False, 'reason': 'نوع این رویداد بازگردانی‌پذیر نیست'}
+        changes = [c for c in ((log or {}).get('changes') or [])
+                   if c.get('field') in spec['fields']]
+        if not changes:
+            return {'undoable': False, 'reason': 'این رویداد تغییر فیلدِ قابل بازگردانی ندارد'}
+        if any(c.get('before') == '—' for c in changes):
+            return {'undoable': False, 'reason': 'مقدار پیشین ثبت نشده است'}
+        if (log or {}).get('undone_at'):
+            return {'undoable': False, 'reason': 'این رویداد قبلاً بازگردانده شده است'}
+        try:
+            key_value = int(target.get('id'))
+        except (TypeError, ValueError):
+            return {'undoable': False, 'reason': 'شناسه‌ی هدف معتبر نیست'}
+        return {
+            'undoable': True,
+            'collection': spec['collection'], 'key': spec['key'],
+            'key_value': key_value,
+            'restore': {c['field']: c.get('before') for c in changes},
+            'current_expected': {c['field']: c.get('after') for c in changes},
+        }
+
+    async def undo_audit_log(self, log_id: str, actor_id: int) -> dict:
+        """اجرای بازگردانی — با محافظت در برابر تغییرِ هم‌زمان.
+
+        اگر مقدار فعلی با `after`ِ ثبت‌شده نخواند، یعنی کسی بعد از آن
+        رویداد چیزی را عوض کرده و بازگردانی، کارِ او را بی‌صدا پاک
+        می‌کند. در آن حالت ۴۰۹ می‌دهیم، نه بازنویسی.
+        """
+        from bson import ObjectId
+        try:
+            oid = ObjectId(log_id)
+        except Exception:
+            return {'ok': False, 'error': 'شناسه‌ی رویداد معتبر نیست', 'status': 422}
+        log = await self.audit_logs.find_one({'_id': oid})
+        if not log:
+            return {'ok': False, 'error': 'رویداد پیدا نشد', 'status': 404}
+        plan = self.undo_plan(log)
+        if not plan['undoable']:
+            return {'ok': False, 'error': plan['reason'], 'status': 409}
+
+        collection = getattr(self, plan['collection'])
+        filt = {plan['key']: plan['key_value']}
+        current = await collection.find_one(filt)
+        if not current:
+            return {'ok': False, 'error': 'هدف دیگر وجود ندارد', 'status': 404}
+        drifted = [f for f, expected in plan['current_expected'].items()
+                   if current.get(f) != expected]
+        if drifted:
+            return {'ok': False, 'status': 409,
+                    'error': f"مقدار فعلی «{'، '.join(drifted)}» با زمان ثبت رویداد "
+                             "فرق دارد؛ بازگردانی تغییرِ بعدی را پاک می‌کند"}
+
+        await collection.update_one(filt, {'$set': plan['restore']})
+        # علامتِ یک‌بارمصرف: جلوی undoی دوباره و حلقه‌ی undo/redo را می‌گیرد.
+        await self.audit_logs.update_one(
+            {'_id': oid, 'undone_at': {'$exists': False}},
+            {'$set': {'undone_at': utc_now_iso(), 'undone_by': int(actor_id)}})
+        return {'ok': True, 'restored': plan['restore'],
+                'target_id': plan['key_value']}
 
 
     async def get_recent_logs(self, category: str = None, min_severity: str = None,
