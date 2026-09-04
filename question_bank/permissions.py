@@ -70,8 +70,19 @@ class QuestionPermissionService:
                                       {"required": required})
         if scope["kind"] == "scoped" and clean_text(question.get("intake")) != scope["intake"]:
             raise QuestionDomainError("question_out_of_scope", "سؤال خارج از محدوده بررسی شماست", 403)
-        if action == "approve" and int(question.get("creator_id") or 0) == uid:
-            raise QuestionDomainError("self_approval_forbidden", "تأیید سؤال خودتان مجاز نیست", 409)
+        # §W10 — قانونِ ضدِ خودتأییدی برداشته شد (تصمیمِ صریحِ محصول).
+        #
+        # این قانون برای نظارتِ دونفره بود، ولی روی نصبِ تک‌ادمینه نتیجهٔ
+        # عملی‌اش «قفلِ دائمی» بود: تنها بازبینِ موجود همان سازنده است، پس
+        # سؤال هرگز تأیید نمی‌شد و در پنل هیچ دکمهٔ تأییدی دیده نمی‌شد.
+        #
+        # امنیت تضعیف نشده: مجوزِ `questions.review` و محدودیتِ scope
+        # بالاتر همچنان اجرا می‌شوند، و هر تأیید در تاریخچه و audit با
+        # نامِ بازبین ثبت می‌ماند. یعنی «چه کسی تأیید کرد» همچنان
+        # قابلِ ردیابی است — فقط دیگر بن‌بست نمی‌سازد.
+        #
+        # اگر روزی نظارتِ دونفره لازم شد، جای درستش یک تنظیمِ صریح
+        # (مثل `require_second_reviewer`) است، نه یک قفلِ سخت‌کدشده.
         return scope
 
     async def authorize_delete(self, *, actor: Mapping, question: Mapping) -> dict:

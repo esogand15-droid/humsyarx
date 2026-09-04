@@ -2023,6 +2023,10 @@ async def wa_questions_list(
     docs = await (db.questions.find(filt)
                   .sort(sort_by, 1 if sort_dir == "asc" else -1)
                   .skip(skip).limit(limit).to_list(limit))
+    # §W10 — تأیید هم مثلِ بقیه باید مجوز بخواهد. پیش‌تر `can_approve`
+    # هیچ مجوزی نمی‌سنجید و به‌جایش «سازنده نبودن» را شرط کرده بود.
+    can_review = (await db.has_permission(user["id"], "questions.review")
+                  or await db.has_permission(user["id"], "questions.review_scoped"))
     can_reject = await db.has_permission(user["id"], "questions.reject")
     can_edit = await db.has_permission(user["id"], "questions.edit")
     # 🛡 §۸۴ — پرچمِ حذف، هم‌شکل با can_reject/can_edit تا UI خودش
@@ -2048,9 +2052,16 @@ async def wa_questions_list(
             "attempts": attempts,
             "accuracy": round(correct * 100 / attempts, 1) if attempts else 0,
             "reports": int(d.get("report_count") or 0),
-            "can_approve": canonical_status(d) == "pending" and int(d.get("creator_id") or 0) != user["id"],
-            "can_reject": canonical_status(d) == "pending" and can_reject,
-            "can_edit": canonical_status(d) == "pending" and can_edit,
+            # §W10 — پرچم‌ها با قانونِ واقعیِ سرور هم‌راستا شدند:
+            #  • تأیید: مجوزِ بررسی لازم است (نه «سازنده نبودن»). قانونِ
+            #    ضدِ خودتأییدی برداشته شد چون روی نصبِ تک‌ادمینه سؤال را
+            #    برای همیشه قفل می‌کرد.
+            #  • ویرایش/رد: دیگر به `pending` محدود نیستند — موجِ ۷ این
+            #    را در ربات باز کرد و پنل عقب مانده بود. سؤالِ تأییدشده
+            #    باید قابلِ اصلاح باشد وگرنه گزارشِ دانشجو بن‌بست می‌خورد.
+            "can_approve": canonical_status(d) == "pending" and can_review,
+            "can_reject": canonical_status(d) != "rejected" and can_reject,
+            "can_edit": can_edit,
             "can_delete": canonical_status(d) != "approved" and can_delete,
         })
     return {"questions": rows, "total": total, "skip": skip, "limit": limit,
@@ -2077,19 +2088,27 @@ async def wa_question_create(
 ):
     actor = await _question_admin(user)
     try:
+        # §W10 — یکپارچگی با ربات (موجِ ۶): ادمینِ دارای `questions.review`
+        # از پنل هم مستقیم ثبت می‌کند. اعتماد در لایهٔ دامنه دوباره با
+        # RBAC سنجیده می‌شود، پس این پرچم به‌تنهایی چیزی را دور نمی‌زند.
+        direct = await db.has_permission(user["id"], "questions.review")
         result = await question_bank.create_question(
             actor=actor, payload=body.model_dump(), source="web_admin",
-            creator_type="admin", auto_approve=False, intake=body.intake)
+            creator_type="admin", auto_approve=direct, intake=body.intake)
     except QuestionDomainError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message,
                                               "details": exc.details})
     document = result["question"]
-    await _audit(user["id"], "ساخت سؤال و ارسال به بازبینی مستقل", severity="INFO",
+    final_status = canonical_status(document)
+    await _audit(user["id"],
+                 "ثبت مستقیم سؤال" if final_status == "approved"
+                 else "ساخت سؤال و ارسال به بازبینی مستقل", severity="INFO",
                  target_type="question", target_id=str(document["_id"]),
                  target_label=document.get("question", "")[:100],
-                 after={"status": "pending", "intake": document.get("intake", "")},
-                 tags=["بانک_سؤال", "ساخت", "بازبینی_مستقل"])
-    return {"ok": True, "question_id": str(document["_id"]), "status": "pending"}
+                 after={"status": final_status, "intake": document.get("intake", "")},
+                 tags=["بانک_سؤال", "ساخت",
+                       "ثبت_مستقیم" if final_status == "approved" else "بازبینی_مستقل"])
+    return {"ok": True, "question_id": str(document["_id"]), "status": final_status}
 
 
 @router.get("/exports/questions.csv")
