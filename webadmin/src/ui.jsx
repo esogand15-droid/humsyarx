@@ -555,3 +555,110 @@ export function Stat({ icon, label, value, tint = 'var(--acc)', delta, hint }) {
     </div><div className="l">{label}</div>{hint && <div className="l stat-hint">{hint}</div>}</div>
   </div>;
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   §DW1 — primitiveهای مشترکِ چیدمان و سنجه
+   ══════════════════════════════════════════════════════════════════
+   ممیزیِ موجِ ۱۱: ۵۱٪ کلاس‌های CSS مخصوصِ یک صفحه بودند. علت نبودِ
+   ابزارِ مشترک بود، نه سلیقه. این‌ها همان ابزارِ غایب‌اند.
+
+   `Stat` قدیمی حذف نشد — هنوز در چند صفحه استفاده می‌شود و شکستنش
+   بی‌دلیل است. `KpiCard` جانشینِ غنی‌ترِ آن است و مهاجرت تدریجی
+   انجام می‌شود (موج‌های بعد).
+   ────────────────────────────────────────────────────────────────── */
+
+/** نمودارِ خطیِ کوچک — بدونِ وابستگیِ بیرونی، فقط SVG. */
+export function Sparkline({ data, tone = '', height = 28, area = true }) {
+  const pts = (data || []).map(Number).filter(n => Number.isFinite(n));
+  if (pts.length < 2) return null;
+  const max = Math.max(...pts), min = Math.min(...pts);
+  const span = max - min || 1;
+  const W = 100, H = height;
+  const step = W / (pts.length - 1);
+  const xy = pts.map((v, i) => [i * step, H - ((v - min) / span) * (H - 6) - 3]);
+  const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(2)},${y.toFixed(2)}`).join(' ');
+  const fill = `${line} L${W},${H} L0,${H} Z`;
+  return (
+    <svg className={`sparkline ${tone ? `is-${tone}` : ''}`} viewBox={`0 0 ${W} ${H}`}
+         preserveAspectRatio="none" aria-hidden="true" focusable="false">
+      {area && <path className="spark-area" d={fill} />}
+      <path className="spark-line" d={line} />
+    </svg>
+  );
+}
+
+/**
+ * کارتِ سنجه. `tone` معنایی است (ok/warn/bad/acc) نه رنگِ خام، تا یک
+ * وضعیت در همهٔ صفحات یک ظاهر داشته باشد.
+ */
+export function KpiCard({ icon, label, value, tone = '', delta, hint,
+                          trend, onClick, enter }) {
+  const clickable = typeof onClick === 'function';
+  const showDelta = delta != null && Number.isFinite(Number(delta));
+  return (
+    <div
+      className={`panel kpi ${tone ? `is-${tone}` : ''} ${enter ? `dw-enter ${enter}` : ''}`}
+      onClick={onClick}
+      onKeyDown={clickable ? e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); }
+      } : undefined}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      style={clickable ? { cursor: 'pointer' } : undefined}
+    >
+      <div className="kpi-head">
+        {icon && <span className="kpi-ic" aria-hidden="true">{icon}</span>}
+        <span className="kpi-label" title={label}>{label}</span>
+      </div>
+      <div className="kpi-value">{value}</div>
+      {(showDelta || hint) && (
+        <div className="kpi-foot">
+          {showDelta && (
+            <span className={`trend ${Number(delta) >= 0 ? 'up' : 'down'}`}>
+              {Number(delta) >= 0 ? '▲' : '▼'}{' '}
+              {Math.abs(Number(delta)).toLocaleString('fa')}٪
+            </span>
+          )}
+          {hint && <span>{hint}</span>}
+        </div>
+      )}
+      {trend?.length > 1 && <Sparkline data={trend} tone={tone} />}
+    </div>
+  );
+}
+
+/** ردیفِ KPI با چیدمانِ واکنش‌گرای یکسان در همهٔ صفحات. */
+export function KpiGrid({ children, className = '' }) {
+  return <div className={`kpi-grid ${className}`}>{children}</div>;
+}
+
+/**
+ * نوارِ ابزار. `FilterBar` فقط در ۵ صفحه بود و بقیه ردیفِ دستی
+ * می‌ساختند؛ این نسخه محلِ اکشن‌های انتهایی را هم استاندارد می‌کند.
+ */
+export function Toolbar({ children, end, className = '' }) {
+  return (
+    <div className={`tbar ${className}`}>
+      {children}
+      {end && <div className="tbar-end">{end}</div>}
+    </div>
+  );
+}
+
+/** سربرگِ بخش — عنوان/توضیح/اکشن با فاصله‌گذاریِ یکسان. */
+export function Section({ title, description, actions, children, className = '' }) {
+  return (
+    <div className={className}>
+      {(title || actions) && (
+        <div className="sec">
+          <div className="sec-main">
+            {title && <div className="sec-title">{title}</div>}
+            {description && <div className="sec-desc">{description}</div>}
+          </div>
+          {actions && <div className="sec-actions">{actions}</div>}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}

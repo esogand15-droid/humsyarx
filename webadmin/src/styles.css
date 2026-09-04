@@ -1490,3 +1490,136 @@ body.overlay-open { overflow: hidden; }
   .hc-summary { align-items: start; flex-direction: column; }
   .hc-summary .spacer { display: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   §DW1 — لایهٔ مشترکِ چیدمان و سنجه
+   ══════════════════════════════════════════════════════════════════
+   ممیزیِ موجِ ۱۱ نشان داد ۵۱٪ کلاس‌های CSS «جزیره‌ای»‌اند (مخصوصِ یک
+   صفحه): content-* با ۷۹ کلاس، an-* با ۵۷، ct3-* با ۲۴.
+
+   علتِ ریشه‌ای «سلیقهٔ متفاوت» نبود؛ نبودِ primitive بود. وقتی صفحه‌ای
+   ردیفِ KPI یا نوارِ ابزار می‌خواست و چیزی برای reuse نبود، مجبور شده
+   کلاسِ محلی بسازد. پس این بلوک ابزارِ مشترک اضافه می‌کند تا صفحات
+   بعدی چیزی برای ساختنِ محلی نداشته باشند.
+
+   هیچ کلاسِ موجودی بازنویسی نشده — این لایه افزایشی است.
+   ────────────────────────────────────────────────────────────────── */
+
+/* عمق: تا امروز سایه‌ها موردی انتخاب می‌شدند. این سه سطح تنها
+   لایه‌بندیِ مجازند تا «کارتِ روی کارت» در همهٔ صفحات یکسان دیده شود. */
+:root {
+  --elev-0: none;
+  --elev-1: var(--sh-1);
+  --elev-2: var(--sh-2);
+  --motion-enter: 320ms;
+}
+
+/* ورودِ نرم. کاربر خواستهٔ «طراحی خفن‌تر» داشت؛ حرکت باید محسوس ولی
+   بی‌سروصدا باشد، و برای کسانی که حرکت را کم می‌خواهند خاموش شود. */
+@keyframes dw-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.dw-enter { animation: dw-rise var(--motion-enter) var(--ease) both; }
+.dw-enter-1 { animation-delay: 40ms; }
+.dw-enter-2 { animation-delay: 80ms; }
+.dw-enter-3 { animation-delay: 120ms; }
+@media (prefers-reduced-motion: reduce) {
+  .dw-enter, .dw-enter-1, .dw-enter-2, .dw-enter-3 { animation: none; }
+}
+
+/* ── ردیفِ KPI ─────────────────────────────────────────────────────
+   سه صفحه سه چیدمانِ متفاوت برای همین یک مفهوم داشتند. */
+.kpi-grid {
+  display: grid; gap: var(--sp3);
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.kpi {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column; gap: var(--sp2h);
+  padding: var(--sp3) var(--sp4);
+  /* بازبینیِ چشمی نشان داد بدونِ ارتفاعِ حداقل، کارت‌های دارای
+     sparkline بلندتر از بقیه می‌شدند و ردیف ناهموار می‌شد. */
+  min-height: 118px;
+  transition: transform var(--d-micro) var(--ease),
+              border-color var(--d-micro) var(--ease);
+}
+/* پاورقی به کفِ کارت چسبیده تا صرفِ نظر از وجودِ روند، همهٔ
+   مقادیر در یک خطِ افقی بنشینند. */
+.kpi-foot { margin-top: auto; }
+.kpi:hover { transform: translateY(-2px); border-color: var(--c-line2); }
+.kpi-head { display: flex; align-items: center; gap: var(--sp2); }
+.kpi-ic {
+  width: 34px; height: 34px; border-radius: var(--r-md);
+  display: grid; place-items: center; font-size: var(--fs-icon);
+  flex: 0 0 auto; background: var(--c-acc-soft); color: var(--c-acc);
+}
+.kpi-label {
+  color: var(--c-txt2); font-size: var(--fs-label);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kpi-value {
+  font-size: 23px; font-weight: 800; line-height: 1.25;
+  letter-spacing: -.2px;
+}
+.kpi-foot {
+  display: flex; align-items: center; gap: var(--sp2);
+  color: var(--c-txt3); font-size: var(--fs-meta);
+}
+/* نوارِ لهجه‌ی بالای کارت — نشانهٔ وضعیت بدونِ اتکا به رنگِ متن */
+.kpi::before {
+  content: ""; position: absolute; inset-inline: 0; top: 0; height: 2px;
+  background: var(--kpi-accent, transparent);
+}
+.kpi.is-ok    { --kpi-accent: var(--c-ok); }
+.kpi.is-warn  { --kpi-accent: var(--c-warn); }
+.kpi.is-bad   { --kpi-accent: var(--c-bad); }
+.kpi.is-acc   { --kpi-accent: var(--c-acc); }
+.kpi.is-ok   .kpi-ic { background: rgba(58,210,155,.12); color: var(--c-ok); }
+.kpi.is-warn .kpi-ic { background: rgba(240,181,69,.12); color: var(--c-warn); }
+.kpi.is-bad  .kpi-ic { background: rgba(248,113,113,.12); color: var(--c-bad); }
+
+/* ── نمودارِ خطیِ کوچک ───────────────────────────────────────────── */
+/* بازبینیِ چشمی: با `overflow: visible` منحنی از کفِ کارت بیرون می‌زد و
+   حاشیه را می‌شکست. ارتفاعِ ثابت + hidden مسئله را حل می‌کند. */
+.sparkline {
+  display: block; width: 100%; height: 28px;
+  overflow: hidden; margin-top: var(--sp1);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.sparkline path { fill: none; stroke-width: 1.5; stroke-linecap: round;
+                  stroke-linejoin: round; }
+.sparkline .spark-line { stroke: var(--c-acc); }
+.sparkline .spark-area { fill: var(--c-acc-soft); stroke: none; }
+.sparkline.is-ok   .spark-line { stroke: var(--c-ok); }
+.sparkline.is-ok   .spark-area { fill: rgba(58,210,155,.12); }
+.sparkline.is-bad  .spark-line { stroke: var(--c-bad); }
+.sparkline.is-bad  .spark-area { fill: rgba(248,113,113,.12); }
+
+/* ── نوارِ ابزار ────────────────────────────────────────────────────
+   FilterBar فقط در ۵ صفحه از ۱۹ استفاده شده بود؛ بقیه ردیفِ دستی
+   ساخته بودند با فاصله‌های متفاوت. */
+.tbar {
+  display: flex; align-items: center; gap: var(--sp2);
+  flex-wrap: wrap; margin-bottom: var(--sp3);
+}
+.tbar-grow { flex: 1 1 220px; min-width: 180px; }
+.tbar-end { margin-inline-start: auto; display: flex;
+            align-items: center; gap: var(--sp2); }
+
+/* ── سربرگِ بخش ─────────────────────────────────────────────────── */
+.sec {
+  display: flex; align-items: flex-start; gap: var(--sp3);
+  margin-bottom: var(--sp3);
+}
+.sec-main { min-width: 0; flex: 1; }
+.sec-title {
+  font-size: var(--fs-section); font-weight: 700; line-height: 1.5;
+  display: flex; align-items: center; gap: var(--sp2);
+}
+.sec-desc {
+  color: var(--c-txt2); font-size: var(--fs-label);
+  margin-top: 2px; line-height: var(--lh-body);
+}
+.sec-actions { display: flex; align-items: center; gap: var(--sp2);
+               flex: 0 0 auto; }

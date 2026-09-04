@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
-import { Stat, Loading, ErrorState, B, FaDateTime, RelativeTime, PageHeader, toast } from '../ui.jsx';
+import { Stat, KpiCard, KpiGrid, Section, Loading, ErrorState, B, FaDateTime, RelativeTime, PageHeader, toast } from '../ui.jsx';
 
 // 📊 داشبورد عملیات + ⚠️ نیازمند اقدام (WA2.7) + 🕓 فید فعالیت واقعی (WA2.7)
 // 🌊 موج Dash-Personalize — نمایش/پنهان بخش‌ها (ترجیح محلی هر مرورگر، localStorage)
@@ -208,16 +208,23 @@ export default function Dashboard({ me, go }) {
         const othersAvg = Math.max(0, (Number(stats.active_week ?? 0) - today)) / 6;
         const delta = othersAvg > 0 ? Math.round((today - othersAvg) / othersAvg * 100) : null;
         return (
-        <>
-          <div className="h1" style={{ marginTop: 22, fontSize: 'var(--fs-section)' }}>شاخص‌های سامانه</div>
-          <div className="grid g4" style={{ marginTop: 10 }}>
-            <Stat icon="📡" label="کاربران فعال امروز" delta={delta} hint="نسبت به میانگین ۶ روز قبل"
-                  value={today.toLocaleString('fa')} tint="var(--ok)" />
-            <Stat icon="📅" label="کاربران فعال هفته" value={Number(stats.active_week ?? 0).toLocaleString('fa')} tint="var(--ok)" />
-            <Stat icon="🆕" label="ثبت‌نام‌های امروز" value={Number(stats.new_today ?? stats.today_new ?? 0).toLocaleString('fa')} tint="var(--acc)" />
-            <Stat icon="📥" label="کل پاسخ‌های ثبت‌شده" value={Number(stats.total_answers ?? 0).toLocaleString('fa')} tint="var(--purple)" />
-          </div>
-        </>
+        // §DW1 — مهاجرت به primitiveهای مشترک: «tint» رنگِ خام بود و
+        // هر صفحه سلیقهٔ خودش را داشت؛ «tone» معنایی است پس یک وضعیت
+        // در کلِ پنل یک ظاهر دارد.
+        <Section title="شاخص‌های سامانه"
+                 className="dash-metrics" >
+          <KpiGrid>
+            <KpiCard icon="📡" label="کاربران فعال امروز" tone="ok" enter="dw-enter-1"
+                     value={today.toLocaleString('fa')} delta={delta}
+                     hint="نسبت به میانگین ۶ روز قبل" />
+            <KpiCard icon="📅" label="کاربران فعال هفته" tone="ok" enter="dw-enter-2"
+                     value={Number(stats.active_week ?? 0).toLocaleString('fa')} />
+            <KpiCard icon="🆕" label="ثبت‌نام‌های امروز" tone="acc" enter="dw-enter-3"
+                     value={Number(stats.new_today ?? stats.today_new ?? 0).toLocaleString('fa')} />
+            <KpiCard icon="📥" label="کل پاسخ‌های ثبت‌شده" tone="acc" enter="dw-enter-3"
+                     value={Number(stats.total_answers ?? 0).toLocaleString('fa')} />
+          </KpiGrid>
+        </Section>
         );
       })()}
 
