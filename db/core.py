@@ -1017,6 +1017,8 @@ class DBCore:
         🌊 C1.5 — effective=True (فقط وقتی intake کد مشخصی است): آمار
         «مؤثر» = آنچه دانشجوی آن ورودی واقعاً می‌بیند = اختصاصی ورودی +
         سراسری. زیرساخت نمایش آمار مؤثر در UI (موج آینده)."""
+        from question_bank.contracts import (and_query, approved_query,
+                                              status_query)
         if intake is not None:
             base = await self._content_admin_stats_scoped(intake)
             if effective and intake:
@@ -1040,10 +1042,18 @@ class DBCore:
             ('ref_files',    self.ref_files,    {}),
             ('ref_fa',       self.ref_files,    {'lang': 'fa'}),
             ('ref_en',       self.ref_files,    {'lang': 'en'}),
-            ('q_total',      self.questions,    {'approved': True}),
-            ('q_pending',    self.questions,    {'approved': False}),
-            ('q_by_bot',     self.questions,    {'approved': True, 'by_bot': True}),
-            ('q_by_users',   self.questions,    {'approved': True, 'by_bot': {'$ne': True}}),
+            # §W12 — ناهمگامیِ اثبات‌شده: این چهار شمارنده فیلترِ خامِ
+            # {'approved': True} داشتند، در حالی که منبعِ حقیقتِ «سؤالِ
+            # تأییدشده» تابعِ approved_query() است که هم `status` مدرن و
+            # هم `approved` قدیمی را می‌بیند.
+            #
+            # نتیجه: هر سؤالی که از موجِ ۶ به بعد ساخته شده (فقط `status`
+            # دارد) در آمارِ پنل شمرده نمی‌شد. با دو سؤالِ آزمایشی سنجیده
+            # شد: approved_query دو تا دید، فیلترِ خام یکی.
+            ('q_total',      self.questions,    approved_query()),
+            ('q_pending',    self.questions,    status_query('pending')),
+            ('q_by_bot',     self.questions,    and_query(approved_query(), {'by_bot': True})),
+            ('q_by_users',   self.questions,    and_query(approved_query(), {'by_bot': {'$ne': True}})),
             ('users_count',  self.users,        {'approved': True}),
         ]
         counts = await asyncio.gather(*[col.count_documents(q) for _, col, q in keys_content])
