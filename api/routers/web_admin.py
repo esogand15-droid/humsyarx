@@ -3642,6 +3642,16 @@ async def content_session_reorder(sid: str, body: ReorderIn,
                     {"intake": {"$exists": False}}]
     fn = db.reorder_up if body.direction == "up" else db.reorder_down
     ok = await fn("bs_sessions", sid, q)
+    # §W11 — بازچینشِ جلسه ترتیبِ محتوایی را که دانشجو می‌بیند عوض می‌کند،
+    # پس یک mutationِ مدیریتیِ ماندگار است و باید مثلِ بقیه ثبت شود.
+    # ممیزیِ موجِ ۱۱ نشان داد این تنها شکافِ واقعیِ audit در کلِ پنل بود.
+    if ok:
+        await _audit(admin["id"], "بازچینش ترتیب جلسه", severity="INFO",
+                     target_id=str(sid), target_type="bs_session",
+                     target_label=str(ses.get("title") or ses.get("topic") or "")[:100],
+                     after={"direction": body.direction,
+                            "lesson_id": ses.get("lesson_id", "")},
+                     tags=["محتوا", "بازچینش"])
     return {"ok": bool(ok)}
 
 
@@ -3656,6 +3666,13 @@ async def content_item_reorder(cid: str, body: ReorderIn,
     sid = item.get("session_id", "")
     fn = db.reorder_content_up if body.direction == "up" else db.reorder_content_down
     ok = await fn(cid, sid)
+    # §W11 — همان دلیلِ بازچینشِ جلسه: ترتیبِ فایل‌ها برای دانشجو تغییر می‌کند.
+    if ok:
+        await _audit(admin["id"], "بازچینش ترتیب فایل محتوا", severity="INFO",
+                     target_id=str(cid), target_type="bs_content",
+                     target_label=str(item.get("description") or "")[:100],
+                     after={"direction": body.direction, "session_id": sid},
+                     tags=["محتوا", "بازچینش"])
     return {"ok": bool(ok)}
 
 

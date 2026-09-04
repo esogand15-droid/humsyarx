@@ -307,7 +307,7 @@ function QuestionDrawer({ row, reportInfo, onClose, onApprove, onReview, onSaved
 
       {/* §W9 — گزارش‌های دانشجویان. طراح باید بدونِ بازکردنِ ۳۰ رکورد
           بفهمد مشکل چیست، پس تفکیکِ دسته‌بندی بالای فهرست می‌آید. */}
-      {!!reportInfo?.open && <div className="panel panel-pad" style={{ marginTop: 10, borderColor: 'var(--c-warn, #b8860b)' }}>
+      {!!reportInfo?.open && <div className="panel panel-pad" style={{ marginTop: 10, borderColor: 'var(--c-warn)' }}>
         <div className="row" style={{ flexWrap: 'wrap' }}>
           <b>⚠️ گزارش دانشجویان</b>
           <B kind="bad">{fa(reportInfo.open)} باز</B>
