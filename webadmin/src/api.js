@@ -90,6 +90,9 @@ export const api = {
   operationAlerts: () => req('/api/web-admin/operations/alerts'),
   dataQuality: () => req('/api/web-admin/operations/data-quality'),
   dataQualityItems: (kind, p = {}) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}?` + new URLSearchParams(p)),
+  // 🌊 WA21 — اصلاح گونه‌های امن کیفیت داده (تأیید صریح لازم است؛ بک‌اند
+  // بدون `confirm:true` با 400 رد می‌کند).
+  dataQualityFix: (kind) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}/fix`, { method: 'POST', body: { kind, confirm: true } }),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${fileDateStamp()}.csv`),

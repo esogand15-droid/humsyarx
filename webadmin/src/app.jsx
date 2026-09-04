@@ -6,6 +6,7 @@ import ErrorBoundary from './ErrorBoundary.jsx';
 import { formatFaDate, formatFaDateTime } from './time.js';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+const Actions = lazy(() => import('./pages/Actions.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Tickets = lazy(() => import('./pages/Tickets.jsx'));
 const Subscriptions = lazy(() => import('./pages/Subscriptions.jsx'));
@@ -26,6 +27,10 @@ const RingStreet = lazy(() => import('./pages/RingStreet.jsx'));
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
     { path: '/dashboard', icon: '📊', label: 'داشبورد' },
+    // 🌊 WA21 — موتور /attention از قبل بود ولی فقط به badge تبدیل می‌شد؛
+    // حالا صفحه‌ی خودش را دارد. `any` عمداً خالی است: خود endpoint
+    // permission-aware است و شمارش خارج از دسترسی را برنمی‌گرداند.
+    { path: '/actions', icon: '🎯', label: 'مرکز اقدام' },
     { path: '/operations', icon: '🎛', label: 'مرکز عملیات', any: ['system.manage'] },
   ] },
   { sec: 'افراد', items: [
@@ -63,6 +68,7 @@ const NAV_GROUPS = [
 
 const PAGES = {
   '/dashboard': Dashboard, '/users': Users, '/tickets': Tickets,
+  '/actions': Actions,
   '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
   '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,

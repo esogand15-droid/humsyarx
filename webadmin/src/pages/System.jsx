@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, FaDateTime, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 import HealthCenter from '../HealthCenter.jsx';
@@ -24,7 +24,7 @@ const SECTIONS = [
   ['access',       '🔐', 'دسترسی‌ها و تنظیمات', 'نقش‌ها، بلک‌لیست، ورودی‌ها'],
 ];
 
-export default function System({ me }) {
+export default function System({ me, route = '' }) {
   const [bs, setBs] = useState(null);
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
@@ -38,6 +38,12 @@ export default function System({ me }) {
   const [excelBusy, setExcelBusy] = useState(false);
   const [restoreFile, setRestoreFile] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null);
+  // 🌊 WA21 — مقصد deep-link مرکز اقدام (`/system?focus=dlq` / `?focus=outbox`).
+  // بدون این، کارت‌های DLQ و صف خروجی کاربر را به صفحه می‌آوردند ولی نه به
+  // همان بخش؛ یعنی عملاً deep-link بی‌اثر بود.
+  const dlqRef = useRef(null);
+  const outboxRef = useRef(null);
+  const focusKey = new URLSearchParams(route.split('?')[1] || '').get('focus');
   const [restorePhrase, setRestorePhrase] = useState('');
   const [restoreBusy, setRestoreBusy] = useState(false);
 
@@ -62,6 +68,18 @@ export default function System({ me }) {
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  // 🌊 WA21 — اسکرول به بخش مقصد + highlight کوتاه. data هنوز نرسیده باشد
+  // هم ref وجود دارد (DlqCenter همیشه رندر می‌شود)، پس ریسک race ندارد.
+  useEffect(() => {
+    if (!focusKey) return;
+    const el = focusKey === 'dlq' ? dlqRef.current : focusKey === 'outbox' ? outboxRef.current : null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('panel--attention');
+    const t = setTimeout(() => el.classList.remove('panel--attention'), 2600);
+    return () => clearTimeout(t);
+  }, [focusKey]);
 
   const doBackup = async (section) => {
     setBusySec(section);
@@ -172,7 +190,7 @@ export default function System({ me }) {
         <div className="callout" style={{ marginTop: 10 }}>Storage: <span className="code ltr">{timeStandard.storage_contract}</span> · Display: {timeStandard.display_contract} · شروع هفته: {timeStandard.week_start}</div>
       </section>}
 
-      {!!jobs.length && <div className="panel panel-pad" style={{ marginTop: 14 }}>
+      {!!jobs.length && <div ref={outboxRef} className="panel panel-pad" style={{ marginTop: 14 }}>
         <div className="row"><div><b>⚙️ Job Center</b><div className="muted">آخرین اجرای جاب‌های اعلان، صف خروجی و بکاپ واقعی</div></div>
           <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی</button></div>
         <div className="grid g3" style={{ marginTop: 10 }}>
@@ -204,7 +222,11 @@ export default function System({ me }) {
 
       {/* 💀 DLQ — پیام‌های مرده‌ی صف. خواندن با notifications.manage هم مجاز است
           (همان قرارداد بک‌اند)، ولی اکشن بازپخش/کنارگذاشتن فقط system.manage. */}
-      {(canObserve || has('notifications.manage')) && <DlqCenter canManage={canObserve} />}
+      {(canObserve || has('notifications.manage')) && (
+        <div ref={dlqRef} className="panel" style={{ borderRadius: 'var(--r-lg)' }}>
+          <DlqCenter canManage={canObserve} />
+        </div>
+      )}
 
       {canObserve && <SecuritySessionsPanel data={sessions} onReload={load} />}
 

@@ -1119,6 +1119,33 @@ async def attention(user=Depends(_guard_any_admin)):
             return len(failed) if kind == "count" else ((failed[0].get("started_at") or failed[0].get("created_at")) if failed else None)
         jobs["failed_jobs"] = failed_jobs_metric("count")
         time_jobs["failed_jobs"] = failed_jobs_metric("time")
+
+        # 🌊 WA21 — سه صفِ پیام ربات که تا اینجا هیچ‌کس آن‌ها را نمی‌دید.
+        # مصرف‌کننده‌ی outbox در bot.py است؛ اگر ربات پایین باشد یا تلگرام
+        # reject کند، پیام‌ها در `bot_notifications` می‌مانند و تنها نشانه‌شان
+        # همین شمارش‌هاست. منبع داده موجود است ⇒ کالکشن جدید ساخته نمی‌شود.
+        backlog_q = {"sent": False,
+                     "$or": [{"send_at": {"$exists": False}}, {"send_at": None}]}
+        jobs["outbox_backlog"] = db.bot_notifs.count_documents(backlog_q)
+        time_jobs["outbox_backlog"] = latest_at(db.bot_notifs, backlog_q, "created_at")
+
+        scheduled_q = {"sent": False, "send_at": {"$exists": True, "$ne": None}}
+        jobs["outbox_scheduled"] = db.bot_notifs.count_documents(scheduled_q)
+        time_jobs["outbox_scheduled"] = latest_at(db.bot_notifs, scheduled_q, "send_at")
+
+        # DLQ: اسنادی که پس از سقف تلاش `status="dead"` شده‌اند. `sent=True`
+        # دارند، پس از شمارش backlog بیرون می‌افتند و بی‌صدا گم می‌شوند.
+        dead_q = {"status": "dead"}
+        jobs["dlq"] = db.bot_notifs.count_documents(dead_q)
+        time_jobs["dlq"] = latest_at(db.bot_notifs, dead_q, "sent_at", "created_at")
+
+    if allow("questions.import"):
+        # 🌊 WA21 — درون‌ریزی نیمه‌تمام: jobهایی که preview آماده شده ولی
+        # ادمین confirm/cancel نکرده است. بدون این کارت، job تا ابد معلق می‌ماند.
+        import_q = {"status": {"$in": ["preview_ready", "validated", "importing"]}}
+        jobs["imports"] = db.question_import_jobs.count_documents(import_q)
+        time_jobs["imports"] = latest_at(db.question_import_jobs, import_q,
+                                         "created_at", "validated_at")
     keys = list(jobs)
     values, time_values = await asyncio.gather(
         asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True),
@@ -1132,12 +1159,34 @@ async def attention(user=Depends(_guard_any_admin)):
         "users": ("🧑‍🎓", "کاربر در انتظار تأیید", "/users?status=pending", "warning"),
         "reports": ("🚩", "گزارش محتوا/سؤال در انتظار", "/content?tab=reports", "warning"),
         "failed_jobs": ("⚙️", "اجرای اعلان دارای خطا", "/system", "critical"),
+        # 🌊 WA21 — مقصد هر کارت جایی است که واقعاً همان صف را نشان می‌دهد؛
+        # `?focus=` در System.jsx و `?tab=` در Operations.jsx مصرف می‌شود.
+        "outbox_backlog": ("📤", "پیام در صف خروجی ربات", "/system?focus=outbox", "warning"),
+        "outbox_scheduled": ("⏰", "پیام زمان‌بندی‌شده‌ی ارسال‌نشده", "/system?focus=outbox", "info"),
+        "dlq": ("💀", "پیام مرده — هرگز تحویل نشده", "/system?focus=dlq", "critical"),
+        "imports": ("📥", "درون‌ریزی منتظر تأیید", "/questions?tab=import", "warning"),
     }
     checked_at = _now()
     items = [{"key": k, "icon": meta[k][0], "label": meta[k][1],
               "count": counts.get(k, 0), "go": meta[k][2], "severity": meta[k][3],
               "timestamp": timestamps.get(k), "urgent": counts.get(k, 0) > 0}
              for k in meta if k in counts]
+
+    # 🌊 WA21 — کارت کیفیت داده. عمداً خارج از gather بالا: این ۱۲ بررسی
+    # $lookup دارند و نباید هر بار که داشبورد باز می‌شود موازی با بقیه صف‌ها
+    # اجرا شوند. نتیجه یک dict خلاصه است، نه یک عدد، تا UI بتواند تفکیک
+    # critical/warning را نشان دهد. خطای هر بررسی بقیه را نمی‌کُشد.
+    if allow("system.manage"):
+        quality = await _quality_summary()
+        items.append({
+            "key": "data_quality", "icon": "🧬",
+            "label": "ناهنجاری کیفیت داده",
+            "count": quality["count"], "go": "/operations?tab=quality",
+            "severity": "critical" if quality["critical"] else (
+                "warning" if quality["count"] else "info"),
+            "timestamp": checked_at, "urgent": quality["count"] > 0,
+            "detail": quality,
+        })
     backup = None
     if allow("backup.manage", "settings.manage", "system.manage"):
         last_run = await db.get_setting("auto_backup_last_run", None)
@@ -1397,6 +1446,121 @@ async def _quality_count(kind: str):
     return int(rows[0].get("count") or 0) if rows else 0
 
 
+async def _quality_summary() -> dict:
+    """🌊 WA21 — خلاصه‌ی سبکِ همه‌ی بررسی‌های کیفیت داده برای کارت Action Center.
+
+    همان `_quality_count` موجود است (منطق جدیدی نوشته نشده)؛ فقط به‌جای
+    برگرداندن فهرست کامل، جمع و تفکیک severity را می‌دهد. خطای یک بررسی
+    بقیه را نمی‌کُشد و در `checked`/`total` قابل تشخیص است.
+    """
+    kinds = list(_QUALITY_META)
+    values = await asyncio.gather(*(_quality_count(k) for k in kinds),
+                                  return_exceptions=True)
+    total = critical = warning = info = 0
+    top = []
+    for kind, value in zip(kinds, values):
+        if isinstance(value, Exception):
+            continue
+        n = int(value or 0)
+        if not n:
+            continue
+        total += n
+        sev = _QUALITY_META[kind][0]
+        if sev == "critical":
+            critical += n
+        elif sev == "warning":
+            warning += n
+        else:
+            info += n
+        top.append({"kind": kind, "severity": sev,
+                    "label": _QUALITY_META[kind][1], "count": n})
+    top.sort(key=lambda x: (x["severity"] != "critical", -x["count"]))
+    return {"count": total, "critical": critical, "warning": warning, "info": info,
+            "checked": len(kinds), "top": top[:4]}
+
+
+# 🌊 WA21 — گونه‌هایی که اصلاحشان «امن» است: رکوردی که والدِ معتبر ندارد
+# هیچ‌وقت نمی‌تواند نمایش داده شود، پس حذفش داده‌ی قابل‌دسترس را از بین نمی‌برد.
+# گونه‌های هویتی/مالی (duplicate_student_ids، orphan_subscriptions،
+# orphan_payments، users_invalid_intake) عمداً اینجا نیستند: اصلاحشان تصمیم
+# انسانی می‌خواهد و auto-fix روی هویت/پرداخت ممنوع است.
+_QUALITY_SAFE_FIXES = {
+    "orphan_files":     "حذف فایل آموزشی بدون جلسه‌ی والد",
+    "orphan_ref_files": "حذف فایل رفرنس بدون کتاب والد",
+    "orphan_ref_books": "حذف کتاب رفرنس بدون موضوع والد",
+    "orphan_sessions":  "حذف جلسه‌ی بدون درس والد",
+    "invalid_role_refs": "حذف ارجاع به نقش‌های ناموجود (نقش‌های معتبر حفظ می‌شوند)",
+}
+
+
+def _quality_safe_fix_criteria(kind: str):
+    """معیار حذف برای گونه‌های امن — دقیقاً همان معیار شمارش، نه یک کپی سلیقه‌ای."""
+    if kind == "orphan_files":
+        coll, field, parent = db.bs_content, "session_id", db.bs_sessions
+    elif kind == "orphan_ref_files":
+        coll, field, parent = db.ref_files, "book_id", db.ref_books
+    elif kind == "orphan_ref_books":
+        coll, field, parent = db.ref_books, "subject_id", db.ref_subjects
+    elif kind == "orphan_sessions":
+        coll, field, parent = db.bs_sessions, "lesson_id", db.bs_lessons
+    else:
+        return None, None
+    return coll, [
+        {"$addFields": {"_parent_oid": {"$convert": {
+            "input": f"${field}", "to": "objectId", "onError": None, "onNull": None}}}},
+        {"$lookup": {"from": parent.name, "localField": "_parent_oid",
+                     "foreignField": "_id", "as": "_parent"}},
+        {"$match": {"_parent.0": {"$exists": False}}},
+        {"$project": {"_id": 1}},
+    ]
+
+
+class WaQualityFix(BaseModel):
+    kind: str
+    confirm: bool = False
+
+
+@router.post("/operations/data-quality/{kind}/fix")
+async def wa_data_quality_fix(kind: str, body: WaQualityFix,
+                              user=Depends(_perm("system.manage"))):
+    """🌊 WA21 — اصلاح یک ناهنجاری کیفیت داده، با تأیید صریح + Audit.
+
+    چرا فقط این گونه‌ها: حذف رکورد یتیم هیچ داده‌ی قابل‌دسترس را از بین نمی‌برد
+    (والدش وجود ندارد، پس هرگز نمایش داده نمی‌شد). هر گونه‌ی هویتی/مالی عمداً
+    بیرون از این فهرست است و 400 می‌گیرد.
+    """
+    if kind not in _QUALITY_SAFE_FIXES:
+        raise HTTPException(
+            400, "این گونه اصلاح خودکار ندارد؛ باید دستی بررسی شود.")
+    if not body.confirm:
+        raise HTTPException(400, "برای اجرای اصلاح، تأیید صریح لازم است.")
+
+    before = await _quality_count(kind)
+    if kind == "invalid_role_refs":
+        # نقش‌های معتبر حفظ می‌شوند؛ فقط کلیدهایی که در roles وجود ندارند
+        # از آرایه‌ی roles بیرون کشیده می‌شوند. هیچ سندی کامل حذف نمی‌شود.
+        valid = [r.get("_id") for r in await db.list_roles() if r.get("_id")]
+        result = await db.user_roles.update_many(
+            {}, {"$pull": {"roles": {"$nin": valid}}})
+        removed = int(result.modified_count or 0)
+    else:
+        coll, pipeline = _quality_safe_fix_criteria(kind)
+        ids = [row["_id"] for row in await coll.aggregate(pipeline).to_list(100000)]
+        removed = 0
+        if ids:
+            removed = int((await coll.delete_many({"_id": {"$in": ids}})).deleted_count or 0)
+    after = await _quality_count(kind)
+
+    log_id = await _audit(
+        user["id"], f"اصلاح خودکار کیفیت داده: {kind}", severity="WARNING",
+        target_id=kind, target_type="data_quality",
+        target_label=_QUALITY_META[kind][1],
+        before={"count": before}, after={"count": after, "removed": removed},
+        details=_QUALITY_SAFE_FIXES[kind], tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "kind": kind, "removed": removed,
+            "before": before, "after": after, "audit_id": log_id}
+
+
 @router.get("/operations/data-quality")
 async def wa_data_quality(user=Depends(_perm("system.manage"))):
     kinds = list(_QUALITY_META)
@@ -1408,7 +1572,10 @@ async def wa_data_quality(user=Depends(_perm("system.manage"))):
                       "suggestion": suggestion,
                       "count": None if isinstance(value, Exception) else int(value or 0),
                       "available": not isinstance(value, Exception)})
-    return {"items": items, "checked_at": _now(), "read_only": True}
+    # 🌊 WA21 — دیگر کاملاً فقط‌خواندنی نیست: گونه‌های `_QUALITY_SAFE_FIXES`
+    # اکشن Fix دارند. بقیه همچنان inspect-only هستند و UI باید همین را بگوید.
+    return {"items": items, "checked_at": _now(),
+            "read_only": False, "fixable": sorted(_QUALITY_SAFE_FIXES)}
 
 
 @router.get("/operations/data-quality/{kind}")
