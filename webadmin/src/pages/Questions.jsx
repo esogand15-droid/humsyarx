@@ -20,6 +20,26 @@ const CLASS_LABEL = {
   exact_duplicate: 'تکراری قطعی', probable_duplicate: 'احتمالاً تکراری', conflict: 'تعارض پاسخ',
 };
 
+// §W9 — نگاشتِ سطحِ شدتِ گزارش به نشانِ بصری. آستانه‌ها سمتِ سرور
+// تعیین می‌شوند (قابلِ تنظیم)؛ اینجا فقط نمایش است.
+// دلایلِ گزارش — همان کلیدهای db.REPORT_REASONS
+// دقیقاً همان کلیدهای db.REPORT_REASONS — نه حدس.
+const REPORT_REASON_FA = {
+  wrong_answer: 'پاسخ اشتباه', wrong_option: 'گزینه اشتباه',
+  incomplete: 'متن ناقص', broken_file: 'فایل خراب',
+  outdated: 'محتوای قدیمی', other: 'سایر',
+};
+const REPORT_STATUS_FA = {
+  new: 'جدید', reviewing: 'در حال بررسی', resolved: 'رفع شد', rejected: 'رد شد',
+};
+
+const SEVERITY = {
+  critical: ['بحرانی', 'bad'],
+  high: ['پرگزارش', 'bad'],
+  flagged: ['نشان‌دار', 'warn'],
+  normal: ['', ''],
+};
+
 export default function Questions({ route = '', go }) {
   const initial = readHashQuery();
   const [rows, setRows] = useState(null);
@@ -50,6 +70,19 @@ export default function Questions({ route = '', go }) {
   const [importOpen, setImportOpen] = useState(false);
   const LIMIT = 30;
 
+  // §W9 — شمارشِ گزارشِ باز برای سؤال‌های همین صفحه. یک درخواستِ
+  // تجمیعی، نه یکی به‌ازای هر سطر (§۵۸ — پرهیز از N+1).
+  const [reportMap, setReportMap] = useState({});
+
+  const loadReports = async () => {
+    try {
+      const result = await api.reportedQuestions({ intake, limit: 100 });
+      const map = {};
+      (result.questions || []).forEach(item => { map[item.id] = item; });
+      setReportMap(map);
+    } catch { /* نشانگر اختیاری است؛ نبودش نباید صفحه را بشکند */ }
+  };
+
   const load = async () => {
     setErr('');
     try {
@@ -67,7 +100,7 @@ export default function Questions({ route = '', go }) {
     }).catch(e => { if (e.status === 403) setPermErr(true); else setErr(errText(e)); });
   }, []);
   useEffect(() => { const timer = setTimeout(() => { setQ(query.trim()); setPage(1); }, 350); return () => clearTimeout(timer); }, [query]);
-  useEffect(() => { setRows(null); setSelected([]); load(); }, [status, intake, q, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
+  useEffect(() => { setRows(null); setSelected([]); load(); loadReports(); }, [status, intake, q, fdiff, fsrc, author, dateFrom, dateTo, sortBy, sortDir, page]);
   useEffect(() => { writeHashQuery('/questions', { status: status !== 'pending' ? status : '', intake, q: query,
     difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo,
     sort_by: sortBy !== 'created_at' ? sortBy : '', sort_dir: sortDir !== 'desc' ? sortDir : '', page: page > 1 ? page : '' });
@@ -116,6 +149,14 @@ export default function Questions({ route = '', go }) {
     { k: 'creator', label: 'طراح', stop: true, render: row => <button className="btn sm" disabled={!row.creator_id} onClick={() => go?.(`/users?q=${row.creator_id}`)}>{row.creator_name || '—'}<small className="muted" style={{ display: 'block' }}>{SRC[row.source] || row.source}</small></button> },
     { k: 'intake', label: 'ورودی', render: row => row.intake || <B>سراسری</B> },
     { k: 'status', label: 'چرخه عمر', render: row => { const [label, kind] = STATUS[row.status] || [row.status, '']; return <div><B kind={kind}>{label}</B>{row.review_reason && <small className="muted" style={{ display: 'block', maxWidth: 180 }}>{row.review_reason}</small>}</div>; } },
+    { k: 'reports', label: 'گزارش', render: row => {
+      const info = reportMap[row.id];
+      if (!info?.open) return <span className="muted">—</span>;
+      const [label, kind] = SEVERITY[info.severity] || ['', 'warn'];
+      return <B kind={kind || 'warn'} title={`آخرین گزارش: ${info.last_report_at || '—'}`}>
+        ⚠️ {fa(info.open)}{label ? ` · ${label}` : ''}
+      </B>;
+    } },
     { k: 'attempts', label: 'تلاش/دقت', sortable: true, render: row => `${fa(row.attempts)} · ${fa(row.accuracy)}٪` },
     { k: 'created_at', label: 'ایجاد', sortable: true, render: row => <FaDateTime value={row.created_at} /> },
     { k: 'ops', label: '', stop: true, render: row => <div className="row" style={{ gap: 4 }}>
@@ -163,7 +204,7 @@ export default function Questions({ route = '', go }) {
       sortState={{ k: sortBy === 'attempt_count' ? 'attempts' : sortBy, dir: sortDir }} onSort={next => { setSortBy(next?.k === 'attempts' ? 'attempt_count' : next?.k || 'created_at'); setSortDir(next?.dir || 'desc'); setPage(1); }}
       pager={{ page, pages: Math.max(1, Math.ceil(total / LIMIT)), total, onPage: setPage }} empty={<Empty icon="🧪" text="سؤالی با این فیلترها نیست" />} />}
 
-    {detail && <QuestionDrawer row={detail} onClose={() => setDetail(null)} onApprove={() => approve(detail.id)}
+    {detail && <QuestionDrawer row={detail} reportInfo={reportMap[detail.id]} onClose={() => setDetail(null)} onApprove={() => approve(detail.id)}
       onReview={action => setReview({ action, ids: [detail.id], reason: '' })} onSaved={() => { setDetail(null); load(); }} />}
     {review && <ReviewModal value={review} onChange={setReview} onClose={() => setReview(null)} onSubmit={runReview} />}
     {delTarget && <Modal title="🗑 حذف همیشگی سؤال" onClose={() => setDelTarget(null)}>
@@ -235,9 +276,18 @@ function QuestionCreateModal({ intake, onClose }) {
   </Modal>;
 }
 
-function QuestionDrawer({ row, onClose, onApprove, onReview, onSaved }) {
+function QuestionDrawer({ row, reportInfo, onClose, onApprove, onReview, onSaved }) {
   const [edit, setEdit] = useState(false);
   const [busy, setBusy] = useState(false);
+  // §W9 — جزئیاتِ گزارش‌ها فقط وقتی drawer باز است بارگذاری می‌شود.
+  const [reports, setReports] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    if (reportInfo?.open) {
+      api.questionReports(row.id).then(r => { if (alive) setReports(r); }).catch(() => {});
+    }
+    return () => { alive = false; };
+  }, [row.id, reportInfo?.open]);
   const [form, setForm] = useState({ lesson_id: row.lesson_id, topic_id: row.topic_id, lesson: row.lesson, topic: row.topic,
     difficulty: row.difficulty, question: row.question, options: [...(row.options || [])], correct: row.correct, explanation: row.explanation || '' });
   const [statusLabel, statusKind] = STATUS[row.status] || [row.status, ''];
@@ -254,11 +304,52 @@ function QuestionDrawer({ row, onClose, onApprove, onReview, onSaved }) {
       <div className="grid" style={{ gap: 7, marginTop: 10 }}>{(row.options || []).map((option, i) => <div className="badge" key={i} style={{ justifyContent: 'flex-start' }}>{i === row.correct ? '✅' : '▫️'} {option}</div>)}</div>
       <div className="muted" style={{ marginTop: 10 }}>{row.lesson} / {row.topic} · طراح: {row.creator_name || row.creator_id}</div>
       {row.explanation && <div className="panel panel-pad" style={{ marginTop: 10 }}><b>توضیح پاسخ</b><div>{row.explanation}</div></div>}
-      {row.status === 'pending' && <div className="row" style={{ marginTop: 14, flexWrap: 'wrap' }}>
-        {row.can_approve && <button className="btn ok" onClick={onApprove}>✅ تأیید</button>}
-        {row.can_reject && <button className="btn" onClick={() => onReview('needs_changes')}>✏️ نیازمند اصلاح</button>}
-        {row.can_reject && <button className="btn danger" onClick={() => onReview('reject')}>❌ رد با دلیل</button>}
-        <span className="spacer" />{row.can_edit && <button className="btn" onClick={() => setEdit(true)}>ویرایش پیش از بررسی</button>}
+
+      {/* §W9 — گزارش‌های دانشجویان. طراح باید بدونِ بازکردنِ ۳۰ رکورد
+          بفهمد مشکل چیست، پس تفکیکِ دسته‌بندی بالای فهرست می‌آید. */}
+      {!!reportInfo?.open && <div className="panel panel-pad" style={{ marginTop: 10, borderColor: 'var(--c-warn, #b8860b)' }}>
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <b>⚠️ گزارش دانشجویان</b>
+          <B kind="bad">{fa(reportInfo.open)} باز</B>
+          {reports?.total > reportInfo.open && <B>{fa(reports.total)} کل</B>}
+          <span className="spacer" />
+          {reportInfo.last_report_at && <small className="muted">آخرین: <FaDateTime value={reportInfo.last_report_at} /></small>}
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {Object.entries(reports?.by_reason || reportInfo.by_reason || {}).map(([reason, count]) =>
+            <B key={reason}>{REPORT_REASON_FA[reason] || reason}: {fa(count)}</B>)}
+        </div>
+        {reports?.reports?.length > 0 && <div className="grid" style={{ gap: 6, marginTop: 10 }}>
+          {reports.reports.slice(0, 10).map(item => <div key={item.report_id} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <B>#{fa(item.report_id)}</B>
+              <B kind={item.status === 'resolved' ? 'ok' : item.status === 'rejected' ? '' : 'warn'}>
+                {REPORT_STATUS_FA[item.status] || item.status}</B>
+              <span className="muted">{REPORT_REASON_FA[item.reason] || item.reason}</span>
+              <span className="spacer" /><small className="muted"><FaDateTime value={item.created_at} /></small>
+            </div>
+            {item.note && <div style={{ marginTop: 4 }}>{item.note}</div>}
+          </div>)}
+          {reports.reports.length > 10 && <div className="muted">و {fa(reports.reports.length - 10)} گزارش دیگر…</div>}
+        </div>}
+      </div>}
+
+      {/* §W7/§W9 — اکشن‌ها دیگر محدود به «در انتظار» نیستند. سؤالِ
+          تأییدشده هم باید قابلِ اصلاح باشد، وگرنه گزارشِ دانشجو به
+          بن‌بست می‌خورد. سرور خودش تصمیم می‌گیرد ویرایشِ محتوایی
+          سؤال را به صفِ بررسی برگرداند. */}
+      <div className="row" style={{ marginTop: 14, flexWrap: 'wrap' }}>
+        {row.status === 'pending' && row.can_approve && <button className="btn ok" onClick={onApprove}>✅ تأیید</button>}
+        {row.status === 'pending' && row.can_reject && <button className="btn" onClick={() => onReview('needs_changes')}>✏️ نیازمند اصلاح</button>}
+        {row.can_reject && <button className="btn danger" onClick={() => onReview('reject')}>
+          {row.status === 'approved' ? '🚫 خروج از بانک (رد با دلیل)' : '❌ رد با دلیل'}</button>}
+        <span className="spacer" />
+        {row.can_edit && <button className="btn" onClick={() => setEdit(true)}>
+          {row.status === 'approved' ? '📝 ویرایش (بازگشت به بازبینی)' : 'ویرایش پیش از بررسی'}</button>}
+      </div>
+      {row.status === 'approved' && row.can_edit && <div className="muted" style={{ marginTop: 6 }}>
+        ویرایشِ متن، گزینه‌ها یا پاسخِ صحیح سؤال را برای تأییدِ مجدد به صفِ بررسی برمی‌گرداند.
+        تغییرِ سطحِ سختی یا توضیح، وضعیت را عوض نمی‌کند.
       </div>}
     </> : <div className="grid" style={{ gap: 10, marginTop: 10 }}>
       <TaxonomyFields intake={row.intake} value={form} onChange={setForm} />

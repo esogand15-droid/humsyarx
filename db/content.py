@@ -14,7 +14,7 @@ from urllib.parse import quote
 from bson import ObjectId
 from pymongo import ReturnDocument
 import motor.motor_asyncio
-from time_utils import today_tehran, utc_now_iso
+from time_utils import today_tehran, utc_now_iso, now_utc
 from question_bank.contracts import (
     DIFFICULTY_LABELS, and_query, approved_query, canonical_difficulty,
     canonical_status, status_query,
@@ -1597,6 +1597,78 @@ class DBContent:
     }
 
 
+    # ── §W9 — محدودیتِ نرخ و آستانهٔ تشدیدِ گزارش ────────────────────
+    #
+    #  اعداد از اندازه‌گیریِ واقعی آمده‌اند، نه حدس:
+    #
+    #  • نوشتنِ هر گزارش ~۲٫۶ms و ~۴۸۷ بایت است. یعنی یک کاربر می‌تواند
+    #    در یک دقیقه ~۲۳٬۰۰۰ گزارش بنویسد. فضای دیسک گلوگاه نیست
+    #    (۱۰٬۰۰۰ گزارش ≈ ۴٫۶MB).
+    #
+    #  • گلوگاهِ واقعی «فن‌اوتِ اعلان» است: هر گزارش به مدیر + ادمین‌های
+    #    محتوا + بازبین‌ها + طراح پیام می‌فرستد. ۱۰۰ گزارشِ اسپم یعنی
+    #    صدها پیامِ تلگرام و عملاً از کار افتادنِ کانالِ اطلاع‌رسانی.
+    #
+    #  پس سقف روی «تعداد گزارش در بازهٔ زمانی» گذاشته شده، نه روی حجم.
+    #  ۲۰ گزارش در ساعت برای استفادهٔ سالم بیش از حد کافی است (کاربرِ
+    #  عادی در یک جلسهٔ تمرین چند سؤال را گزارش می‌کند، نه ده‌ها تا) و
+    #  هم‌زمان فن‌اوت را مهار می‌کند.
+    #
+    #  هر دو عدد طبق §۱۴ از تنظیماتِ سراسری خوانده می‌شوند تا بدونِ
+    #  استقرارِ مجدد قابلِ تغییر باشند.
+    REPORT_RATE_DEFAULT_MAX = 20        # گزارش
+    REPORT_RATE_DEFAULT_WINDOW_MIN = 60  # دقیقه
+
+    #  آستانهٔ تشدید. چون گزارشِ تکراریِ یک کاربر مسدود است، هر گزارش
+    #  یعنی یک کاربرِ متمایز — پس این عدد واقعاً «چند نفر مستقل» است.
+    #  یک سؤالِ سالم معمولاً ۰ تا ۱ گزارش می‌گیرد.
+    REPORT_SEVERITY_DEFAULTS = {"flagged": 3, "high": 10, "critical": 20}
+
+    async def report_rate_limit(self) -> tuple:
+        """(سقف، پنجره به دقیقه) — ۰ یعنی محدودیت خاموش."""
+        raw_max = await self.get_setting("report_rate_max",
+                                         self.REPORT_RATE_DEFAULT_MAX)
+        raw_win = await self.get_setting("report_rate_window_min",
+                                         self.REPORT_RATE_DEFAULT_WINDOW_MIN)
+        try:
+            return max(0, int(raw_max)), max(1, int(raw_win))
+        except (TypeError, ValueError):
+            return (self.REPORT_RATE_DEFAULT_MAX,
+                    self.REPORT_RATE_DEFAULT_WINDOW_MIN)
+
+    async def report_recent_count(self, reporter_id: int,
+                                  window_min: int) -> int:
+        """شمارشِ گزارش‌های همین کاربر در بازهٔ اخیر."""
+        since = (now_utc() - timedelta(minutes=int(window_min))).isoformat()
+        return await self.content_reports.count_documents(
+            {"reporter_id": int(reporter_id), "created_at": {"$gte": since}})
+
+    async def report_severity_thresholds(self) -> dict:
+        """آستانه‌های تشدید — قابلِ تنظیم از پنل (§۱۴)."""
+        out = dict(self.REPORT_SEVERITY_DEFAULTS)
+        for key in out:
+            raw = await self.get_setting(f"report_severity_{key}", None)
+            if raw is None:
+                continue
+            try:
+                out[key] = max(1, int(raw))
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    async def report_severity_of(self, open_count: int,
+                                 thresholds: dict = None) -> str:
+        """نگاشتِ تعدادِ گزارشِ باز به سطحِ شدت."""
+        th = thresholds or await self.report_severity_thresholds()
+        n = int(open_count or 0)
+        if n >= th.get("critical", 20):
+            return "critical"
+        if n >= th.get("high", 10):
+            return "high"
+        if n >= th.get("flagged", 3):
+            return "flagged"
+        return "normal"
+
     async def create_content_report(self, target_type: str, target_id: str,
                                      reporter_id: int, reporter_name: str,
                                      reason: str, note: str = '',
@@ -1618,6 +1690,18 @@ class DBContent:
         })
         if existing:
             return int(existing.get('report_id') or 0)
+
+        # §W9 — سقفِ نرخ. عمداً *بعد* از چکِ تکراری است تا تپِ دوباره روی
+        # همان سؤال سهمیه مصرف نکند. برگرداندنِ ۰ یعنی «رد شد» و لایه‌ی
+        # بالا پیام مناسب نشان می‌دهد.
+        rate_max, window_min = await self.report_rate_limit()
+        if rate_max:
+            recent = await self.report_recent_count(reporter_id, window_min)
+            if recent >= rate_max:
+                logger.warning(
+                    "report rate limit hit reporter_id=%s recent=%s max=%s",
+                    reporter_id, recent, rate_max)
+                return 0
 
         # شمارنده‌ی اتمی — `count_documents()+1` زیرِ دو گزارشِ هم‌زمان
         # شناسه‌ی تکراری می‌داد.

@@ -2194,6 +2194,32 @@ async def wa_question_needs_changes(
                                                      admin=await _question_admin(user))
 
 
+# ── §W9 — گزارش‌های سؤال در پنلِ وب ──────────────────────────────
+#
+# هر دو مسیر صرفاً به `content_admin` delegate می‌کنند تا قانونِ scope،
+# حریمِ گزارش‌دهنده و آستانه‌ها یک‌جا بمانند (بدونِ سیستمِ دوم).
+@router.get("/questions/reported")
+async def wa_reported_questions(
+    intake: Optional[str] = Query(None),
+    min_reports: int = Query(1, ge=1, le=1000),
+    skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """فهرستِ سؤالاتِ گزارش‌دار — نشانگرِ «⚠️ n گزارش» در پنل."""
+    return await content_api.reported_questions(
+        admin=user, intake=intake, min_reports=min_reports,
+        skip=skip, limit=limit)
+
+
+@router.get("/questions/{qid}/reports")
+async def wa_question_reports(
+    qid: str, limit: int = Query(50, ge=1, le=200),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """نمای تجمیعیِ گزارش‌های یک سؤال."""
+    return await content_api.question_reports(qid=qid, admin=user, limit=limit)
+
+
 @router.delete("/questions/{qid}")
 async def wa_question_delete(
     qid: str, reason: str = Query(default="", max_length=1000),

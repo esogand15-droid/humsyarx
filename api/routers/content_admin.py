@@ -1,6 +1,7 @@
 """🎓 Content Admin — 🌊 موج C1: enforce اسکوپ ورودی در سطح endpoint"""
 import logging
 import os
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -196,10 +197,78 @@ async def question_reports(qid: str, admin=Depends(get_question_reviewer),
             "reporter_name": d.get("reporter_name", "")} if full else {}),
     } for d in docs]
 
+    # §W9 — سطحِ شدت از تعدادِ گزارشِ *باز* محاسبه می‌شود. چون گزارشِ
+    # تکراریِ یک کاربر مسدود است، هر گزارش یعنی یک کاربرِ متمایز.
+    thresholds = await db.report_severity_thresholds()
+    severity = await db.report_severity_of(open_count, thresholds)
+
     return {"question_id": str(qid), "total": total, "open": open_count,
-            "by_reason": by_reason,
+            "by_reason": by_reason, "severity": severity,
+            "thresholds": thresholds,
             "last_report_at": docs[0].get("created_at") if docs else None,
             "reports": items}
+
+
+@router.get("/questions/reported")
+async def reported_questions(admin=Depends(get_question_reviewer),
+                             intake: Optional[str] = Query(None),
+                             min_reports: int = Query(1, ge=1, le=1000),
+                             skip: int = Query(0, ge=0),
+                             limit: int = Query(50, ge=1, le=100)):
+    """§۸۳ — سؤالاتِ گزارش‌دار با شمارش، مرتب بر اساسِ شدت.
+
+    بدونِ این، طراح باید تک‌تکِ سؤال‌ها را باز کند تا بفهمد کدام مشکل
+    دارد. تجمیع در دیتابیس انجام می‌شود نه در پایتون (§۵۸ — پرهیز از
+    N+1: صد سؤال ⇒ صد کوئریِ شمارش).
+    """
+    iv = resolve_content_intake(admin, intake)
+
+    pipeline = [
+        {"$match": {"target_type": "question",
+                    "status": {"$in": ["new", "reviewing"]}}},
+        {"$group": {"_id": "$target_id",
+                    "open": {"$sum": 1},
+                    "last_report_at": {"$max": "$created_at"},
+                    "reasons": {"$push": "$reason"}}},
+        {"$match": {"open": {"$gte": int(min_reports)}}},
+        {"$sort": {"open": -1, "last_report_at": -1}},
+        {"$skip": int(skip)}, {"$limit": int(limit)},
+    ]
+    rows = await db.content_reports.aggregate(pipeline).to_list(limit)
+    if not rows:
+        return {"intake": iv, "total": 0, "questions": []}
+
+    oids = [ObjectId(r["_id"]) for r in rows if ObjectId.is_valid(str(r["_id"]))]
+    qdocs = {str(d["_id"]): d for d in
+             await db.questions.find({"_id": {"$in": oids}}).to_list(len(oids))}
+
+    thresholds = await db.report_severity_thresholds()
+    out = []
+    for r in rows:
+        q = qdocs.get(str(r["_id"]))
+        if not q:
+            continue                      # سؤالِ حذف‌شده
+        # scope: ادمینِ محدود فقط ورودیِ خودش را می‌بیند
+        if iv and str(q.get("intake") or "").strip() != iv:
+            continue
+        reasons = {}
+        for x in r.get("reasons") or []:
+            reasons[str(x or "other")] = reasons.get(str(x or "other"), 0) + 1
+        out.append({
+            "id": str(q["_id"]),
+            "question": q.get("question", "")[:200],
+            "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+            "status": canonical_status(q),
+            "creator_name": q.get("creator_name", ""),
+            "creator_id": q.get("creator_id"),
+            "intake": q.get("intake", ""),
+            "open": int(r["open"]),
+            "by_reason": reasons,
+            "last_report_at": r.get("last_report_at"),
+            "severity": await db.report_severity_of(int(r["open"]), thresholds),
+        })
+    return {"intake": iv, "total": len(out), "thresholds": thresholds,
+            "questions": out}
 
 
 class QuestionReviewInput(BaseModel):

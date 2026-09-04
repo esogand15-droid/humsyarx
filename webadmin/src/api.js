@@ -297,6 +297,10 @@ export const api = {
   caQuestionDelete: (qid, reason = '') => req(`/api/web-admin/questions/${qid}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' }),
   // 🌊 موج Q-Editor — ویرایش سؤال پیش از تأیید (scope-aware + audit)
   caQuestionPatch: (qid, body) => req(`/api/web-admin/questions/${qid}`, { method: 'PATCH', body }),
+  // §W9 — گزارش‌های سؤال. هر دو به content_admin delegate می‌شوند.
+  reportedQuestions: (p = {}) => req('/api/web-admin/questions/reported?' + new URLSearchParams(
+    Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
+  questionReports: (qid, limit = 50) => req(`/api/web-admin/questions/${qid}/reports?limit=${limit}`),
   // ── 🌊 WA3 — مدیریت کامل کاربر (permission-based، آینه‌ی دقیق ربات) ──
   waUserMessage: (uid, text) => req(`/api/web-admin/users/${uid}/message`, { method: 'POST', body: { text } }),
   waUserAction: (uid, action, reason = '') => req(`/api/web-admin/users/${uid}/action`, { method: 'POST', body: { action, reason } }),

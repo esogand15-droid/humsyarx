@@ -475,9 +475,13 @@ async def health_deep():
 # تغییر عمدیِ سطح API باید همین عدد را هم آگاهانه به‌روز کند.
 # ۴۹۴ → ۴۹۷ با افزودن DLQ (GET /system/dlq و POST requeue/discard).
 # §W8 — ۴۹۷ → ۴۹۸ با افزودنِ `GET /api/content/questions/{qid}/reports`
-# (نمای تجمیعیِ گزارش‌های یک سؤال). تغییرِ این عدد باید همیشه عمدی و
-# مستند باشد؛ همین محافظ است که افزودنِ ناخواستهٔ endpoint را لو می‌دهد.
-_ROUTE_BASELINE = 498
+#        (نمای تجمیعیِ گزارش‌های یک سؤال).
+# §W9 — ۴۹۸ → ۵۰۱ با سه endpoint:
+#        `GET /api/content/questions/reported` (فهرستِ سؤالاتِ گزارش‌دار)
+#        + دو delegate در web_admin برای مصرفِ پنل.
+# تغییرِ این عدد باید همیشه عمدی و مستند باشد؛ همین محافظ است که
+# افزودنِ ناخواستهٔ endpoint را لو می‌دهد.
+_ROUTE_BASELINE = 501
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:

@@ -192,6 +192,29 @@ async def _finalize_report(update_or_query, context, reason: str, note: str):
         target_type, target_id, uid, reporter_name, reason, note, designer_id
     )
 
+    # §W9 — سقفِ نرخ خورده است. هرگز نباید بگوییم «ثبت شد» وقتی نشده
+    # (§۴۴). کاربر همچنان باید بتواند تمرین را ادامه دهد.
+    if not report_id:
+        rate_max, window_min = await db.report_rate_limit()
+        busy_kb = None
+        if context.user_data.get('quiz') and target_type == 'question':
+            busy_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ ادامه تمرین",
+                                      callback_data='questions:practice_next')],
+                [InlineKeyboardButton("🏠 منو", callback_data='questions:main')],
+            ])
+        busy_text = (
+            "⏳ <b>فعلاً نمی‌توانی گزارش جدیدی ثبت کنی.</b>\n\n"
+            f"سقفِ ثبتِ گزارش {rate_max} مورد در هر {window_min} دقیقه است. "
+            "کمی بعد دوباره تلاش کن — گزارش‌های قبلی‌ات ثبت شده‌اند."
+        )
+        if query:
+            await _safe_edit(query, busy_text, reply_markup=busy_kb)
+        else:
+            await update_or_query.message.reply_text(
+                busy_text, parse_mode='HTML', reply_markup=busy_kb)
+        return
+
     reason_fa = db.REPORT_REASONS.get(reason, reason)
     target_label = "🧪 سوال" if target_type == 'question' else "📁 فایل"
     detail_block = '\n'.join(detail_lines)
