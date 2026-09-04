@@ -1841,9 +1841,16 @@ class DBCore:
         target_label: نام/عنوان قابل‌فهم هدف (مثلاً نام کاربر یا متن سوال)
         — این چیزی است که در پیام لاگ به‌جای ObjectId خام نشان داده می‌شود.
         """
+        # 🛡 موج۳-AUD — قبلاً شرط `before and after` بود، پس هر فراخوانی که
+        # فقط `after` می‌داد (اکثر «ایجاد»ها: پلن، کد تخفیف، اعطای دسته‌ای)
+        # مقدارش کامل دور ریخته می‌شد و لاگ با changes=[] ثبت می‌شد.
+        # برای رویداد «ایجاد» طبیعی است که before نداشته باشد؛ نبودِ حالتِ
+        # قبلی نباید باعث گم‌شدن حالتِ بعدی شود.
         changes = []
-        if before and after:
-            for key in after:
+        if before or after:
+            before = before or {}
+            after = after or {}
+            for key in (list(after) + [k for k in before if k not in after]):
                 changes.append({
                     'field': key,
                     'before': before.get(key, '—'),
