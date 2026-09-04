@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, FaDateTime, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 import HealthCenter from '../HealthCenter.jsx';
+import DlqCenter from '../DlqCenter.jsx';
 
 const fa = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const DETAIL_LABELS = {
@@ -200,6 +201,10 @@ export default function System({ me }) {
         ]} rows={observability.routes || []} rowKey="route" colToggle /></div>
         {!!observability.recent_errors?.length && <details style={{ marginTop: 10 }}><summary>خطاهای اخیر و Request ID</summary><div className="grid">{observability.recent_errors.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
       </div>}
+
+      {/* 💀 DLQ — پیام‌های مرده‌ی صف. خواندن با notifications.manage هم مجاز است
+          (همان قرارداد بک‌اند)، ولی اکشن بازپخش/کنارگذاشتن فقط system.manage. */}
+      {(canObserve || has('notifications.manage')) && <DlqCenter canManage={canObserve} />}
 
       {canObserve && <SecuritySessionsPanel data={sessions} onReload={load} />}
 

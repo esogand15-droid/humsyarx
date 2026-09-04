@@ -473,7 +473,8 @@ async def health_deep():
 # routes_match_baseline را نمی‌خواند، گارد در سکوت False می‌ماند و
 # عملاً بی‌اثر بود. حالا tests/test_route_inventory.py آن را می‌خواند؛
 # تغییر عمدیِ سطح API باید همین عدد را هم آگاهانه به‌روز کند.
-_ROUTE_BASELINE = 494
+# ۴۹۴ → ۴۹۷ با افزودن DLQ (GET /system/dlq و POST requeue/discard).
+_ROUTE_BASELINE = 497
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:

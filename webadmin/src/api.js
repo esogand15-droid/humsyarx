@@ -223,6 +223,10 @@ export const api = {
   auditUndo: (logId, reason = '') => req(`/api/web-admin/audit-logs/${logId}/undo`, { method: 'POST', body: { reason } }),
   exportAuditCsv: (p = {}) => downloadFile('/api/web-admin/exports/audit.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v)), `humsyar-audit-${fileDateStamp()}.csv`),
   systemJobs: () => req('/api/web-admin/system/jobs'),
+  // 💀 DLQ — پیام‌هایی که پس از سقف تلاش مرده‌اند و از pending_queue بیرون افتاده‌اند.
+  dlqList: (page = 1, perPage = 25) => req(`/api/web-admin/system/dlq?page=${page}&per_page=${perPage}`),
+  dlqRequeue: (body) => req('/api/web-admin/system/dlq/requeue', { method: 'POST', body }),
+  dlqDiscard: (body) => req('/api/web-admin/system/dlq/discard', { method: 'POST', body }),
   systemTimeStandard: () => req('/api/web-admin/system/time-standard'),
   systemObservability: (hours = 24) => req(`/api/web-admin/system/observability?hours=${hours}`),
   securitySessions: (page = 1, limit = 30) => req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),

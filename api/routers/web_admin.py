@@ -237,6 +237,23 @@ class VerifyCode(BaseModel):
     code: str
 
 
+# 🛡 §۸۷ — نقشه‌ی اکشن→مجوزِ عملیات گروهی، تک‌منبع.
+# پیش‌نمایش و اجرای واقعی *باید* از یک دیکشنری بخوانند؛ اگر هرکدام
+# نسخه‌ی خودش را داشته باشد، روزی واگرا می‌شوند و پیش‌نمایش دروغ می‌گوید.
+_BULK_ACTION_PERM = {
+    "approve": "users.manage", "set_intake": "users.manage",
+    "set_group": "users.manage", "add_role": "users.manage",
+    "remove_role": "users.manage", "suspend": "users.suspend",
+    "unsuspend": "users.suspend", "message": "users.message",
+    "block": "users.delete",
+    # 🛡 AUDIT-§۷۹ — اشتراک گروهی با همان مجوزِ «مرکز کنترل اشتراک»
+    # (subscription.manage)، نه users.manage: پول در این مسیر جابه‌جا
+    # می‌شود و گیت باید با گیتِ خودِ آن بخش یکی باشد.
+    "grant_subscription": "subscription.manage",
+    "renew_subscription": "subscription.manage",
+}
+
+
 class BulkBody(BaseModel):
     action: str            # approve | suspend | unsuspend | set_intake | grant_subscription | renew_subscription
     ids: list[int]
@@ -857,6 +874,81 @@ async def export_users_csv(
                              headers={"Content-Disposition": "attachment; filename=humsyar-users.csv"})
 
 
+@router.post("/users/bulk/preview")
+async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
+    """🔍 §۸۷ — پیش‌نمایش عملیات گروهی (dry-run کاملاً بدون نوشتن).
+
+    برای Broadcast از قبل پیش‌نمایش وجود داشت، ولی تغییرِ انبوهِ کاربران —
+    که برگشت‌ناپذیرتر است — بدون آن اجرا می‌شد. اینجا *همان* گیت مجوز و
+    *همان* قواعدِ skip بازاجرا می‌شود، فقط هیچ نوشتنی رخ نمی‌دهد.
+
+    خروجی سه سطل است: `will_apply` / `will_skip` / `not_found` تا ادمین
+    پیش از زدنِ دکمه بداند دقیقاً روی چند نفر اثر می‌گذارد.
+    """
+    action_perm = _BULK_ACTION_PERM
+    need = action_perm.get(body.action)
+    if not need:
+        raise HTTPException(400, "اکشن نامعتبر است.")
+    if not await db.has_permission(user["id"], need):
+        raise HTTPException(403, "forbidden")
+
+    ids = list(dict.fromkeys(
+        int(i) for i in (body.ids or [])
+        if isinstance(i, (int, str)) and str(i).isdigit()
+    ))[:100]
+    if not ids:
+        raise HTTPException(400, "لیست کاربران خالی است.")
+    value = (body.value or "").strip()
+    if body.action in ("set_intake", "set_group", "add_role", "remove_role",
+                       "message", "block") and not value:
+        raise HTTPException(422, "مقدار عملیات گروهی الزامی است")
+    if body.action in ("add_role", "remove_role") and not await db.get_role(value):
+        raise HTTPException(422, "نقش ناشناخته است")
+
+    will_apply, will_skip, not_found = [], [], []
+    for uid in ids:
+        if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
+            will_skip.append({"id": uid, "reason": "owner_protected"}); continue
+        target = await db.get_user(uid)
+        if not target:
+            not_found.append({"id": uid, "reason": "user_not_found"}); continue
+        label = target.get("name") or str(uid)
+        reason = None
+        if body.action == "approve" and target.get("approved") and not target.get("suspended"):
+            reason = "already_approved"
+        elif body.action == "suspend" and target.get("suspended"):
+            reason = "already_suspended"
+        elif body.action == "unsuspend" and not target.get("suspended"):
+            reason = "not_suspended"
+        elif body.action == "set_intake" and (target.get("intake") or "") == value:
+            reason = "already_set"
+        elif body.action == "add_role" and value in (
+                (await db.get_user_roles(uid)).get("keys") or []):
+            reason = "already_has_role"
+        elif body.action == "remove_role" and value not in (
+                (await db.get_user_roles(uid)).get("keys") or []):
+            reason = "role_not_assigned"
+        if reason:
+            will_skip.append({"id": uid, "name": label, "reason": reason})
+        else:
+            will_apply.append({"id": uid, "name": label})
+
+    # 🛡 §۸۵ — عملیات گروهیِ نقش هم می‌تواند سیستم را قفل کند.
+    lockout = []
+    if body.action == "remove_role":
+        for row in will_apply:
+            risk = await db.assignment_lockout_risk(row["id"], [], [value])
+            if risk["blocked"]:
+                lockout.append({"id": row["id"], "perms": risk["perms"]})
+
+    return {"ok": True, "action": body.action, "value": value,
+            "total": len(ids), "will_apply": will_apply,
+            "will_skip": will_skip, "not_found": not_found,
+            "lockout_risk": lockout,
+            "counts": {"apply": len(will_apply), "skip": len(will_skip),
+                       "missing": len(not_found)}}
+
+
 @router.post("/users/bulk")
 async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     """اکشن گروهی کاربران با گزارش success/failed/skipped و سقف ۱۰۰.
@@ -864,17 +956,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     تغییر نقش از همان تابع RBAC و پیام از همان outbox موجود استفاده می‌کند؛
     این endpoint orchestration وب است، نه business logic موازی.
     """
-    action_perm = {
-        "approve": "users.manage", "set_intake": "users.manage",
-        "set_group": "users.manage", "add_role": "users.manage",
-        "remove_role": "users.manage", "suspend": "users.suspend",
-        "unsuspend": "users.suspend", "message": "users.message", "block": "users.delete",
-        # 🛡 AUDIT-§۷۹ — اشتراک گروهی با همان مجوزِ «مرکز کنترل اشتراک»
-        # (subscription.manage)، نه users.manage: پول در این مسیر جابه‌جا می‌شود
-        # و گیت باید با گیتِ خودِ آن بخش یکی باشد.
-        "grant_subscription": "subscription.manage", "renew_subscription": "subscription.manage",
-    }
-    need = action_perm.get(body.action)
+    need = _BULK_ACTION_PERM.get(body.action)
     if not need:
         raise HTTPException(400, "اکشن نامعتبر است.")
     actor = user["id"]
@@ -4857,6 +4939,31 @@ async def wa_audit_logs(
         skip=skip, limit=limit)
 
 
+class UndoBody(BaseModel):
+    reason: str = Field(default="", max_length=500)
+
+
+@router.post("/audit-logs/{log_id}/undo")
+async def wa_audit_undo(log_id: str, body: UndoBody,
+                        user=Depends(_perm("audit.undo"))):
+    """↩️ §۸۸ — بازگردانی یک تغییرِ ثبت‌شده.
+
+    گیت مجوزِ *جداگانه* (`audit.undo`) دارد، نه `audit.view`: دیدنِ
+    تاریخچه و تغییردادنِ گذشته دو سطح اختیارند.
+    """
+    result = await db.undo_audit_log(log_id, user["id"])
+    if not result.get("ok"):
+        raise HTTPException(result.get("status", 409), result.get("error", "بازگردانی ممکن نشد"))
+    await _audit(user, "بازگردانی تغییر", "Audit", severity="HIGH",
+                 target_id=log_id, target_type="audit_log",
+                 target_label=str(result.get("target_id")),
+                 before={"undone": False},
+                 after={"undone": True, "restored": result.get("restored"),
+                        "reason": body.reason.strip()},
+                 tags=["حسابرسی", "بازگردانی"])
+    return {"ok": True, "restored": result.get("restored")}
+
+
 @router.get("/exports/audit.csv")
 async def export_audit_csv(
     category: Optional[str] = Query(None), min_severity: Optional[str] = Query(None),
@@ -5024,7 +5131,127 @@ async def wa_system_jobs(
                      "status": "enabled" if enabled else "disabled",
                      "hour": int(await db.get_setting("auto_backup_hour", 3) or 3),
                      "last_run": await db.get_setting("auto_backup_last_run", None)})
+    dead = await db.bot_notifs.count_documents({"status": "dead"})
+    if dead:
+        jobs.append({"key": "dlq", "label": "پیام‌های مرده (DLQ)", "kind": "dlq",
+                     "status": "failed", "dead": dead})
     return {"jobs": jobs, "checked_at": _now()}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 💀 DLQ — صف پیام‌های مرده
+#
+# چرا لازم است: مصرف‌کننده‌ی outbox در bot.py پس از ۴ تلاش ناموفق سند را
+# `status="dead"` و `sent=True` می‌کند. آن `sent=True` باعث می‌شود پیام از
+# شمارش `pending_queue` بیرون بیفتد، در حالی که هرگز به کاربر نرسیده است.
+# نتیجه: گم‌شدن خاموش پیام — هیچ صفحه‌ای در پنل آن را نشان نمی‌داد.
+# این اندپوینت‌ها همان اسناد را قابل‌مشاهده و قابل‌بازپخش می‌کنند.
+# هیچ کالکشن یا سیستم حسابرسی جدیدی ساخته نمی‌شود.
+# ══════════════════════════════════════════════════════════════════
+
+_DLQ_MAX_REQUEUE = 500
+
+
+@router.get("/system/dlq")
+async def wa_dlq_list(
+    page: int = Query(1, ge=1), per_page: int = Query(25, ge=1, le=100),
+    user=Depends(_perm_any("system.manage", "notifications.manage")),
+):
+    """پیام‌هایی که پس از سقف تلاش مرده‌اند و هرگز تحویل نشده‌اند."""
+    filt = {"status": "dead"}
+    total = await db.bot_notifs.count_documents(filt)
+    docs = await db.bot_notifs.find(
+        filt, {"chat_id": 1, "text": 1, "type": 1, "attempts": 1, "error": 1,
+               "sent_at": 1, "created_at": 1, "campaign_id": 1},
+    ).sort("sent_at", -1).skip((page - 1) * per_page).limit(per_page).to_list(per_page)
+    return {
+        "items": [{
+            "id": str(row.get("_id")),
+            "user_id": row.get("chat_id"),
+            # متن بریده می‌شود: DLQ برای تشخیص است، نه بازخوانی کامل پیام کاربر.
+            "text": (row.get("text") or "")[:160],
+            "type": row.get("type") or "",
+            "attempts": int(row.get("attempts") or 0),
+            "error": (row.get("error") or "")[:200],
+            "campaign_id": row.get("campaign_id"),
+            "died_at": row.get("sent_at") or None,
+            "created_at": row.get("created_at") or None,
+        } for row in docs],
+        "total": total, "page": page, "per_page": per_page,
+        "pages": max(1, -(-total // per_page)),
+        "checked_at": _now(),
+    }
+
+
+class WaDlqRequeue(BaseModel):
+    ids: Optional[list[str]] = None
+    all_dead: bool = False
+
+
+@router.post("/system/dlq/requeue")
+async def wa_dlq_requeue(body: WaDlqRequeue,
+                         user=Depends(_perm("system.manage"))):
+    """بازگرداندن پیام‌های مرده به صف ارسال.
+
+    شمارنده‌ی attempts صفر می‌شود وگرنه سند بلافاصله دوباره می‌میرد.
+    سقف دارد تا یک درخواست، کل صف را روی تلگرام آوار نکند.
+    """
+    if body.all_dead:
+        filt = {"status": "dead"}
+        ids = [row["_id"] for row in await db.bot_notifs.find(
+            filt, {"_id": 1}).limit(_DLQ_MAX_REQUEUE).to_list(_DLQ_MAX_REQUEUE)]
+    else:
+        raw = list(dict.fromkeys(body.ids or []))[:_DLQ_MAX_REQUEUE]
+        ids = []
+        for item in raw:
+            try:
+                ids.append(ObjectId(item))
+            except Exception:
+                continue
+        if raw and not ids:
+            raise HTTPException(422, "شناسه‌ی نامعتبر است")
+    if not ids:
+        raise HTTPException(400, "موردی برای بازپخش انتخاب نشده است")
+    result = await db.bot_notifs.update_many(
+        {"_id": {"$in": ids}, "status": "dead"},
+        {"$set": {"sent": False, "failed": False, "attempts": 0, "status": "queued"},
+         "$unset": {"error": "", "sent_at": "", "send_at": ""}})
+    await _audit(user["id"], "بازپخش پیام‌های مرده صف", severity="WARNING",
+                 target_type="dlq", target_label="bot_outbox",
+                 after={"requeued": result.modified_count},
+                 tags=["صف", "dlq", "پنل_وب"])
+    return {"requeued": result.modified_count, "requested": len(ids)}
+
+
+@router.post("/system/dlq/discard")
+async def wa_dlq_discard(body: WaDlqRequeue,
+                         user=Depends(_perm("system.manage"))):
+    """کنارگذاشتن نهایی پیام‌های مرده.
+
+    سند حذف نمی‌شود — فقط `status="discarded"` می‌گیرد تا ردِ حسابرسی و
+    امکان بررسی بعدی باقی بماند.
+    """
+    if body.all_dead:
+        ids = [row["_id"] for row in await db.bot_notifs.find(
+            {"status": "dead"}, {"_id": 1}).limit(_DLQ_MAX_REQUEUE).to_list(_DLQ_MAX_REQUEUE)]
+    else:
+        ids = []
+        for item in list(dict.fromkeys(body.ids or []))[:_DLQ_MAX_REQUEUE]:
+            try:
+                ids.append(ObjectId(item))
+            except Exception:
+                continue
+    if not ids:
+        raise HTTPException(400, "موردی برای کنارگذاشتن انتخاب نشده است")
+    result = await db.bot_notifs.update_many(
+        {"_id": {"$in": ids}, "status": "dead"},
+        {"$set": {"status": "discarded", "discarded_at": _now(),
+                  "discarded_by": user["id"]}})
+    await _audit(user["id"], "کنارگذاشتن پیام‌های مرده صف", severity="HIGH",
+                 target_type="dlq", target_label="bot_outbox",
+                 after={"discarded": result.modified_count},
+                 tags=["صف", "dlq", "پنل_وب"])
+    return {"discarded": result.modified_count, "requested": len(ids)}
 
 
 @router.get("/system/backup-settings")
