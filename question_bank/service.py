@@ -404,9 +404,27 @@ class QuestionBankService:
             logger.exception("question creator notification failed question_id=%s status=%s",
                              question.get("_id"), status)
 
+    #  🐛 §W7 — ویرایشِ بازبین در هر وضعیت، با سیاستِ «بازبینیِ مجدد».
+    #
+    #  فیلدهایی که تغییرشان معنای علمیِ سؤال را عوض می‌کند. تغییر این‌ها
+    #  روی سؤالِ تأییدشده باید دوباره بازبینی شود، وگرنه محتوای
+    #  بازبینی‌نشده بی‌صدا در بانکِ عمومی می‌ماند (§۱۴).
+    SUBSTANTIVE_FIELDS = ("question", "options", "correct_answer",
+                          "lesson_id", "topic_id")
+
     async def edit_pending(self, *, question_id: str, reviewer: Mapping,
                            payload: Mapping, allow_probable_duplicate: bool = False) -> dict:
-        """Reviewer edit with canonical validation, scope, version and history."""
+        """ویرایشِ بازبین — با اعتبارسنجی، scope، نسخه و تاریخچه.
+
+        پیش‌تر فقط سؤالِ `pending` قابلِ ویرایش بود، پس سؤالِ تأییدشده در
+        بن‌بست می‌ماند: نه ویرایش می‌شد، نه حذف (قفلِ approved) و در UI هم
+        هیچ دکمه‌ای نداشت. حالا هر وضعیتی قابلِ ویرایش است، اما امنیت
+        تضعیف نشده:
+
+        • تغییرِ محتواییِ سؤالِ تأییدشده  → به `pending` برمی‌گردد و از
+          بانکِ عمومی خارج می‌شود تا دوباره تأیید شود.
+        • تغییرِ جزئی (سختی/توضیح)        → وضعیت دست‌نخورده می‌ماند.
+        """
         if not ObjectId.is_valid(str(question_id)):
             raise QuestionDomainError("invalid_question_id", "شناسه سؤال معتبر نیست")
         existing = await self.db.questions.find_one({"_id": ObjectId(str(question_id))})
@@ -414,8 +432,6 @@ class QuestionBankService:
             raise QuestionDomainError("question_not_found", "سؤال پیدا نشد", 404)
         await self.permissions.authorize_review(actor=reviewer, question=existing, action="edit")
         status = canonical_status(existing)
-        if status != "pending":
-            raise QuestionDomainError("question_not_editable", "فقط سؤال در انتظار بررسی قابل ویرایش است", 409)
         merged = {
             "question": payload.get("question", existing.get("question")),
             "options": payload.get("options", existing.get("options")),
@@ -442,13 +458,42 @@ class QuestionBankService:
             raise QuestionDomainError("exact_duplicate", "این سؤال قبلاً در بانک ثبت شده است", 409, duplicates)
         if duplicates["probable"] and not allow_probable_duplicate:
             raise QuestionDomainError("probable_duplicate", "سؤال مشابهی در بانک وجود دارد", 409, duplicates)
+        # آیا تغییر «محتوایی» است؟ مقایسه با مقادیرِ ذخیره‌شده، نه با
+        # چیزی که کلاینت ادعا کرده فرستاده است.
+        substantive = False
+        for field in self.SUBSTANTIVE_FIELDS:
+            before = existing.get(field)
+            after = normalized.get(field, taxonomy.get(field, before))
+            if field == "options":
+                before = [clean_text(x) for x in (before or [])]
+                after = [clean_text(x) for x in (after or [])]
+            if field in ("lesson_id", "topic_id"):
+                before, after = str(before or ""), str(after or "")
+            if before != after:
+                substantive = True
+                break
+
+        # §۱۴ — تغییرِ محتواییِ سؤالِ تأییدشده باید دوباره بازبینی شود.
+        # تغییرِ جزئی (سختی/توضیح) وضعیت را دست نمی‌زند.
+        demote = substantive and status == "approved"
+        target = "pending" if demote else status
+
         now = utc_now_iso(); rid = int(reviewer.get("id") or reviewer.get("user_id") or 0)
+        update = {**normalized, **taxonomy, "updated_at": now}
+        if demote:
+            update.update({"status": "pending", "approved": False,
+                           "reviewed_by": None, "reviewed_at": None,
+                           "review_reason": "ویرایشِ محتوایی — نیازمند تأیید مجدد"})
+        reason = ("ویرایشِ محتوایی توسط بازبین — بازگشت به صف بررسی" if demote
+                  else "ویرایش توسط بازبین")
         result = await self.db.questions.find_one_and_update(
-            {"_id": existing["_id"], "status": "pending", "version": int(existing.get("version") or 1)},
-            {"$set": {**normalized, **taxonomy, "updated_at": now}, "$inc": {"version": 1},
+            # قفلِ خوش‌بینانه روی نسخه: اگر سؤال بینِ خواندن و نوشتن عوض
+            # شده باشد، ویرایشِ کهنه اعمال نمی‌شود (§۲۴).
+            {"_id": existing["_id"], "version": int(existing.get("version") or 1)},
+            {"$set": update, "$inc": {"version": 1},
              "$push": {"review_history": self._capped(
-                 {"from": "pending", "to": "pending", "by": rid,
-                  "at": now, "reason": "ویرایش توسط بازبین", "action": "edit"},
+                 {"from": status, "to": target, "by": rid,
+                  "at": now, "reason": reason, "action": "edit"},
                  self.REVIEW_HISTORY_CAP)}},
             return_document=ReturnDocument.AFTER,
         )

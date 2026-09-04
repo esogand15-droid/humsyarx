@@ -450,7 +450,7 @@ class DBRbac:
         ('questions.review',     'بررسی سؤالات پیشنهادی',       'questions'),
         ('questions.review_scoped','بررسی سؤالات (ورودی خود)',  'questions'),
         ('questions.reject',     'رد/نیازمند اصلاح سؤال',       'questions'),
-        ('questions.edit',       'ویرایش سؤال در صف بررسی',     'questions'),
+        ('questions.edit',       'ویرایش سؤال (هر وضعیت)',     'questions'),
         ('questions.delete',     'حذف دائمی سؤال',              'questions'),
         ('questions.import',     'درون‌ریزی بانک سؤال',         'questions'),
         ('schedules.manage',     'مدیریت برنامه و امتحان',      'schedules'),
@@ -471,6 +471,8 @@ class DBRbac:
         ('settings.manage',      'تنظیمات سیستم',               'settings'),
         ('backup.manage',        'بکاپ و بازیابی',              'backup'),
         ('audit.view',           'مشاهده‌ی لاگ حساس',           'system'),
+        # ↩️ §۸۸ — بازگردانی تغییر، اختیاری جدا از دیدنِ تاریخچه است.
+        ('audit.undo',           'بازگردانی تغییرات ثبت‌شده',   'system'),
         ('system.manage',        'عملیات حساس سیستم',           'system'),
     ]
 
@@ -925,11 +927,179 @@ class DBRbac:
             return set(valid)
         perms = set()
         info = await self.get_user_roles(uid)
+        # ⏳ §۸۶ — نقشِ سررسیدشده باید در همین لحظه‌ی تصمیم بی‌اثر باشد،
+        # نه فقط وقتی کسی صفحه‌ی RBAC را باز کند. بدون این فیلتر،
+        # «دسترسی دو ساعته» تا اولین بازدیدِ ادمین زنده می‌ماند.
+        expiry = await self.role_expiry_map(uid)
+        now_iso = utc_now_iso()
         for role in info['roles']:
             if not role.get('active', True):
                 continue
+            if self._expiry_passed(expiry.get(role.get('_id')), now_iso):
+                continue
             perms.update(role.get('perms') or [])
         return perms & valid
+
+
+    # ══════════════════════════════════════════════════════════
+    #  ⏳ §۸۶ — دسترسی موقت (نقشِ خودمنقضی)
+    # ══════════════════════════════════════════════════════════
+    #  انگیزه: «این استاد فقط تا پایان ترم» یا «دسترسی اضطراری دو
+    #  ساعته». بدون انقضای خودکار، ادمین باید دستی یادش بماند پس
+    #  بگیرد — که نمی‌ماند، و دسترسی‌ها آرام‌آرام انباشته می‌شوند.
+    #
+    #  طراحی: انقضا در همان سند user_roles ذخیره می‌شود
+    #  (`role_expiry: {<role_key>: <iso>}`) تا هیچ کالکشن جدیدی لازم
+    #  نباشد و snapshot/restore موجود خودبه‌خود آن را پوشش دهد.
+
+    async def set_role_expiry(self, uid: int, key: str, expires_at) -> None:
+        """زمان انقضا را روی یک نقشِ تخصیص‌یافته می‌گذارد یا برمی‌دارد."""
+        field = f'role_expiry.{key}'
+        if expires_at is None:
+            await self.user_roles.update_one(
+                {'_id': int(uid)}, {'$unset': {field: ''}})
+            return
+        iso = expires_at if isinstance(expires_at, str) else expires_at.isoformat()
+        await self.user_roles.update_one(
+            {'_id': int(uid)},
+            {'$set': {field: iso, 'updated_at': utc_now_iso()}}, upsert=True)
+
+    @staticmethod
+    def _expiry_passed(value, now_iso: str) -> bool:
+        if not value:
+            return False
+        raw = value if isinstance(value, str) else getattr(value, 'isoformat', lambda: '')()
+        return bool(raw) and str(raw) <= now_iso
+
+    async def expire_due_roles(self, uid: int = None) -> list:
+        """نقش‌های سررسیدشده را برمی‌دارد و گزارش می‌دهد.
+
+        ایمن برای اجرای مکرر (idempotent): نقشی که قبلاً برداشته شده
+        دوباره گزارش نمی‌شود. اگر `uid` بدهید فقط همان کاربر بررسی
+        می‌شود — همان مسیری که در زمان ورود/تصمیم استفاده می‌شود.
+        """
+        now_iso = utc_now_iso()
+        query = {'role_expiry': {'$exists': True}}
+        if uid is not None:
+            query['_id'] = int(uid)
+        removed = []
+        for doc in await self.user_roles.find(query).to_list(10000):
+            expiry = doc.get('role_expiry') or {}
+            due = [k for k, v in expiry.items() if self._expiry_passed(v, now_iso)]
+            due = [k for k in due if k in (doc.get('roles') or [])]
+            if not due:
+                continue
+            target = int(doc['_id'])
+            for key in due:
+                # مقدار را *قبل* از پاک‌کردن برمی‌داریم؛ وگرنه گزارش
+                # حسابرسی همیشه expired_at=None می‌شود.
+                when = expiry.get(key)
+                await self._remove_role_key(target, key)
+                await self.set_role_expiry(target, key, None)
+                removed.append({'uid': target, 'role': key, 'expired_at': when})
+            await self.sync_legacy_role_mirror(target)
+        return removed
+
+    async def role_expiry_map(self, uid: int) -> dict:
+        doc = await self.user_roles.find_one({'_id': int(uid)})
+        return dict((doc or {}).get('role_expiry') or {})
+
+    # ══════════════════════════════════════════════════════════
+    #  🛡 §۸۵ — محافظت در برابر قفل‌شدن سیستم (self-lockout)
+    # ══════════════════════════════════════════════════════════
+    #  مجوزهایی که اگر آخرین دارنده‌شان را از دست بدهیم، پنل برای
+    #  همیشه غیرقابل مدیریت می‌شود و تنها راه نجات، دست‌کاری مستقیم
+    #  دیتابیس است. `delete_role` از قبل وابستگی را چک می‌کرد، ولی
+    #  `assign_roles` هیچ گاردی نداشت.
+    LOCKOUT_CRITICAL_PERMS = ('roles.manage', 'users.manage')
+
+    async def _owner_id(self) -> int:
+        return int(os.getenv('ADMIN_ID', '0'))
+
+    async def perm_holders(self, permission: str, exclude_owner: bool = True) -> list:
+        """uidهایی که این مجوز را از راه نقش‌های *فعال* دارند.
+
+        مالک (ADMIN_ID) عمداً حساب نمی‌شود: او تور نجات است، نه یک
+        دارنده‌ی عادی. اگر او را بشماریم، گارد هیچ‌وقت فعال نمی‌شود و
+        عملاً بی‌اثر است.
+        """
+        owner = await self._owner_id()
+        role_keys = [r['_id'] for r in await self.list_roles()
+                     if r.get('active', True) and permission in (r.get('perms') or [])]
+        if not role_keys:
+            return []
+        holders = []
+        cursor = self.user_roles.find({'roles': {'$in': role_keys}}, {'_id': 1})
+        for doc in await cursor.to_list(10000):
+            uid = int(doc['_id'])
+            if exclude_owner and uid == owner:
+                continue
+            holders.append(uid)
+        return holders
+
+    async def assignment_lockout_risk(self, uid: int, add: list, remove: list) -> dict:
+        """آیا این تغییرِ نقش، آخرین دارنده‌ی یک مجوز حیاتی را حذف می‌کند؟
+
+        شبیه‌سازی خالص — هیچ چیزی نوشته نمی‌شود. خروجی dict است تا هم
+        گاردِ سرور و هم پیش‌نمایشِ UI از یک منبع تغذیه شوند.
+        """
+        owner = await self._owner_id()
+        if int(uid) == owner:
+            return {'blocked': False, 'perms': []}     # مالک قابل قفل‌شدن نیست
+
+        roles_by_key = {r['_id']: r for r in await self.list_roles()}
+        current = await self.get_user_roles(uid)
+        after_keys = [k for k in current['keys'] if k not in set(remove or [])]
+        after_keys += [k for k in (add or []) if k not in after_keys]
+
+        def perms_of(keys):
+            out = set()
+            for k in keys:
+                role = roles_by_key.get(k)
+                if role and role.get('active', True):
+                    out.update(role.get('perms') or [])
+            return out
+
+        had, has_now = perms_of(current['keys']), perms_of(after_keys)
+        at_risk = []
+        for perm in self.LOCKOUT_CRITICAL_PERMS:
+            if perm in had and perm not in has_now:
+                others = [h for h in await self.perm_holders(perm) if h != int(uid)]
+                if not others:
+                    at_risk.append(perm)
+        return {'blocked': bool(at_risk), 'perms': at_risk}
+
+    async def role_edit_lockout_risk(self, key: str, new_perms: list,
+                                     active: bool = True) -> dict:
+        """همان گارد، برای ویرایشِ خودِ نقش.
+
+        گرفتنِ `roles.manage` از تنها نقشی که آن را دارد، دقیقاً همان
+        فاجعه است — فقط از درِ دیگر. غیرفعال‌کردن نقش هم همین اثر را دارد.
+        """
+        roles_by_key = {r['_id']: r for r in await self.list_roles()}
+        old = roles_by_key.get(key)
+        if not old:
+            return {'blocked': False, 'perms': []}
+        new_set = set(new_perms or []) if active else set()
+        at_risk = []
+        for perm in self.LOCKOUT_CRITICAL_PERMS:
+            if perm in (old.get('perms') or []) and perm not in new_set:
+                # آیا نقشِ فعالِ دیگری این مجوز را دارد و کاربری دارد؟
+                others = []
+                for other_key, role in roles_by_key.items():
+                    if other_key == key or not role.get('active', True):
+                        continue
+                    if perm in (role.get('perms') or []):
+                        others.append(other_key)
+                holders = []
+                if others:
+                    cursor = self.user_roles.find({'roles': {'$in': others}}, {'_id': 1})
+                    owner = await self._owner_id()
+                    holders = [int(d['_id']) for d in await cursor.to_list(10000)
+                               if int(d['_id']) != owner]
+                if not holders:
+                    at_risk.append(perm)
+        return {'blocked': bool(at_risk), 'perms': at_risk}
 
 
     async def has_perm(self, uid: int, permission: str) -> bool:

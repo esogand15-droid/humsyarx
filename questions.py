@@ -317,6 +317,9 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'ca_q_needs_changes':
         await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '', target='needs_changes')
 
+    elif action == 'ca_q_edit':
+        await _h_ca_q_edit(query, context, uid, parts[2] if len(parts) > 2 else '')
+
     elif action == 'ca_q_approve':
         await _h_ca_q_approve(query, context, uid, parts[2] if len(parts) > 2 else '')
 
@@ -1217,13 +1220,55 @@ async def _save_question(update, context):
     await _do_insert_manual_question(update, context, context.user_data.get('new_q', {}), uid)
 
 
+async def _h_ca_q_edit(query, context, uid: int, qid: str):
+    """🐛 §W7 — ورود بازبین به ویرایشِ سؤال، در هر وضعیتی.
+
+    از همان wizard چندمرحله‌ای «ساخت سؤال» استفاده می‌شود تا سیستمِ
+    دومی ساخته نشود؛ فقط مقصدِ ذخیره فرق می‌کند (`edit_pending` به‌جای
+    `create_question`). مقادیرِ فعلی پیش‌فرض می‌شوند تا بازبین مجبور
+    نباشد همه‌چیز را دوباره بنویسد.
+    """
+    if not await db.has_permission(uid, 'questions.edit'):
+        await query.answer("مجوز ویرایش سؤال را ندارید.", show_alert=True); return
+    q = await db.get_question_by_id(qid)
+    if not q:
+        await query.answer("سؤال پیدا نشد.", show_alert=True); return
+    scope = await db.get_scoped_intake(uid)
+    if scope and (q.get('intake') or '') != scope:
+        await query.answer("این سؤال خارج از scope شماست.", show_alert=True); return
+
+    context.user_data['reviewer_editing_id'] = qid
+    context.user_data['new_q'] = {
+        'lesson_id': q.get('lesson_id'), 'topic_id': q.get('topic_id'),
+        'lesson': q.get('lesson', ''), 'topic': q.get('topic', ''),
+    }
+    context.user_data['mode'] = 'creating_question'
+    context.user_data['create_step'] = 'question'
+    status_key = canonical_status(q)
+    warn = ""
+    if status_key == 'approved':
+        warn = ("\n\n⚠️ این سؤال هم‌اکنون <b>تأییدشده</b> است. اگر متن، گزینه‌ها "
+                "یا پاسخِ صحیح را عوض کنی، برای تأیید مجدد به صف بررسی برمی‌گردد.")
+    await query.edit_message_text(
+        f"📝 <b>ویرایش سؤال</b>\n\n<i>متن فعلی:</i>\n{_h(q.get('question',''))}{warn}\n\n"
+        "گام ۱ — متن جدید سؤال را بفرست:", parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([_back("❌ لغو", f"questions:ca_q_view:{qid}")]))
+
+
 async def _do_insert_manual_question(update, context, q: dict, uid: int):
     creator_user = await db.get_user(uid) or {}; actor = {'id': uid, '_db': creator_user}
     can_review = await db.has_permission(uid, 'questions.review')
     editing_id = context.user_data.get('editing_question_id')
+    reviewer_edit_id = context.user_data.get('reviewer_editing_id')
     try:
         payload = {**q, 'correct_answer': q.get('correct', q.get('correct_answer', 0))}
-        if editing_id:
+        if reviewer_edit_id:
+            # §W7 — ویرایشِ بازبین. لایه‌ی دامنه تصمیم می‌گیرد که تغییر
+            # «محتوایی» است یا نه، و در صورت لزوم سؤال را به صف برمی‌گرداند.
+            document = await question_bank.edit_pending(
+                question_id=reviewer_edit_id, reviewer=actor, payload=payload,
+                allow_probable_duplicate=bool(context.user_data.get('allow_probable_duplicate')))
+        elif editing_id:
             document = await question_bank.update_contribution(
                 question_id=editing_id, user=actor, payload=payload, resubmit=True)
         else:
@@ -1260,7 +1305,7 @@ async def _do_insert_manual_question(update, context, q: dict, uid: int):
         if target: await target.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([_back("🔙 بانک سؤال", "questions:main")]))
         else: await update.message.reply_text(msg)
         return
-    for key in ['new_q','create_step','mode','cr_lesson','creating_as_ca','editing_question_id','allow_probable_duplicate']:
+    for key in ['new_q','create_step','mode','cr_lesson','creating_as_ca','editing_question_id','reviewer_editing_id','allow_probable_duplicate']:
         context.user_data.pop(key, None)
     status = document.get('status')
     message = ("✅ سؤال ثبت و در بانک منتشر شد." if status == 'approved' else
@@ -1485,6 +1530,28 @@ async def _ca_question_view(query, uid: int, qid: str):
                 InlineKeyboardButton("✏️ نیازمند اصلاح", callback_data=f'questions:ca_q_needs_changes:{qid}'),
                 InlineKeyboardButton("❌ رد با دلیل", callback_data=f'questions:ca_q_del:{qid}'),
             ])
+
+    # 🐛 §W7 — ویرایش در هر وضعیتی.
+    #
+    # پیش‌تر صفحه‌ی سؤالِ «تأییدشده» هیچ دکمه‌ای جز «بازگشت» نداشت: نه
+    # ویرایش (چون فقط pending قابلِ ویرایش بود)، نه حذف (قفلِ approved).
+    # عملاً بن‌بست بود. حالا ویرایش همیشه در دسترس است و لایه‌ی دامنه
+    # تصمیم می‌گیرد که آیا تغییر «محتوایی» است و باید به صف برگردد.
+    if await db.has_permission(uid, 'questions.edit'):
+        keyboard.append([InlineKeyboardButton(
+            "📝 ویرایش سؤال", callback_data=f'questions:ca_q_edit:{qid}')])
+        if status_key == 'approved':
+            text += ("\n\n<i>ℹ️ ویرایشِ متن، گزینه‌ها یا پاسخِ صحیح، سؤال را "
+                     "برای تأیید مجدد به صف بررسی برمی‌گرداند. تغییرِ سطحِ سختی "
+                     "یا توضیح، وضعیت را عوض نمی‌کند.</i>")
+
+    if status_key == 'approved':
+        # مسیرِ خروج از «تأییدشده» در دامنه وجود داشت (approved → rejected)
+        # ولی هیچ دکمه‌ای نشانش نمی‌داد. حذفِ مستقیم عمداً ممنوع می‌ماند،
+        # چون سؤال ممکن است در آزمون‌های ثبت‌شده ارجاع داشته باشد.
+        if await db.has_permission(uid, 'questions.reject'):
+            keyboard.append([InlineKeyboardButton(
+                "🚫 خروج از بانک (رد با دلیل)", callback_data=f'questions:ca_q_del:{qid}')])
 
     # 🛡 §۸۴ — حذف سخت در هر وضعیتی جز «تأییدشده» (که قفل است).
     if status_key != 'approved' and await db.has_permission(uid, 'questions.delete'):

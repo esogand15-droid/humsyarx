@@ -253,15 +253,20 @@ async def patch_question(qid: str, body: QuestionPatch,
         await db.log_action(
             admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
             await db.get_actor_role_label(admin["id"]),
-            "ویرایش سؤال در انتظار بازبینی", "Questions", "admin", "WARNING",
+            "ویرایش سؤال توسط بازبین", "Questions", "admin", "WARNING",
             str(qid), "question", f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
             {"version": q.get("version", 1)},
             {"version": updated.get("version"), "fields": sorted(payload)},
             "", ["ویرایش_سؤال", "پنل_وب"])
     except Exception:
         # Best-effort compensating rollback guarded by the version written above.
+        # §W7 — «status» و همراهانش هم باید بازگردانده شوند: ویرایشِ
+        # محتواییِ سؤالِ تأییدشده آن را به صف برمی‌گرداند، و اگر ثبتِ
+        # حسابرسی شکست بخورد، بدونِ این کلیدها سؤال در `pending` گیر
+        # می‌کرد و بی‌صدا از بانکِ عمومی خارج می‌ماند.
         restore_keys = ("question", "options", "correct_answer", "difficulty", "explanation",
-                        "content_hash", "lesson_id", "topic_id", "lesson", "topic", "term", "intake", "updated_at")
+                        "content_hash", "lesson_id", "topic_id", "lesson", "topic", "term", "intake", "updated_at",
+                        "status", "approved", "reviewed_by", "reviewed_at", "review_reason")
         rollback = await db.questions.update_one(
             {"_id": q["_id"], "version": updated.get("version")},
             {"$set": {key: q.get(key) for key in restore_keys},
@@ -269,7 +274,11 @@ async def patch_question(qid: str, body: QuestionPatch,
         if not rollback.modified_count:
             raise HTTPException(503, "ثبت حسابرسی ناموفق بود و تغییر هم‌زمان مانع بازگردانی شد")
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ ویرایش بازگردانده شد")
-    return {"ok": True, "changed": sorted(payload), "version": updated.get("version")}
+    # وضعیت را برمی‌گردانیم تا کلاینت بفهمد ویرایشِ محتوایی سؤال را به
+    # صفِ بررسی برگردانده است (§W7).
+    return {"ok": True, "changed": sorted(payload), "version": updated.get("version"),
+            "status": canonical_status(updated),
+            "requeued": canonical_status(updated) == "pending" and canonical_status(q) == "approved"}
 
 # ── 🌊 موج Q-Import — درون‌ریزی گروهی سؤال (scope-aware + audit) ──
 class QuestionImportItem(BaseModel):
