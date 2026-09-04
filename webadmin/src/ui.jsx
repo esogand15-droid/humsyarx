@@ -610,7 +610,11 @@ export function KpiCard({ icon, label, value, tone = '', delta, hint,
         {icon && <span className="kpi-ic" aria-hidden="true">{icon}</span>}
         <span className="kpi-label" title={label}>{label}</span>
       </div>
-      <div className="kpi-value">{value}</div>
+      {/* مقدارِ متنیِ بلند یک پله کوچک‌تر می‌شود تا وزنِ بصریِ ردیف
+          یکسان بماند — از بازبینیِ چشمیِ موجِ ۲. */}
+      <div className={`kpi-value${
+        typeof value === 'string' && value.length > 6 && !/^[\d\u06F0-\u06F9٬,.\s]+$/.test(value)
+          ? ' is-text' : ''}`}>{value}</div>
       {(showDelta || hint) && (
         <div className="kpi-foot">
           {showDelta && (
@@ -661,4 +665,28 @@ export function Section({ title, description, actions, children, className = '' 
       {children}
     </div>
   );
+}
+
+/**
+ * §DW2 — ردیفِ «برچسب: مقدار».
+ *
+ * RingStreet یک `Stat` محلیِ کاملاً متفاوت تعریف کرده بود (۴۶ مورد
+ * مصرف) که با `Stat` مشترک هم‌نام ولی هم‌معنا نبود: آن یکی کارتِ سنجه
+ * است، این یکی ردیفِ ساده. هم‌نامیِ دو مفهومِ متفاوت بدترین شکلِ
+ * duplication است، چون خواننده فکر می‌کند یکی‌اند.
+ *
+ * حالا مفهوم نامِ درستِ خودش را دارد و فاصله/رنگش از توکن می‌آید.
+ */
+export function KeyValue({ label, value, mono }) {
+  return (
+    <div className="kv-row">
+      <span className="kv-k">{label}</span>
+      <b className={`kv-v${mono ? ' ltr' : ''}`}>{value ?? '—'}</b>
+    </div>
+  );
+}
+
+/** شبکهٔ ردیف‌های برچسب/مقدار با چیدمانِ واکنش‌گرا. */
+export function KeyValueGrid({ children, className = '' }) {
+  return <div className={`kv-grid ${className}`}>{children}</div>;
 }

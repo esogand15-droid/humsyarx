@@ -1561,7 +1561,13 @@ body.overlay-open { overflow: hidden; }
 .kpi-value {
   font-size: 23px; font-weight: 800; line-height: 1.25;
   letter-spacing: -.2px;
+  /* بازبینیِ چشمیِ موجِ ۲: مقدارِ متنی («آماده») کنارِ مقدارِ عددی
+     («۴۸») بیش‌ازحد درشت دیده می‌شد چون عرضِ حروف بیشتر است. کرانهٔ
+     نرم، متن‌های بلند را کوچک‌تر می‌کند بدون آنکه عددها تغییر کنند. */
+  overflow-wrap: anywhere;
 }
+/* مقدارهای متنیِ بلند یک پله کوچک‌تر، تا وزنِ بصریِ ردیف یکسان بماند */
+.kpi-value.is-text { font-size: 19px; }
 .kpi-foot {
   display: flex; align-items: center; gap: var(--sp2);
   color: var(--c-txt3); font-size: var(--fs-meta);
@@ -1623,3 +1629,20 @@ body.overlay-open { overflow: hidden; }
 }
 .sec-actions { display: flex; align-items: center; gap: var(--sp2);
                flex: 0 0 auto; }
+
+/* ── §DW2 — ردیفِ برچسب/مقدار ───────────────────────────────────────
+   RingStreet این الگو را با inline style ساخته بود (gap:6 و رنگِ
+   دستی، ۴۶ مورد). اینجا یک‌بار تعریف می‌شود تا همه‌جا یکسان بنشیند. */
+.kv-grid {
+  display: grid; gap: var(--sp2);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+.kv-row {
+  display: flex; align-items: baseline; gap: var(--sp1h);
+  min-width: 0; font-size: var(--fs-body);
+}
+.kv-k { color: var(--c-txt2); flex: 0 0 auto; }
+.kv-v {
+  color: var(--c-txt); font-weight: 700; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

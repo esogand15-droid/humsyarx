@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import {
-  DataTable, Loading, ErrorState, Stat, B, FaDate, FaDateTime, PageHeader, Tabs, toast, Confirm, Drawer,
-  Empty, NoPerm, Modal, Switch,
+  DataTable, Loading, ErrorState, KpiCard, KpiGrid, Section, B, FaDate,
+  FaDateTime, PageHeader, Tabs, toast, Confirm, Drawer, Empty, NoPerm,
+  Modal, Switch,
 } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
 import SavedViews from '../SavedViews.jsx';
@@ -45,12 +46,19 @@ export default function Subscriptions({ route = '' }) {
         actions={<><B kind={ov.settings?.subscription_enforced ? 'warn' : 'ok'}>{ov.settings?.subscription_enforced ? '🔒 اشتراک اجباری' : '🔓 دسترسی عمومی'}</B>
           <B kind={ov.settings?.protect_content_enabled ? 'ok' : 'warn'}>{ov.settings?.protect_content_enabled ? '🛡 محافظت محتوا روشن' : '⚠️ محافظت محتوا خاموش'}</B></>} />
 
-      <div className="grid g4" style={{ marginBottom: 14 }}>
-        <Stat icon="💎" label="اشتراک فعال" value={fa(stats.active)} tint="var(--teal)" />
-        <Stat icon="🧾" label="رسید در انتظار" value={fa(stats.pending)} tint="var(--warn)" />
-        <Stat icon="⏳" label="نزدیک پایان (۷ روز)" value={fa(stats.expiring)} tint="var(--acc)" />
-        <Stat icon="💰" label="درآمد ماه" value={money(stats.revenue_month)} tint="var(--purple)" />
-      </div>
+      {/* §DW2 — رنگ‌ها از «tint» خام به «tone» معنایی رفتند: رسیدِ
+          در انتظار هشدار است و نزدیکِ پایان هم، پس در کلِ پنل یک
+          ظاهرِ هشدار دارند. */}
+      <KpiGrid className="dw-sub-kpis">
+        <KpiCard tone="ok"   icon="💎" label="اشتراک فعال" enter="dw-enter-1"
+                 value={fa(stats.active)} />
+        <KpiCard tone="warn" icon="🧾" label="رسید در انتظار" enter="dw-enter-2"
+                 value={fa(stats.pending)} />
+        <KpiCard tone="warn" icon="⏳" label="نزدیک پایان (۷ روز)" enter="dw-enter-3"
+                 value={fa(stats.expiring)} />
+        <KpiCard tone="acc"  icon="💰" label="درآمد ماه" enter="dw-enter-3"
+                 value={money(stats.revenue_month)} />
+      </KpiGrid>
 
       <Tabs items={TABS} value={tab} onChange={changeTab} label="بخش‌های اشتراک" />
 
@@ -437,7 +445,9 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
         {data.subscription?.status === 'active' && <div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={reason}
           onChange={e => setReason(e.target.value)} placeholder="دلیل لغو…" /><button className="btn danger" disabled={reason.trim().length < 2} onClick={() => setConfirm(true)}>لغو اشتراک</button></div>}
       </div>
-      <div className="h1" style={{ fontSize: 'var(--fs-section)', marginTop: 16 }}>📜 تاریخچه پرداخت</div>
+      <div className="sec" style={{ marginTop: 'var(--sp4)' }}>
+        <div className="sec-main"><div className="sec-title">📜 تاریخچه پرداخت</div></div>
+      </div>
       {!(data.payments || []).length ? <Empty text="پرداختی ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>
         {data.payments.map(p => <div key={p.id} className="panel panel-pad row"><B kind={p.status === 'approved' ? 'ok' : p.status === 'rejected' ? 'bad' : 'warn'}>{p.status}</B>
           <span style={{ flex: 1 }}>{p.plan_name}</span><span>{money(p.final_price)}</span><FaDateTime value={p.submitted_at} /></div>)}</div>}
@@ -529,8 +539,15 @@ function DiscountDrawer({ item, onClose }) {
   const cancel = async bid => { try { await api.discountBroadcastCancel(item.code, bid); toast('کمپین متوقف شد'); load(); } catch (e) { toast(errText(e), 'err'); } };
   return <Drawer wide title={`🎁 آمار و کمپین — ${item.code}`} onClose={onClose}>
     {!stats ? <Loading rows={4} /> : <>
-      <div className="grid g4"><Stat icon="🎟" label="مصرف" value={fa(stats.used_count)} /><Stat icon="⏳" label="باقی‌مانده" value={stats.remaining_uses == null ? 'نامحدود' : fa(stats.remaining_uses)} />
-        <Stat icon="💰" label="درآمد با تخفیف" value={money(stats.payments?.revenue)} /><Stat icon="📉" label="مبلغ تخفیف" value={money(stats.payments?.discount_given)} /></div>
+      <KpiGrid>
+        <KpiCard icon="🎟" label="مصرف" value={fa(stats.used_count)} />
+        <KpiCard icon="⏳" label="باقی‌مانده"
+                 value={stats.remaining_uses == null ? 'نامحدود' : fa(stats.remaining_uses)} />
+        <KpiCard tone="ok" icon="💰" label="درآمد با تخفیف"
+                 value={money(stats.payments?.revenue)} />
+        <KpiCard tone="warn" icon="📉" label="مبلغ تخفیف"
+                 value={money(stats.payments?.discount_given)} />
+      </KpiGrid>
       <div className="panel panel-pad" style={{ marginTop: 12 }}><b>👁 پیش‌نمایش پیام</b>
         <div style={{ whiteSpace: 'pre-wrap', marginTop: 8, color: 'var(--txt2)', maxHeight: 220, overflowY: 'auto' }}>{preview?.text || '—'}</div></div>
       <div className="panel panel-pad" style={{ marginTop: 12 }}><b>📢 انتشار کمپین</b>

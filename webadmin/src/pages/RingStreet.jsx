@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import {
-  B, Confirm, DataTable, Empty, ErrorState, Field, FaDateTime, Loading, Modal,
-  NoPerm, PageHeader, SectionHeader, StatusBadge, Switch, Tabs, toast,
+  B, Confirm, DataTable, Empty, ErrorState, Field, FaDateTime, KeyValue,
+  KeyValueGrid, KpiCard, KpiGrid, Loading, Modal, NoPerm, PageHeader,
+  SectionHeader, StatusBadge, Switch, Tabs, toast,
 } from '../ui.jsx';
 
 // 💍 رینگ استریت — پنل نظارت (§۳۲، §۶۶..§۷۴)
@@ -32,22 +33,12 @@ const MODE = { serious: '💍 جدی', fun: '🎭 فان' };
 const PSTATUS = { active: 'فعال', paused: '⛔ محدود', banned: 'بن', deleted: 'حذف‌شده' };
 const GENDER = { female: 'دختر', male: 'پسر', undisclosed: 'نامشخص' };
 
-function Kpi({ icon, label, value, hint }) {
-  return <div className="panel panel-pad" style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-    <div style={{ fontSize: 'var(--fs-icon-lg)' }}>{icon}</div>
-    <div style={{ minWidth: 0 }}>
-      <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>{label}</div>
-      <div style={{ fontSize: 'var(--fs-page)', fontWeight: 700 }}>{value}</div>
-      {hint && <div className="muted" style={{ fontSize: 'var(--fs-label)' }}>{hint}</div>}
-    </div>
-  </div>;
-}
-
-function Stat({ label, value }) {
-  return <div className="muted" style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-    <span>{label}</span><b style={{ color: 'var(--txt)' }}>{value}</b>
-  </div>;
-}
+// §DW2 — `Kpi` و `Stat` محلی حذف شدند.
+//
+// هر دو کارِ primitiveهای مشترک را با فاصله و اندازه‌های دستی تکرار
+// می‌کردند. بدتر اینکه `Stat` محلی با `Stat` مشترک هم‌نام بود ولی
+// مفهومِ دیگری داشت (ردیفِ ساده در برابر کارتِ سنجه) — خواننده فکر
+// می‌کرد یکی‌اند. حالا: KpiCard برای کارت، KeyValue برای ردیف.
 
 export default function RingStreet({ me }) {
   const [tab, setTab] = useState('overview');
@@ -204,28 +195,28 @@ export default function RingStreet({ me }) {
     <Tabs items={TABS} value={tab} onChange={t => { setTab(t); setPage(1); setDrawer(null); }} />
 
     {tab === 'overview' && <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }}>
-      <Kpi icon="⏳" label="در صف" value={fa(qs.waiting || live.waiting)} hint={`claim‌شده: ${fa(qs.claimed)}`} />
-      <Kpi icon="💬" label="گفت‌وگوی فعال" value={fa(live.in_chat)} hint={`RAM: ${fa(ov.ram?.in_chat)}`} />
-      <Kpi icon="👤" label="پروفایل‌ها" value={fa(live.active_profiles || live.profiles)} hint={`مکث: ${fa(live.paused)} · بن: ${fa(live.banned)}`} />
-      <Kpi icon="🚩" label="گزارش باز" value={fa(live.reports_pending)} hint={`امروز: ${fa(live.reports_today)}`} />
-      <Kpi icon="🧱" label="بلاک‌ها" value={fa(live.blocks)} />
-      <Kpi icon="📅" label="جلسه‌ی امروز" value={fa(live.sessions_today)} hint={`کل: ${fa(live.sessions_total)}`} />
-      <Kpi icon={nh.bound ? '🟢' : '🔴'} label="لایهٔ ارسال پیام"
+      <KpiCard icon="⏳" label="در صف" value={fa(qs.waiting || live.waiting)} hint={`claim‌شده: ${fa(qs.claimed)}`} />
+      <KpiCard icon="💬" label="گفت‌وگوی فعال" value={fa(live.in_chat)} hint={`RAM: ${fa(ov.ram?.in_chat)}`} />
+      <KpiCard icon="👤" label="پروفایل‌ها" value={fa(live.active_profiles || live.profiles)} hint={`مکث: ${fa(live.paused)} · بن: ${fa(live.banned)}`} />
+      <KpiCard tone="warn" icon="🚩" label="گزارش باز" value={fa(live.reports_pending)} hint={`امروز: ${fa(live.reports_today)}`} />
+      <KpiCard tone="bad" icon="🧱" label="بلاک‌ها" value={fa(live.blocks)} />
+      <KpiCard tone="acc" icon="📅" label="جلسه‌ی امروز" value={fa(live.sessions_today)} hint={`کل: ${fa(live.sessions_total)}`} />
+      <KpiCard tone={nh.bound ? 'ok' : 'bad'} icon={nh.bound ? '🟢' : '🔴'} label="لایهٔ ارسال پیام"
         value={nh.bound ? 'آماده' : 'بدون بات'}
         hint={nh.bound ? `منبع: ${nh.source || 'bind'}` : 'post_init بات را bind نکرده — اطلاعیه‌ها ارسال نمی‌شوند'} />
       <div className="panel panel-pad" style={{ gridColumn: '1 / -1' }}>
-        <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
-          <Stat label="حالت جدی" value={ov.settings?.serious_enabled ? '✅' : '⛔'} />
-          <Stat label="حالت فان" value={ov.settings?.fun_enabled ? '✅' : '⛔'} />
-          <Stat label="کمترین سن" value={fa(ov.settings?.min_age)} />
-          <Stat label="سقف پیام/دقیقه" value={fa(ov.settings?.max_msg_per_min)} />
-          <Stat label="ثبت محتوا" value={ov.settings?.evidence_mode} />
-          <Stat label="وضعیت" value={ov.state_label || (ov.flag ? '🟢 فعال' : '🔴 غیرفعال')} />
-          <Stat label="نسخهٔ قوانین" value={fa(ov.rules_version || 1)} />
-          <Stat label="ترکیب جنسیتی صف" value={Object.entries(qs.by_gender || {}).length
+        <KeyValueGrid>
+          <KeyValue label="حالت جدی" value={ov.settings?.serious_enabled ? '✅' : '⛔'} />
+          <KeyValue label="حالت فان" value={ov.settings?.fun_enabled ? '✅' : '⛔'} />
+          <KeyValue label="کمترین سن" value={fa(ov.settings?.min_age)} />
+          <KeyValue label="سقف پیام/دقیقه" value={fa(ov.settings?.max_msg_per_min)} />
+          <KeyValue label="ثبت محتوا" value={ov.settings?.evidence_mode} />
+          <KeyValue label="وضعیت" value={ov.state_label || (ov.flag ? '🟢 فعال' : '🔴 غیرفعال')} />
+          <KeyValue label="نسخهٔ قوانین" value={fa(ov.rules_version || 1)} />
+          <KeyValue label="ترکیب جنسیتی صف" value={Object.entries(qs.by_gender || {}).length
             ? Object.entries(qs.by_gender).map(([k, n]) => `${GENDER[k] || k}: ${fa(n)}`).join(' · ') : '—'} />
-          <Stat label="به‌روزرسانی" value={<FaDateTime value={live.last_updated} />} />
-        </div>
+          <KeyValue label="به‌روزرسانی" value={<FaDateTime value={live.last_updated} />} />
+        </KeyValueGrid>
         <div className="row" style={{ gap: 8, marginTop: 10 }}>
           <button className="btn sm" disabled={busy} onClick={() => setForce({})}>🎯 force match</button>
           <button className="btn sm" disabled={busy} onClick={() => act(api.ringReconcile, 'ناهمانگی‌ها ترمیم شد')}>🧩 reconcile</button>
@@ -246,7 +237,7 @@ export default function RingStreet({ me }) {
           <option value="action_taken">اقدام شد</option><option value="resolved">حل‌شده</option>
           <option value="dismissed">رد‌شده</option><option value="">همه</option>
         </select>}
-        {['users', 'reports', 'blocks'].includes(tab) && <Stat label="کل" value={fa(box.total)} />}
+        {['users', 'reports', 'blocks'].includes(tab) && <KeyValue label="کل" value={fa(box.total)} />}
       </div>
       <DataTable columns={cols} rows={rows} rowKey={r => r.session_id || r.report_id || r._id || r.uid || r.user_id || Math.random()}
         loading={!box} onRow={tab === 'chats' ? (r => setDrawer({ kind: 'session', body: r })) : undefined}
@@ -371,8 +362,8 @@ function DebugMatch({ busy, onForce }) {
           <span className="muted">حالت بررسی‌شده: {MODE[res.mode] || res.mode || '—'}</span>
         </div>
         <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
-          <Stat label="وضعیت A" value={`${res.a?.state_label || '—'} (${res.a?.queue_status || 'خارج از صف'})`} />
-          <Stat label="وضعیت B" value={`${res.b?.state_label || '—'} (${res.b?.queue_status || 'خارج از صف'})`} />
+          <KeyValue label="وضعیت A" value={`${res.a?.state_label || '—'} (${res.a?.queue_status || 'خارج از صف'})`} />
+          <KeyValue label="وضعیت B" value={`${res.b?.state_label || '—'} (${res.b?.queue_status || 'خارج از صف'})`} />
         </div>
         <DataTable rowKey={r => r.k}
           rows={Object.keys(checks).map(k => ({ k, ok: checks[k], hint: hints[k] }))}
@@ -410,7 +401,7 @@ function CyclePanel({ c }) {
     <SectionHeader title="چرخهٔ match (§۴۹ V6)"
       description="هر حلقهٔ «match ساخته شد ولی کاربر در جست‌وجو ماند» با این شمارنده‌ها دیده می‌شود" />
     <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))' }}>
-      {Object.keys(CYCLE_LABELS).map(k => <Kpi key={k} icon={CYCLE_LABELS[k][0]}
+      {Object.keys(CYCLE_LABELS).map(k => <KpiCard key={k} icon={CYCLE_LABELS[k][0]}
         label={CYCLE_LABELS[k][1]} value={fa(c[k] || 0)} />)}
     </div>
     <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
@@ -432,15 +423,15 @@ function AnalyticsPanel({ box }) {
     {box.cycle ? <CyclePanel c={box.cycle} /> : null}
     <div className="panel panel-pad">
       <SectionHeader title="قیف (§۳۶)" description="پروفایل ← صف ← match ← گفت‌وگو" />
-      <Stat label="پروفایل‌ها" value={fa(f.profiles)} />
-      <Stat label="ورود به صف" value={fa(f.joins)} />
-      <Stat label="matchها" value={fa(f.matches)} />
-      <Stat label="نرخ match" value={pct(f.match_rate)} />
-      <Stat label="میانگین انتظار" value={`${fa(Math.round(f.avg_wait_s || 0))} ثانیه`} />
-      <Stat label="بیشترین انتظار" value={`${fa(Math.round(f.max_wait_s || 0))} ثانیه`} />
-      <Stat label="rematch بعد از کول‌داون" value={fa(f.rematch)} />
-      <Stat label="میانگین طول گفت‌وگو" value={`${fa(Math.round(f.avg_session_s || 0))} ثانیه`} />
-      <Stat label="پیام به ازای match" value={fa(f.msgs_per_match)} />
+      <KeyValue label="پروفایل‌ها" value={fa(f.profiles)} />
+      <KeyValue label="ورود به صف" value={fa(f.joins)} />
+      <KeyValue label="matchها" value={fa(f.matches)} />
+      <KeyValue label="نرخ match" value={pct(f.match_rate)} />
+      <KeyValue label="میانگین انتظار" value={`${fa(Math.round(f.avg_wait_s || 0))} ثانیه`} />
+      <KeyValue label="بیشترین انتظار" value={`${fa(Math.round(f.max_wait_s || 0))} ثانیه`} />
+      <KeyValue label="rematch بعد از کول‌داون" value={fa(f.rematch)} />
+      <KeyValue label="میانگین طول گفت‌وگو" value={`${fa(Math.round(f.avg_session_s || 0))} ثانیه`} />
+      <KeyValue label="پیام به ازای match" value={fa(f.msgs_per_match)} />
     </div>
     <div className="panel panel-pad">
       <SectionHeader title="حالت‌ها" description="تقسیم جدی/فان" />
@@ -458,13 +449,13 @@ function AnalyticsPanel({ box }) {
         style={{ gap: 8, justifyContent: 'space-between' }}>
         <span className="muted">{k}</span><b>{fa(v)}</b>
       </div>)}
-      <Stat label="متوقف‌های جست‌وجو (§۲۳)" value={fa(box.paused)} />
+      <KeyValue label="متوقف‌های جست‌وجو (§۲۳)" value={fa(box.paused)} />
     </div>
     <div className="panel panel-pad">
       <SectionHeader title="مدیریت ریسک" description="گزارش‌ها، تکراری‌ها و بن‌ها" />
-      <Stat label="گزارش‌ها" value={fa(mo.total)} />
-      <Stat label="تکراری" value={pct(mo.dup_share)} />
-      <Stat label="بن‌ها" value={fa(mo.bans)} />
+      <KeyValue label="گزارش‌ها" value={fa(mo.total)} />
+      <KeyValue label="تکراری" value={pct(mo.dup_share)} />
+      <KeyValue label="بن‌ها" value={fa(mo.bans)} />
       <div style={{ marginTop: 8 }}>{Object.entries(mo.by_reason || {}).map(([k, v]) =>
         <div key={k} className="muted">{k}: {fa(v.n)}</div>)}</div>
     </div>
@@ -539,10 +530,10 @@ function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onRe
   if (drawer.kind === 'session') {
     const s = drawer.body || {};
     return <div style={{ padding: 4 }}>
-      <Stat label="حالت" value={MODE[s.mode] || s.mode} />
-      <Stat label="پیام‌ها" value={fa(s.messages_count)} />
-      <Stat label="مدیا" value={fa(s.media_count)} />
-      <Stat label="شروع" value={<FaDateTime value={s.created_at} />} />
+      <KeyValue label="حالت" value={MODE[s.mode] || s.mode} />
+      <KeyValue label="پیام‌ها" value={fa(s.messages_count)} />
+      <KeyValue label="مدیا" value={fa(s.media_count)} />
+      <KeyValue label="شروع" value={<FaDateTime value={s.created_at} />} />
       <div className="row" style={{ gap: 8, marginTop: 10 }}>
         <button className="btn sm danger" disabled={busy} onClick={() => onEnd(s.session_id)}>⛔ بستن جلسه</button>
       </div>
@@ -551,12 +542,12 @@ function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onRe
   if (drawer.kind === 'profile') {
     const p = drawer.body.profile || {}, ban = drawer.body.ban;
     return <div style={{ padding: 4 }}>
-      <Stat label="ناشناس" value={`#${p.anon_id || '—'}`} />
-      <Stat label="حالت" value={MODE[p.mode] || '—'} />
-      <Stat label="امتیاز گزارش" value={fa(p.report_score)} />
-      <Stat label="هشدارها" value={fa(p.warnings)} />
-      <Stat label="جلسه‌ها" value={fa(drawer.body.sessions?.length)} />
-      <Stat label="میانگین امتیاز" value={drawer.body.rating?.avg ?? '—'} />
+      <KeyValue label="ناشناس" value={`#${p.anon_id || '—'}`} />
+      <KeyValue label="حالت" value={MODE[p.mode] || '—'} />
+      <KeyValue label="امتیاز گزارش" value={fa(p.report_score)} />
+      <KeyValue label="هشدارها" value={fa(p.warnings)} />
+      <KeyValue label="جلسه‌ها" value={fa(drawer.body.sessions?.length)} />
+      <KeyValue label="میانگین امتیاز" value={drawer.body.rating?.avg ?? '—'} />
       {ban && <B kind="bad">بن فعال تا {ban.until || 'همیشه'}</B>}
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
         <button className="btn sm" disabled={busy} onClick={() => onPause(p._id)}>⏸ مکث</button>
@@ -568,11 +559,11 @@ function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onRe
   }
   const r = drawer.body.report || {}, ev = drawer.body.evidence || [];
   return <div style={{ padding: 4 }}>
-    <Stat label="دلیل" value={r.reason} />
-    <Stat label="شدت" value={fa(r.severity)} />
-    <Stat label="وضعیت" value={r.status} />
-    <Stat label="توضیح" value={r.details || '—'} />
-    <Stat label="شواهد" value={fa(ev.length)} />
+    <KeyValue label="دلیل" value={r.reason} />
+    <KeyValue label="شدت" value={fa(r.severity)} />
+    <KeyValue label="وضعیت" value={r.status} />
+    <KeyValue label="توضیح" value={r.details || '—'} />
+    <KeyValue label="شواهد" value={fa(ev.length)} />
     {ev.length > 0 && <div className="panel" style={{ marginTop: 8, padding: 8 }}>
       {ev.map(e => <div key={e._id} className="muted" style={{ marginBottom: 4 }}>
         <span className="code">{e.alias}</span> · {e.kind} · {e.text ? `«${e.text}»` : '(بدون متن)'}
@@ -611,11 +602,11 @@ function RulesPanel({ box, busy, onSave, onReset }) {
   const val = txt === null ? (box.text || '') : txt;
   return <div className="panel panel-pad" style={{ display: 'grid', gap: 10 }}>
     <div className="row" style={{ gap: 14, flexWrap: 'wrap' }}>
-      <Stat label="نسخهٔ فعلی" value={fa(box.version)} />
-      <Stat label="پذیرفته‌اند" value={fa(box.accepted)} />
-      <Stat label="در انتظار پذیرش" value={fa(box.pending)} />
-      <Stat label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۱ بند)'} />
-      <Stat label="حداقل سن" value={fa(box.min_age)} />
+      <KeyValue label="نسخهٔ فعلی" value={fa(box.version)} />
+      <KeyValue label="پذیرفته‌اند" value={fa(box.accepted)} />
+      <KeyValue label="در انتظار پذیرش" value={fa(box.pending)} />
+      <KeyValue label="متن" value={box.overridden ? '✏️ جایگزینِ ادمین' : '🛡 پیش‌فرض (۱۱ بند)'} />
+      <KeyValue label="حداقل سن" value={fa(box.min_age)} />
     </div>
     {box.pending > 0 && <div className="muted" style={{ fontSize: 'var(--fs-body)' }}>
       ⚠️ {fa(box.pending)} کاربر فعال نسخهٔ فعلی قوانین را نپذیرفته؛ تا پذیرش وارد
