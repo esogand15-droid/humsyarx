@@ -1228,11 +1228,17 @@ async def _do_insert_manual_question(update, context, q: dict, uid: int):
                 question_id=editing_id, user=actor, payload=payload, resubmit=True)
         else:
             scoped = await db.get_scoped_intake(uid) if can_review else None
+            # 🐛 §W6-1 — ادمینِ محتوا (دارنده‌ی `questions.review`) سؤالش
+            # مستقیم ثبت می‌شود. پیش‌تر اینجا همیشه `auto_approve=False`
+            # بود، پس سؤالِ خودِ ادمین هم به صف می‌رفت و چون خودتأییدی
+            # ممنوع است، در نصبِ تک‌ادمینه برای همیشه در `pending`
+            # می‌ماند. اعتماد در لایه‌ی دامنه دوباره با RBAC سنجیده
+            # می‌شود، پس این پرچم به‌تنهایی چیزی را دور نمی‌زند.
             result = await question_bank.create_question(
                 actor=actor, payload=payload,
                 source='admin_bot' if can_review else 'student_bot',
                 creator_type='admin' if can_review else 'student',
-                auto_approve=False,
+                auto_approve=can_review,
                 intake=scoped if scoped is not None else creator_user.get('intake',''),
                 allow_probable_duplicate=bool(context.user_data.get('allow_probable_duplicate')))
             document = result['question']
@@ -1462,9 +1468,18 @@ async def _ca_question_view(query, uid: int, qid: str):
     keyboard = []
 
     # دکمه‌های mutation دقیقاً مطابق permission contract مشترک.
+    #
+    # 🐛 §W6-2 — پیش‌تر وقتی بازبین خودش سازنده‌ی سؤال بود، دکمه‌ی «تأیید»
+    # بی‌هیچ توضیحی حذف می‌شد ولی «رد با دلیل» می‌ماند. کاربر صفحه‌ای
+    # می‌دید که راهی برای تأیید نداشت و نمی‌فهمید چرا. حالا به‌جای حذفِ
+    # خاموش، علت نمایش داده می‌شود.
     if status_key == 'pending':
-        if int(q.get('creator_id') or 0) != uid:
+        is_own = int(q.get('creator_id') or 0) == uid
+        if not is_own:
             keyboard.append([InlineKeyboardButton("✅ تأیید", callback_data=f'questions:ca_q_approve:{qid}')])
+        else:
+            text += ("\n\n<i>ℹ️ این سؤال را خودت ثبت کرده‌ای، پس تأییدش "
+                     "باید توسط بازبین دیگری انجام شود.</i>")
         if await db.has_permission(uid, 'questions.reject'):
             keyboard.append([
                 InlineKeyboardButton("✏️ نیازمند اصلاح", callback_data=f'questions:ca_q_needs_changes:{qid}'),

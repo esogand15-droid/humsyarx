@@ -23,6 +23,17 @@ from .permissions import QuestionPermissionService
 logger = logging.getLogger(__name__)
 
 
+def _direct_reason(creator_type: str) -> str:
+    """متنِ دلیل برای ثبتِ مستقیم — منبعِ اعتماد را صریح می‌کند.
+
+    در سابقه‌ی بازبینی باید بشود فهمید چرا سؤالی بدونِ بازبینِ دوم
+    «تأییدشده» شده است.
+    """
+    if creator_type == "system":
+        return "ثبت مستقیم توسط سیستم"
+    return "ثبت مستقیم توسط ادمین محتوا (دارای مجوز بررسی)"
+
+
 class QuestionBankService:
     def __init__(self, database):
         self.db = database
@@ -172,9 +183,28 @@ class QuestionBankService:
                               intake: str | None = None,
                               allow_probable_duplicate: bool = False) -> dict:
         normalized = validate_question_payload(payload)
-        if auto_approve and creator_type != "system":
+        # 🐛 §W6-1 — «ثبت مستقیمِ ادمینِ محتوا».
+        #
+        # پیش‌تر فقط `creator_type == "system"` اجازه‌ی auto_approve داشت، پس
+        # سؤالی که ادمینِ محتوا می‌ساخت هم `pending` می‌شد. چون قانونِ
+        # ضدِ خودتأییدی (`self_approval_forbidden`) هم اجازه نمی‌دهد سازنده
+        # سؤالِ خودش را تأیید کند، سؤال در صف گیر می‌کرد مگر بازبینِ دومی
+        # وجود داشته باشد — در عمل روی نصبِ تک‌ادمینه یعنی «هرگز».
+        #
+        # حالا `creator_type == "admin"` هم مجاز است، ولی این اعتماد
+        # *ادعاییِ فراخوان* نیست: پایین‌تر با `questions.review` روی خودِ
+        # دیتابیس راستی‌آزمایی می‌شود. یعنی فراخوانی که صرفاً
+        # `creator_type="admin"` بفرستد چیزی به دست نمی‌آورد.
+        if auto_approve and creator_type not in ("system", "admin"):
             raise QuestionDomainError("self_approval_forbidden",
                                       "سؤال ساخته‌شده توسط همان کاربر باید توسط بازبین دیگری تأیید شود", 409)
+        if auto_approve and creator_type == "admin":
+            # مرجعِ اعتماد فقط RBAC است، نه ورودیِ فراخوان.
+            if not await self.db.has_permission(int(actor.get("id") or 0), "questions.review"):
+                raise QuestionDomainError(
+                    "question_permission_denied",
+                    "ثبتِ مستقیم نیازمند مجوز بررسی سؤال است", 403,
+                    {"required": "questions.review"})
         actor_scope = actor.get("_scope") if isinstance(actor.get("_scope"), Mapping) else {}
         if actor.get("is_owner") or actor_scope.get("kind") == "global":
             visible = None
@@ -228,9 +258,9 @@ class QuestionBankService:
             "created_at": now, "updated_at": now, "version": 1,
             "reviewed_by": int(actor.get("id") or 0) if auto_approve else None,
             "reviewed_at": now if auto_approve else None,
-            "review_reason": "ثبت مستقیم توسط مدیر" if auto_approve else "",
+            "review_reason": _direct_reason(creator_type) if auto_approve else "",
             "review_history": ([{"from": None, "to": "approved", "by": int(actor.get("id") or 0), "at": now,
-                                 "reason": "ثبت مستقیم توسط مدیر"}] if auto_approve else []),
+                                 "reason": _direct_reason(creator_type)}] if auto_approve else []),
             "attempt_count": 0, "correct_count": 0,
         }
         result = await self.db.questions.insert_one(document)
@@ -307,7 +337,16 @@ class QuestionBankService:
         if not document:
             raise QuestionDomainError("question_not_found", "سؤال پیدا نشد", 404)
         current = canonical_status(document)
-        action = "approve" if target == "approved" else target
+        # 🐛 §W6-3 — نگاشتِ وضعیتِ مقصد به نامِ اکشنِ مجوز.
+        #
+        # پیش‌تر فقط "approved" نگاشت می‌شد و بقیه خامْ عبور می‌کردند، پس
+        # `target="rejected"` به اکشنِ «rejected» تبدیل می‌شد در حالی که
+        # کلیدِ مجاز «reject» است ⇒ هر «رد با دلیل» با
+        # `invalid_review_action` شکست می‌خورد. مسیرِ واقعیِ ربات
+        # (`_h_ca_q_del`) دقیقاً همین را می‌فرستد، یعنی دکمه در تولید مرده بود.
+        _ACTION_OF_TARGET = {"approved": "approve", "rejected": "reject",
+                             "needs_changes": "needs_changes"}
+        action = _ACTION_OF_TARGET.get(target, target)
         await self.permissions.authorize_review(actor=reviewer, question=document, action=action)
         if current == target:
             return document
