@@ -1,4 +1,5 @@
 """🎓 Content Admin — 🌊 موج C1: enforce اسکوپ ورودی در سطح endpoint"""
+import logging
 import os
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
@@ -10,6 +11,8 @@ from database import db
 from time_utils import TimeContractError, parse_gregorian_date
 from question_bank import QuestionBankService, QuestionDomainError
 from question_bank.contracts import canonical_difficulty, canonical_status, status_query
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 question_bank = QuestionBankService(db)
@@ -146,6 +149,58 @@ async def pending_questions(admin=Depends(get_question_reviewer),
         "updated_at":d.get("updated_at") or None,"intake":d.get("intake",""),
         "status":canonical_status(d),"review_reason":d.get("review_reason", ""),
         "source":d.get("source","system")} for d in docs]}
+
+# ── §W8 — نمای تجمیعیِ گزارش‌های یک سؤال ──────────────────────────
+#
+# طراح نباید برای فهمیدنِ «این سؤال ایراد دارد» ۳۰ کارتِ جدا باز کند.
+# یک درخواست، خلاصهٔ دسته‌بندی‌شده + جزئیاتِ کرانه‌دار می‌دهد.
+@router.get("/questions/{qid}/reports")
+async def question_reports(qid: str, admin=Depends(get_question_reviewer),
+                           limit: int = Query(50, ge=1, le=200)):
+    """گزارش‌های یک سؤال: شمارش، تفکیکِ دلیل، و آخرین موارد."""
+    q = await db.get_question_by_id(qid)
+    if not q:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    await _deny_intake(q.get("intake", ""), admin)
+
+    base = {"target_type": "question", "target_id": str(qid)}
+    total = await db.content_reports.count_documents(base)
+    open_count = await db.content_reports.count_documents(
+        {**base, "status": {"$in": ["new", "reviewing"]}})
+
+    by_reason = {}
+    try:
+        rows = await db.content_reports.aggregate([
+            {"$match": base},
+            {"$group": {"_id": "$reason", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+        ]).to_list(50)
+        by_reason = {str(r["_id"] or "other"): int(r["count"]) for r in rows}
+    except Exception:
+        logger.exception("report aggregation failed qid=%s", qid)
+
+    docs = await db.content_reports.find(base).sort(
+        "created_at", -1).limit(limit).to_list(limit)
+    # 🔒 هویتِ گزارش‌دهنده به طراح داده نمی‌شود مگر ادمینِ سراسری باشد
+    # (§۵۷). طراح برای اصلاحِ سؤال به نامِ دانشجو نیازی ندارد.
+    scope = (admin.get("_scope") or {})
+    full = bool(admin.get("is_owner")) or scope.get("kind") == "global"
+    items = [{
+        "report_id": d.get("report_id"),
+        "reason": d.get("reason", ""),
+        "note": d.get("note", ""),
+        "status": d.get("status", "new"),
+        "created_at": d.get("created_at"),
+        "resolved_at": d.get("resolved_at"),
+        **({"reporter_id": d.get("reporter_id"),
+            "reporter_name": d.get("reporter_name", "")} if full else {}),
+    } for d in docs]
+
+    return {"question_id": str(qid), "total": total, "open": open_count,
+            "by_reason": by_reason,
+            "last_report_at": docs[0].get("created_at") if docs else None,
+            "reports": items}
+
 
 class QuestionReviewInput(BaseModel):
     reason: str = Field(default="", max_length=1000)

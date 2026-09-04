@@ -474,7 +474,10 @@ async def health_deep():
 # عملاً بی‌اثر بود. حالا tests/test_route_inventory.py آن را می‌خواند؛
 # تغییر عمدیِ سطح API باید همین عدد را هم آگاهانه به‌روز کند.
 # ۴۹۴ → ۴۹۷ با افزودن DLQ (GET /system/dlq و POST requeue/discard).
-_ROUTE_BASELINE = 497
+# §W8 — ۴۹۷ → ۴۹۸ با افزودنِ `GET /api/content/questions/{qid}/reports`
+# (نمای تجمیعیِ گزارش‌های یک سؤال). تغییرِ این عدد باید همیشه عمدی و
+# مستند باشد؛ همین محافظ است که افزودنِ ناخواستهٔ endpoint را لو می‌دهد.
+_ROUTE_BASELINE = 498
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:

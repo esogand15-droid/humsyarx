@@ -252,14 +252,35 @@ async def _finalize_report(update_or_query, context, reason: str, note: str):
         except Exception as e:
             logger.debug(f"report notify failed for {rid_target}: {e}")
 
+    # 🐛 §W8 — گزارش «خروج از تمرین» نیست، یک اکشنِ داخلِ آن است.
+    #
+    # پیش‌تر پیامِ سؤال با متنِ تأیید جایگزین می‌شد و هیچ دکمه‌ای نمی‌ماند،
+    # پس کاربر در بن‌بست می‌افتاد و مجبور بود کلِ مسیرِ
+    # «بانک سؤال → تمرین آزاد → ترم → مبحث» را از نو برود. وضعیتِ تمرین
+    # (`quiz`) در user_data سالم بود؛ فقط راهِ بازگشت به آن وجود نداشت.
+    #
+    # حالا اگر کاربر وسطِ تمرین بوده، دکمهٔ «ادامه تمرین» می‌گذاریم که
+    # مستقیم سؤالِ بعدی همان مبحث را می‌آورد.
+    in_practice = bool(context.user_data.get('quiz')) and target_type == 'question'
     confirm_text = (
         f"✅ <b>گزارش شما با شماره #{report_id} ثبت شد!</b>\n\n"
         "تیم مدیریت و طراح محتوا مطلع شدند. متشکریم از همکاری شما 🙏"
     )
+    if in_practice:
+        confirm_text += "\n\n<i>این سؤال دیگر به شما نمایش داده نمی‌شود.</i>"
+
+    confirm_kb = None
+    if in_practice:
+        confirm_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ ادامه تمرین", callback_data='questions:practice_next')],
+            [InlineKeyboardButton("🏠 منو", callback_data='questions:main')],
+        ])
+
     if query:
-        await _safe_edit(query, confirm_text)
+        await _safe_edit(query, confirm_text, reply_markup=confirm_kb)
     else:
-        await update_or_query.message.reply_text(confirm_text, parse_mode='HTML')
+        await update_or_query.message.reply_text(confirm_text, parse_mode='HTML',
+                                                 reply_markup=confirm_kb)
 
 
 # ══════════════════════════════════════════════════

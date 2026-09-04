@@ -151,6 +151,33 @@ class QuestionBankService:
             parts.append({"difficulty": {"$in": [canonical, legacy]}})
         return and_query(*parts)
 
+    #  §W8 — سقفِ کرانه‌دار برای `$nin`.
+    #
+    #  آرایه‌ی بی‌کران در `$nin` هم کوئری را کند می‌کند و هم به سقفِ ۱۶
+    #  مگابایتیِ سند می‌خورد. در عمل یک دانشجو ده‌ها گزارش می‌دهد نه
+    #  ده‌ها هزار؛ این سقف محافظِ سناریوی سوءاستفاده است.
+    REPORT_EXCLUSION_CAP = 500
+
+    async def reported_question_ids(self, user_id: int) -> list:
+        """شناسه‌ی سؤال‌هایی که این کاربر گزارشِ باز روی‌شان دارد."""
+        if not user_id:
+            return []
+        try:
+            rows = await self.db.content_reports.find(
+                {"reporter_id": int(user_id), "target_type": "question",
+                 "status": {"$in": ["new", "reviewing"]}},
+                {"target_id": 1},
+            ).limit(self.REPORT_EXCLUSION_CAP).to_list(self.REPORT_EXCLUSION_CAP)
+        except Exception:
+            logger.exception("reported question lookup failed user_id=%s", user_id)
+            return []
+        out = []
+        for row in rows:
+            raw = str(row.get("target_id") or "")
+            if ObjectId.is_valid(raw):
+                out.append(ObjectId(raw))
+        return out
+
     async def duplicate_candidates(self, *, taxonomy: Mapping, question: str,
                                    content_hash: str, intakes: list[str] | None,
                                    correct_answer: int | None = None,
@@ -669,8 +696,23 @@ class QuestionBankService:
         intakes = self.student_intakes(user)
         difficulty = "hard" if mode == "hard" else None
         eligible = self.eligible_query(taxonomy, intakes=intakes, difficulty=difficulty)
-        total = await self.db.questions.count_documents(eligible)
         uid = int(user.get("id") or 0)
+
+        # 🐛 §W8 — سؤالی که همین کاربر گزارش کرده نباید دوباره به او
+        # نشان داده شود.
+        #
+        # پیش‌تر فقط `question_progress` (سؤال‌های حل‌شده) دیده می‌شد، پس
+        # سؤالِ گزارش‌شده در نمونه‌برداریِ تصادفی دوباره بالا می‌آمد —
+        # در آزمون واقعی ۱۴ بار از ۴۰ نمونه.
+        #
+        # فیلتر عمداً «کاربر-محور» است: گزارشِ یک دانشجو نباید سؤال را
+        # برای بقیه حذف کند. حذفِ سراسری کارِ چرخهٔ عمرِ سؤال است، نه
+        # گزارش.
+        excluded = await self.reported_question_ids(uid)
+        if excluded:
+            eligible = and_query(eligible, {"_id": {"$nin": excluded}})
+
+        total = await self.db.questions.count_documents(eligible)
         lookup = {"$lookup": {
             "from": "question_progress",
             "let": {"qid": {"$toString": "$_id"}},

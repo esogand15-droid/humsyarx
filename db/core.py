@@ -75,6 +75,9 @@ class DBCore:
         self.settings     = _db['bot_settings']     # تنظیمات کلی + گروه‌های لاگ + maintenance
         self.notif_runs   = _db['notif_runs']       # FIX جدید: لاگ وضعیت ارسال نوتیف‌ها
         self.content_reports = _db['content_reports']  # FIX جدید: گزارش سوال/جزوه
+        # §W8 — شمارنده‌های اتمیِ شناسه (جایگزینِ count_documents()+1 که
+        # زیرِ دو نوشتنِ هم‌زمان شناسه‌ی تکراری تولید می‌کرد)
+        self.db_counters    = _db['db_counters']
         # 🔔 مرکز اعلان مینی‌اپ (موج ۴.۹۰) — هر رویداد مهم کاربری که در
         # ربات پیام می‌شود، اینجا هم با ساختار یکدست (نوع/عنوان/متن/لینک)
         # ثبت می‌شود تا صندوق اعلان مینی‌اپ بازتاب کاملِ ربات باشد.
@@ -178,6 +181,20 @@ class DBCore:
                 self._index(self.qbank_files, [('uploaded_by', 1), ('created_at', -1)], background=True),
                 self._index(self.questions, [('status', 1), ('intake', 1), ('lesson_id', 1), ('topic_id', 1), ('difficulty', 1)], background=True),
                 self._index(self.questions, [('status', 1), ('lesson_id', 1), ('topic_id', 1), ('created_at', -1)], background=True),
+                # §W8 — گزارش‌های محتوا. کوئریِ «سؤال‌هایی که این کاربر
+                # گزارش کرده» در هر بار گرفتنِ سؤالِ تمرین اجرا می‌شود، پس
+                # COLLSCAN روی آن مستقیماً تأخیرِ تمرین می‌سازد.
+                self._index(self.content_reports,
+                            [('reporter_id', 1), ('target_type', 1), ('status', 1)],
+                            background=True),
+                # نمای طراح/ادمین: همهٔ گزارش‌های یک سؤال + شمارش
+                self._index(self.content_reports,
+                            [('target_type', 1), ('target_id', 1), ('status', 1)],
+                            background=True),
+                # صفِ بررسی، مرتب بر اساس زمان
+                self._index(self.content_reports,
+                            [('status', 1), ('created_at', -1)], background=True),
+                self._index(self.content_reports, 'report_id', background=True),
                 self._index(self.questions, [('intake', 1), ('status', 1), ('created_at', -1)], background=True),
                 self._index(self.questions, [('creator_id', 1), ('status', 1), ('created_at', -1)], background=True),
                 self._index(self.questions, [('status', 1), ('intake', 1), ('source', 1), ('created_at', -1)], background=True),

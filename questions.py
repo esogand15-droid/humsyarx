@@ -162,6 +162,15 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == 'free':
         await _term_select(query, context, 'free')
 
+    # §W8 — بازگشت به تمرین پس از گزارشِ سؤال. جریانِ تمرین نباید با
+    # گزارش قطع شود؛ وضعیتِ `quiz` دست‌نخورده است، فقط سؤالِ بعدی را
+    # می‌آوریم. اگر وضعیتی نمانده باشد، به منوی تمرین برمی‌گردیم.
+    elif action == 'practice_next':
+        if not context.user_data.get('quiz'):
+            await _practice_menu(query)
+        else:
+            await _next_q(query, context, uid)
+
     elif action == 'weak':
         context.user_data['quiz'] = {'mode': 'weak', 'answered': [], 'correct': 0, 'total': 999}
         await _next_q(query, context, uid)

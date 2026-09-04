@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from html import escape
 from urllib.parse import quote
 from bson import ObjectId
+from pymongo import ReturnDocument
 import motor.motor_asyncio
 from time_utils import today_tehran, utc_now_iso
 from question_bank.contracts import (
@@ -1604,8 +1605,26 @@ class DBContent:
         ثبت گزارش جدید — target_type: 'question' یا 'resource'.
         designer_id: آیدی طراح سوال (اگه target سوال باشد) برای اطلاع‌رسانی مستقیم.
         """
-        count = await self.content_reports.count_documents({})
-        report_id = count + 1
+        # 🐛 §W8 — گزارشِ تکراریِ همان کاربر روی همان سؤال.
+        #
+        # پیش‌تر هر بار تپ روی «گزارش» یک رکوردِ تازه می‌ساخت، پس یک
+        # دانشجو می‌توانست ده‌ها گزارشِ یکسان بسازد و آمارِ طراح را
+        # بی‌معنا کند. حالا اگر گزارشِ بازِ همان کاربر روی همان هدف
+        # وجود داشته باشد، همان برگردانده می‌شود (idempotent).
+        existing = await self.content_reports.find_one({
+            'target_type': target_type, 'target_id': target_id,
+            'reporter_id': reporter_id,
+            'status': {'$in': ['new', 'reviewing']},
+        })
+        if existing:
+            return int(existing.get('report_id') or 0)
+
+        # شمارنده‌ی اتمی — `count_documents()+1` زیرِ دو گزارشِ هم‌زمان
+        # شناسه‌ی تکراری می‌داد.
+        seq = await self.db_counters.find_one_and_update(
+            {'_id': 'content_report_id'}, {'$inc': {'seq': 1}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+        report_id = int(seq.get('seq') or 1)
         await self.content_reports.insert_one({
             'report_id':    report_id,
             'target_type':  target_type,
