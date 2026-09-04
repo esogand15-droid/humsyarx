@@ -1060,6 +1060,115 @@ async def ask_ai(text: str = None, image_bytes: bytes = None,
 #  متنِ آزاد.
 # ══════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════
+#  🐛 رفعِ باگ: اطلاعیه/پاسخِ تیکت/سوال نصفه تولید می‌شد.
+#
+#  ریشه: مدلِ پیش‌فرض `gemini-2.5-flash` یک مدلِ «تفکری» است و توکن‌هایی
+#  که صرفِ استدلالِ داخلی می‌کند از همان سهمیه‌ی maxOutputTokens کم
+#  می‌شود. توابعِ کمکیِ زیر بدونِ thinkingConfig صدا زده می‌شدند، پس
+#  تفکر بخشِ بزرگی از بودجه را می‌بلعید و متنِ واقعی وسطِ کار قطع
+#  می‌شد — بدونِ هیچ خطایی، چون کد فقط parts[0].text را می‌خواند و
+#  finishReason را نادیده می‌گرفت.
+#
+#  دو اصلاح:
+#   ۱) thinkingBudget=0 → برای این کارهای «قالب‌محور» تفکرِ داخلی لازم
+#      نیست و کلِ بودجه صرفِ خروجی می‌شود.
+#   ۲) _extract_gemini_text() → اگر باز هم به سقف خورد، به‌جای برگرداندنِ
+#      متنِ ناقص، خطای شفاف می‌دهد تا ادمین متنِ نصفه را همگانی نفرستد.
+# ══════════════════════════════════════════════════
+
+#  ۳) _sanitize_tg_html() → خروجیِ مدل همیشه HTMLِ معتبرِ تلگرام نیست.
+#     تگِ بسته‌نشده، تگِ غیرمجاز (<div>, <p>, <br>) یا تودرتویِ نامتوازن
+#     باعث BadRequest می‌شود؛ یعنی پیش‌نمایش می‌شکند و پنلِ ادمین قفل
+#     می‌شود، یا بدتر، ارسالِ همگانی برای همه شکست می‌خورد. پس قبل از
+#     برگرداندنِ متن، آن را پاک‌سازی می‌کنیم.
+
+# تگ‌هایی که Bot API تلگرام در parse_mode=HTML می‌پذیرد
+_TG_ALLOWED_TAGS = {
+    'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
+    'a', 'code', 'pre', 'blockquote', 'span', 'tg-spoiler',
+}
+_TAG_RE = re.compile(r'<(/?)([a-zA-Z0-9-]+)([^>]*)>')
+
+
+def _sanitize_tg_html(text: str) -> str:
+    """HTMLِ خروجیِ مدل را به HTMLِ معتبرِ تلگرام تبدیل می‌کند.
+
+    - تگ‌های غیرمجاز حذف می‌شوند (محتوایشان می‌ماند)؛ <br> و </p> به خطِ
+      جدید تبدیل می‌شوند.
+    - تگ‌های بسته‌نشده در انتها بسته می‌شوند.
+    - بسته‌شدن‌های نامتوازن/اضافه دور ریخته می‌شوند.
+    خودِ متن دست‌نخورده می‌ماند؛ فقط ساختارِ تگ‌ها اصلاح می‌شود.
+    """
+    if not text:
+        return text
+
+    out, stack, pos = [], [], 0
+    for m in _TAG_RE.finditer(text):
+        out.append(text[pos:m.start()])
+        pos = m.end()
+        closing, tag, attrs = m.group(1), m.group(2).lower(), m.group(3)
+
+        if tag in ('br', 'p', 'div'):
+            # این‌ها ساختارِ بلوکی‌اند؛ به شکستِ خط ترجمه می‌شوند
+            out.append('\n' if (tag == 'br' or closing) else '')
+            continue
+        if tag not in _TG_ALLOWED_TAGS:
+            continue                      # تگ را بینداز، متن را نگه دار
+        if closing:
+            if tag in stack:              # فقط اگر واقعاً باز شده بود
+                while stack and stack[-1] != tag:
+                    out.append(f'</{stack.pop()}>')   # تگ‌های داخلی را ببند
+                stack.pop()
+                out.append(f'</{tag}>')
+            continue
+        stack.append(tag)
+        out.append(f'<{tag}{attrs}>')
+
+    out.append(text[pos:])
+    while stack:                          # هرچه باز مانده را ببند
+        out.append(f'</{stack.pop()}>')
+    return ''.join(out).strip()
+
+
+def _no_thinking(cfg: dict) -> dict:
+    """تفکرِ داخلی را خاموش می‌کند تا کلِ maxOutputTokens صرفِ متن شود.
+
+    فقط روی مدل‌های Gemini اثر دارد؛ برای مدل‌های دیگر بی‌ضرر است چون
+    کلیدِ ناشناخته در generationConfig نادیده گرفته می‌شود.
+    """
+    cfg = dict(cfg)
+    cfg['thinkingConfig'] = {'thinkingBudget': 0}
+    return cfg
+
+
+def _extract_gemini_text(data: dict, what: str = "متن") -> str:
+    """متنِ پاسخِ Gemini را درمی‌آورد و «ناقص بودن» را صریحاً تشخیص می‌دهد.
+
+    برخلافِ نسخه‌ی قبلی، finishReason بررسی می‌شود: اگر مدل به سقفِ توکن
+    خورده باشد، متنِ نصفه برگردانده نمی‌شود.
+    """
+    try:
+        cand = data['candidates'][0]
+    except (KeyError, IndexError, TypeError):
+        raise AIConfigError("هوش مصنوعی پاسخی برنگرداند — دوباره امتحان کن.")
+
+    reason = cand.get('finishReason')
+    parts = (cand.get('content') or {}).get('parts') or []
+    text = ''.join(p.get('text', '') for p in parts).strip()
+
+    if reason == 'MAX_TOKENS':
+        raise AIError(
+            f"{what} طولانی‌تر از سهمیه‌ی مدل شد و ناقص ماند. "
+            "دوباره بساز یا نکته‌ها را کوتاه‌تر بنویس."
+        )
+    if reason == 'SAFETY':
+        raise AIError("مدل به‌دلیلِ فیلترِ ایمنی جواب نداد — متن را بازنویسی کن.")
+    if not text:
+        raise AIConfigError("هوش مصنوعی متنِ قابل‌فهمی برنگردوند — دوباره امتحان کن.")
+    return text
+
+
 QUESTION_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -1111,11 +1220,11 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
     headers = {'Content-Type': 'application/json', 'x-goog-api-key': cfg['api_key']}
     payload = {
         'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-        'generationConfig': {
+        'generationConfig': _no_thinking({
             'responseMimeType': 'application/json',
             'responseSchema': QUESTION_SCHEMA,
-            'maxOutputTokens': 1536,
-        },
+            'maxOutputTokens': 2048,
+        }),
     }
 
     try:
@@ -1131,7 +1240,7 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
 
     try:
         data = resp.json()
-        raw_text = data['candidates'][0]['content']['parts'][0]['text']
+        raw_text = _extract_gemini_text(data, "سوال")
         parsed = json.loads(raw_text)
         options = parsed.get('options') or []
         if len(options) != 4 or not parsed.get('question') or 'correct_index' not in parsed:
@@ -1169,7 +1278,7 @@ BROADCAST_STYLE_INSTRUCTION = """تو دستیارِ نوشتنِ اطلاعیه
 
 سبک نگارش: رسمی اما صمیمی، کوتاه و مفید، بدون زیاده‌گویی، بدون متن‌های شعاری، خوانا و مرتب، مناسبِ پیامِ همگانیِ تلگرام. هر پاراگراف حداکثر ۲ تا ۳ خط.
 
-قالب: همیشه خروجی رو با HTML تلگرام بنویس. فقط از تگ‌های <b> و <a> استفاده کن — هیچ تگ HTML دیگری مجاز نیست. هیچ‌وقت از Markdown یا ** استفاده نکن.
+قالب: همیشه خروجی رو با HTML تلگرام بنویس. فقط از تگ‌های <b>، <a> و <code> استفاده کن — هیچ تگ HTML دیگری مجاز نیست. <code> فقط برای دستورها مثل /start. هیچ‌وقت از Markdown یا ** استفاده نکن.
 
 ساختارِ ثابت (دقیقاً به همین شکل):
 📣 <b>عنوان اطلاعیه</b>
@@ -1190,6 +1299,16 @@ BROADCAST_STYLE_INSTRUCTION = """تو دستیارِ نوشتنِ اطلاعیه
 
 لحن بر اساسِ موضوع: اگه موضوع قابلیتِ جدید/بروزرسانی/نسخه‌ی جدید/هوش‌مصنوعی/اشتراک/بانکِ سوالات بود، لحن هیجان‌انگیز اما حرفه‌ای باشه. اگه موضوع امتحانات/اطلاعیه‌ی دانشگاه/نمرات/قوانین/انتخابات/اخبارِ رسمی بود، لحن کاملاً رسمی باشه.
 
+اطلاعیه‌های «رونمایی»: اگه موضوع رونماییِ یک بخشِ بزرگ یا بروزرسانیِ اساسی بود (نه یک تغییرِ جزئی)، این ساختار رو به کار ببر تا حسِ یک پروژه‌ی بلندمدت منتقل بشه، نه یک قابلیتِ کوچک:
+• عنوان با حسِ رونمایی و ایموجی 🚀
+• یک پاراگراف درباره‌ی مسیرِ ساخت (ماه‌ها طراحی و توسعه)
+• بلافاصله بعدش یک جمله‌ی هدف‌گذارانه با 🎯 که نشون بده هدف ساختِ یک «اکوسیستمِ آموزشیِ کامل» بوده، نه صرفاً یک ربات
+• فهرستِ تیتروارِ امکانات، هر خط یک ایموجیِ مرتبط از لیستِ مجاز
+• یک جمله‌ی «و این تازه آغازِ راهه...» درباره‌ی آینده
+• راهنمای دسترسی به‌صورتِ گام‌به‌گام (اگه لازم بود از <code> برای دستور استفاده کن)
+• تشکر از کاربران و امضا
+در این حالت فهرستِ امکانات می‌تونه بلندتر از حدِ معمول باشه و محدودیتِ «۲ تا ۳ خط در هر پاراگراف» فقط به پاراگراف‌های توضیحی مربوطه، نه به فهرست.
+
 خروجی: فقط متنِ نهاییِ HTML رو تولید کن — هیچ توضیحِ اضافه، هیچ مقدمه یا موخره‌ای نده."""
 
 
@@ -1208,7 +1327,7 @@ async def generate_broadcast_ai(notes: str) -> str:
     payload = {
         'system_instruction': {'parts': [{'text': BROADCAST_STYLE_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': f"این نکته‌ها رو به یه اطلاعیه تبدیل کن:\n\n{notes}"}]}],
-        'generationConfig': {'maxOutputTokens': 1024},
+        'generationConfig': _no_thinking({'maxOutputTokens': 2048}),
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -1221,14 +1340,7 @@ async def generate_broadcast_ai(notes: str) -> str:
     if resp.status_code != 200:
         _raise_gemini_status_error(resp.status_code)
 
-    try:
-        data = resp.json()
-        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
-        if not text:
-            raise ValueError('empty')
-        return text
-    except (KeyError, IndexError, ValueError, TypeError):
-        raise AIConfigError("هوش مصنوعی متنِ قابل‌فهمی برنگردوند — دوباره امتحان کن.")
+    return _sanitize_tg_html(_extract_gemini_text(resp.json(), "اطلاعیه"))
 
 
 TICKET_REPLY_INSTRUCTION = """تو داری به ادمینِ پشتیبانیِ ربات «هامزیار» (ربات آموزشیِ دانشگاه علوم پزشکی هرمزگان) کمک می‌کنی تا به تیکتِ یک دانشجو جواب بده.
@@ -1256,7 +1368,7 @@ async def generate_ticket_reply_ai(subject: str, ticket_text: str, previous_repl
     payload = {
         'system_instruction': {'parts': [{'text': TICKET_REPLY_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': convo}]}],
-        'generationConfig': {'maxOutputTokens': 512},
+        'generationConfig': _no_thinking({'maxOutputTokens': 1024}),
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -1269,14 +1381,7 @@ async def generate_ticket_reply_ai(subject: str, ticket_text: str, previous_repl
     if resp.status_code != 200:
         _raise_gemini_status_error(resp.status_code)
 
-    try:
-        data = resp.json()
-        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
-        if not text:
-            raise ValueError('empty')
-        return text
-    except (KeyError, IndexError, ValueError, TypeError):
-        raise AIConfigError("هوش مصنوعی متنِ قابل‌فهمی برنگردوند — دوباره امتحان کن.")
+    return _sanitize_tg_html(_extract_gemini_text(resp.json(), "پاسخِ تیکت"))
 
 
 # نشانه‌های شناخته‌شده‌ی «نشتِ فراداده»: بعضی مدل‌های رایگان (مخصوصاً وقتی
