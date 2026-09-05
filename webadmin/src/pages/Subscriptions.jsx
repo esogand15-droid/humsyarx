@@ -16,6 +16,7 @@ const TABS = [
   ['payments', '🧾 رسیدها'],
   ['subscribers', '👥 مشترکین'],
   ['discounts', '🎁 تخفیف و کمپین'],
+  ['finance', '💰 مالی'],
   ['reconcile', '⚖️ مغایرت‌گیری'],
   ['gifts', '🎀 هدایا'],
 ];
@@ -25,7 +26,15 @@ export default function Subscriptions({ route = '' }) {
   const requested = params.get('tab');
   const [tab, setTab] = useState(TABS.some(([k]) => k === requested) ? requested : 'control');
   useEffect(() => { if (TABS.some(([k]) => k === requested)) setTab(requested); }, [requested]);
-  const changeTab = value => { setTab(value); writeHashQuery('/subscriptions', { tab: value !== 'control' ? value : '' }); };
+  const changeTab = value => { setDeep(null); setTab(value); writeHashQuery('/subscriptions', { tab: value !== 'control' ? value : '' }); };
+  // 🌊 W5 — دیپ‌لینک داخلی از مغایرت‌گیری به رسیدها/مشترکین با همان q
+  const [deep, setDeep] = useState(null);
+  const internalGo = path => {
+    const u = new URLSearchParams((path || '').split('?')[1] || '');
+    const t = TABS.some(([k]) => k === u.get('tab')) ? u.get('tab') : 'payments';
+    setDeep({ tab: t, q: u.get('q') || '', status: u.get('status') || '' });
+    setTab(t);
+  };
   const [ov, setOv] = useState(null);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
@@ -68,7 +77,8 @@ export default function Subscriptions({ route = '' }) {
       {tab === 'payments' && <PaymentsPanel initial={{ status: params.get('status') ?? 'pending', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}
-      {tab === 'reconcile' && <ReconcilePanel />}
+      {tab === 'finance' && <FinancialPanel />}
+      {tab === 'reconcile' && <ReconcilePanel onGo={internalGo} />}
       {tab === 'gifts' && <GiftsPanel />}
     </>
   );
@@ -293,13 +303,6 @@ function RefundModal({ pay, onClose, onDone }) {
 }
 
 // 🌊 W5 — مغایرت‌گیری مالی: ناهم‌خوانی‌های پول/دسترسی بین sub_payments و subscriptions
-const RECON_FA = {
-  approved_no_active_sub: 'تأیید بدون اشتراک فعال',
-  active_sub_no_approved_payment: 'اشتراک فعال بدون پرداخت تأییدشده',
-  refunded_but_active_sub: 'بازگشت وجه، اشتراک فعال',
-  pending_stale: 'رسید قدیمی در انتظار',
-};
-
 // 🌊 GIFT — پنل مدیریت هدیه‌ها: فهرست/فیلتر/صفحه‌بندی + لغو pending
 // و ارسال دوباره‌ی اعلان. تأیید هدیه همان تصمیم رسید است (تب رسیدها) —
 // هیچ «فعال‌سازی دستی کور» وجود ندارد.
@@ -398,31 +401,107 @@ function GiftsPanel() {
   </div>;
 }
 
-function ReconcilePanel() {
+// 🌊 W5 — مغایرت‌گیری مالی انسانی: هر ناهم‌خوانی یک جمله‌ی قابل‌فهم است
+// (چه چیزی، چرا، چه اثری) + اقدام مستقیم یا دیپ‌لینک. ID فقط در جزئیات فنی.
+function ReconcilePanel({ onGo }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
+  const [confirmAct, setConfirmAct] = useState(null);
+  const [busy, setBusy] = useState('');
   const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
   useEffect(load, []);
+  const activate = async item => {
+    setBusy(item.payment_id);
+    try {
+      await api.subReconcileActivate(item.payment_id);
+      toast('اشتراک با فعال‌سازی امن فعال شد ✅ — مورد از مغایرت خارج شد', 'ok');
+      setConfirmAct(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
   return <div className="panel panel-pad" style={{ marginTop: 12 }}>
     <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
       <b>⚖️ مغایرت‌گیری مالی</b>
-      {data && <>
-        <B kind={data.summary.total ? 'bad' : 'ok'}>{fa(data.summary.total)} ناهم‌خوانی</B>
-        {Object.keys(RECON_FA).map(k => data.summary[k] > 0 && <B key={k} kind="warn">{fa(data.summary[k])} {RECON_FA[k]}</B>)}
-      </>}
+      {data && <B kind={data.summary.total ? 'bad' : 'ok'}>{data.summary.total ? `${fa(data.summary.total)} ناهم‌خوانی باز` : 'بدون ناهم‌خوانی ✅'}</B>}
       <span className="spacer" />
       <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
     </div>
+    <div className="panel panel-pad data-quality-note" style={{ marginBottom: 10 }}>
+      <B kind="acc">مغایرت یعنی چه؟</B>
+      <span>مقایسه‌ی «رسید ↔ اشتراک ↔ وضعیت مالی»: مثلاً پول تأیید شده ولی دسترسی فعال نشده، یا برعکس. هر مورد زیر دقیقاً می‌گوید چه چیزی ناهم‌خوان است و چه اقدامی ممکن است.</span>
+    </div>
     {err && <ErrorState error={err} onRetry={load} />}
     {!err && !data && <Loading rows={4} />}
-    {data && <DataTable rowKey="_k" rows={data.items.map((r, i) => ({ ...r, _k: `${r.type}-${i}` }))}
-      empty={<Empty icon="⚖️" text="هیچ ناهم‌خوانی مالی نیست" />} columns={[
-        { k: 'label', label: 'نوع', render: r => <B kind={r.severity === 'warning' ? 'warn' : 'bad'}>{r.label}</B> },
-        { k: 'user_id', label: 'کاربر', render: r => <span className="code">#{fa(r.user_id)}</span> },
-        { k: 'payment_id', label: 'رسید', render: r => r.payment_id ? <span className="code">{String(r.payment_id).slice(0, 8)}</span> : '—' },
-        { k: 'at', label: 'تاریخ', render: r => <FaDateTime value={r.at} /> },
-      ]} />}
+    {data && !data.items.length && <Empty icon="✅" text="مغایرت مالی فعالی وجود ندارد — رسیدها و اشتراک‌ها هم‌خوان‌اند." />}
+    {data && !!data.items.length && <div className="q-list">
+      {data.items.map((r, i) => <div key={`${r.type}-${r.payment_id || r.user_id}-${i}`} className={`q-issue q-issue--${r.severity === 'warning' ? 'warning' : 'critical'}`}>
+        <div className="q-issue-head">
+          <span className="q-issue-icon">⚖️</span>
+          <div style={{ flex: 1 }}>
+            <b>{r.user_name || `کاربر #${fa(r.user_id)}`}</b>
+            <div className="muted" style={{ marginTop: 2 }}>{r.summary}</div>
+          </div>
+          <B kind={r.severity === 'warning' ? 'warn' : 'bad'}>{r.label}</B>
+        </div>
+        <div className="row q-missing">
+          {r.user_name && <B kind="acc">👤 {r.user_name}</B>}
+          {r.student_id && <B kind="acc">🎓 {r.student_id}</B>}
+          {r.amount != null && <B kind="ok">💰 {money(r.amount)}</B>}
+          {r.plan_name && <B kind="acc">📦 {r.plan_name}</B>}
+          {r.at && <B kind="warn">🕓 <FaDateTime value={r.at} /></B>}
+        </div>
+        <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+          {(r.actions || []).map(a => a.key === 'activate'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmAct(r)}>✅ {a.label}</button>
+            : <button key={a.key} className="btn sm" onClick={() => onGo?.(a.go)}>{a.label} ‹</button>)}
+          {busy === r.payment_id && <span className="muted">…</span>}
+        </div>
+        {r.technical && <details className="q-tech"><summary>جزئیات فنی</summary><div className="code muted">{r.technical}</div></details>}
+      </div>)}
+    </div>}
+    {confirmAct && <Confirm onNo={() => setConfirmAct(null)} onYes={() => activate(confirmAct)}
+      text={`فعال‌سازی امن اشتراک برای ${confirmAct.user_name || `کاربر #${fa(confirmAct.user_id)}`}؟ دوره از پلن واقعی رسید (${confirmAct.plan_name || 'نامشخص'}) محاسبه می‌شود و اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
   </div>;
+}
+
+// 🌊 W5 — مرکز مالی: KPIها و روند درآمد از aggregate واقعی بک‌اند،
+// نه شمارش فرانت. بازگشت وجه و نرخ تأیید جدا دیده می‌شوند.
+function FinancialPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.subFinance().then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  if (err) return <ErrorState error={err} onRetry={load} />;
+  if (!data) return <Loading rows={5} />;
+  const maxDay = Math.max(1, ...data.daily.map(d => d.total));
+  return <>
+    <KpiGrid className="dw-sub-kpis">
+      <KpiCard tone="ok" icon="💰" label="درآمد کل (تأییدشده)" value={money(data.revenue_total)} />
+      <KpiCard tone="warn" icon="💸" label="بازگشت وجه" value={`${fa(data.refunded_count)} مورد · ${money(data.revenue_refunded)}`} />
+      <KpiCard tone="warn" icon="🧾" label="در انتظار بررسی" value={fa(data.pending_count)} />
+      <KpiCard tone="acc" icon="📈" label="نرخ تأیید رسید" value={data.success_rate == null ? '—' : `${Number(data.success_rate).toLocaleString('fa-IR')}٪`} />
+    </KpiGrid>
+    <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row"><b>📈 درآمد ۱۴ روز اخیر</b><span className="spacer" /><span className="muted">فقط رسیدهای تأییدشده</span></div>
+      {!data.daily.length ? <Empty icon="📈" text="در این بازه رسید تأییدشده‌ای ثبت نشده" /> :
+        <div className="fin-bars" role="img" aria-label="نمودار درآمد روزانه">
+          {data.daily.map(d => <div key={d.day} className="fin-bar-col">
+            <div className="fin-bar" style={{ height: `${Math.max(4, Math.round(100 * d.total / maxDay))}%` }} title={`${d.day}: ${money(d.total)}`} />
+            <span className="fin-bar-day">{d.day.slice(5)}</span>
+          </div>)}
+        </div>}
+    </div>
+    <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row"><b>💸 آخرین بازگشت وجه‌ها</b></div>
+      {!data.refunds.length ? <Empty icon="💸" text="بازگشت وجهی ثبت نشده است" /> :
+        <DataTable rowKey="payment_id" rows={data.refunds} columns={[
+          { k: 'user_name', label: 'کاربر', render: r => <div><b>{r.user_name || `#${fa(r.user_id)}`}</b></div> },
+          { k: 'amount', label: 'مبلغ', render: r => money(r.amount) },
+          { k: 'reason', label: 'دلیل' },
+          { k: 'at', label: 'تاریخ', render: r => <FaDateTime value={r.at} /> },
+        ]} />}
+    </div>
+  </>;
 }
 
 function ReceiptDrawer({ pay: r, decide, onClose }) {

@@ -93,6 +93,11 @@ export const api = {
   // 🌊 WA21 — اصلاح گونه‌های امن کیفیت داده (تأیید صریح لازم است؛ بک‌اند
   // بدون `confirm:true` با 400 رد می‌کند).
   dataQualityFix: (kind) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}/fix`, { method: 'POST', body: { kind, confirm: true } }),
+  // 🌊 W5 — اصلاح مستقیم آیتم کیفیت داده: ویرایش متادیتا، اتصال به والد، حذف تکی
+  dataQualityRepair: (id, body) => req(`/api/web-admin/operations/data-quality/files_missing_metadata/${encodeURIComponent(id)}/repair`, { method: 'POST', body }),
+  dataQualityAttach: (kind, id, parent_id) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/attach`, { method: 'POST', body: { parent_id } }),
+  dataQualityRemove: (kind, id) => req(`/api/web-admin/operations/data-quality/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/remove`, { method: 'POST', body: { confirm: true } }),
+  dataQualityParents: (pk, q) => req(`/api/web-admin/operations/quality-parents/${encodeURIComponent(pk)}?q=` + encodeURIComponent(q || '')),
   // ── users (WA سرورساید) ──
   users: (p) => req('/api/web-admin/users?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportUsersCsv: (p = {}) => downloadFile('/api/web-admin/exports/users.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-users-${fileDateStamp()}.csv`),
@@ -287,6 +292,9 @@ export const api = {
   // 🌊 W5 — بازگشت وجه + مغایرت‌گیری مالی
   subRefund: (pid, body) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/refund`, { method: 'POST', body }),
   subReconcile: () => req('/api/web-admin/subscription/reconcile'),
+  // 🌊 W5 — اقدام مغایرت + مرکز مالی
+  subReconcileActivate: (pid) => req(`/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/activate`, { method: 'POST', body: { confirm: true } }),
+  subFinance: () => req('/api/web-admin/subscription/finance'),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

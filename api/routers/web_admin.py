@@ -1114,8 +1114,23 @@ async def attention(user=Depends(_guard_any_admin)):
         time_jobs["reports"] = latest_at(db.content_reports, query, "created_at")
     if allow("notifications.manage", "system.manage"):
         async def failed_jobs_metric(kind):
+            # 🌊 W5 — «اجرای دارای خطا» باید actionable بماند: خطای تاریخِ
+            # خیلی قدیمی نباید کارت را برای همیشه قرمز نگه دارد (شمارش
+            # قبلی ۲۰ اجرای اخیر را بی‌بازه می‌شمرد). پنجره‌ی ۲۴ ساعته +
+            # کارت‌های outbox/DLQ برای backlog واقعی.
             runs = await db.get_recent_notif_runs(limit=20)
-            failed = [run for run in runs if int(run.get("failed") or 0) > 0]
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            failed = []
+            for run in runs:
+                if int(run.get("failed") or 0) <= 0:
+                    continue
+                at_raw = run.get("started_at") or run.get("created_at")
+                try:
+                    fresh = parse_machine_datetime(at_raw) >= cutoff
+                except (TypeError, ValueError):
+                    fresh = True
+                if fresh:
+                    failed.append(run)
             return len(failed) if kind == "count" else ((failed[0].get("started_at") or failed[0].get("created_at")) if failed else None)
         jobs["failed_jobs"] = failed_jobs_metric("count")
         time_jobs["failed_jobs"] = failed_jobs_metric("time")
@@ -1609,16 +1624,230 @@ async def wa_data_quality_items(
     else:
         docs = await _quality_value_orphans(db.sub_payments, db.users, "user_id", "user_id", skip, limit)
     severity, label, suggestion = _QUALITY_META[kind]
-    def shape(doc):
-        return {"id": str(doc.get("_id", "")),
-                "label": doc.get("name") or doc.get("question") or doc.get("topic") or doc.get("description") or str(doc.get("_id", "")),
+    items = await _quality_enrich_items(kind, docs, severity, label, suggestion)
+    return {"items": items, "total": total, "skip": skip, "limit": limit,
+            "read_only": False, "repair": _QUALITY_REPAIR.get(kind, {})}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 W5 — مرکز اقدام قابل‌فهم و قابل‌اصلاح
+# آیتم‌ها باید human-readable باشند (عنوان انسانی + context واقعی +
+# فهرست کمبودها) و هر گونه که semantics اصلاحش روشن است، اکشن مستقیم
+# دارد. ID فنی فقط در `technical`. گونه‌های هویتی/مالی عمداً دستی می‌مانند.
+# ══════════════════════════════════════════════════════════════════
+
+_QUALITY_REPAIR = {
+    "files_missing_metadata": {"edit": True, "delete": False, "attach": None},
+    "orphan_files":     {"edit": False, "delete": True, "attach": "sessions"},
+    "orphan_sessions":  {"edit": False, "delete": True, "attach": "lessons"},
+    "orphan_ref_books": {"edit": False, "delete": True, "attach": "subjects"},
+    "orphan_ref_files": {"edit": False, "delete": True, "attach": "books"},
+}
+
+# kind → (کالکشن فرزند، فیلد ارجاع، کالکشن والد) برای «اتصال به والد معتبر»
+_QUALITY_ATTACH = {
+    "orphan_files":     ("bs_content",  "session_id", "bs_sessions"),
+    "orphan_sessions":  ("bs_sessions", "lesson_id",  "bs_lessons"),
+    "orphan_ref_books": ("ref_books",   "subject_id", "ref_subjects"),
+    "orphan_ref_files": ("ref_files",   "book_id",    "ref_books"),
+}
+
+
+async def _quality_enrich_items(kind, docs, severity, label, suggestion):
+    """🌊 W5 — بزرگ‌نمایی انسانی آیتم‌های کیفیت داده.
+
+    به‌جای headline کردن ObjectId، عنوان انسانی + context واقعی
+    (درس/جلسه/نام‌ها) + فهرست فیلدهای ناقص برگردانده می‌شود."""
+    sessions, lessons = {}, {}
+    if kind == "files_missing_metadata":
+        sids = [ObjectId(s) for s in {str(d.get("session_id") or "") for d in docs}
+                if s and ObjectId.is_valid(s)]
+        if sids:
+            sdocs = await db.bs_sessions.find({"_id": {"$in": sids}}).to_list(500)
+            sessions = {str(s["_id"]): s for s in sdocs}
+            lids = [ObjectId(x) for x in {str(s.get("lesson_id") or "") for s in sdocs}
+                    if x and ObjectId.is_valid(x)]
+            if lids:
+                ldocs = await db.bs_lessons.find({"_id": {"$in": lids}}).to_list(500)
+                lessons = {str(l["_id"]): l for l in ldocs}
+    out = []
+    for doc in docs:
+        item = {"id": str(doc.get("_id", "")),
                 "reason": label, "severity": severity, "suggestion": suggestion,
                 "metadata": {key: doc.get(key) for key in
                              ("user_id", "user_ids", "names", "count", "intake", "lesson_id", "session_id",
                               "subject_id", "book_id", "student_id", "roles", "invalid", "type", "source")
                              if doc.get(key) is not None}}
-    return {"items": [shape(doc) for doc in docs], "total": total, "skip": skip, "limit": limit,
-            "read_only": True}
+        title = (doc.get("name") or doc.get("question") or doc.get("topic") or
+                 doc.get("description") or "")
+        context, missing = "", []
+        if kind == "files_missing_metadata":
+            sess = sessions.get(str(doc.get("session_id") or "")) or {}
+            les = lessons.get(str(sess.get("lesson_id") or "")) or {}
+            ctype = (doc.get("type") or "").strip()
+            title = title or f"فایل آموزشی{' (' + ctype + ')' if ctype else ''}"
+            parts = []
+            if les.get("name"):
+                parts.append(f"درس: {les['name']}")
+            if sess.get("name") or sess.get("topic"):
+                parts.append(f"جلسه: {sess.get('name') or sess.get('topic')}")
+            context = " · ".join(parts) or "متصل به جلسه‌ی معتبر نیست"
+            missing = [f for f in ("type", "description")
+                       if not (doc.get(f) or "").strip()]
+            if not (doc.get("name") or doc.get("description") or "").strip():
+                missing.append("name")
+        elif kind in _QUALITY_ATTACH:
+            field = _QUALITY_ATTACH[kind][1]
+            context = f"ارجاع شکسته: {field}={doc.get(field) or '—'}"
+            title = title or label
+        elif kind == "duplicate_student_ids":
+            title = f"شماره دانشجویی {doc.get('_id')} مشترک بین {doc.get('count')} کاربر"
+            context = " · ".join((doc.get("names") or [])[:4])
+        elif kind in ("users_missing_intake", "users_invalid_intake"):
+            title = doc.get("name") or f"کاربر #{doc.get('user_id')}"
+            context = (f"شماره دانشجویی: {doc.get('student_id') or '—'} · "
+                       f"ورودی: {doc.get('intake') or '—'}")
+        elif kind == "malformed_questions":
+            title = (doc.get("question") or "سؤال بدون متن")[:80]
+            context = f"درس: {doc.get('lesson') or '—'} · موضوع: {doc.get('topic') or '—'}"
+        elif kind in ("orphan_subscriptions", "orphan_payments"):
+            title = f"{label} #{doc.get('user_id')}"
+            context = "بررسی زنجیره پرداخت و هویت پیش از هر اصلاح"
+        else:
+            title = title or label
+        item.update({"title": title, "context": context, "missing": missing,
+                     "technical": str(doc.get("_id", "")),
+                     "repair": _QUALITY_REPAIR.get(kind, {})})
+        out.append(item)
+    return out
+
+
+class WaQualityRepairBody(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.post("/operations/data-quality/files_missing_metadata/{item_id}/repair")
+async def wa_data_quality_repair(item_id: str, body: WaQualityRepairBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — اصلاح مستقیم متادیتای ناقص: فقط فیلدهای داده‌شده set می‌شوند،
+    سپس همان rule دوباره اجرا می‌شود؛ `resolved` فقط وقتی true است که رکورد
+    واقعاً از شمارش خارج شده باشد. بدون حدس، بدون overwrite خودکار."""
+    from api.routers.content_admin import CONTENT_TYPES
+    if not ObjectId.is_valid(item_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    doc = await db.bs_content.find_one({"_id": ObjectId(item_id)})
+    if not doc:
+        raise HTTPException(404, "فایل آموزشی پیدا نشد")
+    updates = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if len(name) < 3:
+            raise HTTPException(422, "نام باید حداقل ۳ نویسه باشد")
+        updates["name"] = name[:200]
+    if body.type is not None:
+        ctype = body.type.strip().lower()
+        if ctype not in CONTENT_TYPES:
+            raise HTTPException(422, "نوع معتبر نیست؛ مجاز: " + "، ".join(CONTENT_TYPES))
+        updates["type"] = ctype
+    if body.description is not None:
+        desc = body.description.strip()
+        if len(desc) < 3:
+            raise HTTPException(422, "توضیح باید حداقل ۳ نویسه باشد")
+        updates["description"] = desc[:2000]
+    if not updates:
+        raise HTTPException(400, "هیچ فیلدی برای اصلاح داده نشد")
+    await db.bs_content.update_one({"_id": doc["_id"]}, {"$set": updates})
+    after = await db.bs_content.find_one({"_id": doc["_id"]})
+    resolved = bool((after.get("type") or "").strip()) and \
+        bool((after.get("description") or "").strip())
+    log_id = await _audit(
+        user["id"], "اصلاح کیفیت داده: تکمیل متادیتای فایل آموزشی",
+        severity="INFO", target_type="content", target_id=item_id,
+        target_label=(after.get("name") or after.get("description") or item_id)[:80],
+        before={k: doc.get(k) for k in updates},
+        after={**updates, "resolved": resolved},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "resolved": resolved, "audit_id": log_id}
+
+
+class WaQualityAttachBody(BaseModel):
+    parent_id: str
+
+
+@router.post("/operations/data-quality/{kind}/{item_id}/attach")
+async def wa_data_quality_attach(kind: str, item_id: str, body: WaQualityAttachBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — اتصال رکورد یتیم به والد معتبرِ انتخاب‌شده توسط ادمین.
+    والد باید واقعاً وجود داشته باشد؛ پس از اتصال، rule دوباره چک می‌شود."""
+    if kind not in _QUALITY_ATTACH:
+        raise HTTPException(400, "این گونه اقدام «اتصال به والد» ندارد")
+    child_name, field, parent_name = _QUALITY_ATTACH[kind]
+    if not ObjectId.is_valid(item_id) or not ObjectId.is_valid(body.parent_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    target = await getattr(db, parent_name).find_one({"_id": ObjectId(body.parent_id)})
+    if not target:
+        raise HTTPException(404, "والد معتبر پیدا نشد")
+    res = await getattr(db, child_name).update_one(
+        {"_id": ObjectId(item_id)}, {"$set": {field: str(target["_id"])}})
+    if not res.matched_count:
+        raise HTTPException(404, "رکورد پیدا نشد")
+    log_id = await _audit(
+        user["id"], f"اصلاح کیفیت داده: اتصال {kind} به والد معتبر",
+        severity="WARNING", target_type=child_name, target_id=item_id,
+        target_label=target.get("name") or str(target["_id"]),
+        before={field: None}, after={field: str(target["_id"]), "resolved": True},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "resolved": True, "audit_id": log_id}
+
+
+class WaQualityRemoveBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/operations/data-quality/{kind}/{item_id}/remove")
+async def wa_data_quality_remove(kind: str, item_id: str, body: WaQualityRemoveBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — حذف تکی رکورد یتیم با تأیید صریح. پیش از حذف دوباره چک می‌شود
+    که رکورد هنوز یتیم است (اگر والدش سر راه سبز شده، 409)."""
+    if kind not in _QUALITY_ATTACH:
+        raise HTTPException(400, "این گونه حذف تکی ندارد")
+    if not body.confirm:
+        raise HTTPException(400, "برای حذف، تأیید صریح لازم است")
+    child_name, field, parent_name = _QUALITY_ATTACH[kind]
+    if not ObjectId.is_valid(item_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    doc = await getattr(db, child_name).find_one({"_id": ObjectId(item_id)})
+    if not doc:
+        raise HTTPException(404, "رکورد پیدا نشد")
+    ref = str(doc.get(field) or "")
+    if ref and ObjectId.is_valid(ref) and \
+            await getattr(db, parent_name).find_one({"_id": ObjectId(ref)}):
+        raise HTTPException(409, "این رکورد دیگر یتیم نیست؛ حذف لازم نیست")
+    await getattr(db, child_name).delete_one({"_id": doc["_id"]})
+    log_id = await _audit(
+        user["id"], f"اصلاح کیفیت داده: حذف تکی {kind}",
+        severity="WARNING", target_type=child_name, target_id=item_id,
+        target_label=doc.get("name") or doc.get("description") or item_id,
+        before={"present": True}, after={"present": False},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "removed": 1, "audit_id": log_id}
+
+
+@router.get("/operations/quality-parents/{parent_kind}")
+async def wa_data_quality_parents(parent_kind: str,
+                                  q: str = Query("", max_length=60),
+                                  user=Depends(_perm("system.manage"))):
+    """🌊 W5 — انتخاب والد معتبر برای attach (کرانه‌دار و جست‌وجوپذیر)."""
+    coll = {"sessions": db.bs_sessions, "lessons": db.bs_lessons,
+            "books": db.ref_books, "subjects": db.ref_subjects}.get(parent_kind)
+    if coll is None:
+        raise HTTPException(404, "نوع والد معتبر نیست")
+    flt = {"name": {"$regex": re.escape(q.strip()), "$options": "i"}} if q.strip() else {}
+    docs = await coll.find(flt).sort("name", 1).limit(20).to_list(20)
+    return {"items": [{"id": str(d["_id"]), "label": d.get("name") or str(d["_id"])}
+                      for d in docs]}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -4942,7 +5171,7 @@ async def wa_subscription_reconcile(
         uid = int(p.get("user_id") or 0)
         if uid not in active_subs:
             items.append({"type": "approved_no_active_sub", "user_id": uid,
-                          "payment_id": str(p["_id"]),
+                          "payment": p,
                           "at": p.get("reviewed_at") or p.get("submitted_at")})
     # ۲) اشتراک فعال (منبع پرداخت) بدون هیچ پرداخت تأییدشده
     async for s in db.subscriptions.find(
@@ -4950,7 +5179,7 @@ async def wa_subscription_reconcile(
         uid = int(s["_id"])
         if uid not in users_with_approved:
             items.append({"type": "active_sub_no_approved_payment",
-                          "user_id": uid, "payment_id": None,
+                          "user_id": uid, "payment": None,
                           "at": s.get("end_date")})
     # ۳) بازگشت وجه شده ولی اشتراک هنوز فعال
     async for p in db.sub_payments.find(
@@ -4958,7 +5187,7 @@ async def wa_subscription_reconcile(
         uid = int(p.get("user_id") or 0)
         if uid in active_subs:
             items.append({"type": "refunded_but_active_sub", "user_id": uid,
-                          "payment_id": str(p["_id"]),
+                          "payment": p,
                           "at": p.get("refunded_at")})
     # ۴) رسیدهای مانده‌ی قدیمی (>۷۲ ساعت)
     stale = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
@@ -4967,17 +5196,145 @@ async def wa_subscription_reconcile(
              "submitted_at": {"$lt": stale}}).limit(200):
         items.append({"type": "pending_stale",
                       "user_id": int(p.get("user_id") or 0),
-                      "payment_id": str(p["_id"]),
+                      "payment": p,
                       "at": p.get("submitted_at")})
+    # 🌊 W5 — مغایرت باید برای ادمین انسانی باشد: نام کاربر، مبلغ، پلن،
+    # جمله‌ی توضیح و اقدامِ ممکن. ID فقط در technical.
+    uids = list({i["user_id"] for i in items})
+    users = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": uids}}).to_list(1000):
+            users[int(u["user_id"])] = u
     summary = {t: sum(1 for i in items if i["type"] == t)
                for t in _RECON_META}
     out_items = []
     for i in items:
         sev, label = _RECON_META[i["type"]]
-        out_items.append({**i, "severity": sev, "label": label})
+        p = i.get("payment") or {}
+        u = users.get(i["user_id"]) or {}
+        who = u.get("name") or f"کاربر #{i['user_id']}"
+        amount = p.get("final_price", p.get("amount"))
+        t = i["type"]
+        if t == "approved_no_active_sub":
+            text = (f"رسید {who} به مبلغ {int(amount or 0):,} تومان تأیید شده "
+                    f"ولی هیچ اشتراک فعالی برایش وجود ندارد.")
+            actions = [{"key": "activate", "label": "فعال‌سازی امن اشتراک"},
+                       {"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
+        elif t == "active_sub_no_approved_payment":
+            text = (f"{who} اشتراک فعال دارد (منبع: پرداخت) ولی هیچ رسید "
+                    f"تأییدشده‌ای برایش ثبت نشده — دسترسی بی‌حساب.")
+            actions = [{"key": "go", "label": "بررسی مشترک",
+                        "go": f"/subscriptions?tab=subscribers&q={i['user_id']}"}]
+        elif t == "refunded_but_active_sub":
+            text = (f"وجه رسید {who} بازگشت داده شده ولی اشتراک هنوز فعال "
+                    f"است — تصمیم: revoke یا نگهداری آگاهانه.")
+            actions = [{"key": "go", "label": "مدیریت/revoke اشتراک",
+                        "go": f"/subscriptions?tab=subscribers&q={i['user_id']}"}]
+        else:
+            text = f"رسید {who} بیش از ۷۲ ساعت در انتظار بررسی مانده است."
+            actions = [{"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&status=pending&q={i['user_id']}"}]
+        out_items.append({
+            "type": t, "severity": sev, "label": label,
+            "user_id": i["user_id"], "user_name": u.get("name") or "",
+            "student_id": u.get("student_id") or "",
+            "payment_id": str(p["_id"]) if p.get("_id") else None,
+            "amount": amount, "plan_name": p.get("plan_name") or "",
+            "at": i["at"], "summary": text, "actions": actions,
+            "technical": str(p.get("_id") or ""),
+        })
     return {"items": out_items,
             "summary": {**summary, "total": len(out_items),
                         "checked_at": _now()}}
+
+
+class WaReconActivateBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/subscription/reconcile/{payment_id}/activate")
+async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
+                                user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — اقدام مغایرت «تأیید بدون اشتراک فعال»: فعال‌سازی امن با همان
+    primitive رسمی finalize_approved_payment (plan days از پلن واقعی).
+    اتمیک و تأیید صریح؛ اگر اشتراک هم‌زمان فعال شده باشد 409."""
+    if not body.confirm:
+        raise HTTPException(400, "برای فعال‌سازی، تأیید صریح لازم است")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل فعال‌سازی است")
+    uid = int(payment.get("user_id") or 0)
+    sub = await db.sub_get(uid)
+    if sub and sub.get("status") == "active":
+        raise HTTPException(409, "کاربر هم‌اکنون اشتراک فعال دارد؛ مغایرتی نیست")
+    try:
+        result = await db.finalize_approved_payment(payment, int(user["id"]))
+    except ValueError:
+        raise HTTPException(422, "مدت پلن این رسید نامعتبر است؛ بررسی دستی لازم است")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی: فعال‌سازی امن اشتراک",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=str(payment["_id"]), target_label=f"رسید کاربر {uid}",
+        before={"subscription": (sub or {}).get("status")},
+        after={"status": "active", "end_date": result.get("end_date")},
+        tags=["مالی", "مغایرت‌گیری"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:subscription_active", "chat_id": uid, "sent": False,
+        "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
+        "created_at": _now()})
+    return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
+
+
+@router.get("/subscription/finance")
+async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — مرکز مالی: aggregate واقعی از sub_payments (نه شمارش فرانت).
+    درآمد = فقط رسیدهای تأییدشده؛ بازگشت وجه جدا؛ روند ۱۴ روزه کرانه‌دار."""
+    totals = {}
+    async for row in db.sub_payments.aggregate([
+            {"$group": {"_id": "$status", "count": {"$sum": 1},
+                        "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}}]):
+        totals[row["_id"] or "unknown"] = {"count": int(row["count"]),
+                                           "total": int(row["total"])}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    daily = []
+    async for row in db.sub_payments.aggregate([
+            {"$match": {"status": "approved",
+                        "reviewed_at": {"$gte": cutoff}}},
+            {"$group": {"_id": {"$substrCP": ["$reviewed_at", 0, 10]},
+                        "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}},
+            {"$sort": {"_id": 1}}]):
+        daily.append({"day": row["_id"], "total": int(row["total"])})
+    refunds = []
+    uids = set()
+    rdocs = await db.sub_payments.find({"status": "refunded"}).sort(
+        "refunded_at", -1).limit(20).to_list(20)
+    for p in rdocs:
+        uids.add(int(p.get("user_id") or 0))
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(500):
+            names[int(u["user_id"])] = u.get("name") or ""
+    for p in rdocs:
+        uid = int(p.get("user_id") or 0)
+        refunds.append({"payment_id": str(p["_id"]), "user_id": uid,
+                        "user_name": names.get(uid, ""),
+                        "amount": p.get("final_price", p.get("amount")),
+                        "reason": (p.get("refund") or {}).get("reason") or p.get("refund_reason") or "",
+                        "at": p.get("refunded_at"),
+                        "by": (p.get("refund") or {}).get("by") or p.get("refunded_by")})
+    appr = totals.get("approved", {"count": 0, "total": 0})
+    rej = totals.get("rejected", {"count": 0, "total": 0})
+    decided = appr["count"] + rej["count"]
+    return {"totals": totals,
+            "revenue_total": appr["total"],
+            "revenue_refunded": totals.get("refunded", {"count": 0, "total": 0})["total"],
+            "refunded_count": totals.get("refunded", {"count": 0, "total": 0})["count"],
+            "pending_count": totals.get("pending", {"count": 0, "total": 0})["count"],
+            "success_rate": round(100.0 * appr["count"] / decided, 1) if decided else None,
+            "daily": daily, "refunds": refunds, "checked_at": _now()}
 
 
 @router.get("/subscription/subscribers")

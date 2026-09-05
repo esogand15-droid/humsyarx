@@ -10,6 +10,7 @@ import os
 import sys
 import html
 import re
+import time
 import logging
 import asyncio
 from datetime import time as dtime, timezone, timedelta
@@ -1976,30 +1977,52 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in ('1', 'true', 'yes', 'on')
 
 
-def main():
-    app = build_application()
-    app.post_init = post_init
+def _run_polling_with_retry(build_app):
+    """🛡 HOTFIX پایداری startup — کرش مشاهده‌شده در دیپلوی:
 
-    # 🔁 موج Railway — updateهای pending دیگر کورکورانه دور ریخته نمی‌شوند.
-    #
-    # چرا این تغییر لازم بود: drop_pending_updates=True در ابتدای هر
-    # polling، صف updateهای تلگرام را خالی می‌کند. در Railway هر deploy /
-    # restart (شامل ری‌استارت خودکار supervisor پس از کرش) آن پیام‌ها را
-    # برای همیشه حذف می‌کرد: پیامی که کاربر حین deploy فرستاده بود هیچ‌وقت
-    # پردازش نمی‌شد و کاربر بی‌پاسخ می‌ماند.
-    #
-    # رفتار پیش‌فرض حالا «حفظ» است؛ با BOT_DROP_PENDING=1 می‌توان آگاهانه
-    # برگشت (مثلاً برای پاک‌کردن یک صف گیرکرده‌ی بزرگ پس از یک incident).
+    یک TimedOut گذرا به api.telegram.org حین initialize کل پروسه را
+    می‌کشت؛ با چند کرش پیاپی، supervisor به FATAL می‌رفت و بات برای
+    همه‌ی پیام‌ها (شامل /start) کاملاً خاموش می‌ماند. حالا خطاهای
+    شبکه‌ای با backoff retry می‌شوند و اپلیکیشن در هر تلاش بازسازی
+    می‌شود. خطای پیکربندی (InvalidToken) هرگز retry نمی‌شود — باید
+    همان کرش صریح بماند تا مشکل توکن دیده شود.
+    """
+    from telegram.error import TimedOut, NetworkError, RetryAfter
+
     drop_pending = _env_flag('BOT_DROP_PENDING', False)
     if drop_pending:
         logger.warning("⚠️ BOT_DROP_PENDING=1 — updateهای pending در شروع حذف می‌شوند")
 
-    logger.info("🩺 ربات پزشکی شروع به کار کرد...")
-    app.run_polling(
-        drop_pending_updates=drop_pending,
-        allowed_updates=Update.ALL_TYPES,
-        poll_interval=0.5,
-    )
+    attempt = 0
+    while True:
+        app = build_app()
+        logger.info("🩺 ربات پزشکی شروع به کار کرد... (تلاش %d)", attempt + 1)
+        try:
+            app.run_polling(
+                drop_pending_updates=drop_pending,
+                allowed_updates=Update.ALL_TYPES,
+                poll_interval=0.5,
+            )
+            return  # خروج تمیز (SIGINT/stop) — نه کرش
+        except (TimedOut, NetworkError, RetryAfter) as e:
+            attempt += 1
+            delay = min(30, 2 ** min(attempt, 4))
+            logger.error(
+                "⚠️ اتصال تلگرام در startup ناپایدار بود (%s: %s)؛ "
+                "تلاش مجدد در %d ثانیه — پروسه زنده می‌ماند تا "
+                "supervisor به FATAL نرود.",
+                type(e).__name__, e, delay)
+            time.sleep(delay)
+
+
+def _build_application_with_post_init():
+    app = build_application()
+    app.post_init = post_init
+    return app
+
+
+def main():
+    _run_polling_with_retry(_build_application_with_post_init)
 
 
 if __name__ == '__main__':

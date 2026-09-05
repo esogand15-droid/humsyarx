@@ -1674,3 +1674,43 @@ body.overlay-open { overflow: hidden; }
   color: var(--c-txt); font-weight: 700; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   🌊 W5 — Financial Control Center + Actionable Data Quality
+   ════════════════════════════════════════════════════════════════ */
+.panel { box-shadow: 0 1px 0 rgba(255,255,255,.02) inset, 0 6px 18px rgba(3,8,20,.35); }
+.btn:focus-visible, .tab:focus-visible, .operation-card:focus-visible, .attn-item:focus-visible {
+  outline: 2px solid var(--c-acc); outline-offset: 2px; border-radius: 10px;
+}
+.q-list { display: flex; flex-direction: column; gap: 10px; }
+.q-issue {
+  background: var(--c-surface); border: 1px solid var(--c-line);
+  border-inline-start: 3px solid var(--c-line2);
+  border-radius: 12px; padding: 12px 14px;
+}
+.q-issue--critical { border-inline-start-color: var(--c-bad); background: linear-gradient(180deg, rgba(248,113,113,.05), transparent 45%), var(--c-surface); }
+.q-issue--warning  { border-inline-start-color: var(--c-warn); background: linear-gradient(180deg, rgba(240,181,69,.05), transparent 45%), var(--c-surface); }
+.q-issue--info     { border-inline-start-color: var(--c-acc); }
+.q-issue-head { display: flex; align-items: flex-start; gap: 10px; }
+.q-issue-icon { font-size: var(--fs-icon); line-height: 1.4; }
+.q-issue-head b { color: var(--c-txt); font-size: var(--fs-card); }
+.q-missing { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.q-tech { margin-top: 8px; }
+.q-tech summary { cursor: pointer; color: var(--c-txt3); font-size: var(--fs-label); user-select: none; }
+.q-tech summary:hover { color: var(--c-txt2); }
+.q-tech .code { display: block; margin-top: 6px; font-size: var(--fs-meta); direction: ltr; text-align: left; }
+.q-form { margin-top: 10px; padding: 10px; border: 1px dashed var(--c-line2); border-radius: 10px; background: var(--c-bg2); }
+.q-parents { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; max-height: 160px; overflow: auto; }
+.q-zero { border: 1px solid rgba(58,210,155,.35); background: rgba(58,210,155,.07); color: var(--c-ok); font-weight: 600; margin-bottom: 12px; }
+.fin-bars { display: flex; align-items: flex-end; gap: 8px; height: 150px; margin-top: 12px; padding: 6px 2px 0; }
+.fin-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; min-width: 0; }
+.fin-bar {
+  width: 100%; max-width: 34px; border-radius: 6px 6px 2px 2px;
+  background: linear-gradient(180deg, var(--c-acc2), var(--c-teal));
+  box-shadow: 0 0 12px rgba(47,214,189,.25);
+  transition: height .35s ease;
+}
+.fin-bar-col:hover .fin-bar { filter: brightness(1.15); }
+.fin-bar-day { font-size: var(--fs-meta); color: var(--c-txt3); direction: ltr; }
+.operation-card { transition: transform .15s ease, border-color .15s ease; }
+.operation-card:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--c-line2); }
