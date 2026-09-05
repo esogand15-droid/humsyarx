@@ -53,7 +53,7 @@ import broadcast_service
 from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
-from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, status_query
+from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, clean_text, status_query
 from time_utils import (
     TimeContractError, canonical_utc, day_bounds_utc, diagnostics as time_diagnostics,
     format_datetime_fa, now_utc, parse_clock_time, parse_gregorian_date,
@@ -2404,6 +2404,220 @@ async def wa_question_reports(
 ):
     """نمای تجمیعیِ گزارش‌های یک سؤال."""
     return await content_api.question_reports(qid=qid, admin=user, limit=limit)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA22 — Question Health + Question 360
+#
+# «سلامت سؤال» ویژگیِ اختراعی نیست؛ ترکیب سیگنال‌هایی است که همین حالا
+# در داده وجود دارد و فقط نمایشِ مدیریتی نداشتند:
+#   • شمارنده‌های attempt_count/correct_count روی خود سند سؤال
+#     (در هر پاسخِ آزمون db/content.py افزایش می‌دهد)
+#   • گزارش‌های باز در content_reports (status new/reviewing)
+#   • نبود توضیح پاسخ برای سؤالی که در آزمون استفاده شده
+# Question 360 هم همان الگوی User 360 (§WA2.8) است: پرونده‌ی کامل یک
+# سؤال بدون ترک صفحه؛ هر بخش جدا ضدخطا (Empty و Unavailable دو حالت‌اند).
+# ══════════════════════════════════════════════════════════════════
+
+_HEALTH_MIN_ATTEMPTS = 5     # کمتر از این تعداد تلاش، نرخ غلط معنادار نیست
+_HEALTH_WRONG_RATE = 0.60    # آستانه‌ی «نرخ غلط بحرانی»
+_HEALTH_BORDER_RATE = 0.40   # آستانه‌ی مرزی
+
+
+def _qid_filter(qid: str) -> dict:
+    """‏_id سؤال در این repo دو شکل دارد: ObjectId (production) و str
+    (dev/تست). هر دو شکل جست‌وجو می‌شود — فرض روی یکی ممنوع."""
+    variants = [{"_id": qid}]
+    if ObjectId.is_valid(qid):
+        variants.append({"_id": ObjectId(qid)})
+    return variants[0] if len(variants) == 1 else {"$or": variants}
+
+
+def _question_health(q, open_reports: int) -> dict:
+    """امتیاز بیماری ۰..۱۰۰ (بیشتر = بدتر) + ریز اجزا برای نمایش و تست."""
+    attempts = int(q.get("attempt_count") or 0)
+    correct = int(q.get("correct_count") or 0)
+    wrong_rate = round((attempts - correct) / attempts, 3) if attempts > 0 else 0.0
+    signals, points = [], 0
+    if open_reports > 0:
+        points += 45
+        signals.append({"key": "open_reports", "points": 45,
+                        "label": f"{open_reports} گزارش باز"})
+    if attempts >= _HEALTH_MIN_ATTEMPTS:
+        if wrong_rate >= _HEALTH_WRONG_RATE:
+            points += 45
+            signals.append({"key": "wrong_rate", "points": 45,
+                            "label": f"نرخ پاسخ غلط {int(round(wrong_rate * 100))}٪"})
+        elif wrong_rate >= _HEALTH_BORDER_RATE:
+            points += 20
+            signals.append({"key": "wrong_rate", "points": 20,
+                            "label": f"نرخ پاسخ غلط مرزی {int(round(wrong_rate * 100))}٪"})
+    if attempts > 0 and not clean_text(q.get("explanation")):
+        points += 10
+        signals.append({"key": "no_explanation", "points": 10,
+                        "label": "بدون توضیح پاسخ"})
+    return {
+        "score": min(100, points),
+        "needs_review": bool(open_reports > 0 or (
+            attempts >= _HEALTH_MIN_ATTEMPTS and wrong_rate >= _HEALTH_WRONG_RATE)),
+        "components": {
+            "open_reports": open_reports, "attempts": attempts,
+            "correct": correct, "wrong_rate": wrong_rate,
+            "has_explanation": bool(clean_text(q.get("explanation"))),
+        },
+        "signals": signals,
+    }
+
+
+@router.get("/questions/health")
+async def wa_questions_health(
+    limit: int = Query(50, ge=1, le=200),
+    include_healthy: bool = Query(False),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """🌊 WA22 — صف سلامت سؤال‌ها: بدترین‌ها اول.
+
+    مجموعه‌ی نامزد کرانه‌دار است (اسکن کل کالکشن ممنوع): سؤال‌های دارای
+    گزارش باز + ۵۰۰ پرسوالِ پرتلاش. Scope همان قوانین لیست سؤال است
+    (questions.review_scoped فقط ورودی خودش را می‌بیند)."""
+    scope = await _question_scope_context(user)
+    base = {"intake": scope.get("intake") or ""} if scope.get("kind") == "scoped" else {}
+    rep_docs = await db.content_reports.aggregate([
+        {"$match": {"target_type": "question",
+                    "status": {"$in": ["new", "reviewing"]}}},
+        {"$group": {"_id": "$target_id", "n": {"$sum": 1}}},
+    ]).to_list(length=5000)
+    rep = {str(r["_id"]): int(r["n"]) for r in rep_docs if r.get("_id")}
+    cand = []
+    for t in rep:
+        cand.append(t)
+        if ObjectId.is_valid(t):
+            cand.append(ObjectId(t))
+    by_id = {}
+    if cand:
+        async for q in db.questions.find({**base, "_id": {"$in": cand}}):
+            by_id[str(q["_id"])] = q
+    async for q in db.questions.find(
+            base, sort=[("attempt_count", -1)], limit=500):
+        by_id.setdefault(str(q["_id"]), q)
+    rows = []
+    for q in by_id.values():
+        health = _question_health(q, rep.get(str(q["_id"]), 0))
+        if not include_healthy and health["score"] <= 0:
+            continue
+        rows.append({
+            "id": str(q["_id"]),
+            "question": clean_text(q.get("question"), 120),
+            "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+            "difficulty": q.get("difficulty", ""),
+            "status": canonical_status(q), "intake": q.get("intake", ""),
+            "attempt_count": int(q.get("attempt_count") or 0),
+            "correct_count": int(q.get("correct_count") or 0),
+            "wrong_rate": health["components"]["wrong_rate"],
+            "score": health["score"], "needs_review": health["needs_review"],
+            "signals": health["signals"],
+        })
+    rows.sort(key=lambda r: (-r["score"], -r["attempt_count"]))
+    return {"items": rows[:limit],
+            "summary": {"considered": len(rows),
+                        "needs_review": sum(1 for r in rows if r["needs_review"]),
+                        "min_attempts": _HEALTH_MIN_ATTEMPTS,
+                        "wrong_rate_threshold": _HEALTH_WRONG_RATE,
+                        "checked_at": _now()}}
+
+
+@router.get("/questions/{qid}/360")
+async def wa_question_360(
+        qid: str,
+        user=Depends(_perm_any("questions.review", "questions.review_scoped"))):
+    """🌊 WA22 — نمای ۳۶۰ درجه‌ی سؤال: پرونده + سلامت + گزارش‌ها + آزمون واقعی.
+
+    همان قرارداد User 360: هر بخش جدا ضدخطا؛ خطای بخش در section_errors
+    می‌نشیند و بقیه‌ی پاسخ سالم می‌ماند."""
+    q = await db.questions.find_one(_qid_filter(qid))
+    if not q:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    qid_s = str(q["_id"])
+    out = {"question": {
+        "id": qid_s, "question": q.get("question", ""),
+        "options": q.get("options") or [],
+        "correct_answer": q.get("correct_answer"),
+        "explanation": q.get("explanation") or "",
+        "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+        "difficulty": q.get("difficulty", ""),
+        "status": canonical_status(q), "intake": q.get("intake", ""),
+        "source": q.get("source", ""), "creator_id": q.get("creator_id"),
+        "creator_name": q.get("creator_name", ""),
+        "created_at": q.get("created_at") or None,
+        "attempt_count": int(q.get("attempt_count") or 0),
+        "correct_count": int(q.get("correct_count") or 0),
+        "twins": 0,
+    }, "health": None, "reports": None, "exams": None, "section_errors": {}}
+    try:
+        if q.get("content_hash"):
+            out["question"]["twins"] = await db.questions.count_documents(
+                {"content_hash": q["content_hash"], "_id": {"$ne": q["_id"]}})
+    except Exception:
+        out["section_errors"]["twins"] = "unavailable"
+    try:
+        open_reports = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s,
+             "status": {"$in": ["new", "reviewing"]}})
+        out["health"] = _question_health(q, open_reports)
+    except Exception:
+        out["section_errors"]["health"] = "unavailable"
+    try:
+        total = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s})
+        open_n = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s,
+             "status": {"$in": ["new", "reviewing"]}})
+        recent = await db.content_reports.find(
+            {"target_type": "question", "target_id": qid_s}
+        ).sort("created_at", -1).limit(20).to_list(length=20)
+        out["reports"] = {
+            "total": total, "open": open_n,
+            "recent": [{
+                "report_id": r.get("report_id"), "reason": r.get("reason", ""),
+                "note": r.get("note", ""), "status": r.get("status", ""),
+                "user_name": r.get("user_name", ""),
+                "reporter_id": r.get("user_id"),
+                "created_at": r.get("created_at") or None,
+            } for r in recent],
+        }
+    except Exception:
+        out["section_errors"]["reports"] = "unavailable"
+    try:
+        agg = await db.exam_sessions.aggregate([
+            {"$match": {"answers.question_id": qid_s}},
+            {"$unwind": "$answers"},
+            {"$match": {"answers.question_id": qid_s}},
+            {"$group": {"_id": None, "attempts": {"$sum": 1},
+                        "correct": {"$sum": {
+                            "$cond": ["$answers.is_correct", 1, 0]}}}},
+        ]).to_list(length=1)
+        sessions = await db.exam_sessions.find(
+            {"answers.question_id": qid_s}
+        ).sort("started_at", -1).limit(10).to_list(length=10)
+        recent_answers = []
+        for s in sessions:
+            for a in (s.get("answers") or []):
+                if str(a.get("question_id")) == qid_s:
+                    recent_answers.append({
+                        "session_id": s.get("session_id") or str(s["_id"]),
+                        "user_id": s.get("user_id"),
+                        "is_correct": bool(a.get("is_correct")),
+                        "selected": a.get("selected"),
+                        "at": a.get("answered_at") or s.get("started_at") or None,
+                    })
+        out["exams"] = {
+            "attempts": int(agg[0]["attempts"]) if agg else 0,
+            "correct": int(agg[0]["correct"]) if agg else 0,
+            "recent": recent_answers[:10],
+        }
+    except Exception:
+        out["section_errors"]["exams"] = "unavailable"
+    return out
 
 
 @router.delete("/questions/{qid}")

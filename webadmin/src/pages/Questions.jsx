@@ -68,6 +68,9 @@ export default function Questions({ route = '', go }) {
   const [delTarget, setDelTarget] = useState(null); // {id, question, reason}
   const [createOpen, setCreateOpen] = useState(new URLSearchParams(route.split('?')[1] || '').get('create') === '1');
   const [importOpen, setImportOpen] = useState(false);
+  // 🌊 WA22 — سلامت سؤال + نمای ۳۶۰
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [q360Id, setQ360Id] = useState(null);
   const LIMIT = 30;
 
   // §W9 — شمارشِ گزارشِ باز برای سؤال‌های همین صفحه. یک درخواستِ
@@ -161,6 +164,7 @@ export default function Questions({ route = '', go }) {
     { k: 'created_at', label: 'ایجاد', sortable: true, render: row => <FaDateTime value={row.created_at} /> },
     { k: 'ops', label: '', stop: true, render: row => <div className="row" style={{ gap: 4 }}>
       <button className="btn sm" aria-label="مشاهده سؤال" onClick={() => setDetail(row)}>👁</button>
+      <button className="btn sm" aria-label="نمای ۳۶۰ سؤال" title="نمای ۳۶ سؤال" onClick={() => setQ360Id(row.id)}>🩺</button>
       {row.can_approve && <button className="btn sm ok" aria-label="تأیید سؤال" onClick={() => approve(row.id)}>✅</button>}
       {row.can_reject && <button className="btn sm" aria-label="درخواست اصلاح" onClick={() => setReview({ action: 'needs_changes', ids: [row.id], reason: '' })}>✏️</button>}
       {row.can_reject && <button className="btn sm danger" aria-label="رد سؤال" onClick={() => setReview({ action: 'reject', ids: [row.id], reason: '' })}>❌</button>}
@@ -172,6 +176,7 @@ export default function Questions({ route = '', go }) {
 
   return <>
     <PageHeader title="بازبینی سؤال‌ها" description="دامنه مشترک ربات، API و وب‌ادمین؛ رد بدون حذف داده و اصلاح با ارسال مجدد" actions={<>
+      <button className="btn" title="صف سلامت: سیگنال‌های منفی داده‌ای، بدترین‌ها اول" onClick={() => setHealthOpen(true)}>🩺 سلامت سؤال‌ها</button>
       <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ پیشنهاد سؤال</button>
       <button className="btn" onClick={() => setImportOpen(true)}>📥 JSON نسخه‌دار</button>
       <button className="btn" title="خروجی CSV از سؤال‌های فیلترشده" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
@@ -227,6 +232,8 @@ export default function Questions({ route = '', go }) {
     {bulkResult && <Modal title="نتیجه عملیات گروهی" onClose={() => setBulkResult(null)}><div className="row"><B kind="ok">موفق {fa(bulkResult.succeeded?.length)}</B><B>ردشده {fa(bulkResult.skipped?.length)}</B><B kind="bad">ناموفق {fa(bulkResult.failed?.length)}</B></div>{[...(bulkResult.skipped || []), ...(bulkResult.failed || [])].slice(0, 30).map((item, i) => <div key={`${item.id}-${i}`} className="row"><span className="code">{item.id}</span><span className="muted">{item.reason || item.error}</span></div>)}</Modal>}
     {createOpen && <QuestionCreateModal intake={intake} onClose={ok => { setCreateOpen(false); if (ok) load(); }} />}
     {importOpen && <ImportWizard onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}
+    {healthOpen && <HealthDrawer onClose={() => setHealthOpen(false)} on360={id => { setHealthOpen(false); setQ360Id(id); }} />}
+    {q360Id && <Question360Drawer qid={q360Id} onClose={() => setQ360Id(null)} />}
   </>;
 }
 
@@ -420,4 +427,90 @@ function ImportWizard({ onClose, onDone }) {
 function ImportMapModal({ item, onClose, onSave }) {
   const [value, setValue] = useState({ lesson_id: '', topic_id: '', lesson: '', topic: '' });
   return <Modal title={`نگاشت taxonomy ردیف ${fa(item.row)}`} onClose={onClose}><TaxonomyFields intake="" value={value} onChange={setValue} /><div className="muted" style={{ marginTop: 8 }}>مقدار ورودی: {item.raw?.lesson || '—'} / {item.raw?.topic || '—'}</div><div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!value.lesson_id || !value.topic_id} onClick={() => onSave(value)}>ثبت نگاشت</button><button className="btn" onClick={onClose}>انصراف</button></div></Modal>;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 🌊 WA22 — سلامت سؤال + نمای ۳۶۰
+// ══════════════════════════════════════════════════════════════════
+
+function scoreKind(score) { return score >= 45 ? 'bad' : score >= 20 ? 'warn' : 'ok'; }
+
+function HealthDrawer({ onClose, on360 }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.questionHealth({ limit: 100 }).then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  return <Drawer wide title="🩺 سلامت سؤال‌ها" onClose={onClose}>
+    <p className="muted" style={{ marginTop: 0 }}>فقط سیگنال‌های موجود در داده: گزارش باز، نرخ پاسخ غلط (با حداقل تلاش ثبت‌شده) و نبود توضیح. بدترین‌ها اول.</p>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading />}
+    {data && <>
+      <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+        <B kind="bad">{fa(data.summary.needs_review)} نیازمند بازبینی</B>
+        <B>{fa(data.summary.considered)} بررسی‌شده</B>
+      </div>
+      <DataTable rowKey="id" rows={data.items} empty={<Empty icon="🩺" text="هیچ سؤالی سیگنال منفی ندارد" />} columns={[
+        { k: 'question', label: 'سؤال', render: r => <div style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.question}</div> },
+        { k: 'score', label: 'امتیاز بیماری', render: r => <B kind={scoreKind(r.score)}>{fa(r.score)}</B> },
+        { k: 'signals', label: 'سیگنال‌ها', render: r => <div>{(r.signals || []).map(s => <div key={s.key}><small className="muted">{s.label}</small></div>)}</div> },
+        { k: 'attempts', label: 'تلاش/دقت', render: r => `${fa(r.attempt_count)} · ${fa(Math.round((1 - (r.wrong_rate || 0)) * 100))}٪` },
+        { k: 'ops', label: '', stop: true, render: r => <button className="btn sm" aria-label="نمای ۳۶۰ سؤال" onClick={() => on360(r.id)}>۳۶۰</button> },
+      ]} />
+    </>}
+  </Drawer>;
+}
+
+function Question360Drawer({ qid, onClose }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setD(null); api.question360(qid).then(setD).catch(e => setErr(errText(e))); };
+  useEffect(load, [qid]);
+  return <Drawer wide title="🩺 نمای ۳۶۰ سؤال" onClose={onClose}>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !d && <Loading />}
+    {d && <>
+      <div className="panel panel-pad" style={{ background: 'var(--bg)', marginBottom: 10 }}>
+        <div style={{ fontWeight: 700 }}>{d.question.question || '—'}</div>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          <B kind={(STATUS[d.question.status] || [d.question.status, ''])[1]}>{(STATUS[d.question.status] || [d.question.status])[0]}</B>
+          <B>{d.question.lesson || '—'} / {d.question.topic || '—'}</B>
+          <B>{(DIFF[d.question.difficulty] || ['—'])[0]}</B>
+          {d.question.intake ? <B kind="acc">{d.question.intake}</B> : <B>سراسری</B>}
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>طراح: {d.question.creator_name || d.question.creator_id || '—'} · منبع: {SRC[d.question.source] || d.question.source || '—'} · <FaDateTime value={d.question.created_at} /></div>
+        {(d.question.options || []).length > 0 && <ol style={{ margin: '8px 0 0', paddingInlineStart: 18 }}>
+          {d.question.options.map((o, i) => <li key={i} style={Number(i) === Number(d.question.correct_answer) ? { fontWeight: 700 } : undefined}>{o}</li>)}
+        </ol>}
+        {d.question.explanation && <div className="muted" style={{ marginTop: 6 }}>توضیح: {d.question.explanation}</div>}
+        {Number(d.question.twins) > 0 && <div style={{ marginTop: 6 }}><B kind="warn">⚠️ {fa(d.question.twins)} نسخه‌ی هم‌محتوا (content_hash)</B></div>}
+      </div>
+      {d.section_errors?.health ? <B kind="warn">بخش سلامت در دسترس نیست</B> : d.health && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <B kind={d.health.needs_review ? 'bad' : 'ok'}>امتیاز بیماری {fa(d.health.score)}</B>
+          {(d.health.signals || []).map(s => <B key={s.key} kind="warn">{s.label}</B>)}
+          {(d.health.signals || []).length === 0 && <B kind="ok">بدون سیگنال منفی</B>}
+        </div>)}
+      {d.section_errors?.reports ? <B kind="warn">بخش گزارش‌ها در دسترس نیست</B> : d.reports && (
+        <div className="panel panel-pad" style={{ marginBottom: 10 }}>
+          <b>🚩 گزارش‌ها</b> <B kind={d.reports.open ? 'bad' : 'ok'}>{fa(d.reports.open)} باز</B> <B>{fa(d.reports.total)} کل</B>
+          {(d.reports.recent || []).length === 0 && <div className="muted" style={{ marginTop: 6 }}>گزارشی ثبت نشده.</div>}
+          {(d.reports.recent || []).map((r, i) => <div key={i} className="row" style={{ gap: 6, marginTop: 6 }}>
+            <B kind={r.status === 'resolved' ? 'ok' : r.status === 'rejected' ? '' : 'warn'}>{REPORT_STATUS_FA[r.status] || r.status}</B>
+            <span>{REPORT_REASON_FA[r.reason] || r.reason}</span>
+            <span className="muted">{r.user_name || r.reporter_id || ''}</span>
+            <span className="muted"><FaDateTime value={r.created_at} /></span>
+          </div>)}
+        </div>)}
+      {d.section_errors?.exams ? <B kind="warn">بخش آزمون‌ها در دسترس نیست</B> : d.exams && (
+        <div className="panel panel-pad">
+          <b>🎯 پاسخ‌های ثبت‌شده در آزمون‌ها</b> <B>{fa(d.exams.attempts)}</B> <B kind="ok">{fa(d.exams.correct)} صحیح</B>
+          {(d.exams.recent || []).length === 0 && <div className="muted" style={{ marginTop: 6 }}>هنوز در آزمونی استفاده نشده.</div>}
+          {(d.exams.recent || []).map((a, i) => <div key={i} className="row" style={{ gap: 6, marginTop: 6 }}>
+            <B kind={a.is_correct ? 'ok' : 'bad'}>{a.is_correct ? 'صحیح' : 'غلط'}</B>
+            <span className="muted">کاربر {fa(a.user_id)} · نشست {String(a.session_id).slice(0, 8)}</span>
+            <span className="muted"><FaDateTime value={a.at} /></span>
+          </div>)}
+        </div>)}
+    </>}
+  </Drawer>;
 }

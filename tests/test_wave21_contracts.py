@@ -132,22 +132,21 @@ class ActionCenterRuntimeTests(unittest.TestCase):
         cls.db = db
         cls.headers = {"X-Init-Data": _signed_init_data(TEST_UID)}
 
-        # یک loop مشترک: Motor به اولین loop گره می‌خورد و با بستن loop
-        # بعدی همه‌ی عملیات‌ها RuntimeError می‌گیرند.
-        cls.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(cls.loop)
+        # یک loop مشترک بین همه‌ی کلاس‌های runtime (tests/_rtloop):
+        # Motor به اولین loop گره می‌خورد؛ loop دوم یعنی RuntimeError.
+        from _rtloop import adopt
+        adopt()
         cls._run(cls._prepare())
 
     @classmethod
     def tearDownClass(cls):
-        try:
-            cls._run(cls._clean())
-        finally:
-            cls.loop.close()
+        # loop مشترک را نبند — کلاس‌های runtime بعدی همان را لازم دارند.
+        cls._run(cls._clean())
 
     @classmethod
     def _run(cls, coro):
-        return cls.loop.run_until_complete(coro)
+        from _rtloop import run
+        return run(coro)
 
     @classmethod
     async def _prepare(cls):

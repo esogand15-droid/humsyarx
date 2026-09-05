@@ -254,6 +254,8 @@ input, select, textarea { font-family: inherit; }
 .grid { display: grid; gap: var(--sp3); }
 .g4 { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .g2 { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+/* 🌊 WA22 — گارد CSS مرده این کلاس را در ImportWizard پیدا کرد؛ کامل شد. */
+.g3 { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .spacer { flex: 1; }
 

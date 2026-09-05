@@ -132,6 +132,9 @@ export const api = {
   questionImportMap: (jobId, itemId, lessonId, topicId) => req(`/api/web-admin/questions/import/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/mapping`, { method: 'PATCH', body: { lesson_id: lessonId, topic_id: topicId } }),
   questionImportDecision: (jobId, itemId, decision) => req(`/api/web-admin/questions/import/${encodeURIComponent(jobId)}/items/${encodeURIComponent(itemId)}/decision`, { method: 'PATCH', body: { decision } }),
   questionImportConfirm: (jobId) => req(`/api/web-admin/questions/import/${encodeURIComponent(jobId)}/confirm`, { method: 'POST' }),
+  // 🌊 WA22 — سلامت سؤال + نمای ۳۶۰
+  questionHealth: (p = {}) => req('/api/web-admin/questions/health?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
+  question360: (qid) => req(`/api/web-admin/questions/${encodeURIComponent(qid)}/360`),
   questionImportCancel: (jobId) => req(`/api/web-admin/questions/import/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
   settingsCenter: () => req('/api/web-admin/settings/center'),
   patchSetting: (key, value, applyToExisting = false) => req(`/api/web-admin/settings/center/${encodeURIComponent(key)}`, { method: 'PATCH', body: { value, apply_to_existing: applyToExisting } }),
