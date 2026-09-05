@@ -16,6 +16,7 @@ const TABS = [
   ['payments', '🧾 رسیدها'],
   ['subscribers', '👥 مشترکین'],
   ['discounts', '🎁 تخفیف و کمپین'],
+  ['reconcile', '⚖️ مغایرت‌گیری'],
 ];
 
 export default function Subscriptions({ route = '' }) {
@@ -66,6 +67,7 @@ export default function Subscriptions({ route = '' }) {
       {tab === 'payments' && <PaymentsPanel initial={{ status: params.get('status') ?? 'pending', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}
+      {tab === 'reconcile' && <ReconcilePanel />}
     </>
   );
 }
@@ -200,6 +202,7 @@ function PaymentsPanel({ initial = {} }) {
   const [err, setErr] = useState('');
   const [rcpt, setRcpt] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [refund, setRefund] = useState(null); // 🌊 W5
   const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 25;
 
@@ -224,9 +227,12 @@ function PaymentsPanel({ initial = {} }) {
     { k: 'has_receipt', label: 'رسید', render: r => r.has_receipt ? <B kind="acc">🖼 دارد</B> : '—' },
     { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{r.status}</B> },
-    { k: 'ops', label: '', stop: true, render: r => r.status === 'pending' && <div className="row" style={{ gap: 4 }}>
-      <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
-      <button className="btn sm danger" onClick={() => decide(r, false)} aria-label="رد رسید پرداخت">❌</button></div> },
+    { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
+      {r.status === 'pending' && <>
+        <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
+        <button className="btn sm danger" onClick={() => decide(r, false)} aria-label="رد رسید پرداخت">❌</button></>}
+      {r.status === 'approved' && <button className="btn sm danger" onClick={() => setRefund(r)} aria-label="بازگشت وجه" title="بازگشت وجه رسید تأییدشده (W5)">💸</button>}
+    </div> },
   ];
   if (err) return <ErrorState error={err} onRetry={load} />;
   const total = data?.total || 0;
@@ -249,7 +255,74 @@ function PaymentsPanel({ initial = {} }) {
     {confirm && <Confirm danger={!confirm.approved}
       text={confirm.approved ? `تأیید رسید ${confirm.pay.user_name} و فعال‌سازی اشتراک؟` : `رد رسید ${confirm.pay.user_name}؟`}
       onYes={doDecision} onNo={() => setConfirm(null)} />}
+    {refund && <RefundModal pay={refund} onClose={() => setRefund(null)} onDone={() => { setRefund(null); load(); }} />}
   </>;
+}
+
+// 🌊 W5 — بازگشت وجه: تأیید صریح + دلیل اجباری + revoke اختیاری اشتراک
+function RefundModal({ pay, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [revoke, setRevoke] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      await api.subRefund(pay.id, { confirm: true, reason: reason.trim(), revoke_subscription: revoke });
+      toast('بازگشت وجه ثبت شد 💸');
+      onDone();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <Modal title={`💸 بازگشت وجه — ${pay.user_name || pay.user_id}`} onClose={onClose}>
+    <p className="muted" style={{ marginTop: 0 }}>
+      گذار approved→refunded اتمیک و برگشت‌ناپذیر است و در حسابرسی با شدت بحرانی
+      ثبت می‌شود. اگر اشتراک کاربر revoke نشود، مغایرت‌گیری آن را پرچم نگه می‌دارد.
+    </p>
+    <input className="inp" placeholder="دلیل بازگشت وجه (حداقل ۳ نویسه) *" value={reason} onChange={e => setReason(e.target.value)} />
+    <label className="row" style={{ marginTop: 10 }}>
+      <input type="checkbox" checked={revoke} onChange={e => setRevoke(e.target.checked)} />
+      <span>هم‌زمان اشتراک کاربر نیز revoke شود</span>
+    </label>
+    <div className="row" style={{ marginTop: 12 }}>
+      <button className="btn danger" disabled={busy || reason.trim().length < 3} onClick={run}>ثبت بازگشت وجه</button>
+      <button className="btn" onClick={onClose}>انصراف</button>
+    </div>
+  </Modal>;
+}
+
+// 🌊 W5 — مغایرت‌گیری مالی: ناهم‌خوانی‌های پول/دسترسی بین sub_payments و subscriptions
+const RECON_FA = {
+  approved_no_active_sub: 'تأیید بدون اشتراک فعال',
+  active_sub_no_approved_payment: 'اشتراک فعال بدون پرداخت تأییدشده',
+  refunded_but_active_sub: 'بازگشت وجه، اشتراک فعال',
+  pending_stale: 'رسید قدیمی در انتظار',
+};
+
+function ReconcilePanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <b>⚖️ مغایرت‌گیری مالی</b>
+      {data && <>
+        <B kind={data.summary.total ? 'bad' : 'ok'}>{fa(data.summary.total)} ناهم‌خوانی</B>
+        {Object.keys(RECON_FA).map(k => data.summary[k] > 0 && <B key={k} kind="warn">{fa(data.summary[k])} {RECON_FA[k]}</B>)}
+      </>}
+      <span className="spacer" />
+      <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+    </div>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && <DataTable rowKey="_k" rows={data.items.map((r, i) => ({ ...r, _k: `${r.type}-${i}` }))}
+      empty={<Empty icon="⚖️" text="هیچ ناهم‌خوانی مالی نیست" />} columns={[
+        { k: 'label', label: 'نوع', render: r => <B kind={r.severity === 'warning' ? 'warn' : 'bad'}>{r.label}</B> },
+        { k: 'user_id', label: 'کاربر', render: r => <span className="code">#{fa(r.user_id)}</span> },
+        { k: 'payment_id', label: 'رسید', render: r => r.payment_id ? <span className="code">{String(r.payment_id).slice(0, 8)}</span> : '—' },
+        { k: 'at', label: 'تاریخ', render: r => <FaDateTime value={r.at} /> },
+      ]} />}
+  </div>;
 }
 
 function ReceiptDrawer({ pay: r, decide, onClose }) {

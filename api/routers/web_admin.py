@@ -4855,6 +4855,131 @@ async def wa_subscription_send_receipt(
     return await subscription_api.send_receipt(payment_id=payment_id, admin=user)
 
 
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA23 / W5 — Finance Completeness: بازگشت وجه + مغایرت‌گیری
+#
+# فقط روی primitiveهای موجود: گذار اتمیکِ الگوی AUDIT-A1 (db/finance.py)،
+# sub_revoke، audit_logs و bot_notifications. نه کالکیشن جدید، نه RBAC
+# موازی — همان گیت `subscription.manage`.
+# تصمیم محصول (مستند، نه پنهان): بازگشت وجه، دوره‌ی اشتراکِ تمدیدشده را
+# جراحی نمی‌کند (extend=True روزها را ادغام کرده)؛ پس revoke اختیاریِ
+# صریح است و حالت «refunded ولی اشتراک فعال» در مغایرت‌گیری پرچم می‌ماند
+# تا اپراتور تصمیم بگیرد — نه حذف خودکارِ روزهای کاربر.
+# ══════════════════════════════════════════════════════════════════
+
+_RECON_META = {
+    "approved_no_active_sub": ("high", "تأییدشده بدون اشتراک فعال"),
+    "active_sub_no_approved_payment": ("high", "اشتراک فعال بدون پرداخت تأییدشده"),
+    "refunded_but_active_sub": ("critical", "بازگشت وجه شده ولی اشتراک هنوز فعال"),
+    "pending_stale": ("warning", "رسید قدیمی در انتظار بررسی"),
+}
+
+
+class WaRefundBody(BaseModel):
+    confirm: bool = False
+    reason: str = ""
+    revoke_subscription: bool = False
+
+
+@router.post("/subscription/payments/{payment_id}/refund")
+async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
+                                 user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — بازگشت وجه رسید تأییدشده: تأیید صریح + دلیل + گذار اتمیک +
+    Audit بحرانی + اطلاع به دانشجو. revoke اشتراک اختیاری و صریح است."""
+    if not body.confirm:
+        raise HTTPException(400, "بازگشت وجه بدون تأیید صریح ممکن نیست")
+    reason = (body.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "دلیل بازگشت وجه باید حداقل ۳ نویسه باشد")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل بازگشت وجه است")
+    uid = int(payment.get("user_id") or 0)
+    if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
+                                       reason=reason):
+        raise HTTPException(409, "این رسید هم‌زمان بازگشت وجه شده است")
+    revoked = False
+    if body.revoke_subscription:
+        revoked = await db.sub_revoke(uid, f"بازگشت وجه: {reason}",
+                                      int(user["id"]))
+    log_id = await _audit(
+        int(user["id"]), "بازگشت وجه رسید پرداخت", severity="CRITICAL",
+        target_type="sub_payment", target_id=str(payment["_id"]),
+        target_label=f"رسید کاربر {uid}",
+        before={"status": "approved",
+                "amount": payment.get("final_price", payment.get("amount"))},
+        after={"status": "refunded", "reason": reason,
+               "revoked_subscription": revoked},
+        tags=["مالی", "بازگشت_وجه"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:refund", "chat_id": uid, "sent": False,
+        "text": f"💸 بازگشت وجه رسید شما ثبت شد: {reason}",
+        "created_at": _now()})
+    return {"ok": True, "payment_id": str(payment["_id"]),
+            "revoked_subscription": bool(revoked), "audit_id": log_id}
+
+
+@router.get("/subscription/reconcile")
+async def wa_subscription_reconcile(
+        user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: چهار ناهم‌خوانی بین
+    sub_payments و subscriptions که هر کدام یعنی «پول/دسترسی بی‌حساب».
+
+    همه‌ی خواندن‌ها کرانه‌دار است (to_list محدود) — بدون اسکن بی‌پایان."""
+    items = []
+    active_subs = {s["_id"] for s in await db.subscriptions.find(
+        {"status": "active"}).to_list(length=10000)}
+    users_with_approved = {
+        int(r["_id"]) for r in await db.sub_payments.aggregate([
+            {"$match": {"status": "approved"}},
+            {"$group": {"_id": "$user_id"}},
+        ]).to_list(length=10000)}
+    # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
+    async for p in db.sub_payments.find(
+            {"status": "approved"}).sort("reviewed_at", -1).limit(200):
+        uid = int(p.get("user_id") or 0)
+        if uid not in active_subs:
+            items.append({"type": "approved_no_active_sub", "user_id": uid,
+                          "payment_id": str(p["_id"]),
+                          "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۲) اشتراک فعال (منبع پرداخت) بدون هیچ پرداخت تأییدشده
+    async for s in db.subscriptions.find(
+            {"status": "active", "source": "payment"}).limit(200):
+        uid = int(s["_id"])
+        if uid not in users_with_approved:
+            items.append({"type": "active_sub_no_approved_payment",
+                          "user_id": uid, "payment_id": None,
+                          "at": s.get("end_date")})
+    # ۳) بازگشت وجه شده ولی اشتراک هنوز فعال
+    async for p in db.sub_payments.find(
+            {"status": "refunded"}).sort("refunded_at", -1).limit(200):
+        uid = int(p.get("user_id") or 0)
+        if uid in active_subs:
+            items.append({"type": "refunded_but_active_sub", "user_id": uid,
+                          "payment_id": str(p["_id"]),
+                          "at": p.get("refunded_at")})
+    # ۴) رسیدهای مانده‌ی قدیمی (>۷۲ ساعت)
+    stale = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    async for p in db.sub_payments.find(
+            {"status": "pending",
+             "submitted_at": {"$lt": stale}}).limit(200):
+        items.append({"type": "pending_stale",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment_id": str(p["_id"]),
+                      "at": p.get("submitted_at")})
+    summary = {t: sum(1 for i in items if i["type"] == t)
+               for t in _RECON_META}
+    out_items = []
+    for i in items:
+        sev, label = _RECON_META[i["type"]]
+        out_items.append({**i, "severity": sev, "label": label})
+    return {"items": out_items,
+            "summary": {**summary, "total": len(out_items),
+                        "checked_at": _now()}}
+
+
 @router.get("/subscription/subscribers")
 async def wa_subscription_subscribers(
     status: str = Query("active"),

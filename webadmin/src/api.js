@@ -274,6 +274,9 @@ export const api = {
   subPlanToggle: (id) => req(`/api/web-admin/subscription/plans/${id}/toggle`, { method: 'POST' }),
   subPlanDelete: (id) => req(`/api/web-admin/subscription/plans/${id}`, { method: 'DELETE' }),
   subSendReceipt: (id) => req(`/api/web-admin/subscription/payments/${id}/send-receipt`, { method: 'POST' }),
+  // 🌊 W5 — بازگشت وجه + مغایرت‌گیری مالی
+  subRefund: (pid, body) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/refund`, { method: 'POST', body }),
+  subReconcile: () => req('/api/web-admin/subscription/reconcile'),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

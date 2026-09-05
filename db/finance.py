@@ -638,6 +638,23 @@ class DBFinance:
             return False
 
 
+    async def sub_payment_refund(self, pid: str, admin_id: int, reason: str) -> bool:
+        """🌊 W5 — گذار **اتمیک** approved→refunded، همان الگوی AUDIT-A1.
+
+        شرط `status: 'approved'` داخل خود update است؛ تنها یک فراخوان True
+        می‌گیرد و بقیه 409 می‌خورند — دابل‌کلیک یعنی یک بازگشت وجه، نه دو تا.
+        رسید pending/rejected هرگز قابل refund نیست (چرخه‌ی مالی بسته می‌ماند)."""
+        try:
+            res = await self.sub_payments.update_one(
+                {'_id': ObjectId(pid), 'status': 'approved'},
+                {'$set': {'status': 'refunded', 'refunded_by': admin_id,
+                          'refunded_at': utc_now_iso(),
+                          'refund_reason': reason}})
+            return res.modified_count == 1
+        except Exception as e:
+            logger.warning(f"sub_payment_refund failed for {pid}: {e}")
+            return False
+
     async def sub_payment_list_pending(self) -> list:
         return await self.sub_payments.find({'status': 'pending'}).sort('submitted_at', 1).to_list(100)
 
