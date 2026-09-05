@@ -7,7 +7,7 @@
   ✅ لغو با /cancel در هر مرحله
   ✅ ویرایش و حذف همه موارد
 """
-import os, logging
+import asyncio, hashlib, os, logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
@@ -370,7 +370,8 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
                  'add_ref_subject_prompt','add_ref_book_prompt','add_faq_prompt',
                  'upload_ref_volume_prompt','upload_content',
                  'edit_lesson_prompt','edit_session_prompt',
-                 'edit_ref_subject_prompt','edit_ref_book_prompt')
+                 'edit_ref_subject_prompt','edit_ref_book_prompt',
+                 'urlimport')  # 📥 URL-Import — منتظر ورودی متنی URL
     if action not in KEEP_MODE:
         _clear(context)
 
@@ -846,6 +847,17 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     elif action == 'del_faq':
         await db.faq_delete(parts[2]); await _show_faq(query)
 
+    elif action == 'urlimport':
+        # 📥 URL-Import — §46: ورودی متن → job → پیشرفت با edit
+        context.user_data['ca_mode'] = 'ui_url'
+        await query.edit_message_text(
+            "📥 <b>درون‌ریزی محتوا از URL</b>\n\n"
+            "لینک مستقیم فایل (http/https) رو بفرست.\n"
+            "فایل روی سرور دانلود و مستقیم به تلگرام منتقل می‌شه —\n"
+            "نیازی به دانلود/آپلود از دستگاه تو نیست.\n\n"
+            "لغو: /cancel",
+            parse_mode='HTML')
+
     # FIX باگ بسیار مهم — منشأ «ربات متن دریافت نمی‌کند»:
     # این تابع به‌عنوان entry_point با pattern='^ca:' ثبت شده است،
     # یعنی با هر کلیک در پنل محتوا، ConversationHandler کاربر را
@@ -903,6 +915,8 @@ def _main_keyboard(is_scoped: bool):
         [InlineKeyboardButton("✏️ طراحی سوال",           callback_data='ca:create_q')],
         [InlineKeyboardButton("🧪 مدیریت سوالات",        callback_data='questions:ca_q_list')],
         [InlineKeyboardButton("❓ سوالات متداول",          callback_data='ca:faq')],
+        # 📥 URL-Import — همان پایپ‌لاین canonical سرویس
+        [InlineKeyboardButton("📥 درون‌ریزی از URL",       callback_data='ca:urlimport')],
     ]
     if not is_scoped:
         kb.append([InlineKeyboardButton("🔄 تغییر ورودی", callback_data='ca:change_intake')])
@@ -1582,6 +1596,55 @@ async def ca_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  هندلر متن
 # ══════════════════════════════════════════════════════════
 
+_UI_FA = {
+    'created': '🕘 در صف…', 'validating': '🔍 بررسی لینک…',
+    'downloading': '⬇️ دریافت فایل از سرور مبدأ…',
+    'validating_file': '🔬 بررسی فایل…',
+    'uploading': '☁️ انتقال به تلگرام…',
+    'registering': ' ثبت محتوا…',
+    'completed': '✅ کامل شد — محتوا آماده‌ی دانشجوهاست.',
+    'failed': '❌ ناموفق.', 'cancelled': ' لغو شد.',
+    'duplicate': '⚠️ این فایل قبلاً درون‌ریزی شده.',
+}
+
+
+async def _ui_run_bot(message, uid: int, url: str, lesson: str, topic: str):
+    """📥 URL-Import در بات — همان سرویس canonical (§106)، نه منطق موازی.
+    پیشرفت با edit همان پیام (§47) — نه spam صدها پیام."""
+    import url_import_service as uis
+    user = await db.get_user(uid) or {}
+    admin = {"id": uid, "name": user.get("name", "")}
+    scope = await db.get_content_scope(uid) or {}
+    try:
+        doc = await uis.create_import_job(admin, {
+            "url": url, "kind": "qbank", "lesson": lesson, "topic": topic,
+            "intake": scope.get("intake") or "",
+        }, idem_key=f"bot:{uid}:{hashlib.sha256(url.encode()).hexdigest()[:16]}")
+    except uis.UrlImportError as e:
+        await message.edit_text(f"❌ {e.message}")
+        return
+    job_id = str(doc["_id"])
+    await uis.start_import_job(job_id)
+    for _ in range(40):  # تا ~۲ دقیقه؛ بعدش ادمین از وب/مینی‌اپ پیگیری می‌کند
+        await asyncio.sleep(3)
+        doc = await uis.get_import_job(job_id)
+        if not doc:
+            break
+        st = doc.get("status")
+        pct = (doc.get("progress") or {}).get("percent")
+        txt = f"📥 {doc.get('url_safe', '')}\n{_UI_FA.get(st, st)}"
+        if isinstance(pct, int) and pct:
+            txt += f" — {pct}٪"
+        if doc.get("error"):
+            txt += f"\n{doc['error'].get('code')}: {doc['error'].get('message')}"
+        try:
+            await message.edit_text(txt)
+        except Exception:
+            pass
+        if st in uis.TERMINAL:
+            break
+
+
 async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = update.effective_user.id
     if not await db.is_content_admin(uid): return ConversationHandler.END
@@ -1607,10 +1670,36 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'waiting_description', 'waiting_ref_description',
         'add_faq', 'add_ref_subject', 'add_ref_book',
         'edit_ref_subject', 'edit_ref_book',
+        'ui_url', 'ui_lesson', 'ui_topic',  # 📥 URL-Import
     }
     if ca_mode not in VALID_CA_MODES:
         from message_router import route_message
         return await route_message(update, context)
+
+    # ── 📥 URL-Import — سه گام متنی: URL → درس → مبحث (§46) ──
+    if ca_mode == 'ui_url':
+        if not text.startswith(('http://', 'https://')):
+            await update.message.reply_text(
+                "⚠️ لینک باید با http:// یا https:// شروع بشه.")
+            return ConversationHandler.END
+        context.user_data['ui_url'] = text[:2048]
+        context.user_data['ca_mode'] = 'ui_lesson'
+        await update.message.reply_text("📚 نام درس رو بفرست:")
+        return ConversationHandler.END
+
+    if ca_mode == 'ui_lesson':
+        context.user_data['ui_lesson'] = text[:100]
+        context.user_data['ca_mode'] = 'ui_topic'
+        await update.message.reply_text("🧭 نام مبحث رو بفرست:")
+        return ConversationHandler.END
+
+    if ca_mode == 'ui_topic':
+        url = context.user_data.pop('ui_url', '')
+        lesson = context.user_data.pop('ui_lesson', '')
+        _clear(context)
+        msg = await update.message.reply_text("⏳ ساخت job درون‌ریزی…")
+        await _ui_run_bot(msg, uid, url, lesson, text[:100])
+        return ConversationHandler.END
 
     if ca_mode == 'add_lesson':
         ps = [p.strip() for p in text.split(',')]

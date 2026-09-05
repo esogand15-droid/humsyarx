@@ -27,6 +27,7 @@ const CCONTENT_TABS = [
   ['schedule', '🗓 کلاس‌ها/برنامه'],
   ['faq', '❓ راهنما/FAQ'],
   ['reports', '🚩 گزارش‌ها'],
+  ['import', '📥 درون‌ریزی URL'],
 ];
 
 export default function Content({ route = '' }) {
@@ -47,7 +48,132 @@ export default function Content({ route = '' }) {
       {tab === 'schedule' && <ScheduleTab />}
       {tab === 'faq' && <FaqTab />}
       {tab === 'reports' && <ReportsTab />}
+      {tab === 'import' && <UrlImportTab />}
     </>
+  );
+}
+
+/* ═══  تب درون‌ریزی از URL — پایپ‌لاین راه‌دور ═══
+   سرور فایل را دانلود و مستقیم به تلگرام منتقل می‌کند (§93).
+   پیشرفت فقط از job state می‌آید (§112) — هیچ progress ساختگی نیست. */
+const UI_STATUS_FA = {
+  created: ['در صف', ''],
+  validating: ['بررسی لینک', 'warn'],
+  downloading: ['دریافت فایل', 'warn'],
+  validating_file: ['بررسی فایل', 'warn'],
+  uploading: ['انتقال به تلگرام', 'warn'],
+  registering: ['ثبت محتوا', 'warn'],
+  completed: ['کامل شد', 'ok'],
+  failed: ['ناموفق', 'bad'],
+  cancelled: ['لغو شد', ''],
+  duplicate: ['تکراری', 'warn'],
+};
+
+function UrlImportTab() {
+  const [form, setForm] = useState({ url: '', kind: 'qbank', target_id: '', lesson: '', topic: '', description: '', ctype: 'pdf' });
+  const [jobs, setJobs] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(null);
+
+  const load = () => api.urlImportJobs({ page: 1, per_page: 30 }).then(setJobs).catch(e => setErr(errText(e)));
+  useEffect(() => { load(); }, []);
+  // فقط تا وقتی job غیرنهایی داریم poll سبک (§49 — زیرساخت تازه نیست)
+  useEffect(() => {
+    const active = (jobs?.jobs || []).some(j => !['completed', 'failed', 'cancelled', 'duplicate'].includes(j.status));
+    if (!active) return;
+    const t = setInterval(load, 2500);
+    return () => clearInterval(t);
+  }, [jobs]);
+
+  const submit = async () => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.urlImportCreate({ ...form, idem: `wa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
+      toast('Job درون‌ریزی ساخته شد — سرور در حال انتقال فایل است');
+      setForm(f => ({ ...f, url: '' }));
+      load();
+    } catch (e) { setErr(errText(e)); }
+    finally { setBusy(false); }
+  };
+
+  const act = async (id, fn) => { try { await fn(); load(); } catch (e) { toast(errText(e), 'err'); } };
+
+  return (
+    <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+        <b>📥 درون‌ریزی محتوا از URL</b>
+        <span className="muted small">فایل روی سرور دریافت و مستقیماً به تلگرام منتقل می‌شود — دانلود/آپلود دستی لازم نیست.</span>
+        <span className="spacer" />
+        <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+      </div>
+
+      <div className="grid" style={{ gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <input className="inp" dir="ltr" placeholder="https://example.com/file.pdf" value={form.url}
+          onChange={e => setForm({ ...form, url: e.target.value })} />
+        <select className="inp" value={form.kind} onChange={e => setForm({ ...form, kind: e.target.value })}>
+          <option value="qbank">بانک سؤال (درس/مبحث)</option>
+          <option value="bs">علوم پایه (جلسه)</option>
+          <option value="refs">رفرنس (کتاب)</option>
+        </select>
+        <input className="inp" placeholder="شناسه مقصد (جلسه/کتاب — برای qbank خالی)" value={form.target_id}
+          onChange={e => setForm({ ...form, target_id: e.target.value })} />
+        {form.kind === 'qbank' && <>
+          <input className="inp" placeholder="درس" value={form.lesson} onChange={e => setForm({ ...form, lesson: e.target.value })} />
+          <input className="inp" placeholder="مبحث" value={form.topic} onChange={e => setForm({ ...form, topic: e.target.value })} />
+        </>}
+        {form.kind === 'bs' && (
+          <select className="inp" value={form.ctype} onChange={e => setForm({ ...form, ctype: e.target.value })}>
+            {['video', 'ppt', 'pdf', 'note', 'test', 'voice'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
+        <input className="inp" placeholder="توضیح (اختیاری)" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
+        <button className="btn primary" disabled={busy || !form.url.trim()} onClick={submit}>📥 شروع درون‌ریزی</button>
+      </div>
+      {err && <div className="state-description" style={{ color: 'var(--c-bad)', marginTop: 8 }}>{err}</div>}
+
+      <div style={{ marginTop: 14 }}>
+        {!jobs && <Loading rows={3} />}
+        {jobs && (jobs.jobs || []).length === 0 && <Empty icon="📥" text="هنوز درون‌ریزی‌ای ثبت نشده" />}
+        {jobs && (jobs.jobs || []).map(j => {
+          const [label, kind] = UI_STATUS_FA[j.status] || [j.status, ''];
+          const pct = j.progress?.percent;
+          return (
+            <div key={j.id} className="panel panel-pad" style={{ marginBottom: 8, background: 'var(--bg)' }}>
+              <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <b style={{ direction: 'ltr' }}>{j.url_safe}</b>
+                <B kind={kind}>{label}</B>
+                <span className="muted small">{j.kind}{j.filename ? ` · ${j.filename}` : ''}{j.size ? ` · ${fa(j.size)}B` : ''}</span>
+                <span className="spacer" />
+                {!['completed', 'failed', 'cancelled', 'duplicate'].includes(j.status) &&
+                  <button className="btn sm danger" onClick={() => act(j.id, () => api.urlImportCancel(j.id))}>لغو</button>}
+                {['failed', 'duplicate'].includes(j.status) &&
+                  <button className="btn sm" onClick={() => act(j.id, () => api.urlImportRetry(j.id, j.status === 'duplicate'))}>
+                    {j.status === 'duplicate' ? 'ثبت با وجود تکرار' : '🔁 Retry'}</button>}
+                <button className="btn sm" onClick={() => setOpen(open === j.id ? null : j.id)}>جزئیات</button>
+              </div>
+              {typeof pct === 'number' && (
+                <div style={{ marginTop: 6, height: 6, background: 'var(--elev)', borderRadius: 4 }}>
+                  <div style={{ width: `${pct}%`, height: 6, background: 'var(--acc)', borderRadius: 4 }} />
+                </div>
+              )}
+              {j.progress?.bytes > 0 && <div className="muted small" style={{ marginTop: 4 }}>{fa(j.progress.bytes)}{j.progress.total ? ` / ${fa(j.progress.total)}` : ''} بایت دریافت شد</div>}
+              {j.error && <div className="muted small" style={{ marginTop: 4, color: 'var(--c-bad)' }}>{j.error.code}: {j.error.message}</div>}
+              {open === j.id && (
+                <dl className="kv" style={{ marginTop: 8 }}>
+                  <dt>وضعیت</dt><dd>{j.status}</dd>
+                  <dt>SHA256</dt><dd className="code">{j.sha256 ? j.sha256.slice(0, 20) + '…' : '—'}</dd>
+                  <dt>تلگرام</dt><dd>{j.telegram_file_id ? 'file_id ذخیره شد ✅' : '—'}</dd>
+                  <dt>محتوا</dt><dd>{j.content_id ? `ثبت شد (${j.content_id.slice(0, 8)}…)` : '—'}</dd>
+                  <dt>تلاش‌ها</dt><dd>{fa(j.retries)}</dd>
+                  <dt>رویدادها</dt><dd>{(j.timeline || []).map(t => t.event).join(' ← ')}</dd>
+                </dl>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

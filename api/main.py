@@ -37,6 +37,7 @@ from api.routers import (
     subscription,
     subscription_management,
     tickets,
+    url_import,
     web_admin,
 )
 from database import db
@@ -66,6 +67,15 @@ async def lifespan(app: FastAPI):
         }
     else:
         _BOOTSTRAP_STATE.setdefault("steps", {})["question_indexes"] = {"ok": True}
+
+    # 📥 URL-Import — §82: jobهای نیمه‌کاره‌ی پیش از restart علامت‌گذاری
+    try:
+        import url_import_service as _uis
+        _BOOTSTRAP_STATE.setdefault("steps", {})["url_import_recover"] = {
+            "ok": True, "recovered": await _uis.recover_stale_jobs()}
+    except Exception as exc:  # pragma: no cover
+        _BOOTSTRAP_STATE.setdefault("steps", {})["url_import_recover"] = {
+            "ok": False, "error": str(exc)}
 
     yield
 
@@ -351,6 +361,12 @@ app.include_router(
 
 app.include_router(
     content_admin.router,
+    prefix="/api/content",
+)
+
+# 📥 URL-Import — همان prefix محتوا؛ تنها پایپ‌لاین canonical درون‌ریزی
+app.include_router(
+    url_import.router,
     prefix="/api/content",
 )
 

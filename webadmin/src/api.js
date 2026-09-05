@@ -160,6 +160,16 @@ export const api = {
   studentPreviewFiles: (userId, sessionId) => req(`/api/web-admin/content/student-preview/files?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(sessionId)}`),
   contentImpact: (type, id) => req(`/api/web-admin/content/impact/${encodeURIComponent(type)}/${encodeURIComponent(id)}`),
   contentHistory: (targetType, targetId) => req(`/api/web-admin/content/history?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
+  // 🌊 GIFT — مدیریت هدیه‌ها (همان روتر decide رسیدها)
+  subGifts: (p) => req('/api/subscription-admin/gifts?' + new URLSearchParams(p || {})),
+  subGiftCancel: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/cancel`, { method: 'POST' }),
+  subGiftRetryNotify: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/retry-notify`, { method: 'POST' }),
+  // 📥 URL-Import — پایپ‌لاین canonical درون‌ریزی محتوای راه‌دور
+  urlImportCreate: (body) => req('/api/content/url-import/jobs', { method: 'POST', body }),
+  urlImportJobs: (p) => req('/api/content/url-import/jobs?' + new URLSearchParams(p || {})),
+  urlImportJob: (id) => req(`/api/content/url-import/jobs/${encodeURIComponent(id)}`),
+  urlImportCancel: (id) => req(`/api/content/url-import/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  urlImportRetry: (id, force) => req(`/api/content/url-import/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST', body: { force: !!force } }),
   dupSession: (sid) => req(`/api/web-admin/content/sessions/${sid}/duplicate`, { method: 'POST' }),
   sessionsBulk: (body) => req('/api/web-admin/content/sessions/bulk', { method: 'POST', body }),
   itemsBulk: (body) => req('/api/web-admin/content/items/bulk', { method: 'POST', body }),
@@ -277,10 +287,6 @@ export const api = {
   // 🌊 W5 — بازگشت وجه + مغایرت‌گیری مالی
   subRefund: (pid, body) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/refund`, { method: 'POST', body }),
   subReconcile: () => req('/api/web-admin/subscription/reconcile'),
-  // 🌊 GIFT — مدیریت هدیه‌ها (همان روتر decide رسیدها)
-  subGifts: (p) => req('/api/subscription-admin/gifts?' + new URLSearchParams(p || {})),
-  subGiftCancel: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/cancel`, { method: 'POST' }),
-  subGiftRetryNotify: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/retry-notify`, { method: 'POST' }),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

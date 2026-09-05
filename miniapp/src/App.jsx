@@ -382,6 +382,13 @@ const ReferencesAdminScreen = lazyScreen(
   'ReferencesAdmin'
 );
 
+// 📥 URL-Import — صفحه‌ی درون‌ریزی محتوای راه‌دور
+const UrlImportScreen = lazyScreen(
+  () => import('./pages/Admin/UrlImport'),
+  LibraryRowsSkeleton,
+  'UrlImport'
+);
+
 const QbankAdminScreen = lazyScreen(
   () => import('./pages/Admin/ContentLibrary'),
   LibraryRowsSkeleton,
@@ -1303,6 +1310,16 @@ export default function App() {
           element={
             <PermissionRoute any={['content.manage', 'content.scoped']}>
               <QbankAdminScreen />
+            </PermissionRoute>
+          }
+        />
+
+        {/* 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند */}
+        <Route
+          path="/admin/content/url-import"
+          element={
+            <PermissionRoute any={['content.manage', 'content.scoped']}>
+              <UrlImportScreen />
             </PermissionRoute>
           }
         />

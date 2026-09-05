@@ -55,6 +55,9 @@ class DBCore:
         self.ai_practice_questions = _db['ai_practice_questions']
         self.question_ai_quotas = _db['question_ai_quotas']
         self.question_import_jobs = _db['question_import_jobs']
+        # 📥 URL-Import — jobهای درون‌ریزی محتوای راه‌دور (همان الگوی
+        # question_import_jobs: idem یکتا + فهرست per-admin)
+        self.url_import_jobs = _db['url_import_jobs']
         self.question_import_items = _db['question_import_items']
         self.question_migration_backups = _db['question_migration_backups']
         self.schedules    = _db['schedules']
@@ -214,6 +217,10 @@ class DBCore:
                 self._index(self.question_ai_quotas, [('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self._index(self.question_import_jobs, [('admin_id', 1), ('created_at', -1)], background=True),
                 self._index(self.question_import_jobs, [('admin_id', 1), ('fingerprint', 1)], unique=True, background=True),
+                # 📥 URL-Import — idem یکتا (دابل‌کلیک)، per-admin، و sha برای duplicate
+                self._index(self.url_import_jobs, [('admin_id', 1), ('created_at', -1)], background=True),
+                self._index(self.url_import_jobs, 'idem_key', unique=True, background=True),
+                self._index(self.url_import_jobs, [('sha256', 1), ('status', 1)], background=True),
                 self._index(self.question_import_items, [('job_id', 1), ('classification', 1), ('row', 1)], background=True),
                 self._index(self.question_import_items, [('job_id', 1), ('external_id', 1)], unique=True, background=True),
                 self._index(self.question_migration_backups,

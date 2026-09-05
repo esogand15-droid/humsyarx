@@ -132,6 +132,24 @@ const TOOLS = [
       'var(--soft-warn)',
   },
 
+  // 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند
+  {
+    icon: '📥',
+    title: 'درون‌ریزی از URL',
+
+    desc:
+      'سرور فایل را دانلود و به تلگرام منتقل می‌کند',
+
+    route:
+      '/admin/content/url-import',
+
+    color:
+      'var(--t-info)',
+
+    soft:
+      'var(--soft-info)',
+  },
+
   {
     icon: '❓',
     title: 'سؤالات متداول',
