@@ -566,8 +566,17 @@ class DBFinance:
     async def sub_payment_create(self, user_id: int, plan_id: str, plan_name: str,
                                   price: int, final_price: int, screenshot_file_id: str,
                                   discount_code: str = None,
-                                  discount_percent: int = None) -> str:
-        r = await self.sub_payments.insert_one({
+                                  discount_percent: int = None,
+                                  gift_to: int = 0, gift_message: str = "",
+                                  idem_key: str = "") -> str:
+        # 🌊 GIFT — idempotency: کلاینت (بات/مینی‌اپ) توکن یکتا می‌فرستد؛
+        # double-click یا retry همان سند را برمی‌گرداند، نه سند دوم.
+        if idem_key:
+            existing = await self.sub_payments.find_one(
+                {'idem_key': idem_key}, {'_id': 1})
+            if existing:
+                return str(existing['_id'])
+        doc = {
             'user_id': user_id, 'plan_id': plan_id, 'plan_name': plan_name,
             'price': price, 'final_price': final_price,
             'discount_code': discount_code,
@@ -577,9 +586,73 @@ class DBFinance:
             'screenshot_file_id': screenshot_file_id,
             'status': 'pending', 'submitted_at': utc_now_iso(),
             'admin_msg_id': None,
-        })
+        }
+        # 🌊 GIFT — هدیه یعنی همان خرید عادی + گیرنده؛ نه کالکیشن جدید.
+        # gift.activated_at نگهبان فعال‌سازی تکراری است (الگوی AUDIT-A1).
+        if gift_to:
+            doc['gift'] = {'to': int(gift_to),
+                           'message': (gift_message or '').strip()[:300],
+                           'activated_at': None}
+        if idem_key:
+            doc['idem_key'] = idem_key
+        r = await self.sub_payments.insert_one(doc)
         return str(r.inserted_id)
 
+    async def finalize_approved_payment(self, payment: dict, admin_id: int) -> dict:
+        """🌊 GIFT — تنها نقطه‌ی فعال‌سازی پس از تأیید رسید (بات و وب مشترک).
+
+        رسید عادی → اشتراکِ payer؛ رسید هدیه → اشتراکِ گیرنده.
+        extend=True رفتار واقعیِ معماری فعلی برای اشتراک فعال است
+        (تصمیم ثبت‌شده D1: هدیه روی اشتراک فعال، تمدید می‌کند نه صف/رد).
+        فعال‌سازی هدیه یک‌بار است: لایه‌ی اول، CAS تصمیم (pending→approved)
+        است که فقط یک بار موفق می‌شود؛ لایه‌ی دوم (اینجا)، اگر
+        gift.activated_at پر شده باشد روزی اضافه نمی‌کند."""
+        gift = payment.get('gift') or {}
+        target = int(gift.get('to') or 0) or int(payment['user_id'])
+        if gift and gift.get('activated_at'):
+            sub = await self.subscriptions.find_one({'_id': target})
+            return {'target_uid': target,
+                    'end_date': (sub or {}).get('end_date'),
+                    'is_gift': True, 'days': 0, 'already': True}
+        plan = await self.sub_plan_get(str(payment.get('plan_id', '')))
+        days = int(plan.get('days', 0) or 0) if plan else 0
+        if days <= 0:
+            raise ValueError('plan_days_invalid')
+        end_date = await self.sub_activate(
+            target, days, payment.get('plan_name', 'اشتراک'),
+            source='gift' if gift else 'payment',
+            granted_by=admin_id, extend=True)
+        if gift:
+            await self.sub_payments.update_one(
+                {'_id': payment['_id'], 'gift.activated_at': None},
+                {'$set': {'gift.activated_at': utc_now_iso()}})
+        return {'target_uid': target, 'end_date': end_date,
+                'is_gift': bool(gift), 'days': days}
+
+
+    async def sub_payment_cancel(self, pid: str, admin_id: int) -> bool:
+        """🌊 GIFT — لغو رسید pending توسط ادمین (CAS؛ فقط pending→cancelled).
+
+        «لغو» با «رد» فرق دارد: رد یعنی رسید بررسی و نامعتبر شد؛ لغو یعنی
+        درخواست از صف خارج شد (مثلاً هدیه‌ی اشتباه). کد تخفیف مصرف‌شده
+        آزاد می‌شود تا ظرفیت نشت نکند (الگوی موج D1)."""
+        try:
+            oid = ObjectId(pid)
+        except Exception:
+            return False
+        r = await self.sub_payments.update_one(
+            {'_id': oid, 'status': 'pending'},
+            {'$set': {'status': 'cancelled',
+                      'decided_at': utc_now_iso(),
+                      'decided_by': admin_id,
+                      'note': 'لغو توسط مدیریت'}})
+        if not r.modified_count:
+            return False
+        doc = await self.sub_payments.find_one({'_id': oid})
+        if doc and doc.get('discount_code'):
+            await self.discount_release(
+                doc['discount_code'], user_id=doc.get('user_id', 0))
+        return True
 
     async def sub_payment_get(self, pid: str):
         try:

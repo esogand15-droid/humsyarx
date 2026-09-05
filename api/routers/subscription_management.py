@@ -897,24 +897,11 @@ async def decide_payment(
         )
 
     if body.approved:
-        await db.sub_activate(
-            payment["user_id"],
-
-            days,
-
-            payment.get(
-                "plan_name",
-                "اشتراک",
-            ),
-
-            source=
-                "payment",
-
-            granted_by=
-                admin["id"],
-
-            extend=
-                True,
+        # 🌊 GIFT — فعال‌سازی از تنها نقطه‌ی مشترک (بات/وب یک‌جا):
+        # رسید عادی → payer، رسید هدیه → recipient. اتمیک و یک‌بار.
+        await db.finalize_approved_payment(
+            payment,
+            admin["id"],
         )
 
 
@@ -950,7 +937,9 @@ async def decide_payment(
                 f"\n{body.note.strip()}"
             )
 
-
+    # ROOT-FIX 🌊 GIFT — insert قبلاً داخل شاخه‌ی else بود و در تأیید
+    # هیچ اعلانی برای payer ثبت نمی‌شد؛ notification_text هر دو شاخه
+    # نشان می‌دهد insert باید برای هر دو تصمیم انجام شود.
     await notification_collection.insert_one({
         "type":
             "payment_decision",
@@ -967,6 +956,27 @@ async def decide_payment(
         "created_at":
             utc_now_iso(),
     })
+
+    # 🌊 GIFT — گیرنده هم از طریق همان outbox باخبر می‌شود
+    # (نوتیفیکیشن هرگز rollback نمی‌کند؛ worker با retry می‌فرستد).
+    _gift = payment.get("gift") or {}
+    if body.approved and _gift.get("to"):
+        _sender = await db.get_user(payment["user_id"])
+        _sname = (
+            (_sender or {}).get("name")
+            or f"کاربر {payment['user_id']}"
+        )
+        await notification_collection.insert_one({
+            "type": "gift_activated",
+            "chat_id": int(_gift["to"]),
+            "text": (
+                "🎁 هدیه‌ای برایتان فعال شد!\n"
+                f"{_sname} اشتراک «{payment.get('plan_name', '')}» "
+                "را به شما هدیه داد. از امروز فعال است."
+            ),
+            "sent": False,
+            "created_at": utc_now_iso(),
+        })
 
     decision = "approved" if body.approved else "rejected"
     await _audit(
@@ -2067,3 +2077,117 @@ async def update_card(
     return {
         "ok": True,
     }
+
+
+# ═══════════════ 🌊 GIFT — مدیریت هدیه‌ها ═══════════════
+@router.get("/gifts")
+async def list_gifts(
+    status: str = Query("all"),
+    payer: int = Query(0),
+    recipient: int = Query(0),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    admin=Depends(get_admin_user),
+):
+    """لیست هدیه‌ها با صفحه‌بندی اجباری (قرارداد W4).
+
+    فیلترها: status ∈ all/pending/approved/rejected/refunded/cancelled،
+    payer، recipient. نام‌ها از users همان لحظه join می‌شوند."""
+    q = {"gift.to": {"$exists": True}}
+    if status != "all":
+        q["status"] = status
+    if payer:
+        q["user_id"] = int(payer)
+    if recipient:
+        q["gift.to"] = int(recipient)
+    total = await db.sub_payments.count_documents(q)
+    docs = (
+        await db.sub_payments.find(q)
+        .sort("submitted_at", -1)
+        .skip((page - 1) * per_page)
+        .limit(per_page)
+        .to_list(per_page)
+    )
+    items = []
+    for d in docs:
+        p = await db.get_user(d.get("user_id", 0))
+        r = await db.get_user((d.get("gift") or {}).get("to", 0))
+        items.append({
+            "id": str(d.get("_id", "")),
+            "payer_id": d.get("user_id", 0),
+            "payer_name": (p or {}).get("name", "—"),
+            "recipient_id": (d.get("gift") or {}).get("to", 0),
+            "recipient_name": (r or {}).get("name", "—"),
+            "plan_name": d.get("plan_name", ""),
+            "final_price": d.get("final_price", 0),
+            "status": d.get("status", "pending"),
+            "submitted_at": d.get("submitted_at", ""),
+            "message": (d.get("gift") or {}).get("message", ""),
+            "activated_at": (d.get("gift") or {}).get("activated_at"),
+        })
+    return {"ok": True, "items": items, "total": total,
+            "page": page, "per_page": per_page}
+
+
+@router.post("/gifts/{payment_id}/cancel")
+async def cancel_gift(payment_id: str, admin=Depends(get_admin_user)):
+    """لغو هدیه‌ی pending (CAS). فعال‌سازی دستی کور وجود ندارد —
+    تنها مسیر فعال‌سازی، تأیید رسید است (تصمیم §۵۸)."""
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="هدیه پیدا نشد")
+    if not (payment.get("gift") or {}).get("to"):
+        raise HTTPException(status_code=422, detail="این رسید هدیه نیست")
+    if not await db.sub_payment_cancel(payment_id, admin["id"]):
+        raise HTTPException(
+            status_code=409, detail="فقط هدیه‌ی در انتظار را می‌توان لغو کرد")
+    notification_collection = db.client["medicalbot"]["bot_notifications"]
+    await notification_collection.insert_one({
+        "type": "gift_cancelled",
+        "chat_id": payment["user_id"],
+        "text": "ℹ️ درخواست هدیه‌ی اشتراک شما توسط مدیریت لغو شد.",
+        "sent": False,
+        "created_at": utc_now_iso(),
+    })
+    await _audit(
+        admin, "لغو هدیه اشتراک", "Subscription", severity="HIGH",
+        target_id=payment_id, target_type="payment",
+        before={"status": payment.get("status")}, after={"status": "cancelled"},
+        tags=["اشتراک", "هدیه", "پنل_وب"],
+    )
+    return {"ok": True, "status": "cancelled"}
+
+
+@router.post("/gifts/{payment_id}/retry-notify")
+async def retry_gift_notify(payment_id: str, admin=Depends(get_admin_user)):
+    """ارسال دوباره‌ی اعلان گیرنده از طریق همان outbox —
+    نوتیفیکیشن هرگز تراکنش را rollback نکرده و همیشه قابل retry است."""
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(status_code=404, detail="هدیه پیدا نشد")
+    gift = payment.get("gift") or {}
+    if not gift.get("to"):
+        raise HTTPException(status_code=422, detail="این رسید هدیه نیست")
+    if payment.get("status") != "approved":
+        raise HTTPException(
+            status_code=409, detail="فقط هدیه‌ی فعال‌شده اعلان دارد")
+    sender = await db.get_user(payment["user_id"])
+    sname = (sender or {}).get("name") or f"کاربر {payment['user_id']}"
+    notification_collection = db.client["medicalbot"]["bot_notifications"]
+    await notification_collection.insert_one({
+        "type": "gift_activated",
+        "chat_id": int(gift["to"]),
+        "text": (
+            "🎁 هدیه‌ای برایتان فعال شد!\n"
+            f"{sname} اشتراک «{payment.get('plan_name', '')}» "
+            "را به شما هدیه داد. از امروز فعال است."
+        ),
+        "sent": False,
+        "created_at": utc_now_iso(),
+    })
+    await _audit(
+        admin, "ارسال دوباره اعلان هدیه", "Subscription", severity="MEDIUM",
+        target_id=payment_id, target_type="payment",
+        tags=["اشتراک", "هدیه", "پنل_وب"],
+    )
+    return {"ok": True, "queued": True}

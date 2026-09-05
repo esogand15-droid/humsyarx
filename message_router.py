@@ -76,6 +76,14 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # «نماینده‌ی ورودی» (grade_rep)؛ به همین دلیل بیرون از بلاک بالا
     # است که فقط مخصوص ADMIN_ID بود.
     mode = context.user_data.get('mode', '')
+    # 🌊 GIFT — حالت‌های خرید هدیه (برای همه‌ی کاربران، نه فقط ادمین)
+    if mode in ('gift_recipient', 'gift_message'):
+        from subscription import (gift_message_handler,
+                                  gift_recipient_handler)
+        return await (
+            gift_recipient_handler if mode == 'gift_recipient'
+            else gift_message_handler
+        )(update, context)
     if mode == 'grades_exam_title':
         from grades import handle_exam_title_text
         return await handle_exam_title_text(update, context)

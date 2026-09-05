@@ -17,6 +17,7 @@ const TABS = [
   ['subscribers', '👥 مشترکین'],
   ['discounts', '🎁 تخفیف و کمپین'],
   ['reconcile', '⚖️ مغایرت‌گیری'],
+  ['gifts', '🎀 هدایا'],
 ];
 
 export default function Subscriptions({ route = '' }) {
@@ -68,6 +69,7 @@ export default function Subscriptions({ route = '' }) {
       {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}
       {tab === 'reconcile' && <ReconcilePanel />}
+      {tab === 'gifts' && <GiftsPanel />}
     </>
   );
 }
@@ -297,6 +299,104 @@ const RECON_FA = {
   refunded_but_active_sub: 'بازگشت وجه، اشتراک فعال',
   pending_stale: 'رسید قدیمی در انتظار',
 };
+
+// 🌊 GIFT — پنل مدیریت هدیه‌ها: فهرست/فیلتر/صفحه‌بندی + لغو pending
+// و ارسال دوباره‌ی اعلان. تأیید هدیه همان تصمیم رسید است (تب رسیدها) —
+// هیچ «فعال‌سازی دستی کور» وجود ندارد.
+const GIFT_STATUS_FA = {
+  pending: ['در انتظار', 'warn'],
+  approved: ['فعال‌شده', 'ok'],
+  rejected: ['رد شده', 'bad'],
+  refunded: ['بازگشت وجه', 'bad'],
+  cancelled: ['لغو شده', ''],
+};
+
+function GiftsPanel() {
+  const [status, setStatus] = useState('all');
+  const [payer, setPayer] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const PER = 20;
+  const load = () => {
+    setErr(''); setData(null);
+    api.subGifts({ status, payer: payer || 0, recipient: recipient || 0, page, per_page: PER })
+      .then(setData).catch(e => setErr(errText(e)));
+  };
+  useEffect(() => { load(); }, [status, payer, recipient, page]);
+  useEffect(() => { writeHashQuery('/subscriptions', { tab: 'gifts', status: status !== 'all' ? status : '', page: page > 1 ? page : '' }); }, [status, page]);
+
+  const doCancel = async () => {
+    const r = cancelTarget; setCancelTarget(null);
+    if (!r) return;
+    setBusy(r.id);
+    try { await api.subGiftCancel(r.id); toast('هدیه لغو شد'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+
+  const retryNotify = async (r) => {
+    setBusy(r.id);
+    try { await api.subGiftRetryNotify(r.id); toast('اعلان گیرنده دوباره در صف ارسال قرار گرفت'); }
+    catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+
+  const pages = data ? Math.max(1, Math.ceil(data.total / PER)) : 1;
+
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <b>🎀 هدیه‌های اشتراک</b>
+      <select className="inp" style={{ width: 'auto' }} value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
+        <option value="all">همه</option>
+        <option value="pending">در انتظار</option>
+        <option value="approved">فعال‌شده</option>
+        <option value="rejected">رد شده</option>
+        <option value="refunded">بازگشت وجه</option>
+        <option value="cancelled">لغو شده</option>
+      </select>
+      <input className="inp" style={{ width: 150 }} placeholder="آیدی پرداخت‌کننده…" value={payer}
+        onChange={e => setPayer(e.target.value.replace(/\D/g, ''))} />
+      <input className="inp" style={{ width: 150 }} placeholder="آیدی گیرنده…" value={recipient}
+        onChange={e => setRecipient(e.target.value.replace(/\D/g, ''))} />
+      <span className="spacer" />
+      <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+    </div>
+    <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+      <span className="muted small">تأیید/رد هدیه از تب «رسیدها» انجام می‌شود — همان رسید، همان تصمیم. اینجا فقط لغو pending و retry اعلان.</span>
+    </div>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && <>
+      <DataTable rowKey="id" rows={data.items}
+        empty={<Empty icon="🎀" text="هدیه‌ای ثبت نشده است" />} columns={[
+          { k: 'payer', label: 'پرداخت‌کننده', render: r => <span>{r.payer_name} <span className="muted">#{fa(r.payer_id)}</span></span> },
+          { k: 'recipient', label: 'گیرنده', render: r => <span>{r.recipient_name} <span className="muted">#{fa(r.recipient_id)}</span></span> },
+          { k: 'plan_name', label: 'پلن' },
+          { k: 'final_price', label: 'مبلغ', render: r => money(r.final_price) },
+          { k: 'status', label: 'وضعیت', render: r => { const [l, kind] = GIFT_STATUS_FA[r.status] || [r.status, '']; return <B kind={kind}>{l}</B>; } },
+          { k: 'message', label: 'پیام', render: r => r.message ? <span title={r.message}>{r.message.length > 40 ? r.message.slice(0, 40) + '…' : r.message}</span> : '—' },
+          { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
+          { k: 'activated_at', label: 'فعال‌سازی', render: r => r.activated_at ? <FaDateTime value={r.activated_at} /> : '—' },
+          { k: 'ops', label: 'عملیات', render: r => <div className="row" style={{ gap: 6 }}>
+            {r.status === 'pending' && <button className="btn sm danger" disabled={busy === r.id} onClick={() => setCancelTarget(r)}>لغو</button>}
+            {r.status === 'approved' && <button className="btn sm" disabled={busy === r.id} onClick={() => retryNotify(r)}>📨 اعلان دوباره</button>}
+          </div> },
+        ]} />
+      <div className="row" style={{ justifyContent: 'center', gap: 8, marginTop: 10 }}>
+        <button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹ قبلی</button>
+        <span className="muted">صفحه {fa(page)} از {fa(pages)} — {fa(data.total)} هدیه</span>
+        <button className="btn sm" disabled={page >= pages} onClick={() => setPage(p => p + 1)}>بعدی ›</button>
+      </div>
+    </>}
+    {cancelTarget && <Confirm danger
+      text={`هدیه‌ی «${cancelTarget.plan_name}» از ${cancelTarget.payer_name} به ${cancelTarget.recipient_name} لغو شود؟ ظرفیت کد تخفیف (اگر داشت) آزاد می‌شود.`}
+      onYes={doCancel} onNo={() => setCancelTarget(null)} />}
+  </div>;
+}
 
 function ReconcilePanel() {
   const [data, setData] = useState(null);

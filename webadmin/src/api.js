@@ -277,6 +277,10 @@ export const api = {
   // 🌊 W5 — بازگشت وجه + مغایرت‌گیری مالی
   subRefund: (pid, body) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/refund`, { method: 'POST', body }),
   subReconcile: () => req('/api/web-admin/subscription/reconcile'),
+  // 🌊 GIFT — مدیریت هدیه‌ها (همان روتر decide رسیدها)
+  subGifts: (p) => req('/api/subscription-admin/gifts?' + new URLSearchParams(p || {})),
+  subGiftCancel: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/cancel`, { method: 'POST' }),
+  subGiftRetryNotify: (pid) => req(`/api/subscription-admin/gifts/${encodeURIComponent(pid)}/retry-notify`, { method: 'POST' }),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

@@ -11,6 +11,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
 )
 
@@ -431,6 +432,10 @@ async def buy(
         default=None
     ),
 
+    gift_to: int = Form(0),
+    gift_message: str = Form(""),
+    idem: str = Form(""),
+
     user=Depends(
         get_current_user
     ),
@@ -470,6 +475,59 @@ async def buy(
                 "انتظار بررسی دارید"
             ),
         )
+
+
+    # 🌊 GIFT — هدیه روی همان زیرساخت خرید عادی (نه مسیر موازی).
+    # قیمت همیشه سرور-ساید است؛ گیرنده در سرور اعتبارسنجی می‌شود؛
+    # پیام هدیه در لایه‌ی db sanitize و محدود به ۳۰۰ نویسه می‌شود.
+    gift_to = int(gift_to or 0)
+    gift_message = (gift_message or "").strip()
+    if gift_to:
+        if str(await db.get_setting("gift_enabled", "1")) != "1":
+            raise HTTPException(
+                status_code=403,
+                detail="خرید اشتراک هدیه فعلاً غیرفعال است",
+            )
+        if gift_to == user_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "هدیه دادن به خودتان همان خرید عادی است — "
+                    "از «خرید اشتراک» استفاده کنید"
+                ),
+            )
+        recipient = await db.get_user(gift_to)
+        if not recipient or recipient.get("suspended"):
+            raise HTTPException(
+                status_code=422,
+                detail="دانشجوی موردنظر پیدا نشد یا امکان دریافت هدیه را ندارد",
+            )
+        # ضد-سوءاستفاده: سقف هدیه در بازه‌ی لغزان — مقدار از settings
+        # (تصمیم D10: عدد سخت کد نمی‌شود؛ اول اندازه‌گیری، بعد تنظیم)
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        try:
+            _lim = int(await db.get_setting("gift_rate_max", "5"))
+            _win = int(await db.get_setting("gift_rate_window_h", "24"))
+        except Exception:
+            _lim, _win = 5, 24
+        _since = (_dt.now(_tz.utc) - _td(hours=_win)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+        _cnt = await db.sub_payments.count_documents(
+            {
+                "user_id": user_id,
+                "gift.to": {"$exists": True},
+                "submitted_at": {"$gte": _since},
+            }
+        )
+        if _cnt >= _lim:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"سقف {_lim} هدیه در {_win} ساعت اخیر پر شده است؛ "
+                    "کمی بعد تلاش کنید"
+                ),
+            )
 
 
     price = max(
@@ -544,6 +602,14 @@ async def buy(
 
     # تخفیف صددرصدی:
     # بدون رسید و تأیید ادمین
+    # 🌊 GIFT — کد تخفیف ۱۰۰٪ با هدیه ترکیب نمی‌شود (تصمیم ثبت‌شده:
+    # هدیه خرید واقعی است؛ کد رایگان مسیر شخصی است)
+    if gift_to and final_price <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="کد تخفیف ۱۰۰٪ با هدیه قابل ترکیب نیست",
+        )
+
     if final_price <= 0 and code:
         # 🎟 موج D1 — مصرف اتمیک «قبل» از فعال‌سازی: اگر ظرفیت در همین
         # کسری‌از‌لحظه پر شده باشد، فعال‌سازی انجام نمی‌شود (نشتی صفر)
@@ -772,6 +838,15 @@ async def buy(
 
                 discount_percent=
                     percent if code else None,
+
+                gift_to=
+                    gift_to,
+
+                gift_message=
+                    gift_message,
+
+                idem_key=
+                    idem,
             )
         )
     except Exception:
@@ -881,3 +956,77 @@ async def buy(
             "انتظار بررسی مدیریت است."
         ),
     }
+
+
+# ═══════════════ 🌊 GIFT — تاریخچه‌ی هدیه‌ها (سمت دانشجو) ═══════════════
+@router.get("/gifts")
+async def gift_history(user=Depends(get_current_user)):
+    """هدیه‌هایی که داده‌ام (as_payer) و دریافت کرده‌ام (as_recipient).
+
+    وضعیت‌ها همان ۵ وضعیت قرارداد رسید است — هیچ وضعیت جدیدی اختراع
+    نشده (ماتریس وضعیت §۲۲). پیام هدیه فقط به payer/recipient خودش
+    نشان داده می‌شود."""
+    uid = user["id"]
+    payer_docs = (
+        await db.sub_payments.find(
+            {"user_id": uid, "gift.to": {"$exists": True}}
+        )
+        .sort("submitted_at", -1)
+        .limit(50)
+        .to_list(50)
+    )
+    rec_docs = (
+        await db.sub_payments.find(
+            {"gift.to": uid}
+        )
+        .sort("submitted_at", -1)
+        .limit(50)
+        .to_list(50)
+    )
+
+    def _shape(d: dict, as_payer: bool) -> dict:
+        gift = d.get("gift") or {}
+        return {
+            "id": str(d.get("_id", "")),
+            "plan_name": d.get("plan_name", ""),
+            "final_price": d.get("final_price", 0),
+            "status": d.get("status", "pending"),
+            "submitted_at": d.get("submitted_at", ""),
+            "to": gift.get("to", 0) if as_payer else uid,
+            "from": d.get("user_id", 0) if not as_payer else uid,
+            "message": gift.get("message", ""),
+            "activated_at": gift.get("activated_at"),
+        }
+
+    return {
+        "ok": True,
+        "as_payer": [_shape(d, True) for d in payer_docs],
+        "as_recipient": [_shape(d, False) for d in rec_docs],
+    }
+
+
+# ═══════════════ 🌊 GIFT — جست‌وجوی حریم‌محور گیرنده ═══════════════
+@router.get("/gift/recipients")
+async def gift_recipients(
+    q: str = Query("", max_length=100),
+    user=Depends(get_current_user),
+):
+    """جست‌وجوی گیرنده‌ی هدیه — قرارداد مشترک db.search_users.
+
+    حریم خصوصی: فقط user_id، name و username برمی‌گردد؛ هیچ فیلد
+    شخصی دیگری (شماره، وضعیت اشتراک، ...) به payer داده نمی‌شود.
+    خودِ payer از نتایج حذف می‌شود (خود-هدیه مجاز نیست)."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"ok": True, "items": []}
+    rows = await db.search_users(q, limit=10)
+    items = [
+        {
+            "user_id": r.get("user_id"),
+            "name": r.get("name", "—"),
+            "username": r.get("username") or "",
+        }
+        for r in rows
+        if r.get("user_id") and int(r["user_id"]) != user["id"]
+    ]
+    return {"ok": True, "items": items[:10]}

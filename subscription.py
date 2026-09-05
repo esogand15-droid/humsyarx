@@ -74,6 +74,10 @@ async def show_paywall(target, uid: int, edit: bool = False):
                 callback_data=f"sub:plan:{p['_id']}"
             )])
         keyboard.append([InlineKeyboardButton("🎟 کد تخفیف دارم", callback_data='sub:discount')])
+        # 🌊 GIFT — ورودی هدیه (feature flag از settings، بدون کد سخت)
+        if str(await db.get_setting('gift_enabled', '1')) == '1':
+            keyboard.append([InlineKeyboardButton(
+                "🎁 خرید اشتراک هدیه برای یک دوست", callback_data='sub:gift')])
         text = header + "هر پلن رو بزن تا جزئیات پرداخت رو ببینی 👇"
         kb = InlineKeyboardMarkup(keyboard)
 
@@ -150,6 +154,16 @@ async def _show_payment_details(query, context, plan_id: str):
     discount_code = context.user_data.get('sub_discount_code')
     final_price = context.user_data.get('sub_final_price', price)
 
+    # 🌊 GIFT — کد تخفیف ۱۰۰٪ با هدیه ترکیب نمی‌شود (همان قانون API)
+    gift_to = context.user_data.get('sub_gift_to')
+    if gift_to and final_price <= 0:
+        context.user_data.pop('sub_gift_to', None)
+        context.user_data.pop('sub_gift_message', None)
+        await query.answer(
+            "کد تخفیف ۱۰۰٪ با هدیه ترکیب نمی‌شه — برای خودت عادی بخر 😉",
+            show_alert=True)
+        return
+
     # FIX جدید: کد تخفیف ۱۰۰٪ = رایگان کامل — نیازی به رسید/اسکرین‌شات
     # نیست، همون لحظه فعال می‌شه (منطقاً چیزی برای پرداخت نمانده که
     # عکسش گرفته شود).
@@ -167,8 +181,21 @@ async def _show_payment_details(query, context, plan_id: str):
     price_line = (f"<s>{_fmt_price(price)}</s> ➜ <b>{_fmt_price(final_price)}</b>"
                   if discount_code else f"<b>{_fmt_price(price)}</b>")
 
+    # 🌊 GIFT — خط گیرنده؛ گیرنده از لحظه‌ی انتخاب «قفل» شده و
+    # در لحظه‌ی ثبت رسید هم دوباره سرور-ساید اعتبارسنجی می‌شود.
+    gift_line = ''
+    if gift_to:
+        _rec = await db.get_user(gift_to)
+        if _rec:
+            gift_line = f"🎁 هدیه برای: <b>{_rec.get('name', '—')}</b>\n"
+        else:
+            gift_to = None
+            context.user_data.pop('sub_gift_to', None)
+            context.user_data.pop('sub_gift_message', None)
+
     text = (
         f"💳 <b>{plan['name']}</b> — {plan['days']} روزه\n\n"
+        f"{gift_line}"
         f"{discount_line}"
         f"💰 مبلغ: {price_line}\n\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -299,6 +326,57 @@ async def _discount_deep_link(query, context, code: str, uid: int):
 #  دریافت اسکرین‌شات از دانشجو
 # ══════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════
+#  🌊 GIFT — انتخاب گیرنده و پیام هدیه (حالت‌های متنی)
+# ══════════════════════════════════════════════════
+
+async def gift_recipient_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """جست‌وجوی حریم‌محور گیرنده: فقط نام و یوزرنیم نمایش داده می‌شود
+    (قرارداد مشترک db.search_users — همان چیزی که ربات/وب استفاده
+    می‌کنند). هیچ فیلد شخصی‌تری به payer نشان داده نمی‌شود."""
+    text = (update.message.text or '').strip()
+    if not text:
+        return
+    results = await db.search_users(text, limit=5)
+    results = [r for r in results if r.get('user_id')]
+    if not results:
+        await update.message.reply_text(
+            "🔍 کسی با این مشخصات پیدا نشد.\n"
+            "اسم، @یوزرنیم یا آیدی عددی رو دوباره بفرست (لغو: /cancel)"
+        )
+        return
+    if len(results) == 1:
+        r = results[0]
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ بله، همینه",
+                                 callback_data=f"sub:grsel:{r['user_id']}"),
+            InlineKeyboardButton("🔙 نه، دوباره", callback_data='sub:gift'),
+        ]])
+        await update.message.reply_text(
+            f"منظورت «{r.get('name') or '—'}» "
+            f"(@{r.get('username') or 'بدون یوزرنیم'}) هست؟",
+            reply_markup=kb)
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"{r.get('name') or '—'} (@{r.get('username') or '—'}) — {r['user_id']}",
+            callback_data=f"sub:grsel:{r['user_id']}")]
+        for r in results
+    ])
+    await update.message.reply_text(
+        "چند نفر پیدا شدن — گیرنده‌ی هدیه کدومشونه؟",
+        reply_markup=kb)
+
+
+async def gift_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (update.message.text or '').strip()[:300]
+    context.user_data['sub_gift_message'] = msg
+    context.user_data.pop('mode', None)
+    await update.message.reply_text(
+        "✅ پیامت ذخیره شد.\nحالا پلن هدیه رو انتخاب کن 👇")
+    await show_paywall(update.message, update.effective_user.id)
+
+
 async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
 
@@ -340,14 +418,34 @@ async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         discount_percent = consumed.get('percent')
 
+    # 🌊 GIFT — گیرنده در لحظه‌ی ثبت رسید دوباره سرور-ساید چک می‌شود
+    # (lock بعد از intent، اما اعتماد به کلاینت صفر). idem_key از
+    # file_id عکس: آپدیت تکراری تلگرام = رسید دوم ساخته نمی‌شود.
+    gift_to = context.user_data.get('sub_gift_to') or 0
+    gift_message = context.user_data.get('sub_gift_message', '')
+    if gift_to:
+        rec = await db.get_user(gift_to)
+        if not rec or gift_to == uid:
+            for k in ('sub_mode', 'sub_plan_id', 'sub_final_price',
+                      'sub_discount_code', 'sub_gift_to', 'sub_gift_message'):
+                context.user_data.pop(k, None)
+            await update.message.reply_text(
+                "⚠️ گیرنده‌ی هدیه معتبر نیست — رسید ثبت نشد. "
+                "از اول /start بزن."
+            )
+            return
+
     pid = await db.sub_payment_create(
         user_id=uid, plan_id=str(plan['_id']), plan_name=plan['name'],
         price=plan['price'], final_price=final_price,
         screenshot_file_id=photo.file_id, discount_code=discount_code,
         discount_percent=discount_percent,
+        gift_to=gift_to, gift_message=gift_message,
+        idem_key=f"bot:{uid}:{photo.file_id}",
     )
 
-    for k in ('sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code'):
+    for k in ('sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
+              'sub_gift_to', 'sub_gift_message'):
         context.user_data.pop(k, None)
 
     user = await db.get_user(uid)
@@ -363,6 +461,8 @@ async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"📦 پلن: {plan['name']} ({plan['days']} روز)\n"
         f"💰 مبلغ: {_fmt_price(final_price)}"
         + (f" (کد {discount_code})" if discount_code else "") + "\n"
+        + (f"🎁 هدیه برای: {rec.get('name', '—')} (<code>{gift_to}</code>)\n"
+           if gift_to else "")
         + warn_line
     )
     kb = InlineKeyboardMarkup([[
@@ -406,8 +506,57 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         # 🎟 موج D1 — CTA کمپین: ورود مستقیم با کد پیش‌پُر‌شده
         await _discount_deep_link(query, context, parts[2] if len(parts) > 2 else '', uid)
 
+    elif action == 'gift':
+        # 🌊 GIFT — ورودی هدیه: اول گیرنده، بعد پیام، بعد پلن‌ها
+        if str(await db.get_setting('gift_enabled', '1')) != '1':
+            await query.answer("خرید هدیه فعلاً غیرفعال است", show_alert=True)
+            return
+        context.user_data.pop('sub_gift_to', None)
+        context.user_data.pop('sub_gift_message', None)
+        context.user_data['mode'] = 'gift_recipient'
+        await query.edit_message_text(
+            "🎁 <b>خرید اشتراک هدیه</b>\n\n"
+            "اسم، @یوزرنیم یا آیدی عددی دانشجو رو بفرست تا پیداش کنم.\n\n"
+            "<i>فقط نام و یوزرنیم افراد نمایش داده می‌شه — "
+            "اطلاعات شخصی‌تر بهت نشون داده نمی‌شه.</i>\n\n"
+            "برای لغو /cancel بزن.",
+            parse_mode='HTML')
+
+    elif action == 'grsel':
+        # 🌊 GIFT — قفل‌کردن گیرنده بعد از تأیید صریح (lock پس از intent)
+        try:
+            rid = int(parts[2])
+        except (IndexError, ValueError):
+            await query.answer("خطا؛ دوباره امتحان کن.", show_alert=True)
+            return
+        if rid == uid:
+            await query.answer(
+                "هدیه به خودت یعنی خرید عادی 😉 از لیست پلن‌ها بخر.",
+                show_alert=True)
+            return
+        rec = await db.get_user(rid)
+        if not rec:
+            await query.answer("این دانشجو پیدا نشد.", show_alert=True)
+            return
+        context.user_data['sub_gift_to'] = rid
+        context.user_data['mode'] = 'gift_message'
+        await query.edit_message_text(
+            f"🎁 گیرنده: <b>{rec.get('name') or '—'}</b>\n\n"
+            "می‌خوای پیامی همراه هدیه بفرستی؟ (حداکثر ۳۰۰ نویسه)\n"
+            "پیامت رو بنویس، یا دکمه‌ی زیر رو بزن:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "بی‌خیال پیام ✋", callback_data='sub:gskip')]]))
+
+    elif action == 'gskip':
+        context.user_data.pop('sub_gift_message', None)
+        context.user_data.pop('mode', None)
+        await show_paywall(query.message, uid, edit=True)
+
     elif action == 'back':
         context.user_data.pop('sub_mode', None)
+        context.user_data.pop('sub_gift_to', None)
+        context.user_data.pop('sub_gift_message', None)
         await show_paywall(query.message, uid, edit=True)
 
     elif action == 'my_status':
@@ -433,7 +582,10 @@ async def _admin_approve(query, context, pid: str):
         await query.answer("این رسید قبلاً بررسی شده.", show_alert=True)
         return
     plan = await db.sub_plan_get(payment['plan_id'])
-    days = plan['days'] if plan else 30
+    if not plan or int(plan.get('days', 0) or 0) <= 0:
+        await query.answer("مدت این پلن نامعتبر است؛ اول پلن را اصلاح کن.",
+                           show_alert=True)
+        return
 
     # 🛡 AUDIT-A1 — اول «ادعا»ی تصمیم (گذار اتمیک pending→approved). اگر
     # هم‌زمان کسی همان رسید را بسته باشد نباید حتی یک روز اضافه شود؛
@@ -442,27 +594,52 @@ async def _admin_approve(query, context, pid: str):
     if not await db.sub_payment_decide(pid, approved=True, admin_id=ADMIN_ID):
         await query.answer("این رسید هم‌زمان بررسی و بسته شد.", show_alert=True)
         return
-    end_date = await db.sub_activate(
-        payment['user_id'], days, payment['plan_name'],
-        source='payment', granted_by=ADMIN_ID, extend=True
-    )
+
+    # 🌊 GIFT — فعال‌سازی از تنها نقطه‌ی مشترک (بات/وب یک‌جا):
+    # رسید عادی → payer، رسید هدیه → recipient. اتمیک و یک‌بار.
+    res = await db.finalize_approved_payment(payment, ADMIN_ID)
+    target = res['target_uid']
+    gift = payment.get('gift') or {}
     # 🎟 موج D1 — کد تخفیف در لحظه‌ی ثبت رسید مصرف شده؛ اینجا دیگر مصرف
     # مجدد نداریم (رفع باگ مصرف دوگانه). در رد رسید → discount_release.
 
-    days_left = await db.sub_days_left(payment['user_id'])
+    days_left = await db.sub_days_left(target)
     # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (تأیید رسید → فعال‌سازی)
     await db.inbox_add(payment['user_id'], 'sub_activated',
-        "✅ اشتراکت فعال شد!",
-        f"رسیدت تأیید شد؛ 📦 {payment['plan_name']} — {days_left} روز اعتبار داری.",
+        "✅ اشتراکت فعال شد!" if not gift else "✅ هدیه‌ات فعال شد!",
+        (f"رسیدت تأیید شد؛ 📦 {payment['plan_name']} — {days_left} روز اعتبار داری."
+         if not gift else
+         f"هدیه‌ات برای کاربر {target} فعال شد؛ 📦 {payment['plan_name']}."),
         link='/me/subscription')
     await safe_send(
         context.bot, payment['user_id'],
-        f"✅ <b>اشتراکت فعال شد!</b>\n\n"
-        f"📦 پلن: {payment['plan_name']}\n"
-        f"⏳ {days_left} روز اعتبار داری\n\n"
-        f"از بخش «👤 پروفایل» هر وقت خواستی می‌تونی باقیمونده رو چک کنی.",
+        (f"✅ <b>اشتراکت فعال شد!</b>\n\n"
+         f"📦 پلن: {payment['plan_name']}\n"
+         f"⏳ {days_left} روز اعتبار داری\n\n"
+         f"از بخش «👤 پروفایل» هر وقت خواستی می‌تونی باقیمونده رو چک کنی."
+         if not gift else
+         f"✅ <b>هدیه‌ات به مقصد رسید!</b>\n\n"
+         f"📦 پلن: {payment['plan_name']}\n"
+         f"🎁 اشتراک برای کاربر {target} فعال شد.\n\n"
+         f"ممنون از مهربونیت 💚"),
         parse_mode='HTML'
     )
+    if gift:
+        # 🌊 گیرنده هم خبردار می‌شود — نوتیفیکیشن هرگز تراکنش را
+        # برنمی‌گرداند؛ safe_send بی‌صدا شکست می‌خورد و قابل retry است.
+        sender = await db.get_user(payment['user_id'])
+        sname = (sender or {}).get('name') or f"کاربر {payment['user_id']}"
+        await db.inbox_add(target, 'gift_activated',
+            "🎁 هدیه‌ای برایت فعال شد!",
+            f"{sname} اشتراک «{payment['plan_name']}» را به تو هدیه داد.",
+            link='/me/subscription')
+        await safe_send(
+            context.bot, target,
+            f"🎁 <b>هدیه‌ای برایت فعال شد!</b>\n\n"
+            f"{sname} اشتراک «{payment['plan_name']}» رو بهت هدیه داد.\n"
+            f"⏳ {days_left} روز اعتبار داری 💚",
+            parse_mode='HTML'
+        )
     try:
         await query.edit_message_caption(
             caption=query.message.caption + "\n\n✅ <b>تأیید شد</b>",

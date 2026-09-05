@@ -4,6 +4,7 @@ import { confirmAction } from '../../lib/confirm';
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 
@@ -74,6 +75,60 @@ const PAYMENT_STATUS = {
 };
 
 
+// 🌊 GIFT — نتایج جست‌وجوی گیرنده (حریم‌محور: فقط نام/یوزرنیم)
+function RecipientResults({ q, onPick }) {
+  const { data, isFetching } = useQuery({
+    queryKey: ['gift-recipients', q.trim()],
+    queryFn: () =>
+      api.get('/api/subscription/gift/recipients', {
+        params: { q: q.trim() },
+      }),
+    enabled: q.trim().length >= 2,
+  });
+
+  if (q.trim().length < 2) {
+    return (
+      <div style={{ color: 'var(--txm)', fontSize: 'var(--fs-cap)' }}>
+        حداقل ۲ نویسه بنویس تا جست‌وجو شروع شود…
+      </div>
+    );
+  }
+
+  if (isFetching) return <Spinner />;
+
+  const items = data?.data?.items || [];
+
+  if (items.length === 0) {
+    return (
+      <div style={{ color: 'var(--txm)', fontSize: 'var(--fs-cap)' }}>
+        کسی با این مشخصات پیدا نشد.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 6 }}>
+      {items.map((u) => (
+        <button
+          type="button"
+          key={u.user_id}
+          className="card card-tap"
+          onClick={() => onPick(u)}
+          style={{
+            textAlign: 'right',
+            fontSize: 'var(--fs-sm)',
+            color: 'var(--tx1)',
+          }}
+        >
+          {u.name}
+          {u.username ? ` (@${u.username})` : ''}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+
 export default function Subscription() {
   const [
     selectedId,
@@ -104,6 +159,34 @@ export default function Subscription() {
     result,
     setResult,
   ] = useState(null);
+
+  // 🌊 GIFT — حالت هدیه: گیرنده، پیام و توکن idempotency
+  const [
+    giftMode,
+    setGiftMode,
+  ] = useState(false);
+
+  const [
+    giftTo,
+    setGiftTo,
+  ] = useState(null);
+
+  const [
+    giftQuery,
+    setGiftQuery,
+  ] = useState('');
+
+  const [
+    giftMessage,
+    setGiftMessage,
+  ] = useState('');
+
+  // توکن یکتا برای هر تلاش خرید — double-submit یک رسید می‌سازد نه دو تا
+  const idemRef = useRef(
+    `mp-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`
+  );
 
   const toast = useUIStore(
     (state) => state.toast
@@ -184,6 +267,19 @@ export default function Subscription() {
       data
         ?.has_pending_payment
     );
+
+
+  // 🌊 GIFT — تاریخچه‌ی هدیه‌ها (داده‌شده / دریافت‌شده)
+  const giftsQuery =
+    useQuery({
+      queryKey: [
+        'gifts-history',
+      ],
+      queryFn: () =>
+        api.get(
+          '/api/subscription/gifts'
+        ),
+    });
 
 
   const discountMutation =
@@ -295,6 +391,25 @@ export default function Subscription() {
           ''
         );
 
+        // 🌊 GIFT — فیلدهای هدیه؛ قیمت/گیرنده سرور-ساید
+        // اعتبارسنجی می‌شوند و idem جلوی double-submit را می‌گیرد
+        body.append(
+          'gift_to',
+          giftMode && giftTo
+            ? String(giftTo.user_id)
+            : '0'
+        );
+
+        body.append(
+          'gift_message',
+          giftMode ? giftMessage : ''
+        );
+
+        body.append(
+          'idem',
+          idemRef.current
+        );
+
         if (receipt) {
           body.append(
             'receipt',
@@ -331,6 +446,17 @@ export default function Subscription() {
         setReceipt(null);
         setAccepted(false);
 
+        // 🌊 GIFT — پاک‌سازی حالت هدیه و تولید توکن تازه برای
+        // خرید بعدی (توکن مصرف‌شده دیگر استفاده نمی‌شود)
+        setGiftMode(false);
+        setGiftTo(null);
+        setGiftQuery('');
+        setGiftMessage('');
+        idemRef.current = `mp-${Date.now()}-${Math
+          .random()
+          .toString(36)
+          .slice(2, 10)}`;
+
         toast(
           response.data
             ?.message ||
@@ -343,6 +469,12 @@ export default function Subscription() {
           .invalidateQueries({
             queryKey:
               ['sub-status'],
+          });
+
+        queryClient
+          .invalidateQueries({
+            queryKey:
+              ['gifts-history'],
           });
       },
 
@@ -674,6 +806,126 @@ export default function Subscription() {
                 )}
               </section>
             )}
+
+
+            {/* 🌊 GIFT — پنل خرید هدیه */}
+            <section className="card">
+              <div className="sec-title">
+                🎁 اشتراک هدیه
+              </div>
+
+              <div
+                style={{
+                  color: 'var(--tx2)',
+                  fontSize: 'var(--fs-cap)',
+                  lineHeight: 1.8,
+                }}
+              >
+                می‌خواهی اشتراک را برای دانشجوی
+                دیگری بخری؟ حالت هدیه را روشن کن،
+                گیرنده را انتخاب کن و مثل خرید عادی
+                رسید بفرست. اشتراک فقط بعد از تأیید
+                مدیریت و برای گیرنده فعال می‌شود.
+              </div>
+
+              <button
+                type="button"
+                className={
+                  giftMode ? 'btn btn-pri' : 'btn'
+                }
+                style={{ marginTop: 8 }}
+                onClick={() => {
+                  haptic('light');
+                  setGiftMode(!giftMode);
+                  setGiftTo(null);
+                  setGiftQuery('');
+                  setGiftMessage('');
+                }}
+              >
+                {giftMode
+                  ? '✅ حالت هدیه روشن است (خاموش کردن)'
+                  : '🎁 خرید هدیه برای یک دوست'}
+              </button>
+
+              {giftMode && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: 'grid',
+                    gap: 8,
+                  }}
+                >
+                  {giftTo ? (
+                    <div
+                      className="card"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent:
+                          'space-between',
+                        gap: 8,
+                      }}
+                    >
+                      <span
+                        style={{
+                          color: 'var(--tx1)',
+                          fontSize: 'var(--fs-sm)',
+                        }}
+                      >
+                        🎯 {giftTo.name}
+                        {giftTo.username
+                          ? ` (@${giftTo.username})`
+                          : ''}
+                      </span>
+
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        onClick={() => setGiftTo(null)}
+                      >
+                        تغییر
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <input
+                        className="inp"
+                        placeholder={
+                          'جست‌وجوی گیرنده با نام یا @یوزرنیم…'
+                        }
+                        value={giftQuery}
+                        onChange={(event) =>
+                          setGiftQuery(event.target.value)
+                        }
+                      />
+
+                      <RecipientResults
+                        q={giftQuery}
+                        onPick={(u) => {
+                          setGiftTo(u);
+                          setGiftQuery('');
+                        }}
+                      />
+                    </>
+                  )}
+
+                  {giftTo && (
+                    <textarea
+                      className="inp"
+                      rows={2}
+                      maxLength={300}
+                      placeholder={
+                        'پیام دلخواه همراه هدیه (اختیاری، حداکثر ۳۰۰ نویسه)'
+                      }
+                      value={giftMessage}
+                      onChange={(event) =>
+                        setGiftMessage(event.target.value)
+                      }
+                    />
+                  )}
+                </div>
+              )}
+            </section>
 
 
             <section>
@@ -1272,6 +1524,194 @@ export default function Subscription() {
                     '📤 ارسال رسید'
                   )}
                 </button>
+              </section>
+            )}
+
+
+            {/* 🌊 GIFT — تاریخچه‌ی هدیه‌ها */}
+            {(giftsQuery.data?.data?.as_payer?.length ||
+              giftsQuery.data?.data?.as_recipient
+                ?.length) && (
+              <section>
+                <div className="sec-title">
+                  🎁 هدیه‌های من
+                </div>
+
+                <div
+                  style={{ display: 'grid', gap: 8 }}
+                >
+                  {(
+                    giftsQuery.data?.data?.as_payer ||
+                    []
+                  ).map((item) => {
+                    const [label, badge, icon] =
+                      PAYMENT_STATUS[item.status] || [
+                        item.status,
+                        'b-gray',
+                        '🎁',
+                      ];
+
+                    return (
+                      <article
+                        key={`p-${item.id}`}
+                        className="card"
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 'var(--sp-3)',
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: 'grid',
+                              width: 42,
+                              height: 42,
+                              placeItems: 'center',
+                              borderRadius:
+                                'var(--r-md)',
+                              background:
+                                'var(--soft-mut)',
+                              fontSize: 'var(--fs-xl)',
+                            }}
+                          >
+                            {icon}
+                          </span>
+
+                          <div style={{ flex: 1 }}>
+                            <b>
+                              هدیه به کاربر{' '}
+                              {item.to}
+                            </b>
+
+                            <div
+                              style={{
+                                color: 'var(--txm)',
+                                fontSize:
+                                  'var(--fs-cap)',
+                                marginTop: 3,
+                              }}
+                            >
+                              {item.plan_name ||
+                                'اشتراک'}{' '}
+                              • {money(item.final_price)}
+                            </div>
+                          </div>
+
+                          <span
+                            className={`badge ${badge}`}
+                          >
+                            {label}
+                          </span>
+                        </div>
+
+                        {item.message && (
+                          <div
+                            style={{
+                              marginTop: 8,
+                              padding: '8px 9px',
+                              color: 'var(--tx2)',
+                              background:
+                                'var(--soft-mut)',
+                              borderRadius:
+                                'var(--r-sm)',
+                              fontSize:
+                                'var(--fs-cap)',
+                            }}
+                          >
+                            💬 {item.message}
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+
+                  {(
+                    giftsQuery.data?.data
+                      ?.as_recipient || []
+                  ).map((item) => (
+                    <article
+                      key={`r-${item.id}`}
+                      className="card"
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 'var(--sp-3)',
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: 'grid',
+                            width: 42,
+                            height: 42,
+                            placeItems: 'center',
+                            borderRadius:
+                              'var(--r-md)',
+                            background:
+                              'var(--soft-mut)',
+                            fontSize: 'var(--fs-xl)',
+                          }}
+                        >
+                          🎁
+                        </span>
+
+                        <div style={{ flex: 1 }}>
+                          <b>
+                            هدیه از کاربر{' '}
+                            {item.from}
+                          </b>
+
+                          <div
+                            style={{
+                              color: 'var(--txm)',
+                              fontSize:
+                                'var(--fs-cap)',
+                              marginTop: 3,
+                            }}
+                          >
+                            {item.plan_name ||
+                              'اشتراک'}
+                            {item.activated_at
+                              ? ' • فعال شد ✅'
+                              : ''}
+                          </div>
+                        </div>
+
+                        <span
+                          className={`badge ${
+                            item.status === 'approved'
+                              ? 'b-grn'
+                              : 'b-gray'
+                          }`}
+                        >
+                          {item.status === 'approved'
+                            ? 'فعال'
+                            : '—'}
+                        </span>
+                      </div>
+
+                      {item.message && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            padding: '8px 9px',
+                            color: 'var(--tx2)',
+                            background:
+                              'var(--soft-mut)',
+                            borderRadius:
+                              'var(--r-sm)',
+                            fontSize: 'var(--fs-cap)',
+                          }}
+                        >
+                          💬 {item.message}
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
               </section>
             )}
 
