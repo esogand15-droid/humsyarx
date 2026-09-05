@@ -127,6 +127,9 @@ class DBCore:
         self.subscriptions = _db['subscriptions']
         self.sub_payments  = _db['sub_payments']
         self.discount_codes = _db['discount_codes']
+        # 💰 W6 — کیف پول داخلی: ledger (منبع حقیقت) + موجودی کش‌شده
+        self.wallets             = _db['wallets']
+        self.wallet_transactions = _db['wallet_transactions']
         # 🎟 موج D1 — کمپین انتشار کد تخفیف: کاربرانِ مصرف‌کننده‌ی هر کد
         # (per_user_limit اتمیک) + تاریخچه‌ی broadcast کمپین‌ها
         self.discount_uses     = _db['discount_uses']
@@ -333,6 +336,17 @@ class DBCore:
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
                 self._index(self.discount_uses, [('code', 1), ('user_id', 1)], unique=True, background=True),
                 self._index(self.discount_bcasts, [('code', 1), ('created_at', -1)], background=True),
+                # 💰 W6 — کیف پول: هر کاربر یک wallet؛ کلید یکتای تراکنش =
+                # idempotency مالی (دو اثر اقتصادی برای یک مرجع ممنوع)؛
+                # ایندکس‌ها دقیقاً شکل کوئری‌های داغ wallet_tx_list/summary را دارند
+                self._index(self.wallets, 'user_id', unique=True, background=True),
+                self._index(self.wallet_transactions,
+                            [('reference_type', 1), ('reference_id', 1)],
+                            unique=True, background=True),
+                self._index(self.wallet_transactions,
+                            [('user_id', 1), ('created_at', -1)], background=True),
+                self._index(self.wallet_transactions,
+                            [('status', 1), ('created_at', -1)], background=True),
             ]
             coros = [
                 collection.create_index(*keys, **options)

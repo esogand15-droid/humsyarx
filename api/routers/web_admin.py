@@ -23,6 +23,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import re
 import secrets
 import time
@@ -59,6 +60,8 @@ from time_utils import (
     format_datetime_fa, now_utc, parse_clock_time, parse_gregorian_date,
     parse_machine_datetime, remaining_days, today_tehran, utc_now_iso,
 )
+
+logger = logging.getLogger("api.web_admin")
 
 router = APIRouter()
 question_bank = QuestionBankService(db)
@@ -4319,7 +4322,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "prestige_div": target.get("prestige_div", ""),
             "streak_current": target.get("streak_current", 0) or 0,
         },
-        "subscription": None, "admin_role": None, "roles": [], "perms": [],
+        "subscription": None, "wallet": None, "admin_role": None, "roles": [], "perms": [],
         "counts": {"tickets": 0, "grades": 0, "answers": 0, "questions": 0,
                    "exams": 0, "notifications": 0},
         "recent_tickets": [], "recent_audit": [], "recent_questions": [],
@@ -4337,6 +4340,16 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             }
     except Exception:
         out["section_errors"]["subscription"] = "unavailable"
+    try:
+        # 💰 W6 — کیف پول در نمای ۳۶۰: موجودی + آخرین تراکنش (server-derived)
+        w = await db.wallet_summary(uid)
+        out["wallet"] = {
+            "balance": w["balance"], "currency": w["currency"],
+            "credits_total": w["credits_total"],
+            "debits_total": w["debits_total"], "last_tx": w["last_tx"],
+        }
+    except Exception:
+        out["section_errors"]["wallet"] = "unavailable"
     try:
         ar = await db.get_admin_role(uid)
         if ar:
@@ -5133,6 +5146,24 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
     if body.revoke_subscription:
         revoked = await db.sub_revoke(uid, f"بازگشت وجه: {reason}",
                                       int(user["id"]))
+    # 💰 W6 — بازگشت وجه = اعتبار کیف پول داخلی (نه فقط status).
+    # مبلغ از خودِ رسید (سرور-ساید)؛ idempotency با کلید یکتای
+    # (sub_payment_refund, payment_id) — حتی اگر این خط دوبار اجرا شود.
+    # اگر اعتبار ناموفق باشد، مغایرت‌گیری «refund_without_wallet_credit»
+    # را بحرانی پرچم می‌کند (هرگز خطای مالی پنهان نمی‌شود).
+    amount = int(payment.get("final_price") or payment.get("amount") or 0)
+    credit_tx = None
+    balance_after = None
+    if amount > 0:
+        try:
+            tx = await db.wallet_credit(
+                uid, amount, "refund_credit", "sub_payment_refund",
+                str(payment["_id"]), int(user["id"]),
+                f"بازگشت وجه — {payment.get('plan_name') or 'اشتراک'}")
+            credit_tx = str(tx.get("_id"))
+            balance_after = tx.get("balance_after")
+        except Exception as e:
+            logger.warning(f"refund wallet credit failed {payment_id}: {e}")
     log_id = await _audit(
         int(user["id"]), "بازگشت وجه رسید پرداخت", severity="CRITICAL",
         target_type="sub_payment", target_id=str(payment["_id"]),
@@ -5140,14 +5171,24 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         before={"status": "approved",
                 "amount": payment.get("final_price", payment.get("amount"))},
         after={"status": "refunded", "reason": reason,
-               "revoked_subscription": revoked},
+               "revoked_subscription": revoked,
+               "wallet_credited": bool(credit_tx),
+               "wallet_tx_id": credit_tx},
         tags=["مالی", "بازگشت_وجه"])
+    if amount > 0 and credit_tx:
+        text = (f"💸 مبلغ {amount:,} تومان به کیف پول شما بازگشت. "
+                f"می‌توانید با آن اشتراک بخرید.")
+    else:
+        text = f"💸 بازگشت وجه رسید شما ثبت شد: {reason}"
     await db.client["medicalbot"]["bot_notifications"].insert_one({
         "type": "event:refund", "chat_id": uid, "sent": False,
-        "text": f"💸 بازگشت وجه رسید شما ثبت شد: {reason}",
-        "created_at": _now()})
+        "text": text, "created_at": _now()})
     return {"ok": True, "payment_id": str(payment["_id"]),
-            "revoked_subscription": bool(revoked), "audit_id": log_id}
+            "revoked_subscription": bool(revoked),
+            "wallet_credited": bool(credit_tx),
+            "wallet_tx_id": credit_tx,
+            "wallet_balance_after": balance_after,
+            "audit_id": log_id}
 
 
 @router.get("/subscription/reconcile")
@@ -5244,6 +5285,49 @@ async def wa_subscription_reconcile(
             "at": i["at"], "summary": text, "actions": actions,
             "technical": str(p.get("_id") or ""),
         })
+    # 💰 W6 — مغایرت‌های کیف پول: جمله‌ی انسانی، نه OID جارگون
+    witems = await db.wallet_reconcile_items()
+    if witems:
+        wnames = {}
+        for u in await db.users.find(
+                {"user_id": {"$in": [i["user_id"] for i in witems]}}).to_list(200):
+            wnames[int(u["user_id"])] = u.get("name") or ""
+        for i in witems:
+            who = wnames.get(i["user_id"]) or f"کاربر {i['user_id']}"
+            go_wallet = {"key": "go", "label": "بررسی کیف پول",
+                         "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}
+            t = i["type"]
+            if t == "wallet_balance_mismatch":
+                label, sev = "مغایرت حسابداری کیف پول", "critical"
+                text = (f"موجودی ثبت‌شده‌ی کیف پول {who} "
+                        f"({i['balance']:,} تومان) با جمع ledger "
+                        f"({i['ledger']:,} تومان) نمی‌خواند — اختلاف "
+                        f"{abs(i['amount']):,} تومان.")
+                actions = [go_wallet]
+            elif t == "refund_without_wallet_credit":
+                label, sev = "بازگشت وجه بدون اعتبار کیف پول", "critical"
+                text = (f"بازگشت وجه {i['amount']:,} تومان برای {who} ثبت "
+                        f"شده ولی اعتبار کیف پول ایجاد نشده است.")
+                actions = [{"key": "recredit", "label": "اعتبار مجدد کیف پول",
+                            "payment_id": i["payment_id"]}, go_wallet]
+            elif t == "wallet_debit_without_payment":
+                label, sev = "کسر کیف پول بدون پرداخت تأییدشده", "critical"
+                text = (f"کسر {i['amount']:,} تومان از کیف پول {who} بدون "
+                        f"رسید تأییدشده‌ی متناظر انجام شده است.")
+                actions = [go_wallet]
+            else:
+                label, sev = "تراکنش کیف پول در انتظار", "warning"
+                text = (f"تراکنش {i['amount']:,} تومانی کیف پول {who} در "
+                        f"حالت معلق مانده است (احتمالاً کرش بین مراحل).")
+                actions = [go_wallet]
+            out_items.append({
+                "type": t, "severity": sev, "label": label,
+                "user_id": i["user_id"], "user_name": who,
+                "student_id": "", "payment_id": i.get("payment_id"),
+                "amount": i.get("amount") or 0, "plan_name": "",
+                "at": i.get("at"), "summary": text, "actions": actions,
+                "technical": i.get("tx_id") or i.get("payment_id") or "",
+            })
     # 🌊 W5 — داشبورد مغایرت (§۳۷): چند مورد امروز با اقدام واقعی رفع شده؟
     today = datetime.now(timezone.utc).date().isoformat()
     resolved_today = await db.audit_logs.count_documents({
@@ -5346,6 +5430,7 @@ async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
             "success_rate": round(100.0 * appr["count"] / decided, 1) if decided else None,
             "refund_rate": round(100.0 * ref["count"] / (appr["count"] + ref["count"]), 1)
             if (appr["count"] + ref["count"]) else None,
+            "wallet": await db.wallet_stats_global(),
             "daily": daily, "refunds": refunds, "checked_at": _now()}
 
 
@@ -5362,6 +5447,14 @@ async def wa_payment_trace(payment_id: str,
     sub = await db.sub_get(uid)
     logs = await db.audit_logs.find({"target.id": str(payment["_id"])}).sort(
         "timestamp", -1).limit(8).to_list(8)
+    # 💰 W6 — زنجیره‌ی مالی رسید در کیف پول (refund credit / wallet debit /
+    # reversal) تا کل chain در یک نما trace شود
+    wtxs = await db.wallet_transactions.find(
+        {"reference_id": str(payment["_id"]),
+         "reference_type": {"$in": ["sub_payment_refund",
+                                    "sub_payment_wallet",
+                                    "sub_payment_wallet_reversal"]}}
+    ).sort("created_at", -1).to_list(10)
     return {
         "payment": {"id": str(payment["_id"]), "status": payment.get("status"),
                     "plan_name": payment.get("plan_name"),
@@ -5384,6 +5477,12 @@ async def wa_payment_trace(payment_id: str,
                    "by": (payment.get("refund") or {}).get("by")}
         if payment.get("status") == "refunded" else None,
         "gift": payment.get("gift"),
+        "wallet_txs": [{"id": str(t["_id"]), "type": t.get("type"),
+                        "direction": t.get("direction"),
+                        "amount": int(t.get("amount") or 0),
+                        "label": t.get("label"), "status": t.get("status"),
+                        "balance_after": t.get("balance_after"),
+                        "at": t.get("created_at")} for t in wtxs],
         "audit": [{"id": str(l["_id"]), "at": l.get("timestamp"),
                    "actor_name": (l.get("actor") or {}).get("name", ""),
                    "action": l.get("action", ""), "severity": l.get("severity")}
@@ -5421,6 +5520,155 @@ async def wa_export_payments_csv(status: str = Query("", max_length=20),
         "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
                  "X-Audit-Id": str(log_id)})
+
+
+# ── 💰 W6 — مدیریت کیف پول‌ها ──────────────────────────────────
+class WaWalletAdjustBody(BaseModel):
+    amount: int = Field(..., description="مبلغ به تومان؛ مثبت=افزایش، منفی=کسر")
+    reason: str = Field(..., min_length=3, max_length=200)
+    confirm: bool = False
+
+
+class WaRecreditBody(BaseModel):
+    payment_id: str
+    confirm: bool = False
+
+
+@router.get("/wallets")
+async def wa_wallets(skip: int = Query(0, ge=0),
+                     limit: int = Query(30, ge=1, le=100),
+                     q: str = Query("", max_length=80),
+                     user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — لیست کیف پول‌ها با نام/موجودی (جست‌وجو: uid/نام/شماره دانشجویی)."""
+    flt = {}
+    if q.strip():
+        qq = q.strip()
+        ors = []
+        if qq.isdigit():
+            ors.append({"user_id": int(qq)})
+        ors += [{"name": {"$regex": re.escape(qq), "$options": "i"}},
+                {"student_id": {"$regex": re.escape(qq), "$options": "i"}}]
+        uids = [int(u["user_id"]) for u in await db.users.find(
+            {"$or": ors}, {"user_id": 1}).limit(500)]
+        flt = {"user_id": {"$in": uids}} if uids else {"user_id": -1}
+    total = await db.wallets.count_documents(flt)
+    docs = await db.wallets.find(flt).sort("balance", -1).skip(skip).limit(limit).to_list(limit)
+    users = {}
+    if docs:
+        for u in await db.users.find(
+                {"user_id": {"$in": [d["user_id"] for d in docs]}}).to_list(500):
+            users[int(u["user_id"])] = u
+    return {"total": total, "items": [{
+        "user_id": d["user_id"],
+        "user_name": (users.get(d["user_id"]) or {}).get("name") or "",
+        "student_id": (users.get(d["user_id"]) or {}).get("student_id") or "",
+        "balance": int(d.get("balance", 0)),
+        "currency": d.get("currency") or "تومان",
+        "updated_at": d.get("updated_at"),
+    } for d in docs]}
+
+
+@router.get("/wallets/{uid}")
+async def wa_wallet_detail(uid: int,
+                           skip: int = Query(0, ge=0),
+                           limit: int = Query(20, ge=1, le=50),
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — جزئیات کیف پول: موجودی + آمار + تاریخچه صفحه‌بندی‌شده.
+    تراکنش‌ها human-readable (label فارسی) و IDها فقط فنی."""
+    u = await db.users.find_one({"user_id": uid})
+    summary = await db.wallet_summary(uid)
+    txs = await db.wallet_tx_list(uid, skip=skip, limit=limit)
+    return {"summary": {**summary,
+                        "user_name": (u or {}).get("name") or "",
+                        "student_id": (u or {}).get("student_id") or ""},
+            "transactions": [{
+                "id": str(t["_id"]), "type": t.get("type"),
+                "direction": t.get("direction"), "amount": int(t.get("amount") or 0),
+                "label": t.get("label"), "status": t.get("status"),
+                "balance_before": t.get("balance_before"),
+                "balance_after": t.get("balance_after"),
+                "reference_type": t.get("reference_type"),
+                "reference_id": t.get("reference_id"),
+                "actor_id": t.get("actor_id"), "at": t.get("created_at"),
+            } for t in txs],
+            "tx_total": await db.wallet_tx_count(uid)}
+
+
+@router.post("/wallets/{uid}/adjust")
+async def wa_wallet_adjust(uid: int, body: WaWalletAdjustBody,
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — تنظیم دستی موجودی: فقط با دلیل + تأیید صریح + audit بحرانی.
+    هیچ تنظیم بی‌صدایی وجود ندارد؛ کسر با موجودی ناکافی ۴۰۰ می‌گیرد."""
+    if not body.confirm:
+        raise HTTPException(400, "تنظیم دستی بدون تأیید صریح ممکن نیست")
+    amount = int(body.amount)
+    if amount == 0 or abs(amount) > 50_000_000:
+        raise HTTPException(400, "مبلغ نامعتبر است")
+    u = await db.users.find_one({"user_id": uid})
+    if not u:
+        raise HTTPException(404, "کاربر پیدا نشد")
+    token = secrets.token_hex(8)
+    try:
+        if amount > 0:
+            tx = await db.wallet_credit(
+                uid, amount, "admin_credit", "admin_adjustment", token,
+                int(user["id"]), f"افزایش دستی — {body.reason}")
+        else:
+            tx = await db.wallet_debit(
+                uid, -amount, "admin_debit", "admin_adjustment", token,
+                int(user["id"]), f"کسر دستی — {body.reason}")
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "insufficient_balance":
+            raise HTTPException(400, "موجودی کیف پول برای این کسر کافی نیست")
+        raise
+    log_id = await _audit(
+        int(user["id"]), "تنظیم دستی کیف پول", severity="CRITICAL",
+        target_type="wallet", target_id=str(uid),
+        target_label=(u.get("name") or f"کاربر {uid}"),
+        before={"balance": int(tx.get("balance_before") or 0)},
+        after={"balance": tx.get("balance_after"), "amount": amount,
+               "reason": body.reason, "tx_id": str(tx["_id"])},
+        tags=["مالی", "کیف_پول", "تنظیم_دستی"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:wallet", "chat_id": uid, "sent": False,
+        "text": (f"{'➕' if amount > 0 else '➖'} {'افزایش' if amount > 0 else 'کسر'} "
+                 f"{abs(amount):,} تومان در کیف پول شما — {body.reason}"),
+        "created_at": _now()})
+    return {"ok": True, "tx_id": str(tx["_id"]),
+            "balance_after": tx.get("balance_after"), "audit_id": log_id}
+
+
+@router.post("/subscription/reconcile/wallet-recredit")
+async def wa_wallet_recredit(body: WaRecreditBody,
+                             user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — اقدام امن روی مغایرت «بازگشت وجه بدون اعتبار کیف پول»:
+    اعتبار مجدد **idempotent** (کلید = همان sub_payment_refund/payment_id)؛
+    دوبار اجرا = یک اثر اقتصادی. این یک repair مالی است: audit بحرانی."""
+    if not body.confirm:
+        raise HTTPException(400, "این اقدام مالی بدون تأیید صریح ممکن نیست")
+    payment = await db.sub_payment_get(body.payment_id)
+    if not payment or payment.get("status") != "refunded":
+        raise HTTPException(409, "فقط رسید بازگشت‌وجه‌شده قابل اعتبار مجدد است")
+    uid = int(payment.get("user_id") or 0)
+    amount = int(payment.get("final_price") or payment.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(409, "مبلغ معتبری برای اعتبار یافت نشد")
+    tx = await db.wallet_credit(
+        uid, amount, "refund_credit", "sub_payment_refund",
+        str(payment["_id"]), int(user["id"]),
+        f"بازگشت وجه (اعتبار مجدد مغایرت) — {payment.get('plan_name') or 'اشتراک'}")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی — اعتبار مجدد کیف پول",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=body.payment_id, target_label=f"رسید کاربر {uid}",
+        before={"wallet_credited": False},
+        after={"wallet_credited": True, "amount": amount,
+               "tx_id": str(tx["_id"]),
+               "already_credited": tx.get("balance_after") is None},
+        tags=["مالی", "مغایرت", "کیف_پول"])
+    return {"ok": True, "tx_id": str(tx["_id"]),
+            "balance_after": tx.get("balance_after"), "audit_id": log_id}
 
 
 @router.get("/subscription/subscribers")

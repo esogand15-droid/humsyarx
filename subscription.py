@@ -206,9 +206,16 @@ async def _show_payment_details(query, context, plan_id: str):
         f"بعد از تأیید ادمین، اشتراکت فوراً فعال می‌شه ✅\n\n"
         f"<i>یادت باشه: قوانین ذکرشده در مرحله‌ی قبل رو قبول کردی 📜</i>"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به پلن‌ها", callback_data='sub:back')],
-    ]
+    keyboard = []
+    # 💰 W6 — کیف پول روش پرداخت جدید است (هدیه فقط با رسید بانکی)
+    if not gift_to:
+        _w = await db.wallet_get_for_user_id(query.from_user.id)
+        _wb = int((_w or {}).get('balance', 0))
+        keyboard.append([InlineKeyboardButton(
+            f"💰 خرید با کیف پول (موجودی: {_fmt_price(_wb)})",
+            callback_data=f"sub:wpay:{plan_id}")])
+    keyboard.append(
+        [InlineKeyboardButton("🔙 بازگشت به پلن‌ها", callback_data='sub:back')])
     context.user_data['sub_mode'] = 'awaiting_screenshot'
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -499,6 +506,16 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == 'agree':
         await _show_payment_details(query, context, parts[2])
 
+    elif action == 'wpay':
+        # 💰 W6 — صفحه‌ی تأیید قبل از کسر: موجودی + قیمت + موجودی پس از خرید
+        await _wallet_confirm(query, parts[2] if len(parts) > 2 else '', uid)
+
+    elif action == 'wbuy':
+        await _wallet_buy(query, parts[2] if len(parts) > 2 else '', uid)
+
+    elif action == 'wallet':
+        await _show_wallet(query, uid)
+
     elif action == 'discount':
         await _prompt_discount(query, context)
 
@@ -765,6 +782,11 @@ async def _build_my_status(uid: int):
         )
         keyboard.append([InlineKeyboardButton("🔄 تمدید کن", callback_data='sub:back')])
 
+    # 💰 W6 — کیف پول در صفحه‌ی وضعیت اشتراک (موجودی همیشه از بک‌اند)
+    w = await db.wallet_get_for_user_id(uid)
+    wb = int((w or {}).get('balance', 0))
+    text += f"\n\n👛 <b>کیف پول:</b> {_fmt_price(wb)}"
+    keyboard.append([InlineKeyboardButton("💰 کیف پول من", callback_data='sub:wallet')])
     keyboard.append([InlineKeyboardButton("🧾 تاریخچه‌ی پرداخت‌ها", callback_data='sub:my_history')])
     return text, keyboard
 
@@ -821,3 +843,106 @@ async def sub_status_line(uid: int) -> str:
     if s and s.get('status') == 'revoked':
         return "💳 اشتراک: ❌ لغوشده\n"
     return "💳 اشتراک: ⚠️ نداری — از «📚 منابع» می‌تونی فعالش کنی\n"
+
+
+# ══════════════════════════════════════════════════════════════
+#  💰 W6 — کیف پول داخلی (بات): تأیید → خرید → نمایش
+#  منطق خرید فقط در سرویس واحد db.wallet_purchase است (API هم همان).
+# ══════════════════════════════════════════════════════════════
+
+async def _wallet_confirm(query, plan_id: str, uid: int):
+    plan = await db.sub_plan_get(plan_id)
+    if not plan or not plan.get('active'):
+        await query.answer("❌ این پلن دیگه در دسترس نیست.", show_alert=True)
+        return
+    price = int(plan.get('price') or 0)
+    w = await db.wallet_get_for_user_id(uid)
+    balance = int((w or {}).get('balance', 0))
+    if balance < price:
+        await query.answer(
+            f"موجودی کافی نیست — {_fmt_price(balance)} از {_fmt_price(price)}",
+            show_alert=True)
+        return
+    text = (
+        f"💰 <b>خرید اشتراک با کیف پول</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📦 پلن: <b>{plan.get('name', '—')}</b> — {plan.get('days', '—')} روزه\n"
+        f"💵 مبلغ: <b>{_fmt_price(price)}</b>\n"
+        f"👛 موجودی فعلی: {_fmt_price(balance)}\n"
+        f"👛 موجودی پس از خرید: <b>{_fmt_price(balance - price)}</b>\n\n"
+        f"با تأیید، مبلغ از کیف پول کسر و اشتراکت فعال می‌شه ✅"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ تأیید خرید", callback_data=f"sub:wbuy:{plan_id}")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='sub:back')],
+    ]
+    try:
+        await query.edit_message_text(
+            text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await query.message.reply_text(
+            text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _wallet_buy(query, plan_id: str, uid: int):
+    """اجرا روی سرویس واحد db.wallet_purchase — همان منطق API.
+    خطای مالی هرگز پنهان نمی‌شود؛ در شکست، موجودی دست‌نخورده می‌ماند."""
+    from db.wallet import WalletError
+    try:
+        res = await db.wallet_purchase(uid, plan_id)
+    except WalletError as e:
+        await query.answer(str(e), show_alert=True)
+        return
+    except Exception:
+        logger.exception(f"wallet buy failed uid={uid} plan={plan_id}")
+        await query.answer(
+            "خطا در خرید — موجودی شما دست‌نخورده است. دوباره امتحان کن.",
+            show_alert=True)
+        return
+    w = await db.wallet_get_for_user_id(uid)
+    balance = int((w or {}).get('balance', 0))
+    text = (
+        "🎉 <b>خرید موفق!</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"✅ اشتراک <b>{res.get('plan_name', '')}</b> با کیف پول فعال شد.\n"
+        f"💵 کسرشده: {_fmt_price(int(res.get('amount') or 0))}\n"
+        f"👛 موجودی کیف پول: <b>{_fmt_price(balance)}</b>"
+    )
+    keyboard = [[InlineKeyboardButton(
+        "💎 وضعیت اشتراک من", callback_data='sub:my_status')]]
+    try:
+        await query.edit_message_text(
+            text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await query.message.reply_text(
+            text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _show_wallet(query, uid: int):
+    """💰 موجودی + تراکنش‌های اخیر — human-readable (ID فنی نمایش داده نمی‌شود)."""
+    from utils import fmt_jalali_dt
+    s = await db.wallet_summary(uid)
+    txs = await db.wallet_tx_list(uid, limit=8)
+    lines = ["💰 <b>کیف پول من</b>", "━━━━━━━━━━━━━━━━",
+             f"👛 موجودی: <b>{_fmt_price(int(s.get('balance') or 0))}</b>"]
+    if txs:
+        lines.append("\n<b>تراکنش‌های اخیر:</b>")
+        for t in txs:
+            sign = '➕' if t.get('direction') == 'credit' else '➖'
+            lines.append(
+                f"{sign} {_fmt_price(int(t.get('amount') or 0))} — "
+                f"{t.get('label') or ''} ({fmt_jalali_dt(t.get('created_at', ''))})")
+    else:
+        lines.append("\nهنوز تراکنشی نداری.")
+    keyboard = [
+        [InlineKeyboardButton("💳 خرید اشتراک", callback_data='sub:back')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')],
+    ]
+    try:
+        await query.edit_message_text(
+            '\n'.join(lines), parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await query.message.reply_text(
+            '\n'.join(lines), parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard))

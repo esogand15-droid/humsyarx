@@ -9,6 +9,10 @@ import { faDate, number, percent, errorText } from '../../lib/format';
 import { useState } from 'react';
 
 import {
+  useNavigate,
+} from 'react-router-dom';
+
+import {
   useMutation,
   useQuery,
   useQueryClient,
@@ -1364,6 +1368,9 @@ export default function Profile() {
             )}
 
 
+            <WalletMiniCard />
+
+
             <section className="card">
               <div className="sec-title">
                 📊 عملکرد تحصیلی
@@ -1658,5 +1665,42 @@ export default function Profile() {
         )}
       </main>
     </>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// 💰 W6 — کارت کوچک کیف پول در پروفایل (§۱۴): موجودی از API canonical
+// + میان‌بر به صفحه‌ی اشتراک برای خرید/تاریخچه. READ-ONLY در فرانت.
+// ════════════════════════════════════════════════════════════════
+export function WalletMiniCard() {
+  const nav = useNavigate();
+  const walletQuery = useQuery({
+    queryKey: ['wallet'],
+    queryFn: () => api.get('/api/subscription/wallet'),
+  });
+  const w = walletQuery.data;
+  return (
+    <section className="card">
+      <div className="sec-title">👛 کیف پول</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 18 }}>
+          {walletQuery.isLoading ? '…' : `${number(w?.balance ?? 0)} تومان`}
+        </b>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
+          💳 خرید اشتراک
+        </button>
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
+          🧾 تاریخچه
+        </button>
+      </div>
+      {w?.last_tx && (
+        <div className="muted" style={{ marginTop: 6 }}>
+          آخرین تراکنش: {w.last_tx.direction === 'credit' ? '➕' : '➖'}{' '}
+          {number(w.last_tx.amount)} — {w.last_tx.label}
+        </div>
+      )}
+    </section>
   );
 }

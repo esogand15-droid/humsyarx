@@ -928,6 +928,9 @@ export default function Subscription() {
             </section>
 
 
+            <WalletSection plans={plans} selectedId={selectedId} />
+
+
             <section>
               <div className="sec-title">
                 💳 انتخاب پلن
@@ -1880,5 +1883,130 @@ export default function Subscription() {
         )}
       </main>
     </>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// 💰 W6 — کیف پول داخلی: موجودی + تاریخچه + خرید اشتراک با کیف پول.
+// موجودی همیشه از API canonical می‌آید (READ-ONLY در فرانت)؛
+// خرید همان مسیر اشتراک موجود است — کیف پول فقط روش پرداخت است.
+// ════════════════════════════════════════════════════════════════
+export function WalletSection({ plans = [], selectedId, onDone }) {
+  const qc = useQueryClient();
+  const walletQuery = useQuery({
+    queryKey: ['wallet'],
+    queryFn: () => api.get('/api/subscription/wallet'),
+  });
+  const [confirmBuy, setConfirmBuy] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const buyMutation = useMutation({
+    mutationFn: (payload) => api.post('/api/subscription/buy-wallet', payload),
+    onSuccess: () => {
+      qc.invalidateQueries();
+      setConfirmBuy(null);
+      onDone?.();
+    },
+  });
+
+  const w = walletQuery.data;
+  const balance = number(w?.balance ?? 0);
+  const txs = Array.isArray(w?.transactions) ? w.transactions : [];
+  const sel = plans.find((p) => p.id === selectedId) || null;
+  const price = number(sel?.price ?? 0);
+  const enough = sel && balance >= price;
+  const errText = buyMutation.isError
+    ? (buyMutation.error?.response?.data?.detail ||
+        buyMutation.error?.message ||
+        'پرداخت از کیف پول انجام نشد. موجودی شما حفظ شده است.')
+    : '';
+
+  const startBuy = () => {
+    if (!sel) return;
+    setConfirmBuy({
+      plan_id: sel.id,
+      idem: `w6-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    });
+  };
+
+  return (
+    <section>
+      <div className="sec-title">👛 کیف پول من</div>
+      <div className="card">
+        {walletQuery.isLoading ? (
+          <Spinner />
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <b style={{ fontSize: 20 }}>موجودی: {number(balance)} تومان</b>
+              <span style={{ flex: 1 }} />
+              <button type="button" className="btn btn-xs" onClick={() => setShowHistory((v) => !v)}>
+                {showHistory ? 'بستن تاریخچه' : 'تاریخچه تراکنش‌ها'}
+              </button>
+            </div>
+
+            {sel && (
+              <div className="muted" style={{ marginTop: 8 }}>
+                {enough
+                  ? `خرید «${sel.name}» با کیف پول: موجودی پس از خرید ${number(balance - price)} تومان`
+                  : `موجودی کافی نیست — کسری: ${number(price - balance)} تومان`}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={!sel || !enough || buyMutation.isPending}
+                onClick={startBuy}
+              >
+                {sel ? `💰 خرید «${sel.name}» با کیف پول` : '💰 ابتدا یک پلن انتخاب کنید'}
+              </button>
+            </div>
+
+            {errText && <div className="err" style={{ marginTop: 8 }}>{errText}</div>}
+
+            {confirmBuy && (
+              <div className="card" style={{ marginTop: 10 }}>
+                <b>تأیید خرید با کیف پول</b>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  پلن: {sel?.name} · مبلغ: {number(price)} تومان · موجودی پس از خرید:{' '}
+                  {number(balance - price)} تومان
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={buyMutation.isPending}
+                    onClick={() => buyMutation.mutate(confirmBuy)}
+                  >
+                    {buyMutation.isPending ? '…' : '✅ تأیید خرید'}
+                  </button>
+                  <button type="button" className="btn btn-xs" onClick={() => setConfirmBuy(null)}>
+                    انصراف
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {showHistory && (
+              <div style={{ marginTop: 10 }}>
+                {txs.length === 0 ? (
+                  <div className="empty card">هنوز تراکنشی نداری.</div>
+                ) : (
+                  txs.map((t) => (
+                    <div key={t.id} className="card" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <b>{t.direction === 'credit' ? '➕' : '➖'} {number(t.amount)}</b>
+                      <span className="muted" style={{ flex: 1 }}>{t.label}</span>
+                      <span className="muted">{t.at ? new Date(t.at).toLocaleDateString('fa-IR') : ''}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
   );
 }

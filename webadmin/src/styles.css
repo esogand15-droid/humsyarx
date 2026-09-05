@@ -1676,7 +1676,7 @@ body.overlay-open { overflow: hidden; }
 }
 
 /* ════════════════════════════════════════════════════════════════
-   🌊 W5 — Financial Control Center + Actionable Data Quality
+   🌊 W5/W6 — Financial Control Center + Actionable Data Quality
    ════════════════════════════════════════════════════════════════ */
 .panel { box-shadow: 0 1px 0 rgba(255,255,255,.02) inset, 0 6px 18px rgba(3,8,20,.35); }
 .btn:focus-visible, .tab:focus-visible, .operation-card:focus-visible, .attn-item:focus-visible {
@@ -1717,7 +1717,7 @@ body.overlay-open { overflow: hidden; }
 /* 🌊 W5 — خط زمانی ردیابی رسید (§۱۱) */
 .trace-timeline { list-style: none; margin: 6px 0 0; padding: 0; }
 .trace-timeline li {
-  position: relative; padding: 4px 14px 4px 0; font-size: var(--fs-label);
+  position: relative; padding: 4px 0; font-size: var(--fs-label);
   color: var(--c-txt2); border-inline-start: 2px solid var(--c-line2);
   margin-inline-start: 4px; padding-inline-start: 10px;
 }

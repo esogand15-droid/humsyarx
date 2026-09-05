@@ -28,6 +28,7 @@ from api.telegram_send import (
     upload_and_get_file_id,
 )
 
+from bson import ObjectId
 from database import db
 from time_utils import utc_now_iso
 
@@ -1030,3 +1031,96 @@ async def gift_recipients(
         if r.get("user_id") and int(r["user_id"]) != user["id"]
     ]
     return {"ok": True, "items": items[:10]}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 💰 W6 — کیف پول داخلی (API canonical — Bot/MiniApp/Web مشترک)
+# موجودی همیشه از بک‌اند می‌آید؛ client هیچ‌وقت مبلغ/موجودی تعیین نمی‌کند.
+# ══════════════════════════════════════════════════════════════════
+
+class BuyWalletBody(BaseModel):
+    plan_id: str
+    idem: str = ""
+
+
+def _tx_view(t: dict) -> dict:
+    """نمای human-readable تراکنش — IDها فقط جزئیات فنی‌اند."""
+    return {
+        "id": str(t["_id"]), "type": t.get("type"),
+        "direction": t.get("direction"), "amount": int(t.get("amount") or 0),
+        "label": t.get("label"), "at": t.get("created_at"),
+        "balance_after": t.get("balance_after"),
+        "reference_type": t.get("reference_type"),
+    }
+
+
+@router.get("/wallet")
+async def wallet_status(user=Depends(get_current_user)):
+    """موجودی + آمار + تراکنش‌های اخیر — همه server-derived."""
+    s = await db.wallet_summary(user["id"])
+    txs = await db.wallet_tx_list(user["id"], limit=10)
+    return {**s, "transactions": [_tx_view(t) for t in txs]}
+
+
+@router.get("/wallet/transactions")
+async def wallet_transactions(skip: int = 0, limit: int = 20,
+                              user=Depends(get_current_user)):
+    skip = max(0, int(skip))
+    limit = max(1, min(int(limit), 50))
+    txs = await db.wallet_tx_list(user["id"], skip=skip, limit=limit)
+    return {"items": [_tx_view(t) for t in txs],
+            "total": await db.wallet_tx_count(user["id"])}
+
+
+async def _wallet_purchase_result(payment: dict, user_id: int,
+                                  act: dict = None, replay: bool = False):
+    w = await db.wallet_get_for_user_id(user_id)
+    out = {"ok": True, "payment_id": str(payment["_id"]),
+           "plan_name": payment.get("plan_name"),
+           "amount": int(payment.get("final_price") or 0),
+           "balance": int((w or {}).get("balance", 0)), "replay": replay}
+    if act:
+        out["end_date"] = act.get("end_date")
+        out["days"] = act.get("days")
+    else:
+        sub = await db.sub_get(user_id)
+        out["end_date"] = (sub or {}).get("end_date")
+    return out
+
+
+@router.post("/buy-wallet")
+async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
+    """خرید اشتراک از کیف پول — روی همان سیستم خرید موجود؛ کیف پول فقط
+    روش پرداخت جدید است. منطق واحد در db.wallet_purchase (Bot هم همان را
+    صدا می‌زند). خطاها با پیام فارسی و کد ماشین‌خوان برمی‌گردند."""
+    user_id = user["id"]
+    try:
+        res = await db.wallet_purchase(user_id, body.plan_id, body.idem)
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "plan_not_found":
+            raise HTTPException(status_code=404, detail=str(e))
+        if code == "insufficient_balance":
+            w = await db.wallet_get_for_user_id(user_id)
+            plan = await db.sub_plan_get(body.plan_id)
+            price = int((plan or {}).get("price") or 0)
+            balance = int((w or {}).get("balance", 0))
+            raise HTTPException(
+                status_code=400,
+                detail=(f"موجودی کیف پول کافی نیست. موجودی: {balance:,} تومان · "
+                        f"قیمت: {price:,} تومان · "
+                        f"کسری: {max(0, price - balance):,} تومان"))
+        if code in ("plan_days_invalid", "plan_price_invalid"):
+            raise HTTPException(status_code=422, detail=str(e))
+        if code == "order_conflict":
+            raise HTTPException(status_code=409, detail=str(e))
+        raise
+    if not res.get("replay"):
+        await db.client["medicalbot"]["bot_notifications"].insert_one({
+            "type": "event:wallet_purchase", "chat_id": user_id, "sent": False,
+            "text": (f"✅ اشتراک شما با استفاده از کیف پول فعال شد "
+                     f"({int(res.get('amount') or 0):,} تومان)."),
+            "created_at": utc_now_iso()})
+    w = await db.wallet_get_for_user_id(user_id)
+    return {"ok": True, **res,
+            "balance": int((w or {}).get("balance", 0))}

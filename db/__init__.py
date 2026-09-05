@@ -22,5 +22,7 @@ from .rbac import DBRbac
 from .prestige import DBPrestige
 from .finance import DBFinance
 from .ring import DBRing
+from .wallet import DBWallet, WalletError, WALLET_CURRENCY
 
-__all__ = ['DBCore', 'DBContent', 'DBRbac', 'DBPrestige', 'DBFinance', 'DBRing']
+__all__ = ['DBCore', 'DBContent', 'DBRbac', 'DBPrestige', 'DBFinance', 'DBRing',
+           'DBWallet', 'WalletError', 'WALLET_CURRENCY']

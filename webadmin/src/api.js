@@ -298,6 +298,11 @@ export const api = {
   // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
   subPaymentTrace: (pid) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/trace`),
   exportPaymentsCsv: (p = {}) => downloadFile('/api/web-admin/exports/payments.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-payments-${fileDateStamp()}.csv`),
+  // 💰 W6 — کیف پول داخلی
+  subWallets: (p = {}) => req('/api/web-admin/wallets?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
+  subWalletDetail: (uid, p = {}) => req(`/api/web-admin/wallets/${uid}?` + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
+  subWalletAdjust: (uid, body) => req(`/api/web-admin/wallets/${uid}/adjust`, { method: 'POST', body }),
+  subWalletRecredit: (pid) => req('/api/web-admin/subscription/reconcile/wallet-recredit', { method: 'POST', body: { payment_id: pid, confirm: true } }),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),
