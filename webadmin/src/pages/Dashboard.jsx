@@ -127,7 +127,7 @@ export default function Dashboard({ me, go }) {
               {/* 🌊 W5 — گروه‌بندی معنایی (§۹۱): مالی/محتوا/پشتیبانی/سیستم */}
               {(() => {
                 const GROUPS = [
-                  ['💰 مالی', ['payments']],
+                  ['💰 مالی', ['payments', 'wallet_issues']],
                   ['📚 محتوا', ['questions', 'reports', 'imports', 'data_quality']],
                   ['🧑‍🎓 کاربران و پشتیبانی', ['users', 'tickets']],
                   ['⚙️ سیستم', ['failed_jobs', 'outbox_backlog', 'outbox_scheduled', 'dlq', 'backup_issue']],

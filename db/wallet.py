@@ -307,10 +307,13 @@ class DBWallet:
     # ── خرید اشتراک با کیف پول (لایه‌ی db — سرویس واحد) ────────
     async def sub_payment_create_wallet(self, user_id: int, plan_id: str,
                                         plan_name: str, price: int,
-                                        idem_key: str = '') -> str:
+                                        idem_key: str = '',
+                                        final_price: int = None,
+                                        discount_code: str = None,
+                                        discount_percent: int = None) -> str:
         """رسید خرید کیف‌پولی روی همان sub_payments — مسیر موازی نیست.
         status='wallet_processing' تا debit اتمیک تأیید شود؛ در صف رسیدهای
-        دستی (pending) ظاهر نمی‌شود."""
+        دستی (pending) ظاهر نمی‌شود. snapshot تخفیف همان الگوی موج D1 است."""
         if idem_key:
             existing = await self.sub_payments.find_one(
                 {'idem_key': idem_key}, {'_id': 1})
@@ -319,8 +322,11 @@ class DBWallet:
         doc = {
             'user_id': int(user_id), 'plan_id': plan_id,
             'plan_name': plan_name, 'price': int(price),
-            'final_price': int(price), 'discount_code': None,
-            'discount_percent': None, 'screenshot_file_id': None,
+            'final_price': int(final_price if final_price is not None
+                               else price),
+            'discount_code': discount_code,
+            'discount_percent': discount_percent,
+            'screenshot_file_id': None,
             'method': 'wallet', 'status': 'wallet_processing',
             'submitted_at': utc_now_iso(), 'admin_msg_id': None,
         }
@@ -351,15 +357,21 @@ class DBWallet:
 
     # ── سرویس واحد خرید با کیف پول (API و Bot مشترک) ───────────
     async def wallet_purchase(self, user_id: int, plan_id: str,
-                              idem_key: str = '') -> dict:
+                              idem_key: str = '',
+                              discount_code: str = None) -> dict:
         """🌊 W6 — تنها منطق خرید با کیف پول؛ Bot و MiniApp/Web API هر دو
         همین را صدا می‌زنند (منطق موازی ممنوع).
 
         order (sub_payments, method=wallet) → debit اتمیک شرطی →
         CAS اتمیک → همان سرویس فعال‌سازیِ تأیید رسید (finalize_approved_payment).
 
+        🎟 کد تخفیف: validate قبل از debit؛ مصرف اتمیک بعد از debit موفق
+        (همان primitive موج D1)؛ اگر مصرف شکست بخورد، debit با reversal
+        جبران می‌شود — کد تخفیف هرگز «نیمه‌مصرف» نمی‌ماند.
+
         خطاها WalletError با کد ماشین‌خوان هستند:
-        plan_not_found / plan_price_invalid / insufficient_balance /
+        plan_not_found / plan_price_invalid / discount_invalid /
+        discount_full / discount_exhausted / insufficient_balance /
         order_conflict / plan_days_invalid (با جبران reversal)."""
         user_id = int(user_id)
         plan = await self.sub_plan_get(plan_id)
@@ -368,20 +380,38 @@ class DBWallet:
         price = int(plan.get('price') or 0)
         if price <= 0:
             raise WalletError('plan_price_invalid', 'قیمت پلن نامعتبر است')
+        # 🎟 تخفیف — فقط اعتبارسنجی؛ قیمت نهایی همان فرمول مسیر رسید است
+        code = (discount_code or '').strip().upper()
+        percent = None
+        if code:
+            v = await self.discount_validate(
+                code, plan_id=str(plan['_id']), user_id=user_id)
+            if not v.get('ok'):
+                raise WalletError('discount_invalid',
+                                  v.get('reason') or 'کد تخفیف معتبر نیست')
+            percent = int(v.get('percent') or 0)
+        final = round(price * (100 - percent) / 100) if percent else price
+        if final <= 0:
+            raise WalletError('discount_full',
+                              'کد تخفیف ۱۰۰٪ نیازی به کیف پول ندارد — '
+                              'از مسیر فعال‌سازی رایگان استفاده کنید')
         idem = (idem_key or '').strip()[:64]
         pid = await self.sub_payment_create_wallet(
-            user_id, str(plan['_id']), plan.get('name', 'اشتراک'), price, idem)
+            user_id, str(plan['_id']), plan.get('name', 'اشتراک'), price,
+            idem, final_price=final, discount_code=code or None,
+            discount_percent=percent)
         # ری‌تری با idem یکسان و سفارشِ کامل‌شده → همان نتیجه، بدون اثر دوم
         existing = await self.sub_payment_get(pid)
         if existing and existing.get('status') == 'approved' \
                 and existing.get('method') == 'wallet':
             sub = await self.sub_get(user_id)
             return {'payment_id': pid, 'plan_name': plan.get('name'),
-                    'amount': price, 'replay': True,
+                    'amount': int(existing.get('final_price') or final),
+                    'replay': True,
                     'end_date': (sub or {}).get('end_date')}
         try:
             await self.wallet_debit(
-                user_id, price, TX_SUB_PURCHASE, 'sub_payment_wallet',
+                user_id, final, TX_SUB_PURCHASE, 'sub_payment_wallet',
                 pid, user_id, f"خرید اشتراک {plan.get('name', '')} با کیف پول")
         except WalletError as e:
             if e.code == 'insufficient_balance':
@@ -390,6 +420,22 @@ class DBWallet:
                     {'$set': {'status': 'rejected',
                               'review_note': 'موجودی کیف پول کافی نبود'}})
             raise
+        # 🎟 مصرف اتمیک کد بعد از debit؛ شکست = جبران کامل debit
+        if code:
+            consumed = await self.discount_consume(code, user_id=user_id)
+            if not consumed:
+                await self.wallet_credit(
+                    user_id, final, TX_REVERSAL,
+                    'sub_payment_wallet_discount_fail', pid, 0,
+                    'بازگشت مبلغ به دلیل اتمام ظرفیت کد تخفیف')
+                await self.sub_payments.update_one(
+                    {'_id': ObjectId(pid)},
+                    {'$set': {'status': 'rejected',
+                              'review_note': 'مصرف کد تخفیف ناموفق — '
+                                             'مبلغ به کیف پول برگشت'}})
+                raise WalletError('discount_exhausted',
+                                  'ظرفیت کد تخفیف پر شده — '
+                                  'موجودی شما دست‌نخورده است')
         if not await self.wallet_purchase_finalize(pid):
             existing = await self.sub_payment_get(pid)
             if not existing or existing.get('status') != 'approved':
@@ -401,7 +447,7 @@ class DBWallet:
         except ValueError:
             # جبران مالی صریح: مبلغ با compensating transaction برمی‌گردد
             await self.wallet_credit(
-                user_id, price, TX_REVERSAL, 'sub_payment_wallet_reversal',
+                user_id, final, TX_REVERSAL, 'sub_payment_wallet_reversal',
                 pid, 0, 'بازگشت مبلغ به دلیل خطای فعال‌سازی')
             await self.sub_payments.update_one(
                 {'_id': ObjectId(pid)},
@@ -410,5 +456,5 @@ class DBWallet:
             raise WalletError('plan_days_invalid',
                               'پلن معتبر نیست؛ مبلغ به کیف پول شما برگشت')
         return {'payment_id': pid, 'plan_name': plan.get('name'),
-                'amount': price, 'end_date': act.get('end_date'),
+                'amount': final, 'end_date': act.get('end_date'),
                 'days': act.get('days'), 'replay': False}

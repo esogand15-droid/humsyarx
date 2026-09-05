@@ -95,10 +95,14 @@ class WalletStaticTests(unittest.TestCase):
         sub = read("api", "routers", "subscription.py")
         self.assertIn('"/wallet"', sub)
         self.assertIn('"/buy-wallet"', sub)
-        # منطق خرید در db است، نه endpoint (جلوگیری از منطق موازی)
-        self.assertIn("db.wallet_purchase(user_id, body.plan_id, body.idem)",
+        # منطق خرید در db است، نه endpoint (جلوگیری از منطق موازی)؛
+        # تخفیف هم به همان سرویس واحد سپرده می‌شود
+        self.assertIn("db.wallet_purchase(user_id, body.plan_id, body.idem",
                       sub)
+        self.assertIn("discount_code=body.discount_code", sub)
         self.assertIn("async def wallet_purchase", self.wallet_db)
+        self.assertIn("discount_validate", self.wallet_db)
+        self.assertIn("discount_consume", self.wallet_db)
 
     def test_refund_credits_wallet(self):
         idx = self.wa.index("async def wa_subscription_refund")
@@ -191,6 +195,8 @@ class WalletRuntimeTests(unittest.TestCase):
         await db.audit_logs.delete_many(
             {"target.id": {"$in": [str(PAY_W6_REFUND), str(PAY_W6_ORPHAN),
                                    str(STUDENT_A), str(STUDENT_B)]}})
+        await db.discount_codes.delete_many({"code": "W6TEST20"})
+        await db.discount_uses.delete_many({"code": "W6TEST20"})
 
     @classmethod
     def _reset_wallets(cls, uids):
@@ -482,6 +488,90 @@ class WalletRuntimeTests(unittest.TestCase):
                     {"action": "تنظیم دستی کیف پول",
                      "target.id": str(STUDENT_B)})
                 assert n == 1
+        self._run(run())
+
+    def test_discount_wallet_purchase(self):
+        """🎟 کد تخفیف روی خرید کیف‌پولی: همان فرمول مسیر رسید + snapshot."""
+        self._reset_wallets([STUDENT_A])
+        async def run():
+            db = self.db
+            await db.discount_codes.delete_many({"code": "W6TEST20"})
+            await db.discount_add("W6TEST20", 20, max_uses=5)
+            await db.wallet_credit(STUDENT_A, 200000, "admin_credit",
+                                   "unit", "disc-seed", ADMIN_UID, "تست")
+            from db.wallet import WalletError
+            # کد نامعتبر → خطای شفاف، بدون اثر مالی
+            try:
+                await db.wallet_purchase(STUDENT_A, str(PLAN_W6),
+                                         "w6-disc-bad",
+                                         discount_code="NOPE999")
+                assert False
+            except WalletError as e:
+                assert e.code == "discount_invalid"
+            # خرید با تخفیف ۲۰٪ → مبلغ نهایی ۹۶٬۰۰۰
+            res = await db.wallet_purchase(STUDENT_A, str(PLAN_W6),
+                                           "w6-disc-ok",
+                                           discount_code="w6test20")
+            assert res["amount"] == 96000, res
+            w = await db.wallet_get_for_user_id(STUDENT_A)
+            assert int(w["balance"]) == 104000
+            pay = await db.sub_payment_get(res["payment_id"])
+            assert pay["final_price"] == 96000
+            assert pay["discount_code"] == "W6TEST20"
+            assert pay["discount_percent"] == 20
+            # کد دقیقاً یک بار مصرف شده
+            d = await db.discount_codes.find_one({"code": "W6TEST20"})
+            assert int(d.get("used_count") or 0) == 1
+            await db.discount_codes.delete_many({"code": "W6TEST20"})
+            await db.discount_uses.delete_many({"code": "W6TEST20"})
+        self._run(run())
+
+    def test_attention_includes_wallet_issues(self):
+        """§۶۴ — مغایرت مالی کیف پول باید وارد «نیازمند اقدام» شود."""
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            await self.db.wallets.update_one({"user_id": STUDENT_B},
+                                             {"$inc": {"balance": 5000}})
+            async with self._client_ctx() as c:
+                r = await c.get("/api/web-admin/attention",
+                                headers=self.admin_h)
+                assert r.status_code == 200
+                hit = next((i for i in r.json()["items"]
+                            if i["key"] == "wallet_issues"), None)
+                assert hit and hit["count"] >= 1, r.json()["items"]
+                assert hit["severity"] == "critical"
+            await self.db.wallets.update_one({"user_id": STUDENT_B},
+                                             {"$inc": {"balance": -5000}})
+        self._run(run())
+
+    def test_resync_repairs_mismatch(self):
+        """§۹۰ — repair امن: هم‌ترازسازی موجودی کش با ledger + audit."""
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            w0 = await self.db.wallet_get_for_user_id(STUDENT_B)
+            ledger = int(w0["balance"])
+            await self.db.wallets.update_one({"user_id": STUDENT_B},
+                                             {"$inc": {"balance": 7000}})
+            async with self._client_ctx() as c:
+                r = await c.post(f"/api/web-admin/wallets/{STUDENT_B}/resync",
+                                 headers=self.admin_h, json={"confirm": False})
+                assert r.status_code == 400
+                r = await c.post(f"/api/web-admin/wallets/{STUDENT_B}/resync",
+                                 headers=self.admin_h, json={"confirm": True})
+                assert r.status_code == 200, r.text
+                assert r.json()["balance"] == ledger
+                w = await self.db.wallet_get_for_user_id(STUDENT_B)
+                assert int(w["balance"]) == ledger
+                n = await self.db.audit_logs.count_documents(
+                    {"action": "هم‌ترازسازی موجودی کیف پول با ledger",
+                     "target.id": str(STUDENT_B)})
+                assert n >= 1
+                # مغایرت از لیست خارج شد
+                r = await c.get("/api/web-admin/subscription/reconcile",
+                                headers=self.admin_h)
+                assert not any(i["type"] == "wallet_balance_mismatch"
+                               and i["user_id"] == STUDENT_B
+                               for i in r.json()["items"])
         self._run(run())
 
     def test_wallet_admin_views(self):

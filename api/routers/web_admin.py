@@ -1205,6 +1205,22 @@ async def attention(user=Depends(_guard_any_admin)):
             "timestamp": checked_at, "urgent": quality["count"] > 0,
             "detail": quality,
         })
+    # 💰 W6 — مغایرت مالی کیف پول (§۶۴): ledger حساب را لو نمی‌دهد؛
+    # موارد بحرانی یعنی پول ناهم‌خوان است. دیپ‌لینک به مغایرت‌گیری که همان
+    # موارد human-readable + اقدام امن دارند. خارج از gather بالا:
+    # aggregate دارد و نباید با صف‌های سبک موازی شود.
+    if allow("subscription.manage"):
+        witems = await db.wallet_reconcile_items()
+        wcrit = [i for i in witems if i.get("severity") == "critical"]
+        wats = [i.get("at") for i in wcrit if i.get("at")]
+        items.append({
+            "key": "wallet_issues", "icon": "👛",
+            "label": "مغایرت مالی کیف پول",
+            "count": len(wcrit), "go": "/subscriptions?tab=reconcile",
+            "severity": "critical" if wcrit else "info",
+            "timestamp": max(wats) if wats else checked_at,
+            "urgent": bool(wcrit),
+        })
     backup = None
     if allow("backup.manage", "settings.manage", "system.manage"):
         last_run = await db.get_setting("auto_backup_last_run", None)
@@ -1868,7 +1884,8 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
     allow = lambda *keys: uid == ADMIN_ID or any(k in perms for k in keys)
     res = {"users": [], "tickets": [], "questions": [], "content": [],
            "exams": [], "grades": [], "roles": [], "broadcasts": [],
-           "payments": [], "subscriptions": [], "notifications": [], "audit": []}
+           "payments": [], "subscriptions": [], "notifications": [],
+           "audit": [], "wallets": []}
 
     if allow("users.view", "users.manage"):
         try:
@@ -1955,6 +1972,23 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
             subs = await db.subscriptions.find({"plan_name": rx}).sort("end_date", -1).limit(5).to_list(5)
             res["subscriptions"] = [{"user_id": x.get("_id"), "plan": x.get("plan_name", ""),
                 "status": x.get("status", ""), "end_date": x.get("end_date", "")} for x in subs]
+            # 💰 W6 — کیف پول (§۱۰۷): آیدی عددی مستقیم، وگرنه از راه نام کاربر
+            if query.isdigit():
+                wq = {"user_id": int(query)}
+            else:
+                wuids = [int(u["user_id"]) for u in await db.users.find(
+                    {"name": rx}, {"user_id": 1}).limit(20)]
+                wq = {"user_id": {"$in": wuids}} if wuids else {"user_id": -1}
+            ws = await db.wallets.find(wq).sort("balance", -1).limit(5).to_list(5)
+            if ws:
+                wnames = {}
+                for u in await db.users.find(
+                        {"user_id": {"$in": [w["user_id"] for w in ws]}}).to_list(50):
+                    wnames[int(u["user_id"])] = u.get("name") or ""
+                res["wallets"] = [{"user_id": w["user_id"],
+                                   "name": wnames.get(int(w["user_id"]), ""),
+                                   "balance": int(w.get("balance", 0))}
+                                  for w in ws]
         except Exception:
             pass
     if allow("notifications.manage", "broadcast.send"):
@@ -5303,7 +5337,9 @@ async def wa_subscription_reconcile(
                         f"({i['balance']:,} تومان) با جمع ledger "
                         f"({i['ledger']:,} تومان) نمی‌خواند — اختلاف "
                         f"{abs(i['amount']):,} تومان.")
-                actions = [go_wallet]
+                actions = [{"key": "resync",
+                            "label": "هم‌ترازسازی با ledger (امن)"},
+                           go_wallet]
             elif t == "refund_without_wallet_credit":
                 label, sev = "بازگشت وجه بدون اعتبار کیف پول", "critical"
                 text = (f"بازگشت وجه {i['amount']:,} تومان برای {who} ثبت "
@@ -5534,6 +5570,10 @@ class WaRecreditBody(BaseModel):
     confirm: bool = False
 
 
+class WaWalletResyncBody(BaseModel):
+    confirm: bool = False
+
+
 @router.get("/wallets")
 async def wa_wallets(skip: int = Query(0, ge=0),
                      limit: int = Query(30, ge=1, le=100),
@@ -5637,6 +5677,42 @@ async def wa_wallet_adjust(uid: int, body: WaWalletAdjustBody,
         "created_at": _now()})
     return {"ok": True, "tx_id": str(tx["_id"]),
             "balance_after": tx.get("balance_after"), "audit_id": log_id}
+
+
+@router.post("/wallets/{uid}/resync")
+async def wa_wallet_resync(uid: int, body: WaWalletResyncBody,
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — هم‌ترازسازی موجودی کش با ledger (§۹۰ repair امن):
+    ledger منبع حقیقت است؛ موجودی کش فقط بهینه‌سازی. اگر جمع ledger منفی
+    شود یعنی خودِ ledger ناهنجار است — آن حالت هرگز خودکار «اصلاح»
+    نمی‌شود و برای بررسی انسانی پرچم می‌ماند."""
+    if not body.confirm:
+        raise HTTPException(400, "هم‌ترازسازی بدون تأیید صریح ممکن نیست")
+    w = await db.wallets.find_one({"user_id": uid})
+    if not w:
+        raise HTTPException(404, "کیف پول پیدا نشد")
+    ledger = 0
+    async for row in db.wallet_transactions.aggregate([
+            {"$match": {"user_id": uid, "status": "ok"}},
+            {"$group": {"_id": None, "s": {"$sum": {"$cond": [
+                {"$eq": ["$direction", "credit"]},
+                "$amount", {"$multiply": ["$amount", -1]}]}}}}]):
+        ledger = int(row["s"])
+    if ledger < 0:
+        raise HTTPException(
+            409, "جمع ledger منفی است — تراکنش‌ها ناهنجارند؛ "
+                 "اصلاح خودکار انجام نشد و مورد نیازمند بررسی دستی است")
+    before = int(w.get("balance", 0))
+    await db.wallets.update_one(
+        {"user_id": uid},
+        {"$set": {"balance": ledger, "updated_at": _now()}})
+    log_id = await _audit(
+        int(user["id"]), "هم‌ترازسازی موجودی کیف پول با ledger",
+        severity="CRITICAL", target_type="wallet", target_id=str(uid),
+        target_label=f"کیف پول کاربر {uid}",
+        before={"balance": before}, after={"balance": ledger},
+        tags=["مالی", "کیف_پول", "مغایرت"])
+    return {"ok": True, "balance": ledger, "audit_id": log_id}
 
 
 @router.post("/subscription/reconcile/wallet-recredit")

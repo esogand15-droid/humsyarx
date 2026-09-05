@@ -928,7 +928,9 @@ export default function Subscription() {
             </section>
 
 
-            <WalletSection plans={plans} selectedId={selectedId} />
+            <WalletSection plans={plans} selectedId={selectedId}
+              discountCode={discountCode}
+              discountFinal={discount?.final_price ?? null} />
 
 
             <section>
@@ -1892,7 +1894,8 @@ export default function Subscription() {
 // موجودی همیشه از API canonical می‌آید (READ-ONLY در فرانت)؛
 // خرید همان مسیر اشتراک موجود است — کیف پول فقط روش پرداخت است.
 // ════════════════════════════════════════════════════════════════
-export function WalletSection({ plans = [], selectedId, onDone }) {
+export function WalletSection({ plans = [], selectedId, onDone,
+                                discountCode = '', discountFinal = null }) {
   const qc = useQueryClient();
   const walletQuery = useQuery({
     queryKey: ['wallet'],
@@ -1913,7 +1916,9 @@ export function WalletSection({ plans = [], selectedId, onDone }) {
   const balance = number(w?.balance ?? 0);
   const txs = Array.isArray(w?.transactions) ? w.transactions : [];
   const sel = plans.find((p) => p.id === selectedId) || null;
-  const price = number(sel?.price ?? 0);
+  // 🎟 قیمت نهایی = همان چیزی که سرور حساب می‌کند (تخفیف اعمال‌شده روی پلن انتخابی)
+  const price = number(
+    (sel && discountFinal != null ? discountFinal : sel?.price) ?? 0);
   const enough = sel && balance >= price;
   const errText = buyMutation.isError
     ? (buyMutation.error?.response?.data?.detail ||
@@ -1925,6 +1930,7 @@ export function WalletSection({ plans = [], selectedId, onDone }) {
     if (!sel) return;
     setConfirmBuy({
       plan_id: sel.id,
+      discount_code: discountCode || '',
       idem: `w6-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     });
   };

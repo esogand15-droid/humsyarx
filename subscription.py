@@ -508,10 +508,10 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif action == 'wpay':
         # 💰 W6 — صفحه‌ی تأیید قبل از کسر: موجودی + قیمت + موجودی پس از خرید
-        await _wallet_confirm(query, parts[2] if len(parts) > 2 else '', uid)
+        await _wallet_confirm(query, context, parts[2] if len(parts) > 2 else '', uid)
 
     elif action == 'wbuy':
-        await _wallet_buy(query, parts[2] if len(parts) > 2 else '', uid)
+        await _wallet_buy(query, context, parts[2] if len(parts) > 2 else '', uid)
 
     elif action == 'wallet':
         await _show_wallet(query, uid)
@@ -850,26 +850,45 @@ async def sub_status_line(uid: int) -> str:
 #  منطق خرید فقط در سرویس واحد db.wallet_purchase است (API هم همان).
 # ══════════════════════════════════════════════════════════════
 
-async def _wallet_confirm(query, plan_id: str, uid: int):
+async def _wallet_confirm(query, context, plan_id: str, uid: int):
     plan = await db.sub_plan_get(plan_id)
     if not plan or not plan.get('active'):
         await query.answer("❌ این پلن دیگه در دسترس نیست.", show_alert=True)
         return
     price = int(plan.get('price') or 0)
-    w = await db.wallet_get_for_user_id(uid)
-    balance = int((w or {}).get('balance', 0))
-    if balance < price:
+    # 🎟 W6 — کد تخفیف انتخاب‌شده در همین flow روی خرید کیف‌پولی هم اعمال
+    # می‌شود؛ همان اعتبارسنجی سرور-ساید، بدون مصرف در این مرحله.
+    discount_code = context.user_data.get('sub_discount_code')
+    percent = 0
+    if discount_code:
+        v = await db.discount_validate(discount_code, plan_id=str(plan['_id']), user_id=uid)
+        if v.get('ok'):
+            percent = int(v.get('percent') or 0)
+        else:
+            discount_code = None
+    final_price = round(price * (100 - percent) / 100) if percent else price
+    if final_price <= 0:
         await query.answer(
-            f"موجودی کافی نیست — {_fmt_price(balance)} از {_fmt_price(price)}",
+            "کد تخفیف ۱۰۰٪ نیازی به کیف پول ندارد — از مسیر فعال‌سازی رایگان استفاده کن.",
             show_alert=True)
         return
+    w = await db.wallet_get_for_user_id(uid)
+    balance = int((w or {}).get('balance', 0))
+    if balance < final_price:
+        await query.answer(
+            f"موجودی کافی نیست — {_fmt_price(balance)} از {_fmt_price(final_price)}",
+            show_alert=True)
+        return
+    discount_line = (f"🎟 کد <code>{discount_code}</code> اعمال شد\n"
+                     if discount_code else "")
     text = (
         f"💰 <b>خرید اشتراک با کیف پول</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"📦 پلن: <b>{plan.get('name', '—')}</b> — {plan.get('days', '—')} روزه\n"
-        f"💵 مبلغ: <b>{_fmt_price(price)}</b>\n"
+        f"{discount_line}"
+        f"💵 مبلغ: <b>{_fmt_price(final_price)}</b>\n"
         f"👛 موجودی فعلی: {_fmt_price(balance)}\n"
-        f"👛 موجودی پس از خرید: <b>{_fmt_price(balance - price)}</b>\n\n"
+        f"👛 موجودی پس از خرید: <b>{_fmt_price(balance - final_price)}</b>\n\n"
         f"با تأیید، مبلغ از کیف پول کسر و اشتراکت فعال می‌شه ✅"
     )
     keyboard = [
@@ -884,12 +903,14 @@ async def _wallet_confirm(query, plan_id: str, uid: int):
             text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-async def _wallet_buy(query, plan_id: str, uid: int):
+async def _wallet_buy(query, context, plan_id: str, uid: int):
     """اجرا روی سرویس واحد db.wallet_purchase — همان منطق API.
     خطای مالی هرگز پنهان نمی‌شود؛ در شکست، موجودی دست‌نخورده می‌ماند."""
     from db.wallet import WalletError
     try:
-        res = await db.wallet_purchase(uid, plan_id)
+        res = await db.wallet_purchase(
+            uid, plan_id,
+            discount_code=context.user_data.get('sub_discount_code'))
     except WalletError as e:
         await query.answer(str(e), show_alert=True)
         return

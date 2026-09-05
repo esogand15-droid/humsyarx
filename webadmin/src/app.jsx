@@ -258,6 +258,7 @@ export default function App() {
     (r.broadcasts || []).forEach(b => out.push({ id: `b-${b.id}`, group: 'Broadcast', icon: '📢', label: b.text, hint: formatFaDateTime(b.created_at), go: b.correlation_id ? `/audit?correlation_id=${encodeURIComponent(b.correlation_id)}` : '/notify' }));
     (r.payments || []).forEach(p => out.push({ id: `p-${p.id}`, group: 'پرداخت‌ها', icon: '🧾', label: `${p.plan} · #${p.user_id}`, hint: p.status, go: `/subscriptions?tab=payments&q=${p.id}` }));
     (r.subscriptions || []).forEach(s => out.push({ id: `s-${s.user_id}`, group: 'اشتراک‌ها', icon: '💎', label: `${s.plan} · #${s.user_id}`, hint: s.status, go: '/subscriptions?tab=subscribers' }));
+    (r.wallets || []).forEach(w => out.push({ id: `w-${w.user_id}`, group: 'کیف پول', icon: '👛', label: `${w.name || `کاربر #${w.user_id}`} · ${Number(w.balance).toLocaleString('fa')} تومان`, hint: 'موجودی کیف پول', go: `/subscriptions?tab=wallets&q=${w.user_id}` }));
     (r.notifications || []).forEach(n => out.push({ id: `n-${n.id}`, group: 'اعلان‌ها', icon: '🔔', label: n.text, hint: n.type, go: '/notify' }));
     (r.audit || []).forEach(a => out.push({ id: `a-${a.id}`, group: 'حسابرسی', icon: '🧭', label: `${a.actor} — ${a.action}`, hint: a.at, go: '/audit' }));
     return out;

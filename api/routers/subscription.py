@@ -1041,6 +1041,7 @@ async def gift_recipients(
 class BuyWalletBody(BaseModel):
     plan_id: str
     idem: str = ""
+    discount_code: str = ""
 
 
 def _tx_view(t: dict) -> dict:
@@ -1095,7 +1096,8 @@ async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
     صدا می‌زند). خطاها با پیام فارسی و کد ماشین‌خوان برمی‌گردند."""
     user_id = user["id"]
     try:
-        res = await db.wallet_purchase(user_id, body.plan_id, body.idem)
+        res = await db.wallet_purchase(user_id, body.plan_id, body.idem,
+                                       discount_code=body.discount_code)
     except Exception as e:
         code = getattr(e, "code", "")
         if code == "plan_not_found":
@@ -1104,12 +1106,22 @@ async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
             w = await db.wallet_get_for_user_id(user_id)
             plan = await db.sub_plan_get(body.plan_id)
             price = int((plan or {}).get("price") or 0)
+            dc = (body.discount_code or "").strip()
+            if dc and plan:
+                v = await db.discount_validate(
+                    dc, plan_id=str(plan["_id"]), user_id=user_id)
+                if v.get("ok"):
+                    price = round(price * (100 - int(v.get("percent") or 0))
+                                  / 100)
             balance = int((w or {}).get("balance", 0))
             raise HTTPException(
                 status_code=400,
                 detail=(f"موجودی کیف پول کافی نیست. موجودی: {balance:,} تومان · "
                         f"قیمت: {price:,} تومان · "
                         f"کسری: {max(0, price - balance):,} تومان"))
+        if code in ("discount_invalid", "discount_exhausted",
+                    "discount_full"):
+            raise HTTPException(status_code=400, detail=str(e))
         if code in ("plan_days_invalid", "plan_price_invalid"):
             raise HTTPException(status_code=422, detail=str(e))
         if code == "order_conflict":

@@ -428,6 +428,7 @@ function ReconcilePanel({ onGo }) {
   const [err, setErr] = useState('');
   const [confirmAct, setConfirmAct] = useState(null);
   const [confirmRecredit, setConfirmRecredit] = useState(null);
+  const [confirmResync, setConfirmResync] = useState(null);
   const [busy, setBusy] = useState('');
   const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
   useEffect(load, []);
@@ -447,6 +448,16 @@ function ReconcilePanel({ onGo }) {
       const r = await api.subWalletRecredit(item.payment_id);
       toast(`مبلغ ${money(item.amount)} به کیف پول اعتبار شد ✅`, 'ok');
       setConfirmRecredit(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 💰 W6 — هم‌ترازسازی موجودی کش با ledger (ledger منبع حقیقت است)
+  const resync = async item => {
+    setBusy(`resync-${item.user_id}`);
+    try {
+      const r = await api.subWalletResync(item.user_id);
+      toast(`موجودی با ledger هم‌تراز شد: ${money(r.balance)} ✅`, 'ok');
+      setConfirmResync(null); load();
     } catch (e) { toast(errText(e), 'err'); }
     finally { setBusy(''); }
   };
@@ -487,8 +498,10 @@ function ReconcilePanel({ onGo }) {
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmAct(r)}>✅ {a.label}</button>
             : a.key === 'recredit'
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmRecredit(r)}>💰 {a.label}</button>
+            : a.key === 'resync'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResync(r)}>⚖️ {a.label}</button>
             : <button key={a.key} className="btn sm" onClick={() => onGo?.(a.go)}>{a.label} ‹</button>)}
-          {busy === r.payment_id && <span className="muted">…</span>}
+          {(busy === r.payment_id || busy === `resync-${r.user_id}`) && <span className="muted">…</span>}
         </div>
         {r.technical && <details className="q-tech"><summary>جزئیات فنی</summary><div className="code muted">{r.technical}</div></details>}
       </div>)}
@@ -497,6 +510,8 @@ function ReconcilePanel({ onGo }) {
       text={`فعال‌سازی امن اشتراک برای ${confirmAct.user_name || `کاربر #${fa(confirmAct.user_id)}`}؟ دوره از پلن واقعی رسید (${confirmAct.plan_name || 'نامشخص'}) محاسبه می‌شود و اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
     {confirmRecredit && <Confirm onNo={() => setConfirmRecredit(null)} onYes={() => recredit(confirmRecredit)}
       text={`اعتبار مجدد ${money(confirmRecredit.amount)} به کیف پول ${confirmRecredit.user_name || `کاربر #${fa(confirmRecredit.user_id)}`}؟ این اقدام idempotent است (اجرای دوباره = یک اثر) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmResync && <Confirm onNo={() => setConfirmResync(null)} onYes={() => resync(confirmResync)}
+      text={`موجودی کیف پول ${confirmResync.user_name || `کاربر #${fa(confirmResync.user_id)}`} با جمع ledger هم‌تراز شود؟ ledger منبع حقیقت است و اختلاف ${money(confirmResync.amount)} تومانی حذف می‌شود. اگر جمع ledger منفی باشد، بک‌اند اصلاح خودکار را رد می‌کند. اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
   </div>;
 }
 
