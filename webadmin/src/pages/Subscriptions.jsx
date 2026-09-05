@@ -423,6 +423,7 @@ function ReconcilePanel({ onGo }) {
     <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
       <b>⚖️ مغایرت‌گیری مالی</b>
       {data && <B kind={data.summary.total ? 'bad' : 'ok'}>{data.summary.total ? `${fa(data.summary.total)} ناهم‌خوانی باز` : 'بدون ناهم‌خوانی ✅'}</B>}
+      {data && data.summary.resolved_today > 0 && <B kind="ok">✅ رفع‌شده امروز: {fa(data.summary.resolved_today)}</B>}
       <span className="spacer" />
       <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
     </div>
@@ -465,7 +466,7 @@ function ReconcilePanel({ onGo }) {
 }
 
 // 🌊 W5 — مرکز مالی: KPIها و روند درآمد از aggregate واقعی بک‌اند،
-// نه شمارش فرانت. بازگشت وجه و نرخ تأیید جدا دیده می‌شوند.
+// نه شمارش فرانت. بازگشت وجه و نرخ‌ها جدا دیده می‌شوند + خروجی CSV.
 function FinancialPanel() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -474,15 +475,18 @@ function FinancialPanel() {
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!data) return <Loading rows={5} />;
   const maxDay = Math.max(1, ...data.daily.map(d => d.total));
+  const pct = v => v == null ? '—' : `${Number(v).toLocaleString('fa-IR')}٪`;
   return <>
     <KpiGrid className="dw-sub-kpis">
       <KpiCard tone="ok" icon="💰" label="درآمد کل (تأییدشده)" value={money(data.revenue_total)} />
+      <KpiCard tone="acc" icon="📅" label="درآمد ۷ روز" value={money(data.revenue_week)} />
       <KpiCard tone="warn" icon="💸" label="بازگشت وجه" value={`${fa(data.refunded_count)} مورد · ${money(data.revenue_refunded)}`} />
       <KpiCard tone="warn" icon="🧾" label="در انتظار بررسی" value={fa(data.pending_count)} />
-      <KpiCard tone="acc" icon="📈" label="نرخ تأیید رسید" value={data.success_rate == null ? '—' : `${Number(data.success_rate).toLocaleString('fa-IR')}٪`} />
+      <KpiCard tone="acc" icon="📈" label="نرخ تأیید / نرخ بازگشت" value={`${pct(data.success_rate)} / ${pct(data.refund_rate)}`} />
     </KpiGrid>
     <div className="panel panel-pad" style={{ marginTop: 12 }}>
-      <div className="row"><b>📈 درآمد ۱۴ روز اخیر</b><span className="spacer" /><span className="muted">فقط رسیدهای تأییدشده</span></div>
+      <div className="row"><b>📈 درآمد ۱۴ روز اخیر</b><span className="spacer" />
+        <button className="btn sm" onClick={() => api.exportPaymentsCsv({})}>⬇️ خروجی CSV رسیدها</button></div>
       {!data.daily.length ? <Empty icon="📈" text="در این بازه رسید تأییدشده‌ای ثبت نشده" /> :
         <div className="fin-bars" role="img" aria-label="نمودار درآمد روزانه">
           {data.daily.map(d => <div key={d.day} className="fin-bar-col">
@@ -507,6 +511,9 @@ function FinancialPanel() {
 function ReceiptDrawer({ pay: r, decide, onClose }) {
   const [note, setNote] = useState('');
   const [imgErr, setImgErr] = useState(false);
+  // 🌊 W5 — ردیابی کامل: User → Payment → Subscription → Refund → Audit
+  const [trace, setTrace] = useState(null); const [traceOpen, setTraceOpen] = useState(false);
+  const loadTrace = () => { setTrace(null); api.subPaymentTrace(r.id).then(setTrace).catch(e => toast(errText(e), 'err')); };
   const sendToMe = async () => {
     try { await api.subSendReceipt(r.id); toast('تصویر رسید در تلگرام برای شما ارسال شد'); }
     catch (e) { toast(errText(e), 'err'); }
@@ -521,6 +528,26 @@ function ReceiptDrawer({ pay: r, decide, onClose }) {
           'ثبت': r.submitted_at, 'یادداشت بررسی': r.review_note,
         }).filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{k === 'ثبت' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>)}</dl>
         <button className="btn sm" onClick={sendToMe}>📨 ارسال تصویر به تلگرام من</button>
+        <button className="btn sm" style={{ marginInlineStart: 6 }} onClick={() => { setTraceOpen(o => !o); if (!trace) loadTrace(); }}>🔗 ردیابی کامل (کاربر→پرداخت→اشتراک→حسابرسی)</button>
+        {traceOpen && <div className="q-form" style={{ marginTop: 10 }}>
+          {!trace ? <Loading rows={3} /> : <>
+            <div className="row q-missing">
+              <B kind="acc">👤 {trace.user?.name || `#${fa(trace.user?.user_id)}`}</B>
+              {trace.user?.student_id && <B kind="acc">🎓 {trace.user.student_id}</B>}
+              <B kind={trace.payment?.status === 'approved' ? 'ok' : trace.payment?.status === 'pending' ? 'warn' : 'bad'}>وضعیت رسید: {trace.payment?.status}</B>
+              {trace.subscription
+                ? <B kind={trace.subscription.status === 'active' ? 'ok' : 'warn'}>اشتراک: {trace.subscription.status} · پایان <FaDateTime value={trace.subscription.end_date} /></B>
+                : <B kind="warn">اشتراک: فعال نشده</B>}
+              {trace.refund && <B kind="bad">💸 بازگشت وجه: {trace.refund.reason}</B>}
+              {trace.gift && <B kind="acc">🎀 هدیه به #{fa(trace.gift.to)}</B>}
+            </div>
+            <div className="muted" style={{ marginTop: 8, fontSize: 'var(--fs-label)' }}>خط زمانی حسابرسی:</div>
+            {!trace.audit.length ? <div className="muted">رویداد حسابرسی برای این رسید ثبت نشده.</div> :
+              <ul className="trace-timeline">
+                {trace.audit.map(a => <li key={a.id}><FaDateTime value={a.at} /> — <b>{a.actor_name}</b>: {a.action}</li>)}
+              </ul>}
+          </>}
+        </div>}
         {r.status === 'pending' && <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
           <input className="inp" style={{ width: '100%' }} placeholder="یادداشت بررسی…" value={note} onChange={e => setNote(e.target.value)} />
           <div className="row" style={{ marginTop: 8 }}><button className="btn ok" onClick={() => decide(true, note)}>✅ تأیید</button>

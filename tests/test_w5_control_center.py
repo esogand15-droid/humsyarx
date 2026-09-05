@@ -90,8 +90,13 @@ class ControlCenterStaticTests(unittest.TestCase):
     def test_ui_wired(self):
         api_js = read("webadmin", "src", "api.js")
         for fn in ("dataQualityRepair", "dataQualityAttach", "dataQualityRemove",
-                   "dataQualityParents", "subReconcileActivate", "subFinance"):
+                   "dataQualityParents", "subReconcileActivate", "subFinance",
+                   "subPaymentTrace", "exportPaymentsCsv"):
             self.assertIn(fn + ":", api_js, fn)
+        dash = read("webadmin", "src", "pages", "Dashboard.jsx")
+        self.assertIn("attn-group", dash, "گروه‌بندی نیازمند اقدام")
+        styles = read("webadmin", "src", "styles.css")
+        self.assertIn("trace-timeline", styles, "خط زمانی ردیابی")
         ops = read("webadmin", "src", "pages", "Operations.jsx")
         for token in ("EditMetaForm", "AttachPicker", "تکمیل/ویرایش اطلاعات", "جزئیات فنی"):
             self.assertIn(token, ops, token)
@@ -324,6 +329,42 @@ class ControlCenterRuntimeTests(unittest.TestCase):
                         ("get", "/api/web-admin/subscription/reconcile")):
                     r = await getattr(c, method)(path, headers=self.student_h)
                     assert r.status_code == 403, (path, r.status_code)
+        self._run(run())
+
+    def test_payment_trace_and_export(self):
+        """§۱۱/۱۳/۸۶ — ردیابی کامل رسید + خروجی CSV کرانه‌دار."""
+        async def run():
+            async with self._client_ctx() as c:
+                r = await c.get(
+                    f"/api/web-admin/subscription/payments/{PAY_RECON}/trace",
+                    headers=self.admin_h)
+                assert r.status_code == 200, r.text
+                t = r.json()
+                assert t["payment"]["status"] == "approved"
+                assert t["user"]["name"] == "رضا کریمی"
+                assert "subscription" in t and "refund" in t and "audit" in t
+                # §۷۶ پیوند اشتراک به منبع پرداخت
+                assert t["payment"]["final_price"] == 120000
+                r = await c.get("/api/web-admin/exports/payments.csv",
+                                headers=self.admin_h)
+                assert r.status_code == 200
+                assert "text/csv" in r.headers["content-type"]
+                head = r.text.splitlines()[0]
+                assert "کاربر" in head and "وضعیت" in head
+                assert str(PAY_RECON) in r.text
+        self._run(run())
+
+    def test_finance_extras_and_recon_dashboard(self):
+        """§۳۷/۸۷ — داشبورد مغایرت (resolved_today) و analytics مالی."""
+        async def run():
+            async with self._client_ctx() as c:
+                r = await c.get("/api/web-admin/subscription/finance",
+                                headers=self.admin_h)
+                d = r.json()
+                assert "revenue_week" in d and "refund_rate" in d
+                r = await c.get("/api/web-admin/subscription/reconcile",
+                                headers=self.admin_h)
+                assert "resolved_today" in r.json()["summary"]
         self._run(run())
 
 

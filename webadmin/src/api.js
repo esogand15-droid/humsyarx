@@ -295,6 +295,9 @@ export const api = {
   // 🌊 W5 — اقدام مغایرت + مرکز مالی
   subReconcileActivate: (pid) => req(`/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/activate`, { method: 'POST', body: { confirm: true } }),
   subFinance: () => req('/api/web-admin/subscription/finance'),
+  // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
+  subPaymentTrace: (pid) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/trace`),
+  exportPaymentsCsv: (p = {}) => downloadFile('/api/web-admin/exports/payments.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-payments-${fileDateStamp()}.csv`),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

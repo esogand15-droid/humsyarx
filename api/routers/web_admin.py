@@ -5244,8 +5244,14 @@ async def wa_subscription_reconcile(
             "at": i["at"], "summary": text, "actions": actions,
             "technical": str(p.get("_id") or ""),
         })
+    # 🌊 W5 — داشبورد مغایرت (§۳۷): چند مورد امروز با اقدام واقعی رفع شده؟
+    today = datetime.now(timezone.utc).date().isoformat()
+    resolved_today = await db.audit_logs.count_documents({
+        "action": {"$regex": "رفع مغایرت مالی"},
+        "timestamp": {"$gte": today}})
     return {"items": out_items,
             "summary": {**summary, "total": len(out_items),
+                        "resolved_today": resolved_today,
                         "checked_at": _now()}}
 
 
@@ -5327,14 +5333,94 @@ async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
                         "by": (p.get("refund") or {}).get("by") or p.get("refunded_by")})
     appr = totals.get("approved", {"count": 0, "total": 0})
     rej = totals.get("rejected", {"count": 0, "total": 0})
+    ref = totals.get("refunded", {"count": 0, "total": 0})
     decided = appr["count"] + rej["count"]
+    week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()[:10]
+    revenue_week = sum(d["total"] for d in daily if d["day"] >= week)
     return {"totals": totals,
             "revenue_total": appr["total"],
-            "revenue_refunded": totals.get("refunded", {"count": 0, "total": 0})["total"],
-            "refunded_count": totals.get("refunded", {"count": 0, "total": 0})["count"],
+            "revenue_week": revenue_week,
+            "revenue_refunded": ref["total"],
+            "refunded_count": ref["count"],
             "pending_count": totals.get("pending", {"count": 0, "total": 0})["count"],
             "success_rate": round(100.0 * appr["count"] / decided, 1) if decided else None,
+            "refund_rate": round(100.0 * ref["count"] / (appr["count"] + ref["count"]), 1)
+            if (appr["count"] + ref["count"]) else None,
             "daily": daily, "refunds": refunds, "checked_at": _now()}
+
+
+@router.get("/subscription/payments/{payment_id}/trace")
+async def wa_payment_trace(payment_id: str,
+                           user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — ردیابی کامل یک رسید (§۱۱): کاربر ← پرداخت ← اشتراک ←
+    بازگشت وجه ← خط زمانی حسابرسی. فقط خواندنی و کرانه‌دار."""
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    uid = int(payment.get("user_id") or 0)
+    u = await db.users.find_one({"user_id": uid})
+    sub = await db.sub_get(uid)
+    logs = await db.audit_logs.find({"target.id": str(payment["_id"])}).sort(
+        "timestamp", -1).limit(8).to_list(8)
+    return {
+        "payment": {"id": str(payment["_id"]), "status": payment.get("status"),
+                    "plan_name": payment.get("plan_name"),
+                    "price": payment.get("price"),
+                    "final_price": payment.get("final_price"),
+                    "discount_code": payment.get("discount_code"),
+                    "submitted_at": payment.get("submitted_at"),
+                    "reviewed_at": payment.get("reviewed_at"),
+                    "review_note": payment.get("review_note")},
+        "user": {"user_id": uid, "name": (u or {}).get("name") or "",
+                 "student_id": (u or {}).get("student_id") or "",
+                 "username": (u or {}).get("username") or ""} if u else None,
+        "subscription": {"status": sub.get("status"), "plan_name": sub.get("plan_name"),
+                         "start_date": sub.get("start_date"),
+                         "end_date": sub.get("end_date"),
+                         "source": sub.get("source")} if sub else None,
+        "refund": {"reason": payment.get("refund_reason") or
+                   (payment.get("refund") or {}).get("reason"),
+                   "at": payment.get("refunded_at"),
+                   "by": (payment.get("refund") or {}).get("by")}
+        if payment.get("status") == "refunded" else None,
+        "gift": payment.get("gift"),
+        "audit": [{"id": str(l["_id"]), "at": l.get("timestamp"),
+                   "actor_name": (l.get("actor") or {}).get("name", ""),
+                   "action": l.get("action", ""), "severity": l.get("severity")}
+                  for l in logs],
+    }
+
+
+@router.get("/exports/payments.csv")
+async def wa_export_payments_csv(status: str = Query("", max_length=20),
+                                 user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — خروجی CSV کرانه‌دار رسیدها (حداکثر ۲۰۰ سطر) با header انسانی."""
+    flt = {"status": status} if status else {}
+    rows = await db.sub_payments.find(flt).sort("submitted_at", -1).limit(2000).to_list(2000)
+    uids = {int(p.get("user_id") or 0) for p in rows}
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(2000):
+            names[int(u["user_id"])] = u.get("name") or ""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "پلن", "مبلغ پایه", "مبلغ نهایی",
+                "کد تخفیف", "وضعیت", "ثبت", "بررسی", "بازگشت وجه"])
+    for p in rows:
+        uid = int(p.get("user_id") or 0)
+        w.writerow([str(p["_id"]), names.get(uid, ""), uid, p.get("plan_name") or "",
+                    p.get("price") or "", p.get("final_price") or "",
+                    p.get("discount_code") or "", p.get("status") or "",
+                    p.get("submitted_at") or "", p.get("reviewed_at") or "",
+                    p.get("refunded_at") or ""])
+    log_id = await _audit(int(user["id"]), "خروجی CSV رسیدها",
+                          severity="INFO", target_type="export",
+                          target_id=f"payments:{status or 'all'}",
+                          after={"rows": len(rows)}, tags=["مالی", "خروجی"])
+    return Response(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
+                 "X-Audit-Id": str(log_id)})
 
 
 @router.get("/subscription/subscribers")

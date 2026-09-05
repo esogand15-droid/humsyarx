@@ -123,19 +123,40 @@ export default function Dashboard({ me, go }) {
             {!attnItems.length && <B kind="ok">همه‌ی صف‌ها خالی‌اند 🎉</B>}
           </div>
           {attnItems.length > 0 && (
-            <div className="attn-grid" style={{ marginTop: 12 }}>
-              {attnItems.map(i => (
-                <button type="button" key={i.key} className={`attn-item ${i.severity || ''}`} onClick={() => i.go && go(i.go)}>
-                  <span style={{ fontSize: 'var(--fs-icon)' }}>{i.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div className="row"><b style={{ color: 'var(--txt)', fontSize: 'var(--fs-section)' }}>{Number(i.count).toLocaleString('fa')}</b>
-                      {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
-                    <div className="muted">{i.label}</div>
-                    {i.timestamp && <div className="muted" style={{ marginTop: 3 }}><FaDateTime value={i.timestamp} /></div>}
+            <div style={{ marginTop: 12 }}>
+              {/* 🌊 W5 — گروه‌بندی معنایی (§۹۱): مالی/محتوا/پشتیبانی/سیستم */}
+              {(() => {
+                const GROUPS = [
+                  ['💰 مالی', ['payments']],
+                  ['📚 محتوا', ['questions', 'reports', 'imports', 'data_quality']],
+                  ['🧑‍🎓 کاربران و پشتیبانی', ['users', 'tickets']],
+                  ['⚙️ سیستم', ['failed_jobs', 'outbox_backlog', 'outbox_scheduled', 'dlq', 'backup_issue']],
+                ];
+                const inGroup = new Set(GROUPS.flatMap(([, ks]) => ks));
+                const rest = attnItems.filter(i => !inGroup.has(i.key));
+                const groups = GROUPS.map(([title, ks]) => [title, attnItems.filter(i => ks.includes(i.key))])
+                  .filter(([, items]) => items.length);
+                if (rest.length) groups.push(['📌 سایر', rest]);
+                return groups.map(([title, items]) => (
+                  <div key={title} className="attn-group">
+                    <div className="attn-group-title">{title}</div>
+                    <div className="attn-grid">
+                      {items.map(i => (
+                        <button type="button" key={i.key} className={`attn-item ${i.severity || ''}`} onClick={() => i.go && go(i.go)}>
+                          <span style={{ fontSize: 'var(--fs-icon)' }}>{i.icon}</span>
+                          <div style={{ flex: 1 }}>
+                            <div className="row"><b style={{ color: 'var(--txt)', fontSize: 'var(--fs-section)' }}>{Number(i.count).toLocaleString('fa')}</b>
+                              {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
+                            <div className="muted">{i.label}</div>
+                            {i.timestamp && <div className="muted" style={{ marginTop: 3 }}><FaDateTime value={i.timestamp} /></div>}
+                          </div>
+                          <span className="muted">‹</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <span className="muted">‹</span>
-                </button>
-              ))}
+                ));
+              })()}
             </div>
           )}
         </div>

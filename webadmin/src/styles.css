@@ -1714,3 +1714,21 @@ body.overlay-open { overflow: hidden; }
 .fin-bar-day { font-size: var(--fs-meta); color: var(--c-txt3); direction: ltr; }
 .operation-card { transition: transform .15s ease, border-color .15s ease; }
 .operation-card:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--c-line2); }
+/* 🌊 W5 — خط زمانی ردیابی رسید (§۱۱) */
+.trace-timeline { list-style: none; margin: 6px 0 0; padding: 0; }
+.trace-timeline li {
+  position: relative; padding: 4px 14px 4px 0; font-size: var(--fs-label);
+  color: var(--c-txt2); border-inline-start: 2px solid var(--c-line2);
+  margin-inline-start: 4px; padding-inline-start: 10px;
+}
+.trace-timeline li::before {
+  content: ''; position: absolute; inset-inline-start: -5px; top: 9px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--c-acc); box-shadow: 0 0 6px rgba(77,184,255,.6);
+}
+/* 🌊 W5 — گروه‌بندی «نیازمند اقدام» داشبورد (§۹۱) */
+.attn-group { margin-top: 10px; }
+.attn-group > .attn-group-title {
+  font-size: var(--fs-label); color: var(--c-txt3); font-weight: 700;
+  margin-bottom: 6px; letter-spacing: .2px;
+}
