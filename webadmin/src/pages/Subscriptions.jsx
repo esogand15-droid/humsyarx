@@ -429,6 +429,7 @@ function ReconcilePanel({ onGo }) {
   const [confirmAct, setConfirmAct] = useState(null);
   const [confirmRecredit, setConfirmRecredit] = useState(null);
   const [confirmResync, setConfirmResync] = useState(null);
+  const [confirmResolve, setConfirmResolve] = useState(null);
   const [busy, setBusy] = useState('');
   const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
   useEffect(load, []);
@@ -458,6 +459,21 @@ function ReconcilePanel({ onGo }) {
       const r = await api.subWalletResync(item.user_id);
       toast(`موجودی با ledger هم‌تراز شد: ${money(r.balance)} ✅`, 'ok');
       setConfirmResync(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 🌊 W6.1 — تعیین تکلیف تراکنش معلق (کرش): تشخیص اعمالِ اثر در بک‌اند
+  // evidence-based است؛ اینجا فقط انتخاب ادمین + تأیید است.
+  const resolveTx = async (txId, action) => {
+    setBusy(`tx-${txId}`);
+    try {
+      const r = await api.subWalletTxResolve(txId, action);
+      toast(action === 'complete'
+        ? (r.resolution === 'applied_now'
+          ? 'اثر تراکنش همین حالا اتمیک اعمال شد ✅'
+          : 'اثر مالی قبلاً اعمال شده بود — فقط نشان‌گذاری شد (بدون اثر دوم) ✅')
+        : 'تراکنش لغو شد — در صورت لزوم جبران مالی ثبت شد ✅', 'ok');
+      setConfirmResolve(null); load();
     } catch (e) { toast(errText(e), 'err'); }
     finally { setBusy(''); }
   };
@@ -500,6 +516,8 @@ function ReconcilePanel({ onGo }) {
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmRecredit(r)}>💰 {a.label}</button>
             : a.key === 'resync'
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResync(r)}>⚖️ {a.label}</button>
+            : a.key === 'resolve_tx'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResolve({ item: r, tx_id: a.tx_id })}>⏳ {a.label}</button>
             : <button key={a.key} className="btn sm" onClick={() => onGo?.(a.go)}>{a.label} ‹</button>)}
           {(busy === r.payment_id || busy === `resync-${r.user_id}`) && <span className="muted">…</span>}
         </div>
@@ -510,6 +528,24 @@ function ReconcilePanel({ onGo }) {
       text={`فعال‌سازی امن اشتراک برای ${confirmAct.user_name || `کاربر #${fa(confirmAct.user_id)}`}؟ دوره از پلن واقعی رسید (${confirmAct.plan_name || 'نامشخص'}) محاسبه می‌شود و اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
     {confirmRecredit && <Confirm onNo={() => setConfirmRecredit(null)} onYes={() => recredit(confirmRecredit)}
       text={`اعتبار مجدد ${money(confirmRecredit.amount)} به کیف پول ${confirmRecredit.user_name || `کاربر #${fa(confirmRecredit.user_id)}`}؟ این اقدام idempotent است (اجرای دوباره = یک اثر) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmResolve && <Modal title="⏳ تعیین تکلیف تراکنش معلق" onClose={() => setConfirmResolve(null)}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        تراکنش معلق یعنی فرآیند بین «ثبت در ledger» و «اعمال اثر» قطع شده (کرش).
+        بک‌اند با مقایسه‌ی موجودی و جمع ledger تشخیص می‌دهد اثر مالی قبلاً اعمال
+        شده یا نه — هیچ‌وقت اثر دوم ساخته نمی‌شود. هر دو اقدام با شدت بحرانی
+        در حسابرسی ثبت می‌شوند.
+      </p>
+      <div className="row q-missing" style={{ marginBottom: 10 }}>
+        <B kind="warn">💰 {money(confirmResolve.item.amount)}</B>
+        <B kind="acc">👤 {confirmResolve.item.user_name || `کاربر #${fa(confirmResolve.item.user_id)}`}</B>
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ok" disabled={!!busy} onClick={() => resolveTx(confirmResolve.tx_id, 'complete')}>
+          ✅ تکمیل — اگر اثر اعمال نشده، اتمیک اعمال شود</button>
+        <button className="btn danger" disabled={!!busy} onClick={() => resolveTx(confirmResolve.tx_id, 'cancel')}>
+          🚫 لغو — اگر اثر اعمال شده، جبران شود</button>
+      </div>
+    </Modal>}
     {confirmResync && <Confirm onNo={() => setConfirmResync(null)} onYes={() => resync(confirmResync)}
       text={`موجودی کیف پول ${confirmResync.user_name || `کاربر #${fa(confirmResync.user_id)}`} با جمع ledger هم‌تراز شود؟ ledger منبع حقیقت است و اختلاف ${money(confirmResync.amount)} تومانی حذف می‌شود. اگر جمع ledger منفی باشد، بک‌اند اصلاح خودکار را رد می‌کند. اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
   </div>;
@@ -1024,18 +1060,31 @@ function WalletDrawer({ uid, onClose, onChanged }) {
         <div className="q-list">
           {data.transactions.map(t => {
             const [label, kind] = TX_KIND[t.type] || [t.label || t.type, 'acc'];
-            return <div key={t.id} className="q-issue q-issue--info">
+            const pending = t.status === 'pending';
+            return <div key={t.id} className={`q-issue ${pending ? 'q-issue--warning' : 'q-issue--info'}`}>
               <div className="q-issue-head">
-                <span className="q-issue-icon">{t.direction === 'credit' ? '➕' : '➖'}</span>
+                <span className="q-issue-icon">{pending ? '⏳' : t.direction === 'credit' ? '➕' : '➖'}</span>
                 <div style={{ flex: 1 }}>
                   <b>{t.label || label}</b>
                   <div className="muted" style={{ marginTop: 2 }}>
-                    موجودی پس از تراکنش: {money(t.balance_after)} · <FaDateTime value={t.at} />
+                    {pending
+                      ? <>معلق — احتمال کرش بین مراحل؛ اثر مالی هنوز قطعی نیست · <FaDateTime value={t.at} /></>
+                      : <>موجودی پس از تراکنش: {money(t.balance_after)} · <FaDateTime value={t.at} /></>}
                   </div>
                 </div>
-                <B kind={t.direction === 'credit' ? 'ok' : 'bad'}>
-                  {t.direction === 'credit' ? '+' : '−'}{money(t.amount)}
-                </B>
+                {pending
+                  ? <button className="btn sm" disabled={busy === `tx-${t.id}`} onClick={async () => {
+                      setBusy(`tx-${t.id}`);
+                      try {
+                        const action = window.confirm('تکمیل تراکنش معلق؟ (لغو: از مغایرت‌گیری اقدام کنید)') ? 'complete' : 'cancel';
+                        const r = await api.subWalletTxResolve(t.id, action);
+                        toast(`تعیین تکلیف شد: ${r.resolution}`, 'ok'); load();
+                      } catch (e) { toast(errText(e), 'err'); }
+                      finally { setBusy(''); }
+                    }}>⏳ تعیین تکلیف</button>
+                  : <B kind={t.direction === 'credit' ? 'ok' : 'bad'}>
+                      {t.direction === 'credit' ? '+' : '−'}{money(t.amount)}
+                    </B>}
               </div>
               <details className="q-tech"><summary>جزئیات فنی</summary>
                 <div className="code muted">{t.id} · {t.reference_type || ''}:{t.reference_id || ''} · actor {t.actor_id}</div>

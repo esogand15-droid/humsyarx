@@ -5355,7 +5355,10 @@ async def wa_subscription_reconcile(
                 label, sev = "تراکنش کیف پول در انتظار", "warning"
                 text = (f"تراکنش {i['amount']:,} تومانی کیف پول {who} در "
                         f"حالت معلق مانده است (احتمالاً کرش بین مراحل).")
-                actions = [go_wallet]
+                actions = [{"key": "resolve_tx",
+                            "label": "تعیین تکلیف تراکنش",
+                            "tx_id": i.get("tx_id")},
+                           go_wallet]
             out_items.append({
                 "type": t, "severity": sev, "label": label,
                 "user_id": i["user_id"], "user_name": who,
@@ -5574,6 +5577,11 @@ class WaWalletResyncBody(BaseModel):
     confirm: bool = False
 
 
+class WaTxResolveBody(BaseModel):
+    action: str = Field(..., description="complete یا cancel")
+    confirm: bool = False
+
+
 @router.get("/wallets")
 async def wa_wallets(skip: int = Query(0, ge=0),
                      limit: int = Query(30, ge=1, le=100),
@@ -5618,6 +5626,14 @@ async def wa_wallet_detail(uid: int,
     u = await db.users.find_one({"user_id": uid})
     summary = await db.wallet_summary(uid)
     txs = await db.wallet_tx_list(uid, skip=skip, limit=limit)
+    # 🌊 W6.1 — تراکنش‌های معلق (کرش) در صفحه‌ی اول دیده می‌شوند تا ادمین
+    # بتواند همان‌جا تعیین تکلیف کند؛ در ledger کاربر شمارش نمی‌شوند.
+    pend = []
+    if skip == 0:
+        pend = await db.wallet_transactions.find(
+            {"user_id": uid, "status": "pending"}
+        ).sort([("created_at", -1), ("_id", -1)]).to_list(10)
+    txs = list(pend) + list(txs)
     return {"summary": {**summary,
                         "user_name": (u or {}).get("name") or "",
                         "student_id": (u or {}).get("student_id") or ""},
@@ -5691,6 +5707,12 @@ async def wa_wallet_resync(uid: int, body: WaWalletResyncBody,
     w = await db.wallets.find_one({"user_id": uid})
     if not w:
         raise HTTPException(404, "کیف پول پیدا نشد")
+    # 🌊 W6.1 — تا تراکنش معلقی تعیین‌تکلیف نشده، هم‌ترازسازی ممنوع:
+    # وگرنه جمع ledgerِ ok بدون اثرِ در راه محاسبه و موجودی خراب می‌شود.
+    if await db.wallet_pending_count(uid):
+        raise HTTPException(
+            409, "این کیف پول تراکنش معلق دارد؛ ابتدا آن را تعیین تکلیف "
+                 "کنید (کامل یا لغو)، سپس هم‌ترازسازی ممکن است")
     ledger = 0
     async for row in db.wallet_transactions.aggregate([
             {"$match": {"user_id": uid, "status": "ok"}},
@@ -5713,6 +5735,40 @@ async def wa_wallet_resync(uid: int, body: WaWalletResyncBody,
         before={"balance": before}, after={"balance": ledger},
         tags=["مالی", "کیف_پول", "مغایرت"])
     return {"ok": True, "balance": ledger, "audit_id": log_id}
+
+
+@router.post("/wallet-tx/{tx_id}/resolve")
+async def wa_wallet_tx_resolve(tx_id: str, body: WaTxResolveBody,
+                               user=Depends(_perm("subscription.manage"))):
+    """🌊 W6.1 — تعیین تکلیف تراکنش معلق (کرش بین مراحل ledger):
+    تشخیص اینکه اثر مالی اعمال شده یا نه در لایه‌ی db و evidence-based
+    است؛ اینجا فقط گیت مجوز + تأیید صریح + audit بحرانی اضافه می‌شود."""
+    if not body.confirm:
+        raise HTTPException(400, "تعیین تکلیف بدون تأیید صریح ممکن نیست")
+    try:
+        res = await db.wallet_resolve_pending(tx_id, int(user["id"]),
+                                              body.action)
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "tx_not_found":
+            raise HTTPException(404, str(e))
+        if code == "tx_not_pending":
+            raise HTTPException(409, str(e))
+        if code == "bad_action":
+            raise HTTPException(400, str(e))
+        if code == "insufficient_balance":
+            raise HTTPException(400, "اعمال کسر ممکن نیست — موجودی کافی نیست")
+        if code == "cancel_would_overdraw":
+            raise HTTPException(409, str(e))
+        raise
+    log_id = await _audit(
+        int(user["id"]), "تعیین تکلیف تراکنش معلق کیف پول",
+        severity="CRITICAL", target_type="wallet_tx", target_id=tx_id,
+        target_label=f"تراکنش کیف پول",
+        before={"status": "pending"},
+        after={**res},
+        tags=["مالی", "کیف_پول", "کرش_ریکاوری"])
+    return {**res, "audit_id": log_id}
 
 
 @router.post("/subscription/reconcile/wallet-recredit")

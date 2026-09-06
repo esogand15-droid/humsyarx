@@ -110,13 +110,23 @@ class WalletStaticTests(unittest.TestCase):
         self.assertIn("wallet_credit", body)
         self.assertIn('"sub_payment_refund"', body)
 
+    def test_resolve_endpoint_perm_gated(self):
+        idx = self.wa.index('@router.post("/wallet-tx/{tx_id}/resolve")')
+        self.assertIn('_perm("subscription.manage")',
+                      self.wa[idx:idx + 600])
+        # تشخیص کرش در لایه‌ی db است و evidence-based
+        self.assertIn("async def wallet_resolve_pending", self.wallet_db)
+        self.assertIn("_wallet_ok_ledger_sum", self.wallet_db)
+
     def test_ui_wired(self):
         api_js = read("webadmin", "src", "api.js")
         for fn in ("subWallets:", "subWalletDetail:", "subWalletAdjust:",
-                   "subWalletRecredit:"):
+                   "subWalletRecredit:", "subWalletResync:",
+                   "subWalletTxResolve:"):
             self.assertIn(fn, api_js, fn)
         sub_jsx = read("webadmin", "src", "pages", "Subscriptions.jsx")
         self.assertIn("کیف پول", sub_jsx)
+        self.assertIn("تعیین تکلیف", sub_jsx)
 
 
 @unittest.skipUnless(_mongo_available(), "MongoDB در دسترس نیست (CI)")
@@ -572,6 +582,158 @@ class WalletRuntimeTests(unittest.TestCase):
                 assert not any(i["type"] == "wallet_balance_mismatch"
                                and i["user_id"] == STUDENT_B
                                for i in r.json()["items"])
+        self._run(run())
+
+    # ── 🌊 W6.1 — کرش‌ریکاوری عمیق: تراکنش معلق ───────────────
+    async def _inject_pending(self, uid, amount, ref, direction="credit",
+                              simulate_applied=False):
+        """تراکنش pending دستی = شبیه‌سازی کرش بین مراحل؛ اگر
+        simulate_applied=True اثر مالی هم (بدون نشان‌گذاری) روی موجودی است."""
+        from time_utils import utc_now_iso
+        r = await self.db.wallet_transactions.insert_one({
+            "user_id": uid,
+            "type": "refund_credit" if direction == "credit"
+                    else "subscription_purchase",
+            "direction": direction, "amount": amount,
+            "currency": "تومان",
+            "reference_type": "pending_test", "reference_id": ref,
+            "balance_before": None, "balance_after": None,
+            "label": "تست کرش", "actor_id": 0, "status": "pending",
+            "created_at": "2026-01-01T00:00:00+00:00"})
+        if simulate_applied:
+            delta = amount if direction == "credit" else -amount
+            await self.db.wallets.update_one({"user_id": uid},
+                                             {"$inc": {"balance": delta}})
+        return str(r.inserted_id)
+
+    async def _assert_ledger_invariant(self, uid):
+        w = await self.db.wallet_get_for_user_id(uid)
+        ledger = await self.db._wallet_ok_ledger_sum(uid)
+        assert int(w["balance"]) == ledger, \
+            f"invariant شکست: balance={w['balance']} ledger={ledger}"
+
+    def test_resolve_pending_not_applied(self):
+        """کرش قبل از اعمال → complete اثر را اتمیک اعمال می‌کند."""
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            tx_id = await self._inject_pending(STUDENT_B, 25000, "nx1")
+            b0 = int((await self.db.wallet_get_for_user_id(
+                STUDENT_B))["balance"])
+            async with self._client_ctx() as c:
+                # در مغایرت‌گیری پرچم می‌خورد و اکشن تعیین تکلیف دارد
+                r = await c.get("/api/web-admin/subscription/reconcile",
+                                headers=self.admin_h)
+                hit = next((i for i in r.json()["items"]
+                            if i["type"] == "wallet_tx_stuck_pending"
+                            and i["user_id"] == STUDENT_B), None)
+                assert hit and any(a.get("tx_id") == tx_id
+                                   for a in hit["actions"])
+                # بدون تأیید → ۴۰۰
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "complete", "confirm": False})
+                assert r.status_code == 400
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "complete", "confirm": True})
+                assert r.status_code == 200, r.text
+                assert r.json()["resolution"] == "applied_now"
+                w = await self.db.wallet_get_for_user_id(STUDENT_B)
+                assert int(w["balance"]) == b0 + 25000
+                # تعیین تکلیف دوباره → ۴۰۹ (اثر دوم هرگز)
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "complete", "confirm": True})
+                assert r.status_code == 409
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_resolve_pending_applied_detection(self):
+        """کرش بعد از $inc → تشخیص evidence-based: فقط نشان‌گذاری، بدون اثر دوم."""
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            tx_id = await self._inject_pending(STUDENT_B, 10000, "nx2",
+                                               simulate_applied=True)
+            b0 = int((await self.db.wallet_get_for_user_id(
+                STUDENT_B))["balance"])
+            async with self._client_ctx() as c:
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "complete", "confirm": True})
+                assert r.status_code == 200, r.text
+                assert r.json()["resolution"] == "marked_applied"
+                w = await self.db.wallet_get_for_user_id(STUDENT_B)
+                assert int(w["balance"]) == b0, "اثر دوم اعمال شد!"
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_cancel_applied_credit_compensates(self):
+        """لغوِ اعتبارِ اعمال‌شده = compensating debit، نه بازنویسی ledger."""
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            tx_id = await self._inject_pending(STUDENT_B, 8000, "nx3",
+                                               simulate_applied=True)
+            b0 = int((await self.db.wallet_get_for_user_id(
+                STUDENT_B))["balance"])
+            async with self._client_ctx() as c:
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "cancel", "confirm": True})
+                assert r.status_code == 200, r.text
+                assert r.json()["resolution"] == "cancelled"
+                w = await self.db.wallet_get_for_user_id(STUDENT_B)
+                assert int(w["balance"]) == b0 - 8000
+                n = await self.db.wallet_transactions.count_documents(
+                    {"reference_type": "pending_cancel",
+                     "reference_id": tx_id, "status": "ok"})
+                assert n == 1
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_resync_blocked_while_pending_exists(self):
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            tx_id = await self._inject_pending(STUDENT_B, 5000, "nx4")
+            async with self._client_ctx() as c:
+                r = await c.post(f"/api/web-admin/wallets/{STUDENT_B}/resync",
+                                 headers=self.admin_h, json={"confirm": True})
+                assert r.status_code == 409
+                # بعد از تعیین تکلیف، resync آزاد است
+                r = await c.post(f"/api/web-admin/wallet-tx/{tx_id}/resolve",
+                                 headers=self.admin_h,
+                                 json={"action": "cancel", "confirm": True})
+                assert r.status_code == 200
+                r = await c.post(f"/api/web-admin/wallets/{STUDENT_B}/resync",
+                                 headers=self.admin_h, json={"confirm": True})
+                assert r.status_code == 200
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_concurrent_same_ref_credit_once(self):
+        """دو credit هم‌زمان با مرجع یکسان → دقیقاً یک اثر اقتصادی."""
+        self._reset_wallets([STUDENT_B])
+        async def run():
+            await self.db.wallet_get_or_create(STUDENT_B)
+            w0 = int((await self.db.wallet_get_for_user_id(
+                STUDENT_B))["balance"])
+            await asyncio.gather(
+                self.db.wallet_credit(STUDENT_B, 30000, "refund_credit",
+                                      "unit", "race-ref", ADMIN_UID, "تست"),
+                self.db.wallet_credit(STUDENT_B, 30000, "refund_credit",
+                                      "unit", "race-ref", ADMIN_UID, "تست"))
+            n = await self.db.wallet_transactions.count_documents(
+                {"reference_type": "unit", "reference_id": "race-ref"})
+            assert n == 1, f"تراکنش تکراری: {n}"
+            w = await self.db.wallet_get_for_user_id(STUDENT_B)
+            assert int(w["balance"]) == w0 + 30000
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_ledger_invariant_after_mixed_ops(self):
+        """پس از توالی مخلوط عملیات‌ها: balance == جمع جبری ledgerِ ok."""
+        async def run():
+            for uid in (STUDENT_A, STUDENT_B):
+                await self._assert_ledger_invariant(uid)
         self._run(run())
 
     def test_wallet_admin_views(self):

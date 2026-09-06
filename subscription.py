@@ -514,7 +514,8 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await _wallet_buy(query, context, parts[2] if len(parts) > 2 else '', uid)
 
     elif action == 'wallet':
-        await _show_wallet(query, uid)
+        _skip = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _show_wallet(query, uid, _skip)
 
     elif action == 'discount':
         await _prompt_discount(query, context)
@@ -939,26 +940,33 @@ async def _wallet_buy(query, context, plan_id: str, uid: int):
             text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-async def _show_wallet(query, uid: int):
-    """💰 موجودی + تراکنش‌های اخیر — human-readable (ID فنی نمایش داده نمی‌شود)."""
+async def _show_wallet(query, uid: int, skip: int = 0):
+    """💰 موجودی + تراکنش‌ها — human-readable و صفحه‌بندی‌شده (کرانه‌دار)."""
     from utils import fmt_jalali_dt
+    page = max(0, min(int(skip or 0), 200))
     s = await db.wallet_summary(uid)
-    txs = await db.wallet_tx_list(uid, limit=8)
+    txs = await db.wallet_tx_list(uid, skip=page, limit=8)
     lines = ["💰 <b>کیف پول من</b>", "━━━━━━━━━━━━━━━━",
              f"👛 موجودی: <b>{_fmt_price(int(s.get('balance') or 0))}</b>"]
     if txs:
-        lines.append("\n<b>تراکنش‌های اخیر:</b>")
+        lines.append("\n<b>تراکنش‌ها:</b>")
         for t in txs:
             sign = '➕' if t.get('direction') == 'credit' else '➖'
             lines.append(
                 f"{sign} {_fmt_price(int(t.get('amount') or 0))} — "
                 f"{t.get('label') or ''} ({fmt_jalali_dt(t.get('created_at', ''))})")
     else:
-        lines.append("\nهنوز تراکنشی نداری.")
-    keyboard = [
-        [InlineKeyboardButton("💳 خرید اشتراک", callback_data='sub:back')],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')],
-    ]
+        lines.append("\nتراکنشی در این صفحه نیست.")
+    keyboard = []
+    if len(txs) == 8:
+        keyboard.append([InlineKeyboardButton(
+            "🕓 تراکنش‌های قدیمی‌تر", callback_data=f"sub:wallet:{page + 8}")])
+    keyboard.append(
+        [InlineKeyboardButton("💳 خرید اشتراک", callback_data='sub:back')])
+    keyboard.append([InlineKeyboardButton(
+        "🔙 بازگشت",
+        callback_data=f"sub:wallet:{max(0, page - 8)}" if page
+        else 'sub:my_status')])
     try:
         await query.edit_message_text(
             '\n'.join(lines), parse_mode='HTML',

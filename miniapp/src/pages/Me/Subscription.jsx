@@ -1914,7 +1914,20 @@ export function WalletSection({ plans = [], selectedId, onDone,
 
   const w = walletQuery.data;
   const balance = number(w?.balance ?? 0);
-  const txs = Array.isArray(w?.transactions) ? w.transactions : [];
+  const [extraTxs, setExtraTxs] = useState([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const txs = [...(Array.isArray(w?.transactions) ? w.transactions : []), ...extraTxs];
+  const loadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const r = await api.get(`/api/subscription/wallet/transactions?skip=${txs.length}&limit=10`);
+      const items = Array.isArray(r?.items) ? r.items : [];
+      setExtraTxs((prev) => [...prev, ...items]);
+      setHasMore(items.length >= 10);
+    } catch { /* خطا در UI نشان داده می‌شود؛ موجودی دست‌نخورده */ }
+    finally { setLoadingMore(false); }
+  };
   const sel = plans.find((p) => p.id === selectedId) || null;
   // 🎟 قیمت نهایی = همان چیزی که سرور حساب می‌کند (تخفیف اعمال‌شده روی پلن انتخابی)
   const price = number(
@@ -2000,13 +2013,22 @@ export function WalletSection({ plans = [], selectedId, onDone,
                 {txs.length === 0 ? (
                   <div className="empty card">هنوز تراکنشی نداری.</div>
                 ) : (
-                  txs.map((t) => (
-                    <div key={t.id} className="card" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      <b>{t.direction === 'credit' ? '➕' : '➖'} {number(t.amount)}</b>
-                      <span className="muted" style={{ flex: 1 }}>{t.label}</span>
-                      <span className="muted">{t.at ? new Date(t.at).toLocaleDateString('fa-IR') : ''}</span>
-                    </div>
-                  ))
+                  <>
+                    {txs.map((t) => (
+                      <div key={t.id} className="card" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <b>{t.direction === 'credit' ? '➕' : '➖'} {number(t.amount)}</b>
+                        <span className="muted" style={{ flex: 1 }}>{t.label}</span>
+                        <span className="muted">{t.at ? new Date(t.at).toLocaleDateString('fa-IR') : ''}</span>
+                      </div>
+                    ))}
+                    {(hasMore || txs.length >= 10) && (
+                      <button type="button" className="btn btn-xs"
+                        disabled={loadingMore} onClick={loadMore}
+                        style={{ marginTop: 6 }}>
+                        {loadingMore ? '…' : '🕓 تراکنش‌های قدیمی‌تر'}
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             )}

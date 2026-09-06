@@ -304,6 +304,7 @@ export const api = {
   subWalletAdjust: (uid, body) => req(`/api/web-admin/wallets/${uid}/adjust`, { method: 'POST', body }),
   subWalletRecredit: (pid) => req('/api/web-admin/subscription/reconcile/wallet-recredit', { method: 'POST', body: { payment_id: pid, confirm: true } }),
   subWalletResync: (uid) => req(`/api/web-admin/wallets/${uid}/resync`, { method: 'POST', body: { confirm: true } }),
+  subWalletTxResolve: (txId, action) => req(`/api/web-admin/wallet-tx/${encodeURIComponent(txId)}/resolve`, { method: 'POST', body: { action, confirm: true } }),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
   subSubscriber: (uid) => req(`/api/web-admin/subscription/subscribers/${uid}`),
   subUserSearch: (q) => req('/api/web-admin/subscription/users/search?q=' + encodeURIComponent(q)),

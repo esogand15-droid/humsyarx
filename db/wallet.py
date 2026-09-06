@@ -140,10 +140,14 @@ class DBWallet:
                  '$set': {'updated_at': utc_now_iso()}})
             balance_before = int((updated or {}).get('balance', 0))
         balance_after = balance_before + delta
-        await self.wallet_transactions.update_one(
-            {'_id': tx['_id']},
+        # گارد status: فقط تراکنش pending کامل می‌شود — اگر هم‌زمان مسیر
+        # دیگری آن را تعیین‌تکلیف کرده باشد، اثر دوم نوشته نمی‌شود.
+        res = await self.wallet_transactions.update_one(
+            {'_id': tx['_id'], 'status': 'pending'},
             {'$set': {'status': 'ok', 'balance_before': balance_before,
                       'balance_after': balance_after}})
+        if res.modified_count != 1:
+            logger.warning(f'wallet tx {tx["_id"]} was resolved concurrently')
         tx.update({'status': 'ok', 'balance_before': balance_before,
                    'balance_after': balance_after})
         return tx
@@ -180,13 +184,130 @@ class DBWallet:
     async def wallet_tx_list(self, user_id: int, skip: int = 0,
                              limit: int = 20) -> list:
         limit = max(1, min(int(limit), 50))
+        # ترتیب پایدار: created_at ثانیه‌ای است؛ _id گره‌ی tie-breaker است
         return await self.wallet_transactions.find(
             {'user_id': int(user_id), 'status': 'ok'}
-        ).sort('created_at', -1).skip(max(0, int(skip))).limit(limit).to_list(limit)
+        ).sort([('created_at', -1), ('_id', -1)]).skip(
+            max(0, int(skip))).limit(limit).to_list(limit)
 
     async def wallet_tx_count(self, user_id: int) -> int:
         return await self.wallet_transactions.count_documents(
             {'user_id': int(user_id), 'status': 'ok'})
+
+    async def wallet_pending_count(self, user_id: int) -> int:
+        return await self.wallet_transactions.count_documents(
+            {'user_id': int(user_id), 'status': 'pending'})
+
+    async def _wallet_ok_ledger_sum(self, user_id: int) -> int:
+        """جمع جبری ledger (فقط ok) — مبنای هر قضاوت حسابداری."""
+        total = 0
+        async for row in self.wallet_transactions.aggregate([
+                {'$match': {'user_id': int(user_id), 'status': 'ok'}},
+                {'$group': {'_id': None, 's': {'$sum': {'$cond': [
+                    {'$eq': ['$direction', 'credit']},
+                    '$amount', {'$multiply': ['$amount', -1]}]}}}}]):
+            total = int(row['s'])
+        return total
+
+    # ── تعیین تکلیف تراکنش معلق (کرش بین مراحل) ───────────────
+    async def wallet_resolve_pending(self, tx_id: str, admin_id: int,
+                                     action: str) -> dict:
+        """🌊 W6.1 — repair عمیق کرش: تراکنش pending یعنی الگوی
+        insert-first بین «درج» و «اعمال/نشان‌گذاری» قطع شده است.
+
+        تشخیص **evidence-based** است، نه حدس: اختلافِ (موجودی کش − جمع
+        ledgerِ ok) اگر دقیقاً برابر اثر این تراکنش باشد، یعنی اثر مالی
+        قبلاً اعمال شده و فقط نشان‌گذاری جا مانده؛ وگرنه اثر هرگز اعمال
+        نشده. بر این اساس:
+
+        action='complete' → اگر اثر اعمال نشده: اتمیک اعمال می‌شود
+            (debit با شرط موجودی؛ ناکافی = خطا و tx همچنان معلق)؛
+            اگر اعمال شده: فقط ok نشان‌گذاری می‌شود (بدون اثر دوم).
+        action='cancel'   → txfailed می‌شود؛ اگر اثر اعمال شده باشد با
+            compensating transaction جبران می‌شود (ledger هرگز بازنویسی
+            نمی‌شود). جبرانِ creditِ اعمال‌شده یک debit است و اگر موجودی
+            خرج شده باشد، صریحاً خطا می‌دهد (پنهان‌کاری صفر)."""
+        try:
+            tx = await self.wallet_transactions.find_one(
+                {'_id': ObjectId(str(tx_id))})
+        except Exception:
+            tx = None
+        if not tx:
+            raise WalletError('tx_not_found', 'تراکنش پیدا نشد')
+        if tx.get('status') != 'pending':
+            raise WalletError('tx_not_pending',
+                              'تراکنش معلق نیست (قبلاً تعیین تکلیف شده)')
+        if action not in ('complete', 'cancel'):
+            raise WalletError('bad_action', 'اقدام معتبر نیست')
+        uid = int(tx['user_id'])
+        amount = int(tx['amount'])
+        delta = amount if tx['direction'] == 'credit' else -amount
+        wallet = await self.wallet_get_or_create(uid)
+        ledger = await self._wallet_ok_ledger_sum(uid)
+        applied = (int(wallet.get('balance', 0)) - ledger) == delta
+
+        if action == 'complete':
+            if applied:
+                res = await self.wallet_transactions.update_one(
+                    {'_id': tx['_id'], 'status': 'pending'},
+                    {'$set': {'status': 'ok',
+                              'recovery': 'completed_after_crash',
+                              'resolved_by': int(admin_id)}})
+                if res.modified_count != 1:
+                    raise WalletError('tx_not_pending',
+                                      'تراکنش هم‌زمان تعیین تکلیف شد')
+                return {'tx_id': str(tx['_id']), 'resolution': 'marked_applied',
+                        'applied_before': True,
+                        'balance_after': int(wallet.get('balance', 0))}
+            # اثر اعمال نشده — همین‌جا اتمیک اعمال می‌شود
+            tx = await self._wallet_apply(wallet, tx, delta)
+            return {'tx_id': str(tx['_id']), 'resolution': 'applied_now',
+                    'applied_before': False,
+                    'balance_after': tx.get('balance_after')}
+
+        # cancel — اگر اثر اعمال شده، طبق دکترین compensating transaction:
+        # اول جبران (idempotent با کلید یکتا)، بعد خودِ تراکنش ok ثبت می‌شود
+        # (واقعاً اتفاق افتاده) با نشان recovery — ledger هرگز بازنویسی
+        # نمی‌شود و invariant «balance == جمع ledger» برقرار می‌ماند.
+        # اگر اثر اعمال نشده: tx مستقیماً failed می‌شود (اثری در کار نبوده).
+        if applied:
+            if tx['direction'] == 'credit':
+                # جبرانِ اعتبارِ اعمال‌شده = کسر همان مبلغ
+                try:
+                    await self.wallet_debit(
+                        uid, amount, TX_ADMIN_DEBIT, 'pending_cancel',
+                        str(tx['_id']), admin_id,
+                        'جبران تراکنش معلق لغوشده (اعتبار)')
+                except WalletError as e:
+                    if e.code == 'insufficient_balance':
+                        raise WalletError(
+                            'cancel_would_overdraw',
+                            'لغو ممکن نیست: موجودی خرج شده و جبران کسری '
+                            'می‌آورد — نیازمند بررسی دستی (مغایرت‌گیری)')
+                    raise
+            else:
+                await self.wallet_credit(
+                    uid, amount, TX_REVERSAL, 'pending_cancel',
+                    str(tx['_id']), admin_id,
+                    'جبران تراکنش معلق لغوشده (کسر)')
+            res = await self.wallet_transactions.update_one(
+                {'_id': tx['_id'], 'status': 'pending'},
+                {'$set': {'status': 'ok',
+                          'recovery': 'cancelled_after_apply',
+                          'resolved_by': int(admin_id)}})
+        else:
+            res = await self.wallet_transactions.update_one(
+                {'_id': tx['_id'], 'status': 'pending'},
+                {'$set': {'status': 'failed',
+                          'fail_reason': 'cancelled_by_admin',
+                          'resolved_by': int(admin_id)}})
+        if res.modified_count != 1:
+            raise WalletError('tx_not_pending',
+                              'تراکنش هم‌زمان تعیین تکلیف شد')
+        return {'tx_id': str(tx['_id']), 'resolution': 'cancelled',
+                'applied_before': applied,
+                'balance_after': int((await self.wallet_get_for_user_id(
+                    uid) or {}).get('balance', 0))}
 
     async def wallet_summary(self, user_id: int) -> dict:
         """خلاصه‌ی کیف پول یک کاربر — همه از بک‌اند (client هیچ‌وقت
@@ -200,7 +321,7 @@ class DBWallet:
             agg[row['_id']] = int(row['total'])
         last = await self.wallet_transactions.find_one(
             {'user_id': int(user_id), 'status': 'ok'},
-            sort=[('created_at', -1)])
+            sort=[('created_at', -1), ('_id', -1)])
         return {'user_id': int(user_id),
                 'balance': int(w.get('balance', 0)),
                 'currency': WALLET_CURRENCY,
