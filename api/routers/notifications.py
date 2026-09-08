@@ -16,7 +16,7 @@ async def _notif_audit(actor: dict, action: str, *, before=None, after=None):
             role_label = "student"
         await db.log_action(
             actor["id"], name, role_label,
-            action, "Notifications", category="user", severity="INFO",
+            action, "Notifications", category="notification", severity="INFO",
             target_id=str(actor["id"]), target_type="user", target_label=name,
             before=before, after=after,
         )

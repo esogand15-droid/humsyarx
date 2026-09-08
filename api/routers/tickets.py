@@ -83,7 +83,7 @@ async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
     try:
         await db.log_action(
             uid, db_user.get("name",""), _role,
-            "ثبت تیکت پشتیبانی", "Tickets", category="user", severity="INFO",
+            "ثبت تیکت پشتیبانی", "Tickets", category="ticket", severity="INFO",
             target_id=str(tid), target_type="ticket", target_label=body.subject[:60],
             after={"subject": body.subject[:60]},
         )
@@ -125,7 +125,7 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
     try:
         await db.log_action(
             user["id"], (user.get("_db") or {}).get("name",""), _role2,
-            "پاسخ دانشجو به تیکت", "Tickets", category="user", severity="INFO",
+            "پاسخ دانشجو به تیکت", "Tickets", category="ticket", severity="INFO",
             target_id=str(tid), target_type="ticket", target_label=f"تیکت #{tid}",
             after={"reply_len": len(msg)},
         )

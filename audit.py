@@ -93,6 +93,23 @@ def normalize_category(c: str) -> str:
     c = (c or "system").strip().lower()
     return c if c in CATEGORIES else "system"
 
+# ── Unified category → group/icon/title (single source of truth §18-§20) ──
+# مدیریتی → log_group_admin / 🛡  |  محتوایی → log_group_content / 🎓
+_ADMIN_CATS = {"admin","security","system","ai","job","database","integration","subscription","payment","backup","notification"}
+_CONTENT_CATS = {"content","qbank","reference","grades","schedule","ticket"}
+# user → مدیریتی (چون مدیریت کاربران است)، اما قابل تنظیم
+def get_category_meta(category: str) -> tuple[str, str, str]:
+    """return (group_key, icon, title) — unified for message + delivery."""
+    c = normalize_category(category)
+    if c in _ADMIN_CATS or c == "user":  # user management logs are admin-visible
+        return ("log_group_admin", "🛡", "گزارش فعالیت مدیریتی")
+    if c in _CONTENT_CATS:
+        return ("log_group_content", "🎓", "گزارش فعالیت محتوا")
+    # fallback — system-like → admin
+    if c in ("admin","security","system"):
+        return ("log_group_admin", "🛡", "گزارش فعالیت مدیریتی")
+    return ("log_group_admin", "🛡", "گزارش فعالیت")
+
 # ══════════════════════════════════════════════════
 #  3) Action Naming — dot-notation (§19)
 #     action = "content.created"   (پایدار برای query)
@@ -487,8 +504,7 @@ def build_telegram_audit_text(event: dict) -> str:
     """
     sev = SEVERITY_META.get(event.get("severity", "INFO"), SEVERITY_META["INFO"])
     cat = event.get("category", "system")
-    cat_icon = "🛡" if cat in ("admin", "security", "system") else "🎓"
-    cat_title = "گزارش فعالیت مدیریتی" if cat == "admin" else "گزارش فعالیت محتوا" if cat == "content" else "گزارش فعالیت"
+    _gkey, cat_icon, cat_title = get_category_meta(cat)
 
     actor = event.get("actor") or {}
     target = event.get("target") or {}
@@ -908,12 +924,7 @@ async def audit_event(
             if telegram_chat_id is None:
                 try:
                     from database import db as _db
-                    group_key = "log_group_admin" if category == "admin" else "log_group_content" if category == "content" else "log_group_admin" if category in ("security","system") else "log_group_content"
-                    # برای ai/payment/notification etc — نگاشت هوشمند:
-                    if category in ("ai", "system", "security", "job", "database", "integration"):
-                        group_key = "log_group_admin"
-                    elif category in ("qbank", "reference"):
-                        group_key = "log_group_content"
+                    group_key, _, _ = get_category_meta(category)
                     chat_id = await _db.get_setting(group_key, None)
                     # اگر گروه مربوطه نبود، admin را fallback کن
                     if not chat_id and group_key != "log_group_admin":

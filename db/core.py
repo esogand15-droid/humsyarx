@@ -1879,7 +1879,9 @@ class DBCore:
         'Roles':         'نقش‌ها',
         'Settings':      'تنظیمات',
         'Questions':     'سوالات',
+        'QBank':         'بانک سوال',
         'Content':       'محتوا',
+        'Reference':     'رفرنس',
         'Schedules':     'برنامه کلاسی',
         'Tickets':       'تیکت‌ها',
         'Reports':       'گزارش‌ها',
@@ -1887,16 +1889,18 @@ class DBCore:
         'Backup':        'بکاپ',
         'System':        'سیستم',
         'Auth':          'ورود/خروج',
-        'Subscription':  'اشتراک',   # FIX جدید
-        'Grades':        'نمرات',    # FIX جدید
+        'Subscription':  'اشتراک',
+        'Grades':        'نمرات',
         'AI':            'هوش مصنوعی',
         'Payment':       'پرداخت',
-        'QBank':         'بانک سوال',
-        'Reference':     'رفرنس',
         'Security':      'امنیت',
         'Job':           'Job',
         'Integration':   'یکپارچه‌سازی',
         'Database':      'دیتابیس',
+        'WebAdmin':      'پنل وب',
+        'Profile':       'پروفایل',
+        'Ring':          'رینگ',
+        'ring':          'رینگ',
     }
 
 
@@ -1961,6 +1965,26 @@ class DBCore:
                     if existing:
                         return str(existing.get("_id") or doc["event_id"])
                 raise
+            # ── Unified Delivery: هر لاگ مدیریتی/محتوایی به تلگرام هم می‌رود (یک الگوی واحد) ──
+            # این enqueue ثانویه است و هرگز persistence را نمی‌شکند (fail-open).
+            try:
+                from audit import enqueue_telegram_delivery
+                # group_key را از audit.get_category_meta می‌گیریم تا الگو یکسان بماند
+                try:
+                    from audit import get_category_meta
+                    gkey, _, _ = get_category_meta(doc.get("category", "system"))
+                except Exception:
+                    gkey = "log_group_admin" if doc.get("category") == "admin" else "log_group_content" if doc.get("category") == "content" else "log_group_admin"
+                chat_id = await self.get_setting(gkey, None)
+                # fallback admin اگر content group تنظیم نشده
+                if not chat_id and gkey != "log_group_admin":
+                    chat_id = await self.get_setting("log_group_admin", None)
+                if chat_id:
+                    # _id را برای delivery tracking ست کن
+                    doc["_id"] = r.inserted_id
+                    await enqueue_telegram_delivery(doc, chat_id)
+            except Exception:
+                pass  # delivery هرگز business را نمی‌شکند (§13)
             # 🚨 §۸۹ — هشدار فعال. داخل try تا هیچ‌وقت مسیر اصلی را نشکند:
             if doc.get("severity") in self.ALERT_SEVERITIES:
                 try:
@@ -1991,10 +2015,20 @@ class DBCore:
         except Exception:
             pass
         import uuid as _uuid
+        # fallback Tehran time — یکپارچه شمسی حتی در مسیر قدیمی
+        try:
+            from time_utils import format_datetime_fa
+            _now = now_utc()
+            _ts_tehran = _now.astimezone(TEHRAN).isoformat()
+            _ts_str = format_datetime_fa(_now, long=True)
+        except Exception:
+            _ts_tehran = utc_now_iso()
+            _ts_str = _ts_tehran
         doc = {
             'event_id': event_id or _uuid.uuid4().hex,
             'timestamp':      utc_now_iso(),
-            'timestamp_tehran': utc_now_iso(),
+            'timestamp_tehran': _ts_tehran,
+            'timestamp_tehran_str': _ts_str,
             'severity':       severity,
             'module':         module,
             'category':       category,

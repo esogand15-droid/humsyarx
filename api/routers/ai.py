@@ -1178,14 +1178,22 @@ async def duplicate_conversation(
         max_items=CONV_MAX_ITEMS,
     )
 
-    await db.log_action(
-        user_id,
-        "ai_duplicate_conversation",
-        target_id=user_id,
-        category="ai",
-        severity="LOW",
-        meta={"source": cid},
-    )
+    try:
+        _u = await db.get_user(user_id) or {}
+        _name = _u.get("name", str(user_id))
+        try:
+            _role = await db.get_actor_role_label(user_id)
+        except Exception:
+            _role = "student"
+        await db.log_action(
+            user_id, _name, _role,
+            "ai_duplicate_conversation", "AI", "ai", "LOW",
+            target_id=str(user_id), target_type="ai_conversation", target_label=f"conv:{cid}"[:80],
+            metadata={"source": str(cid)},
+            tags=["هوشیار", "رونوشت"],
+        )
+    except Exception:
+        pass
 
     return {"id": new_id}
 

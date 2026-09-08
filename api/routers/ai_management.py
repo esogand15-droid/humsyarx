@@ -37,7 +37,7 @@ async def _ai_audit(actor_id: int, action: str, *, before=None, after=None, targ
             role_label = "owner" if actor_id == 0 else "admin"
         await db.log_action(
             actor_id, name, role_label,
-            action, "AI", category="admin", severity="HIGH",
+            action, "AI", category="ai", severity="HIGH",
             target_id=str(target_id), target_type="user", target_label=target_label or str(target_id),
             before=before, after=after, tags=["هوشیار", "دسترسی"],
         )

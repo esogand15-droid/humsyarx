@@ -396,7 +396,7 @@ async def patch_question(qid: str, body: QuestionPatch,
         await db.log_action(
             admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
             await db.get_actor_role_label(admin["id"]),
-            "ویرایش سؤال توسط بازبین", "Questions", "admin", "WARNING",
+            "ویرایش سؤال توسط بازبین", "QBank", "qbank", "WARNING",
             str(qid), "question", f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
             {"version": q.get("version", 1)},
             {"version": updated.get("version"), "fields": sorted(payload)},

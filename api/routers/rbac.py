@@ -38,7 +38,7 @@ async def _audit_rbac(actor: dict, action: str, target_label: str,
         if hasattr(db, "get_actor_role_label") else "مدیر"
     await db.log_action(
         uid, name, role_label, action,
-        module="Roles", severity=severity,
+        module="Roles", category="security", severity=severity,
         target_id=target_id, target_type="role",
         target_label=target_label, before=before, after=after,
         tags=["rbac"],

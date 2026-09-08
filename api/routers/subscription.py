@@ -43,7 +43,7 @@ async def _sub_audit(actor: dict, action: str, *, before=None, after=None, targe
                 role = "student"
         else:
             role = "student"
-        await db.log_action(uid, name or str(uid), role, action, "Subscription", category="user", severity=severity, target_id=str(target_id), target_type="sub_payment" if target_id else "subscription", target_label=target_label, before=before, after=after, details=details, tags=["مالی", "اشتراک"] )
+        await db.log_action(uid, name or str(uid), role, action, "Subscription", category="subscription", severity=severity, target_id=str(target_id), target_type="sub_payment" if target_id else "subscription", target_label=target_label, before=before, after=after, details=details, tags=["مالی", "اشتراک"] )
     except Exception:
         pass
 from time_utils import utc_now_iso

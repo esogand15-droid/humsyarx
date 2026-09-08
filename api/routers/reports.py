@@ -43,7 +43,7 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
     try:
         await db.log_action(
             uid, db_user.get("name",""), _role,
-            "ثبت گزارش محتوا", "Reports", category="user", severity="INFO",
+            "ثبت گزارش محتوا", "Reports", category="content", severity="INFO",
             target_id=str(rid), target_type=body.target_type, target_label=target_label[:80],
             after={"reason": body.reason, "target_id": body.target_id[:24]},
             details=(body.note or "")[:120],
