@@ -564,6 +564,11 @@ async def payments(
         default=None
     ),
 
+    kind: str | None = Query(
+        default=None,
+        description="topup | gift | normal — 🌊 W7 تفکیک نوع رسید",
+    ),
+
     admin=Depends(
         get_admin_user
     ),
@@ -573,6 +578,17 @@ async def payments(
             search
         )
     )
+    # 🌊 W7 — فیلتر نوع رسید: شارژ کیف پول / هدیه / خرید عادی.
+    # معیار همان داده است (plan_id ثابت شارژ، فیلد gift) — ستون جدید نساختیم.
+    extra = extra or {}  # search=None → None برمی‌گردد، نه {}
+    if kind == "topup":
+        extra = {**extra, "plan_id": "wallet_topup"}
+    elif kind == "gift":
+        extra = {**extra, "gift.to": {"$exists": True}}
+    elif kind == "normal":
+        extra = {**extra,
+                 "plan_id": {"$ne": "wallet_topup"},
+                 "gift": {"$exists": False}}
 
     items = (
         await db

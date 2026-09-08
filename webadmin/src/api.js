@@ -297,6 +297,7 @@ export const api = {
   subFinance: () => req('/api/web-admin/subscription/finance'),
   // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
   subPaymentTrace: (pid) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/trace`),
+  exportWalletCsv: (p = {}) => downloadFile('/api/web-admin/exports/wallet.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-wallet-ledger-${fileDateStamp()}.csv`),
   exportPaymentsCsv: (p = {}) => downloadFile('/api/web-admin/exports/payments.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-payments-${fileDateStamp()}.csv`),
   // 💰 W6 — کیف پول داخلی
   subWallets: (p = {}) => req('/api/web-admin/wallets?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),

@@ -209,6 +209,7 @@ function PlanModal({ plan, onClose, onDone }) {
 
 function PaymentsPanel({ initial = {} }) {
   const [status, setStatus] = useState(initial.status ?? 'pending');
+  const [kind, setKind] = useState(''); // 🌊 W7 — نوع رسید: ''|normal|topup|gift
   const [q, setQ] = useState(initial.q || '');
   const [search, setSearch] = useState(initial.q || '');
   const [page, setPage] = useState(initial.page || 1);
@@ -222,10 +223,10 @@ function PaymentsPanel({ initial = {} }) {
 
   const load = async () => {
     setErr(''); setData(null);
-    try { setData(await api.subPayments({ status, search, skip: (page - 1) * LIMIT, limit: LIMIT })); }
+    try { setData(await api.subPayments({ status, kind, search, skip: (page - 1) * LIMIT, limit: LIMIT })); }
     catch (e) { setErr(errText(e)); }
   };
-  useEffect(() => { load(); }, [status, search, page]);
+  useEffect(() => { load(); }, [status, kind, search, page]);
   useEffect(() => { writeHashQuery('/subscriptions', { tab: 'payments', status: status !== 'pending' ? status : '', q: search, page: page > 1 ? page : '' }); }, [status, search, page]);
   const decide = (pay, approved, note = '') => setConfirm({ pay, approved, note });
   const doDecision = async () => {
@@ -255,6 +256,11 @@ function PaymentsPanel({ initial = {} }) {
       <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="وضعیت پرداخت‌ها">
         {[['pending', 'در انتظار'], ['approved', 'تأیید'], ['rejected', 'رد'], ['', 'همه']].map(([k, l]) =>
           <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+      </div>
+      {/* 🌊 W7 — تفکیک نوع رسید (اشتراک/شارژ/هدیه) — همان داده، بدون ستون جدید */}
+      <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="نوع رسید">
+        {[['', 'همه انواع'], ['normal', '🧾 اشتراک'], ['topup', '💰 شارژ'], ['gift', '🎁 هدیه']].map(([k, l]) =>
+          <button key={k || 'all'} type="button" role="tab" aria-selected={kind === k} className={`tab ${kind === k ? 'on' : ''}`} onClick={() => { setKind(k); setPage(1); }}>{l}</button>)}
       </div>
       <span className="spacer" />
       <input className="inp" style={{ minWidth: 250 }} value={q} onChange={e => setQ(e.target.value)}
@@ -1003,6 +1009,7 @@ function WalletsPanel({ initial = {} }) {
       <input className="inp" style={{ width: 220 }} placeholder="جست‌وجو: نام / شماره دانشجویی / آیدی"
         value={q} onChange={e => setQ(e.target.value)} />
       <button className="btn sm" onClick={load}>↻</button>
+      <button className="btn sm" onClick={() => api.exportWalletCsv(q && /^\d+$/.test(q) ? { user_id: q } : {})} title="خروجی ledger کامل (۲۰۰۰ ردیف آخر)">⬇️ خروجی CSV ledger</button>
     </div>
     <div className="panel panel-pad data-quality-note" style={{ marginBottom: 10 }}>
       <B kind="acc">کیف پول یعنی چه؟</B>

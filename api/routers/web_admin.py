@@ -3139,6 +3139,64 @@ _SETTINGS_CATALOG = [
          "فقط نمایشی — توسط جاب بکاپ به‌روزرسانی می‌شود",
          "readonly", "backup.manage", "INFO"),
     ]),
+    # 🌊 W7 — کلیدهایی که سیستم مصرف می‌کرد ولی UI نداشتند (نه کلید
+    # جدید: دقیقاً همان‌ها که get_setting می‌خواند — بدون موازی‌سازی)
+    ("finance", [
+        ("subscription_card_number", "شماره کارت دریافت",
+         "شماره کارتی که در ربات/مینی‌اپ برای خرید و شارژ کیف پول "
+         "نمایش داده می‌شود",
+         "text", "settings.manage", "HIGH"),
+        ("subscription_card_owner", "نام صاحب کارت",
+         "نام نمایشی صاحب کارت دریافت",
+         "text", "settings.manage", "HIGH"),
+        ("topup_min", "حداقل مبلغ شارژ کیف پول",
+         "کمترین مبلغ مجاز شارژ (تومان) — سمت سرور اعمال می‌شود",
+         "number", "settings.manage", "HIGH"),
+        ("topup_max", "حداکثر مبلغ شارژ کیف پول",
+         "بیشترین مبلغ مجاز شارژ (تومان) — سقف آپلود بات تلگرام "
+         "را هم در نظر بگیرید",
+         "number", "settings.manage", "HIGH"),
+    ]),
+    ("gift", [
+        ("gift_enabled", "خرید اشتراک هدیه",
+         "امکان هدیه دادن اشتراک به دانشجوی دیگر",
+         "bool", "settings.manage", "HIGH"),
+        ("gift_rate_max", "سقف هدیه در بازه",
+         "حداکثر تعداد هدیه‌ی هر کاربر در بازه‌ی زیر (ضد سوءاستفاده)",
+         "number", "settings.manage", "HIGH"),
+        ("gift_rate_window_h", "بازه‌ی سقف هدیه (ساعت)",
+         "طول بازه‌ی لغزان شمارش هدیه‌ها",
+         "number", "settings.manage", "HIGH"),
+    ]),
+    ("limits", [
+        ("report_rate_max", "سقف گزارش ایراد",
+         "حداکثر گزارش ایراد هر کاربر در بازه‌ی زیر",
+         "number", "settings.manage", "HIGH"),
+        ("report_rate_window_min", "بازه‌ی گزارش ایراد (دقیقه)",
+         "طول بازه‌ی لغزان شمارش گزارش‌ها",
+         "number", "settings.manage", "HIGH"),
+        ("url_import_max_mb", "سقف حجم ایمپورت URL (مگابایت)",
+         "بیشترین حجم فایل قابل ایمپورت از لینک",
+         "number", "settings.manage", "HIGH"),
+        ("qbank_ai_daily_limit", "سقف روزانه‌ی ساخت سوال با AI",
+         "حداکثر سوال AI هر ادمین در روز",
+         "number", "settings.manage", "HIGH"),
+        ("qbank_ai_topic_daily_limit", "سقف روزانه‌ی AI هر موضوع",
+         "حداکثر سوال AI هر موضوع در روز",
+         "number", "settings.manage", "HIGH"),
+        ("qbank_weak_min_attempts", "حداقل تلاش برای سوال ضعیف",
+         "کمترین پاسخ یک سوال تا آمارش معنا داشته باشد",
+         "number", "settings.manage", "HIGH"),
+        ("qbank_weak_accuracy_pct", "آستانه‌ی دقت سوال ضعیف (٪)",
+         "زیر این درصد، سوال «ضعیف» پرچم می‌خورد",
+         "number", "settings.manage", "HIGH"),
+        ("resource_notif_interval_hours", "فاصله‌ی اطلاع‌رسانی منابع (ساعت)",
+         "حداقل فاصله‌ی دو اعلان منبع جدید در ربات",
+         "number", "settings.manage", "HIGH"),
+        ("poll_channel_id", "کانال نظرسنجی",
+         "آیدی عددی کانال تلگرام نظرسنجی‌ها (عدد منفی؛ خالی=حذف)",
+         "group", "settings.manage", "HIGH"),
+    ]),
 ]
 
 
@@ -3266,6 +3324,18 @@ async def settings_center_patch(key: str, body: SettingPatch,
             val = str(val or "").strip()
             if len(val) > 400:
                 raise HTTPException(422, "متن نباید بیشتر از ۴۰۰ کاراکتر باشد")
+        elif typ == "number":
+            # 🌊 W7 — عدد صحیح نامنفی؛ مقدار خالی یعنی «حذف کلید»
+            # (fallback به پیش‌فرض کد برمی‌گردد)
+            if val in (None, ""):
+                val = None
+            else:
+                try:
+                    val = int(val)
+                except (TypeError, ValueError):
+                    raise HTTPException(422, "مقدار باید عدد صحیح باشد")
+                if val < 0 or val > 10 ** 9:
+                    raise HTTPException(422, "عدد باید بین ۰ و ۱٬۰۰۰٬۰۰۰٬۰۰۰ باشد")
         elif typ == "group":
             if val in (None, ""):
                 val = None
@@ -5053,10 +5123,12 @@ async def wa_subscription_payments(
     skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100),
     search: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None, max_length=10),
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.payments(
-        status=status, skip=skip, limit=limit, search=search, admin=user)
+        status=status, skip=skip, limit=limit, search=search, kind=kind,
+        admin=user)
 
 
 @router.post("/subscription/payments/{payment_id}/decision")
@@ -5614,6 +5686,54 @@ async def wa_export_payments_csv(status: str = Query("", max_length=20),
     return Response(
         "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
+                 "X-Audit-Id": str(log_id)})
+
+
+@router.get("/exports/wallet.csv")
+async def wa_export_wallet_csv(user_id: int = Query(0),
+                               status: str = Query("", max_length=10),
+                               user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — خروجی CSV کرانه‌دار ledger کیف پول (ردپای کامل مالی:
+    نوع/جهت/مبلغ/مانده/مرجع). ledger هرگز حذف نمی‌شود؛ این فقط خواندن است."""
+    flt = {}
+    if user_id:
+        flt["user_id"] = int(user_id)
+    if status in ("ok", "pending", "failed"):
+        flt["status"] = status
+    rows = await db.wallet_transactions.find(flt).sort(
+        [("created_at", -1), ("_id", -1)]).limit(2000).to_list(2000)
+    uids = {int(t.get("user_id") or 0) for t in rows}
+    names = {}
+    if uids:
+        for u in await db.users.find(
+                {"user_id": {"$in": list(uids)}}).to_list(2000):
+            names[int(u["user_id"])] = u.get("name") or ""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "نوع", "جهت", "مبلغ",
+                "مانده قبل", "مانده بعد", "مرجع", "وضعیت", "شرح", "تاریخ"])
+    for t in rows:
+        uid = int(t.get("user_id") or 0)
+        ref = (f"{t.get('reference_type') or ''}:"
+               f"{t.get('reference_id') or ''}")
+        w.writerow([str(t["_id"]), names.get(uid, ""), uid,
+                    t.get("type") or "", t.get("direction") or "",
+                    t.get("amount") or "",
+                    t.get("balance_before") if t.get("balance_before")
+                    is not None else "",
+                    t.get("balance_after") if t.get("balance_after")
+                    is not None else "",
+                    ref, t.get("status") or "", t.get("label") or "",
+                    t.get("created_at") or ""])
+    log_id = await _audit(
+        int(user["id"]), "خروجی CSV ledger کیف پول", severity="INFO",
+        target_type="export",
+        target_id=f"wallet:{user_id or 'all'}:{status or 'all'}",
+        after={"rows": len(rows)}, tags=["مالی", "کیف_پول", "خروجی"])
+    return Response(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 "attachment; filename=humsyar-wallet-ledger.csv",
                  "X-Audit-Id": str(log_id)})
 
 
