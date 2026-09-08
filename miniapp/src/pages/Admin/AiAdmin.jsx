@@ -246,6 +246,11 @@ export default function AiAdmin() {
                 form.daily_limit
               ),
 
+            image_daily_limit:
+              Number(
+                form.image_daily_limit
+              ),
+
             api_key: (
               form.api_key.trim()
               || null
@@ -601,6 +606,76 @@ export default function AiAdmin() {
                 }
                 placeholder={
                   'محدودیت روزانه؛ صفر یعنی نامحدود'
+                }
+              />
+
+
+              <div className="fld-label">
+                🎨 تولید تصویر
+              </div>
+
+              <select
+                className="inp"
+                value={
+                  form.image_enabled
+                    ? 'on'
+                    : 'off'
+                }
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+
+                    image_enabled:
+                      event.target.value
+                      === 'on',
+                  })
+                }
+              >
+                <option value="on">
+                  تولید تصویر فعال
+                </option>
+
+                <option value="off">
+                  تولید تصویر غیرفعال
+                </option>
+              </select>
+
+              <input
+                className="inp"
+                value={
+                  form.image_model
+                }
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+
+                    image_model:
+                      event.target.value,
+                  })
+                }
+                placeholder={
+                  'مدل تصویر (خالی = پیش‌فرض gemini-2.5-flash-image)'
+                }
+              />
+
+              <input
+                className="inp"
+                type="number"
+                min="0"
+                max="1000"
+                value={
+                  form.image_daily_limit
+                }
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+
+                    image_daily_limit:
+                      event.target.value,
+                  })
+                }
+                placeholder={
+                  'سهمیه روزانه تصویر؛ صفر یعنی نامحدود'
                 }
               />
 

@@ -46,6 +46,138 @@ DEFAULT_MODEL  = DEFAULT_MODELS['gemini']   # برای سازگاری با کد�
 DEFAULT_LIMIT  = 15   # سقف روزانه‌ی هر کاربر عادی؛ 0 = نامحدود
 MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگیری از هدررفت توکن/هزینه)
 
+# 🎨 تولید تصویر — مدل/کرانه‌ها از settings قابل تغییرند (ai_image_model و
+# ai_image_daily_limit)؛ اینها فقط پیش‌فرض‌اند. aspect ratioها همان فهرست
+# رسمی gemini-2.5-flash-image (نانوبانانا) است.
+DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image'
+DEFAULT_IMAGE_LIMIT = 10          # سقف روزانه‌ی تصویر؛ 0 = نامحدود
+IMG_RETRY_BASE_DELAY = 0.8        # ثانیه — backoff: 0.8s سپس 1.6s
+IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
+                       '3:2', '2:3', '21:9', '5:4', '4:5')
+IMAGE_PROMPT_MIN = 3
+IMAGE_PROMPT_MAX = 1000
+
+
+class AiImageError(Exception):
+    """خطای نگاشت‌شده‌ی تولید تصویر — code ماشین‌خوان + پیام امن کاربر.
+    جزئیات خام provider هرگز از اینجا بیرون نمی‌رود."""
+
+    def __init__(self, code: str, user_message: str, detail: str = ''):
+        super().__init__(code)
+        self.code = code
+        self.user_message = user_message
+        self.detail = detail
+
+
+async def generate_image(api_key: str, model: str, prompt: str,
+                         aspect_ratio: str = '1:1',
+                         timeout: int = 90, max_retries: int = 2) -> dict:
+    """🎨 تولید تصویر با Gemini — لایه‌ی provider (مشترک بات/مینی‌اپ).
+
+    - فقط server-side؛ api_key هرگز به کلاینت نمی‌رسد.
+    - retry محدود با backoff روی خطاهای گذرا (429/5xx/شبکه)؛
+      4xxهای معنادار (400/401/403) هرگز retry نمی‌شوند.
+    - خروجی: {'mime': str, 'data_b64': str} — تصویر inline از پاسخ.
+    """
+    aspect_ratio = aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS \
+        else '1:1'
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent")
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'responseModalities': ['IMAGE'],
+            'imageConfig': {'aspectRatio': aspect_ratio},
+        },
+    }
+    headers = {'Content-Type': 'application/json',
+               'x-goog-api-key': api_key}
+    last_err = None
+    for attempt in range(max_retries + 1):
+        if attempt:
+            await asyncio.sleep(IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+        try:
+            async with _image_http_client(timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            last_err = AiImageError('GEMINI_TIMEOUT',
+                                    'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
+            logger.warning("imggen timeout attempt=%s err=%s",
+                           attempt, type(e).__name__)
+            continue  # گذرا — retry مجاز
+        except httpx.HTTPError as e:
+            last_err = AiImageError('GEMINI_UNAVAILABLE',
+                                    'سرویس تصویر در دسترس نیست؛ کمی بعد '
+                                    'دوباره تلاش کن.')
+            logger.warning("imggen network error attempt=%s err=%s",
+                           attempt, type(e).__name__)
+            continue
+        if resp.status_code in (429, 500, 502, 503):
+            last_err = AiImageError(
+                'GEMINI_RATE_LIMIT' if resp.status_code == 429
+                else 'GEMINI_UNAVAILABLE',
+                'سرویس تصویر شلوغ است؛ چند لحظه دیگر دوباره تلاش کن.')
+            logger.warning("imggen transient status=%s attempt=%s",
+                           resp.status_code, attempt)
+            continue
+        if resp.status_code in (401, 403):
+            raise AiImageError('GEMINI_AUTH_ERROR',
+                               'سرویس تصویر توسط مدیریت آماده نشده است.')
+        if resp.status_code == 400:
+            raise AiImageError('GEMINI_INVALID_REQUEST',
+                               'این درخواست قابل پردازش نیست؛ توضیح تصویر '
+                               'را تغییر بده.')
+        if resp.status_code != 200:
+            raise AiImageError('GEMINI_UNAVAILABLE',
+                               'سرویس تصویر پاسخ نامعتبر داد؛ دوباره '
+                               'تلاش کن.')
+        # ۲۰۰ — parse (بدون retry: خطای محتوا گذرا نیست)
+        try:
+            data = resp.json()
+        except ValueError:
+            raise AiImageError('IMAGE_PARSE_FAILED',
+                               'پاسخ سرویس تصویر خوانده نشد.')
+        return _parse_image_response(data)
+    raise last_err or AiImageError('GEMINI_UNAVAILABLE',
+                                   'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+
+
+def _image_http_client(timeout: int) -> httpx.AsyncClient:
+    """ساخت کلاینت HTTP لایه‌ی تصویر — هوکِ تست‌پذیری (MockTransport)."""
+    return httpx.AsyncClient(timeout=timeout)
+
+
+def _parse_image_response(data: dict) -> dict:
+    """استخراج تصویر inline از پاسخ generateContent + نگاشت safety.
+    تابع خالص — مستقیماً unit-test می‌شود."""
+    pf = data.get('promptFeedback') or {}
+    if pf.get('blockReason'):
+        raise AiImageError('GEMINI_SAFETY_BLOCK',
+                           'این درخواست قابل پردازش نیست. لطفاً توضیح '
+                           'متفاوتی برای تصویر وارد کنید.')
+    candidates = data.get('candidates') or []
+    if not candidates:
+        raise AiImageError('IMAGE_PARSE_FAILED',
+                           'تصویری تولید نشد؛ دوباره تلاش کن.')
+    cand = candidates[0]
+    if (cand.get('finishReason') or '') in (
+            'SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST',
+            'RECITATION', 'SPII'):
+        raise AiImageError('GEMINI_SAFETY_BLOCK',
+                           'این درخواست قابل پردازش نیست. لطفاً توضیح '
+                           'متفاوتی برای تصویر وارد کنید.')
+    parts = ((cand.get('content') or {}).get('parts')) or []
+    for part in parts:
+        inline = part.get('inlineData') or part.get('inline_data')
+        if inline and inline.get('data'):
+            mime = (inline.get('mimeType') or inline.get('mime_type')
+                    or 'image/png')
+            if not mime.startswith('image/'):
+                continue
+            return {'mime': mime, 'data_b64': inline['data']}
+    raise AiImageError('IMAGE_PARSE_FAILED',
+                       'تصویری در پاسخ سرویس پیدا نشد؛ دوباره تلاش کن.')
+
 # ══════════════════════════════════════════════════
 #  حافظه‌ی مکالمه — ⚠️ فیکس: قبلاً فقط توی RAM بود و با هر ری‌استارتِ
 #  سرور (که این چند روز به‌خاطرِ آپدیت‌های پیاپی زیاد اتفاق افتاد)
@@ -199,6 +331,12 @@ async def get_ai_config() -> dict:
         # خودِ مدل)، 'high' یعنی برای سوالاتِ سخت بیشتر «فکر کنه» قبل از
         # جواب — رایگانه، فقط جزوِ توکنِ خروجی حساب می‌شه.
         'thinking':         raw.get('ai_thinking', 'auto'),
+        # 🎨 تولید تصویر — مدل و سهمیه از settings (بدون hardcode)
+        'image_enabled':    str(raw.get('ai_image_enabled', '1'))
+                            not in ('0', 'false', 'False', ''),
+        'image_model':      raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL,
+        'image_daily_limit': int(raw.get('ai_image_daily_limit',
+                                         DEFAULT_IMAGE_LIMIT) or 0),
     }
 
 
@@ -1480,7 +1618,10 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای چیزای مهم حتماً با منبع درسی یا استاد هم یه چک بزن.\n\n"
         "هر وقت خواستی بری سراغ کارِ دیگه، کافیه یه دکمه‌ی دیگه از منو رو بزنی — "
         "من همیشه همینجام 👋",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart'),
+        ]]) if cfg.get('image_enabled') else None,
     )
 
 
@@ -1804,6 +1945,90 @@ async def ai_release_inflight(uid: int) -> None:
         logger.exception("ai_release_inflight failed for %s", uid)
 
 
+async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎨 تولید تصویر در بات — متنِ حالتِ ai_image_prompt.
+
+    ترتیبِ گاردها عمداً همین است: ban → enabled → اعتبارسنجی ورودی →
+    سهمیه → قفلِ سراسری → provider؛ سهمیه فقط **بعد از موفقیت** مصرف
+    می‌شود تا شکستِ provider سهمیه‌ی کاربر را نسوزاند.
+    """
+    uid  = update.effective_user.id
+    text = (update.message.text or '').strip()
+    if not text:
+        return
+
+    cfg = await get_ai_config()
+    if not cfg['enabled'] or not cfg.get('image_enabled'):
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG)
+        return
+
+    if await db.ai_is_banned(uid):
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(AI_BANNED_MSG, disable_web_page_preview=True)
+        return
+
+    if not (IMAGE_PROMPT_MIN <= len(text) <= IMAGE_PROMPT_MAX):
+        await update.message.reply_text(
+            f"✋ توضیح تصویر باید بین {IMAGE_PROMPT_MIN} و "
+            f"{IMAGE_PROMPT_MAX} نویسه باشه.")
+        return
+
+    img_limit = cfg['image_daily_limit']
+    today = today_tehran().isoformat()
+    if uid != ADMIN_ID and img_limit > 0:
+        used = await db.ai_image_used_today(uid, today)
+        if used >= img_limit:
+            await update.message.reply_text(
+                f"📊 سهمیه‌ی امروزت ({img_limit} تصویر) تموم شده — "
+                "فردا دوباره بیا، یا از حالت پرسش استفاده کن. 💬")
+            return
+
+    claimed = await ai_claim_inflight(uid)
+    if not claimed:
+        await update.message.reply_text(
+            "⏳ یه لحظه! یه درخواست هوش مصنوعی‌ات هنوز در حال انجامه — "
+            "صبر کن تموم شه، بعد اینو بزن.")
+        return
+
+    status = await update.message.reply_text(
+        "🎨 در حال ساخت تصویر... یه لحظه صبر کن 🖌️\n"
+        "(ممکنه تا یک دقیقه طول بکشه)")
+    try:
+        try:
+            res = await generate_image(cfg['api_key'], cfg['image_model'],
+                                       text, '1:1')
+        except AiImageError as e:
+            logger.warning("bot image generation failed uid=%s code=%s",
+                           uid, e.code)
+            await status.edit_text(e.user_message)
+            return
+
+        img_bytes = base64.b64decode(res['data_b64'])
+        from io import BytesIO
+        await update.message.reply_photo(
+            BytesIO(img_bytes), filename='humsyar_image.png',
+            caption=f"🎨 تصویرت آماده شد!\n«{text[:80]}»")
+        if uid != ADMIN_ID and img_limit > 0:
+            try:
+                await db.ai_image_inc(uid, today)
+            except Exception:
+                logger.exception("ثبت مصرف تصویر ناموفق بود uid=%s", uid)
+        try:
+            await status.edit_text("✅ تصویرت ارسال شد!")
+        except Exception:
+            pass  # پیامِ وضعیت پاک نشه — مشکلی نیست
+    except Exception:
+        logger.exception("bot image generation crashed uid=%s", uid)
+        try:
+            await status.edit_text(
+                "❌ یه مشکلِ فنی پیش اومد؛ چند لحظه دیگه دوباره تلاش کن.")
+        except Exception:
+            pass
+    finally:
+        await ai_release_inflight(uid)
+
+
 async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     text = (update.message.text or '').strip()
@@ -2060,6 +2285,46 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _clear_memory(uid)
         await db.ai_clear_doc(uid)
         await query.answer("✅ حافظه‌ی مکالمه (و سندِ مرجعِ فعال، اگه بود) پاک شد؛ از اول شروع کن 🙂", show_alert=True)
+        return
+
+    if action == 'imgstart':
+        await query.answer()
+        cfg = await get_ai_config()
+        if not cfg['enabled'] or not cfg.get('image_enabled'):
+            await query.message.reply_text(
+                "🎨 بخشِ ساخت تصویر فعلاً توسط مدیریت غیرفعال است.")
+            return
+        context.user_data['mode'] = 'ai_image_prompt'
+        context.user_data['last_question'] = ''
+        img_limit = cfg['image_daily_limit']
+        if uid == ADMIN_ID or img_limit <= 0:
+            q_line = "🔓 امروز محدودیتی نداری."
+        else:
+            used = await db.ai_image_used_today(uid, today_tehran().isoformat())
+            q_line = f"📊 {used} از {img_limit} تصویرِ امروزت استفاده شده."
+        await query.message.reply_text(
+            "🎨 <b>حالت ساخت تصویر</b>\n\n"
+            "توضیح تصویری که می‌خوای رو <b>همینجا تایپ کن</b> — هرچی "
+            "جزئیات بیشتر بدی، نتیجه بهتر می‌شه:\n\n"
+            "مثلاً: «یک کتابخانه‌ی چوبیِ گرم با نور عصرگاهی، سبک "
+            "واقع‌گرایانه»\n\n"
+            "برای بازگشت به حالت سوال، فقط سوالتو بفرست یا از منو «پرسش از "
+            "هوشیار» رو دوباره بزن.\n"
+            "برای لغو: /cancel",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "💬 بازگشت به پرسش", callback_data='aiu:imgoff')],
+            ]),
+        )
+        return
+
+    if action == 'imgoff':
+        await query.answer("💬 برگشتیم به حالت پرسش.", show_alert=False)
+        context.user_data['mode'] = 'ai_query'
+        await query.message.reply_text(
+            "💬 هر سوالی داری بفرست؛ برای ساخت تصویر دوباره از منو یا "
+            "دکمه‌ی 🎨 استفاده کن.")
         return
 
     if action == 'fu':

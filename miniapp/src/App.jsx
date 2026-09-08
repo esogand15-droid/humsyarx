@@ -140,6 +140,11 @@ const AiHomeScreen = lazyScreen(
   () => <SkRowList n={4} />
 );
 
+const AiImageScreen = lazyScreen(
+  () => import('./pages/Ai/AiImage'),
+  () => <SkRowList n={3} />
+);
+
 const GlobalSearchScreen = lazyScreen(
   () => import('./pages/Search/GlobalSearch'),
   SearchResultsSkeleton
@@ -932,6 +937,13 @@ export default function App() {
           path="/ai/c/:convId"
           element={
             <AiHomeScreen />
+          }
+        />
+
+        <Route
+          path="/ai/image"
+          element={
+            <AiImageScreen />
           }
         />
 

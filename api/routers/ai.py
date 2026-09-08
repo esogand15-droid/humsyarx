@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from pathlib import PurePath
@@ -21,6 +22,10 @@ from ai_solver import (
     MAX_INPUT_CHARS,
     MAX_MEDIA_BYTES,
     AIError,
+    AiImageError,
+    IMAGE_ASPECT_RATIOS,
+    IMAGE_PROMPT_MAX,
+    IMAGE_PROMPT_MIN,
     ai_claim_inflight,
     ai_is_inflight,
     ai_release_inflight,
@@ -31,6 +36,7 @@ from ai_solver import (
     _transcode_ogg_opus_to_wav,
     ask_ai,
     check_and_consume_quota,
+    generate_image,
     get_ai_config,
     record_token_usage,
 )
@@ -1700,3 +1706,112 @@ async def report(
     return {
         "ok": True,
     }
+
+
+# ══════════════════════════════════════════════════════════════
+#  🎨 تولید تصویر با Gemini — همان زیرساخت هوشیار:
+#  ban/enabled/api_key (get_ai_config) + قفل سراسری ai_inflight +
+#  سهمیه‌ی روزانه‌ی مستقل تصویر. کلید API هرگز از این لایه بیرون
+#  نمی‌رود؛ تصویر به‌صورت base64 یک‌بارمصرف برمی‌گردد (بدون فایلِ
+#  ماندگار روی سرور ⇒ بدون نیاز به cleanup).
+# ══════════════════════════════════════════════════════════════
+
+_IMAGE_ERR_STATUS = {
+    'GEMINI_SAFETY_BLOCK': 422,
+    'GEMINI_INVALID_REQUEST': 422,
+    'GEMINI_RATE_LIMIT': 429,
+    'GEMINI_TIMEOUT': 504,
+    'GEMINI_UNAVAILABLE': 502,
+    'GEMINI_AUTH_ERROR': 503,
+    'IMAGE_PARSE_FAILED': 502,
+    'IMAGE_STORAGE_FAILED': 500,
+}
+
+
+class ImageGenBody(BaseModel):
+    prompt: str = Field(..., description="توضیح تصویر")
+    aspect_ratio: str = Field('1:1', description='مثلاً 1:1 یا 16:9')
+
+
+@router.post("/generate-image")
+async def generate_image_ep(body: ImageGenBody,
+                            user=Depends(get_current_user)):
+    import time as _time
+    import uuid as _uuid
+    uid = user["id"]
+    request_id = f"imggen_{_uuid.uuid4().hex[:12]}"
+
+    prompt = (body.prompt or "").strip()
+    if not (IMAGE_PROMPT_MIN <= len(prompt) <= IMAGE_PROMPT_MAX):
+        raise HTTPException(
+            status_code=422,
+            detail=(f"توضیح تصویر باید بین {IMAGE_PROMPT_MIN} و "
+                    f"{IMAGE_PROMPT_MAX} نویسه باشد"))
+    aspect_ratio = (body.aspect_ratio or "1:1").strip()
+    if aspect_ratio not in IMAGE_ASPECT_RATIOS:
+        raise HTTPException(
+            status_code=422,
+            detail="نسبت تصویر معتبر نیست — یکی از: "
+                   + "، ".join(IMAGE_ASPECT_RATIOS))
+
+    config = await _ensure_available(uid)
+    if not config.get("image_enabled"):
+        raise HTTPException(
+            status_code=503, detail="تولید تصویر فعلاً غیرفعال است")
+
+    limit = max(0, int(config.get("image_daily_limit") or 0))
+    today = today_tehran().isoformat()
+    used = await db.ai_image_used_today(uid, today)
+    is_vip = uid == int(os.getenv("ADMIN_ID", "0"))
+    if limit and not is_vip and used >= limit:
+        raise HTTPException(
+            status_code=429,
+            detail=f"سهمیه روزانه ساخت تصویر تمام شده است ({used}/{limit})")
+
+    # یک عملیات AI در لحظه — همان قفل مشترک ربات/مینی‌اپ
+    await _acquire_user(uid)
+    started = _time.monotonic()
+    try:
+        try:
+            res = await generate_image(
+                config["api_key"], config["image_model"], prompt,
+                aspect_ratio)
+        except AiImageError as e:
+            logger.warning(
+                "IMAGE_GENERATION_FAILED rid=%s uid=%s model=%s code=%s "
+                "latency_ms=%s", request_id, uid,
+                config.get("image_model"), e.code,
+                int((_time.monotonic() - started) * 1000))
+            raise HTTPException(
+                status_code=_IMAGE_ERR_STATUS.get(e.code, 502),
+                detail=e.user_message)
+        # سهمیه فقط پس از موفقیت مصرف می‌شود (شکست provider = سهمیه سالم)
+        used_after = used + 1
+        if limit or is_vip:
+            try:
+                used_after = await db.ai_image_inc(uid, today)
+            except Exception:
+                logger.exception("ثبت مصرف تصویر ناموفق بود rid=%s",
+                                 request_id)
+        latency_ms = int((_time.monotonic() - started) * 1000)
+        # prompt کاربر لاگ نمی‌شود (حریم خصوصی) — فقط متادیتا
+        logger.info(
+            "IMAGE_GENERATION_OK rid=%s uid=%s model=%s latency_ms=%s "
+            "bytes_b64=%s", request_id, uid, config.get("image_model"),
+            latency_ms, len(res["data_b64"]))
+        return {
+            "ok": True,
+            "image": res["data_b64"],
+            "mime": res["mime"],
+            "model": config.get("image_model"),
+            "aspect_ratio": aspect_ratio,
+            "usage": {
+                "used_today": used_after,
+                "daily_limit": limit,
+                "remaining": (max(0, limit - used_after) if limit
+                              else None),
+                "unlimited": limit == 0 or is_vip,
+            },
+        }
+    finally:
+        await ai_release_inflight(uid)

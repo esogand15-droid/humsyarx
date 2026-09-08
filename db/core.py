@@ -3190,6 +3190,37 @@ class DBCore:
         }
 
 
+    async def ai_image_used_today(self, uid: int, today: str) -> tuple:
+        """🎨 مصرف امروزِ تصویر (used_today) — سطل تصویر عمداً از سطل
+        چت جداست (ai_image_count/ai_image_date): تصویر گران‌تر است و
+        سهمیه‌ی مستقل می‌خواهد."""
+        u = await self.users.find_one({'user_id': int(uid)},
+                                      {'ai_image_count': 1,
+                                       'ai_image_date': 1})
+        if not u:
+            return 0
+        if u.get('ai_image_date') != today:
+            return 0
+        return int(u.get('ai_image_count') or 0)
+
+    async def ai_image_inc(self, uid: int, today: str) -> int:
+        """🎨 یک واحد مصرف تصویر — **بعد از موفقیت** سرویس صدا زده می‌شود
+        (شکست provider سهمیه‌ی کاربر را نمی‌سوزاند). اتمیک و بدون شرط؛
+        هم‌زمانیِ کاربر با قفل ai_inflight بسته شده است."""
+        await self.users.update_one(
+            {'user_id': int(uid)},
+            [{'$set': {
+                'ai_image_count': {'$cond': [
+                    {'$eq': ['$ai_image_date', today]},
+                    {'$add': [{'$ifNull': ['$ai_image_count', 0]}, 1]}, 1]},
+                'ai_image_date': today,
+                'ai_image_total': {
+                    '$add': [{'$ifNull': ['$ai_image_total', 0]}, 1]},
+            }}])
+        u = await self.users.find_one({'user_id': int(uid)},
+                                      {'ai_image_count': 1})
+        return int((u or {}).get('ai_image_count') or 0)
+
     async def ai_consume_quota(self, uid: int, daily_limit: int, today: str) -> tuple:
         """Atomically reserve one AI request across all API/Bot workers.
 

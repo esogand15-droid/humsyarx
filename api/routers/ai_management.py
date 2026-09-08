@@ -48,6 +48,20 @@ class ConfigUpdate(BaseModel):
         le=1000,
     )
 
+    image_enabled: bool = True
+
+    image_model: str = Field(
+        default="",
+        min_length=0,
+        max_length=150,
+    )
+
+    image_daily_limit: int = Field(
+        default=10,
+        ge=0,
+        le=1000,
+    )
+
     thinking: str = Field(
         pattern="^(auto|high)$"
     )
@@ -100,6 +114,15 @@ async def config(
         "thinking":
             value["thinking"],
 
+        "image_enabled":
+            value["image_enabled"],
+
+        "image_model":
+            value["image_model"],
+
+        "image_daily_limit":
+            value["image_daily_limit"],
+
         "system_prompt":
             value[
                 "system_prompt"
@@ -135,6 +158,9 @@ async def update_config(
         "thinking",
         "system_prompt",
         "disabled_message",
+        "image_enabled",
+        "image_model",
+        "image_daily_limit",
     )
 
     for key in editable_fields:

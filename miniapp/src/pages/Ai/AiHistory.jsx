@@ -258,6 +258,18 @@ export default function AiHistory() {
           شروع گفت‌وگوی جدید
         </button>
 
+        <button
+          type="button"
+          className="conv-new aiimg-entry"
+          onClick={() => {
+            haptic('light');
+            navigate('/ai/image');
+          }}
+        >
+          🎨
+          ساخت تصویر با هوشیار
+        </button>
+
         <SearchField
           value={query}
           onChange={(event) =>

@@ -76,7 +76,8 @@ from ticket import ticket_callback, ticket_message_handler
 from reports import report_callback, handle_report_note_text   # FIX جدید
 from ai_admin import ai_admin_callback, ai_admin_text_handler   # 🤖 هوشیار
 from ai_solver import (                                          # 🤖 هوشیار
-    handle_ai_text, handle_ai_media, ai_user_callback,
+    handle_ai_text, handle_ai_media, handle_ai_image_prompt,
+    ai_user_callback,
 )
 from database import db
 
@@ -1508,6 +1509,8 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return await ai_admin_text_handler(update, context)
 
     # ۴e. 🤖 هوشیار — حالت «پرسش از AI» برای هر کاربر تأییدشده
+    if context.user_data.get('mode') == 'ai_image_prompt':
+        return await handle_ai_image_prompt(update, context)
     if context.user_data.get('mode') == 'ai_query':
         return await handle_ai_text(update, context)
 
