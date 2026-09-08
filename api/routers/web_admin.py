@@ -6021,23 +6021,28 @@ async def wa_ai_config_update(
 @router.post("/ai/api-key/rotate")
 async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
                                user=Depends(get_admin_user)):
-    """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود."""
+    """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود. Vault-aware: کلید برای provider فعلی در vault ذخیره می‌شود."""
     secret = body.api_key.strip()
     if len(secret) < 8:
         raise HTTPException(422, "کلید API معتبر نیست")
-    old_secret = (await ai_admin_api.get_ai_config()).get("api_key") or ""
+    cfg = await ai_admin_api.get_ai_config()
+    provider = cfg.get("provider") or "gemini"
+    old_secret = cfg.get("api_key") or ""
     before_configured = bool(old_secret)
+    # ذخیره در vault برای provider فعلی + legacy برای سازگاری
+    await ai_admin_api.set_api_key_for_provider(provider, secret)
     await ai_admin_api.set_ai_setting("api_key", secret)
     try:
         await _audit(user["id"], "AI API key rotated", severity="CRITICAL",
-                     target_type="ai_secret", target_label="Houshyar API key",
-                     before={"configured": before_configured},
-                     after={"configured": True},
+                     target_type="ai_secret", target_label=f"Houshyar API key ({provider})",
+                     before={"configured": before_configured, "provider": provider},
+                     after={"configured": True, "provider": provider},
                      tags=["هوشیار", "secret_rotation", "owner_only", "پنل_وب"])
     except Exception:
+        await ai_admin_api.set_api_key_for_provider(provider, old_secret)
         await ai_admin_api.set_ai_setting("api_key", old_secret)
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ کلید قبلی بازگردانده شد")
-    return {"ok": True, "has_api_key": True}
+    return {"ok": True, "has_api_key": True, "provider": provider}
 
 
 @router.post("/ai/test")

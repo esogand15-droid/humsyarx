@@ -21,7 +21,9 @@ from time_utils import format_datetime_fa, today_tehran
 from ai_solver import (
     get_ai_config, set_ai_setting, ask_ai, save_persona, delete_persona,
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
-    MODEL_CATALOG, PROVIDERS,
+    MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG,
+    set_api_key_for_provider, delete_api_key_for_provider,
+    _detect_provider_for_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,9 @@ PROVIDER_KEY_HINTS = {
     'cerebras':   'cloud.cerebras.ai (بخش API Keys)',
     'mistral':    'console.mistral.ai (بخش API Keys)',
     'deepseek':   'platform.deepseek.com (بخش API Keys)',
+    'nvidia':     'integrate.api.nvidia.com (NIM)',
+    'huggingface':'huggingface.co/settings/tokens',
+    'together':   'api.together.xyz/settings/api-keys',
 }
 
 
@@ -96,6 +101,15 @@ async def show_ai_main(query):
     toggle_txt = "🔴 غیرفعال کردن" if cfg['enabled'] else "🟢 فعال کردن"
     limit      = cfg['daily_limit']
     limit_txt  = "بدون محدودیت" if not limit else f"{limit} سوال در روز / هر کاربر"
+    vault = cfg.get('vault') or cfg.get('api_keys') or {}
+    vault_lines = []
+    for pid in PROVIDERS:
+        masked = _mask_key(vault.get(pid, ''))
+        has = "✅" if vault.get(pid) else "⬜"
+        vault_lines.append(f"{has} {PROVIDER_LABELS.get(pid,pid)}: <code>{masked}</code>")
+    vault_txt = "\n".join(vault_lines) if vault_lines else "—"
+    img_provider = cfg.get('image_provider') or cfg.get('provider')
+    img_model = cfg.get('image_model') or ''
 
     text = (
         "🤖 <b>مدیریت هوشیار — دستیار هوشمند حل سوال</b>\n"
@@ -103,17 +117,22 @@ async def show_ai_main(query):
         f"📊 وضعیت: {status_txt}\n"
         f"🧠 ارائه‌دهنده: <code>{PROVIDER_LABELS.get(cfg['provider'], cfg['provider'])}</code>\n"
         f"🧩 مدل: <code>{cfg['model']}</code>\n"
-        f"🔑 API Key: <code>{_mask_key(cfg['api_key'])}</code>\n"
+        f"🔑 API Key فعلی: <code>{_mask_key(cfg['api_key'])}</code>\n"
+        f"🎨 مدل تصویر: <code>{img_model}</code> ({PROVIDER_LABELS.get(img_provider, img_provider)})\n"
         f"👥 محدودیت روزانه: {limit_txt}\n"
         f"🧠 عمقِ استدلال: {'🔥 بالا (High Thinking)' if cfg['thinking'] == 'high' else 'خودکار (پیش‌فرضِ مدل)'}\n\n"
-        "<i>دانشجویان با دکمه‌ی «🤖 هوشیار» در منوی اصلی، سوال متنی، عکس، "
-        "PDF یا حتی ویس می‌فرستن و طبق همین تنظیمات جواب می‌گیرن.</i>"
+        f"🗝️ <b>Vault کلیدها (هر provider جداگانه):</b>\n{vault_txt}\n\n"
+        "<i>کلید هر ارائه‌دهنده جداگانه ذخیره می‌شود — با تغییر مدل/ارائه‌دهنده، کلید مربوطه خودکار انتخاب می‌شود و نیاز به وارد کردن مجدد نیست.\n"
+        "💡 مدل‌های رایگان FreeLLM از طریق OpenRouter با یک کلید OpenRouter قابل استفاده‌اند؛ برای Gemini/Groq و... کلید جداگانه بگذار.</i>\n"
+        "<i>تصویر برای همه‌ی مدل‌ها باز است — اگر مدلی تصویر نسازد، خطای دوستانه نمایش داده می‌شود.</i>"
     )
     keyboard = [
         [InlineKeyboardButton(toggle_txt, callback_data='ai:toggle')],
-        [InlineKeyboardButton("🔁 تغییر ارائه‌دهنده (Gemini/OpenRouter/Groq/...)", callback_data='ai:pick_provider')],
-        [InlineKeyboardButton("🔑 تنظیم / تغییر API Key", callback_data='ai:set_key')],
+        [InlineKeyboardButton("🔁 تغییر ارائه‌دهنده", callback_data='ai:pick_provider')],
+        [InlineKeyboardButton("🗝️ مدیریت Vault کلیدها (همه providerها)", callback_data='ai:vault')],
+        [InlineKeyboardButton("🔑 تنظیم کلید برای ارائه‌دهنده فعلی", callback_data='ai:set_key')],
         [InlineKeyboardButton("🧩 انتخاب مدل", callback_data='ai:pick_model')],
+        [InlineKeyboardButton("🎨 انتخاب مدل تصویر", callback_data='ai:pick_image_model')],
         [InlineKeyboardButton("👥 محدودیت روزانه هر کاربر", callback_data='ai:set_limit')],
         [InlineKeyboardButton("🧠 عمقِ استدلال (Thinking)", callback_data='ai:toggle_thinking')],
         [InlineKeyboardButton("💬 ویرایش دستور سیستمی", callback_data='ai:set_prompt')],
@@ -203,17 +222,65 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == 'set_key':
         cfg = await get_ai_config()
+        target_provider = parts[2] if len(parts) > 2 and parts[2] in PROVIDER_LABELS else cfg['provider']
         context.user_data['mode'] = 'ai_set_key'
-        hint = PROVIDER_KEY_HINTS.get(
-            cfg['provider'], "پنل مدیریت همان ارائه‌دهنده")
+        context.user_data['ai_set_key_provider'] = target_provider
+        hint = PROVIDER_KEY_HINTS.get(target_provider, "پنل مدیریت همان ارائه‌دهنده")
         await query.edit_message_text(
             "🔑 <b>تنظیم API Key</b>\n\n"
-            f"کلید API مربوط به «{PROVIDER_LABELS.get(cfg['provider'], cfg['provider'])}» رو بفرست "
+            f"کلید API مربوط به «{PROVIDER_LABELS.get(target_provider, target_provider)}» رو بفرست "
             f"(از {hint}).\n\n"
-            "<i>بلافاصله بعد از ذخیره، پیامت حذف می‌شه که جایی نمونه.</i>",
+            "<i>بلافاصله بعد از ذخیره، پیامت حذف می‌شه که جایی نمونه. کلید در Vault ذخیره می‌شود و با سوییچ مدل خودکار انتخاب می‌شود.</i>",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='ai:main')]])
         )
+        return
+
+    if action == 'vault':
+        cfg = await get_ai_config()
+        vault = cfg.get('vault') or {}
+        kb = []
+        for pid, label in PROVIDER_LABELS.items():
+            has = "✅" if vault.get(pid) else "⬜"
+            kb.append([InlineKeyboardButton(f"{has} {label} — {'تغییر' if vault.get(pid) else 'افزودن'} کلید", callback_data=f'ai:set_key:{pid}')])
+            if vault.get(pid):
+                kb.append([InlineKeyboardButton(f"🗑 حذف کلید {label}", callback_data=f'ai:del_key:{pid}')])
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
+        txt = "🗝️ <b>Vault کلیدها</b>\n\nهر ارائه‌دهنده کلید جداگانه دارد. با انتخاب مدل از هر provider، کلید مربوطه خودکار استفاده می‌شود.\n\n"
+        for pid in PROVIDER_LABELS:
+            txt += f"{'✅' if vault.get(pid) else '⬜'} {PROVIDER_LABELS[pid]}: <code>{_mask_key(vault.get(pid,''))}</code>\n"
+        txt += "\n<i>مدل‌های رایگان freellm.net (OpenRouter) با یک کلید OpenRouter کار می‌کنند.</i>"
+        await query.edit_message_text(txt, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if action == 'del_key':
+        provider = parts[2] if len(parts) > 2 else ''
+        if provider in PROVIDER_LABELS:
+            await delete_api_key_for_provider(provider)
+            await query.answer(f"🗑 کلید {PROVIDER_LABELS[provider]} حذف شد", show_alert=True)
+        await show_ai_main(query)
+        return
+
+    if action == 'pick_image_model':
+        cfg = await get_ai_config()
+        kb = []
+        for mid, label, free in IMAGE_MODEL_CATALOG:
+            kb.append([InlineKeyboardButton(label, callback_data=f'ai:set_image_model:{mid}')])
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
+        await query.edit_message_text(
+            f"🎨 <b>انتخاب مدل تصویر — فعلی: {cfg.get('image_model')}</b>\n\nبرای همه‌ی providerها باز است؛ اگر مدلی تصویر نسازد خطای دوستانه می‌بینی. مدل‌های freellm.net رایگان با OpenRouter کار می‌کنند.",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    if action == 'set_image_model':
+        mid = ":".join(parts[2:]) if len(parts) > 2 else ''
+        if mid:
+            prov = _detect_provider_for_model(mid) or cfg.get('provider') or 'gemini'
+            await set_ai_setting('image_model', mid)
+            await set_ai_setting('image_provider', prov)
+            await query.answer(f"✅ مدل تصویر روی {mid} تنظیم شد", show_alert=True)
+        await show_ai_main(query)
         return
 
     if action == 'pick_model':
@@ -231,9 +298,13 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == 'set_model':
-        model_id = parts[2] if len(parts) > 2 else ''
+        model_id = ":".join(parts[2:]) if len(parts) > 2 else ''
         if model_id:
             await set_ai_setting('model', model_id)
+            # auto-detect provider از روی مدل — اگر مدل متعلق به provider دیگری است، provider را هم همگام کن
+            detected = _detect_provider_for_model(model_id)
+            if detected and detected in PROVIDER_LABELS:
+                await set_ai_setting('provider', detected)
             await query.answer(f"✅ مدل روی {model_id} تنظیم شد", show_alert=True)
         await show_ai_main(query)
         return
@@ -593,14 +664,15 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if mode == 'ai_set_key':
         context.user_data.pop('mode', None)
-        await set_ai_setting('api_key', text)
+        provider = context.user_data.pop('ai_set_key_provider', None) or (await get_ai_config())['provider']
+        await set_api_key_for_provider(provider, text)
         try:
             await update.message.delete()
         except Exception:
             pass
         await update.message.reply_text(
-            "✅ API Key ذخیره شد (پیامت هم حذف شد که جایی نمونه).\n\n"
-            "حالا از پنل هوشیار دکمه‌ی «فعال کردن» رو بزن تا برای کاربرها فعال بشه."
+            f"✅ API Key برای {PROVIDER_LABELS.get(provider, provider)} ذخیره شد (پیامت هم حذف شد که جایی نمونه).\n\n"
+            "کلید در Vault ذخیره شد — با سوییچ مدل/ارائه‌دهنده خودکار انتخاب می‌شود."
         )
         return
 

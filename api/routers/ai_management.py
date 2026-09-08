@@ -22,6 +22,8 @@ from ai_solver import (
     ask_ai,
     get_ai_config,
     set_ai_setting,
+    set_api_key_for_provider,
+    delete_api_key_for_provider,
 )
 
 from database import db
@@ -53,7 +55,7 @@ class ConfigUpdate(BaseModel):
 
     provider: str = Field(
         pattern=(
-            "^(gemini|openrouter|groq|cerebras|mistral|deepseek)$"
+            "^(gemini|openrouter|groq|cerebras|mistral|deepseek|nvidia|huggingface|together)$"
         )
     )
 
@@ -68,6 +70,11 @@ class ConfigUpdate(BaseModel):
     )
 
     image_enabled: bool = True
+
+    image_provider: str | None = Field(
+        default=None,
+        max_length=50,
+    )
 
     image_model: str = Field(
         default="",
@@ -100,6 +107,10 @@ class ConfigUpdate(BaseModel):
         max_length=500,
     )
 
+    api_keys: dict | None = Field(
+        default=None,
+    )
+
 
 class UserAction(BaseModel):
     user_id: int = Field(
@@ -127,6 +138,7 @@ async def config(
         await get_ai_config()
     )
 
+    vault = value.get("vault") or value.get("api_keys") or {}
     return {
         "enabled":
             value["enabled"],
@@ -146,6 +158,9 @@ async def config(
         "image_enabled":
             value["image_enabled"],
 
+        "image_provider":
+            value.get("image_provider", value["provider"]),
+
         "image_model":
             value["image_model"],
 
@@ -162,12 +177,17 @@ async def config(
                 "disabled_message"
             ],
 
-        # کلید API هیچ‌وقت
-        # به مرورگر ارسال نمی‌شود.
+        # کلید API هیچ‌وقت به مرورگر ارسال نمی‌شود — فقط وضعیت وجود
         "has_api_key":
             bool(
                 value["api_key"]
             ),
+
+        "has_api_keys":
+            {k: True for k, v in (vault or {}).items() if v},
+
+        "vault":
+            {k: bool(v) for k, v in (vault or {}).items()},
     }
 
 
@@ -190,28 +210,86 @@ async def update_config(
         "image_enabled",
         "image_model",
         "image_daily_limit",
+        "image_provider",
     )
 
     for key in editable_fields:
-        await set_ai_setting(
-            key,
-            getattr(body, key),
-        )
+        val = getattr(body, key, None)
+        if val is not None:
+            # image_provider may be None/empty meaning auto-detect
+            if key == "image_provider" and not val:
+                continue
+            await set_ai_setting(
+                key,
+                val,
+            )
 
-    # فقط اگر کلید جدیدی وارد شده
-    # باشد کلید قبلی جایگزین می‌شود.
+    # Vault: اگر دیکشنری api_keys فرستاده شده — هر provider جداگانه
+    if body.api_keys and isinstance(body.api_keys, dict):
+        for prov, key in body.api_keys.items():
+            if not prov:
+                continue
+            k = (key or "").strip()
+            if k:
+                await set_api_key_for_provider(prov.strip(), k)
+            elif k == "":
+                # خالی یعنی حذف
+                await delete_api_key_for_provider(prov.strip())
+
+    # فقط اگر کلید جدیدی وارد شده باشد کلید قبلی جایگزین می‌شود.
+    # این کلید برای provider فعلی در vault ذخیره می‌شود (auto-vault)
     if (
         body.api_key
         and body.api_key.strip()
     ):
-        await set_ai_setting(
-            "api_key",
-            body.api_key.strip(),
-        )
+        await set_api_key_for_provider(body.provider, body.api_key.strip())
 
     return {
         "ok": True,
     }
+
+
+class VaultUpdate(BaseModel):
+    api_key: str = Field(max_length=500)
+
+
+@router.get("/vault")
+async def vault_status(
+    admin=Depends(get_admin_user),
+):
+    cfg = await get_ai_config()
+    vault = cfg.get("vault") or {}
+    # فقط وضعیت وجود، نه خود کلید
+    return {
+        "vault": {k: bool(v) for k, v in vault.items()},
+        "providers": list(vault.keys()),
+    }
+
+
+@router.put("/vault/{provider}")
+async def vault_set(
+    provider: str,
+    body: VaultUpdate,
+    admin=Depends(get_admin_user),
+):
+    provider = provider.strip()
+    if provider not in ("gemini","openrouter","groq","cerebras","mistral","deepseek","nvidia","huggingface","together"):
+        raise HTTPException(status_code=400, detail="provider نامعتبر")
+    key = (body.api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="کلید نمی‌تواند خالی باشد")
+    await set_api_key_for_provider(provider, key)
+    return {"ok": True, "provider": provider}
+
+
+@router.delete("/vault/{provider}")
+async def vault_delete(
+    provider: str,
+    admin=Depends(get_admin_user),
+):
+    provider = provider.strip()
+    await delete_api_key_for_provider(provider)
+    return {"ok": True, "provider": provider}
 
 
 @router.get("/stats")

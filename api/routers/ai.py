@@ -1766,12 +1766,11 @@ async def generate_image_ep(body: ImageGenBody,
     if not config.get("image_enabled"):
         raise HTTPException(
             status_code=503, detail="تولید تصویر فعلاً غیرفعال است")
-    if config.get("provider") != "gemini":
-        raise HTTPException(
-            status_code=503,
-            detail=("تولید تصویر فقط با ارائه‌دهنده‌ی گوگل (Gemini) کار "
-                    "می‌کند — provider هوشیار را در پنل ادمین روی Gemini "
-                    "بگذارید"))
+    effective_key = config.get("image_api_key") or config.get("api_key") or ""
+    effective_model = config.get("image_model") or config.get("model") or "gemini-2.5-flash-image"
+    effective_provider = config.get("image_provider") or config.get("provider") or "gemini"
+    if not effective_key:
+        raise HTTPException(status_code=503, detail="کلید API برای ساخت تصویر تنظیم نشده — از پنل مدیریت کلید مربوطه را وارد کن")
 
     limit = max(0, int(config.get("image_daily_limit") or 0))
     today = today_tehran().isoformat()
@@ -1788,8 +1787,8 @@ async def generate_image_ep(body: ImageGenBody,
     try:
         try:
             res = await generate_image(
-                config["api_key"], config["image_model"], prompt,
-                aspect_ratio)
+                effective_key, effective_model, prompt,
+                aspect_ratio, provider=effective_provider)
         except AiImageError as e:
             logger.warning(
                 "IMAGE_GENERATION_FAILED rid=%s uid=%s model=%s code=%s "

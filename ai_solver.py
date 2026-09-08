@@ -45,6 +45,9 @@ DEFAULT_MODELS = {
     'cerebras':   'llama-3.3-70b',
     'mistral':    'mistral-large-latest',
     'deepseek':   'deepseek-chat',
+    'nvidia':     'deepseek-ai/deepseek-v3',
+    'huggingface':'meta-llama/Meta-Llama-3.1-70B-Instruct',
+    'together':   'meta-llama/Llama-3.3-70B-Instruct-Turbo',
 }
 
 # ══════════════════════════════════════════════════
@@ -60,14 +63,14 @@ PROVIDERS = {
         'vision': True, 'images': True,
     },
     'openrouter': {
-        'label': '🟪 OpenRouter',
+        'label': '🟪 OpenRouter — هاب مدل‌های رایگان (freellm.net)',
         'url': 'https://openrouter.ai/api/v1',
-        'vision': True, 'images': False,
+        'vision': True, 'images': True,
     },
     'groq': {
         'label': '🟧 Groq — سریع‌ترین inference',
         'url': 'https://api.groq.com/openai/v1',
-        'vision': False, 'images': False,
+        'vision': False, 'images': True,
     },
     'cerebras': {
         'label': '🟨 Cerebras',
@@ -84,9 +87,25 @@ PROVIDERS = {
         'url': 'https://api.deepseek.com/v1',
         'vision': False, 'images': False,
     },
+    # 🌊 FreeLLM-favorite free providers — OpenAI-compatible base_url
+    'nvidia': {
+        'label': '🖥️ NVIDIA NIM — مدل‌های آزاد',
+        'url': 'https://integrate.api.nvidia.com/v1',
+        'vision': True, 'images': False,
+    },
+    'huggingface': {
+        'label': '🤗 Hugging Face Inference',
+        'url': 'https://api-inference.huggingface.co/v1',
+        'vision': True, 'images': True,
+    },
+    'together': {
+        'label': '🤝 Together AI — رایگان',
+        'url': 'https://api.together.xyz/v1',
+        'vision': True, 'images': True,
+    },
 }
 
-# (شناسه‌ی مدل, برچسب فارسی, رایگان؟)
+# (شناسه‌ی مدل, برچسب فارسی, رایگان؟) — منبع: https://freellm.net/models/?free=1 (299 مدل رایگان، 239 تأیید Live 2026-09-08)
 MODEL_CATALOG = {
     'gemini': [
         ('gemini-3.6-flash',      '🌟 Gemini 3.6 Flash (جدیدترین، پیشنهادی)', False),
@@ -96,38 +115,74 @@ MODEL_CATALOG = {
         ('gemini-flash-latest',   '🔄 Gemini Flash Latest', True),
         ('gemini-2.5-flash-lite', '💨 Gemini 2.5 Flash-Lite (سبک‌تر)', True),
         ('gemini-2.5-pro',        '🧠 Gemini 2.5 Pro (دقیق‌تر)', False),
+        ('gemini-2.0-flash-exp',  '🧪 Gemini 2.0 Flash Exp (رایگان)', True),
     ],
     'openrouter': [
-        ('deepseek/deepseek-chat-v3-0324:free', '🐋 DeepSeek V3 (رایگان)', True),
+        # FreeLLM top free models aggregated under OpenRouter OpenAI-compatible API
+        ('deepseek/deepseek-chat-v3-0324:free', '🐋 DeepSeek V3 (رایگان، freellm verified)', True),
+        ('deepseek/deepseek-r1:free', '🧠 DeepSeek R1 (رایگان، استدلال)', True),
         ('qwen/qwen3-235b-a22b:free',           '🎯 Qwen3 235B (رایگان)', True),
-        ('google/gemma-4-31b-it:free',          '⚡ Gemma 4 31B (رایگان، تصویر+متن)', True),
+        ('qwen/qwen3-coder:free',                '👨‍💻 Qwen3 Coder (رایگان)', True),
+        ('qwen/qwen2.5-vl-32b-instruct:free',   '👁️ Qwen2.5 VL 32B (رایگان، vision)', True),
+        ('google/gemma-3-27b-it:free',           '⚡ Gemma 3 27B (رایگان، vision)', True),
+        ('google/gemma-4-31b-it:free',           '⚡ Gemma 4 31B (رایگان، تصویر+متن)', True),
+        ('meta-llama/llama-3.3-70b-instruct:free', '🦙 Llama 3.3 70B Instruct (رایگان)', True),
+        ('meta-llama/llama-4-maverick:free',    '🦙 Llama 4 Maverick (رایگان)', True),
+        ('mistralai/mistral-small-3.1-24b-instruct:free', '🌪 Mistral Small 3.1 24B (رایگان)', True),
+        ('thinkingmachines/inkling-small:free', '💡 Inkling Small (رایگان، image-capable)', True),
+        ('inclusionai/ling-3.0-flash-sante:free','🌟 Ling 3.0 Sante (رایگان)', True),
+        ('nvidia/llama-3.1-nemotron-70b-instruct:free', '🖥️ Nemotron 70B (رایگان)', True),
         ('openrouter/free',                     '🎲 انتخاب خودکار مدل رایگان', True),
     ],
     'groq': [
         ('llama-3.3-70b-versatile', '🦙 Llama 3.3 70B (رایگان، سریع)', True),
+        ('llama-3.1-8b-instant',    '⚡ Llama 3.1 8B Instant (رایگان)', True),
         ('openai/gpt-oss-120b',     '🧠 GPT-OSS 120B (رایگان، استدلال)', True),
         ('openai/gpt-oss-20b',      '💨 GPT-OSS 20B (رایگان، سبک)', True),
-        ('llama-3.1-8b-instant',    '⚡ Llama 3.1 8B Instant (رایگان)', True),
+        ('mixtral-8x7b-32768',      '🔀 Mixtral 8x7B (رایگان)', True),
+        ('llama-3.2-11b-vision-preview', '👁️ Llama 3.2 11B Vision (رایگان)', True),
     ],
     'cerebras': [
         ('llama-3.3-70b',  '🦙 Llama 3.3 70B (رایگان)', True),
         ('qwen-3-32b',     '🎯 Qwen3 32B (رایگان)', True),
+        ('llama-4-maverick-17b-128e-instruct', '🦙 Llama 4 Maverick 17B (رایگان)', True),
     ],
     'mistral': [
         ('mistral-large-latest', '🌪 Mistral Large (پرچم‌دار)', False),
         ('mistral-small-latest', '💨 Mistral Small (سریع)', False),
         ('codestral-latest',     '👨‍💻 Codestral (کدنویسی)', False),
+        ('mistral-small-3.1-24b-instruct:free','💨 Mistral Small 3.1 24B (رایگان FreeLLM)', True),
     ],
     'deepseek': [
         ('deepseek-chat',     '💬 DeepSeek V3 (چت عمومی)', False),
         ('deepseek-reasoner', '🧠 DeepSeek R1 (استدلال عمیق)', False),
+        ('deepseek-chat:free', '💬 DeepSeek V3 Free (via OpenRouter)', True),
+    ],
+    'nvidia': [
+        ('deepseek-ai/deepseek-v3', '🐋 DeepSeek V3 (NIM)', True),
+        ('moonshotai/kimi-k2-instruct', '🌙 Kimi K2 (vision, free)', True),
+        ('qwen/qwen3-235b-a22b', '🎯 Qwen3 235B (NIM)', True),
+    ],
+    'huggingface': [
+        ('black-forest-labs/FLUX.1-schnell', '⚡ Flux Schnell (رایگان، image)', True),
+        ('stabilityai/stable-diffusion-3.5-large', '🖼 SD 3.5 Large (رایگان، image)', True),
+    ],
+    'together': [
+        ('meta-llama/Llama-3.3-70B-Instruct-Turbo', '🦙 Llama 3.3 Turbo (رایگان)', True),
+        ('Qwen/Qwen2.5-VL-72B-Instruct', '👁️ Qwen2.5 VL 72B (vision)', True),
     ],
 }
 
-# مدل‌های تصویر (فعلاً فقط Gemini — endpoint تصویر اختصاصیِ گوگل است)
+# مدل‌های تصویر — universal: Gemini native + OpenAI-compatible (OpenRouter/HF/Together) — freellm.net verified image-capable
 IMAGE_MODEL_CATALOG = [
     ('gemini-2.5-flash-image',    '🍌 Gemini 2.5 Flash Image (نانوبانانا)', False),
     ('gemini-3-pro-image-preview', '🖼 Gemini 3 Pro Image (پیش‌نمایش)', False),
+    ('google/gemini-2.5-flash-image:free', '🍌 Gemini Image Free (OpenRouter)', True),
+    ('black-forest-labs/FLUX.1-schnell:free', '⚡ Flux Schnell (رایگان، سریع)', True),
+    ('black-forest-labs/FLUX.1-dev:free', '🎨 Flux 1 Dev (رایگان)', True),
+    ('stabilityai/stable-diffusion-3.5-large:free', '🖼 SD 3.5 Large (رایگان)', True),
+    ('stabilityai/stable-diffusion-xl:free', '🖼 SDXL (رایگان)', True),
+    ('thinkingmachines/inkling-small:free', '💡 Inkling Small Image (رایگان)', True),
 ]
 
 
@@ -182,36 +237,24 @@ class AiImageError(Exception):
         self.detail = detail
 
 
-async def generate_image(api_key: str, model: str, prompt: str,
-                         aspect_ratio: str = '1:1',
-                         timeout: int = 90, max_retries: int = 2) -> dict:
-    """🎨 تولید تصویر با Gemini — لایه‌ی provider (مشترک بات/مینی‌اپ).
+# نگاشت aspectRatio به size برای APIهای OpenAI-compatible
+_ASPECT_TO_SIZE = {
+    '1:1': '1024x1024', '4:3': '1024x768', '3:4': '768x1024',
+    '16:9': '1792x1024', '9:16': '1024x1792', '3:2': '1024x683',
+    '2:3': '683x1024', '21:9': '1792x768', '5:4': '1024x819', '4:5': '819x1024',
+}
 
-    - فقط server-side؛ api_key هرگز به کلاینت نمی‌رسد.
-    - retry محدود با backoff روی خطاهای گذرا (429/5xx/شبکه)؛
-      4xxهای معنادار (400/401/403) هرگز retry نمی‌شوند.
-    - خروجی: {'mime': str, 'data_b64': str} — تصویر inline از پاسخ.
-    """
-    aspect_ratio = aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS \
-        else '1:1'
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{model}:generateContent")
-    payload = {
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {
-            'responseModalities': ['IMAGE'],
-            'imageConfig': {'aspectRatio': aspect_ratio},
-        },
-    }
-    headers = {'Content-Type': 'application/json',
-               'x-goog-api-key': api_key}
+async def _generate_image_gemini(api_key: str, model: str, prompt: str,
+                                  aspect_ratio: str, timeout: int, max_retries: int) -> dict:
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/" f"{model}:generateContent")
+    payload = {'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'responseModalities': ['IMAGE'], 'imageConfig': {'aspectRatio': aspect_ratio}}}
+    headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
     last_err = None
-    retry_after = None  # ثانیه — از هدر Retry-After پاسخ 429
+    retry_after = None
     for attempt in range(max_retries + 1):
         if attempt:
             if retry_after is not None:
                 if retry_after > IMG_RETRY_AFTER_CAP:
-                    # سقفِ انتظار بی‌فایده است — کاربر را معطل نکن
                     raise last_err
                 delay = retry_after
                 retry_after = None
@@ -222,67 +265,155 @@ async def generate_image(api_key: str, model: str, prompt: str,
             async with _image_http_client(timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException as e:
-            last_err = AiImageError('GEMINI_TIMEOUT',
-                                    'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
-            logger.warning("imggen timeout attempt=%s err=%s",
-                           attempt, type(e).__name__)
-            continue  # گذرا — retry مجاز
+            last_err = AiImageError('GEMINI_TIMEOUT', 'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
+            logger.warning("imggen timeout attempt=%s err=%s", attempt, type(e).__name__)
+            continue
         except httpx.HTTPError as e:
-            last_err = AiImageError('GEMINI_UNAVAILABLE',
-                                    'سرویس تصویر در دسترس نیست؛ کمی بعد '
-                                    'دوباره تلاش کن.')
-            logger.warning("imggen network error attempt=%s err=%s",
-                           attempt, type(e).__name__)
+            last_err = AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen network error attempt=%s err=%s", attempt, type(e).__name__)
             continue
         if resp.status_code in (429, 500, 502, 503):
-            # 🩺 بدنه‌ی پاسخِ Google علت دقیق را می‌گوید (مثلاً «سهمیه‌ی
-            # این پروژه برای مدل تصویر صفر است»). برای تشخیص، بریده‌اش را
-            # لاگ کن — بدنه‌ی پاسخ حاوی اطلاعات محرمانه نیست (کلید فقط در
-            # هدرِ درخواست است).
             try:
                 body_snip = resp.text[:300].replace('\n', ' ')
             except Exception:
                 body_snip = ''
             if resp.status_code == 429:
-                last_err = AiImageError(
-                    'GEMINI_RATE_LIMIT',
-                    'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه '
-                    'بعد دوباره تلاش کن.')
-                ra = resp.headers.get('Retry-After') or \
-                    resp.headers.get('retry-after')
+                last_err = AiImageError('GEMINI_RATE_LIMIT', 'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه بعد دوباره تلاش کن.')
+                ra = resp.headers.get('Retry-After') or resp.headers.get('retry-after')
                 try:
                     retry_after = float(ra) if ra else None
                 except ValueError:
                     retry_after = None
             else:
-                last_err = AiImageError(
-                    'GEMINI_UNAVAILABLE',
-                    'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
-            logger.warning(
-                "imggen transient status=%s attempt=%s retry_after=%s "
-                "body=%s", resp.status_code, attempt, retry_after,
-                body_snip)
+                last_err = AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen transient status=%s attempt=%s retry_after=%s body=%s", resp.status_code, attempt, retry_after, body_snip)
             continue
         if resp.status_code in (401, 403):
-            raise AiImageError('GEMINI_AUTH_ERROR',
-                               'سرویس تصویر توسط مدیریت آماده نشده است.')
+            raise AiImageError('GEMINI_AUTH_ERROR', 'سرویس تصویر توسط مدیریت آماده نشده است.')
         if resp.status_code == 400:
-            raise AiImageError('GEMINI_INVALID_REQUEST',
-                               'این درخواست قابل پردازش نیست؛ توضیح تصویر '
-                               'را تغییر بده.')
+            raise AiImageError('GEMINI_INVALID_REQUEST', 'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.')
         if resp.status_code != 200:
-            raise AiImageError('GEMINI_UNAVAILABLE',
-                               'سرویس تصویر پاسخ نامعتبر داد؛ دوباره '
-                               'تلاش کن.')
-        # ۲۰۰ — parse (بدون retry: خطای محتوا گذرا نیست)
+            raise AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر پاسخ نامعتبر داد؛ دوباره تلاش کن.')
         try:
             data = resp.json()
         except ValueError:
-            raise AiImageError('IMAGE_PARSE_FAILED',
-                               'پاسخ سرویس تصویر خوانده نشد.')
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر خوانده نشد.')
         return _parse_image_response(data)
-    raise last_err or AiImageError('GEMINI_UNAVAILABLE',
-                                   'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+    raise last_err or AiImageError('GEMINI_UNAVAILABLE', 'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+
+async def _generate_image_openai(api_key: str, model: str, prompt: str,
+                                  aspect_ratio: str, provider: str,
+                                  timeout: int, max_retries: int) -> dict:
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or 'https://openrouter.ai/api/v1'
+    url = f"{base}/images/generations"
+    size = _ASPECT_TO_SIZE.get(aspect_ratio, '1024x1024')
+    payload = {'model': model, 'prompt': prompt, 'n': 1, 'size': size, 'response_format': 'b64_json'}
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    if provider == 'openrouter':
+        headers['HTTP-Referer'] = 'https://humsyar.local'
+        headers['X-Title'] = 'Humsyar'
+    last_err = None
+    retry_after = None
+    for attempt in range(max_retries + 1):
+        if attempt:
+            if retry_after is not None:
+                if retry_after > IMG_RETRY_AFTER_CAP:
+                    raise last_err
+                delay = retry_after
+                retry_after = None
+            else:
+                delay = IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            await _img_sleep(delay)
+        try:
+            async with _image_http_client(timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            last_err = AiImageError('IMAGE_TIMEOUT', 'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
+            logger.warning("imggen openai timeout provider=%s attempt=%s err=%s", provider, attempt, type(e).__name__)
+            continue
+        except httpx.HTTPError as e:
+            last_err = AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen openai network error provider=%s attempt=%s err=%s", provider, attempt, type(e).__name__)
+            continue
+        if resp.status_code in (429, 500, 502, 503):
+            try:
+                body_snip = resp.text[:400].replace('\n', ' ')
+            except Exception:
+                body_snip = ''
+            if resp.status_code == 429:
+                last_err = AiImageError('IMAGE_RATE_LIMIT', 'سرویس تصویر محدود شده؛ چند دقیقه بعد دوباره تلاش کن.')
+                ra = resp.headers.get('Retry-After') or resp.headers.get('retry-after')
+                try:
+                    retry_after = float(ra) if ra else None
+                except ValueError:
+                    retry_after = None
+            else:
+                last_err = AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen openai transient provider=%s status=%s attempt=%s retry_after=%s body=%s", provider, resp.status_code, attempt, retry_after, body_snip)
+            continue
+        if resp.status_code in (401, 403):
+            raise AiImageError('IMAGE_AUTH_ERROR', f'کلید {meta.get("label", provider)} برای ساخت تصویر تنظیم نشده یا نامعتبر است.')
+        if resp.status_code == 400:
+            body = ''
+            try:
+                body = resp.text[:600]
+            except Exception:
+                pass
+            if 'not support' in body.lower() or 'unsupported' in body.lower() or 'image' in body.lower():
+                raise AiImageError('IMAGE_NOT_SUPPORTED', 'این مدل قابلیت ساخت تصویر ندارد؛ مدل دیگری (مثلاً Flux یا Gemini Image) را انتخاب کن.')
+            raise AiImageError('IMAGE_INVALID_REQUEST', 'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.')
+        if resp.status_code == 404:
+            raise AiImageError('IMAGE_NOT_SUPPORTED', 'این ارائه‌دهنده/مدل از ساخت تصویر پشتیبانی نمی‌کند؛ مدل دیگری را امتحان کن.')
+        if resp.status_code != 200:
+            raise AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر پاسخ نامعتبر داد؛ دوباره تلاش کن.')
+        try:
+            data = resp.json()
+        except ValueError:
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر خوانده نشد.')
+        try:
+            d = (data.get('data') or [])[0] if isinstance(data.get('data'), list) else {}
+            b64 = d.get('b64_json') or d.get('b64Json') or d.get('image') or ''
+            if not b64:
+                url_img = d.get('url')
+                if url_img and url_img.startswith('http'):
+                    async with _image_http_client(timeout) as client2:
+                        r2 = await client2.get(url_img)
+                        if r2.status_code == 200:
+                            import base64
+                            b64 = base64.b64encode(r2.content).decode('utf-8')
+            if not b64:
+                raise AiImageError('IMAGE_PARSE_FAILED', 'تصویری در پاسخ سرویس پیدا نشد؛ مدل دیگری را امتحان کن.')
+            mime = 'image/png'
+            return {'mime': mime, 'data_b64': b64}
+        except AiImageError:
+            raise
+        except Exception:
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر قابل پردازش نبود.')
+    raise last_err or AiImageError('IMAGE_UNAVAILABLE', 'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+
+async def generate_image(api_key: str, model: str, prompt: str,
+                         aspect_ratio: str = '1:1',
+                         timeout: int = 90, max_retries: int = 2,
+                         provider: str | None = None) -> dict:
+    aspect_ratio = aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else '1:1'
+    if not api_key:
+        raise AiImageError('IMAGE_AUTH_ERROR', 'کلید API برای ساخت تصویر تنظیم نشده.')
+    if not provider:
+        provider = _detect_provider_for_model(model) or 'gemini'
+    if model.startswith('gemini') or provider == 'gemini':
+        return await _generate_image_gemini(api_key, model, prompt, aspect_ratio, timeout, max_retries)
+    if provider in PROVIDERS and PROVIDERS[provider].get('url'):
+        try:
+            return await _generate_image_openai(api_key, model, prompt, aspect_ratio, provider, timeout, max_retries)
+        except AiImageError as e:
+            if e.code == 'IMAGE_NOT_SUPPORTED':
+                raise
+            raise
+    try:
+        return await _generate_image_openai(api_key, model, prompt, aspect_ratio, provider or 'openrouter', timeout, max_retries)
+    except AiImageError:
+        raise
 
 
 def _image_http_client(timeout: int) -> httpx.AsyncClient:
@@ -458,34 +589,127 @@ def _cache_for_report(chat_id: int, message_id: int, uid: int, name: str,
 DEFAULT_DISABLED_MSG = "🤖 بخش هوش مصنوعی توسط مدیریت غیرفعال شد."
 
 
+def _detect_provider_for_model(model_id: str) -> str | None:
+    """تشخیص provider از روی model_id با کاتالوگ."""
+    if not model_id:
+        return None
+    mid = model_id.strip()
+    for pid, models in MODEL_CATALOG.items():
+        for m_id, _, _ in models:
+            if m_id == mid:
+                return pid
+    for m_id, _, _ in IMAGE_MODEL_CATALOG:
+        if m_id == mid:
+            if m_id.startswith('gemini'):
+                return 'gemini'
+            if 'FLUX' in m_id or 'stable' in m_id.lower() or 'flux' in m_id.lower():
+                return 'openrouter'
+            if 'gemini' in m_id:
+                return 'gemini'
+            return 'openrouter'
+    if '/' in mid:
+        if ':free' in mid or '/' in mid:
+            return 'openrouter'
+    if mid.startswith('gemini'):
+        return 'gemini'
+    return None
+
+
+def _load_vault(raw: dict) -> dict:
+    vault: dict = {}
+    raw_vault = raw.get('ai_api_keys', '')
+    if raw_vault:
+        if isinstance(raw_vault, dict):
+            vault = dict(raw_vault)
+        elif isinstance(raw_vault, str):
+            raw_vault = raw_vault.strip()
+            if raw_vault:
+                try:
+                    loaded = json.loads(raw_vault)
+                    if isinstance(loaded, dict):
+                        vault = loaded
+                except Exception:
+                    vault = {}
+    legacy = (raw.get('ai_api_key') or '').strip()
+    provider = raw.get('ai_provider', 'gemini')
+    if legacy and not vault:
+        vault[provider] = legacy
+    for pid in PROVIDERS:
+        k = (raw.get(f'ai_api_key_{pid}') or '').strip()
+        if k and pid not in vault:
+            vault[pid] = k
+    return vault
+
+
 async def get_ai_config() -> dict:
     raw = await db.get_settings_by_prefix('ai_')
-    provider = raw.get('ai_provider', 'gemini')
+    provider = (raw.get('ai_provider', 'gemini') or 'gemini').strip() or 'gemini'
+    if provider not in PROVIDERS:
+        provider = 'gemini'
     personas_raw = raw.get('ai_personas', '{}')
     try:
         personas = json.loads(personas_raw) if isinstance(personas_raw, str) else (personas_raw or {})
     except (ValueError, TypeError):
         personas = {}
+    vault = _load_vault(raw)
+    model = raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
+    detected = _detect_provider_for_model(model)
+    if detected and detected != provider and detected in vault and vault.get(detected):
+        provider = detected
+    api_key = vault.get(provider) or raw.get('ai_api_key', '') or ''
+    image_model = raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL
+    image_enabled = str(raw.get('ai_image_enabled', '1')) not in ('0', 'false', 'False', '')
+    image_daily_limit = int(raw.get('ai_image_daily_limit', DEFAULT_IMAGE_LIMIT) or 0)
+    image_provider_raw = (raw.get('ai_image_provider') or '').strip()
+    if image_provider_raw and image_provider_raw in PROVIDERS:
+        image_provider = image_provider_raw
+    else:
+        d2 = _detect_provider_for_model(image_model)
+        image_provider = d2 or provider
+        if image_provider not in PROVIDERS:
+            image_provider = provider
+    image_api_key = vault.get(image_provider) or vault.get(provider) or raw.get('ai_api_key', '') or ''
     return {
         'enabled':          bool(raw.get('ai_enabled', False)),
         'provider':         provider,
-        'api_key':          raw.get('ai_api_key', ''),
-        'model':            raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL),
+        'api_key':          api_key,
+        'api_keys':         vault,
+        'vault':            vault,
+        'model':            model,
         'daily_limit':      int(raw.get('ai_daily_limit', DEFAULT_LIMIT) or 0),
         'system_prompt':    raw.get('ai_system_prompt', DEFAULT_PROMPT),
         'disabled_message': raw.get('ai_disabled_message', ''),
-        'personas':         personas,   # {نامِ_پرسونا: متنِ_پرامپت}
-        # ⚠️ قابلیت جدید: عمقِ استدلال. 'auto' یعنی دست‌نخورده (پیش‌فرضِ
-        # خودِ مدل)، 'high' یعنی برای سوالاتِ سخت بیشتر «فکر کنه» قبل از
-        # جواب — رایگانه، فقط جزوِ توکنِ خروجی حساب می‌شه.
+        'personas':         personas,
         'thinking':         raw.get('ai_thinking', 'auto'),
-        # 🎨 تولید تصویر — مدل و سهمیه از settings (بدون hardcode)
-        'image_enabled':    str(raw.get('ai_image_enabled', '1'))
-                            not in ('0', 'false', 'False', ''),
-        'image_model':      raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL,
-        'image_daily_limit': int(raw.get('ai_image_daily_limit',
-                                         DEFAULT_IMAGE_LIMIT) or 0),
+        'image_enabled':    image_enabled,
+        'image_model':      image_model,
+        'image_provider':   image_provider,
+        'image_api_key':    image_api_key,
+        'image_daily_limit': image_daily_limit,
     }
+
+
+async def set_api_key_for_provider(provider: str, key: str) -> None:
+    provider = (provider or 'gemini').strip() or 'gemini'
+    key = (key or '').strip()
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    if key:
+        vault[provider] = key
+    else:
+        vault.pop(provider, None)
+    await db.set_setting('ai_api_keys', json.dumps(vault, ensure_ascii=False))
+    if key:
+        await db.set_setting(f'ai_api_key_{provider}', key)
+    else:
+        await db.set_setting(f'ai_api_key_{provider}', '')
+    cur = (raw.get('ai_provider') or 'gemini').strip() or 'gemini'
+    if provider == cur and key:
+        await db.set_setting('ai_api_key', key)
+
+
+async def delete_api_key_for_provider(provider: str) -> None:
+    await set_api_key_for_provider(provider, '')
 
 
 async def set_ai_setting(key: str, value) -> None:
@@ -1271,7 +1495,7 @@ def _make_compat_stream(provider_name: str):
     return _stream
 
 
-for _p in ('openrouter', 'groq', 'cerebras', 'mistral', 'deepseek'):
+for _p in ('openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'nvidia', 'huggingface', 'together'):
     STREAM_PROVIDERS[_p] = _make_compat_stream(_p)
 
 
@@ -2132,11 +2356,14 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG)
         return
 
-    if cfg['provider'] != 'gemini':
+    # universal image: use image_provider/image_api_key from vault, not hard-coded gemini
+    effective_key = cfg.get('image_api_key') or cfg.get('api_key') or ''
+    effective_model = cfg.get('image_model') or DEFAULT_IMAGE_MODEL
+    effective_provider = cfg.get('image_provider') or cfg.get('provider') or 'gemini'
+    if not effective_key:
         context.user_data.pop('mode', None)
         await update.message.reply_text(
-            "🎨 ساخت تصویر فقط با ارائه‌دهنده‌ی گوگل (Gemini) کار می‌کند؛ "
-            "فعلاً provider چیز دیگری است.")
+            "🎨 کلید API برای ساخت تصویر هنوز تنظیم نشده — از پنل مدیریت کلید مربوطه را وارد کن.")
         return
 
     if await db.ai_is_banned(uid):
@@ -2172,8 +2399,8 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
         "(ممکنه تا یک دقیقه طول بکشه)")
     try:
         try:
-            res = await generate_image(cfg['api_key'], cfg['image_model'],
-                                       text, '1:1')
+            res = await generate_image(effective_key, effective_model,
+                                       text, '1:1', provider=effective_provider)
         except AiImageError as e:
             logger.warning("bot image generation failed uid=%s code=%s",
                            uid, e.code)
@@ -2470,11 +2697,8 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(
                 "🎨 بخشِ ساخت تصویر فعلاً توسط مدیریت غیرفعال است.")
             return
-        if cfg['provider'] != 'gemini':
-            await query.message.reply_text(
-                "🎨 ساخت تصویر فقط وقتی ارائه‌دهنده‌ی هوشیار روی گوگل "
-                "(Gemini) باشد فعال است.")
-            return
+        # universal image — any provider allowed, just check image_enabled
+        # (key check is done at generation time, so button stays enabled for all providers)
         context.user_data['mode'] = 'ai_image_prompt'
         context.user_data['last_question'] = ''
         img_limit = cfg['image_daily_limit']

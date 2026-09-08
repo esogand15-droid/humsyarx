@@ -33,6 +33,10 @@ def _backup_settings_view(document: dict | None) -> dict:
     """Return restorable non-secret settings; credentials never enter artifacts."""
     safe = dict(document or {})
     safe.pop('ai_api_key', None)
+    safe.pop('ai_api_keys', None)
+    for k in list(safe.keys()):
+        if k.startswith('ai_api_key_'):
+            safe.pop(k, None)
     return safe
 
 
@@ -245,7 +249,7 @@ async def build_full_backup_data() -> dict:
             'consistency': 'count-verified-best-effort',
             'datasets': integrity,
             'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
-            'excluded_secrets': ['bot_settings.ai_api_key'],
+            'excluded_secrets': ['bot_settings.ai_api_key', 'bot_settings.ai_api_keys', 'bot_settings.ai_api_key_*'],
             'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
             'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
         },
@@ -631,7 +635,7 @@ async def build_section_backup_data(section: str) -> dict:
             'complete': True, 'consistency': 'count-verified-best-effort',
             'datasets': integrity,
             'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
-            'excluded_secrets': ['bot_settings.ai_api_key'],
+            'excluded_secrets': ['bot_settings.ai_api_key', 'bot_settings.ai_api_keys', 'bot_settings.ai_api_key_*'],
             'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
             'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
         },
