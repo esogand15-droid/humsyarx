@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-08T16:51:01.886896Z",
-  "version": "Users Intelligence Center — 20260908_165101",
+  "generated_at": "2026-09-08T16:58:13.125328Z",
+  "version": "Users Investigation+Diagnostics — 20260908_165812",
   "files": [
     {
       "path": "audit.py",
@@ -114,9 +114,9 @@
     },
     {
       "path": "webadmin/src/pages/Users.jsx",
-      "sha256": "ae116d88ee199a5130aa3731b165536f38f9353af860d0b7829e6fc1eda20c2b",
-      "size": 111830
+      "sha256": "fc1b9e2559449a343e3e31bc387cc51a1434da444fad8c2d3e72183a643dd111",
+      "size": 145353
     }
   ],
-  "notes": "Runtime only — no *.md/tests/dist/cache/__pycache__ — Users Intelligence Center (Health/Attention/Timeline/Investigation/Segments/Bulk Preview) + preserved 19 py + styles/Dashboard/HealthCenter"
+  "notes": "Runtime only — 5 Intelligence features: Why Access / Investigation Workspace / Journey Replay / Snapshot Compare / Recommended Next Action — Evidence First — No mock — Preserved 19 py + 4 webadmin — Build 56 modules"
 }

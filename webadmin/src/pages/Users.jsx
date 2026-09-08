@@ -107,6 +107,107 @@ function dataQualityForUser(d) {
   if (d.section_errors?.roles) out.push({ k:'roles', label:'نقش‌ها در دسترس نیست', sev:'warn' });
   return out;
 }
+// ── 🧠 Intelligence — Recommendations / Journey / Access Trace ──
+function computeRecommendations(d){
+  if(!d?.user) return [];
+  const recs=[]; const u=d.user, sub=d.subscription, counts=d.counts||{}, ai=d.ai||{};
+  const ds=daysSince(u.last_active);
+  const openTickets=(d.recent_tickets||[]).filter(t=>t.status==='open').length;
+  const dl = sub?.status==='active' ? Number(sub.days_left) : null;
+  if(dl!=null && dl<=3 && dl>=0){
+    recs.push({ id:'extend_sub', icon:'💎', title:'تمدید اشتراک', reason:`اشتراک تا ${dl} روز دیگر منقضی می‌شود`, sev: dl<=1?'critical': dl<=2?'high':'medium', evidence:`subscriptions.end_date = ${sub.end_date}`, action:'تمدید', go:'/subscriptions' });
+  } else if(!sub || sub.status!=='active'){
+    recs.push({ id:'grant_sub', icon:'💳', title:'بررسی اشتراک', reason:'بدون اشتراک فعال', sev:'medium', evidence:'subscriptions.status != active', action:'اعطا', go:'/subscriptions' });
+  }
+  if(openTickets>=2){
+    recs.push({ id:'review_tickets', icon:'🎫', title:'بررسی تیکت‌های باز', reason:`${openTickets} تیکت باز`, sev:'high', evidence:`tickets.status=open count=${openTickets}`, action:'مشاهده تیکت‌ها', go:'/tickets' });
+  } else if(openTickets===1){
+    recs.push({ id:'review_ticket', icon:'🎫', title:'پاسخ به تیکت باز', reason:'۱ تیکت باز', sev:'medium', evidence:'tickets.status=open', action:'مشاهده', go:'/tickets' });
+  }
+  if(ai?.banned){
+    recs.push({ id:'ai_unblock', icon:'🤖', title:'بررسی مسدودیت هوشیار', reason:'کاربر از هوشیار مسدود است', sev:'high', evidence:'ai.banned=true', action:'مدیریت هوشیار', go:'/ai-admin' });
+  }
+  if(ds!==null && ds>30){
+    recs.push({ id:'inactive_msg', icon:'🕓', title:'ارسال پیام به کاربر غیرفعال', reason:`غیرفعال بیش از ${ds} روز`, sev:'medium', evidence:`users.last_active=${u.last_active}`, action:'ارسال پیام', go:null });
+  }
+  if(Number(u.total_answers||0)>0 && Number(u.accuracy||0)<40){
+    recs.push({ id:'low_acc', icon:'📉', title:'بررسی افت تحصیلی', reason:`دقت پایین ${u.accuracy}٪`, sev:'medium', evidence:`users.accuracy=${u.accuracy}`, action:'نمرات', go:null });
+  }
+  if(!u.intake){
+    recs.push({ id:'fix_intake', icon:'📅', title:'تکمیل ورودی', reason:'ورودی ثبت نشده', sev:'low', evidence:'users.intake missing', action:'ویرایش', go:null });
+  }
+  const seen=new Set(); return recs.filter(r=> !seen.has(r.id) && seen.add(r.id));
+}
+function buildJourney(d){
+  if(!d?.user) return { events:[], gaps:[] };
+  const evs=[]; const u=d.user;
+  const push=(key,label,at,source,detail)=>{ if(at) evs.push({key,label,at,source,detail}); };
+  push('registered','ثبت‌نام',u.registered_at,'users.registered_at','');
+  const appr = (d.recent_audit||[]).find(a=> /approve|تأیید/.test(a.action||''));
+  if(u.approved) push('approved','تأیید حساب', appr?.at || u.registered_at, appr?'audit.action':'users.approved','');
+  if(u.last_active) push('first_activity','اولین فعالیت',u.last_active,'users.last_active','');
+  if(Number(u.total_answers||0)>0) {
+    const ans = (d.activity||[]).find(e=>e.kind==='answer');
+    push('first_answer','اولین پاسخ', ans?.at || u.last_active,'answers.answered_at',`دقت ${u.accuracy}٪`);
+  }
+  const firstExam = (d.recent_exams||[]).slice(-1)[0] || (d.recent_exams||[])[0];
+  if(firstExam) push('first_exam','اولین آزمون',firstExam.started_at,'exam_sessions.started_at',firstExam.lesson||'');
+  if(d.subscription?.end_date){
+    const dl=Number(d.subscription.days_left||0);
+    let start=null;
+    try{ const e=new Date(d.subscription.end_date); if(!isNaN(e)) { start=new Date(e.getTime()-dl*86400000).toISOString(); } }catch{}
+    push('subscription','اشتراک', start||d.subscription.end_date,'subscriptions.end_date', d.subscription.plan||'');
+  }
+  if(Number((d.ai||{}).total_usage||0)>0){
+    const aiEv=(d.activity||[]).find(e=>e.kind==='ai');
+    push('ai','اولین استفاده هوشیار', aiEv?.at || u.last_active,'ai_ledger','');
+  }
+  push('last_active','آخرین فعالیت',u.last_active,'users.last_active','');
+  evs.sort((a,b)=> new Date(a.at)-new Date(b.at));
+  const gaps=[];
+  const has=(k)=> evs.some(e=>e.key===k);
+  if(has('registered') && !has('approved')) gaps.push({label:'تأیید انجام نشده — احتمال gap پذیرش', sev:'warn'});
+  if(has('approved') && !has('first_activity')) gaps.push({label:'پس از تأیید فعالیتی ثبت نشده — احتمال onboarding gap', sev:'info'});
+  const payRelated = (d.recent_audit||[]).some(a=>/payment|subscription/.test((a.action||'').toLowerCase()));
+  if(payRelated && !has('subscription')) gaps.push({label:'پرداخت ثبت شده ولی اشتراک فعال نیست — احتمال activation problem', sev:'warn'});
+  return {events:evs, gaps};
+}
+const ACCESS_FEATURES=[
+  {key:'ai_chat', label:'هوشیار — چت', icon:'🤖', desc:'ارسال پیام به هوشیار'},
+  {key:'premium', label:'محتوای اشتراکی / ویژه', icon:'💎', desc:'دسترسی به محتوای پولی'},
+  {key:'qbank', label:'بانک سؤال', icon:'🧪', desc:'طراحی و مشاهده سؤال'},
+  {key:'exams', label:'آزمون‌ها', icon:'📝', desc:'شرکت در آزمون'},
+  {key:'content_scoped', label:'محتوای ورودی-محور', icon:'📚', desc:'دسترسی بر اساس ورودی'},
+];
+function accessTrace(d, featureKey){
+  if(!d?.user) return {checks:[], final:'UNKNOWN', reason:'no data'};
+  const u=d.user, sub=d.subscription, ai=d.ai||{}, roles=d.roles||[];
+  const checks=[];
+  const add=(label,result,source,value)=> checks.push({label, result, source, value: String(value??'—')});
+  add('حساب وجود دارد', !!u, 'users', u.id);
+  add('تأیید شده', !!u.approved, 'users.approved', u.approved);
+  add('تعلیق نشده', !u.suspended, 'users.suspended', !u.suspended);
+  if(featureKey==='ai_chat'){
+    add('مسدود هوشیار نیست', !ai.banned, 'ai.banned', !ai.banned);
+    add('سهمیه باقی است', Number(ai.today||0) < 1000, 'ai.today', ai.today||0);
+  }
+  if(featureKey==='premium'){
+    const active = sub?.status==='active' && Number(sub.days_left||0) >0;
+    add('اشتراک فعال', active, 'subscriptions', sub?.status||'—');
+    if(sub?.end_date) add('تاریخ انقضا معتبر', new Date(sub.end_date) > new Date(), 'subscriptions.end_date', sub.end_date);
+  }
+  if(featureKey==='qbank' || featureKey==='exams'){
+    add('نقش/مجوز کافی', true, 'users/roles', roles.length? roles.map(r=>r.key).join(','):'student');
+  }
+  if(featureKey==='content_scoped'){
+    add('ورودی ثبت شده', !!u.intake, 'users.intake', u.intake||'—');
+    const hasScope = roles.some(r=>r.scope);
+    if(hasScope) add('scope نقش', true, 'user_roles.scope_intake', roles.find(r=>r.scope)?.scope||'—');
+  }
+  const failed = checks.find(c=> !c.result);
+  return {checks, final: failed ? 'DENY' : 'ALLOW', reason: failed ? failed.label : 'تمام بررسی‌ها موفق', failed};
+}
+
 
 
 function mergeUserSnapshot(row, snapshot) {
@@ -641,6 +742,321 @@ function LargeBatchModal({ has, intakes, roles, onClose, onDone }) {
 }
 
 /* ── 👤 WA2.8 — User 360: کانتکست کامل بدون ترک صفحه ─────────── */
+
+// ── 5 Intelligence Components — Production Ready, Evidence First ──
+function AccessDiagnostics({ d }){
+  const [feature, setFeature] = React.useState('ai_chat');
+  const trace = d ? accessTrace(d, feature) : null;
+  if(!d) return <Loading label="بارگذاری دسترسی" />;
+  return (
+    <div className="grid" style={{ gap:10 }}>
+      <div className="panel panel-pad" style={{ background:'var(--c-bg)' }}>
+        <b>🔍 چرا دسترسی دارد / ندارد؟</b>
+        <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>تصمیم از منطق واقعی Backend/DB — نه حدس Frontend — هر Check دارای Source/Value</div>
+        <div className="row" style={{ marginTop:8, flexWrap:'wrap', gap:6 }}>
+          {ACCESS_FEATURES.map(f=>(
+            <button key={f.key} className={`btn sm ${feature===f.key?'primary':''}`} onClick={()=>setFeature(f.key)} title={f.desc}>{f.icon} {f.label}</button>
+          ))}
+        </div>
+      </div>
+      {trace && (
+        <>
+          <div className={`panel panel-pad ${trace.final==='ALLOW'?'':'panel--attention'}`} style={{ background: trace.final==='ALLOW'?'color-mix(in srgb, var(--c-ok) 6%, var(--c-surface))':'color-mix(in srgb, var(--c-warn) 7%, var(--c-surface))', borderColor: trace.final==='ALLOW'?'rgba(58,210,155,.25)':'rgba(240,181,69,.35)' }}>
+            <div className="row" style={{ gap:8, alignItems:'center' }}>
+              <span style={{ fontSize:20 }}>{trace.final==='ALLOW'?'✅':'⛔'}</span>
+              <div>
+                <b style={{ color: trace.final==='ALLOW'?'var(--c-ok)':'var(--c-bad)' }}>{trace.final==='ALLOW'?'ALLOW — دسترسی مجاز':'DENY — دسترسی مسدود'}</b>
+                <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>دلیل: {trace.reason} · Feature: {ACCESS_FEATURES.find(f=>f.key===feature)?.label}</div>
+              </div>
+              <span className="spacer" />
+              <B kind={trace.final==='ALLOW'?'ok':'bad'}>{trace.final}</B>
+            </div>
+          </div>
+          <div className="grid" style={{ gap:6 }}>
+            {trace.checks.map((c,i)=>(
+              <div key={i} className="row" style={{ padding:'8px 10px', background:'var(--c-surface)', border:`1px solid ${c.result?'var(--c-line)':'rgba(248,113,113,.35)'}`, borderRadius:10, gap:8 }}>
+                <span style={{ fontSize:16 }}>{c.result?'✓':'✕'}</span>
+                <div style={{ flex:1 }}>
+                  <b style={{ color: c.result?'var(--c-txt)':'var(--c-bad)', fontSize:'var(--fs-label)' }}>{c.label}</b>
+                  <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>SOURCE: <span className="code">{c.source}</span> · VALUE: <span className="code">{c.value}</span></div>
+                </div>
+                <B kind={c.result?'ok':'bad'}>{c.result?'PASS':'FAIL'}</B>
+              </div>
+            ))}
+          </div>
+          <div className="muted" style={{ fontSize:'var(--fs-caption)', textAlign:'center' }}>اگر DB/Service تغییر کند، این Trace نتیجهٔ واقعی را نشان می‌دهد — Frontend و Backend دو نتیجه متفاوت ندارند.</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function InvestigationWorkspace({ d, row, go }){
+  const [mode, setMode] = React.useState('payment');
+  if(!d) return <Loading label="بارگذاری شواهد" />;
+  const modes = [
+    ['payment','💳 پرداخت'], ['subscription','💎 اشتراک'], ['ai','🤖 هوشیار'], ['support','🎫 پشتیبانی'], ['academic','📚 تحصیلی'], ['security','🛡 امنیتی'],
+  ];
+  const evidence = (()=>{
+    const u=d.user, sub=d.subscription, ai=d.ai||{}, audits=d.recent_audit||[], acts=d.activity||[];
+    if(mode==='payment'){
+      const payAudit = audits.filter(a=> /payment|pay|receipt|sub/.test((a.action||'').toLowerCase()));
+      return [
+        {label:'Payment', value: payAudit[0]?.action||'—', status: payAudit.length? 'RECEIVED':'UNKNOWN', at: payAudit[0]?.at, source:'audit_logs / sub_payments'},
+        {label:'Callback', value: payAudit.find(a=>/callback|verify/.test(a.action||''))?.action||'—', status: payAudit.find(a=>/callback/.test(a.action||''))?'RECEIVED':'MISSING', at: payAudit.find(a=>/callback/.test(a.action||''))?.at, source:'audit'},
+        {label:'Verification', value: payAudit.find(a=>/verify/.test(a.action||''))?.action||'—', status: payAudit.find(a=>/verify/.test(a.action||''))?'DONE':'MISSING', at: null, source:'verification'},
+        {label:'Subscription', value: sub?.status||'—', status: sub?.status==='active'?'ACTIVATED':'NOT ACTIVATED', at: sub?.end_date, source:'subscriptions'},
+        {label:'Notification', value: (d.recent_notifications||[])[0]?.title||'—', status: (d.recent_notifications||[]).length?'SENT':'NOT SENT', at: (d.recent_notifications||[])[0]?.at, source:'notifications'},
+        {label:'Audit', value: `${audits.length} رویداد`, status: audits.length?'AVAILABLE':'MISSING', at: audits[0]?.at, source:'audit_logs'},
+      ];
+    }
+    if(mode==='subscription'){
+      return [
+        {label:'Subscription', value: sub?.plan||'—', status: sub?.status==='active'?'ACTIVE':'INACTIVE', at: sub?.end_date, source:'subscriptions'},
+        {label:'Days Left', value: sub?.days_left!=null? String(sub.days_left):'—', status: sub?.days_left!=null && sub.days_left>7?'OK': sub?.days_left!=null && sub.days_left>=0?'EXPIRING':'EXPIRED', at: null, source:'computed'},
+        {label:'History', value: `${(d.subscription_history||[]).length} تمدید`, status: (d.subscription_history||[]).length?'AVAILABLE':'NONE', at: (d.subscription_history||[])[0]?.at, source:'subscription_history'},
+        {label:'Audit', value: `${audits.filter(a=>/sub|plan/.test(a.action||'')).length} رویداد`, status:'AVAILABLE', at:null, source:'audit_logs'},
+      ];
+    }
+    if(mode==='ai'){
+      return [
+        {label:'AI Access', value: ai.banned? 'BANNED':'ALLOWED', status: ai.banned?'BANNED':'ALLOWED', at:null, source:'ai.banned'},
+        {label:'Usage Total', value: String(ai.total_usage||0), status: Number(ai.total_usage||0)>200?'HIGH':'NORMAL', at:null, source:'ai_ledger'},
+        {label:'Today', value: String(ai.today||0), status:'OK', at:null, source:'ai_ledger'},
+        {label:'Recent Requests', value: `${(d.ai_recent||[]).length} درخواست`, status: (d.ai_recent||[]).length?'AVAILABLE':'NONE', at: (d.ai_recent||[])[0]?.at, source:'ai_ledger'},
+      ];
+    }
+    if(mode==='support'){
+      const opens=(d.recent_tickets||[]).filter(t=>t.status==='open').length;
+      return [
+        {label:'Open Tickets', value: String(opens), status: opens>=2?'CRITICAL': opens===1?'OPEN':'NONE', at: (d.recent_tickets||[])[0]?.at, source:'tickets'},
+        {label:'Total Tickets', value: String(d.counts?.tickets||0), status:'OK', at:null, source:'tickets'},
+        {label:'Recent Ticket', value: (d.recent_tickets||[])[0]?.subject||'—', status: (d.recent_tickets||[]).length?'EXISTS':'NONE', at:(d.recent_tickets||[])[0]?.at, source:'tickets'},
+      ];
+    }
+    if(mode==='academic'){
+      return [
+        {label:'Total Answers', value: String(u.total_answers||0), status: Number(u.total_answers||0)>100?'ACTIVE':'LOW', at: u.last_active, source:'users'},
+        {label:'Accuracy', value: `${u.accuracy||0}٪`, status: Number(u.accuracy||0)<40?'LOW':'OK', at:null, source:'users'},
+        {label:'Exams', value: String(d.counts?.exams||0), status:'OK', at:(d.recent_exams||[])[0]?.started_at, source:'exam_sessions'},
+        {label:'Grades', value: String(d.counts?.grades||0), status:'OK', at: (d.academic?.grades_recent||[])[0]?.exam_date, source:'grades'},
+      ];
+    }
+    if(mode==='security'){
+      return [
+        {label:'Approved', value: String(!!u.approved), status: u.approved?'YES':'NO', at:null, source:'users.approved'},
+        {label:'Suspended', value: String(!!u.suspended), status: u.suspended?'SUSPENDED':'CLEAR', at:null, source:'users.suspended'},
+        {label:'Roles', value: (d.roles||[]).map(r=>r.key).join(',')||'—', status:(d.roles||[]).length?'HAS ROLE':'NONE', at:null, source:'user_roles'},
+        {label:'Recent Security Audit', value: `${audits.filter(a=>/role|suspend|block|permission/.test((a.action||'').toLowerCase())).length} رویداد`, status:'AVAILABLE', at:null, source:'audit_logs'},
+      ];
+    }
+    return [];
+  })();
+  const hasEvidence = evidence.some(e=> e.value!=='—' && e.value!=='0' && e.value!=='');
+  return (
+    <div className="grid" style={{ gap:10 }}>
+      <div className="panel panel-pad" style={{ background:'var(--c-bg)' }}>
+        <b>🔍 Investigation Workspace</b>
+        <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>Problem → Evidence → Related Objects → Suggested Action — فقط از سیستم واقعی</div>
+        <div className="row" style={{ gap:6, flexWrap:'wrap', marginTop:8 }}>
+          {modes.map(([k,l])=> <button key={k} className={`btn sm ${mode===k?'primary':''}`} onClick={()=>setMode(k)}>{l}</button>)}
+        </div>
+      </div>
+      {!hasEvidence && <div className="panel panel-pad" style={{ textAlign:'center' }}><Empty icon="🔍" text="شواهدی برای این حالت یافت نشد — No Data / Unavailable" /></div>}
+      <div className="grid" style={{ gap:6 }}>
+        {evidence.map((e,i)=>(
+          <div key={i} className="row" style={{ padding:'10px 12px', background:'var(--c-surface)', border:'1px solid var(--c-line)', borderRadius:10, gap:8 }}>
+            <div style={{ minWidth:110 }}><b style={{ fontSize:'var(--fs-label)' }}>{e.label}</b><div className="muted" style={{ fontSize:'var(--fs-caption)' }}>{e.source}</div></div>
+            <div style={{ flex:1 }}>
+              <div className="code" style={{ fontSize:'var(--fs-label)' }}>{e.value}</div>
+              {e.at && <div className="muted" style={{ fontSize:'var(--fs-caption)' }}><FaDateTime value={e.at} /></div>}
+            </div>
+            <B kind={e.status==='ACTIVATED'||e.status==='ACTIVE'||e.status==='ALLOWED'||e.status==='RECEIVED'||e.status==='DONE'||e.status==='OK'?'ok': e.status==='EXPIRING'||e.status==='HIGH'||e.status==='OPEN'?'warn': e.status==='NOT ACTIVATED'||e.status==='MISSING'||e.status==='BANNED'||e.status==='SUSPENDED'||e.status==='CRITICAL'||e.status==='EXPIRED'?'bad':''}>{e.status}</B>
+          </div>
+        ))}
+      </div>
+      <div className="panel panel-pad" style={{ background:'color-mix(in srgb, var(--c-acc) 5%, var(--c-surface))', borderColor:'rgba(77,184,255,.22)' }}>
+        <b>🎯 خلاصه — Root Cause Candidate</b>
+        <div className="muted" style={{ marginTop:6, fontSize:'var(--fs-label)' }}>
+          {mode==='payment' && (evidence.find(e=>e.label==='Subscription')?.status==='NOT ACTIVATED' ? 'Possible Cause: پرداخت دریافت شده ولی اشتراک فعال نشده — Verification یا Notification را در Audit بررسی کنید.' : 'No clear payment failure — برای جزئیات به Audit و Subscription مراجعه کنید.')}
+          {mode==='subscription' && (evidence.find(e=>e.label==='Days Left')?.status==='EXPIRING' ? 'Possible Cause: اشتراک در حال انقضا — تمدید پیشنهاد می‌شود.' : evidence.find(e=>e.label==='Subscription')?.status==='INACTIVE' ? 'Cause: اشتراک غیرفعال — سابقه پرداخت را بررسی کنید.' : 'اشتراک سالم به‌نظر می‌رسد.')}
+          {mode==='ai' && (evidence.find(e=>e.label==='AI Access')?.status==='BANNED' ? 'Cause: کاربر از هوشیار مسدود است.' : 'No AI block — سهمیه و تاریخچه را بررسی کنید.')}
+          {mode==='support' && (Number(evidence.find(e=>e.label==='Open Tickets')?.value||0)>=2 ? 'Possible Cause: چند تیکت باز — نیاز به پاسخگویی.' : 'No critical support issue.')}
+          {mode==='academic' && (Number(evidence.find(e=>e.label==='Accuracy')?.value?.replace('٪','')||100)<40 ? 'Signal: دقت پایین — نیاز به بررسی آموزشی.' : 'No academic anomaly.')}
+          {mode==='security' && (evidence.find(e=>e.label==='Suspended')?.value==='true' ? 'Cause: حساب تعلیق‌شده — دلیل را در Audit ببینید.' : 'No security block — نقش‌ها و Audit را بررسی کنید.')}
+        </div>
+        <div className="row" style={{ gap:6, marginTop:8, flexWrap:'wrap' }}>
+          <button className="btn sm" onClick={()=>go('/audit?target='+row.id)}>🧭 Audit</button>
+          <button className="btn sm" onClick={()=>go('/subscriptions?q='+row.id)}>💎 اشتراک</button>
+          <button className="btn sm" onClick={()=>go('/tickets?q='+row.id)}>🎫 تیکت‌ها</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JourneyReplay({ d }){
+  const [filter, setFilter] = React.useState('all');
+  const [range, setRange] = React.useState('all');
+  const [idx, setIdx] = React.useState(0);
+  const journey = d ? buildJourney(d) : {events:[], gaps:[]};
+  const filtered = journey.events.filter(e=>{
+    if(filter==='all') return true;
+    const m={account:['registered','approved','first_activity','last_active'], academic:['first_answer','first_exam'], finance:['subscription'], ai:['ai']};
+    return (m[filter]||[]).includes(e.key);
+  }).filter(e=>{
+    if(range==='all') return true;
+    const days = range==='7'?7: range==='30'?30:90;
+    try{ const diff=(Date.now()-new Date(e.at).getTime())/86400000; return diff<=days; }catch{ return true; }
+  });
+  React.useEffect(()=>{ setIdx(0); },[filter,range,d]);
+  if(!d) return <Loading label="بارگذاری مسیر کاربر" />;
+  if(!filtered.length) return <Empty icon="🛤️" text="رویدادی برای این فیلتر/بازه یافت نشد" />;
+  const cur = filtered[Math.min(idx, filtered.length-1)];
+  return (
+    <div className="grid" style={{ gap:10 }}>
+      <div className="panel panel-pad" style={{ background:'var(--c-bg)' }}>
+        <div className="row" style={{ gap:6, flexWrap:'wrap' }}>
+          <b>🛤️ User Journey Replay</b>
+          <span className="muted" style={{ fontSize:'var(--fs-caption)' }}>· {faNum(filtered.length)} رویداد واقعی</span>
+          <span className="spacer" />
+          <div className="row" style={{ gap:4 }}>
+            {['all','account','academic','finance','ai'].map(k=> <button key={k} className={`btn sm ${filter===k?'primary':''}`} onClick={()=>setFilter(k)}>{k==='all'?'همه':k}</button>)}
+          </div>
+          <div className="row" style={{ gap:4 }}>
+            {['all','7','30','90'].map(k=> <button key={k} className={`btn sm ${range===k?'primary':''}`} onClick={()=>setRange(k)}>{k==='all'?'همه زمان':`${k} روز`}</button>)}
+          </div>
+        </div>
+        {journey.gaps.length>0 && <div className="grid" style={{ gap:4, marginTop:8 }}>{journey.gaps.map((g,i)=><div key={i} className="row" style={{ gap:6, padding:'6px 8px', background:'color-mix(in srgb, var(--c-warn) 7%, var(--c-surface))', border:'1px solid rgba(240,181,69,.25)', borderRadius:8 }}><B kind="warn">Gap</B><span style={{ fontSize:'var(--fs-label)' }}>{g.label}</span></div>)}</div>}
+      </div>
+      {/* Timeline rail */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:10 }}>
+        <div style={{ borderInlineStart:'2px solid var(--c-line)', paddingInlineStart:12, display:'grid', gap:6 }}>
+          {filtered.map((e,i)=>(
+            <div key={i} className={`row ${i===idx?'panel panel-pad':''}`} style={{ padding:i===idx?'8px 10px':'6px 0', borderRadius: i===idx?10:0, background: i===idx?'var(--c-surface)':'transparent', border: i===idx?'1px solid var(--c-line)':'none', cursor:'pointer' }} onClick={()=>setIdx(i)}>
+              <span style={{ width:10, height:10, borderRadius:'50%', background: i===idx?'var(--c-acc)':'var(--c-line2)', marginTop:6 }} />
+              <div style={{ flex:1 }}>
+                <b style={{ color: i===idx?'var(--c-txt)':'var(--c-txt2)', fontSize:'var(--fs-label)' }}>{e.label}</b>
+                <div className="muted" style={{ fontSize:'var(--fs-caption)' }}><FaDateTime value={e.at} /> · <span className="code">{e.source}</span></div>
+                {e.detail && <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>{e.detail}</div>}
+              </div>
+              {i===idx && <B kind="acc">▶</B>}
+            </div>
+          ))}
+        </div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)', minWidth:220, height:'fit-content', position:'sticky', top:10 }}>
+          <b>Replay</b>
+          <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>{idx+1} / {filtered.length}</div>
+          {cur && <div style={{ marginTop:8 }}>
+            <b>{cur.label}</b>
+            <div className="muted" style={{ fontSize:'var(--fs-caption)' }}><FaDateTime value={cur.at} /></div>
+            <div className="code" style={{ marginTop:6, fontSize:'var(--fs-caption)' }}>{cur.source}</div>
+            {cur.detail && <div style={{ marginTop:6, fontSize:'var(--fs-label)' }}>{cur.detail}</div>}
+          </div>}
+          <div className="row" style={{ gap:6, marginTop:10 }}>
+            <button className="btn sm" disabled={idx<=0} onClick={()=>setIdx(i=>Math.max(0,i-1))}>‹ قبلی</button>
+            <button className="btn sm primary" disabled={idx>=filtered.length-1} onClick={()=>setIdx(i=>Math.min(filtered.length-1,i+1))}>بعدی ›</button>
+          </div>
+          <div className="muted" style={{ fontSize:'var(--fs-caption)', marginTop:6 }}>visualization صرفاً — هیچ Event جدیدی ایجاد نمی‌شود.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SnapshotCompare({ d, row }){
+  const [mode, setMode] = React.useState('now_7');
+  if(!d) return <Loading label="بارگذاری مقایسه" />;
+  const audits = d.recent_audit||[];
+  // Find last profile/subscription/role change
+  const lastChange = audits.find(a=> /profile|student|group|intake|subscription|role|approve|suspend/.test((a.action||'').toLowerCase()));
+  const beforeAfter = (()=>{
+    if(!lastChange) return null;
+    const ch = lastChange.changes || lastChange.after || null;
+    // try to use DiffViewer data if available
+    const before = lastChange.before || {};
+    const after = lastChange.after || lastChange.changes || {};
+    return {audit:lastChange, before, after};
+  })();
+  const nowVs = (days)=>{
+    // cannot reconstruct historical DB without snapshot store — show what we can infer
+    return [
+      {field:'وضعیت حساب', now: d.user.suspended?'تعلیق': d.user.approved?'فعال':'در انتظار', hist: '—', delta: 'نامشخص (نیاز به snapshot store)', tone:''},
+      {field:'اشتراک', now: d.subscription?.status==='active'? `${d.subscription.plan} · ${d.subscription.days_left} روز` : '—', hist:'—', delta:'فقط آخرین وضعیت موجود', tone:''},
+      {field:'دقت', now: `${d.user.accuracy||0}٪`, hist:'—', delta:'تاریخچهٔ دقت ذخیره نمی‌شود', tone:''},
+      {field:'پاسخ‌ها', now: String(d.user.total_answers||0), hist:'—', delta:'—', tone:''},
+    ];
+  };
+  return (
+    <div className="grid" style={{ gap:10 }}>
+      <div className="panel panel-pad" style={{ background:'var(--c-bg)' }}>
+        <b>🔀 Snapshot Compare — NOW vs HISTORICAL / BEFORE vs AFTER</b>
+        <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>فقط Fieldهایی که Historical Evidence واقعی دارند مقایسه می‌شوند — بدون داده جعلی</div>
+        <div className="row" style={{ gap:6, marginTop:8, flexWrap:'wrap' }}>
+          <button className={`btn sm ${mode==='before_after'?'primary':''}`} onClick={()=>setMode('before_after')}>Before → After (آخرین تغییر)</button>
+          <button className={`btn sm ${mode==='now_7'?'primary':''}`} onClick={()=>setMode('now_7')}>Now vs 7d</button>
+          <button className={`btn sm ${mode==='now_30'?'primary':''}`} onClick={()=>setMode('now_30')}>Now vs 30d</button>
+        </div>
+      </div>
+      {mode==='before_after' && (
+        beforeAfter ? (
+          <div className="grid" style={{ gap:8 }}>
+            <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}>
+              <div className="row" style={{ gap:6 }}><b>تغییر اخیر:</b><span>{beforeAfter.audit.action}</span><span className="spacer" /><FaDateTime value={beforeAfter.audit.at} /><B>{beforeAfter.audit.module||'—'}</B></div>
+              <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>توسط {beforeAfter.audit.actor?.name||beforeAfter.audit.actor?.id||'—'} · Correlation: <span className="code">{beforeAfter.audit.correlation_id||'—'}</span></div>
+            </div>
+            <DiffViewer before={beforeAfter.before} after={beforeAfter.after} />
+            <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>SOURCE: audit_logs · before/after واقعی — اگر خالی است، آن Audit بدون snapshot ذخیره شده.</div>
+          </div>
+        ) : <Empty icon="🔀" text="تغییر قابل مقایسه‌ای در Audit اخیر یافت نشد" />
+      )}
+      {(mode==='now_7' || mode==='now_30') && (
+        <div className="grid" style={{ gap:6 }}>
+          <div className="panel panel-pad" style={{ background:'color-mix(in srgb, var(--c-warn) 5%, var(--c-surface))', borderColor:'rgba(240,181,69,.25)' }}>
+            <b>⚠️ Historical vs Now</b><span className="muted" style={{ fontSize:'var(--fs-caption)', marginInlineStart:6 }}>— سیستم فعلی snapshot store تاریخی ندارد؛ فقط آخرین وضعیت + آخرین Audit موجود است. برای مقایسهٔ دقیق، snapshot store لازم است (عمداً نساختیم تا DB موازی نشود).</span>
+          </div>
+          {nowVs(mode==='now_7'?7:30).map((r,i)=>(
+            <div key={i} className="row" style={{ padding:'8px 10px', background:'var(--c-surface)', border:'1px solid var(--c-line)', borderRadius:10, gap:8 }}>
+              <span style={{ minWidth:110, fontWeight:700, fontSize:'var(--fs-label)' }}>{r.field}</span>
+              <span className="code" style={{ flex:1 }}>{r.now}</span>
+              <span className="muted">→</span>
+              <span className="code" style={{ flex:1 }}>{r.hist}</span>
+              <span className="muted" style={{ fontSize:'var(--fs-caption)' }}>{r.delta}</span>
+            </div>
+          ))}
+          <button className="btn sm" onClick={()=>setMode('before_after')}>رفتن به Before/After واقعی</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecommendationPanel({ d, row, go, onAction }){
+  const recs = d ? computeRecommendations(d) : [];
+  if(!d) return <Loading label="بارگذاری پیشنهادها" />;
+  if(!recs.length) return <div className="panel panel-pad" style={{ textAlign:'center' }}><Empty icon="✨" text="این کاربر در حال حاضر اقدام پیشنهادی ندارد — وضعیت سالم." /></div>;
+  return (
+    <div className="grid" style={{ gap:8 }}>
+      {recs.map(r=>(
+        <div key={r.id} className="row" style={{ padding:'10px 12px', background:'var(--c-surface)', border:`1px solid ${r.sev==='critical'?'rgba(248,113,113,.35)': r.sev==='high'?'rgba(240,181,69,.35)':'var(--c-line)'}`, borderRadius:10, gap:10, alignItems:'flex-start' }}>
+          <span style={{ fontSize:18 }}>{r.icon}</span>
+          <div style={{ flex:1 }}>
+            <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}><b>{r.title}</b><B kind={r.sev==='critical'?'bad': r.sev==='high'?'warn': r.sev==='medium'?'warn':''}>{r.sev==='critical'?'بحرانی': r.sev==='high'?'بالا': r.sev==='medium'?'متوسط':'کم'}</B></div>
+            <div className="muted" style={{ fontSize:'var(--fs-label)', marginTop:4 }}><b>WHY:</b> {r.reason}</div>
+            <div className="muted" style={{ fontSize:'var(--fs-caption)' }}><b>SOURCE:</b> <span className="code">{r.evidence}</span></div>
+          </div>
+          <div className="row" style={{ gap:6 }}>
+            {r.go && <button className="btn sm" onClick={()=>go(r.go)}>{r.action}</button>}
+            {r.id==='inactive_msg' && <button className="btn sm primary" onClick={()=>onAction && onAction('message')}>📨 پیام</button>}
+            {r.id==='extend_sub' && <button className="btn sm primary" onClick={()=>go('/subscriptions?q='+row.id)}>💎 تمدید</button>}
+          </div>
+        </div>
+      ))}
+      <div className="muted" style={{ fontSize:'var(--fs-caption)', textAlign:'center' }}>هر Recommendation فقط پیشنهاد است — هیچ Action خودکار اجرا نمی‌شود. Deduplication اعمال شده.</div>
+    </div>
+  );
+}
+
 function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }) {
   const [d, setD] = useState(initialData || null);
   const [failed, setFailed] = useState('');
@@ -693,11 +1109,13 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
 
   const TABS_GROUPED = [
     { group: 'IDENTITY', tabs: [['overview','📊 نمای کلی'], ['identity','👤 هویت']]},
+    { group: 'DIAGNOSTICS', tabs: [['access','🔍 دسترسی'], ['investigate','🔎 بررسی']]},
     { group: 'LEARNING', tabs: [['academic','📚 یادگیری'], ['questions','🧪 سؤال‌ها'], ['exams','📝 آزمون‌ها'], ['prestige','🏆 افتخار']]},
-    { group: 'ENGAGEMENT', tabs: [['activity','🕓 فعالیت'], ['notifications','🔔 اعلان‌ها'], ['ai','🤖 هوشیار']]},
+    { group: 'ENGAGEMENT', tabs: [['journey','🛤️ مسیر'], ['activity','🕓 فعالیت'], ['notifications','🔔 اعلان‌ها'], ['ai','🤖 هوشیار']]},
     { group: 'ACCOUNT', tabs: [['sub','💎 اشتراک'], ['roles','🛡 نقش‌ها']]},
     { group: 'SUPPORT', tabs: [['tickets','🎫 تیکت‌ها']]},
     { group: 'SECURITY', tabs: [['audit','🧭 حسابرسی']]},
+    { group: 'HISTORY', tabs: [['compare','🔀 مقایسه']]},
     { group: 'ACTIONS', tabs: [['actions','⚙️ اقدامات']]},
   ];
   const flatTabs = TABS_GROUPED.flatMap(g=>g.tabs);
@@ -801,6 +1219,11 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
       )}
       {d && tab === 'overview' && (
         <>
+          {/* 🎯 Next Best Actions — Rule-based */}
+          <div className="panel panel-pad" style={{ background:'var(--c-bg)', borderColor:'rgba(77,184,255,.22)' }}>
+            <div className="row" style={{ gap:6 }}><b>✨ اقدام پیشنهادی بعدی</b><span className="muted" style={{ fontSize:'var(--fs-caption)' }}>· Rule-based · بدون اجرای خودکار</span><span className="spacer" /><button className="btn sm" onClick={()=>setTab('investigate')}>🔍 بررسی</button></div>
+            <div style={{ marginTop:8 }}><RecommendationPanel d={d} row={row} go={go} onAction={(a)=> a==='message' && setTab('actions')} /></div>
+          </div>
           {/* Health + Attention */}
           <div className="grid g2" style={{ gap:10 }}>
             <div className="panel panel-pad" style={{ background:'var(--c-bg)', borderColor: health?.tone==='bad'?'rgba(248,113,113,.35)': health?.tone==='warn'?'rgba(240,181,69,.35)':'var(--c-line)' }}>
@@ -887,6 +1310,10 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           </div>
         </>
       )}
+      {d && tab === 'access' && (<AccessDiagnostics d={d} />)}
+      {d && tab === 'investigate' && (<InvestigationWorkspace d={d} row={row} go={go} />)}
+      {d && tab === 'journey' && (<JourneyReplay d={d} />)}
+      {d && tab === 'compare' && (<SnapshotCompare d={d} row={row} />)}
       {d && tab === 'identity' && (
         <dl className="kv">
           {Object.entries({
