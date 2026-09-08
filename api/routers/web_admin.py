@@ -3001,7 +3001,11 @@ async def question_import_prompt(user=Depends(get_admin_user)):
 
 @router.post("/questions/import/upload")
 async def question_import_upload(file: UploadFile = File(...), user=Depends(get_admin_user)):
-    raw = await file.read()
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل JSON بیشتر از ۱۰MB است")
+    if not raw:
+        raise HTTPException(422, "فایل خالی است")
     try:
         preview = await question_imports.create_preview(
             admin=user, raw=raw, file_name=file.filename or "questions.json")
@@ -4908,7 +4912,9 @@ async def wa_broadcast_media_upload(
 ):
     if media_type not in {"photo", "video", "document", "voice", "audio"}:
         raise HTTPException(422, "نوع رسانه پشتیبانی نمی‌شود")
-    raw = await file.read()
+    raw = await file.read(50 * 1024 * 1024 + 1)
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل بیشتر از ۵۰MB است")
     limits = {"photo": 10, "voice": 25, "audio": 45, "video": 45, "document": 45}
     if not raw or len(raw) > limits[media_type] * 1024 * 1024:
         raise HTTPException(413, f"حجم فایل برای {media_type} نامعتبر یا بیش از حد مجاز است")

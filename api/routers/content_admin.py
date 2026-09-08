@@ -1463,10 +1463,8 @@ async def qbank_file_upload(
         raise HTTPException(422, "کد ورودی نامعتبر است")
     if not await db.can_access_intake(admin["id"], target):
         raise HTTPException(403, "intake_out_of_scope")
-    raw = await file.read()
-    # Telegram Bot API's practical sendDocument limit is 50 MB. Rejecting
-    # before the network call also prevents an unbounded browser upload.
-    if not raw or len(raw) > 50 * 1024 * 1024:
+    raw = await _read_capped(file, 50 * 1024 * 1024)
+    if not raw:
         raise HTTPException(413, "حجم فایل باید بین ۱ بایت و ۵۰ مگابایت باشد")
     telegram_file_id = await upload_and_get_file_id(
         admin["id"], file.filename or "file", raw,

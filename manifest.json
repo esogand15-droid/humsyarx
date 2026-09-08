@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-08T15:55:12.044513Z",
+  "generated_at": "2026-09-08T16:06:04Z",
   "files": [
     {
       "path": "audit.py",
@@ -43,8 +43,8 @@
     },
     {
       "path": "api/routers/subscription.py",
-      "sha256": "a5fe0c96316d05ccc8a5a988745a82ffb4e6c6140e4560d5217364a42a7da76d",
-      "size": 33940
+      "sha256": "2b0a74410fde4479f6952fc35675e83dc324da2a9afc79ca60b6c2bcc226be14",
+      "size": 33856
     },
     {
       "path": "api/routers/profile.py",
@@ -73,8 +73,8 @@
     },
     {
       "path": "api/routers/web_admin.py",
-      "sha256": "5774e1143484603a98d1adb0f6575eafd8e6a432fed0276209003c88d747b151",
-      "size": 371459
+      "sha256": "acb248cffd390ff1597124916b21fa0e2e0bb520c3b5453e0b55a5bfa24ad28c",
+      "size": 371817
     },
     {
       "path": "ticket.py",
@@ -90,7 +90,12 @@
       "path": "subscription.py",
       "sha256": "faac9378d9a1ed75a57e0cf42e06ee10814f07ea5fbdbdd6f4915de8a93350ff",
       "size": 63492
+    },
+    {
+      "path": "api/routers/content_admin.py",
+      "sha256": "97ba1ce8168c4bc5faeee3bb0247230143a3fb18a3eff37d17f51494104f89e8",
+      "size": 85670
     }
   ],
-  "count": 18
+  "count": 19
 }

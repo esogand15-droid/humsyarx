@@ -765,7 +765,9 @@ async def buy(
         )
 
 
-    raw = await receipt.read()
+    raw = await receipt.read(MAX_RECEIPT_SIZE + 1)
+    if len(raw) > MAX_RECEIPT_SIZE:
+        raise HTTPException(status_code=413, detail="حجم رسید بیشتر از ۱۰ مگابایت است")
 
     if not raw:
         raise HTTPException(
@@ -776,19 +778,6 @@ async def buy(
             ),
         )
 
-
-    if (
-        len(raw)
-        > MAX_RECEIPT_SIZE
-    ):
-        raise HTTPException(
-            status_code=413,
-
-            detail=(
-                "حجم رسید بیشتر از "
-                "۱۰ مگابایت است"
-            ),
-        )
 
 
     file_id = (
@@ -1198,12 +1187,12 @@ async def topup(
     if not content_type.startswith("image/"):
         raise HTTPException(
             status_code=422, detail="رسید باید فایل تصویری باشد")
-    raw = await receipt.read()
+    raw = await receipt.read(MAX_RECEIPT_SIZE + 1)
+    if len(raw) > MAX_RECEIPT_SIZE:
+        raise HTTPException(status_code=413, detail="حجم رسید بیشتر از ۱۰ مگابایت است")
     if not raw:
         raise HTTPException(status_code=422, detail="فایل رسید خالی است")
-    if len(raw) > MAX_RECEIPT_SIZE:
-        raise HTTPException(
-            status_code=413, detail="حجم رسید بیشتر از ۱۰ مگابایت است")
+
     file_id = await upload_and_get_file_id(
         user_id, receipt.filename or "receipt.jpg", raw,
         content_type or "image/jpeg")
