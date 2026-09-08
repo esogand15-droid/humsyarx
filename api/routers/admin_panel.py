@@ -756,7 +756,9 @@ class PollChannelSet(BaseModel):
 
 @router.post("/poll/channel")
 async def poll_channel_set(body: PollChannelSet, admin=Depends(get_admin_user)):
+    old = await db.get_setting("poll_channel_id", None)
     await db.set_setting("poll_channel_id", body.channel_id.strip())
+    await _audit(admin, "تغییر کانال نظرسنجی", "Notifications", severity="WARNING", target_type="setting", target_label="poll_channel_id", before={"poll_channel_id": old}, after={"poll_channel_id": body.channel_id.strip()}, tags=["نظرسنجی", "تنظیمات"])
     return {"ok":True}
 
 class PollCreate(BaseModel):

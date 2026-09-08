@@ -262,6 +262,11 @@ async def _activate_free_via_discount(query, context, plan: dict, discount_code:
             price=plan['price'], final_price=0, screenshot_file_id='',
             discount_code=discount_code, discount_percent=_percent,
         )
+        try:
+            _r1 = await db.get_actor_role_label(uid)
+        except Exception: _r1="student"
+        try: await __import__('utils').send_audit_log(None,'user',(await db.get_user(uid) or {}).get('name',str(uid)),uid,"ثبت رسید رایگان (ربات)",module='Subscription',severity='INFO',actor_role=_r1,target_id=str(pid),target_type='sub_payment',target_label=plan['name'][:60],after={"final_price":0},tags=['مالی','ربات'])
+        except Exception: pass
         await db.sub_payment_decide(pid, approved=True, admin_id=0, note='کد تخفیف ۱۰۰٪ — خودکار')
 
     days_left = await db.sub_days_left(uid)
@@ -450,6 +455,11 @@ async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         gift_to=gift_to, gift_message=gift_message,
         idem_key=f"bot:{uid}:{photo.file_id}",
     )
+    try:
+        _r2 = await db.get_actor_role_label(uid)
+    except Exception: _r2="student"
+    try: await __import__('utils').send_audit_log(None,'user',(await db.get_user(uid) or {}).get('name',str(uid)),uid,"ثبت رسید پرداخت (ربات)",module='Subscription',severity='INFO',actor_role=_r2,target_id=str(pid),target_type='sub_payment',target_label=plan['name'][:60],after={"final_price": final_price},tags=['مالی','ربات'])
+    except Exception: pass
 
     for k in ('sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
               'sub_gift_to', 'sub_gift_message'):
@@ -608,6 +618,11 @@ async def topup_screenshot_handler(update: Update,
         price=amount, final_price=amount, screenshot_file_id=photo.file_id,
         idem_key=f"bot:topup:{uid}:{photo.file_id}",
     )
+    try:
+        _r3 = await db.get_actor_role_label(uid)
+    except Exception: _r3="student"
+    try: await __import__('utils').send_audit_log(None,'user',(await db.get_user(uid) or {}).get('name',str(uid)),uid,"ثبت رسید شارژ کیف پول (ربات)",module='Subscription',severity='INFO',actor_role=_r3,target_id=str(pid),target_type='sub_payment',target_label="شارژ کیف پول",after={"amount": amount},tags=['مالی','ربات'])
+    except Exception: pass
     for k in ('sub_mode', 'sub_topup_amount'):
         context.user_data.pop(k, None)
 

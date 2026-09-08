@@ -30,6 +30,22 @@ from api.telegram_send import (
 
 from bson import ObjectId
 from database import db
+from request_context import current_request_id
+
+async def _sub_audit(actor: dict, action: str, *, before=None, after=None, target_id="", target_label="", severity="INFO", details: str = ""):
+    try:
+        uid = actor["id"] if isinstance(actor, dict) else actor
+        name = (actor.get("_db") or {}).get("name") if isinstance(actor, dict) else str(uid)
+        if isinstance(actor, dict):
+            try:
+                role = await db.get_actor_role_label(uid)
+            except Exception:
+                role = "student"
+        else:
+            role = "student"
+        await db.log_action(uid, name or str(uid), role, action, "Subscription", category="user", severity=severity, target_id=str(target_id), target_type="sub_payment" if target_id else "subscription", target_label=target_label, before=before, after=after, details=details, tags=["مالی", "اشتراک"] )
+    except Exception:
+        pass
 from time_utils import utc_now_iso
 
 
@@ -681,6 +697,7 @@ async def buy(
                         percent,
                 )
             )
+            await _sub_audit(user, "ثبت رسید پرداخت (API) — رایگان", target_id=str(payment_id), target_label=plan.get("name",""), after={"final_price": 0, "discount_code": code}, severity="INFO")
 
             await db.sub_payment_decide(
                 payment_id,
@@ -850,6 +867,7 @@ async def buy(
                     idem,
             )
         )
+        await _sub_audit(user, "ثبت رسید پرداخت (API)", target_id=str(payment_id), target_label=plan.get("name",""), after={"final_price": final_price, "discount_code": code, "gift_to": gift_to}, severity="INFO")
     except Exception:
         if code:
             await db.discount_release(code, user_id=user_id)
@@ -1098,6 +1116,7 @@ async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
     try:
         res = await db.wallet_purchase(user_id, body.plan_id, body.idem,
                                        discount_code=body.discount_code)
+        await _sub_audit(user, "خرید اشتراک از کیف پول (API)", target_id=str(res.get("payment_id" ) or ""), target_label=body.plan_id[:24], after={"discount_code": body.discount_code, "amount": int(res.get("amount") or 0)}, severity="INFO")
     except Exception as e:
         code = getattr(e, "code", "")
         if code == "plan_not_found":
@@ -1196,6 +1215,7 @@ async def topup(
         price=int(amount), final_price=int(amount),
         screenshot_file_id=file_id,
         idem_key=idem or f"topup:{user_id}:{file_id}")
+    await _sub_audit(user, "ثبت رسید شارژ کیف پول (API)", target_id=str(payment_id), target_label="شارژ کیف پول", after={"amount": int(amount)}, severity="INFO")
     try:
         admin_id = int(os.getenv("ADMIN_ID", "0"))
         safe_payment_id = escape(payment_id)

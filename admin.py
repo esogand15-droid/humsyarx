@@ -364,7 +364,14 @@ ROOT_ONLY_ACTIONS = {
 
 async def _h_notif_set_interval(query, context, parts, uid):
     hours = int(parts[2])
+    _old_h = await db.get_setting('resource_notif_interval_hours', 24)
     await db.set_setting('resource_notif_interval_hours', hours)
+    try:
+        _au = await db.get_user(uid) or {}
+        _an = _au.get('name','مدیر ارشد')
+        _ar = await db.get_actor_role_label(uid)
+        await send_audit_log(context.bot,'admin',_an,uid,"تغییر فاصله اعلان منابع",module='Settings',severity='WARNING',actor_role=_ar,before={'hours': _old_h},after={'hours': hours},tags=['اعلان'])
+    except Exception as _e: import logging; logging.getLogger(__name__).warning(f"notif interval audit failed: {_e}")
     await query.answer(f"✅ فاصله اعلان منابع جدید: هر {hours} ساعت", show_alert=True)
     await _show_notif_manage(query)
 
@@ -3330,7 +3337,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if mode == 'set_poll_channel':
         context.user_data['mode'] = ''
         if text in ('حذف', '-'):
+            _old_pc = await db.get_setting('poll_channel_id', None)
             await db.set_setting('poll_channel_id', None)
+            try:
+                _au2 = await db.get_user(update.effective_user.id) or {}
+                _an2 = _au2.get('name','مدیر ارشد')
+                _ar2 = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot,'admin',_an2,update.effective_user.id,"حذف کانال نظرسنجی",module='Settings',severity='WARNING',actor_role=_ar2,before={'poll_channel_id': str(_old_pc) if _old_pc else 'تنظیم نشده'},after={'poll_channel_id': 'حذف شد'},tags=['کانال','نظرسنجی'])
+            except Exception as _e: import logging; logging.getLogger(__name__).warning(f"poll_channel delete audit failed: {_e}")
             await update.message.reply_text(
                 "✅ کانال نظرسنجی حذف شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')]])
@@ -3350,7 +3364,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 parse_mode='HTML'
             )
             return True
+        _old_pc2 = await db.get_setting('poll_channel_id', None)
         await db.set_setting('poll_channel_id', channel_id)
+        try:
+            _au3 = await db.get_user(update.effective_user.id) or {}
+            _an3 = _au3.get('name','مدیر ارشد')
+            _ar3 = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot,'admin',_an3,update.effective_user.id,"تنظیم کانال نظرسنجی",module='Settings',severity='WARNING',actor_role=_ar3,before={'poll_channel_id': str(_old_pc2) if _old_pc2 else 'تنظیم نشده'},after={'poll_channel_id': str(channel_id)},tags=['کانال','نظرسنجی'])
+        except Exception as _e: import logging; logging.getLogger(__name__).warning(f"poll_channel set audit failed: {_e}")
         try:
             await context.bot.send_message(channel_id, "✅ این کانال به‌عنوان کانال نظرسنجی / اطلاع‌رسانی ربات تنظیم شد.")
         except Exception:
