@@ -1,5 +1,6 @@
 {
-  "generated_at": "2026-09-08T16:28:06Z",
+  "generated_at": "2026-09-08T16:51:01.886896Z",
+  "version": "Users Intelligence Center — 20260908_165101",
   "files": [
     {
       "path": "audit.py",
@@ -110,7 +111,12 @@
       "path": "webadmin/src/HealthCenter.jsx",
       "sha256": "654f3ca70817568006c771e5c315e2be831fbcdddb79d500363f254e6d9edc4c",
       "size": 9317
+    },
+    {
+      "path": "webadmin/src/pages/Users.jsx",
+      "sha256": "ae116d88ee199a5130aa3731b165536f38f9353af860d0b7829e6fc1eda20c2b",
+      "size": 111830
     }
   ],
-  "count": 22
+  "notes": "Runtime only — no *.md/tests/dist/cache/__pycache__ — Users Intelligence Center (Health/Attention/Timeline/Investigation/Segments/Bulk Preview) + preserved 19 py + styles/Dashboard/HealthCenter"
 }

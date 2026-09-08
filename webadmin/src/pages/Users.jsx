@@ -11,6 +11,104 @@ const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
 const USER360_STALE_MS = 60_000;
 const USER360_CACHE_LIMIT = 20;
 
+// ── 🧠 User Intelligence helpers — REAL DATA ONLY, rule-based ──
+function daysSince(iso) {
+  if (!iso) return null;
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return Math.floor((Date.now() - d.getTime()) / 86400000);
+  } catch { return null; }
+}
+function parseScore(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+
+function computeHealth(d) {
+  if (!d?.user) return null;
+  const u = d.user, counts = d.counts || {}, sub = d.subscription, ai = d.ai || {};
+  let score = 0, reasons = [];
+  // Account 20
+  if (u.suspended) { score += 0; reasons.push({ icon:'⛔', text:'حساب تعلیق‌شده', tone:'bad' }); }
+  else if (!u.approved) { score += 5; reasons.push({ icon:'⏳', text:'در انتظار تأیید', tone:'warn' }); }
+  else { score += 20; reasons.push({ icon:'✅', text:'حساب فعال', tone:'ok' }); }
+  // Activity 25
+  const ds = daysSince(u.last_active);
+  if (ds === null) { score += 5; reasons.push({ icon:'🕓', text:'بدون فعالیت ثبت‌شده', tone:'warn' }); }
+  else if (ds <= 1) { score += 25; reasons.push({ icon:'⚡', text:'فعال در ۲۴ ساعت اخیر', tone:'ok' }); }
+  else if (ds <= 7) { score += 20; reasons.push({ icon:'🟢', text:`فعال ${ds} روز پیش`, tone:'ok' }); }
+  else if (ds <= 14) { score += 15; reasons.push({ icon:'🟡', text:`غیرفعال ${ds} روز`, tone:'warn' }); }
+  else if (ds <= 30) { score += 10; reasons.push({ icon:'🟠', text:`غیرفعال ${ds} روز`, tone:'warn' }); }
+  else { score += 0; reasons.push({ icon:'🔴', text:`غیرفعال بیش از ${ds} روز`, tone:'bad' }); }
+  // Subscription 20
+  if (sub?.status === 'active' && sub.days_left != null) {
+    const dl = Number(sub.days_left);
+    if (dl > 30) { score += 20; reasons.push({ icon:'💎', text:`اشتراک فعال · ${dl} روز باقی`, tone:'ok' }); }
+    else if (dl >= 8) { score += 15; reasons.push({ icon:'💎', text:`اشتراک فعال · ${dl} روز`, tone:'ok' }); }
+    else if (dl >= 1) { score += 8; reasons.push({ icon:'⏰', text:`در حال انقضا · ${dl} روز`, tone:'warn' }); }
+    else { score += 2; reasons.push({ icon:'⚠️', text:'اشتراک منقضی‌شده', tone:'bad' }); }
+  } else { score += 0; reasons.push({ icon:'💳', text:'بدون اشتراک فعال', tone:'warn' }); }
+  // Academic 15
+  const tot = Number(u.total_answers || 0), acc = Number(u.accuracy || 0);
+  if (tot >= 100 && acc >= 60) { score += 15; reasons.push({ icon:'📚', text:`یادگیری فعال · دقت ${acc}٪`, tone:'ok' }); }
+  else if (tot >= 20 && acc >= 50) { score += 10; reasons.push({ icon:'📚', text:`فعالیت متوسط · دقت ${acc}٪`, tone:'ok' }); }
+  else if (tot > 0) { score += 5; reasons.push({ icon:'📚', text:`فعالیت کم · دقت ${acc}٪`, tone:'warn' }); }
+  else { score += 2; reasons.push({ icon:'📚', text:'بدون فعالیت آموزشی', tone:'warn' }); }
+  // Support 10
+  const tickets = Number(counts.tickets || 0), openTickets = (d.recent_tickets || []).filter(t=>t.status==='open').length;
+  if (openTickets === 0) { score += 10; reasons.push({ icon:'🎫', text:'بدون تیکت باز', tone:'ok' }); }
+  else if (openTickets === 1) { score += 5; reasons.push({ icon:'🎫', text:'۱ تیکت باز', tone:'warn' }); }
+  else { score += 0; reasons.push({ icon:'🎫', text:`${openTickets} تیکت باز`, tone:'bad' }); }
+  // AI 10
+  if (ai.banned) { score += 0; reasons.push({ icon:'🤖', text:'مسدود از هوشیار', tone:'bad' }); }
+  else if (Number(ai.total_usage||0) > 200) { score += 7; reasons.push({ icon:'🤖', text:`مصرف بالای هوشیار · ${ai.total_usage}`, tone:'warn' }); }
+  else { score += 10; reasons.push({ icon:'🤖', text:'دسترسی هوشیار آزاد', tone:'ok' }); }
+  score = Math.max(0, Math.min(100, score));
+  let label = 'سالم', tone = 'ok';
+  if (score < 40) { label='بحرانی'; tone='bad'; } else if (score < 70) { label='نیازمند توجه'; tone='warn'; }
+  return { score, label, tone, reasons };
+}
+function computeAttention(d) {
+  if (!d?.user) return [];
+  const out=[]; const u=d.user, sub=d.subscription, counts=d.counts||{}, ai=d.ai||{};
+  const ds = daysSince(u.last_active);
+  if (sub?.status==='active' && sub.days_left!=null && sub.days_left<=7 && sub.days_left>=0) out.push({ sev: sub.days_left<=2?'critical':'warn', icon:'⏰', title:`اشتراک در حال انقضا · ${sub.days_left} روز باقی`, go:null });
+  if (!sub || sub.status!=='active') out.push({ sev:'info', icon:'💳', title:'بدون اشتراک فعال', go:null });
+  if (ds!==null && ds>21) out.push({ sev: ds>30?'warn':'info', icon:'🕓', title:`غیرفعال بیش از ${ds} روز`, go:null });
+  if (ds===null) out.push({ sev:'warn', icon:'🕓', title:'بدون فعالیت ثبت‌شده', go:null });
+  const open = (d.recent_tickets||[]).filter(t=>t.status==='open').length;
+  if (open>=1) out.push({ sev: open>=2?'critical':'warn', icon:'🎫', title:`${open} تیکت باز`, go:'/tickets' });
+  if (ai?.banned) out.push({ sev:'critical', icon:'⛔', title:'مسدود از هوشیار', go:'/ai-admin' });
+  if (!u.intake) out.push({ sev:'warn', icon:'📅', title:'ورودی ثبت نشده', go:null });
+  if (!u.student_id) out.push({ sev:'info', icon:'🪪', title:'شماره دانشجویی ثبت نشده', go:null });
+  if (Number(u.total_answers||0)>0 && Number(u.accuracy||0)<40) out.push({ sev:'warn', icon:'📉', title:`دقت پایین · ${u.accuracy}٪`, go:null });
+  return out;
+}
+function statusContext(row) {
+  const parts=[];
+  if (row.suspended) return { text:'تعلیق‌شده', tone:'bad', icon:'⛔' };
+  if (!row.approved) return { text:'در انتظار تأیید', tone:'warn', icon:'⏳' };
+  let t='فعال', tone='ok', icon='🟢';
+  if (row.subscription?.status==='active' && row.subscription.days_left!=null) {
+    const dl=row.subscription.days_left;
+    if (dl<=3 && dl>=0) { t=`فعال · در حال انقضا ${dl} روز`; tone='warn'; icon='🟡'; }
+    else if (dl<0) { t='فعال · منقضی‌شده'; tone='warn'; icon='🟠'; }
+  } else if (!row.subscription || row.subscription.status!=='active') {
+    t='فعال · بدون اشتراک'; tone='warn'; icon='🟡';
+  }
+  if (row.has_open_ticket) { t += ' · تیکت باز'; tone = tone==='ok'?'warn':tone; }
+  return { text:t, tone, icon };
+}
+function dataQualityForUser(d) {
+  if (!d?.user) return[];
+  const u=d.user, out=[];
+  if (!u.intake) out.push({ k:'intake', label:'ورودی ثبت نشده', sev:'warn' });
+  if (!u.student_id) out.push({ k:'student_id', label:'شماره دانشجویی خالی', sev:'info' });
+  if (!u.group) out.push({ k:'group', label:'گروه تعیین نشده', sev:'info' });
+  if (u.group && !['1','2'].includes(String(u.group))) out.push({ k:'group', label:`گروه نامعتبر: ${u.group}`, sev:'warn' });
+  if (d.section_errors?.roles) out.push({ k:'roles', label:'نقش‌ها در دسترس نیست', sev:'warn' });
+  return out;
+}
+
+
 function mergeUserSnapshot(row, snapshot) {
   const user = snapshot?.user;
   if (!row || !user || Number(row.id) !== Number(user.id)) return row;
@@ -87,6 +185,8 @@ export default function Users({ go, me, route = '' }) {
   const [bulkModal, setBulkModal] = useState(null); // group | add_role | remove_role | message | subscription
   const [bulkValue, setBulkValue] = useState('');
   const [bulkResult, setBulkResult] = useState(null);
+  const [bulkPreview, setBulkPreview] = useState(null);
+  const [bulkPreviewLoading, setBulkPreviewLoading] = useState(false);
   // 🛡 AUDIT-§۷۹ — اشتراک گروهی: پلن‌ها از همان `subOverview` بخش مالی خوانده
   // می‌شوند (منبع یکتا)، پس فهرست پلن/روز در دو جای پنل دوشعبه نمی‌شود.
   const [subPlans, setSubPlans] = useState(null);
@@ -158,6 +258,15 @@ export default function Users({ go, me, route = '' }) {
     api.subOverview().then(r => setSubPlans(r.plans || [])).catch(() => setSubPlans([]));
   };
 
+  const doBulkPreview = async (action, value, ids = sel, extra = {}) => {
+    if (!ids.length) return;
+    setBulkPreviewLoading(true);
+    try {
+      const r = await api.usersBulkPreview(action, ids, value, extra);
+      setBulkPreview({ ...r, action, value, ids });
+    } catch (e) { toast(errText(e), 'err'); setBulkPreview(null); }
+    setBulkPreviewLoading(false);
+  };
   const bulk = async (action, value, ids = sel, extra = {}) => {
     if (!ids.length) return toast('ابتدا کاربران را انتخاب کنید', 'err');
     try {
@@ -296,6 +405,13 @@ export default function Users({ go, me, route = '' }) {
         </div>
       )}
 
+      {/* 📊 Directory summary — real counts from server total + page sample */}
+      <div className="grid" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:8, marginBottom:10 }}>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>کل کاربران (فیلترشده)</div><b style={{fontSize:'var(--fs-section)'}}>{Number(data.total||0).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{loading?'در حال بارگذاری…':`${(data.users||[]).length.toLocaleString('fa-IR')} در این صفحه`}</div></div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>صفحه</div><b>{Number(page).toLocaleString('fa-IR')} / {Number(data.pages||1).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>هر صفحه {Number(perPage).toLocaleString('fa-IR')}</div></div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>انتخاب‌شده</div><b>{Number(sel.length).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{sel.length?'آماده عملیات گروهی':'—'}</div></div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>فیلتر فعال</div><b>{[q&&'جستجو',status&&'وضعیت',intake&&'ورودی',group&&'گروه',role&&'نقش',activity&&'فعالیت',accuracyMax&&'دقت',subDays&&'انقضا',openTicket&&'تیکت',smart&&'🧠'].filter(Boolean).length.toLocaleString('fa-IR')} مورد</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{smart?'Query ترکیبی فعال':'—'}</div></div>
+      </div>
       <FilterBar>
         <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، نام‌نما، یوزرنیم، شماره دانشجویی یا Telegram ID…"
                value={q2} onChange={e => { setQ2(e.target.value); setPage(1); }} />
@@ -346,7 +462,39 @@ export default function Users({ go, me, route = '' }) {
         subDays, openTicket, smart, sortBy, sortDir }} columns={visibleColumns} sort={{ key: sortBy, dir: sortDir }}
         onApply={(flt, item) => { applyFilter({ ...item, filters: flt }); setVisibleColumns(item.columns || []); }} label="نماهای کاربران" />
 
-      <DataTable columns={cols} rows={data.users} selectable onSelect={setSel}
+      {/* 🧠 Directory Intelligence — Auto Segments (real data, query-based) */}
+      {(() => {
+        const rows = data.users || [];
+        if (!rows.length && !loading) return null;
+        const pending = rows.filter(r=>!r.approved && !r.suspended).length;
+        const expiring = rows.filter(r=>r.subscription?.status==='active' && r.subscription.days_left!=null && r.subscription.days_left<=7 && r.subscription.days_left>=0).length;
+        const inactive30 = rows.filter(r=>{ const v=r.last_active; if(!v) return true; try{ const d=(Date.now()-new Date(v).getTime())/86400000; return d>30;}catch{return false;}}).length;
+        const lowAcc = rows.filter(r=>r.total_answers>5 && r.accuracy<40).length;
+        const heavyAI = rows.filter(r=>r.ai_usage>100).length;
+        const noSub = rows.filter(r=>!r.subscription || r.subscription.status!=='active').length;
+        const hasTicket = rows.filter(r=>r.has_open_ticket).length;
+        const defs = [
+          { k:'pending', label:'در انتظار', icon:'⏳', cnt: pending, on:()=>{setStatus('pending');setPage(1);}, tip:'approved=false' },
+          { k:'expiring', label:'در حال انقضا ≤۷ روز', icon:'⏰', cnt: expiring, on:()=>{setSubDays('7');setPage(1);}, tip:'subscription days_left ≤7' },
+          { k:'inactive', label:'غیرفعال >۳۰ روز', icon:'🕓', cnt: inactive30, on:()=>{setActivity('inactive_30');setPage(1);}, tip:'last_active >30d' },
+          { k:'lowAcc', label:'دقت پایین <۴۰٪', icon:'📉', cnt: lowAcc, on:()=>{setAccuracyMax('40');setPage(1);}, tip:'accuracy <40' },
+          { k:'heavyAI', label:'پراستفاده هوشیار >۱۰۰', icon:'🤖', cnt: heavyAI, on:()=>{setSortBy('ai_total_usage');setSortDir('desc');setPage(1);}, tip:'ai_usage >100' },
+          { k:'noSub', label:'بدون اشتراک', icon:'💳', cnt: noSub, on:()=>{setSubDays(''); setStatus('active');}, tip:'no active subscription' },
+          { k:'ticket', label:'تیکت باز', icon:'🎫', cnt: hasTicket, on:()=>{setOpenTicket('true');setPage(1);}, tip:'has_open_ticket=true' },
+        ].filter(x=>x.cnt>0);
+        if (!defs.length) return null;
+        return (<div className="panel" style={{ padding:10, marginBottom:10, background:'color-mix(in srgb, var(--c-surface) 92%, transparent)', border:'1px solid var(--c-line)' }}>
+          <div className="row" style={{ flexWrap:'wrap', gap:6 }}>
+            <b style={{ fontSize:'var(--fs-label)', color:'var(--c-txt2)' }}>🧭 سگمنت‌های هوشمند (همین صفحه):</b>
+            {defs.map(d=>(<button key={d.k} className="btn sm" title={d.tip} onClick={d.on} style={{ borderRadius:999 }}>
+              <span>{d.icon}</span> {d.label} <B kind={d.k==='pending'?'warn':d.k==='expiring'?'warn':d.k==='ticket'?'bad':''}>{d.cnt.toLocaleString('fa-IR')}</B>
+            </button>))}
+            <span className="muted" style={{ fontSize:'var(--fs-caption)' }}>· کلیک = اعمال فیلتر واقعی · بدون snapshot جداگانه</span>
+          </div>
+        </div>);
+      })()}
+
+            <DataTable columns={cols} rows={data.users} selectable onSelect={setSel}
                  loading={loading} onRow={r => setDetail(r)} colToggle visibleColumns={visibleColumns}
                  onColumnsChange={setVisibleColumns}
                  pager={{ page, pages: data.pages, total: data.total, onPage: setPage }} />
@@ -380,7 +528,7 @@ export default function Users({ go, me, route = '' }) {
         </Modal>
       )}
       {bulkModal && (
-        <Modal title={{ set_group: '👥 تغییر گروه گروهی', add_role: '🛡 افزودن نقش گروهی', remove_role: '➖ حذف نقش گروهی', message: '📨 پیام به کاربران انتخاب‌شده', block: '⛔ مسدودسازی کاربران انتخاب‌شده', subscription: '💎 اعطا/تمدید اشتراک گروهی' }[bulkModal]} onClose={() => setBulkModal(null)}>
+        <Modal title={{ set_group: '👥 تغییر گروه گروهی', add_role: '🛡 افزودن نقش گروهی', remove_role: '➖ حذف نقش گروهی', message: '📨 پیام به کاربران انتخاب‌شده', block: '⛔ مسدودسازی کاربران انتخاب‌شده', subscription: '💎 اعطا/تمدید اشتراک گروهی' }[bulkModal]} onClose={() => {setBulkModal(null); setBulkPreview(null);}}>
           <p className="muted" style={{ marginBottom: 10 }}>{faNum(sel.length)} کاربر انتخاب شده‌اند. نتیجه‌ی هر کاربر جداگانه گزارش می‌شود.</p>
           {bulkModal === 'set_group' && <select className="inp" style={{ width: '100%' }} value={bulkValue} onChange={e => setBulkValue(e.target.value)}>
             <option value="">انتخاب گروه…</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option>
@@ -406,19 +554,30 @@ export default function Users({ go, me, route = '' }) {
             <div className="muted">اعطا از همان مسیر «مرکز کنترل اشتراک» انجام می‌شود — نوتیف کاربر، تاریخ
               پایان، ردپای مالی و ضدتکرارِ کلیک برای {faNum(sel.length)} کاربر. سقف هر درخواست ۱۰۰ کاربر است.</div>
           </div>}
-          <div className="row" style={{ marginTop: 12 }}>
+          {bulkPreview && (
+            <div className="panel panel-pad" style={{ marginTop:10, background:'color-mix(in srgb, var(--c-acc) 5%, var(--c-surface))', borderColor:'rgba(77,184,255,.22)' }}>
+              <b>🔍 پیش‌نمایش تأثیر (dry-run — بدون نوشتن)</b>
+              <div className="grid g3" style={{ marginTop:8 }}>
+                <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><b className="ok-text">{faNum(((bulkPreview.affected ?? bulkPreview.will_succeed) ?? (bulkPreview.succeeded?.length ?? 0)))}</b><div className="muted">موردِ تحت تأثیر</div></div>
+                <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><b>{faNum(bulkPreview.skipped?.length||0)}</b><div className="muted">ردشده/بدون تغییر</div></div>
+                <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><b>{faNum(((bulkPreview.will_fail ?? (bulkPreview.failed?.length||0))))}</b><div className="muted">ناموفقِ احتمالی</div></div>
+              </div>
+            </div>
+          )}
+                    <div className="row" style={{ marginTop: 12 }}>
+            <button className="btn" disabled={bulkPreviewLoading} onClick={async ()=>{ if(bulkModal==='subscription'){ const days=Number(bulkSubDays); await doBulkPreview(bulkSubExtend?'renew_subscription':'grant_subscription', sel, String(days), {days, plan_name: bulkSubPlan, extend: bulkSubExtend}); } else { await doBulkPreview(bulkModal, sel, bulkValue); } }} style={{ marginInlineEnd:6 }}>{bulkPreviewLoading?'⏳':'🔍'} پیش‌نمایش</button>
             <button className={`btn ${bulkModal === 'remove_role' || bulkModal === 'block' ? 'danger' : 'primary'}`}
               disabled={bulkModal === 'subscription' ? !(Number(bulkSubDays) >= 1 && Number(bulkSubDays) <= 3650) : !bulkValue.trim()}
               onClick={async () => {
                 if (bulkModal === 'subscription') {
-                  const days = Number(bulkSubDays); const value = String(days); setBulkModal(null);
+                  const days = Number(bulkSubDays); const value = String(days); setBulkModal(null); setBulkPreview(null);
                   await bulk(bulkSubExtend ? 'renew_subscription' : 'grant_subscription', value, sel,
                              { days, plan_name: bulkSubPlan, extend: bulkSubExtend });
                   return;
                 }
-                const action = bulkModal; const value = bulkValue; setBulkModal(null); await bulk(action, value);
+                const action = bulkModal; const value = bulkValue; setBulkModal(null); setBulkPreview(null); await bulk(action, value);
               }}>{bulkModal === 'subscription' ? `${bulkSubExtend ? 'تمدید' : 'اعطا'} اشتراک · ${faNum(sel.length)} کاربر` : 'بازبینی شد؛ اجرا'}</button>
-            <button className="btn" onClick={() => setBulkModal(null)}>انصراف</button>
+            <button className="btn" onClick={() => {setBulkModal(null); setBulkPreview(null);}}>انصراف</button>
           </div>
         </Modal>
       )}
@@ -488,6 +647,8 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
   const [loading, setLoading] = useState(!initialData);
   const [tab, setTab] = useState('overview');
   const [relation, setRelation] = useState(null);
+  const [timelineFilter, setTimelineFilter] = useState('all');
+  const [investigation, setInvestigation] = useState('');
   const requestSeq = useRef(0);
 
   const fetchSnapshot = useCallback(async ({ keepData = true } = {}) => {
@@ -512,7 +673,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
 
   useEffect(() => {
     requestSeq.current += 1;
-    setTab('overview'); setRelation(null); setFailed('');
+    setTab('overview'); setRelation(null); setFailed(''); setTimelineFilter('all'); setInvestigation('');
     if (initialData) { setD(initialData); setLoading(false); }
     else { setD(null); fetchSnapshot({ keepData: false }); }
     return () => { requestSeq.current += 1; };
@@ -525,21 +686,105 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
   const unavailable = section => d?.section_errors?.[section]
     ? <div className="panel panel-pad"><B kind="warn">⚠️ اطلاعات فعلاً در دسترس نیست</B><button className="btn sm" onClick={refetch}>Retry</button></div>
     : null;
-  const TABS = [
-    ['overview', '📊 نمای کلی'], ['identity', '👤 هویت'], ['academic', '📚 یادگیری و نمرات'],
-    ['questions', '🧪 سؤال‌ها'], ['exams', '📝 آزمون‌ها'], ['ai', '🤖 هوشیار'],
-    ['notifications', '🔔 اعلان‌ها'], ['tickets', '🎫 تیکت‌ها'], ['sub', '💎 اشتراک'],
-    ['prestige', '🏆 افتخار'], ['roles', '🛡 نقش‌ها'], ['activity', '🕓 فعالیت'],
-    ['audit', '🧭 حسابرسی'], ['actions', '⚙️ اقدامات'],
+  const health = d ? computeHealth(d) : null;
+  const attention = d ? computeAttention(d) : [];
+  const dq = d ? dataQualityForUser(d) : [];
+  const statusCtx = statusContext(row);
+
+  const TABS_GROUPED = [
+    { group: 'IDENTITY', tabs: [['overview','📊 نمای کلی'], ['identity','👤 هویت']]},
+    { group: 'LEARNING', tabs: [['academic','📚 یادگیری'], ['questions','🧪 سؤال‌ها'], ['exams','📝 آزمون‌ها'], ['prestige','🏆 افتخار']]},
+    { group: 'ENGAGEMENT', tabs: [['activity','🕓 فعالیت'], ['notifications','🔔 اعلان‌ها'], ['ai','🤖 هوشیار']]},
+    { group: 'ACCOUNT', tabs: [['sub','💎 اشتراک'], ['roles','🛡 نقش‌ها']]},
+    { group: 'SUPPORT', tabs: [['tickets','🎫 تیکت‌ها']]},
+    { group: 'SECURITY', tabs: [['audit','🧭 حسابرسی']]},
+    { group: 'ACTIONS', tabs: [['actions','⚙️ اقدامات']]},
   ];
+  const flatTabs = TABS_GROUPED.flatMap(g=>g.tabs);
+
+  // Timeline categorization for filter
+  const catFor = (e) => {
+    const k = e.kind||'';
+    if (['registration','answer','exam'].includes(k)) return 'academic';
+    if (['ticket'].includes(k)) return 'support';
+    if (['prestige'].includes(k)) return 'academic';
+    if (['audit'].includes(k)) {
+      const m=(e.description||'').toLowerCase();
+      if (m.includes('payment')||m.includes('subscription')||m.includes('finance')) return 'finance';
+      if (m.includes('ai')||m.includes('hosh')) return 'ai';
+      if (m.includes('role')||m.includes('suspend')||m.includes('block')) return 'security';
+      return 'admin';
+    }
+    return 'account';
+  };
 
   return (
     <Drawer wide title={`👤 ${row.display_name || row.name} · #${row.id}`} onClose={onClose}>
-      <div className="tabs" style={{ marginBottom: 10 }} role="tablist" aria-label="بخش‌های پرونده کاربر">
-        {TABS.filter(([k]) => k !== 'actions' || canAct).map(([k, v]) => (
-          <button key={k} type="button" role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>{v}</button>
+      {/* Sticky Identity Header — always visible */}
+      <div style={{ position:'sticky', top:0, zIndex:2, background:'color-mix(in srgb, var(--c-surface) 96%, transparent)', backdropFilter:'blur(8px)', border:'1px solid var(--c-line)', borderRadius:12, padding:10, marginBottom:10, display:'grid', gap:8 }}>
+        <div className="row" style={{ gap:10, flexWrap:'wrap', alignItems:'center' }}>
+          <div style={{ width:44, height:44, borderRadius:12, background:'linear-gradient(135deg, var(--c-acc), var(--c-teal))', display:'grid', placeItems:'center', color:'#fff', fontWeight:800, fontSize:18 }}>
+            {(row.display_name||row.name||'?').trim().slice(0,1).toUpperCase()}
+          </div>
+          <div style={{ flex:1, minWidth:160 }}>
+            <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+              <b style={{ color:'var(--c-txt)', fontSize:'var(--fs-card)' }}>{row.display_name||row.name}</b>
+              <span className="code muted">#{row.id}</span>
+              {row.username && <span className="muted">@{row.username}</span>}
+            </div>
+            <div className="row" style={{ gap:4, marginTop:4, flexWrap:'wrap' }}>
+              <B kind={statusCtx.tone}>{statusCtx.icon} {statusCtx.text}</B>
+              {row.intake && <B>{row.intake}</B>}
+              {row.group && <B>گروه {row.group}</B>}
+              {row.student_id && <span className="code" style={{ fontSize:'var(--fs-caption)' }}>{row.student_id}</span>}
+              {d?.subscription?.status==='active' && <B kind="ok">💎 {d.subscription.plan} · {faNum(d.subscription.days_left)} روز</B>}
+              {!d?.subscription && row.subscription?.status==='active' && <B kind="ok">💎 {row.subscription.plan}</B>}
+            </div>
+          </div>
+          {health && (
+            <div style={{ display:'flex', gap:10, alignItems:'center' }}>
+              <div className={`health-score ${health.tone==='warn'?'warn':health.tone==='bad'?'bad':''}`} style={{ '--score': health.score, width:56, height:56 }}><span>{faNum(health.score)}</span></div>
+              <div style={{ minWidth:90 }}>
+                <div style={{ fontWeight:800, color: health.tone==='bad'?'var(--c-bad)':health.tone==='warn'?'var(--c-warn)':'var(--c-ok)' }}>{health.label}</div>
+                <div className="muted" style={{ fontSize:'var(--fs-caption)' }}>سلامت کاربر</div>
+              </div>
+            </div>
+          )}
+        </div>
+        {/* Quick Action Rail */}
+        <div className="row" style={{ gap:6, flexWrap:'wrap' }}>
+          {has('users.message') && <button className="btn sm" onClick={()=>setTab('actions')}>📨 پیام</button>}
+          {has('users.manage') && <button className="btn sm" onClick={()=>setTab('actions')}>✏️ ویرایش</button>}
+          {has('subscription.manage') && <button className="btn sm" onClick={()=>setTab('sub')}>💎 اشتراک</button>}
+          {has('users.suspend') && !row.suspended && <button className="btn sm warn" onClick={()=>setTab('actions')}>⏸ تعلیق</button>}
+          {has('users.suspend') && row.suspended && <button className="btn sm ok" onClick={()=>setTab('actions')}>🔓 رفع تعلیق</button>}
+          <button className="btn sm" onClick={()=>setTab('audit')}>🧭 Audit</button>
+          <span className="spacer" />
+          <button className="btn sm" onClick={refetch} title="به‌روزرسانی پرونده">↻ به‌روزرسانی</button>
+          <span className="muted" style={{ fontSize:'var(--fs-caption)' }}>{d?`آخرین فعالیت: ${d.user?.last_active ? '' : '—'}`:''} {d?.user?.last_active && <RelativeTime value={d.user.last_active} />}</span>
+        </div>
+        {attention.length>0 && (
+          <div className="row" style={{ gap:6, flexWrap:'wrap' }}>
+            {attention.slice(0,4).map((a,i)=>(<B key={i} kind={a.sev==='critical'?'bad':a.sev==='warn'?'warn':''}>{a.icon} {a.title}</B>))}
+            {attention.length>4 && <B>+{faNum(attention.length-4)}</B>}
+          </div>
+        )}
+      </div>
+
+      {/* Grouped Navigation */}
+      <div style={{ display:'grid', gap:6, marginBottom:10 }}>
+        {TABS_GROUPED.filter(g=> g.group!=='ACTIONS' || canAct).map(g=>(
+          <div key={g.group} className="row" style={{ gap:6, flexWrap:'wrap', alignItems:'center' }}>
+            <span className="muted" style={{ fontSize:'var(--fs-caption)', minWidth:72 }}>{g.group}</span>
+            <div className="row" style={{ gap:4, flexWrap:'wrap' }}>
+              {g.tabs.filter(([k])=> k!=='actions' || canAct).map(([k,v])=>(
+                <button key={k} type="button" role="tab" aria-selected={tab===k} className={`tab ${tab===k?'on':''}`} onClick={()=>setTab(k)} style={{ fontSize:'var(--fs-label)' }}>{v}</button>
+              ))}
+            </div>
+          </div>
         ))}
       </div>
+
       {failed && <div className="user-drawer-error"><ErrorState title="اطلاعات کاربر بارگذاری نشد" error={failed} onRetry={() => fetchSnapshot({ keepData: Boolean(d) })} />
         {!d && <dl className="kv">
           {Object.entries({
@@ -556,20 +801,89 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
       )}
       {d && tab === 'overview' && (
         <>
-          <div className="grid g4">
-            <div className="panel panel-pad"><b>{faNum(d.user.total_answers)}</b><div className="muted">پاسخ · دقت {faNum(d.user.accuracy)}٪</div></div>
-            <div className="panel panel-pad"><b>{faNum(d.counts.exams)}</b><div className="muted">آزمون</div></div>
-            <div className="panel panel-pad"><b>{faNum(d.counts.tickets)}</b><div className="muted">تیکت</div></div>
-            <div className="panel panel-pad"><b>{faNum(d.ai?.total_usage)}</b><div className="muted">استفاده از هوشیار</div></div>
+          {/* Health + Attention */}
+          <div className="grid g2" style={{ gap:10 }}>
+            <div className="panel panel-pad" style={{ background:'var(--c-bg)', borderColor: health?.tone==='bad'?'rgba(248,113,113,.35)': health?.tone==='warn'?'rgba(240,181,69,.35)':'var(--c-line)' }}>
+              <b>🩺 سلامت کاربر — {health ? `${faNum(health.score)}/۱۰۰ · ${health.label}` : '—'}</b>
+              {health && <div className="grid" style={{ gap:6, marginTop:8 }}>
+                {health.reasons.slice(0,6).map((r,i)=>(<div key={i} className="row" style={{ gap:6 }}><span>{r.icon}</span><span style={{ flex:1, fontSize:'var(--fs-label)' }}>{r.text}</span><B kind={r.tone==='ok'?'ok':r.tone==='warn'?'warn':r.tone==='bad'?'bad':''}>{r.tone==='ok'?'✓':r.tone==='warn'?'!':'✕'}</B></div>))}
+                <div className="muted" style={{ fontSize:'var(--fs-caption)', marginTop:4 }}>امتیاز Rule-based از دادهٔ واقعی (حساب/فعالیت/اشتراک/آموزش/پشتیبانی/هوشیار) — عدد تصادفی نیست.</div>
+              </div>}
+            </div>
+            <div className="panel panel-pad" style={{ background: attention.length?'color-mix(in srgb, var(--c-warn) 6%, var(--c-surface))':'var(--c-bg)', borderColor: attention.length?'rgba(240,181,69,.35)':'var(--c-line)' }}>
+              <b>⚠️ نیازمند توجه {attention.length?`· ${faNum(attention.length)} مورد`:''}</b>
+              {!attention.length ? <div className="muted" style={{ marginTop:6 }}>مورد فعالی نیست — وضعیت سالم.</div> :
+                <div className="grid" style={{ gap:6, marginTop:8 }}>
+                  {attention.map((a,i)=>(<div key={i} className="row" style={{ gap:6, padding:'6px 8px', background:'var(--c-surface)', border:'1px solid var(--c-line)', borderRadius:8 }}><span>{a.icon}</span><span style={{ flex:1 }}>{a.title}</span><B kind={a.sev==='critical'?'bad':a.sev==='warn'?'warn':''}>{a.sev==='critical'?'بحرانی':a.sev==='warn'?'هشدار':'اطلاع'}</B></div>))}
+                </div>
+              }
+              {dq.length>0 && <div style={{ marginTop:10 }}><b style={{ fontSize:'var(--fs-label)' }}>🧹 کیفیت داده</b><div className="row" style={{ gap:4, flexWrap:'wrap', marginTop:6 }}>{dq.map(x=><B key={x.k} kind={x.sev==='warn'?'warn':''}>{x.label}</B>)}</div></div>}
+            </div>
           </div>
+
+          {/* Summary + Relationship */}
+          <div className="grid g4" style={{ marginTop:10 }}>
+            <div className="panel panel-pad"><b>{faNum(d.user.total_answers)}</b><div className="muted">پاسخ · دقت {faNum(d.user.accuracy)}٪</div><button className="btn sm" style={{ marginTop:6 }} onClick={()=>setTab('academic')}>مشاهده</button></div>
+            <div className="panel panel-pad"><b>{faNum(d.counts.exams)}</b><div className="muted">آزمون</div><button className="btn sm" style={{ marginTop:6 }} onClick={()=>setTab('exams')}>مشاهده</button></div>
+            <div className="panel panel-pad"><b>{faNum(d.counts.tickets)}</b><div className="muted">تیکت { (d.recent_tickets||[]).filter(t=>t.status==='open').length ? `· ${faNum((d.recent_tickets||[]).filter(t=>t.status==='open').length)} باز` : ''}</div><button className="btn sm" style={{ marginTop:6 }} onClick={()=>setTab('tickets')}>مشاهده</button></div>
+            <div className="panel panel-pad"><b>{faNum(d.ai?.total_usage)}</b><div className="muted">هوشیار {d.ai?.banned?'· مسدود':''}</div><button className="btn sm" style={{ marginTop:6 }} onClick={()=>setTab('ai')}>مشاهده</button></div>
+          </div>
+          <div className="panel panel-pad" style={{ marginTop:10, background:'var(--c-bg)' }}>
+            <div className="row" style={{ gap:6, flexWrap:'wrap' }}>
+              <b>🔗 اکوسیستم کاربر</b><span className="muted">— یک نگاه به ارتباطات واقعی</span><span className="spacer" />
+              <button className="btn sm" onClick={()=>setInvestigation(investigation?'':'subscription')}>{investigation?'بستن بررسی':'🔍 حالت بررسی'}</button>
+            </div>
+            <div className="grid" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:6, marginTop:8 }}>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>اشتراک</div><b>{d.subscription?.status==='active'?'فعال': '—'}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{d.subscription?.plan||'بدون پلن'}</div></div>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>پرداخت‌ها</div><b>{faNum(d.counts?.payments||0)}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>اخیر {faNum((d.recent_payments||[]).length)}</div></div>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>نمرات</div><b>{faNum(d.counts?.grades||0)}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>میانگین {d.academic?.avg?Number(d.academic.avg).toLocaleString('fa-IR'):'—'}</div></div>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>سؤال‌ها</div><b>{faNum(d.counts?.questions||0)}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>طراحی‌شده</div></div>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>آزمون‌ها</div><b>{faNum(d.counts?.exams||0)}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>شرکت‌کرده</div></div>
+              <div className="panel panel-pad" style={{ background:'var(--c-surface)', textAlign:'center' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>اعلان‌ها</div><b>{faNum(d.notifs?.total||0)}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{faNum(d.notifs?.unread||0)} خوانده‌نشده</div></div>
+            </div>
+            <div className="row" style={{ gap:4, flexWrap:'wrap', marginTop:8 }}>
+              <span className="muted" style={{fontSize:'var(--fs-caption)'}}>ارتباط سریع:</span>
+              <button className="btn sm" onClick={()=>setTab('sub')}>اشتراک</button>
+              <button className="btn sm" onClick={()=>setTab('academic')}>نمرات</button>
+              <button className="btn sm" onClick={()=>setTab('tickets')}>تیکت‌ها</button>
+              <button className="btn sm" onClick={()=>setTab('activity')}>تایم‌لاین</button>
+              <button className="btn sm" onClick={()=>setTab('audit')}>Audit</button>
+            </div>
+          </div>
+          {investigation && (
+            <div className="panel panel-pad" style={{ marginTop:10, background:'color-mix(in srgb, var(--c-acc) 5%, var(--c-surface))', borderColor:'rgba(77,184,255,.25)' }}>
+              <div className="row" style={{ gap:6 }}>
+                <b>🔍 حالت بررسی —</b>
+                <select className="inp" value={investigation} onChange={e=>setInvestigation(e.target.value)}>
+                  <option value="subscription">مشکل اشتراک/پرداخت</option>
+                  <option value="ai">مشکل هوشیار</option>
+                  <option value="ticket">مشکل پشتیبانی</option>
+                  <option value="academic">مشکل تحصیلی</option>
+                  <option value="security">مشکل امنیتی/دسترسی</option>
+                </select>
+                <span className="spacer" />
+                <button className="btn sm" onClick={()=>setInvestigation('')}>بستن</button>
+              </div>
+              <div className="muted" style={{ marginTop:8 }}>
+                {investigation==='subscription' && <>برای «اشتراک فعال نشده»: پرداخت → تأیید → اشتراک → اعلان → Audit را در تب‌های <b>💎 اشتراک / 🧭 Audit / 🎫 تیکت</b> بررسی کنید. Correlation ID مشترک را در Audit جستجو کنید.</>}
+                {investigation==='ai' && <>برای «هوشیار کار نمی‌کند»: تب <b>🤖 هوشیار</b> (وضعیت مسدود/سهمیه) + <b>🕓 فعالیت</b> + <b>🧭 Audit</b> (تغییرات دسترسی) را ببینید.</>}
+                {investigation==='ticket' && <>برای «تیکت بی‌پاسخ»: تب <b>🎫 تیکت‌ها</b> (باز/پاسخ) + <b>🕓 فعالیت</b> + <b>🧭 Audit</b> (اقدامات پشتیبان) را دنبال کنید.</>}
+                {investigation==='academic' && <>برای «نمره ثبت نشده»: تب <b>📚 یادگیری</b> + <b>🧭 Audit</b> (import/grade) + <b>🕓 فعالیت</b> را بررسی کنید.</>}
+                {investigation==='security' && <>برای «دسترسی/نقش»: تب <b>🛡 نقش‌ها</b> (permissions مؤثر) + <b>🧭 Audit</b> (role change) + <b>🕓 فعالیت</b> را ببینید.</>}
+              </div>
+            </div>
+          )}
           <div className="grid g2" style={{ marginTop: 10 }}>
             <div className="panel panel-pad"><b>وضعیت حساب</b><div style={{ marginTop: 6 }}>
               {d.user.suspended ? <B kind="bad">تعلیق‌شده</B> : d.user.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار تأیید</B>}
               <span className="muted"> · آخرین فعالیت: </span><RelativeTime value={d.user.last_active} fallback="ثبت نشده" />
-            </div></div>
+            </div><div className="muted" style={{ marginTop:6, fontSize:'var(--fs-caption)' }}>ثبت‌نام: <FaDateTime value={d.user.registered_at} /> · ID: <span className="code">{d.user.id}</span></div></div>
             <div className="panel panel-pad"><b>اشتراک هامزیار</b><div style={{ marginTop: 6 }}>
               {d.subscription?.status === 'active' ? <><B kind="ok">{d.subscription.plan}</B><span className="muted"> {faNum(d.subscription.days_left)} روز باقی</span></> : <span className="muted">اشتراک فعال ندارد</span>}
-            </div></div>
+            </div>
+              {d.subscription?.end_date && <div className="muted" style={{ marginTop:6, fontSize:'var(--fs-caption)' }}>پایان: <FaDateTime value={d.subscription.end_date} /></div>}
+              {d.subscription?.status==='active' && has('subscription.manage') && <button className="btn sm" style={{ marginTop:8 }} onClick={()=>setTab('sub')}>تمدید/مدیریت</button>}
+            </div>
           </div>
         </>
       )}
@@ -586,11 +900,23 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           ))}
         </dl>
       )}
-      {/* 🌊 W-Admin — تب‌های جدید User 360 */}
       {d && tab === 'academic' && (
         <>
           {unavailable('academic') || unavailable('academic_counts')}
-          <div className="row" style={{ marginBottom: 8 }}><span className="muted">نمرات ثبت‌شده: {Number(d.counts.grades || 0).toLocaleString('fa')}</span><span className="spacer" /><button className="btn sm" onClick={() => setRelation('grades')}>مشاهده همه</button></div>
+          <div className="panel panel-pad" style={{ background:'var(--c-bg)', marginBottom:8 }}>
+            <div className="row" style={{ gap:8, flexWrap:'wrap' }}>
+              <div><div className="muted" style={{fontSize:'var(--fs-caption)'}}>میانگین</div><b>{d.academic?.avg!=null?Number(d.academic.avg).toLocaleString('fa-IR'):'—'}</b></div>
+              <div><div className="muted" style={{fontSize:'var(--fs-caption)'}}>بهترین</div><b style={{color:'var(--c-ok)'}}>{d.academic?.best!=null?Number(d.academic.best).toLocaleString('fa-IR'):'—'}</b></div>
+              <div><div className="muted" style={{fontSize:'var(--fs-caption)'}}>کمترین</div><b style={{color:'var(--c-bad)'}}>{d.academic?.worst!=null?Number(d.academic.worst).toLocaleString('fa-IR'):'—'}</b></div>
+              <div><div className="muted" style={{fontSize:'var(--fs-caption)'}}>تعداد نمره</div><b>{faNum(d.counts.grades||0)}</b></div>
+              <span className="spacer" /><button className="btn sm" onClick={() => setRelation('grades')}>مشاهده همه</button>
+            </div>
+            {(() => {
+              const weak = (d.academic?.weak_areas||[]).slice(0,3);
+              if (!weak.length) return null;
+              return (<div style={{ marginTop:8 }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>⚠️ حوزه‌های ضعیف (واقعی):</div><div className="row" style={{ gap:6, flexWrap:'wrap', marginTop:4 }}>{weak.map(w=><B key={w.lesson} kind="warn">{w.lesson} · {faNum(w.accuracy)}٪</B>)}</div></div>);
+            })()}
+          </div>
           {(d.academic?.grades_recent || []).length === 0 &&
             <div className="center-state">نمره‌ای ثبت نشده</div>}
           {(d.academic?.grades_recent || []).map((g, i) => (
@@ -662,6 +988,9 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           {d.ai?.banned && (
             <p className="muted">رفع مسدودیت از صفحه‌ی «هوشیار ← دسترسی» انجام می‌شود.</p>
           )}
+          {!!(d.ai_recent||[]).length && <div style={{ marginTop:10 }}><b>آخرین درخواست‌های هوشیار</b>
+            {(d.ai_recent||[]).slice(0,8).map((r,i)=>(<div key={i} className="row" style={{ padding:'6px 0', borderBottom:'1px solid var(--line)', gap:6 }}><B>{r.model||'gemini'}</B><span style={{flex:1}} className="muted">{r.type||'chat'} · {r.status||'—'}</span><span className="code" style={{fontSize:'var(--fs-caption)'}}>{r.latency?`${r.latency}ms`:''}</span><FaDateTime value={r.at} /></div>))}
+          </div>}
         </>
       )}
       {d && tab === 'notifications' && (
@@ -684,8 +1013,10 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
             <div className="row"><b>{r.label || r.key}</b><span className="code">{r.key}</span><span className="spacer" />
               <B kind={r.active ? 'ok' : 'bad'}>{r.active ? 'فعال' : 'غیرفعال'}</B>{r.scope && <B kind="purple">{r.scope}</B>}</div>
           </div>)}
-          {!!(d.perms || []).length && <div className="row" style={{ marginTop: 10, gap: 4 }}>
-            {d.perms.map(p => <B key={p} kind="acc">{p}</B>)}</div>}
+          {!!(d.perms || []).length && <div><div style={{ marginTop:10, marginBottom:6 }}><b>✨ دسترسی‌های مؤثر (Effective Permissions)</b><span className="muted" style={{fontSize:'var(--fs-caption)'}}> — از اجتماع نقش‌ها + scope</span></div><div className="row" style={{ gap:4, flexWrap:'wrap' }}>{d.perms.map(p => <B key={p} kind="acc">{p}</B>)}</div>
+            {d.roles?.some(r=>r.scope) && <div className="muted" style={{ marginTop:6, fontSize:'var(--fs-caption)' }}>Scope نمونه: {d.roles.filter(r=>r.scope).map(r=>`${r.key}:${r.scope}`).join(' · ')}</div>}
+          </div>}
+          {!d.perms?.length && d.roles?.length>0 && <div className="muted" style={{marginTop:8}}>نقش دارد ولی permission مؤثری یافت نشد — ممکن است نقش غیرفعال باشد.</div>}
         </>
       )}
       {d && tab === 'sub' && (<>
@@ -698,6 +1029,8 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
             <dt>روزهای باقی</dt><dd>{d.subscription.days_left ?? '—'}</dd>
           </dl>
         ) : <div className="center-state">اشتراک فعالی ندارد</div>}
+        {!!(d.subscription_history||[]).length && <div style={{ marginTop:10 }}><b>تاریخچه تمدید</b>{(d.subscription_history||[]).slice(0,10).map((h,i)=>(<div key={i} className="row" style={{ padding:'6px 0', borderBottom:'1px solid var(--line)' }}><span style={{flex:1}}>{h.plan||'—'} · {h.days?`${faNum(h.days)} روز`:''}</span><FaDateTime value={h.at||h.created_at} /></div>))}</div>}
+        {d.subscription?.status==='active' && Number(d.subscription.days_left||999)>0 && Number(d.subscription.days_left||999)<=7 && <div className="panel panel-pad" style={{ marginTop:10, background:'color-mix(in srgb, var(--c-warn) 7%, var(--c-surface))', borderColor:'rgba(240,181,69,.35)' }}><div className="row"><span>⏰ اشتراک در حال انقضا — {faNum(d.subscription.days_left)} روز باقی</span><span className="spacer" />{has('subscription.manage') && <button className="btn sm primary" onClick={()=>{ toast('به بخش اشتراک منتقل شوید'); go('/subscriptions'); }}>💎 تمدید</button>}</div></div>}
       </>)}
       {d && tab === 'tickets' && (
         <>
@@ -719,13 +1052,26 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
       {d && tab === 'activity' && (
         <>
           {unavailable('answers')}
+          <div className="row" style={{ marginBottom:8, flexWrap:'wrap', gap:6 }}>
+            <b>تایم‌لاین کاربر</b>
+            <span className="muted" style={{fontSize:'var(--fs-caption)'}}>· {faNum((d.activity||[]).length)} رویداد</span>
+            <span className="spacer" />
+            <div className="row" style={{ gap:4 }}>
+              {[
+                ['all','همه'], ['account','حساب'], ['academic','آموزشی'], ['support','پشتیبانی'], ['finance','مالی'], ['security','امنیتی'], ['ai','هوشیار']
+              ].map(([k,l])=>(<button key={k} className={`btn sm ${timelineFilter===k?'primary':''}`} onClick={()=>setTimelineFilter(k)}>{l}</button>))}
+            </div>
+          </div>
           {!(d.activity || []).length && <Empty icon="🕓" text="فعالیتی ثبت نشده است" />}
-          {(d.activity || []).map(event => <button key={event.id} className="panel panel-pad row" style={{ width: '100%', marginBottom: 6, color: 'inherit', textAlign: 'right' }}
+          {(d.activity || []).filter(e=> timelineFilter==='all' || catFor(e)===timelineFilter).map(event => <button key={event.id} className="panel panel-pad row" style={{ width: '100%', marginBottom: 6, color: 'inherit', textAlign: 'right' }}
             onClick={() => event.go && go(event.go)}>
             <span style={{ fontSize: 'var(--fs-icon)' }}>{event.icon || '•'}</span>
-            <span style={{ flex: 1 }}><b>{event.title}</b>{event.description && <span className="muted" style={{ display: 'block' }}>{event.description}</span>}</span>
+            <span style={{ flex: 1 }}><b>{event.title}</b>{event.description && <span className="muted" style={{ display: 'block' }}>{event.description}</span>}
+              {event.correlation_id && <span className="code" style={{ fontSize:'var(--fs-caption)' }}>{event.correlation_id}</span>}
+            </span>
             <FaDateTime value={event.at} /><span className="muted">‹</span>
           </button>)}
+          {(d.activity||[]).filter(e=> timelineFilter!=='all' && catFor(e)===timelineFilter).length===0 && (d.activity||[]).length>0 && timelineFilter!=='all' && <div className="muted" style={{ textAlign:'center', padding:12 }}>رویدادی در این دسته نیست</div>}
         </>
       )}
       {d && tab === 'audit' && (
