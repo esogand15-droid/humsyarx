@@ -6965,6 +6965,15 @@ async def wa_grades_term_options(
     return await academic_api.grades_term_options(admin=user)
 
 
+@router.get("/grades/lesson-term")
+async def wa_grades_lesson_term(
+    lesson: str = Query(..., min_length=1, max_length=120),
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    """🛡 §۸۲-ج — پروکسی حدس ترم از روی درس برای پرکردن خودکار منوی ترم."""
+    return await academic_api.grades_lesson_term(lesson=lesson, admin=user)
+
+
 @router.get("/grades/intakes")
 async def wa_grades_intakes(user=Depends(_perm_any("grades.manage", "grades.scoped"))):
     scoped = await _grade_intake_scope(user)

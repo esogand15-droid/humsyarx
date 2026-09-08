@@ -1,5 +1,5 @@
 import { confirmAction } from '../../lib/confirm';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   useMutation,
   useQuery,
@@ -24,7 +24,7 @@ const EMPTY_EXAM = {
   lesson: '',
   exam_title: '',
   exam_date: '',
-  // 🛡 §۸۲-ب — ترمِ صریح. خالی = تشخیص خودکار از روی نام درس.
+  // 🛡 §۸۲-ج — ترمِ صریح و الزامی؛ هر ترم جدا (بدون «بدون ترم»).
   term: '',
 };
 
@@ -159,6 +159,43 @@ export default function AcademicGradesAdmin() {
     ? termOptionsData
     : [];
 
+  // 🛡 §۸۲-ج — حدس ترم از روی درس برای پرکردن خودکار منوی ترم (اما ثبت همچنان ترم صریح می‌خواهد)
+  const [
+    suggestedTerm,
+    setSuggestedTerm,
+  ] = useState('');
+
+  useEffect(() => {
+    const name = exam.lesson.trim();
+    if (!name || name.length < 2 || exam.term) {
+      setSuggestedTerm('');
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api
+        .get('/api/academic-admin/grades/lesson-term', {
+          params: { lesson: name },
+        })
+        .then((res) => {
+          if (!cancelled) setSuggestedTerm(res.data?.term || '');
+        })
+        .catch(() => {
+          if (!cancelled) setSuggestedTerm('');
+        });
+    }, 450);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [exam.lesson, exam.term]);
+
+  useEffect(() => {
+    if (suggestedTerm && !exam.term) {
+      setExam((cur) => ({ ...cur, term: suggestedTerm }));
+    }
+  }, [suggestedTerm]);
+
   const {
     data: searchResults,
     isFetching: searching,
@@ -215,10 +252,8 @@ export default function AcademicGradesAdmin() {
           exam_date:
             exam.exam_date,
 
-          // ترمِ خالی فرستاده نمی‌شود تا سرور مثل قبل از روی درس حدس بزند.
-          ...(exam.term
-            ? { term: exam.term }
-            : {}),
+          // 🛡 §۸۲-ج — ترم الزامی است؛ سرور بدون ترم ۴۲۲ می‌دهد.
+          term: exam.term.trim(),
 
           entries: entries.map(
             (entry) => ({
@@ -360,6 +395,7 @@ export default function AcademicGradesAdmin() {
     /^\d{4}-\d{2}-\d{2}$/.test(
       exam.exam_date
     ) &&
+    !!exam.term.trim() &&
     entries.length > 0 &&
     entries.every(
       (entry) =>
@@ -529,7 +565,7 @@ export default function AcademicGradesAdmin() {
                 marginTop: 10,
               }}
             >
-              ترم
+              ترم * <span style={{ color: 'var(--c-err, #e11)' }}>(الزامی — هر ترم جدا)</span>
             </label>
 
             <select
@@ -544,9 +580,13 @@ export default function AcademicGradesAdmin() {
                     .value,
                 })
               }
+              style={{
+                borderColor: !exam.term ? 'var(--c-err, #e11)' : undefined,
+                background: !exam.term ? 'var(--bg-warn, var(--card))' : undefined,
+              }}
             >
-              <option value="">
-                تشخیص خودکار از روی درس
+              <option value="" disabled>
+                — ترم را انتخاب کنید * —
               </option>
 
               {entryTermOptions.map(
@@ -556,21 +596,55 @@ export default function AcademicGradesAdmin() {
                     value={item}
                   >
                     {item}
+                    {suggestedTerm === item
+                      ? ' (پیشنهادی)'
+                      : ''}
                   </option>
                 )
               )}
             </select>
 
+            {suggestedTerm &&
+              exam.term === suggestedTerm && (
+                <div
+                  style={{
+                    fontSize: 'var(--fs-meta)',
+                    color: 'var(--c-ok, #0a7)',
+                    marginTop: 5,
+                  }}
+                >
+                  ✓ ترم پیشنهادی از روی درس: {suggestedTerm} — قابل تغییر دستی
+                </div>
+              )}
+
+            {!exam.term && (
+              <div
+                style={{
+                  fontSize: 'var(--fs-meta)',
+                  color: 'var(--c-err, #e11)',
+                  marginTop: 5,
+                }}
+              >
+                ⚠️ ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.
+              </div>
+            )}
+
             <div
               style={{
                 fontSize: 'var(--fs-meta)',
                 color: 'var(--txm)',
-                marginTop: 5,
+                marginTop: 6,
+                background: 'var(--soft-purple, var(--bg))',
+                border: '1px solid var(--bd)',
+                borderRadius: 8,
+                padding: '7px 8px',
+                lineHeight: 1.7,
               }}
             >
-              اگر درس در فهرست دروس نباشد، بدون
-              انتخاب ترم نمره «بدون ترم» ثبت
-              می‌شود.
+              🎓 هر درس به یک ترم متصل است و کارنامه‌ی
+              دانشجو <b>هر ترم را جدا</b> با میانگین جدا
+              نشان می‌دهد. ترم را دقیق انتخاب کنید تا
+              نمرات «بدون ترم» تولید نشود.
             </div>
           </div>
 

@@ -315,7 +315,8 @@ function GradesTab({ autoCreate = false, initial = {} }) {
 
       {!data ? <Loading /> : (
         <>
-          {(data.by_term || []).length > 0 && <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          {(data.by_term || []).length > 0 && <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 10, padding: '8px 10px', background: 'var(--soft-purple, var(--bg))', borderRadius: 'var(--r-md)', border: '1px solid var(--bd)' }}>
+            <span className="muted" style={{ fontSize: 12, fontWeight: 800 }}>🎓 فیلتر ترم (هر ترم جدا):</span>
             <button type="button" className={`btn sm ${term ? '' : 'primary'}`} onClick={() => { setTerm(''); setSkip(0); }}>همه · {Number(total).toLocaleString('fa')}</button>
             {data.by_term.map(t => <button key={t.term || 'none'} type="button"
                   className={`btn sm ${term === t.term ? 'primary' : ''}`}
@@ -325,8 +326,35 @@ function GradesTab({ autoCreate = false, initial = {} }) {
               {t.avg != null ? ` · میانگین ${Number(t.avg).toLocaleString('fa')}` : ''}
             </button>)}
           </div>}
-          <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
-            <div className="center-state">نمره‌ای ثبت نشده</div>} />
+          {term ? (
+            <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
+              <div className="center-state">برای «{term}» نمره‌ای ثبت نشده است.</div>} />
+          ) : (data.by_term || []).length > 1 ? (
+            <div style={{ display: 'grid', gap: 14 }}>
+              {data.by_term.map(group => {
+                const rows = (data.grades || []).filter(r => (r.term || '') === (group.term || ''));
+                if (!rows.length) return null;
+                return (
+                  <div key={group.term || 'none'} className="card" style={{ overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: 'var(--bg)', borderBottom: '1px solid var(--bd)', flexWrap: 'wrap' }}>
+                      <B kind="purple">{group.term || 'بدون ترم'}</B>
+                      <span className="muted" style={{ fontSize: 12 }}>{Number(group.count).toLocaleString('fa')} نمره</span>
+                      {group.avg != null && <B kind={group.avg >= 10 ? 'ok' : 'bad'}>میانگین {Number(group.avg).toLocaleString('fa')} / ۲۰</B>}
+                      <span className="spacer" />
+                      <button className="btn sm" onClick={() => { setTerm(group.term); setSkip(0); }}>فقط همین ترم ←</button>
+                    </div>
+                    <DataTable columns={cols} rows={rows} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={<div className="center-state">نمره‌ای نیست</div>} />
+                  </div>
+                );
+              })}
+              {!(data.by_term || []).some(g => (data.grades || []).some(r => (r.term || '') === (g.term || ''))) && (
+                <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={<div className="center-state">نمره‌ای ثبت نشده</div>} />
+              )}
+            </div>
+          ) : (
+            <DataTable columns={cols} rows={data.grades} colToggle visibleColumns={visibleColumns} onColumnsChange={setVisibleColumns} empty={
+              <div className="center-state">نمره‌ای ثبت نشده</div>} />
+          )}
           <div className="row" style={{ marginTop: 10 }}>
             <span className="muted">مجموع: {Number(total).toLocaleString('fa')} نمره</span>
             <span className="spacer" />
@@ -366,11 +394,33 @@ function GradeBulkModal({ onClose }) {
   const [meta, setMeta] = useState({ lesson: '', exam_title: '', exam_date: '', term: '' });
   const [rows, setRows] = useState([{ q: '', hits: null, picked: null, score: '' }]);
   const [busy, setBusy] = useState(false);
-  // 🛡 §۸۲-ب — گزینه‌های ترم از سرور (تعریف‌شده‌ها + ترم‌های دارای نمره).
+  const [termTouched, setTermTouched] = useState(false);
+  // 🛡 §۸۲-ج — طبقه‌بندی ترمی: ترم الزامی است و هر ترم جدا ذخیره می‌شود (بدون «بدون ترم»).
   const [termOptions, setTermOptions] = useState([]);
+  const [suggestedTerm, setSuggestedTerm] = useState('');
   useEffect(() => {
     api.gradeTermOptions().then(r => setTermOptions(r.terms || [])).catch(() => setTermOptions([]));
   }, []);
+  // حدس ترم از روی درس برای پرکردن خودکار منو (اما ثبت همچنان ترم صریح می‌خواهد)
+  useEffect(() => {
+    const name = meta.lesson.trim();
+    if (!name || name.length < 2) { setSuggestedTerm(''); return; }
+    if (meta.term) { setSuggestedTerm(''); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      api.gradeLessonTerm(name).then(r => {
+        if (!cancelled && r?.term) setSuggestedTerm(r.term);
+        else if (!cancelled) setSuggestedTerm('');
+      }).catch(() => { if (!cancelled) setSuggestedTerm(''); });
+    }, 450);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [meta.lesson]);
+  // اگر ترم خالی و پیشنهاد آمد، خودکار انتخاب کن (قابل ویرایش دستی)
+  useEffect(() => {
+    if (suggestedTerm && !meta.term) {
+      setMeta(m => ({ ...m, term: suggestedTerm }));
+    }
+  }, [suggestedTerm]);
   const [importReport, setImportReport] = useState(null);
   const setRow = (i, patch) => setRows(rs => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
   const importCSV = async (file) => {
@@ -423,15 +473,29 @@ function GradeBulkModal({ onClose }) {
                  onChange={e => setMeta({ ...meta, exam_title: e.target.value })} />
           <PersianDatePicker value={meta.exam_date} onChange={value => setMeta({ ...meta, exam_date: value })} ariaLabel="تاریخ شمسی نمره" />
         </div>
-        <div className="row">
-          <select className="inp" style={{ flex: 1 }} value={meta.term} aria-label="ترم نمره"
-                  onChange={e => setMeta({ ...meta, term: e.target.value })}>
-            <option value="">ترم: تشخیص خودکار از روی درس</option>
-            {termOptions.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <span className="muted" style={{ fontSize: 12 }}>
-            اگر درس در فهرست دروس نباشد، بدون انتخابِ ترم نمره «بدون ترم» ثبت می‌شود.
-          </span>
+        <div className="row" style={{ alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <label className="fld" style={{ margin: 0 }}><span>ترم * <span style={{ color: 'var(--c-err)' }}>(الزامی — هر ترم جدا ثبت می‌شود)</span></span>
+              <select className="inp" value={meta.term} aria-label="ترم نمره"
+                      onChange={e => { setMeta({ ...meta, term: e.target.value }); setTermTouched(true); }}
+                      style={{ borderColor: termTouched && !meta.term ? 'var(--c-err)' : undefined, background: !meta.term ? 'var(--bg-warn, var(--bg))' : undefined }}>
+                <option value="" disabled>— ترم را انتخاب کنید * —</option>
+                {termOptions.map(t => <option key={t} value={t}>{t}{suggestedTerm === t ? ' (پیشنهادی)' : ''}</option>)}
+              </select>
+            </label>
+            {suggestedTerm && !termTouched && meta.term === suggestedTerm && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 4, color: 'var(--c-ok)' }}>✓ ترم پیشنهادی از روی درس: <b>{suggestedTerm}</b> — قابل تغییر دستی</div>
+            )}
+            {termTouched && !meta.term && (
+              <div style={{ fontSize: 12, marginTop: 4, color: 'var(--c-err)' }}>⚠️ ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.</div>
+            )}
+          </div>
+          <div className="panel panel-pad" style={{ background: 'var(--soft-purple, var(--bg))', borderColor: 'var(--bd-purple, var(--bd))', minWidth: 220, flex: '0 0 260px' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--c-purple, var(--txt))' }}>🎓 طبقه‌بندی ترمی</div>
+            <div className="muted" style={{ fontSize: 12, lineHeight: 1.7, marginTop: 4 }}>
+              هر درس به یک ترم متصل است و کارنامه‌ی دانشجو <b>هر ترم را جدا</b> با میانگین جدا نشان می‌دهد. ترم را دقیق انتخاب کنید تا نمرات «بدون ترم» تولید نشود.
+            </div>
+          </div>
         </div>
         <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
           <div className="row"><div><b>درون‌ریزی CSV</b><div className="muted">دو ستون: Telegram ID و نمره؛ جداشده با comma، semicolon یا tab</div></div>
@@ -472,10 +536,11 @@ function GradeBulkModal({ onClose }) {
           <span className="muted">{rows.filter(r => r.picked && r.score !== '').length} دانشجو آماده</span>
         </div>
         <div className="row">
-          <button className="btn primary" disabled={busy || !meta.lesson.trim() || !meta.exam_title.trim() || !meta.exam_date}
-                  onClick={submit}>{busy ? '⏳ …' : 'ثبت و ارسال به دانشجویان'}</button>
+          <button className="btn primary" disabled={busy || !meta.lesson.trim() || !meta.exam_title.trim() || !meta.exam_date || !meta.term}
+                  onClick={() => { if (!meta.term) { setTermTouched(true); return toast('ترم الزامی است — لطفاً ترم را انتخاب کنید', 'err'); } submit(); }}>{busy ? '⏳ …' : 'ثبت و ارسال به دانشجویان'}</button>
           <button className="btn" onClick={() => onClose(false)}>انصراف</button>
         </div>
+        {!meta.term && <div style={{ fontSize: 12, color: 'var(--c-err)', marginTop: 4 }}>⚠️ بدون انتخاب ترم، ثبت گروهی انجام نمی‌شود — لطفاً از منوی ترم یک گزینه را برگزینید.</div>}
       </div>
     </Modal>
   );

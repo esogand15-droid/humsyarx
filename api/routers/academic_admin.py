@@ -735,14 +735,14 @@ class GradeBulkCreate(BaseModel):
         max_length=10,
     )
 
-    # 🛡 §۸۲-ب — ترمِ صریح.
-    # اختیاری است: خالی/None یعنی «از روی نامِ درس در bs_lessons حدس بزن»
-    # (رفتار قبلی، پس کلاینت‌های قدیمی نمی‌شکنند). اگر داده شود، برنده است —
-    # چون درس‌هایی مثل «فیزیولوژی» ممکن است در bs_lessons نباشند و بدون
-    # override نمره برای همیشه «بدون ترم» می‌ماند.
+    # 🛡 §۸۲-ج — ترمِ صریح و طبقه‌بندی‌شده.
+    # ترم الزامی است: اگر خالی/None باشد سرور از روی bs_lessons حدس می‌زند؛
+    # اما اگر درس در فهرست نباشد ثبت «بدون ترم» ممنوع است و باید ۴۲۲ برگردد
+    # تا ادمین ترم را صریحاً انتخاب کند (هر ترم بلوک جدا با میانگین جدا).
     term: str | None = Field(
         default=None,
         max_length=40,
+        description="ترم الزامی — مثل «ترم ۱»؛ خالی فقط اگر درس در bs_lessons ترم داشته باشد",
     )
 
 
@@ -779,6 +779,21 @@ async def grades_bulk_create(
         body.term or "",
         40,
     ) or None
+    # 🛡 §۸۲-ج — ترم الزامی + حدس خودکارِ هوشمند
+    # اگر ترم صریح نیامده، از روی درس حدس زده می‌شود؛ ولی اگر حتی حدس هم
+    # خالی ماند، ثبت «بدون ترم» ممنوع است و باید کاربر را مجبور به انتخاب کنیم.
+    if not term:
+        try:
+            inferred = await db.lesson_term(lesson)
+            if inferred and str(inferred).strip():
+                term = str(inferred).strip()[:40]
+        except Exception:
+            pass
+    if not term:
+        raise HTTPException(
+            status_code=422,
+            detail="ترم الزامی است — لطفاً ترم مربوط به درس را انتخاب کنید (مثلاً «ترم ۱»). اگر درس در فهرست نیست، ترم را به‌صورت دستی مشخص کنید.",
+        )
 
     user_ids = [
         entry.user_id
@@ -845,9 +860,8 @@ async def grades_bulk_create(
 
         entered_by=admin["id"],
 
-        # None را عمداً دست‌نخورده رد می‌کنیم تا لایه‌ی db حدسِ خودکار را
-        # انجام دهد؛ رشته‌ی خالی هم به None تبدیل می‌شود تا «انتخاب نکردم»
-        # با «ترمِ خالی» یکی رفتار کند.
+        # 🛡 §۸۲-ج — ترم در این نقطه حتماً پر است (یا صریح یا حدس‌زده‌شده)؛
+        # db-grade_bulk_upsert دیگر حدسِ دوباره نمی‌زند و «بدون ترم» تولید نمی‌شود.
         term=term,
     )
 
@@ -948,7 +962,7 @@ async def grades_term_options(
     می‌شوند و با همان `_term_rank` مرتب می‌شوند تا «ترم ۱۰» بعد از «ترم ۲»
     بیاید، نه بینِ ۱ و ۲.
     """
-    from grade_utils import _term_rank
+    from grade_utils import _term_rank, TERM_ORDER
 
     known: list[str] = []
     try:
@@ -956,6 +970,15 @@ async def grades_term_options(
         known = [str(t).strip() for t in (_TERMS or []) if str(t).strip()]
     except Exception:
         known = []
+    # 🛡 §۸۲-ج — برنامه‌ی درسی ۸ ترمه است؛ منوی ثبت باید همه‌ی ۸ ترم را نشان دهد،
+    # حتی اگر هنوز نمره‌ای برای ترم ۶-۸ ثبت نشده (وگرنه طبقه‌بندی ناقص می‌ماند).
+    try:
+        for t in TERM_ORDER:
+            tt = str(t).strip()
+            if tt and tt not in known:
+                known.append(tt)
+    except Exception:
+        pass
 
     used: list[str] = []
     try:
@@ -965,6 +988,25 @@ async def grades_term_options(
 
     merged = sorted(set(known) | set(used), key=_term_rank)
     return {"terms": merged, "defined": known, "used": used}
+
+
+@router.get("/grades/lesson-term")
+async def grades_lesson_term(
+    lesson: str = Query(..., min_length=1, max_length=120),
+    admin=Depends(get_grade_admin_user),
+):
+    """🛡 §۸۲-ج — حدسِ ترم از روی نامِ درس (برای پرکردن خودکار منوی ترم).
+
+    پنل وب/مینی‌اپ هنگام تایپِ درس این را صدا می‌زند تا ترمِ پیشنهادی
+    پررنگ نشان داده شود؛ ولی ثبت نهایی همچنان ترمِ صریحِ انتخاب‌شده را
+    می‌خواهد (بدون ترم ممنوع).
+    """
+    term = ""
+    try:
+        term = await db.lesson_term(lesson.strip())
+    except Exception:
+        term = ""
+    return {"lesson": lesson.strip()[:120], "term": (term or "").strip()[:40]}
 
 
 @router.get("/grades/recent")

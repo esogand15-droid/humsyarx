@@ -59,9 +59,50 @@ async def _pick_lesson(query, context, idx: int):
         await query.answer("❌ منقضی شد، دوباره از اول شروع کن.", show_alert=True)
         return
     context.user_data['grade_lesson'] = lessons[idx]
-    context.user_data['mode'] = 'grades_exam_title'
+    # 🛡 §۸۲-ج — طبقه‌بندی ترمی: ترم الزامی و هر ترم جدا؛ ادمین باید صریح انتخاب کند
+    # سعی می‌کنیم ترمِ پیشنهادی از روی درس را پیدا کنیم و برجسته کنیم، ولی «بدون ترم» ممنوع است.
+    suggested = ""
+    try:
+        suggested = await db.lesson_term(lessons[idx])
+    except Exception:
+        suggested = ""
+    suggested = (suggested or "").strip()
+    from grade_utils import TERM_ORDER
+    # گزینه‌های ترم: همان ترتیبِ برنامه‌ی درسی + پیشنهادی هم برجسته
+    keyboard = []
+    row = []
+    for t in TERM_ORDER:
+        label = f"✅ {t}" if t == suggested else t
+        row.append(InlineKeyboardButton(label, callback_data=f'grades:term_pick:{TERM_ORDER.index(t)}'))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    if suggested and suggested not in TERM_ORDER:
+        keyboard.append([InlineKeyboardButton(f"✅ {suggested} (پیشنهادی)", callback_data=f'grades:term_pick_raw:{suggested}')])
+    keyboard.append([InlineKeyboardButton("❌ لغو", callback_data='admin:main')])
+    hint = f"\n🎓 ترم پیشنهادی: <b>{suggested}</b> — تایید یا ترم دیگر را انتخاب کن" if suggested else "\n⚠️ ترم این درس در فهرست نیست — لطفاً ترم را دستی انتخاب کن"
     await query.edit_message_text(
-        f"📚 درس: <b>{lessons[idx]}</b>\n\n"
+        f"📚 درس: <b>{lessons[idx]}</b>{hint}\n\n"
+        "🎓 <b>ترم را انتخاب کن</b> (هر ترم نمراتش جدا ذخیره می‌شود):",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def _pick_term(query, context, idx: int, raw: str | None = None):
+    from grade_utils import TERM_ORDER
+    term = raw if raw is not None else (TERM_ORDER[idx] if 0 <= idx < len(TERM_ORDER) else "")
+    term = (term or "").strip()
+    if not term:
+        await query.answer("❌ ترم نامعتبر", show_alert=True)
+        return
+    context.user_data['grade_term'] = term
+    context.user_data['mode'] = 'grades_exam_title'
+    lesson = context.user_data.get('grade_lesson', '')
+    await query.edit_message_text(
+        f"📚 درس: <b>{lesson}</b>\n🎓 ترم: <b>{term}</b>\n\n"
         "حالا عنوان امتحان رو بنویس (مثلاً «میان‌ترم» یا «پایان‌ترم بهمن ۱۴۰۳»):",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='admin:main')]])
@@ -100,6 +141,17 @@ async def handle_bulk_list_text(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ چیزی گم شده، دوباره از «📊 ثبت نمره‌ی جدید» شروع کن.")
         return
 
+    term = context.user_data.get('grade_term') or ""
+    if not term:
+        try:
+            term = await db.lesson_term(lesson)
+        except Exception:
+            term = ""
+        term = (term or "").strip()
+        if not term:
+            await update.message.reply_text("❌ ترم گم شده — لطفاً از «📊 ثبت نمره‌ی جدید» دوباره شروع کن و ترم را انتخاب کن.")
+            return
+        context.user_data['grade_term'] = term
     matched, not_found, ambiguous = [], [], []
     for line in raw.splitlines():
         line = line.strip()
@@ -134,7 +186,7 @@ async def handle_bulk_list_text(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.pop('mode', None)
     context.user_data['grade_matched'] = matched
 
-    lines = [f"📊 <b>پیش‌نمایش ثبت نمره</b>\n📚 {lesson} — {exam_title}\n━━━━━━━━━━━━━━━━"]
+    lines = [f"📊 <b>پیش‌نمایش ثبت نمره</b>\n📚 {lesson} — {exam_title}\n🎓 ترم: <b>{term}</b>\n━━━━━━━━━━━━━━━━"]
     if matched:
         lines.append(f"\n✅ <b>{len(matched)} نفر پیدا شد:</b>")
         for m in matched[:20]:
@@ -164,6 +216,7 @@ async def _confirm_and_save(query, context):
     matched = context.user_data.pop('grade_matched', [])
     lesson = context.user_data.pop('grade_lesson', None)
     exam_title = context.user_data.pop('grade_exam_title', None)
+    term = context.user_data.pop('grade_term', None)
     context.user_data.pop('grade_intake_scope', None)
     context.user_data.pop('grades_lesson_options', None)
     if not matched or not lesson:
@@ -183,7 +236,16 @@ async def _confirm_and_save(query, context):
         if set(allowed) != {e['user_id'] for e in entries}:
             await query.answer("❌ یکی از دانشجویان دیگر در scope شما نیست.", show_alert=True)
             return
-    saved = await db.grade_bulk_upsert(entries, lesson, exam_title, exam_date, query.from_user.id)
+    if not term:
+        try:
+            term = await db.lesson_term(lesson)
+        except Exception:
+            term = ""
+        term = (term or "").strip()
+        if not term:
+            await query.answer("❌ ترم الزامی است — دوباره تلاش کن", show_alert=True)
+            return
+    saved = await db.grade_bulk_upsert(entries, lesson, exam_title, exam_date, query.from_user.id, term=term)
 
     # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (نمره → کارنامه) برای همه‌ی دانشجویان
     # 🧠 N2 — Deep Link: همان درس در کارنامه فلش می‌خورد
@@ -191,7 +253,7 @@ async def _confirm_and_save(query, context):
     await db.inbox_add_many([
         {'user_id': rec['student_id'], 'type': 'grade',
          'title': f"📊 نمره‌ات {'به‌روزرسانی شد' if rec.get('_is_update') else 'ثبت شد'}",
-         'body': (f"📚 {lesson}\n📝 {exam_title}\n🎯 نمره: {rec['score']}/20"),
+         'body': (f"📚 {lesson}\n🎓 {term}\n📝 {exam_title}\n🎯 نمره: {rec['score']}/20"),
          'link': '/grades?hl=' + _gq(str(lesson or ''))}
         for rec in saved if rec.get('student_id')
     ])
@@ -202,7 +264,7 @@ async def _confirm_and_save(query, context):
         ok = await safe_send(
             query.get_bot(), rec['student_id'],
             f"📊 <b>نمره‌ات {verb}!</b>\n\n"
-            f"📚 درس: {lesson}\n📝 امتحان: {exam_title}\n"
+            f"📚 درس: {lesson}\n🎓 ترم: {term}\n📝 امتحان: {exam_title}\n"
             f"🎯 نمره: <b>{rec['score']}/20</b>",
             parse_mode='HTML'
         )
@@ -210,7 +272,7 @@ async def _confirm_and_save(query, context):
             sent += 1
 
     await query.edit_message_text(
-        f"✅ <b>{len(saved)} نمره ثبت شد.</b>\nبه {sent} نفر نوتیف رفت.",
+        f"✅ <b>{len(saved)} نمره برای {term} ثبت شد.</b>\nبه {sent} نفر نوتیف رفت.",
         parse_mode='HTML'
     )
 
@@ -221,8 +283,8 @@ async def _confirm_and_save(query, context):
     actor_role = await db.get_actor_role_label(query.from_user.id)
     await send_audit_log(
         query.get_bot(), 'admin', actor_name, query.from_user.id,
-        f"ثبت دسته‌جمعی نمره ({len(saved)} نفر)", module='Grades', severity='INFO',
-        actor_role=actor_role, target_type='lesson', target_label=f"{lesson} — {exam_title}",
+        f"ثبت دسته‌جمعی نمره ({len(saved)} نفر) — {term}", module='Grades', severity='INFO',
+        actor_role=actor_role, target_type='lesson', target_label=f"{lesson} — {exam_title} — {term}",
         tags=['ثبت_نمره']
     )
 
@@ -248,7 +310,8 @@ async def _show_recent_grades(query, page: int):
     for g in items:
         user = await db.get_user(g['student_id'])
         name = user.get('name', str(g['student_id'])) if user else str(g['student_id'])
-        lines.append(f"• {name} — {g['lesson']} ({g['exam_title']}): <b>{g['score']}/20</b>")
+        term_txt = f" [{g.get('term')}]" if g.get('term') else ""
+        lines.append(f"• {name} — {g['lesson']}{term_txt} ({g['exam_title']}): <b>{g['score']}/20</b>")
 
     keyboard = []
     nav = []
@@ -319,13 +382,41 @@ async def grades_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _start_new_grade(query, context)
     elif action == 'lesson_pick':
         await _pick_lesson(query, context, int(parts[2]))
+    elif action == 'term_pick':
+        await _pick_term(query, context, int(parts[2]))
+    elif action == 'term_pick_raw':
+        # term string may contain spaces, join remainder
+        raw_term = ':'.join(parts[2:])
+        await _pick_term(query, context, -1, raw=raw_term)
     elif action == 'confirm':
         await _confirm_and_save(query, context)
     elif action == 'list':
         await _show_recent_grades(query, int(parts[2]))
     elif action == 'mine':
-        text = await _build_my_grades_text(query.from_user.id)
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data='dashboard:refresh')]]
+        # اگر کاربر از ترم خاص آمده باشد، parts[2] حاوی ترم است
+        term_filter = ':'.join(parts[2:]) if len(parts) > 2 and parts[2] else None
+        term_filter = term_filter.strip() if isinstance(term_filter, str) else None
+        if term_filter == "":
+            term_filter = None
+        text = await _build_my_grades_text(query.from_user.id, term=term_filter)
+        # تب‌های ترم: کارنامه‌ی ترم‌به‌ترم — هر ترم جدا با میانگین جدا
+        try:
+            terms = await db.grade_terms_of_student(query.from_user.id)
+        except Exception:
+            terms = []
+        keyboard = []
+        if terms:
+            row = []
+            for t in terms:
+                row.append(InlineKeyboardButton(t, callback_data=f'grades:mine:{t}'))
+                if len(row) == 2:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            if term_filter:
+                keyboard.append([InlineKeyboardButton("📚 همه ترم‌ها", callback_data='grades:mine')])
+        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='dashboard:refresh')])
         try:
             await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception:
