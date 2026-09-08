@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 # ─────────── Time ───────────
 try:
-    from time_utils import now_utc, utc_now_iso, TEHRAN
+    from time_utils import now_utc, utc_now_iso, TEHRAN, format_datetime_fa
 except Exception:  # pragma: no cover
     from zoneinfo import ZoneInfo
     TEHRAN = ZoneInfo("Asia/Tehran")
@@ -41,6 +41,11 @@ except Exception:  # pragma: no cover
         return datetime.now(timezone.utc)
     def utc_now_iso():
         return now_utc().isoformat()
+    def format_datetime_fa(v, long=False, seconds=False, fallback="—"):
+        try:
+            return v.astimezone(TEHRAN).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(v)
 
 try:
     from request_context import current_request_id
@@ -387,13 +392,18 @@ def build_audit_event(
     """ساخت رویداد استاندارد — تابع خالص بدون I/O."""
     now = now_utc()
     ts_iso = now.isoformat()
-    # Tehran display
+    # Tehran display — یکپارچه با time_utils (شمسی، Asia/Tehran)
     try:
         ts_tehran = now.astimezone(TEHRAN).isoformat()
-        ts_tehran_str = now.astimezone(TEHRAN).strftime("%Y-%m-%d %H:%M:%S %Z")
     except Exception:
         ts_tehran = ts_iso
-        ts_tehran_str = ts_iso
+    try:
+        ts_tehran_str = format_datetime_fa(now, long=True)
+    except Exception:
+        try:
+            ts_tehran_str = now.astimezone(TEHRAN).strftime("%Y-%m-%d %H:%M:%S %Z")
+        except Exception:
+            ts_tehran_str = ts_iso
 
     # Normalize
     severity_n = normalize_severity(severity)
@@ -490,8 +500,15 @@ def build_telegram_audit_text(event: dict) -> str:
     except Exception:
         mod_fa = mod
 
-    # زمان تهران
-    ts = event.get("timestamp_tehran_str") or event.get("timestamp", "")
+    # زمان تهران — یکپارچه شمسی (time_utils)
+    raw_ts = event.get("timestamp_tehran") or event.get("timestamp") or event.get("timestamp_tehran_str") or ""
+    try:
+        ts = format_datetime_fa(raw_ts, long=True) if raw_ts else (event.get("timestamp_tehran_str") or "")
+        # اگر format_datetime_fa مقدار fallback برگرداند و raw_ts همان strftime قدیمی بود، به همان اکتفا کن
+        if ts == "—" and event.get("timestamp_tehran_str"):
+            ts = event.get("timestamp_tehran_str")
+    except Exception:
+        ts = event.get("timestamp_tehran_str") or event.get("timestamp", "")
 
     lines = [
         f"{cat_icon} <b>{html_escape(cat_title)}</b>",
@@ -508,9 +525,6 @@ def build_telegram_audit_text(event: dict) -> str:
         "⚡ <b>عملیات</b>",
         html_escape(event.get("display_action") or event.get("action", "")),
     ]
-    # action code کوچک
-    if event.get("action"):
-        lines.append(f"<code>{html_escape(event['action'])}</code>")
 
     if target.get("label") or target.get("id"):
         lines += ["", "🎯 <b>هدف</b>"]
@@ -551,11 +565,6 @@ def build_telegram_audit_text(event: dict) -> str:
             lines.append(f"⚠️ {html_escape(event['error_message'][:300])}")
 
     lines += ["", f"🏷 <b>سطح اهمیت</b>", f"{sev['icon']} {sev['label']}"]
-    lines += ["", f"🆔 <b>Event ID</b> <code>{html_escape(event.get('event_id',''))}</code>"]
-    if event.get("correlation_id"):
-        lines.append(f"🔗 <b>Correlation</b> <code>{html_escape(event['correlation_id'])}</code>")
-    if event.get("request_id"):
-        lines.append(f"📨 <b>Request</b> <code>{html_escape(event['request_id'])}</code>")
 
     # تگ‌ها
     auto_tags = []
