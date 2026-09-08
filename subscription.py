@@ -490,6 +490,161 @@ async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ══════════════════════════════════════════════════
+#  🌊 W6.2 — شارژ کیف پول (همان معماری رسید بانکی خرید؛ بدون مسیر موازی)
+# ══════════════════════════════════════════════════
+
+TOPUP_AMOUNTS = (50_000, 100_000, 200_000, 500_000)
+
+
+async def _topup_bounds() -> tuple:
+    """کرانه‌های مبلغ — همان settings که اندپوینت API هم می‌خواند."""
+    try:
+        return (int(await db.get_setting('topup_min', '10000')),
+                int(await db.get_setting('topup_max', '20000000')))
+    except Exception:
+        return 10_000, 20_000_000
+
+
+async def _prompt_topup_amounts(query, context):
+    context.user_data.pop('sub_mode', None)
+    context.user_data.pop('sub_topup_amount', None)
+    kb = [[InlineKeyboardButton(f"{_fmt_price(a)} تومان",
+                                callback_data=f"sub:topamt:{a}")]
+          for a in TOPUP_AMOUNTS]
+    kb.append([InlineKeyboardButton("✏️ مبلغ دلخواه",
+                                    callback_data="sub:topcustom")])
+    kb.append([InlineKeyboardButton("🔙 بازگشت به کیف پول",
+                                    callback_data="sub:wallet")])
+    await query.edit_message_text(
+        "💰 <b>شارژ کیف پول</b>\n\n"
+        "مبلغ شارژ رو انتخاب کن؛ بعدش اطلاعات کارت و نحوه‌ی ارسال رسید "
+        "نشونت داده می‌شه 👇",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def _prompt_topup_receipt(target, context, uid: int, amount: int,
+                                is_query: bool):
+    """نمایش اطلاعات واریز + ورود به حالت انتظار عکس رسید."""
+    tmin, tmax = await _topup_bounds()
+    if not tmin <= amount <= tmax:
+        msg = (f"⚠️ مبلغ شارژ باید بین {_fmt_price(tmin)} و "
+               f"{_fmt_price(tmax)} باشه.")
+        if is_query:
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.reply_text(msg)
+        return
+    if await db.sub_payment_has_pending(uid):
+        msg = ("⏳ یه رسید قبلی ازت در انتظار بررسیه؛ اول اون بررسی بشه، "
+               "بعد می‌تونی رسید شارژ بفرستی.")
+        if is_query:
+            await target.answer(msg, show_alert=True)
+        else:
+            await target.reply_text(msg)
+        return
+    card_num = await db.get_setting('subscription_card_number', '—')
+    card_owner = await db.get_setting('subscription_card_owner', '—')
+    context.user_data['sub_mode'] = 'awaiting_topup_screenshot'
+    context.user_data['sub_topup_amount'] = amount
+    text = (
+        f"💰 <b>شارژ کیف پول — {_fmt_price(amount)}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📇 شماره کارت:\n<code>{card_num}</code>\n"
+        f"👤 به نام: {card_owner}\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"مبلغ <b>{_fmt_price(amount)}</b> رو واریز کن و <b>فقط عکس "
+        f"رسید/اسکرین‌شات</b> رو همینجا بفرست.\n"
+        f"بعد از تأیید ادمین، مبلغ فوراً به کیف پولت اضافه می‌شه ✅"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "🔙 انصراف", callback_data="sub:wallet")]])
+    if is_query:
+        await target.edit_message_text(text, parse_mode='HTML',
+                                       reply_markup=kb)
+    else:
+        await target.reply_text(text, parse_mode='HTML', reply_markup=kb)
+
+
+async def topup_amount_text_handler(update: Update,
+                                    context: ContextTypes.DEFAULT_TYPE):
+    """مبلغ دلخواه — ارقام فارسی/عربی نرمال می‌شوند؛ کرانه سرور-ساید."""
+    raw = (update.message.text or '').strip()
+    table = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+    cleaned = raw.translate(table).replace(',', '').replace(' ', '')
+    try:
+        amount = int(cleaned)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ مبلغ رو فقط با عدد بفرست (مثلاً ۱۵۰۰۰۰) یا /cancel بزن.")
+        return
+    await _prompt_topup_receipt(update.message, context,
+                                update.effective_user.id, amount,
+                                is_query=False)
+
+
+async def topup_screenshot_handler(update: Update,
+                                   context: ContextTypes.DEFAULT_TYPE):
+    """عکس رسید شارژ — دقیقاً همان الگوی screenshot_handler خرید:
+    رسید یک sub_payment با plan_id='wallet_topup' است؛ تأیید ادمین در
+    finalize_approved_payment اعتبار کیف پول می‌سازد."""
+    uid = update.effective_user.id
+    amount = int(context.user_data.get('sub_topup_amount') or 0)
+    if amount <= 0:
+        context.user_data.pop('sub_mode', None)
+        await update.message.reply_text(
+            "❌ اول مبلغ شارژ رو انتخاب کن. /cancel بزن و از «کیف پول» "
+            "دوباره امتحان کن.")
+        return
+    if await db.sub_payment_has_pending(uid):
+        for k in ('sub_mode', 'sub_topup_amount'):
+            context.user_data.pop(k, None)
+        await update.message.reply_text(
+            "⏳ یه رسید قبلی ازت در انتظار بررسیه.\n"
+            "لطفاً صبر کن تا همون بررسی بشه.")
+        return
+    photo = update.message.photo[-1]
+    pid = await db.sub_payment_create(
+        user_id=uid, plan_id='wallet_topup', plan_name='شارژ کیف پول',
+        price=amount, final_price=amount, screenshot_file_id=photo.file_id,
+        idem_key=f"bot:topup:{uid}:{photo.file_id}",
+    )
+    for k in ('sub_mode', 'sub_topup_amount'):
+        context.user_data.pop(k, None)
+
+    user = await db.get_user(uid)
+    uname = f"@{user.get('username')}" if user and user.get('username') else '—'
+    name = (user.get('name', update.effective_user.full_name)
+            if user else update.effective_user.full_name)
+    reject_count = await db.sub_payment_reject_count(uid)
+    warn_line = (f"\n⚠️ این کاربر قبلاً {reject_count} بار رد شده\n"
+                 if reject_count > 0 else "")
+    caption = (
+        f"💰 <b>رسید شارژ کیف پول جدید</b>\n\n"
+        f"👤 {name} | {uname}\n"
+        f"🆔 <code>{uid}</code>\n"
+        f"💰 مبلغ: {_fmt_price(amount)}\n"
+        f"📌 تأیید = اعتبار به کیف پول کاربر (نه اشتراک)"
+        + warn_line
+    )
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ تأیید", callback_data=f"sub:appr:{pid}"),
+        InlineKeyboardButton("❌ رد", callback_data=f"sub:rej:{pid}"),
+    ]])
+    try:
+        sent = await context.bot.send_photo(
+            ADMIN_ID, photo.file_id, caption=caption,
+            parse_mode='HTML', reply_markup=kb)
+        await db.sub_payment_set_admin_msg(pid, sent.message_id)
+    except Exception as e:
+        logger.error(f"topup admin notify failed: {e}")
+
+    await update.message.reply_text(
+        "⏳ رسید شارژت برای ادمین ارسال شد.\n"
+        "به‌محض تأیید، مبلغ به کیف پولت اضافه می‌شه."
+    )
+
+
+# ══════════════════════════════════════════════════
 #  callback اصلی — دکمه‌های sub:
 # ══════════════════════════════════════════════════
 
@@ -516,6 +671,20 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == 'wallet':
         _skip = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await _show_wallet(query, uid, _skip)
+    # 🌊 W6.2 — شارژ کیف پول
+    elif action == 'topup':
+        await _prompt_topup_amounts(query, context)
+    elif action == 'topamt':
+        _amt = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _prompt_topup_receipt(query, context, uid, _amt, is_query=True)
+    elif action == 'topcustom':
+        context.user_data['sub_mode'] = 'awaiting_topup_amount'
+        context.user_data.pop('sub_topup_amount', None)
+        await query.edit_message_text(
+            "✏️ <b>مبلغ دلخواه</b>\n\nمبلغ شارژ (تومان) رو تایپ کن و بفرست:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔙 انصراف", callback_data="sub:wallet")]]))
 
     elif action == 'discount':
         await _prompt_discount(query, context)
@@ -599,11 +768,13 @@ async def _admin_approve(query, context, pid: str):
     if not payment or payment.get('status') != 'pending':
         await query.answer("این رسید قبلاً بررسی شده.", show_alert=True)
         return
-    plan = await db.sub_plan_get(payment['plan_id'])
-    if not plan or int(plan.get('days', 0) or 0) <= 0:
-        await query.answer("مدت این پلن نامعتبر است؛ اول پلن را اصلاح کن.",
-                           show_alert=True)
-        return
+    is_topup = str(payment.get('plan_id') or '') == 'wallet_topup'
+    if not is_topup:
+        plan = await db.sub_plan_get(payment['plan_id'])
+        if not plan or int(plan.get('days', 0) or 0) <= 0:
+            await query.answer("مدت این پلن نامعتبر است؛ اول پلن را اصلاح کن.",
+                               show_alert=True)
+            return
 
     # 🛡 AUDIT-A1 — اول «ادعا»ی تصمیم (گذار اتمیک pending→approved). اگر
     # هم‌زمان کسی همان رسید را بسته باشد نباید حتی یک روز اضافه شود؛
@@ -615,7 +786,30 @@ async def _admin_approve(query, context, pid: str):
 
     # 🌊 GIFT — فعال‌سازی از تنها نقطه‌ی مشترک (بات/وب یک‌جا):
     # رسید عادی → payer، رسید هدیه → recipient. اتمیک و یک‌بار.
+    # 🌊 W6.2 — رسید شارژ → همان primitive، اعتبار کیف پول می‌سازد.
     res = await db.finalize_approved_payment(payment, ADMIN_ID)
+    if is_topup:
+        balance = int((await db.wallet_get_for_user_id(
+            payment['user_id']) or {}).get('balance', 0))
+        await db.inbox_add(payment['user_id'], 'wallet_topup',
+            "💰 کیف پولت شارژ شد!",
+            (f"رسید شارژ {_fmt_price(int(payment.get('final_price') or 0))} "
+             f"تأیید شد؛ موجودی فعلی: {_fmt_price(balance)} تومان."),
+            link='/me/subscription')
+        await safe_send(
+            context.bot, payment['user_id'],
+            (f"💰 <b>کیف پولت شارژ شد!</b>\n\n"
+             f"➕ مبلغ: {_fmt_price(int(payment.get('final_price') or 0))}\n"
+             f"👛 موجودی فعلی: <b>{_fmt_price(balance)}</b>\n\n"
+             f"حالا می‌تونی با کیف پول اشتراک بخری 💳"),
+            parse_mode='HTML')
+        try:
+            await query.edit_message_caption(
+                caption=query.message.caption + "\n\n✅ <b>تأیید شد</b>",
+                parse_mode='HTML')
+        except Exception:
+            pass
+        return
     target = res['target_uid']
     gift = payment.get('gift') or {}
     # 🎟 موج D1 — کد تخفیف در لحظه‌ی ثبت رسید مصرف شده؛ اینجا دیگر مصرف
@@ -958,6 +1152,9 @@ async def _show_wallet(query, uid: int, skip: int = 0):
     else:
         lines.append("\nتراکنشی در این صفحه نیست.")
     keyboard = []
+    # 🌊 W6.2 — شارژ کیف پول از سمت دانشجو (رسید بانکی → تأیید ادمین)
+    keyboard.append([InlineKeyboardButton(
+        "💰 شارژ کیف پول", callback_data="sub:topup")])
     if len(txs) == 8:
         keyboard.append([InlineKeyboardButton(
             "🕓 تراکنش‌های قدیمی‌تر", callback_data=f"sub:wallet:{page + 8}")])

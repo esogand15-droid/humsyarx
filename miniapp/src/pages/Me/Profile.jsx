@@ -1688,8 +1688,11 @@ export function WalletMiniCard() {
           {walletQuery.isLoading ? '…' : `${number(w?.balance ?? 0)} تومان`}
         </b>
         <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription?wallet=topup')}>
+          💳 شارژ کیف پول
+        </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
-          💳 خرید اشتراک
+          💰 خرید اشتراک
         </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
           🧾 تاریخچه

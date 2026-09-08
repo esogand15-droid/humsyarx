@@ -72,6 +72,8 @@ class WalletStaticTests(unittest.TestCase):
     def setUp(self):
         self.wa = read("api", "routers", "web_admin.py")
         self.wallet_db = read("db", "wallet.py")
+        self.sub_router = read("api", "routers", "subscription.py")
+        self.finance_db = read("db", "finance.py")
 
     def test_admin_wallet_routes_perm_gated(self):
         for route in ('"/wallets"', '"/wallets/{uid}"',
@@ -103,6 +105,30 @@ class WalletStaticTests(unittest.TestCase):
         self.assertIn("async def wallet_purchase", self.wallet_db)
         self.assertIn("discount_validate", self.wallet_db)
         self.assertIn("discount_consume", self.wallet_db)
+
+    def test_topup_wired_end_to_end(self):
+        """🌊 W6.2 — شارژ کیف پول: یک مسیر مالی، سه کلاینت، صفر منطق موازی."""
+        # API دانشجو: اندپوینت شارژ روی همان زیرساخت رسید
+        self.assertIn('"/topup"', self.sub_router)
+        self.assertIn('plan_id="wallet_topup"', self.sub_router)
+        # تنها نقطه‌ی اعتبار: finalize (مشترک بات/وب)
+        self.assertIn("wallet_topup", self.finance_db)
+        self.assertIn("sub_payment_topup", self.finance_db)
+        self.assertIn("TX_TOPUP = 'topup_credit'", self.wallet_db)
+        # بات: پروفایل → کیف پول، جریان رسید شارژ، شعبه‌ی تأیید
+        prof = read("profile.py")
+        self.assertIn("sub:wallet", prof)
+        bot = read("subscription.py")
+        self.assertIn("topup_screenshot_handler", bot)
+        self.assertIn("is_topup", bot)
+        # مینی‌اپ: فرم شارژ با رسید
+        self.assertIn("/api/subscription/topup", read(
+            "miniapp", "src", "pages", "Me", "Subscription.jsx"))
+        # وب‌ادمین: اقدام مغایرت + گارد refund
+        self.assertIn("finalize-topup", self.wa)
+        self.assertIn("topup_without_wallet_credit", self.wallet_db)
+        api_js = read("webadmin", "src", "api.js")
+        self.assertIn("subReconFinalizeTopup:", api_js)
 
     def test_refund_credits_wallet(self):
         idx = self.wa.index("async def wa_subscription_refund")
@@ -198,7 +224,9 @@ class WalletRuntimeTests(unittest.TestCase):
         await db.wallet_transactions.delete_many({"user_id": {"$in": uids}})
         await db.sub_payments.delete_many(
             {"$or": [{"_id": {"$in": [PAY_W6_REFUND, PAY_W6_ORPHAN]}},
-                     {"user_id": {"$in": uids}, "method": "wallet"}]})
+                     {"user_id": {"$in": uids}, "method": "wallet"},
+                     {"plan_id": "wallet_topup",
+                      "user_id": {"$in": uids}}]})
         await db.subscriptions.delete_many({"_id": {"$in": uids}})
         await db.sub_plans.delete_many(
             {"_id": {"$in": [PLAN_W6, PLAN_BAD_W6]}})
@@ -736,8 +764,129 @@ class WalletRuntimeTests(unittest.TestCase):
                 await self._assert_ledger_invariant(uid)
         self._run(run())
 
-    def test_wallet_admin_views(self):
+    # ── 🌊 W6.2 — شارژ کیف پول با رسید بانکی ──────────────────
+    async def _make_topup_payment(self, uid, amount):
+        await self.db.sub_payments.delete_many(
+            {"plan_id": "wallet_topup", "user_id": uid})
+        return await self.db.sub_payment_create(
+            user_id=uid, plan_id="wallet_topup", plan_name="شارژ کیف پول",
+            price=amount, final_price=amount, screenshot_file_id="tgfile")
+
+    def test_topup_finalize_credits_once(self):
+        """تأیید رسید شارژ = اعتبار کیف پول؛ ری‌تری finalize اثر دوم ندارد."""
+        self._reset_wallets([STUDENT_A])
         async def run():
+            db = self.db
+            await db.wallet_get_or_create(STUDENT_A)
+            pid = await self._make_topup_payment(STUDENT_A, 40000)
+            assert await db.sub_payment_decide(pid, approved=True,
+                                               admin_id=ADMIN_UID)
+            res = await db.finalize_approved_payment(
+                await db.sub_payment_get(pid), ADMIN_UID)
+            assert res["is_topup"] and res["amount"] == 40000
+            w = await db.wallet_get_for_user_id(STUDENT_A)
+            assert int(w["balance"]) == 40000
+            # اجرای دوباره (کرش/ری‌تری) → already، بدون اعتبار دوم
+            res2 = await db.finalize_approved_payment(
+                await db.sub_payment_get(pid), ADMIN_UID)
+            assert res2["already"]
+            w = await db.wallet_get_for_user_id(STUDENT_A)
+            assert int(w["balance"]) == 40000
+            n = await db.wallet_transactions.count_documents(
+                {"reference_type": "sub_payment_topup",
+                 "reference_id": pid, "type": "topup_credit"})
+            assert n == 1, f"تراکنش شارژ تکراری: {n}"
+            await self._assert_ledger_invariant(STUDENT_A)
+        self._run(run())
+
+    def test_topup_refund_guarded(self):
+        """رسید شارژ مسیر بازگشت وجه به کیف پول ندارد (پرداخت دوبرابر ممنوع)."""
+        self._reset_wallets([STUDENT_A])
+        async def run():
+            db = self.db
+            await db.wallet_get_or_create(STUDENT_A)
+            pid = await self._make_topup_payment(STUDENT_A, 30000)
+            await db.sub_payment_decide(pid, approved=True,
+                                        admin_id=ADMIN_UID)
+            await db.finalize_approved_payment(
+                await db.sub_payment_get(pid), ADMIN_UID)
+            async with self._client_ctx() as c:
+                r = await c.post(
+                    f"/api/web-admin/subscription/payments/{pid}/refund",
+                    headers=self.admin_h,
+                    json={"confirm": True, "reason": "تست شارژ"})
+                assert r.status_code == 409, r.text
+                w = await db.wallet_get_for_user_id(STUDENT_A)
+                assert int(w["balance"]) == 30000
+            await self._assert_ledger_invariant(STUDENT_A)
+        self._run(run())
+
+    def test_topup_reconcile_and_finalize_endpoint(self):
+        """تأییدشده‌ی بدون اعتبار → مغایرت بحرانی؛ اقدام تعمیر = finalize."""
+        self._reset_wallets([STUDENT_B])
+        async def run():
+            db = self.db
+            await db.wallet_get_or_create(STUDENT_B)
+            pid = await self._make_topup_payment(STUDENT_B, 25000)
+            await db.sub_payment_decide(pid, approved=True,
+                                        admin_id=ADMIN_UID)
+            # بدون finalize — شبیه‌سازی کرش بین تأیید و اعتبار
+            async with self._client_ctx() as c:
+                r = await c.get("/api/web-admin/subscription/reconcile",
+                                headers=self.admin_h)
+                items = r.json()["items"]
+                hit = next((i for i in items
+                            if i["type"] == "topup_without_wallet_credit"
+                            and i["payment_id"] == pid), None)
+                assert hit, "رسید شارژِ بی‌اعتبار پرچم نخورد"
+                assert any(a["key"] == "finalize_topup"
+                           for a in hit["actions"])
+                # false-positive ممنوع: رسید شارژ ≠ «تأییدشده بدون اشتراک»
+                assert not any(
+                    i["type"] == "approved_no_active_sub"
+                    and i.get("technical") == pid for i in items)
+                r = await c.post(
+                    f"/api/web-admin/subscription/reconcile/{pid}"
+                    "/finalize-topup",
+                    headers=self.admin_h, json={"confirm": True})
+                assert r.status_code == 200, r.text
+                assert r.json()["amount"] == 25000
+                w = await db.wallet_get_for_user_id(STUDENT_B)
+                assert int(w["balance"]) == 25000
+                r = await c.get("/api/web-admin/subscription/reconcile",
+                                headers=self.admin_h)
+                assert not any(
+                    i["type"] == "topup_without_wallet_credit"
+                    and i["payment_id"] == pid for i in r.json()["items"])
+            await self._assert_ledger_invariant(STUDENT_B)
+        self._run(run())
+
+    def test_topup_api_guards(self):
+        """مرز مبلغ + رسید الزامی + رسیدِ در انتظار — همه سرور-ساید."""
+        self._reset_wallets([STUDENT_A])
+        async def run():
+            async with self._client_ctx() as c:
+                # مبلغ زیر کرانه → ۴۲۲ (بدون هیچ اثر مالی)
+                r = await c.post("/api/subscription/topup",
+                                 headers=self.b_h,
+                                 data={"amount": "500"})
+                assert r.status_code == 422, r.text
+                # مبلغ معتبر ولی بدون رسید → ۴۲۲
+                r = await c.post("/api/subscription/topup",
+                                 headers=self.b_h,
+                                 data={"amount": "50000"})
+                assert r.status_code == 422, r.text
+            w = await self.db.wallet_get_for_user_id(STUDENT_A)
+            assert int((w or {}).get("balance", 0)) == 0
+        self._run(run())
+
+    def test_wallet_admin_views(self):
+        # خودبسنده: state لازم را خودش می‌سازد (نه side-effect تست‌های قبلی)
+        self._reset_wallets([STUDENT_A])
+        async def run():
+            await self.db.wallet_credit(STUDENT_A, 120000, "refund_credit",
+                                        "unit", "admin-views-seed",
+                                        ADMIN_UID, "بازگشت وجه تست")
             async with self._client_ctx() as c:
                 r = await c.get("/api/web-admin/wallets",
                                 headers=self.admin_h)

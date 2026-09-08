@@ -39,6 +39,8 @@ TX_SUB_PURCHASE = 'subscription_purchase'
 TX_ADMIN_CREDIT = 'admin_credit'
 TX_ADMIN_DEBIT = 'admin_debit'
 TX_REVERSAL = 'reversal'
+# 🌊 W6.2 — شارژ کیف پول با رسید بانکی (تأیید ادمین → اعتبار)
+TX_TOPUP = 'topup_credit'
 
 _TX_LABELS = {
     TX_REFUND_CREDIT: 'بازگشت وجه',
@@ -46,6 +48,7 @@ _TX_LABELS = {
     TX_ADMIN_CREDIT: 'افزایش موجودی توسط ادمین',
     TX_ADMIN_DEBIT: 'کسر موجودی توسط ادمین',
     TX_REVERSAL: 'اصلاح مالی (جبران تراکنش قبلی)',
+    TX_TOPUP: 'شارژ کیف پول',
 }
 
 # عمر آستانه‌ی تراکنش pending برای پرچم‌خوردن در مغایرت‌گیری (ثانیه)
@@ -92,7 +95,8 @@ class DBWallet:
         doc = {
             'user_id': int(user_id), 'type': tx_type,
             'direction': 'credit' if tx_type in (
-                TX_REFUND_CREDIT, TX_ADMIN_CREDIT, TX_REVERSAL) else 'debit',
+                TX_REFUND_CREDIT, TX_ADMIN_CREDIT, TX_REVERSAL,
+                TX_TOPUP) else 'debit',
             'amount': int(amount), 'currency': WALLET_CURRENCY,
             'reference_type': ref_type, 'reference_id': str(ref_id),
             'balance_before': None, 'balance_after': None,
@@ -411,6 +415,24 @@ class DBWallet:
                               'user_id': int(t.get('user_id') or 0),
                               'payment_id': pid, 'amount': int(t['amount']),
                               'at': t.get('created_at')})
+        # ۵) 🌊 W6.2 — رسید شارژ تأییدشده بدون اعتبار کیف پول (کرش بین
+        # تأیید و اعتبار). ملاک قضاوت همان ledger است، نه فقط فیلد
+        # topup_credited_at — اگر tx اعتبار وجود داشته باشد مغایرتی نیست.
+        topup_refs = {
+            t['reference_id'] async for t in self.wallet_transactions.find(
+                {'reference_type': 'sub_payment_topup',
+                 'status': 'ok'}, {'reference_id': 1})}
+        async for p in self.sub_payments.find(
+                {'plan_id': 'wallet_topup', 'status': 'approved'}
+        ).sort('reviewed_at', -1).limit(200):
+            if str(p['_id']) not in topup_refs:
+                items.append({'type': 'topup_without_wallet_credit',
+                              'severity': 'critical',
+                              'user_id': int(p.get('user_id') or 0),
+                              'payment_id': str(p['_id']),
+                              'amount': int(p.get('final_price')
+                                            or p.get('amount') or 0),
+                              'at': p.get('reviewed_at')})
         # ۴) stuck pending tx (crash recovery)
         from datetime import datetime, timedelta, timezone
         cutoff = (datetime.now(timezone.utc)

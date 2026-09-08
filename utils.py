@@ -310,6 +310,7 @@ async def cancel_handler(update, context):
         'edit_user', 'backup_mode',
         # FIX جدید: سیستم اشتراک
         'sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
+        'sub_topup_amount',
         'sub_reject_pid', 'suba_target_uid', 'suba_grant_role',
         'suba_plan_edit_id', 'suba_grant_list',
         'grade_intake_scope', 'grade_lesson', 'grade_exam_title',

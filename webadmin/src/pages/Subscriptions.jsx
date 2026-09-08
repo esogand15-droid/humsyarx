@@ -430,6 +430,7 @@ function ReconcilePanel({ onGo }) {
   const [confirmRecredit, setConfirmRecredit] = useState(null);
   const [confirmResync, setConfirmResync] = useState(null);
   const [confirmResolve, setConfirmResolve] = useState(null);
+  const [confirmFinalize, setConfirmFinalize] = useState(null);
   const [busy, setBusy] = useState('');
   const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
   useEffect(load, []);
@@ -449,6 +450,18 @@ function ReconcilePanel({ onGo }) {
       const r = await api.subWalletRecredit(item.payment_id);
       toast(`مبلغ ${money(item.amount)} به کیف پول اعتبار شد ✅`, 'ok');
       setConfirmRecredit(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 🌊 W6.2 — اعمال اعتبار رسید شارژ (اجرای دوباره‌ی finalize — idempotent)
+  const finalizeTopup = async item => {
+    setBusy(item.payment_id);
+    try {
+      const r = await api.subReconFinalizeTopup(item.payment_id);
+      toast(r.already_credited
+        ? 'اعتبار قبلاً ثبت شده بود — اثر دوم ساخته نشد ✅'
+        : `اعتبار شارژ ${money(r.amount)} اعمال شد ✅`, 'ok');
+      setConfirmFinalize(null); load();
     } catch (e) { toast(errText(e), 'err'); }
     finally { setBusy(''); }
   };
@@ -514,6 +527,8 @@ function ReconcilePanel({ onGo }) {
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmAct(r)}>✅ {a.label}</button>
             : a.key === 'recredit'
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmRecredit(r)}>💰 {a.label}</button>
+            : a.key === 'finalize_topup'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmFinalize(r)}>💳 {a.label}</button>
             : a.key === 'resync'
             ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResync(r)}>⚖️ {a.label}</button>
             : a.key === 'resolve_tx'
@@ -528,6 +543,8 @@ function ReconcilePanel({ onGo }) {
       text={`فعال‌سازی امن اشتراک برای ${confirmAct.user_name || `کاربر #${fa(confirmAct.user_id)}`}؟ دوره از پلن واقعی رسید (${confirmAct.plan_name || 'نامشخص'}) محاسبه می‌شود و اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
     {confirmRecredit && <Confirm onNo={() => setConfirmRecredit(null)} onYes={() => recredit(confirmRecredit)}
       text={`اعتبار مجدد ${money(confirmRecredit.amount)} به کیف پول ${confirmRecredit.user_name || `کاربر #${fa(confirmRecredit.user_id)}`}؟ این اقدام idempotent است (اجرای دوباره = یک اثر) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmFinalize && <Confirm onNo={() => setConfirmFinalize(null)} onYes={() => finalizeTopup(confirmFinalize)}
+      text={`اعمال اعتبار شارژ ${money(confirmFinalize.amount)} به کیف پول ${confirmFinalize.user_name || `کاربر #${fa(confirmFinalize.user_id)}`}؟ همان primitive مشترک تأیید رسید اجرا می‌شود (idempotent — اجرای دوباره اثر دوم نمی‌سازد) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
     {confirmResolve && <Modal title="⏳ تعیین تکلیف تراکنش معلق" onClose={() => setConfirmResolve(null)}>
       <p className="muted" style={{ marginTop: 0 }}>
         تراکنش معلق یعنی فرآیند بین «ثبت در ledger» و «اعمال اثر» قطع شده (کرش).
@@ -962,6 +979,7 @@ const TX_KIND = {
   admin_credit: ['افزایش دستی', 'warn'],
   admin_debit: ['کسر دستی', 'bad'],
   reversal: ['اصلاح مالی (جبرانی)', 'warn'],
+  topup_credit: ['شارژ کیف پول (رسید بانکی)', 'ok'],
 };
 
 function WalletsPanel({ initial = {} }) {

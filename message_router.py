@@ -146,6 +146,11 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from subscription import discount_text_handler
         return await discount_text_handler(update, context)
 
+    # 🌊 W6.2 — مبلغ دلخواه شارژ کیف پول
+    if context.user_data.get('sub_mode') == 'awaiting_topup_amount':
+        from subscription import topup_amount_text_handler
+        return await topup_amount_text_handler(update, context)
+
     # ── مسیریابی دکمه‌های منو ──
     await _route_menu_button(update, context, text, uid, user)
 

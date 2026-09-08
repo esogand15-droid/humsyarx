@@ -609,6 +609,27 @@ class DBFinance:
         gift.activated_at پر شده باشد روزی اضافه نمی‌کند."""
         gift = payment.get('gift') or {}
         target = int(gift.get('to') or 0) or int(payment['user_id'])
+        # 🌊 W6.2 — رسید شارژ کیف پول: تأیید ادمین = اعتبار به کیف پول.
+        # همان الگوی هدیه برای یکباربودن: wallet_credit با مرجع یکتا
+        # ('sub_payment_topup', pid) — ری‌تری هرگز اعتبار دوم نمی‌سازد.
+        if str(payment.get('plan_id') or '') == 'wallet_topup':
+            amount = int(payment.get('final_price') or payment.get('price') or 0)
+            if amount <= 0:
+                raise ValueError('topup_amount_invalid')
+            if payment.get('topup_credited_at'):
+                return {'target_uid': target, 'is_topup': True,
+                        'amount': amount, 'already': True}
+            tx = await self.wallet_credit(
+                int(payment['user_id']), amount, 'topup_credit',
+                'sub_payment_topup', str(payment['_id']), int(admin_id),
+                'شارژ کیف پول — رسید تأییدشده')
+            await self.sub_payments.update_one(
+                {'_id': payment['_id'], 'topup_credited_at': None},
+                {'$set': {'topup_credited_at': utc_now_iso()}})
+            return {'target_uid': int(payment['user_id']), 'is_topup': True,
+                    'amount': amount,
+                    'balance_after': tx.get('balance_after'),
+                    'tx_id': str(tx.get('_id'))}
         if gift and gift.get('activated_at'):
             sub = await self.subscriptions.find_one({'_id': target})
             return {'target_uid': target,

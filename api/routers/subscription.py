@@ -1136,3 +1136,78 @@ async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
     w = await db.wallet_get_for_user_id(user_id)
     return {"ok": True, **res,
             "balance": int((w or {}).get("balance", 0))}
+
+
+# 🌊 W6.2 — شارژ کیف پول از سمت دانشجو: همان معماری رسید بانکی خرید
+# (رسید → بررسی ادمین → اعتبار). سیستم مالی موازی ساخته نمی‌شود؛
+# رسید شارژ یک sub_payment با plan_id ثابت 'wallet_topup' است و
+# finalize_approved_payment شاخه‌ی اعتبار آن را دارد.
+TOPUP_DEFAULT_MIN = 10_000
+TOPUP_DEFAULT_MAX = 20_000_000
+
+
+@router.post("/topup")
+async def topup(
+    amount: int = Form(...),
+    receipt: UploadFile | None = File(default=None),
+    idem: str = Form(""),
+    user=Depends(get_current_user),
+):
+    user_id = user["id"]
+    database_user = user["_db"]
+    try:
+        topup_min = int(await db.get_setting(
+            "topup_min", str(TOPUP_DEFAULT_MIN)))
+        topup_max = int(await db.get_setting(
+            "topup_max", str(TOPUP_DEFAULT_MAX)))
+    except Exception:
+        topup_min, topup_max = TOPUP_DEFAULT_MIN, TOPUP_DEFAULT_MAX
+    if not topup_min <= int(amount or 0) <= topup_max:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"مبلغ شارژ باید بین {topup_min:,} و "
+                    f"{topup_max:,} تومان باشد"))
+    # همان قاعده‌ی خرید: هر کاربر در هر لحظه یک رسید در انتظار دارد
+    if await db.sub_payment_has_pending(user_id):
+        raise HTTPException(
+            status_code=409,
+            detail="یک رسید قبلی در انتظار بررسی دارید")
+    if receipt is None:
+        raise HTTPException(
+            status_code=422, detail="تصویر رسید پرداخت الزامی است")
+    content_type = receipt.content_type or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=422, detail="رسید باید فایل تصویری باشد")
+    raw = await receipt.read()
+    if not raw:
+        raise HTTPException(status_code=422, detail="فایل رسید خالی است")
+    if len(raw) > MAX_RECEIPT_SIZE:
+        raise HTTPException(
+            status_code=413, detail="حجم رسید بیشتر از ۱۰ مگابایت است")
+    file_id = await upload_and_get_file_id(
+        user_id, receipt.filename or "receipt.jpg", raw,
+        content_type or "image/jpeg")
+    if not file_id:
+        raise HTTPException(
+            status_code=502, detail="آپلود رسید در تلگرام ناموفق بود")
+    payment_id = await db.sub_payment_create(
+        user_id=user_id, plan_id="wallet_topup", plan_name="شارژ کیف پول",
+        price=int(amount), final_price=int(amount),
+        screenshot_file_id=file_id,
+        idem_key=idem or f"topup:{user_id}:{file_id}")
+    try:
+        admin_id = int(os.getenv("ADMIN_ID", "0"))
+        safe_payment_id = escape(payment_id)
+        safe_name = escape(str(database_user.get("name", user_id)))
+        await db.client["medicalbot"]["bot_notifications"].insert_one({
+            "type": "payment_request", "chat_id": admin_id,
+            "text": (f"💰 <b>رسید شارژ کیف پول #{safe_payment_id}</b>"
+                     f"\n👤 {safe_name}"
+                     f"\n💰 {int(amount):,} تومان"),
+            "sent": False, "created_at": utc_now_iso()})
+    except Exception:
+        pass  # ثبت رسید نباید به‌خاطر خطای اعلان ادمین شکست بخورد
+    return {"ok": True, "payment_id": payment_id, "amount": int(amount),
+            "message": "رسید شارژ ثبت شد و در انتظار بررسی مدیریت است؛ "
+                       "پس از تأیید، مبلغ به کیف پول شما اضافه می‌شود."}

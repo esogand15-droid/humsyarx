@@ -5172,6 +5172,15 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         raise HTTPException(404, "رسید پیدا نشد")
     if payment.get("status") != "approved":
         raise HTTPException(409, "فقط رسید تأییدشده قابل بازگشت وجه است")
+    # 🌊 W6.2 — رسید شارژ کیف پول «بازگشت وجه به کیف پول» ندارد: مبلغ در
+    # لحظه‌ی تأیید به کیف پول رفته و اعتبار مجدد یعنی پرداخت دوبرابر.
+    # عودت بانکی = اقدام دستی مسئول مالی (+ در صورت لزوم کسر با ابزار adjust).
+    if str(payment.get("plan_id") or "") == "wallet_topup":
+        raise HTTPException(
+            409,
+            "رسید شارژ کیف پول قابل بازگشت وجه به کیف پول نیست (مبلغ هنگام "
+            "تأیید به کیف پول اعتبار یافته). عودت بانکی را دستی انجام دهید "
+            "و در صورت نیاز با ابزار «کسر موجودی» کیف پول را اصلاح کنید.")
     uid = int(payment.get("user_id") or 0)
     if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
                                        reason=reason):
@@ -5235,14 +5244,18 @@ async def wa_subscription_reconcile(
     items = []
     active_subs = {s["_id"] for s in await db.subscriptions.find(
         {"status": "active"}).to_list(length=10000)}
+    # 🌊 W6.2 — رسید شارژ کیف پول «پرداخت اشتراک» نیست: در هر دو طرف
+    # مغایرت‌گیری اشتراک excluded می‌شود تا false-positive نسازد.
     users_with_approved = {
         int(r["_id"]) for r in await db.sub_payments.aggregate([
-            {"$match": {"status": "approved"}},
+            {"$match": {"status": "approved",
+                        "plan_id": {"$ne": "wallet_topup"}}},
             {"$group": {"_id": "$user_id"}},
         ]).to_list(length=10000)}
     # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
     async for p in db.sub_payments.find(
-            {"status": "approved"}).sort("reviewed_at", -1).limit(200):
+            {"status": "approved",
+             "plan_id": {"$ne": "wallet_topup"}}).sort("reviewed_at", -1).limit(200):
         uid = int(p.get("user_id") or 0)
         if uid not in active_subs:
             items.append({"type": "approved_no_active_sub", "user_id": uid,
@@ -5346,6 +5359,14 @@ async def wa_subscription_reconcile(
                         f"شده ولی اعتبار کیف پول ایجاد نشده است.")
                 actions = [{"key": "recredit", "label": "اعتبار مجدد کیف پول",
                             "payment_id": i["payment_id"]}, go_wallet]
+            elif t == "topup_without_wallet_credit":
+                label, sev = "شارژ تأییدشده بدون اعتبار کیف پول", "critical"
+                text = (f"رسید شارژ {i['amount']:,} تومانی {who} تأیید شده "
+                        f"ولی اعتبار کیف پول ثبت نشده است (کرش بین تأیید و "
+                        f"اعتبار).")
+                actions = [{"key": "finalize_topup",
+                            "label": "اعمال اعتبار شارژ",
+                            "payment_id": i["payment_id"]}, go_wallet]
             elif t == "wallet_debit_without_payment":
                 label, sev = "کسر کیف پول بدون پرداخت تأییدشده", "critical"
                 text = (f"کسر {i['amount']:,} تومان از کیف پول {who} بدون "
@@ -5415,6 +5436,41 @@ async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
         "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
         "created_at": _now()})
     return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
+
+
+@router.post("/subscription/reconcile/{payment_id}/finalize-topup")
+async def wa_reconcile_finalize_topup(payment_id: str,
+                                      body: WaReconActivateBody,
+                                      user=Depends(_perm("subscription.manage"))):
+    """🌊 W6.2 — اقدام مغایرت «شارژ تأییدشده بدون اعتبار کیف پول»:
+    اجرای دوباره‌ی finalize_approved_payment — همان primitive مشترک و
+    idempotent (مرجع یکتای sub_payment_topup)؛ هرگز اعتبار دوم نمی‌سازد."""
+    if not body.confirm:
+        raise HTTPException(400, "برای اعمال اعتبار، تأیید صریح لازم است")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if str(payment.get("plan_id") or "") != "wallet_topup":
+        raise HTTPException(409, "این رسید، رسید شارژ کیف پول نیست")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل اعمال اعتبار است")
+    uid = int(payment.get("user_id") or 0)
+    res = await db.finalize_approved_payment(payment, int(user["id"]))
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی: اعمال اعتبار شارژ کیف پول",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=str(payment["_id"]), target_label=f"رسید شارژ کاربر {uid}",
+        before={"wallet_credited": False},
+        after={"wallet_credited": True, "amount": res.get("amount"),
+               "already": bool(res.get("already"))},
+        tags=["مالی", "کیف_پول", "مغایرت‌گیری"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:wallet", "chat_id": uid, "sent": False,
+        "text": (f"💰 شارژ کیف پول شما ({int(res.get('amount') or 0):,} "
+                 f"تومان) اعمال شد."),
+        "created_at": _now()})
+    return {"ok": True, "amount": res.get("amount"),
+            "already_credited": bool(res.get("already")), "audit_id": log_id}
 
 
 @router.get("/subscription/finance")

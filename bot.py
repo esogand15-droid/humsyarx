@@ -1128,6 +1128,11 @@ async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if context.user_data.get('sub_mode') == 'awaiting_screenshot' and update.message.photo:
         return await sub_screenshot_handler(update, context)
 
+    # 🌊 W6.2 — اسکرین‌شات رسید شارژ کیف پول
+    if context.user_data.get('sub_mode') == 'awaiting_topup_screenshot' and update.message.photo:
+        from subscription import topup_screenshot_handler
+        return await topup_screenshot_handler(update, context)
+
     # 🤖 هوشیار — عکس/PDF/صدا در حالت «پرسش از AI»
     # ⚠️ قابلیتِ جدید: قبلاً فقط عکس پشتیبانی می‌شد؛ حالا PDF (جزوه/برگه‌ی
     # اسکن‌شده) و پیامِ صوتی/فایلِ صوتی (سوالِ گفتاری) هم قبول می‌شه —

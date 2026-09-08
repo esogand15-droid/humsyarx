@@ -930,7 +930,8 @@ export default function Subscription() {
 
             <WalletSection plans={plans} selectedId={selectedId}
               discountCode={discountCode}
-              discountFinal={discount?.final_price ?? null} />
+              discountFinal={discount?.final_price ?? null}
+              initialTopup={searchParams.get('wallet') === 'topup'} />
 
 
             <section>
@@ -1895,7 +1896,8 @@ export default function Subscription() {
 // خرید همان مسیر اشتراک موجود است — کیف پول فقط روش پرداخت است.
 // ════════════════════════════════════════════════════════════════
 export function WalletSection({ plans = [], selectedId, onDone,
-                                discountCode = '', discountFinal = null }) {
+                                discountCode = '', discountFinal = null,
+                                initialTopup = false }) {
   const qc = useQueryClient();
   const walletQuery = useQuery({
     queryKey: ['wallet'],
@@ -1903,6 +1905,11 @@ export function WalletSection({ plans = [], selectedId, onDone,
   });
   const [confirmBuy, setConfirmBuy] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
+  // 🌊 W6.2 — شارژ کیف پول: رسید بانکی → بررسی ادمین → اعتبار
+  const [showTopup, setShowTopup] = useState(initialTopup);
+  const [topupAmount, setTopupAmount] = useState('');
+  const [topupFile, setTopupFile] = useState(null);
+  const toast = useUIStore((state) => state.toast);
   const buyMutation = useMutation({
     mutationFn: (payload) => api.post('/api/subscription/buy-wallet', payload),
     onSuccess: () => {
@@ -1911,6 +1918,26 @@ export function WalletSection({ plans = [], selectedId, onDone,
       onDone?.();
     },
   });
+  const topupMutation = useMutation({
+    mutationFn: ({ amount, file, idem }) => {
+      const fd = new FormData();
+      fd.append('amount', String(amount));
+      fd.append('receipt', file);
+      fd.append('idem', idem);
+      return api.post('/api/subscription/topup', fd);
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries();
+      setShowTopup(false);
+      setTopupAmount('');
+      setTopupFile(null);
+      toast(r?.data?.message || 'رسید شارژ ثبت شد و در انتظار بررسی است.', 'success');
+    },
+  });
+  const topupErr = topupMutation.isError
+    ? (topupMutation.error?.response?.data?.detail ||
+        topupMutation.error?.message || 'ثبت رسید شارژ ناموفق بود.')
+    : '';
 
   const w = walletQuery.data;
   const balance = number(w?.balance ?? 0);
@@ -1981,7 +2008,71 @@ export function WalletSection({ plans = [], selectedId, onDone,
               >
                 {sel ? `💰 خرید «${sel.name}» با کیف پول` : '💰 ابتدا یک پلن انتخاب کنید'}
               </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowTopup((v) => !v)}
+              >
+                {showTopup ? 'بستن شارژ کیف پول' : '💳 شارژ کیف پول'}
+              </button>
             </div>
+
+            {showTopup && (
+              <div className="card" style={{ marginTop: 10 }}>
+                <b>💳 شارژ کیف پول با رسید بانکی</b>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  مبلغ را وارد کن، رسید واریز را آپلود کن؛ پس از تأیید ادمین
+                  مبلغ به کیف پولت اضافه می‌شود.
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  {[50000, 100000, 200000, 500000].map((a) => (
+                    <button
+                      key={a}
+                      type="button"
+                      className="btn btn-xs"
+                      onClick={() => setTopupAmount(String(a))}
+                    >
+                      {number(a)}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={10000}
+                  placeholder="مبلغ (تومان)"
+                  value={topupAmount}
+                  onChange={(e) => setTopupAmount(e.target.value)}
+                  style={{ marginTop: 8, width: '100%' }}
+                />
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setTopupFile(e.target.files?.[0] || null)}
+                  style={{ marginTop: 8 }}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ marginTop: 10 }}
+                  disabled={
+                    topupMutation.isPending ||
+                    !topupFile ||
+                    !(Number(topupAmount) >= 10000)
+                  }
+                  onClick={() =>
+                    topupMutation.mutate({
+                      amount: Number(topupAmount),
+                      file: topupFile,
+                      idem: `topup-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                    })
+                  }
+                >
+                  {topupMutation.isPending ? '…' : '📨 ثبت رسید شارژ'}
+                </button>
+                {topupErr && <div className="err" style={{ marginTop: 8 }}>{topupErr}</div>}
+              </div>
+            )}
 
             {errText && <div className="err" style={{ marginTop: 8 }}>{errText}</div>}
 

@@ -87,7 +87,11 @@ def _profile_keyboard(user: dict = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📅 تغییر ورودی", callback_data='profile:edit_intake'),
         ],
         # FIX جدید: دسترسی به جزئیات کامل اشتراک از پروفایل
-        [InlineKeyboardButton("🧾 جزئیات اشتراک", callback_data='sub:my_status')],
+        # 🌊 W6.2 — کیف پول (موجودی + شارژ + خرید) مستقیم از پروفایل
+        [
+            InlineKeyboardButton("💰 کیف پول", callback_data='sub:wallet'),
+            InlineKeyboardButton("🧾 جزئیات اشتراک", callback_data='sub:my_status'),
+        ],
         # 👑 Prestige — دسترسی سریع به نشان‌ها و سفر رقابتی
         [
             InlineKeyboardButton("🏅 نشان‌های من", callback_data='profile:badges'),
