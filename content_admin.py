@@ -375,6 +375,7 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     KEEP_MODE = ('sel_ctype','upload_ref','add_lesson_prompt','add_session_prompt',
                  'add_ref_subject_prompt','add_ref_book_prompt','add_faq_prompt',
+                 'edit_faq_prompt','edit_faq',
                  'upload_ref_volume_prompt','upload_content',
                  'edit_lesson_prompt','edit_session_prompt',
                  'edit_ref_subject_prompt','edit_ref_book_prompt',
@@ -885,6 +886,34 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             "➕ <b>سوال متداول جدید</b>\n\n"
             "فرمت: <code>سوال | جواب | دسته</code>\n⌨️ /cancel",
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", 'ca:faq'))
+
+    elif action == 'edit_faq_menu':
+        fid = parts[2] if len(parts) > 2 else ''
+        faq = await db.faq_get(fid)
+        if not faq:
+            await query.answer("❌ سوال پیدا نشد", show_alert=True); return
+        kb = [
+            [InlineKeyboardButton("✏️ ویرایش سؤال", callback_data=f'ca:edit_faq_prompt:{fid}:question')],
+            [InlineKeyboardButton("✏️ ویرایش پاسخ", callback_data=f'ca:edit_faq_prompt:{fid}:answer')],
+            [InlineKeyboardButton("✏️ ویرایش دسته", callback_data=f'ca:edit_faq_prompt:{fid}:category')],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data='ca:faq')],
+        ]
+        await query.edit_message_text(
+            f"✏️ <b>ویرایش FAQ</b>\n\n❓ <b>{faq.get('question','')[:120]}</b>\n\n"
+            f"📝 {faq.get('answer','')[:300]}...\n\n🗂 دسته: {faq.get('category','عمومی')}",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif action == 'edit_faq_prompt':
+        fid = parts[2] if len(parts) > 2 else ''
+        field = parts[3] if len(parts) > 3 else 'question'
+        faq = await db.faq_get(fid)
+        if not faq:
+            await query.answer("❌ سوال پیدا نشد", show_alert=True); return
+        labels = {'question':'سؤال','answer':'پاسخ','category':'دسته'}
+        context.user_data.update({'ca_mode':'edit_faq','ca_edit_target':fid,'ca_edit_field':field})
+        await query.edit_message_text(
+            f"✏️ <b>ویرایش {labels.get(field,'سؤال')}</b>\n\nفعلی: <b>{faq.get(field,'')[:500]}</b>\n\nجدید بنویسید:\n⌨️ /cancel",
+            parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:edit_faq_menu:{fid}'))
 
     elif action == 'del_faq':
         _faq_del_id = parts[2]
@@ -1576,13 +1605,14 @@ async def _show_faq(query, back='ca:main'):
     for f in faqs[:15]:
         fid = str(f['_id'])
         kb.append([
-            InlineKeyboardButton(f"❓ {f.get('question','')[:30]}", callback_data='ca:faq'),
+            InlineKeyboardButton(f"❓ {f.get('question','')[:28]}", callback_data='ca:faq'),
+            InlineKeyboardButton("✏️", callback_data=f'ca:edit_faq_menu:{fid}'),
             InlineKeyboardButton("🗑", callback_data=f'ca:del_faq:{fid}'),
         ])
     kb.append([InlineKeyboardButton("➕ سوال جدید", callback_data='ca:add_faq_prompt')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
     await query.edit_message_text(
-        f"❓ <b>سوالات متداول</b> — {len(faqs)} سوال",
+        f"❓ <b>سوالات متداول</b> — {len(faqs)} سوال\n<i>✏️=ویرایش  🗑=حذف</i>",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1722,7 +1752,7 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     VALID_CA_MODES = {
         'add_lesson', 'add_session', 'edit_lesson', 'edit_session',
         'waiting_description', 'waiting_ref_description',
-        'add_faq', 'add_ref_subject', 'add_ref_book',
+        'add_faq', 'edit_faq', 'add_ref_subject', 'add_ref_book',
         'edit_ref_subject', 'edit_ref_book',
         'ui_url', 'ui_lesson', 'ui_topic',  # 📥 URL-Import
     }
@@ -2045,6 +2075,41 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _clear(context)
         await update.message.reply_text(f"✅ سوال اضافه شد!",
             reply_markup=_back_btn("🔙 برگشت", 'ca:faq'))
+
+    elif ca_mode == 'edit_faq':
+        fid = context.user_data.get('ca_edit_target',''); field = context.user_data.get('ca_edit_field','')
+        if not fid or field not in ('question','answer','category'):
+            _clear(context)
+            await update.message.reply_text("❌ خطا — دوباره از منو اقدام کنید.")
+            return ConversationHandler.END
+        old = await db.faq_get(fid)
+        if not old:
+            _clear(context)
+            await update.message.reply_text("❌ سوال پیدا نشد.")
+            return ConversationHandler.END
+        val = text.strip()
+        if not val:
+            await update.message.reply_text("❌ مقدار خالی مجاز نیست — دوباره بفرست یا /cancel")
+            return CA_WAITING_TEXT
+        ok = await db.faq_update(fid, {field: val})
+        _clear(context)
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش سوال متداول",
+                    severity='WARNING',
+                    target_id=fid,
+                    target_type='faq',
+                    target_label=old.get('question','')[:60],
+                    before={field: old.get(field,'')},
+                    after={field: val},
+                    tags=['ویرایش_FAQ'])
+            except Exception as _e:
+                logger.warning(f"edit_faq audit failed: {_e}")
+            await update.message.reply_text("✅ ویرایش ذخیره شد.",
+                reply_markup=_back_btn("🔙 بازگشت", 'ca:faq'))
+        else:
+            await update.message.reply_text("❌ ویرایش انجام نشد.",
+                reply_markup=_back_btn("🔙 بازگشت", 'ca:faq'))
 
     else:
         _clear(context)

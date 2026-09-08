@@ -917,6 +917,11 @@ export function ContentFaq() {
   ] = useState(false);
 
   const [
+    editTarget,
+    setEditTarget,
+  ] = useState(null);
+
+  const [
     form,
     setForm,
   ] = useState({
@@ -978,11 +983,18 @@ export function ContentFaq() {
     mutationFn: ({
       type,
       id,
+      payload,
     }) => {
       if (type === 'add') {
         return api.post(
           '/api/content/faq',
           form
+        );
+      }
+      if (type === 'edit') {
+        return api.patch(
+          `/api/content/faq/${id}`,
+          payload
         );
       }
 
@@ -999,15 +1011,19 @@ export function ContentFaq() {
         'success'
       );
 
-      toast(
-        variables.type === 'add'
-          ? 'سؤال متداول اضافه شد ✅'
-          : 'سؤال حذف شد',
+      if (variables.type === 'edit') {
+        toast('سؤال ویرایش شد ✅', 'success');
+      } else {
+        toast(
+          variables.type === 'add'
+            ? 'سؤال متداول اضافه شد ✅'
+            : 'سؤال حذف شد',
 
-        variables.type === 'add'
-          ? 'success'
-          : 'info'
-      );
+          variables.type === 'add'
+            ? 'success'
+            : 'info'
+        );
+      }
 
       setForm({
         category:
@@ -1020,6 +1036,7 @@ export function ContentFaq() {
           '',
       });
 
+      setEditTarget(null);
       setFormOpen(false);
 
       await refresh();
@@ -1063,17 +1080,19 @@ export function ContentFaq() {
       .length >= 5;
 
 
-  if (formOpen) {
+  if (formOpen || editTarget) {
+    const isEdit = !!editTarget;
     return (
       <>
         <Header
-          title="FAQ جدید"
+          title={isEdit ? 'ویرایش FAQ' : 'FAQ جدید'}
           subtitle={
-            'افزودن پاسخ به راهنمای کاربران'
+            isEdit ? 'ویرایش پاسخ راهنما' : 'افزودن پاسخ به راهنمای کاربران'
           }
-          onBack={() =>
-            setFormOpen(false)
-          }
+          onBack={() => {
+            setFormOpen(false);
+            setEditTarget(null);
+          }}
         />
 
         <main className="page fade-up">
@@ -1167,15 +1186,23 @@ export function ContentFaq() {
               !valid ||
               mutation.isPending
             }
-            onClick={() =>
-              mutation.mutate({
-                type:
-                  'add',
-              })
-            }
+            onClick={() => {
+              if (isEdit) {
+                const payload = {};
+                if (form.category.trim() !== (editTarget.category||'')) payload.category = form.category.trim();
+                if (form.question.trim() !== (editTarget.question||'')) payload.question = form.question.trim();
+                if (form.answer.trim() !== (editTarget.answer||'')) payload.answer = form.answer.trim();
+                if (!Object.keys(payload).length) { toast('تغییری ایجاد نشد','info'); return; }
+                mutation.mutate({ type: 'edit', id: editTarget.id, payload });
+              } else {
+                mutation.mutate({ type: 'add' });
+              }
+            }}
           >
             {mutation.isPending ? (
               <Spinner size={15} />
+            ) : isEdit ? (
+              '💾 ذخیره ویرایش'
             ) : (
               '💾 ذخیره سؤال متداول'
             )}
@@ -1400,41 +1427,50 @@ export function ContentFaq() {
 
                             lineHeight:
                               1.9,
+                            whiteSpace:
+                              'pre-wrap',
                           }}
                         >
                           {item.answer}
                         </div>
 
-                        <button
-                          className={
-                            'btn btn-d btn-full'
-                          }
-                          style={{
-                            marginTop:
-                              9,
-                          }}
-                          disabled={
-                            mutation.isPending
-                          }
-                          onClick={async () => {
-                            const accepted =
-                              await confirmAction(
-                                'این سؤال متداول حذف شود؟'
-                              );
+                        <div style={{ display:'flex', gap:8, marginTop:9 }}>
+                          <button
+                            className={'btn btn-dark'}
+                            style={{ flex:1 }}
+                            disabled={mutation.isPending}
+                            onClick={() => {
+                              setEditTarget(item);
+                              setForm({ category: item.category || 'عمومی', question: item.question || '', answer: item.answer || '' });
+                              setFormOpen(false);
+                            }}
+                          >
+                            ✏️ ویرایش
+                          </button>
+                          <button
+                            className={'btn btn-d'}
+                            style={{ flex:1 }}
+                            disabled={mutation.isPending}
+                            onClick={async () => {
+                              const accepted =
+                                await confirmAction(
+                                  'این سؤال متداول حذف شود؟'
+                                );
 
-                            if (accepted) {
-                              mutation.mutate({
-                                type:
-                                  'delete',
+                              if (accepted) {
+                                mutation.mutate({
+                                  type:
+                                    'delete',
 
-                                id:
-                                  item.id,
-                              });
-                            }
-                          }}
-                        >
-                          🗑 حذف
-                        </button>
+                                  id:
+                                    item.id,
+                                });
+                              }
+                            }}
+                          >
+                            🗑 حذف
+                          </button>
+                        </div>
                       </>
                     )}
                   </article>

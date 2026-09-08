@@ -365,6 +365,7 @@ export const api = {
   caFaq: () => req('/api/content/faq'),
   caFaqAdd: (body) => req('/api/content/faq', { method: 'POST', body }),
   caFaqDel: (fid) => req(`/api/content/faq/${fid}`, { method: 'DELETE' }),
+  caFaqEdit: (fid, body) => req(`/api/content/faq/${fid}`, { method: 'PATCH', body }),
   refSubjects: (intake) => req('/api/content/references/subjects' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),
   refSubjectAdd: (body) => req('/api/content/references/subjects', { method: 'POST', body }),
   refSubjectEdit: (sid, name) => req(`/api/content/references/subjects/${sid}`, { method: 'PATCH', body: { name } }),

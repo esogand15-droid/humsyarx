@@ -615,6 +615,35 @@ async def del_faq(fid: str, admin=Depends(get_content_admin_user)):
         tags=["FAQ", "حذف", "پنل_وب"])
     return {"ok":True}
 
+class FaqUpdate(BaseModel):
+    category: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    question: Optional[str] = Field(default=None, min_length=5, max_length=500)
+    answer: Optional[str] = Field(default=None, min_length=5, max_length=5000)
+
+@router.patch("/faq/{fid}")
+async def edit_faq(fid: str, body: FaqUpdate, admin=Depends(get_content_admin_user)):
+    old = await db.faq_get(fid)
+    if not old:
+        raise HTTPException(404, "پرسش متداول پیدا نشد")
+    payload = body.model_dump(exclude_none=True)
+    # strip
+    for k in list(payload.keys()):
+        if isinstance(payload[k], str):
+            payload[k] = payload[k].strip()
+            if not payload[k]:
+                del payload[k]
+    if not payload:
+        raise HTTPException(422, "چیزی برای ویرایش نیست")
+    ok = await db.faq_update(fid, payload)
+    if not ok:
+        raise HTTPException(500, "ویرایش انجام نشد")
+    await _audit(admin, "ویرایش پرسش متداول", "Content", severity="WARNING",
+        target_id=fid, target_type="faq", target_label=payload.get("question", old.get("question",""))[:300],
+        before={"question": old.get("question",""), "answer": old.get("answer","")[:300], "category": old.get("category","")},
+        after=payload,
+        tags=["FAQ", "ویرایش", "پنل_وب"])
+    return {"ok": True, "changed": list(payload.keys())}
+
 class GradeBulk(BaseModel):
     entries: List[dict]; lesson: str; exam_title: str; exam_date: str
 

@@ -710,6 +710,7 @@ export function FaqTab() {
   const [err, setErr] = useState('');
   const [permErr, setPermErr] = useState(false);
   const [addModal, setAddModal] = useState(false);
+  const [editItem, setEditItem] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [open, setOpen] = useState({});
 
@@ -742,8 +743,9 @@ export function FaqTab() {
               <div key={f.id} className="row content-faq-row">
                 <div className="content-faq-copy" onClick={() => setOpen(x => ({ ...x, [f.id]: !x[f.id] }))}>
                   <div className="content-faq-question">{open[f.id] ? '▾' : '▸'} {f.question}</div>
-                  {open[f.id] && <div className="muted content-faq-answer">{f.answer}</div>}
+                  {open[f.id] && <div className="muted content-faq-answer" style={{ whiteSpace:'pre-wrap' }}>{f.answer}</div>}
                 </div>
+                <button className="btn sm" aria-label={`ویرایش پرسش ${f.question.slice(0, 40)}`} onClick={() => setEditItem(f)}>✏️</button>
                 <button className="btn sm danger" aria-label={`حذف پرسش ${f.question.slice(0, 40)}`} onClick={() => setConfirm({
                   text: `حذف پرسش «${f.question.slice(0, 40)}…»؟`,
                   run: async () => { await api.caFaqDel(f.id); toast('حذف شد'); load(); },
@@ -753,6 +755,7 @@ export function FaqTab() {
           </div>
         ))}
       {addModal && <FaqAddModal onClose={(ok) => { setAddModal(false); if (ok) load(); }} />}
+      {editItem && <FaqEditModal item={editItem} onClose={(ok) => { setEditItem(null); if (ok) load(); }} />}
       {confirm && <Confirm text={confirm.text} danger
                            onYes={async () => { await confirm.run(); setConfirm(null); }}
                            onNo={() => setConfirm(null)} />}
@@ -781,6 +784,39 @@ function FaqAddModal({ onClose }) {
             } catch (e) { toast(errText(e), 'err'); }
             setBusy(false);
           }}>ثبت</button>
+          <button className="btn" onClick={() => onClose(false)}>انصراف</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function FaqEditModal({ item, onClose }) {
+  const [f, setF] = useState({ category: item.category || 'عمومی', question: item.question || '', answer: item.answer || '' });
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal title="✏️ ویرایش پرسش متداول" onClose={() => onClose(false)}>
+      <div className="grid content-modal-grid">
+        <input className="inp" placeholder="دسته…" value={f.category}
+               onChange={e => setF(x => ({ ...x, category: e.target.value }))} />
+        <input className="inp" placeholder="پرسش (حداقل ۵ حرف) *" value={f.question}
+               onChange={e => setF(x => ({ ...x, question: e.target.value }))} />
+        <textarea className="inp" rows={5} placeholder="پاسخ (حداقل ۵ حرف) *" value={f.answer}
+                  onChange={e => setF(x => ({ ...x, answer: e.target.value }))} />
+        <div className="row">
+          <button className="btn primary" disabled={busy || f.question.trim().length < 5 || f.answer.trim().length < 5} onClick={async () => {
+            setBusy(true);
+            try {
+              const payload = {};
+              if (f.category.trim() !== (item.category||'')) payload.category = f.category.trim();
+              if (f.question.trim() !== (item.question||'')) payload.question = f.question.trim();
+              if (f.answer.trim() !== (item.answer||'')) payload.answer = f.answer.trim();
+              if (!Object.keys(payload).length) { toast('تغییری ایجاد نشد','err'); setBusy(false); return; }
+              await api.caFaqEdit(item.id, payload);
+              toast('ویرایش ذخیره شد ✅'); onClose(true);
+            } catch (e) { toast(errText(e), 'err'); }
+            setBusy(false);
+          }}>ذخیره</button>
           <button className="btn" onClick={() => onClose(false)}>انصراف</button>
         </div>
       </div>

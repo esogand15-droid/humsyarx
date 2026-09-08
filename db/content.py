@@ -1484,6 +1484,27 @@ class DBContent:
             return None
 
 
+    async def faq_update(self, fid: str, data: dict):
+        """ویرایش سؤال متداول — فیلدهای مجاز: question/answer/category/order."""
+        allowed = {'question', 'answer', 'category', 'order'}
+        payload = {k: v for k, v in (data or {}).items() if k in allowed}
+        if not payload:
+            return False
+        # اعتبارسنجی سبک
+        if 'question' in payload and not str(payload['question']).strip():
+            return False
+        if 'answer' in payload and not str(payload['answer']).strip():
+            return False
+        if 'category' in payload:
+            payload['category'] = str(payload['category']).strip() or 'عمومی'
+        try:
+            r = await self.faq.update_one({'_id': ObjectId(fid)}, {'$set': payload})
+            return bool(r.matched_count)
+        except Exception as e:
+            logger.error(f"faq_update failed for {fid}: {e}")
+            return False
+
+
     async def seed_subscription_copyright_faqs(self):
         """
         FIX مهم: faq.py._get_faq_data فقط وقتی دیتابیس FAQ کاملاً
