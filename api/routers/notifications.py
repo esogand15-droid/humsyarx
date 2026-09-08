@@ -4,6 +4,24 @@ from pydantic import BaseModel
 from typing import Dict, List, Optional
 from api.auth import get_current_user
 from database import db
+from request_context import current_request_id
+
+async def _notif_audit(actor: dict, action: str, *, before=None, after=None):
+    try:
+        db_user = actor.get("_db") if isinstance(actor.get("_db"), dict) else {}
+        name = (db_user.get("name") or actor.get("name") or str(actor.get("id") or ""))
+        try:
+            role_label = await db.get_actor_role_label(actor["id"])
+        except Exception:
+            role_label = "student"
+        await db.log_action(
+            actor["id"], name, role_label,
+            action, "Notifications", category="user", severity="INFO",
+            target_id=str(actor["id"]), target_type="user", target_label=name,
+            before=before, after=after,
+        )
+    except Exception:
+        pass
 
 router = APIRouter()
 
@@ -39,6 +57,7 @@ async def update(body: Toggle, user=Depends(get_current_user)):
             updates[f"notification_settings.{canon}"] = bool(v)
     if updates:
         await db.update_user(user["id"], updates)
+        await _notif_audit(user, "ویرایش تنظیمات اعلان", after={"keys": list(updates.keys())[:5]})
     return {"ok": True}
 
 
@@ -50,6 +69,7 @@ async def toggle_all(body: ToggleAll, user=Depends(get_current_user)):
     updates = {f"notification_settings.{k}": body.enabled
                for k, _, _, _ in db.NOTIF_CATALOG}
     await db.update_user(user["id"], updates)
+    await _notif_audit(user, "ویرایش کلی تنظیمات اعلان", after={"enabled": bool(body.enabled)})
     return {"ok": True, "enabled": body.enabled}
 
 

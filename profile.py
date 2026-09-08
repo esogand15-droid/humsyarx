@@ -10,6 +10,7 @@ from utils import esc as escape   # 🛡 AUDIT-A6 —escape مرکزی
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
+from utils import send_audit_log
 from utils import progress_bar, get_rank, fmt_jalali_dt
 
 logger   = logging.getLogger(__name__)
@@ -264,6 +265,13 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'clear_nick':
         ok, err, info = await db.set_nickname(
             uid, '', changed_by='user', reason='ربات تلگرام')
+        if ok:
+            try:
+                _u = await db.get_user(uid)
+                _role = await db.get_actor_role_label(uid)
+                await send_audit_log(context.bot, 'user', (_u or {}).get('name', str(uid)), uid, "پاکسازی لقب (ربات)", module='Profile', severity='INFO', actor_role=_role, target_id=str(uid), target_type='user', target_label=(_u or {}).get('name',''), after={"nickname": ""}, tags=['لقب', 'ربات'])
+            except Exception:
+                pass
         await query.answer(
             "✅ لقب پاک شد؛ نام واقعی نمایش داده می‌شود."
             if ok else f"⚠️ {db.nick_error_text(err, info)}",
@@ -279,6 +287,12 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user     = await db.get_user(uid) or {}
         was_on   = user.get('show_real_name') is not False
         await db.set_show_real_name(uid, not was_on)
+        try:
+            _u2 = await db.get_user(uid)
+            _role2 = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', (_u2 or {}).get('name', str(uid)), uid, "تغییر حریم خصوصی نام (ربات)", module='Profile', severity='INFO', actor_role=_role2, target_id=str(uid), target_type='user', target_label=(_u2 or {}).get('name',''), before={"show_real_name": was_on}, after={"show_real_name": not was_on}, tags=['حریم', 'ربات'])
+        except Exception:
+            pass
         await query.answer(
             "🔒 در فضای عمومی فقط لقب نمایش داده می‌شود."
             if was_on else
@@ -326,7 +340,14 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'set_group' and len(parts) > 2:
         new_group = parts[2]
+        _before_g = (await db.get_user(uid) or {}).get('group', '')
         await db.update_user(uid, {'group': new_group})
+        try:
+            _u3 = await db.get_user(uid)
+            _role3 = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', (_u3 or {}).get('name', str(uid)), uid, "ویرایش گروه (ربات)", module='Profile', severity='INFO', actor_role=_role3, target_id=str(uid), target_type='user', target_label=(_u3 or {}).get('name',''), before={"group": _before_g}, after={"group": new_group}, tags=['گروه', 'ربات'])
+        except Exception:
+            pass
         await query.answer(f"✅ گروه به {new_group} تغییر یافت!", show_alert=True)
         user, stats, open_t = await _get_profile_data(uid)
         await query.edit_message_text(
@@ -362,7 +383,14 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_intake = parts[2]
         intakes    = await db.get_all_intakes()
         label      = next((i['label'] for i in intakes if i['code'] == new_intake), new_intake)
+        _before_i = (await db.get_user(uid) or {}).get('intake', '')
         await db.update_user(uid, {'intake': new_intake})
+        try:
+            _u4 = await db.get_user(uid)
+            _role4 = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', (_u4 or {}).get('name', str(uid)), uid, "ویرایش ورودی (ربات)", module='Profile', severity='INFO', actor_role=_role4, target_id=str(uid), target_type='user', target_label=(_u4 or {}).get('name',''), before={"intake": _before_i}, after={"intake": new_intake}, tags=['ورودی', 'ربات'])
+        except Exception:
+            pass
         await query.answer(f"✅ ورودی به {label} تغییر یافت!", show_alert=True)
         user, stats, open_t = await _get_profile_data(uid)
         await query.edit_message_text(
@@ -396,7 +424,13 @@ async def profile_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if len(text) > 50:
             await update.message.reply_text("⚠️ نام نباید بیشتر از ۵۰ حرف باشد:")
             return
+        _before_n = (await db.get_user(uid) or {}).get('name', '')
         await db.update_user(uid, {'name': text})
+        try:
+            _role5 = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', text, uid, "ویرایش نام (ربات)", module='Profile', severity='INFO', actor_role=_role5, target_id=str(uid), target_type='user', target_label=text, before={"name": _before_n}, after={"name": text}, tags=['نام', 'ربات'])
+        except Exception:
+            pass
         context.user_data.pop('profile_edit', None)
         context.user_data.pop('mode', None)
         await update.message.reply_text(
@@ -411,7 +445,14 @@ async def profile_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if len(text) < 5:
             await update.message.reply_text("⚠️ شماره دانشجویی نامعتبر است. مجدد وارد کنید:")
             return
+        _before_sid = (await db.get_user(uid) or {}).get('student_id', '')
         await db.update_user(uid, {'student_id': text})
+        try:
+            _u6 = await db.get_user(uid)
+            _role6 = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', (_u6 or {}).get('name', str(uid)), uid, "ویرایش شماره دانشجویی (ربات)", module='Profile', severity='INFO', actor_role=_role6, target_id=str(uid), target_type='user', target_label=(_u6 or {}).get('name',''), before={"student_id": _before_sid}, after={"student_id": text}, tags=['شماره_دانشجویی', 'ربات'])
+        except Exception:
+            pass
         context.user_data.pop('profile_edit', None)
         context.user_data.pop('mode', None)
         await update.message.reply_text(
@@ -426,6 +467,13 @@ async def profile_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif field == 'nickname':
         ok, err, info = await db.set_nickname(
             uid, text, changed_by='user', reason='ربات تلگرام')
+        if ok:
+            try:
+                _u7 = await db.get_user(uid)
+                _role7 = await db.get_actor_role_label(uid)
+                await send_audit_log(context.bot, 'user', (_u7 or {}).get('name', str(uid)), uid, "ثبت لقب (ربات)", module='Profile', severity='INFO', actor_role=_role7, target_id=str(uid), target_type='user', target_label=(_u7 or {}).get('name',''), after={"nickname": info.get('nickname')}, tags=['لقب', 'ربات'])
+            except Exception:
+                pass
         if not ok:
             await update.message.reply_text(
                 f"⚠️ {db.nick_error_text(err, info)}\n\n"

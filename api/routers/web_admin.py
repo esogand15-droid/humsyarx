@@ -2107,6 +2107,7 @@ async def saved_filters_add(body: SavedFilterIn, user=Depends(_guard_any_admin))
            "shared": bool(body.shared), "updated_by": uid,
            "created_at": now, "updated_at": now}
     r = await db.wa_saved_filters.insert_one(doc)
+    await _audit(user["id"], "ذخیره نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=str(getattr(r, "inserted_id", "") or ""), target_label=name, after={"scope": body.scope}, tags=["saved_filter", "پنل_وب"])
     return {"ok": True, "id": str(getattr(r, "inserted_id", "") or "")}
 
 
@@ -2136,6 +2137,7 @@ async def saved_filters_update(fid: str, body: SavedFilterPatch,
     if not changes: raise HTTPException(422, "تغییری ارسال نشده است")
     changes["updated_at"] = _now(); changes["updated_by"] = user["id"]
     await db.wa_saved_filters.update_one(query, {"$set": changes})
+    await _audit(user["id"], "ویرایش نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=fid, target_label=old.get("name",""), before={"scope": old.get("scope")}, after={"changed": list(changes)}, tags=["saved_filter", "پنل_وب"])
     return {"ok": True, "changed": list(changes)}
 
 
@@ -2162,6 +2164,11 @@ async def saved_filters_del(fid: str, user=Depends(_guard_any_admin)):
     else:
         q["_id"] = fid
     r = await db.wa_saved_filters.delete_many(q)
+    if getattr(r, "deleted_count", 0):
+        try:
+            await _audit(user["id"], "حذف نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=fid, tags=["saved_filter", "پنل_وب"])
+        except Exception:
+            pass
     if not getattr(r, "deleted_count", 0):
         raise HTTPException(404, "فیلتر یافت نشد")
     return {"ok": True}

@@ -400,6 +400,14 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
         # اضافه کردن پیام به replies با تگ [دانشجو]
         reply_text = f"[دانشجو] {text}"
         await db.ticket_add_reply(tid, reply_text)
+        # AUDIT — student reply via bot
+        try:
+            _u = await db.get_user(uid)
+            _name = (_u or {}).get('name', str(uid))
+            _role = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'user', _name, uid, "پاسخ دانشجو به تیکت (ربات)", module='Tickets', severity='INFO', actor_role=_role, target_id=str(tid), target_type='ticket', target_label=f"تیکت #{tid}", after={"reply_len": len(text)}, tags=['پاسخ_تیکت', 'ربات'])
+        except Exception:
+            pass
         context.user_data.pop('ticket_mode', None)
         context.user_data.pop('user_replying_ticket', None)
 
@@ -461,6 +469,15 @@ async def _send_ticket_reply(bot, tid: int, text: str) -> None:
     """
     ticket = await db.ticket_get(tid)
     await db.ticket_add_reply(tid, text)
+    # AUDIT — admin reply via bot (if called by admin)
+    try:
+        # attempt to infer actor: if ticket exists, actor is ADMIN_ID (caller is admin via ticket_message_handler or ai_send)
+        _admin_u = await db.get_user(ADMIN_ID)
+        _admin_name = (_admin_u or {}).get('name', 'ادمین')
+        _admin_role = await db.get_actor_role_label(ADMIN_ID)
+        await send_audit_log(None, 'admin', _admin_name, ADMIN_ID, "پاسخ پشتیبانی به تیکت (ربات)", module='Tickets', severity='INFO', actor_role=_admin_role, target_id=str(tid), target_type='ticket', target_label=(ticket or {}).get('subject','')[:60], after={"reply_len": len(text)}, tags=['پاسخ_تیکت', 'ربات'])
+    except Exception:
+        pass
 
     if ticket:
         try:
@@ -567,6 +584,12 @@ async def _do_create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     uname   = f"@{user.get('username','')}" if user and user.get('username') else 'ندارد'
 
     tid = await db.ticket_create(uid, name, subject, text)
+    # AUDIT — ticket create via bot
+    try:
+        _role2 = await db.get_actor_role_label(uid)
+        await send_audit_log(context.bot, 'user', name or str(uid), uid, "ثبت تیکت (ربات)", module='Tickets', severity='INFO', actor_role=_role2, target_id=str(tid), target_type='ticket', target_label=subject[:60], after={"subject": subject[:60]}, tags=['ثبت_تیکت', 'ربات'])
+    except Exception:
+        pass
     context.user_data.pop('ticket_mode', None)
     context.user_data.pop('ticket_draft', None)
     context.user_data.pop('ticket_subject', None)

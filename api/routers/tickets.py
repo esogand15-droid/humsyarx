@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from api.auth import get_current_user
 from database import db
+from request_context import current_request_id
 from time_utils import utc_now_iso
 
 router = APIRouter()
@@ -74,6 +75,20 @@ async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
     uid = user["id"]; db_user = user["_db"]
     if len(body.message.strip()) < 10: raise HTTPException(422,"متن کوتاه است")
     tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip())
+    # AUDIT — ticket creation
+    try:
+        _role = await db.get_actor_role_label(uid)
+    except Exception:
+        _role = "student"
+    try:
+        await db.log_action(
+            uid, db_user.get("name",""), _role,
+            "ثبت تیکت پشتیبانی", "Tickets", category="user", severity="INFO",
+            target_id=str(tid), target_type="ticket", target_label=body.subject[:60],
+            after={"subject": body.subject[:60]},
+        )
+    except Exception:
+        pass
     try:
         notif = db.client["medicalbot"]["bot_notifications"]
         await notif.insert_one({"type":"new_ticket","chat_id":int(os.getenv("ADMIN_ID","0")),
@@ -102,6 +117,20 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
     msg = body.message.strip()
     if not msg: raise HTTPException(422)
     await db.ticket_add_reply(tid, f"[دانشجو] {msg}")
+    # AUDIT — student reply
+    try:
+        _role2 = await db.get_actor_role_label(user["id"])
+    except Exception:
+        _role2 = "student"
+    try:
+        await db.log_action(
+            user["id"], (user.get("_db") or {}).get("name",""), _role2,
+            "پاسخ دانشجو به تیکت", "Tickets", category="user", severity="INFO",
+            target_id=str(tid), target_type="ticket", target_label=f"تیکت #{tid}",
+            after={"reply_len": len(msg)},
+        )
+    except Exception:
+        pass
     try:
         notif = db.client["medicalbot"]["bot_notifications"]
         await notif.insert_one({"type":"ticket_reply","chat_id":int(os.getenv("ADMIN_ID","0")),

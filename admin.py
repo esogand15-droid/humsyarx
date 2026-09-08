@@ -1111,11 +1111,37 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📅 <b>افزودن ورودی جدید</b>\n\nفرمت: <code>کد, برچسب</code>\nمثال: <code>bahman_1404, بهمن ۱۴۰۴</code>", parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='admin:intakes')]]))
     elif action == 'intake_toggle':
-        new_state = await db.toggle_intake(parts[2])
+        code_it = parts[2]
+        old_intake = next((i for i in (await db.get_all_intakes()) if i.get('code')==code_it), {})
+        new_state = await db.toggle_intake(code_it)
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "تغییر وضعیت ورودی" if new_state else "تغییر وضعیت ورودی",
+                module='Users', severity='WARNING', actor_role=_ar,
+                target_id=code_it, target_type='intake', target_label=old_intake.get('label', code_it),
+                before={'active': not new_state}, after={'active': new_state},
+                tags=['ورودی'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"intake_toggle audit failed: {_e}")
         await query.answer(f"{'✅ فعال' if new_state else '❌ غیرفعال'} شد", show_alert=True)
         await _show_intakes(query)
     elif action == 'intake_del':
-        await db.delete_intake(parts[2])
+        _del_code = parts[2]
+        _del_old = next((i for i in (await db.get_all_intakes()) if i.get('code')==_del_code), {})
+        await db.delete_intake(_del_code)
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "حذف ورودی", module='Users', severity='HIGH', actor_role=_ar,
+                target_id=_del_code, target_type='intake', target_label=_del_old.get('label', _del_code),
+                tags=['ورودی','حذف_ورودی'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"intake_del audit failed: {_e}")
         await query.answer("🗑 ورودی حذف شد!", show_alert=True)
         await _show_intakes(query)
     elif action == 'intake_view':
@@ -1149,13 +1175,37 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("➕ کاربر مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action == 'ca_set':
         target_uid = int(parts[2])
+        _t_before = await db.get_user(target_uid) or {}
         await db.update_user(target_uid, {'role': 'content_admin'})
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "اعطای دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
+                target_id=str(target_uid), target_type='user', target_label=_t_before.get('name',''),
+                before={'role': _t_before.get('role','')}, after={'role': 'content_admin'},
+                tags=['اعطای_نقش'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"ca_set audit failed: {_e}")
         await safe_send(context.bot, target_uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", parse_mode='HTML', reply_markup=content_admin_keyboard())
         await query.answer("✅ دسترسی داده شد!", show_alert=True)
         await _show_cat_users(query, uid=uid)
     elif action == 'ca_remove':
         target_uid = int(parts[2])
+        _t_before2 = await db.get_user(target_uid) or {}
         await db.update_user(target_uid, {'role': 'student'})
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "لغو دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
+                target_id=str(target_uid), target_type='user', target_label=_t_before2.get('name',''),
+                before={'role': _t_before2.get('role','')}, after={'role': 'student'},
+                tags=['لغو_نقش'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"ca_remove audit failed: {_e}")
         await safe_send(context.bot, target_uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", reply_markup=main_keyboard())
         await query.answer("↩️ دسترسی لغو شد!", show_alert=True)
         await _show_cat_users(query, uid=uid)
@@ -3175,12 +3225,25 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if mode == 'set_maintenance_text':
         context.user_data['mode'] = ''
+        _old_mt = await db.get_setting('maintenance_text', '')
         if text in ('پیشفرض', 'پیش‌فرض', '-'):
             await db.set_setting('maintenance_text', '')
             msg = "✅ متن حالت تعمیر به پیش‌فرض بازگشت."
+            _new_mt = ''
         else:
             await db.set_setting('maintenance_text', text)
             msg = "✅ متن حالت تعمیر ذخیره شد."
+            _new_mt = text
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                "تغییر متن حالت تعمیر", module='Settings', severity='HIGH', actor_role=_ar,
+                before={'maintenance_text': _old_mt or '(پیش‌فرض)'}, after={'maintenance_text': _new_mt or '(پیش‌فرض)'},
+                tags=['حالت_تعمیر'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"maintenance_text audit failed: {_e}")
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')
         ]]))
@@ -3191,7 +3254,19 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         key = 'log_group_admin' if mode == 'set_log_group_admin' else 'log_group_content'
         context.user_data['mode'] = ''
         if text in ('حذف', '-'):
+            _old_lg = await db.get_setting(key, None)
             await db.set_setting(key, None)
+            try:
+                _au = await db.get_user(update.effective_user.id) or {}
+                _an = _au.get('name', 'مدیر ارشد')
+                _ar = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                    f"حذف گروه لاگ {key}", module='Settings', severity='HIGH', actor_role=_ar,
+                    before={'group': str(_old_lg) if _old_lg else 'تنظیم نشده'}, after={'group': 'حذف شد'},
+                    target_id=key, target_type='settings',
+                    tags=['گروه_لاگ'])
+            except Exception as _e:
+                import logging; logging.getLogger(__name__).warning(f"del log group audit failed: {_e}")
             await update.message.reply_text(
                 "✅ تنظیم گروه حذف شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')]])
@@ -3226,7 +3301,19 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 parse_mode='HTML'
             )
             return True
+        _old_lg2 = await db.get_setting(key, None)
         await db.set_setting(key, chat_id)
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                f"تنظیم گروه لاگ {key}", module='Settings', severity='HIGH', actor_role=_ar,
+                before={'group': str(_old_lg2) if _old_lg2 else 'تنظیم نشده'}, after={'group': str(chat_id)},
+                target_id=key, target_type='settings',
+                tags=['گروه_لاگ'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"set log group audit failed: {_e}")
         try:
             await context.bot.send_message(chat_id, "✅ این گروه به‌عنوان گروه لاگ ربات تنظیم شد.")
         except Exception:
@@ -3406,7 +3493,20 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         field = info.get('field')
         label = info.get('label', '')
         if uid and field:
+            _eu_before = await db.get_user(uid) or {}
+            _eu_old = _eu_before.get(field, '')
             await db.update_user(uid, {field: text})
+            try:
+                _au = await db.get_user(update.effective_user.id) or {}
+                _an = _au.get('name', 'مدیر ارشد')
+                _ar = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                    f"ویرایش کاربر {field}", module='Users', severity='WARNING', actor_role=_ar,
+                    target_id=str(uid), target_type='user', target_label=_eu_before.get('name',''),
+                    before={field: _eu_old}, after={field: text},
+                    tags=['ویرایش_کاربر'])
+            except Exception as _e:
+                import logging; logging.getLogger(__name__).warning(f"edit_user audit failed: {_e}")
             context.user_data['mode'] = ''
             await update.message.reply_text(f"✅ {label} ویرایش شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f'admin:user_detail:{uid}')]]))
@@ -3419,6 +3519,17 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 raise ValueError("فرمت اشتباه")
             code, label = pts[0], pts[1]
             ok = await db.add_intake(code, label)
+            if ok:
+                try:
+                    _au = await db.get_user(update.effective_user.id) or {}
+                    _an = _au.get('name', 'مدیر ارشد')
+                    _ar = await db.get_actor_role_label(update.effective_user.id)
+                    await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                        "افزودن ورودی جدید", module='Users', severity='INFO', actor_role=_ar,
+                        target_id=code, target_type='intake', target_label=label,
+                        tags=['ورودی'])
+                except Exception as _e:
+                    import logging; logging.getLogger(__name__).warning(f"add_intake audit failed: {_e}")
             context.user_data.pop('mode', None)
             if ok:
                 await update.message.reply_text(f"✅ ورودی <b>{label}</b> اضافه شد!", parse_mode='HTML',

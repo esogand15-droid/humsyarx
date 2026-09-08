@@ -25,6 +25,24 @@ from ai_solver import (
 )
 
 from database import db
+from request_context import current_request_id
+
+async def _ai_audit(actor_id: int, action: str, *, before=None, after=None, target_id="", target_label=""):
+    try:
+        u = await db.get_user(actor_id)
+        name = (u or {}).get("name", str(actor_id))
+        try:
+            role_label = await db.get_actor_role_label(actor_id)
+        except Exception:
+            role_label = "owner" if actor_id == 0 else "admin"
+        await db.log_action(
+            actor_id, name, role_label,
+            action, "AI", category="admin", severity="HIGH",
+            target_id=str(target_id), target_type="user", target_label=target_label or str(target_id),
+            before=before, after=after, tags=["هوشیار", "دسترسی"],
+        )
+    except Exception:
+        pass
 
 
 router = APIRouter()
@@ -405,6 +423,8 @@ async def toggle_ban(
         body.user_id,
         new_state,
     )
+    # AUDIT — toggle AI ban
+    await _ai_audit(admin["id"], "تغییر دسترسی کاربر به هوشیار", before={"banned": not new_state}, after={"banned": new_state}, target_id=str(body.user_id), target_label=(user or {}).get("name",""))
 
     return {
         "ok":
@@ -449,6 +469,12 @@ async def reset_quota(
             status_code=404,
             detail="کاربر پیدا نشد",
         )
+    # AUDIT — reset AI quota
+    try:
+        _target = await db.get_user(body.user_id)
+    except Exception:
+        _target = None
+    await _ai_audit(admin["id"], "صفرکردن سهمیه روزانه هوشیار", before={"usage": int(( _target or {}).get("ai_usage_count") or 0)}, after={"usage": 0}, target_id=str(body.user_id), target_label=(_target or {}).get("name",""))
 
     return {
         "ok": True,

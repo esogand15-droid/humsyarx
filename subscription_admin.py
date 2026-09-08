@@ -237,8 +237,23 @@ async def handle_card_text(update, context):
     context.user_data.pop('mode', None)
     try:
         num, owner = [p.strip() for p in text.split('|', 1)]
+        _old_num = await db.get_setting('subscription_card_number', '')
+        _old_owner = await db.get_setting('subscription_card_owner', '')
         await db.set_setting('subscription_card_number', num)
         await db.set_setting('subscription_card_owner', owner)
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            # شماره کارت حساس است — فقط 4 رقم آخر در جزئیات
+            _masked = (num[:4] + '****' + num[-4:]) if len(num) >= 8 else '****'
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                "ویرایش اطلاعات کارت اشتراک", module='Subscription', severity='HIGH', actor_role=_ar,
+                before={'card_number': _old_num[:4]+'****' if _old_num else '—', 'owner': _old_owner},
+                after={'card_number': _masked, 'owner': owner},
+                tags=['اشتراک_کارت'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"card audit failed: {_e}")
         await update.message.reply_text("✅ اطلاعات کارت به‌روزرسانی شد.")
     except Exception:
         await update.message.reply_text("❌ فرمت اشتباه بود. مثال: <code>شماره | نام</code>", parse_mode='HTML')
@@ -1080,10 +1095,34 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'plan_edit':
         await _prompt_plan_edit(query, context, parts[2])
     elif action == 'plan_toggle':
+        _pt_old = await db.sub_plan_get(parts[2]) or {}
         await db.sub_plan_toggle(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            _pt_new = await db.sub_plan_get(parts[2]) or {}
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"{'فعال‌سازی' if _pt_new.get('active') else 'غیرفعال‌سازی'} پلن {_pt_new.get('name','')}", module='Subscription', severity='WARNING', actor_role=_ar,
+                target_id=parts[2], target_type='plan', target_label=_pt_new.get('name',''),
+                before={'active': _pt_old.get('active')}, after={'active': _pt_new.get('active')},
+                tags=['پلن'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"plan_toggle audit failed: {_e}")
         await _show_plans(query)
     elif action == 'plan_del':
+        _pd_old = await db.sub_plan_get(parts[2]) or {}
         await db.sub_plan_delete(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"حذف پلن {_pd_old.get('name','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='plan', target_label=_pd_old.get('name',''),
+                tags=['پلن','حذف_پلن'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"plan_del audit failed: {_e}")
         await _show_plans(query)
 
     elif action == 'card':
@@ -1118,10 +1157,34 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'disc_add':
         await _prompt_discount_add(query, context)
     elif action == 'disc_toggle':
+        _dc_old = await db.discount_get(parts[2]) or {}
         await db.discount_toggle(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            _dc_new = await db.discount_get(parts[2]) or {}
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"{'فعال‌سازی' if _dc_new.get('active') else 'غیرفعال‌سازی'} کد تخفیف {_dc_new.get('code','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='discount', target_label=_dc_new.get('code',''),
+                before={'active': _dc_old.get('active')}, after={'active': _dc_new.get('active')},
+                tags=['تخفیف'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"disc_toggle audit failed: {_e}")
         await _show_discounts(query)
     elif action == 'disc_del':
+        _dd_old = await db.discount_get(parts[2]) or {}
         await db.discount_delete(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"حذف کد تخفیف {_dd_old.get('code','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='discount', target_label=_dd_old.get('code',''),
+                tags=['تخفیف','حذف_تخفیف'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"disc_del audit failed: {_e}")
         await _show_discounts(query)
     # 🎟 موج D1 — کمپین: پیش‌نمایش/انتشار/آمار
     elif action == 'disc_prev':
