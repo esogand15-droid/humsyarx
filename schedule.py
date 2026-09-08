@@ -405,6 +405,56 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
+    # ══════════════════════════════════════════════
+    # 📸 اسکن با هوشیار + الگوی هفتگی
+    # ══════════════════════════════════════════════
+    elif action == 'scan_menu' and can_manage:
+        await _show_scan_menu(query)
+
+    elif action == 'scan_weekly' and can_manage:
+        context.user_data['mode'] = 'schedule_scan_weekly'
+        await query.edit_message_text(
+            "📸 <b>اسکن برنامه هفتگی با هوشیار</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "عکس جدول برنامه کلاسی (شنبه تا جمعه) را بفرستید.\n"
+            "هوشیار آن را به الگوی هفتگی تبدیل می‌کند — بعد پیش‌نمایش را تایید می‌کنید.\n\n"
+            "💡 نکته: جدول باید خوانا باشد (۸-۱۰، ۱۰-۱۲ ... یا ساعت دقیق). "
+            "برای کلاس‌های عملی/آز، نوع «منعطف» پیشنهاد می‌شود ولی قابل ویرایش است.\n\n"
+            "برای لغو /cancel بزنید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'scan_exam' and can_manage:
+        context.user_data['mode'] = 'schedule_scan_exam'
+        await query.edit_message_text(
+            "📝 <b>اسکن برنامه امتحانات با هوشیار</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "عکس جدول امتحانات (تاریخ + ساعت + درس) را بفرستید.\n"
+            "هوشیار آن را استخراج می‌کند — پیش‌نمایش را تایید کنید تا ثبت شود.\n\n"
+            "برای لغو /cancel بزنید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'scan_confirm' and can_manage:
+        await _confirm_scan(query, context, kind='weekly')
+
+    elif action == 'scan_exam_confirm' and can_manage:
+        await _confirm_scan(query, context, kind='exam')
+
+    elif action == 'scan_cancel' and can_manage:
+        context.user_data.pop('scan_preview', None)
+        context.user_data.pop('mode', None)
+        await query.edit_message_text("❌ اسکن لغو شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'template_menu' and can_manage:
+        await _show_template_menu(query)
+
+    elif action == 'template_generate' and can_manage:
+        await _handle_template_generate(query, context)
+
+    elif action == 'template_clear' and can_manage:
+        await _handle_template_clear(query)
+
 
 # ══════════════════════════════════════════════════
 #  UI
@@ -1305,3 +1355,287 @@ async def handle_add_schedule_text(update: Update, context: ContextTypes.DEFAULT
                 InlineKeyboardButton("❌ لغو",         callback_data=cancel_cb),
             ]])
         )
+
+
+# ══════════════════════════════════════════════════
+#  📸 اسکن با هوشیار — منطق Bot
+# ══════════════════════════════════════════════════
+
+async def _show_scan_menu(query):
+    txt = (
+        "📸 <b>اسکن با هوشیار</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "عکس جدول را بفرستید تا هوشیار آن را به‌صورت ساختاریافته استخراج کند.\n"
+        "بعد پیش‌نمایش را تایید می‌کنید — هیچ چیزی بدون تایید ذخیره نمی‌شود.\n\n"
+        "• <b>برنامه هفتگی</b> → به الگوی شنبه-جمعه تبدیل می‌شود (تکرار خودکار هفته بعد)\n"
+        "• <b>امتحانات</b> → مستقیم به لیست امتحانات می‌رود"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 اسکن برنامه هفتگی (شنبه-جمعه)", callback_data='schedule:scan_weekly')],
+        [InlineKeyboardButton("📝 اسکن لیست امتحانات", callback_data='schedule:scan_exam')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')],
+    ])
+    await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+
+async def _show_template_menu(query):
+    templates = await db.get_schedule_templates()
+    total = len(templates or [])
+    g1 = sum(1 for t in (templates or []) if t.get('group') == '1')
+    g2 = sum(1 for t in (templates or []) if t.get('group') == '2')
+    both = total - g1 - g2
+    txt = (
+        "🔁 <b>الگوی هفتگی (شنبه-جمعه)</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"📦 الگوهای ذخیره‌شده: <b>{total}</b> (گ۱: {g1} | گ۲: {g2} | هر دو: {both})\n\n"
+        "الگو هر هفته تکرار می‌شود؛ کافی است بازه را انتخاب کنید و «تولید» بزنید.\n"
+        "استثنا (لغو/جبرانی) را از بخش ویرایش/حذف تک‌جلسه انجام دهید — الگو دست‌نخورده می‌ماند."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ تولید برای ۴ هفته آینده", callback_data='schedule:template_generate')],
+        [InlineKeyboardButton("🗑 پاک‌سازی الگوها", callback_data='schedule:template_clear')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')],
+    ])
+    await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+
+async def _handle_template_generate(query, context):
+    from datetime import timedelta
+    from time_utils import parse_gregorian_date as _pgd
+    import jdatetime
+    today = now_tehran().date()
+    # start = this Saturday
+    start = start_of_week_tehran(today).date().isoformat().replace('-', '/')
+    # convert to jalali for generate API
+    # we pass jalali to db layer which handles both
+    try:
+        jd = jdatetime.date.fromgregorian(date=today)
+        # use jalali formatting YYYY/MM/DD
+        jalali_today = f"{jd.year}/{jd.month:02d}/{jd.day:02d}"
+        start_j = jalali_today  # approx; db will handle correctly via parse_jalali
+        # end = 4 weeks later
+        end_date = today + timedelta(days=28)
+        jd2 = jdatetime.date.fromgregorian(date=end_date)
+        end_j = f"{jd2.year}/{jd2.month:02d}/{jd2.day:02d}"
+    except Exception:
+        end_date = today + timedelta(days=28)
+        start_j = today.isoformat().replace('-', '/')
+        end_j = end_date.isoformat().replace('-', '/')
+    await query.edit_message_text("⏳ در حال تولید برنامه ۴ هفته از روی الگو...")
+    res = await db.generate_schedules_from_templates(start_j, end_j)
+    if not res.get('ok'):
+        await query.edit_message_text(f"❌ خطا: {res.get('error')}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]]))
+        return
+    created = res.get('created', 0)
+    skipped = res.get('skipped', 0)
+    await query.edit_message_text(
+        f"✅ تولید انجام شد\n\n"
+        f"🆕 ایجاد: <b>{created}</b>\n"
+        f"⏭ تکراری (رد): <b>{skipped}</b>\n"
+        f"📅 بازه: {start_j} تا {end_j}",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]])
+    )
+    try:
+        admin_user = await db.get_user(query.from_user.id)
+        await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                             "تولید برنامه از الگو (Bot)", module='Schedules', severity='INFO',
+                             after={'created': created, 'skipped': skipped}, tags=['الگوی_هفتگی','تولید','ربات'])
+    except Exception:
+        pass
+
+async def _handle_template_clear(query):
+    n = await db.clear_schedule_templates()
+    await query.edit_message_text(f"🗑 الگوها پاک شدند ({n} ردیف).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]]))
+
+WEEKDAY_FA = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه"]
+
+async def handle_schedule_scan_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get('mode', '')
+    kind = 'weekly' if mode == 'schedule_scan_weekly' else 'exam' if mode == 'schedule_scan_exam' else None
+    if kind not in ('weekly','exam'):
+        return
+    msg = update.message
+    # get largest photo or document image
+    file_obj = None
+    try:
+        if msg.photo:
+            file_obj = await msg.photo[-1].get_file()
+        elif msg.document and (msg.document.mime_type or '').startswith('image/'):
+            file_obj = await msg.document.get_file()
+    except Exception as e:
+        await msg.reply_text(f"❌ دریافت عکس ناموفق: {e}")
+        return
+    if not file_obj:
+        await msg.reply_text("❌ عکسی دریافت نشد.")
+        return
+    # download
+    try:
+        bio = io.BytesIO()
+        await file_obj.download_to_memory(bio)
+        image_bytes = bio.getvalue()
+    except Exception as e:
+        await msg.reply_text(f"❌ دانلود عکس ناموفق: {e}")
+        return
+    if len(image_bytes) < 500:
+        await msg.reply_text("❌ عکس خراب یا خیلی کوچک است.")
+        return
+    if len(image_bytes) > 12*1024*1024:
+        await msg.reply_text("❌ حجم عکس خیلی زیاد است (حداکثر ۱۲MB).")
+        return
+    # guess mime
+    mime = "image/jpeg"
+    try:
+        if image_bytes[:2] == b'\xff\xd8':
+            mime = "image/jpeg"
+        elif image_bytes[:8].startswith(b'\x89PNG'):
+            mime = "image/png"
+        elif image_bytes[:4] == b'RIFF' and b'WEBP' in image_bytes[:12]:
+            mime = "image/webp"
+    except Exception:
+        pass
+    await msg.reply_text("⏳ هوشیار در حال خواندن جدول است... لطفاً صبر کنید.")
+    try:
+        from ai_solver import scan_weekly_schedule_image, scan_exam_schedule_image
+        if kind == 'weekly':
+            parsed = await scan_weekly_schedule_image(image_bytes, mime)
+            slots = parsed.get('slots') or []
+            if not slots:
+                await msg.reply_text("❌ چیزی در عکس تشخیص داده نشد. لطفاً عکسی خوانا و واضح بفرستید.")
+                return
+            context.user_data['scan_preview'] = {'kind': 'weekly', 'slots': slots}
+            context.user_data.pop('mode', None)
+            # preview text
+            # group by weekday
+            by_w = {i: [] for i in range(7)}
+            for s in slots:
+                try:
+                    w = int(s.get('weekday', -1))
+                    if 0 <= w <= 6:
+                        by_w[w].append(s)
+                except Exception:
+                    continue
+            lines = ["👁 <b>پیش‌نمایش اسکن — برنامه هفتگی</b>", "━━━━━━━━━━━━━━━━", f"🔢 تعداد ردیف: <b>{len(slots)}</b>", ""]
+            for w in range(7):
+                lst = sorted(by_w[w], key=lambda x: x.get('time',''))
+                if not lst:
+                    continue
+                lines.append(f"📅 <b>{WEEKDAY_FA[w]}</b>")
+                for s in lst:
+                    fl = "🔄" if s.get('flex_type') == 'flexible' else "📌"
+                    gl = s.get('group','هر دو')
+                    lines.append(f"  {fl} {_fa_time(s.get('time',''))} — <b>{s.get('lesson','')}</b> ({gl}) {s.get('teacher','') or ''} {s.get('location','') or ''}".strip())
+                lines.append("")
+            lines.append("برای تایید و ذخیره به‌عنوان الگوی هفتگی، دکمه تایید را بزنید.")
+            lines.append("بعد از ذخیره، از بخش «🔁 الگوی هفتگی → تولید» برنامه ۴ هفته را بسازید.")
+            txt = "\n".join(lines)[:3800]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ تایید و ذخیره ({len(slots)} ردیف)", callback_data='schedule:scan_confirm')],
+                [InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_cancel')],
+            ])
+            await msg.reply_text(txt, parse_mode='HTML', reply_markup=kb)
+        else:
+            parsed = await scan_exam_schedule_image(image_bytes, mime)
+            exams = parsed.get('exams') or []
+            if not exams:
+                await msg.reply_text("❌ امتحانی تشخیص داده نشد.")
+                return
+            context.user_data['scan_preview'] = {'kind': 'exam', 'exams': exams}
+            context.user_data.pop('mode', None)
+            lines = ["👁 <b>پیش‌نمایش اسکن — امتحانات</b>", "━━━━━━━━━━━━━━━━", f"🔢 تعداد: <b>{len(exams)}</b>", ""]
+            for e in exams[:30]:
+                lines.append(f"• <b>{e.get('lesson','')}</b> — {e.get('date','')} {_fa_time(e.get('time',''))} 📍{e.get('location','') or '—'} ({e.get('group','هر دو')})")
+            if len(exams) > 30:
+                lines.append(f"... و {len(exams)-30} مورد دیگر")
+            txt = "\n".join(lines)[:3800]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ تایید و ثبت ({len(exams)} امتحان)", callback_data='schedule:scan_exam_confirm')],
+                [InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_cancel')],
+            ])
+            await msg.reply_text(txt, parse_mode='HTML', reply_markup=kb)
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, AIConfigError):
+            await msg.reply_text(f"⚠️ هوشیار پیکربندی نشده: {e}\n\nاز پنل وب → تنظیمات Vault → AI API Keys یک مدل vision (gemini/openrouter) ست کنید.")
+        elif isinstance(e, AIError):
+            await msg.reply_text(f"❌ اسکن ناموفق: {e}")
+        else:
+            logger.exception("schedule scan failed")
+            await msg.reply_text(f"❌ خطای اسکن: {str(e)[:300]}")
+        # keep mode so admin can retry
+        return
+
+async def _confirm_scan(query, context, kind: str):
+    preview = context.user_data.get('scan_preview')
+    if not preview or preview.get('kind') != kind:
+        await query.edit_message_text("❌ پیش‌نمایشی پیدا نشد. دوباره عکس بفرستید.")
+        return
+    if kind == 'weekly':
+        slots = preview.get('slots') or []
+        # validate times
+        for s in slots:
+            if not _is_valid_time(s.get('time','')):
+                await query.edit_message_text("❌ زمان نامعتبر در پیش‌نمایش — دوباره اسکن کنید.")
+                return
+        res = await db.bulk_upsert_schedule_templates(slots)
+        context.user_data.pop('scan_preview', None)
+        await query.edit_message_text(
+            f"✅ الگوی هفتگی ذخیره شد\n\n"
+            f"➕ افزوده: <b>{res.get('added',0)}</b> | ✏️ به‌روز: <b>{res.get('updated',0)}</b> | مجموع: <b>{res.get('total',0)}</b>\n"
+            f"حالا از «🔁 الگوی هفتگی → تولید» برنامه را برای هفته‌های آینده بسازید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔁 تولید برنامه ۴ هفته", callback_data='schedule:template_generate'), InlineKeyboardButton("🔙 پنل", callback_data='admin:cat_schedule')]])
+        )
+        try:
+            admin_user = await db.get_user(query.from_user.id)
+            await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                                 "اسکن و ذخیره الگوی هفتگی (Bot هوشیار)", module='Schedules', severity='INFO',
+                                 after=res, tags=['الگوی_هفتگی','اسکن_هوشیار','ربات'])
+        except Exception:
+            pass
+    else:
+        exams = preview.get('exams') or []
+        from time_utils import parse_gregorian_date, parse_jalali_date, TimeContractError, en_digits
+        created = 0; skipped = 0
+        for raw in exams:
+            try:
+                lesson = str(raw.get('lesson') or '').strip()
+                if not lesson: 
+                    skipped += 1; continue
+                raw_date = str(raw.get('date') or '').strip()
+                if not raw_date:
+                    skipped += 1; continue
+                norm = en_digits(raw_date).replace('/', '-')
+                try:
+                    y = int(norm.split('-',1)[0])
+                    if 1200 <= y <= 1600:
+                        gdate = parse_jalali_date(raw_date).isoformat()
+                    else:
+                        gdate = parse_gregorian_date(norm).isoformat()
+                except Exception:
+                    skipped += 1; continue
+                time_v = str(raw.get('time') or '08:00').strip()
+                try:
+                    parse_clock_time(time_v)
+                except Exception:
+                    time_v = '08:00'
+                group = db.normalize_group(raw.get('group') or 'هر دو') or 'هر دو'
+                loc = str(raw.get('location') or '').strip()[:80]
+                exists = await db.schedules.find_one({"date": gdate, "type": "exam", "lesson": lesson, "time": time_v})
+                if exists:
+                    skipped +=1; continue
+                await db.add_schedule("exam", lesson, "", gdate, time_v, loc, "", group)
+                created +=1
+            except Exception:
+                skipped+=1; continue
+        context.user_data.pop('scan_preview', None)
+        await query.edit_message_text(
+            f"✅ امتحانات ثبت شد\n\n🆕 ایجاد: <b>{created}</b> | ⏭ تکراری: <b>{skipped}</b>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 پنل", callback_data='admin:cat_schedule')]])
+        )
+        try:
+            admin_user = await db.get_user(query.from_user.id)
+            await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                                 "اسکن و ثبت امتحانات (Bot هوشیار)", module='Schedules', severity='INFO',
+                                 after={'created':created,'skipped':skipped}, tags=['امتحان','اسکن_هوشیار','ربات'])
+        except Exception:
+            pass

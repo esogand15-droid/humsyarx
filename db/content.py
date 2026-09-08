@@ -1254,6 +1254,157 @@ class DBContent:
             return {'notified': 0, 'preference': pref, 'group': group}
 
 
+    # ══════════════════════════════════════════════════
+    #  📅 الگوهای هفتگی (شنبه-جمعه) — تکرار خودکار
+    #  هر الگو یک کلاسِ هفتگی است که در expand به تاریخ‌های واقعی تبدیل می‌شود
+    # ══════════════════════════════════════════════════
+
+    async def get_schedule_templates(self, group: str = None) -> list:
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        return await self.schedule_templates.find(q).sort([('weekday', 1), ('time', 1)]).to_list(500)
+
+    async def clear_schedule_templates(self, group: str = None) -> int:
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        r = await self.schedule_templates.delete_many(q)
+        return int(getattr(r, 'deleted_count', 0) or 0)
+
+    async def bulk_upsert_schedule_templates(self, items: list) -> dict:
+        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, lesson, teacher, location, group, flex_type."""
+        from time_utils import parse_clock_time, TimeContractError
+        inserted = 0
+        updated = 0
+        skipped = 0
+        for raw in (items or []):
+            try:
+                wd = int(raw.get('weekday'))
+                if not 0 <= wd <= 6:
+                    skipped += 1
+                    continue
+                t = str(raw.get('time') or '').strip()
+                parse_clock_time(t)  # validate
+                lesson = str(raw.get('lesson') or '').strip()
+                if not lesson:
+                    skipped += 1
+                    continue
+                group = self.normalize_group(raw.get('group') or 'هر دو') or 'هر دو'
+                flex_type = str(raw.get('flex_type') or 'fixed').strip().lower()
+                if flex_type not in ('fixed', 'flexible'):
+                    flex_type = 'flexible' if 'عمل' in lesson or 'آز' in lesson else 'fixed'
+                doc = {
+                    'weekday': wd,
+                    'time': t,
+                    'lesson': lesson[:120],
+                    'teacher': str(raw.get('teacher') or '').strip()[:80],
+                    'location': str(raw.get('location') or '').strip()[:80],
+                    'group': group,
+                    'type': str(raw.get('type') or 'class').strip() or 'class',
+                    'flex_type': flex_type,
+                    'notes': str(raw.get('notes') or raw.get('note') or '').strip()[:300],
+                    'updated_at': utc_now_iso(),
+                }
+                # upsert by (weekday,time,lesson,group) — دو ردیف هم‌زمان با درس متفاوت (آیین/عملی) هر دو می‌مانند
+                existing = await self.schedule_templates.find_one({
+                    'weekday': wd, 'time': t, 'lesson': doc['lesson'], 'group': group
+                })
+                if existing:
+                    await self.schedule_templates.update_one({'_id': existing['_id']}, {'$set': doc})
+                    updated += 1
+                else:
+                    doc['created_at'] = utc_now_iso()
+                    await self.schedule_templates.insert_one(doc)
+                    inserted += 1
+            except (TimeContractError, ValueError, TypeError, AttributeError):
+                skipped += 1
+                continue
+        return {'inserted': inserted, 'updated': updated, 'skipped': skipped, 'total': inserted + updated}
+
+    async def generate_schedules_from_templates(self, start_date: str, end_date: str, group: str = None, dry_run: bool = False) -> dict:
+        """Expand weekly templates into dated schedules for range inclusive."""
+        from time_utils import parse_gregorian_date, parse_jalali_date, en_digits, TimeContractError
+        # parse start/end — accept jalali YYYY/MM/DD or gregorian YYYY-MM-DD
+        def _to_date(s: str):
+            raw = str(s or '').strip()
+            if not raw:
+                raise TimeContractError('empty date')
+            normalized = ''.join(c for c in en_digits(raw) if c.isprintable()).strip().replace('/', '-').replace('\\\\', '-')
+            # decide jalali vs gregorian by year range
+            try:
+                y = int(normalized.split('-', 1)[0])
+                if 1200 <= y <= 1600:
+                    return parse_jalali_date(raw)
+                return parse_gregorian_date(normalized)
+            except Exception:
+                raise TimeContractError(f'invalid date: {s}')
+        try:
+            start = _to_date(start_date)
+            end = _to_date(end_date)
+        except TimeContractError as e:
+            return {'ok': False, 'error': str(e)}
+        if end < start:
+            return {'ok': False, 'error': 'end_before_start'}
+        # fetch templates
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        templates = await self.schedule_templates.find(q).to_list(500)
+        if not templates:
+            return {'ok': False, 'error': 'no_templates'}
+        created = 0
+        skipped = 0
+        preview = []
+        cur = start
+        while cur <= end:
+            wd = (cur.weekday() - 5) % 7  # 0=Sat
+            day_str = cur.isoformat()
+            for tpl in templates:
+                if int(tpl.get('weekday')) != wd:
+                    continue
+                # idempotent: check existing schedule with same date/time/lesson/group/type
+                exists = await self.schedules.find_one({
+                    'date': day_str,
+                    'time': tpl.get('time'),
+                    'lesson': tpl.get('lesson'),
+                    'group': tpl.get('group'),
+                    'type': tpl.get('type', 'class'),
+                })
+                if exists:
+                    skipped += 1
+                    continue
+                preview.append({
+                    'date': day_str,
+                    'weekday': wd,
+                    'time': tpl.get('time'),
+                    'lesson': tpl.get('lesson'),
+                    'teacher': tpl.get('teacher', ''),
+                    'location': tpl.get('location', ''),
+                    'group': tpl.get('group'),
+                    'type': tpl.get('type', 'class'),
+                    'flex_type': tpl.get('flex_type', 'fixed'),
+                })
+                if not dry_run:
+                    await self.schedules.insert_one({
+                        'type': tpl.get('type', 'class'),
+                        'lesson': tpl.get('lesson'),
+                        'teacher': tpl.get('teacher', ''),
+                        'date': day_str,
+                        'time': tpl.get('time'),
+                        'location': tpl.get('location', ''),
+                        'notes': tpl.get('notes', ''),
+                        'group': tpl.get('group'),
+                        'is_weekly': False,
+                        'flex_type': tpl.get('flex_type', 'fixed'),
+                        'flex_note': '',
+                        'created_at': utc_now_iso(),
+                        'notified_days': [],
+                    })
+                    created += 1
+            cur = cur + timedelta(days=1)
+        return {'ok': True, 'created': created if not dry_run else 0, 'skipped': skipped, 'preview': preview[:50], 'total_matched': len(preview), 'dry_run': dry_run}
+
     async def upcoming_exams(self, days: int = 7, group: str = None):
         """Return near exams, optionally limited to a student's group.
 

@@ -8,8 +8,10 @@ from typing import Literal
 from fastapi import (
     APIRouter,
     Depends,
+    File,
     HTTPException,
     Query,
+    UploadFile,
 )
 from pydantic import BaseModel, Field
 
@@ -480,6 +482,225 @@ async def flexible_schedule_change(
         tags=["برنامه", "تغییر_زمان", schedule.get("type", ""), "پنل_وب"],
     )
     return {"ok": True, "notified": notice.get("notified", 0)}
+
+
+# ══════════════════════════════════════════════════
+#  📅 الگوهای هفتگی (شنبه-جمعه) + اسکن هوشیار
+# ══════════════════════════════════════════════════
+
+class TemplateSlot(BaseModel):
+    weekday: int = Field(ge=0, le=6, description="0=شنبه ... 6=جمعه")
+    time: str = Field(min_length=4, max_length=5)
+    lesson: str = Field(min_length=1, max_length=120)
+    teacher: str = Field(default="", max_length=80)
+    location: str = Field(default="", max_length=80)
+    group: ScheduleGroup = "هر دو"
+    flex_type: FlexType = "fixed"
+    notes: str = Field(default="", max_length=300)
+    type: ScheduleType = "class"
+
+class TemplateBulk(BaseModel):
+    slots: list[TemplateSlot] = Field(min_length=1, max_length=200)
+    clear_existing: bool = False
+    group: ScheduleGroup | None = None
+
+class TemplateGenerate(BaseModel):
+    start_date: str = Field(min_length=8, max_length=12, description="YYYY/MM/DD jalali or YYYY-MM-DD gregorian")
+    end_date: str = Field(min_length=8, max_length=12)
+    group: ScheduleGroup | None = None
+    dry_run: bool = False
+
+def _tpl_doc(item: dict) -> dict:
+    return {
+        "weekday": item.get("weekday"),
+        "time": item.get("time", ""),
+        "lesson": item.get("lesson", ""),
+        "teacher": item.get("teacher", ""),
+        "location": item.get("location", ""),
+        "group": item.get("group") or "هر دو",
+        "flex_type": item.get("flex_type") or "fixed",
+        "notes": item.get("notes") or "",
+        "type": item.get("type") or "class",
+    }
+
+@router.get("/schedule/templates")
+async def schedule_templates_list(
+    group: ScheduleGroup | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    items = await db.get_schedule_templates(group=group)
+    return {"templates": [_tpl_doc(i) for i in (items or [])], "total": len(items or [])}
+
+@router.post("/schedule/templates/bulk")
+async def schedule_templates_bulk(
+    body: TemplateBulk,
+    admin=Depends(get_schedule_admin_user),
+):
+    if body.clear_existing:
+        await db.clear_schedule_templates(group=body.group)
+    # validate times
+    for s in body.slots:
+        _valid_time(s.time)
+    result = await db.bulk_upsert_schedule_templates([s.model_dump() for s in body.slots])
+    await _audit(admin, "ثبت الگوی هفتگی", "Schedules", severity="INFO",
+                 target_type="schedule_template", target_label=f"{result['total']} ردیف",
+                 after=result, tags=["الگوی_هفتگی", "پنل_وب"])
+    return {"ok": True, **result}
+
+@router.delete("/schedule/templates")
+async def schedule_templates_clear(
+    group: ScheduleGroup | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    n = await db.clear_schedule_templates(group=group)
+    await _audit(admin, "پاک‌سازی الگوی هفتگی", "Schedules", severity="WARNING",
+                 target_type="schedule_template", target_label=str(group or "همه"),
+                 after={"deleted": n}, tags=["الگوی_هفتگی", "پاکسازی", "پنل_وب"])
+    return {"ok": True, "deleted": n}
+
+@router.post("/schedule/templates/generate")
+async def schedule_templates_generate(
+    body: TemplateGenerate,
+    admin=Depends(get_schedule_admin_user),
+):
+    result = await db.generate_schedules_from_templates(
+        body.start_date, body.end_date, group=(body.group or None), dry_run=body.dry_run
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("error") or "خطا در تولید برنامه")
+    if not body.dry_run:
+        await _audit(admin, "تولید برنامه از الگوی هفتگی", "Schedules", severity="INFO",
+                     target_type="schedule", target_label=f"{body.start_date} تا {body.end_date}",
+                     after={"created": result.get("created"), "skipped": result.get("skipped"), "group": body.group},
+                     tags=["الگوی_هفتگی", "تولید", "پنل_وب"])
+    return result
+
+MAX_SCAN_BYTES = 12 * 1024 * 1024
+
+async def _read_scan_upload(file: UploadFile) -> tuple[bytes, str]:
+    if not file or not getattr(file, "filename", None):
+        raise HTTPException(status_code=400, detail="فایل عکس ارسال نشده")
+    ctype = (file.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp", "image/jpg", "image/heic", "image/heif"):
+        # allow common image types; fallback check filename ext
+        name = (file.filename or "").lower()
+        if not any(name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")):
+            raise HTTPException(status_code=415, detail="فرمت عکس باید JPG/PNG/WEBP باشد")
+    data = await file.read()
+    if not data or len(data) < 200:
+        raise HTTPException(status_code=400, detail="فایل خالی یا خراب است")
+    if len(data) > MAX_SCAN_BYTES:
+        raise HTTPException(status_code=413, detail="حجم عکس بیش از حد زیاد است (حداکثر 12MB)")
+    mime = ctype or "image/jpeg"
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    return data, mime
+
+@router.post("/schedule/templates/scan")
+async def schedule_templates_scan(
+    file: UploadFile = File(...),
+    group: ScheduleGroup | None = Query(default=None, description="اگر جدول یک گروه خاص است"),
+    admin=Depends(get_schedule_admin_user),
+):
+    image_bytes, mime = await _read_scan_upload(file)
+    try:
+        from ai_solver import scan_weekly_schedule_image
+        parsed = await scan_weekly_schedule_image(image_bytes, mime, group_hint=(group or None))
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, (AIConfigError, AIError)):
+            raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"اسکن ناموفق: {e}")
+    slots = parsed.get("slots") or []
+    # preview: no DB write yet
+    return {"ok": True, "slots": slots, "count": len(slots)}
+
+@router.post("/schedule/templates/scan/confirm")
+async def schedule_templates_scan_confirm(
+    body: TemplateBulk,
+    admin=Depends(get_schedule_admin_user),
+):
+    # same as bulk but from scan preview
+    if body.clear_existing:
+        await db.clear_schedule_templates(group=body.group)
+    for s in body.slots:
+        _valid_time(s.time)
+    result = await db.bulk_upsert_schedule_templates([s.model_dump() for s in body.slots])
+    await _audit(admin, "تایید اسکن الگوی هفتگی", "Schedules", severity="INFO",
+                 target_type="schedule_template", target_label=f"{result['total']} ردیف از اسکن",
+                 after=result, tags=["الگوی_هفتگی", "اسکن_هوشیار", "پنل_وب"])
+    return {"ok": True, **result}
+
+@router.post("/schedule/exams/scan")
+async def schedule_exams_scan(
+    file: UploadFile = File(...),
+    admin=Depends(get_schedule_admin_user),
+):
+    image_bytes, mime = await _read_scan_upload(file)
+    try:
+        from ai_solver import scan_exam_schedule_image
+        parsed = await scan_exam_schedule_image(image_bytes, mime)
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, (AIConfigError, AIError)):
+            raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"اسکن ناموفق: {e}")
+    exams = parsed.get("exams") or []
+    return {"ok": True, "exams": exams, "count": len(exams)}
+
+class ExamBulkConfirm(BaseModel):
+    exams: list[dict] = Field(min_length=1, max_length=100)
+
+@router.post("/schedule/exams/scan/confirm")
+async def schedule_exams_scan_confirm(
+    body: ExamBulkConfirm,
+    admin=Depends(get_schedule_admin_user),
+):
+    from time_utils import parse_gregorian_date, parse_jalali_date, TimeContractError, en_digits
+    created = 0
+    skipped = 0
+    for raw in body.exams:
+        try:
+            lesson = str(raw.get("lesson") or "").strip()
+            if not lesson:
+                skipped += 1
+                continue
+            raw_date = str(raw.get("date") or "").strip()
+            if not raw_date:
+                skipped += 1
+                continue
+            # normalize jalali date to gregorian machine date
+            normalized = en_digits(raw_date).replace("/", "-")
+            try:
+                y = int(normalized.split("-", 1)[0])
+                if 1200 <= y <= 1600:
+                    gdate = parse_jalali_date(raw_date).isoformat()
+                else:
+                    gdate = parse_gregorian_date(normalized).isoformat()
+            except Exception:
+                skipped += 1
+                continue
+            time_v = str(raw.get("time") or "08:00").strip()
+            try:
+                parse_clock_time(time_v)
+            except Exception:
+                time_v = "08:00"
+            group = db.normalize_group(raw.get("group") or "هر دو") or "هر دو"
+            location = str(raw.get("location") or "").strip()[:80]
+            # idempotent by date+time+lesson
+            exists = await db.schedules.find_one({"date": gdate, "type": "exam", "lesson": lesson, "time": time_v})
+            if exists:
+                skipped += 1
+                continue
+            await db.add_schedule("exam", lesson, "", gdate, time_v, location, "", group)
+            created += 1
+        except Exception:
+            skipped += 1
+            continue
+    await _audit(admin, "تایید اسکن امتحانات", "Schedules", severity="INFO",
+                 target_type="schedule", target_label=f"{created} امتحان از اسکن",
+                 after={"created": created, "skipped": skipped}, tags=["امتحان", "اسکن_هوشیار", "پنل_وب"])
+    return {"ok": True, "created": created, "skipped": skipped}
 
 
 class GradeEntry(BaseModel):

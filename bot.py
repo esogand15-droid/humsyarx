@@ -1155,6 +1155,15 @@ async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if uid == ADMIN_ID and context.user_data.get('mode') == 'broadcast':
         return await admin_broadcast_handler(update, context)
 
+    # 📅 اسکن برنامه هفتگی/امتحانات با هوشیار (عکس جدول)
+    scan_mode = context.user_data.get('mode', '')
+    if scan_mode in ('schedule_scan_weekly', 'schedule_scan_exam'):
+        # فقط ادمین برنامه
+        if await db.has_permission(uid, "schedules.manage") or (await db.get_content_scope(uid) or {}).get("kind") == "global":
+            if update.message.photo or (update.message.document and (update.message.document.mime_type or '').startswith('image/')):
+                from schedule import handle_schedule_scan_photo
+                return await handle_schedule_scan_photo(update, context)
+
     # ۳. محتوا ادمین
     ca_mode = context.user_data.get('ca_mode', '')
     if ca_mode in ('waiting_file', 'waiting_ref_file') and await db.is_content_admin(uid):
@@ -1362,7 +1371,7 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # بعدی او در هر بخش دیگری از ربات به اشتباه به همین mode می‌رسد.
 INTERRUPTIBLE_SIMPLE_MODES = {
     'search_user', 'edit_user', 'add_intake', 'add_admin_role',
-    'add_schedule', 'flex_time_change',
+    'add_schedule', 'flex_time_change', 'schedule_scan_weekly', 'schedule_scan_exam',
     'set_auto_backup_hour', 'report_note', 'ticket_search',
     'set_maintenance_text', 'set_log_group_admin', 'set_log_group_content',
     'add_required_channel', 'edit_schedule_field', 'set_donation_link',

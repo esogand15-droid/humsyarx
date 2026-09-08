@@ -61,6 +61,7 @@ class DBCore:
         self.question_import_items = _db['question_import_items']
         self.question_migration_backups = _db['question_migration_backups']
         self.schedules    = _db['schedules']
+        self.schedule_templates = _db['schedule_templates']
         self.stats_col    = _db['stats']
         self.answers      = _db['answers']
         self.bs_lessons   = _db['bs_lessons']
@@ -255,6 +256,8 @@ class DBCore:
                 self._index(self.ref_books, [('subject_id', 1), ('order', 1)], background=True),
                 self._index(self.ref_files, [('book_id', 1), ('lang', 1), ('volume', 1)], background=True),
                 self._index(self.schedules, [('date', 1), ('type', 1)], background=True),
+                self._index(self.schedule_templates, [('weekday', 1), ('group', 1)], background=True),
+                self._index(self.schedule_templates, [('group', 1), ('weekday', 1), ('time', 1)], background=True),
                 self._index(self.stats_col, [('user_id', 1), ('timestamp', -1)], background=True),
                 self._index(self.tickets, 'ticket_id', unique=True, background=True),
                 self._index(self.tickets, [('user_id', 1), ('status', 1)], background=True),

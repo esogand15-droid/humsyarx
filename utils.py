@@ -308,6 +308,8 @@ async def cancel_handler(update, context):
         'ticket_mode', 'mode', 'creating_question',
         'profile_edit', 'awaiting_search', 'search_mode',
         'edit_user', 'backup_mode',
+        'scan_preview', 'pending_schedule', 'schedule_type', 'schedule_edit_sid',
+        'edit_schedule_sid', 'edit_schedule_field', 'flex_change_sid',
         # FIX جدید: سیستم اشتراک
         'sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
         'sub_topup_amount',

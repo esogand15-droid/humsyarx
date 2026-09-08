@@ -2799,3 +2799,304 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+
+# ══════════════════════════════════════════════════
+#  📅 اسکن برنامه با هوشیار — الگوی هفتگی و امتحان
+#  ورودی: عکس جدول (vision) → JSON ساختاریافته
+#  هیچ‌چیز هاردکد نیست: از همین vault/provider فعلی استفاده می‌کند
+# ══════════════════════════════════════════════════
+
+# توجه: برای schedule_scan provider باید vision True باشد؛ در غیر این صورت fallback به Gemini/OpenRouter vision-free model
+
+WEEKLY_SCHEDULE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'slots': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'weekday': {'type': 'integer', 'description': '0=شنبه ... 6=جمعه'},
+                    'time': {'type': 'string', 'description': 'HH:MM like 08:00'},
+                    'lesson': {'type': 'string', 'description': 'نام درس کامل فارسی'},
+                    'teacher': {'type': 'string', 'description': 'نام استاد اگر دیده شد'},
+                    'location': {'type': 'string', 'description': 'مکان/کلاس'},
+                    'group': {'type': 'string', 'description': '1 یا 2 یا هر دو'},
+                    'flex_type': {'type': 'string', 'description': 'fixed یا flexible'},
+                    'notes': {'type': 'string', 'description': 'توضیح کوتاه اختیاری'},
+                },
+                'required': ['weekday', 'time', 'lesson'],
+            },
+        }
+    },
+    'required': ['slots'],
+}
+
+EXAM_SCHEDULE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'exams': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'date': {'type': 'string', 'description': 'تاریخ شمسی YYYY/MM/DD — دقیقاً همان که در عکس است'},
+                    'time': {'type': 'string', 'description': 'ساعت HH:MM یا بازه مثل 10:00'},
+                    'lesson': {'type': 'string', 'description': 'نام درس'},
+                    'location': {'type': 'string'},
+                    'group': {'type': 'string', 'description': 'گروه اگر مشخص است'},
+                },
+                'required': ['date', 'lesson'],
+            }
+        }
+    },
+    'required': ['exams'],
+}
+
+def _pick_vision_config(cfg: dict) -> tuple:
+    """Choose vision-capable provider/model/key from current config, with fallback."""
+    vault = cfg.get('vault') or {}
+    provider = cfg.get('provider') or 'gemini'
+    model = cfg.get('model') or ''
+    key = cfg.get('api_key') or ''
+    meta = PROVIDERS.get(provider) or {}
+    if meta.get('vision') and key and not key.strip() == '':
+        return provider, model, key
+    # fallback: try gemini vault
+    if vault.get('gemini') and PROVIDERS['gemini']['vision']:
+        return 'gemini', DEFAULT_MODELS['gemini'], vault['gemini']
+    # fallback: any vision provider with key
+    for pid in ('openrouter', 'nvidia', 'together', 'huggingface'):
+        if PROVIDERS.get(pid, {}).get('vision') and vault.get(pid):
+            m = DEFAULT_MODELS.get(pid) or MODEL_CATALOG.get(pid, [(None, '', True)])[0][0]
+            # for openrouter use vision model
+            if pid == 'openrouter':
+                m = 'qwen/qwen2.5-vl-32b-instruct:free'
+            return pid, m, vault[pid]
+    # last resort: current even if non-vision (will error clearly)
+    return provider, model, key
+
+WEEKLY_SYSTEM = (
+    "تو یک دستیار استخراج برنامه کلاسی دانشگاه پزشکی هستی. از روی عکس جدول هفتگی (شنبه تا جمعه، ستون‌ها روز، سطرها ساعت 8-10/10-12/13-15/15-17/17-19) تمام درس‌ها را استخراج کن.\n"
+    "قواعد:\n"
+    "• weekday: شنبه=0، یکشنبه=1، دوشنبه=2، سه‌شنبه=3، چهارشنبه=4، پنج‌شنبه=5، جمعه=6\n"
+    "• time: ابتدای بازه را به HH:MM تبدیل کن (8-10→08:00، 10-12→10:00، 13-15→13:00، 15-17→15:00، 17-19→17:00)\n"
+    "• اگر یک خانه دو درس موازی دارد (مثلاً 'آیین زندگی (دخترا) / عملی (پسرا)' یا 'آز بیوشیمی / بیوشیمی') هر دو را به‌صورت دو slot جداگانه با همان weekday/time تولید کن.\n"
+    "• group: اگر جدول برای گروه 1 یا 2 جداست همان را بگذار؛ اگر ستون 'هر دو' یا نامشخص است 'هر دو'.\n"
+    "• flex_type: درس‌های عملی/آز/آزمایشگاه → flexible، بقیه fixed.\n"
+    "• فقط JSON مطابق schema برگردان، بدون توضیح اضافه."
+)
+
+EXAM_SYSTEM = (
+    "تو یک دستیار استخراج برنامه امتحانی هستی. از روی عکس جدول امتحانات، تمام ردیف‌ها را استخراج کن.\n"
+    "• date: تاریخ شمسی دقیقاً همان که در عکس دیده می‌شود به شکل YYYY/MM/DD (اعداد انگلیسی، مثل 1405/10/26). اگر تاریخ میلادی دیدی همان را حفظ کن.\n"
+    "• time: ساعت شروع امتحان به HH:MM (مثلاً '10-12'→10:00، '08:00'→08:00). اگر بازه بود ابتدای بازه.\n"
+    "• lesson: نام کامل درس فارسی.\n"
+    "• فقط JSON مطابق schema برگردان."
+)
+
+async def _vision_json_gemini(api_key: str, model: str, system_prompt: str, user_prompt: str, image_bytes: bytes, image_mime: str, schema: dict) -> dict:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+    payload = {
+        'system_instruction': {'parts': [{'text': system_prompt}]},
+        'contents': [{'role': 'user', 'parts': [
+            {'inline_data': {'mime_type': image_mime or 'image/jpeg', 'data': base64.b64encode(image_bytes).decode('utf-8')}},
+            {'text': user_prompt},
+        ]}],
+        'generationConfig': _no_thinking({
+            'responseMimeType': 'application/json',
+            'responseSchema': schema,
+            'maxOutputTokens': 4096,
+        }),
+    }
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        _raise_gemini_status_error(resp.status_code)
+    data = resp.json()
+    raw = _extract_gemini_text(data, "برنامه")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # fallback: extract first {...}
+        m = re.search(r'\{.*\}', raw, flags=re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise AIConfigError("هوشیار خروجی قابل فهم برنگرداند — دوباره با عکس واضح‌تر امتحان کن.")
+
+async def _vision_json_openai(api_key: str, model: str, system_prompt: str, user_prompt: str, image_bytes: bytes, image_mime: str, provider: str) -> dict:
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or PROVIDERS['openrouter']['url']
+    url = f"{base}/chat/completions"
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    if provider == 'openrouter':
+        headers['HTTP-Referer'] = 'https://humsyar.local'
+        headers['X-Title'] = 'Humsyar'
+    b64 = base64.b64encode(image_bytes).decode('utf-8')
+    messages = [
+        {'role': 'system', 'content': system_prompt},
+        {'role': 'user', 'content': [
+            {'type': 'text', 'text': user_prompt},
+            {'type': 'image_url', 'image_url': {'url': f'data:{image_mime or "image/jpeg"};base64,{b64}'}},
+        ]},
+    ]
+    payload = {
+        'model': model,
+        'messages': messages,
+        'temperature': 0.1,
+        'max_tokens': 4096,
+    }
+    # ask for JSON
+    if provider in ('openrouter', 'together'):
+        payload['response_format'] = {'type': 'json_object'}
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code == 429:
+        raise AIQuotaError("سقف API پر شد — کمی بعد دوباره امتحان کن.")
+    if resp.status_code >= 400:
+        raise AIConfigError(f"خطای سرویس هوشیار ({resp.status_code}) — تنظیمات را بررسی کن.")
+    data = resp.json()
+    try:
+        txt = data['choices'][0]['message']['content']
+    except Exception:
+        raise AIConfigError("پاسخ هوشیار خوانده نشد.")
+    txt = txt.strip()
+    # strip markdown fences
+    if txt.startswith('```'):
+        txt = re.sub(r'^```(?:json)?\s*', '', txt)
+        txt = re.sub(r'\s*```$', '', txt)
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        m = re.search(r'\{.*\}', txt, flags=re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise AIConfigError("هوشیار JSON معتبر برنگرداند.")
+
+async def scan_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg', kind: str = 'weekly', group_hint: str = None, extra_note: str = None) -> dict:
+    """Single entry for image scan — kind: weekly|exam. Returns parsed JSON."""
+    if not image_bytes or len(image_bytes) < 100:
+        raise AIError("عکس نامعتبر یا خیلی کوچک است.")
+    if len(image_bytes) > 12 * 1024 * 1024:
+        raise AIError("حجم عکس بیش از حد زیاد است — نسخه کم‌حجم‌تر بفرست.")
+    cfg = await get_ai_config()
+    if not cfg.get('enabled'):
+        raise AIConfigError("بخش هوشیار غیرفعال است.")
+    provider, model, key = _pick_vision_config(cfg)
+    if not key:
+        raise AIConfigError("کلید API vision تنظیم نشده — از پنل هوشیار یک کلید Gemini/OpenRouter وارد کن.")
+    if kind == 'exam':
+        system = EXAM_SYSTEM
+        schema = EXAM_SCHEDULE_SCHEMA
+        prompt = "این عکس جدول امتحانات است. تمام ردیف‌ها را استخراج کن و فقط JSON برگردان."
+        if extra_note:
+            prompt += f"\nنکته: {extra_note}"
+    else:
+        system = WEEKLY_SYSTEM
+        schema = WEEKLY_SCHEDULE_SCHEMA
+        prompt = "این عکس جدول برنامه هفتگی کلاسی است. تمام خانه‌های پر را استخراج کن و فقط JSON برگردان."
+        if group_hint and group_hint.strip() not in ('', 'هر دو'):
+            prompt += f"\nاین جدول مربوط به گروه {group_hint} است؛ اگر گروه در عکس مشخص نبود همین را بگذار."
+        if extra_note:
+            prompt += f"\nنکته: {extra_note}"
+    # choose path
+    if provider == 'gemini':
+        return await _vision_json_gemini(key, model, system, prompt, image_bytes, image_mime, schema)
+    else:
+        # openai-compatible vision
+        return await _vision_json_openai(key, model, system, prompt, image_bytes, image_mime, provider)
+
+async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg', group_hint: str = None) -> dict:
+    data = await scan_schedule_image(image_bytes, image_mime, kind='weekly', group_hint=group_hint)
+    # normalize
+    slots = data.get('slots') or []
+    norm = []
+    for s in slots:
+        try:
+            wd = int(s.get('weekday'))
+            if not 0 <= wd <= 6:
+                continue
+            t = str(s.get('time') or '').strip()
+            # ensure HH:MM
+            if not re.match(r'^\d{2}:\d{2}$', t):
+                # try to fix 8:00 → 08:00
+                if re.match(r'^\d{1,2}:\d{2}$', t):
+                    hh, mm = t.split(':')
+                    t = f"{int(hh):02d}:{mm}"
+                else:
+                    continue
+            lesson = str(s.get('lesson') or '').strip()
+            if not lesson:
+                continue
+            g = str(s.get('group') or group_hint or 'هر دو').strip() or 'هر دو'
+            # canonical group
+            from database import db as _db
+            g = _db.normalize_group(g) or 'هر دو'
+            if g not in ('1','2','هر دو'):
+                g = 'هر دو'
+            flex = str(s.get('flex_type') or '').strip().lower()
+            if flex not in ('fixed','flexible'):
+                flex = 'flexible' if any(k in lesson for k in ('عملی','آز','آزمایشگاه')) else 'fixed'
+            norm.append({
+                'weekday': wd,
+                'time': t,
+                'lesson': lesson[:120],
+                'teacher': str(s.get('teacher') or '').strip()[:80],
+                'location': str(s.get('location') or '').strip()[:80],
+                'group': g,
+                'type': 'class',
+                'flex_type': flex,
+                'notes': str(s.get('notes') or '').strip()[:200],
+            })
+        except Exception:
+            continue
+    return {'slots': norm}
+
+async def scan_exam_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg') -> dict:
+    data = await scan_schedule_image(image_bytes, image_mime, kind='exam')
+    exams = data.get('exams') or []
+    norm = []
+    for e in exams:
+        try:
+            lesson = str(e.get('lesson') or '').strip()
+            if not lesson:
+                continue
+            raw_date = str(e.get('date') or '').strip()
+            if not raw_date:
+                continue
+            # normalize digits and slashes
+            from time_utils import en_digits
+            raw_date = en_digits(raw_date).replace('-', '/').strip()
+            # ensure YYYY/MM/DD
+            parts = re.split(r'[/\s]+', raw_date)
+            if len(parts) >= 3:
+                y, m, d = parts[0], parts[1], parts[2]
+                raw_date = f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
+            t = str(e.get('time') or '08:00').strip()
+            t = en_digits(t)
+            # extract HH:MM from possibly "10-12" or "۱۰:۰۰"
+            m = re.search(r'(\d{1,2}):(\d{2})', t)
+            if m:
+                t = f"{int(m.group(1)):02d}:{m.group(2)}"
+            elif re.search(r'(\d{1,2})\s*-\s*(\d{1,2})', t):
+                hh = int(re.search(r'(\d{1,2})', t).group(1))
+                t = f"{hh:02d}:00"
+            else:
+                t = '08:00'
+            g = str(e.get('group') or 'هر دو').strip() or 'هر دو'
+            from database import db as _db
+            g = _db.normalize_group(g) or 'هر دو'
+            norm.append({
+                'date': raw_date,
+                'time': t,
+                'lesson': lesson[:120],
+                'teacher': '',
+                'location': str(e.get('location') or '').strip()[:80],
+                'group': g,
+                'type': 'exam',
+            })
+        except Exception:
+            continue
+    return {'exams': norm}
+

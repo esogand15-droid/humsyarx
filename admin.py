@@ -278,8 +278,10 @@ async def _show_cat_schedule(query):
             InlineKeyboardButton("📅 برنامه جدید", callback_data='schedule:add_type'),
             InlineKeyboardButton("🗑 حذف برنامه",  callback_data='schedule:del_list'),
         ],
+        [InlineKeyboardButton("📸 اسکن با هوشیار (عکس جدول → الگو)", callback_data='schedule:scan_menu')],
         [InlineKeyboardButton("✏️ ویرایش برنامه‌ها", callback_data='schedule:manage_types')],
         [InlineKeyboardButton("🔄 اعلام تغییر زمان (کلاس منعطف)", callback_data='schedule:flex_list')],
+        [InlineKeyboardButton("🔁 الگوی هفتگی → تولید برنامه", callback_data='schedule:template_menu')],
         [InlineKeyboardButton("📊 مدیریت نمرات", callback_data='grades:new')],
         [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:main')],
     ]
