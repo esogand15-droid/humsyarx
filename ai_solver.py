@@ -41,7 +41,119 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 DEFAULT_MODELS = {
     'gemini':     'gemini-2.5-flash',
     'openrouter': 'google/gemma-4-31b-it:free',
+    'groq':       'llama-3.3-70b-versatile',
+    'cerebras':   'llama-3.3-70b',
+    'mistral':    'mistral-large-latest',
+    'deepseek':   'deepseek-chat',
 }
+
+# ══════════════════════════════════════════════════
+#  🌊 W9 — کاتالوگ مرکزی providerها و مدل‌ها (منبع واحد حقیقت).
+#  بات (ai_admin)، پنل وب و مینی‌اپ همه از همین‌جا می‌خوانند تا
+#  هیچ‌جا مدل دستی تایپ نشود. base_urlها اندپوینتِ سازگار با
+#  OpenAI هر provider است (همه‌شان /chat/completions دارند).
+# ══════════════════════════════════════════════════
+PROVIDERS = {
+    'gemini': {
+        'label': '🟦 Google Gemini',
+        'url': None,   # مسیر اختصاصیِ خودش (_stream_gemini)
+        'vision': True, 'images': True,
+    },
+    'openrouter': {
+        'label': '🟪 OpenRouter',
+        'url': 'https://openrouter.ai/api/v1',
+        'vision': True, 'images': False,
+    },
+    'groq': {
+        'label': '🟧 Groq — سریع‌ترین inference',
+        'url': 'https://api.groq.com/openai/v1',
+        'vision': False, 'images': False,
+    },
+    'cerebras': {
+        'label': '🟨 Cerebras',
+        'url': 'https://api.cerebras.ai/v1',
+        'vision': False, 'images': False,
+    },
+    'mistral': {
+        'label': '🟠 Mistral — ۱ میلیارد توکن/ماه رایگان',
+        'url': 'https://api.mistral.ai/v1',
+        'vision': False, 'images': False,
+    },
+    'deepseek': {
+        'label': '🐋 DeepSeek — استدلال قوی و ارزان',
+        'url': 'https://api.deepseek.com/v1',
+        'vision': False, 'images': False,
+    },
+}
+
+# (شناسه‌ی مدل, برچسب فارسی, رایگان؟)
+MODEL_CATALOG = {
+    'gemini': [
+        ('gemini-3.6-flash',      '🌟 Gemini 3.6 Flash (جدیدترین، پیشنهادی)', False),
+        ('gemini-3.5-flash',      '🆕 Gemini 3.5 Flash (قوی، استدلال سنگین)', False),
+        ('gemini-3.5-flash-lite', '🆕 Gemini 3.5 Flash-Lite (سریع/ارزان)', False),
+        ('gemini-2.5-flash',      '⚡ Gemini 2.5 Flash (پایدار)', True),
+        ('gemini-flash-latest',   '🔄 Gemini Flash Latest', True),
+        ('gemini-2.5-flash-lite', '💨 Gemini 2.5 Flash-Lite (سبک‌تر)', True),
+        ('gemini-2.5-pro',        '🧠 Gemini 2.5 Pro (دقیق‌تر)', False),
+    ],
+    'openrouter': [
+        ('deepseek/deepseek-chat-v3-0324:free', '🐋 DeepSeek V3 (رایگان)', True),
+        ('qwen/qwen3-235b-a22b:free',           '🎯 Qwen3 235B (رایگان)', True),
+        ('google/gemma-4-31b-it:free',          '⚡ Gemma 4 31B (رایگان، تصویر+متن)', True),
+        ('openrouter/free',                     '🎲 انتخاب خودکار مدل رایگان', True),
+    ],
+    'groq': [
+        ('llama-3.3-70b-versatile', '🦙 Llama 3.3 70B (رایگان، سریع)', True),
+        ('openai/gpt-oss-120b',     '🧠 GPT-OSS 120B (رایگان، استدلال)', True),
+        ('openai/gpt-oss-20b',      '💨 GPT-OSS 20B (رایگان، سبک)', True),
+        ('llama-3.1-8b-instant',    '⚡ Llama 3.1 8B Instant (رایگان)', True),
+    ],
+    'cerebras': [
+        ('llama-3.3-70b',  '🦙 Llama 3.3 70B (رایگان)', True),
+        ('qwen-3-32b',     '🎯 Qwen3 32B (رایگان)', True),
+    ],
+    'mistral': [
+        ('mistral-large-latest', '🌪 Mistral Large (پرچم‌دار)', False),
+        ('mistral-small-latest', '💨 Mistral Small (سریع)', False),
+        ('codestral-latest',     '👨‍💻 Codestral (کدنویسی)', False),
+    ],
+    'deepseek': [
+        ('deepseek-chat',     '💬 DeepSeek V3 (چت عمومی)', False),
+        ('deepseek-reasoner', '🧠 DeepSeek R1 (استدلال عمیق)', False),
+    ],
+}
+
+# مدل‌های تصویر (فعلاً فقط Gemini — endpoint تصویر اختصاصیِ گوگل است)
+IMAGE_MODEL_CATALOG = [
+    ('gemini-2.5-flash-image',    '🍌 Gemini 2.5 Flash Image (نانوبانانا)', False),
+    ('gemini-3-pro-image-preview', '🖼 Gemini 3 Pro Image (پیش‌نمایش)', False),
+]
+
+
+def ai_catalog_payload() -> dict:
+    """خروجی JSON کاتالوگ برای هر سه UI (بات/وب/مینی‌اپ)."""
+    return {
+        'providers': [
+            {
+                'id': pid,
+                'label': meta['label'],
+                'vision': meta['vision'],
+                'images': meta['images'],
+                'default_model': DEFAULT_MODELS.get(pid, ''),
+                'models': [
+                    {'id': mid, 'label': label, 'free': free}
+                    for mid, label, free in MODEL_CATALOG.get(pid, [])
+                ],
+            }
+            for pid, meta in PROVIDERS.items()
+        ],
+        'image_models': [
+            {'id': mid, 'label': label, 'free': free}
+            for mid, label, free in IMAGE_MODEL_CATALOG
+        ],
+        'default_image_model': DEFAULT_IMAGE_MODEL,
+    }
 DEFAULT_MODEL  = DEFAULT_MODELS['gemini']   # برای سازگاری با کدهای قبلی
 DEFAULT_LIMIT  = 15   # سقف روزانه‌ی هر کاربر عادی؛ 0 = نامحدود
 MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگیری از هدررفت توکن/هزینه)
@@ -1041,19 +1153,29 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
     yield {'type': 'done', 'answer': answer, 'tokens': total_tokens}
 
 
-async def _call_openrouter(api_key: str, model: str, system_prompt: str,
-                            text: str = None, image_bytes: bytes = None,
-                            image_mime: str = 'image/jpeg', history: list = None,
-                            **_) -> tuple:
+async def _call_openai_compat(api_key: str, model: str, system_prompt: str,
+                              text: str = None, image_bytes: bytes = None,
+                              image_mime: str = 'image/jpeg', history: list = None,
+                              provider: str = 'openrouter', **_) -> tuple:
     """
-    ارائه‌دهنده‌ی جایگزین رایگان (openrouter.ai) — مستقل از مشکل فعلی
-    کلیدهای AQ. گوگل. برای گرفتن کلید: openrouter.ai/keys (بدون کارت).
+    🌊 W9 — فراخوان عمومیِ همه‌ی providerهای سازگار با OpenAI
+    (openrouter/groq/cerebras/mistral/deepseek). همه‌شان همان
+    /chat/completions را با Bearer token حرف می‌زنند؛ فقط base_url فرق
+    می‌کند. پیام‌های خطای خاص OpenRouter (۴۰۲) به‌صورت شرطی حفظ شده‌اند.
     """
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or PROVIDERS['openrouter']['url']
+    url = f"{base}/chat/completions"
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Content-Type':  'application/json',
     }
+
+    if image_bytes and not meta.get('vision'):
+        raise AIConfigError(
+            f"ارائه‌دهنده‌ی {meta.get('label', provider)} ورودی تصویر را "
+            "پشتیبانی نمی‌کند — برای سوالِ تصویری provider را روی Gemini "
+            "یا OpenRouter بگذارید.")
 
     content = []
     if text:
@@ -1097,14 +1219,18 @@ async def _call_openrouter(api_key: str, model: str, system_prompt: str,
     if resp.status_code == 429:
         raise AIQuotaError("سقف رایگان API برای امروز پر شده — کمی بعد دوباره امتحان کن.")
     if resp.status_code == 402:
+        if provider == 'openrouter':
+            raise AIConfigError(
+                "خطای ۴۰۲ (نیاز به پرداخت) از OpenRouter. معمولاً یکی از این‌هاست:\n"
+                "۱) نام مدل درست/کامل نیست — باید دقیقاً مثل فهرست کاتالوگ باشه "
+                "(با :free آخرش)\n"
+                "۲) موجودی حساب openrouter.ai/settings/credits منفیه\n"
+                "۳) توی تنظیمات اکانت OpenRouter، Provider ی که این مدل رایگان رو "
+                "می‌ده Ignore/بلاک شده"
+            )
         raise AIConfigError(
-            "خطای ۴۰۲ (نیاز به پرداخت) از OpenRouter. معمولاً یکی از این‌هاست:\n"
-            "۱) نام مدل درست/کامل نیست — باید دقیقاً google/gemma-4-31b-it:free "
-            "باشه (با google/ اول و :free آخرش)\n"
-            "۲) موجودی حساب openrouter.ai/settings/credits منفیه\n"
-            "۳) توی تنظیمات اکانت OpenRouter، Provider ی که این مدل رایگان رو "
-            "می‌ده Ignore/بلاک شده"
-        )
+            "خطای ۴۰۲ (نیاز به پرداخت) — سهمیه‌ی رایگانِ این ارائه‌دهنده تمام "
+            "شده یا مدل انتخابی پولی است.")
     if resp.status_code in (400, 401, 403, 404):
         raise AIConfigError(
             "کلید API نامعتبره، مدل اشتباهه یا دسترسی لازم رو نداره — ادمین باید از پنل "
@@ -1133,18 +1259,25 @@ STREAM_PROVIDERS = {
 }
 
 
-async def _openrouter_as_stream(**kwargs):
-    """
-    OpenRouter فعلاً استریمِ واقعی نداره؛ برای اینکه رابطِ یکسانی به
-    فراخوان بدیم، کل جواب رو یک‌جا می‌گیریم و به‌عنوان یک delta واحد +
-    یک done برمی‌گردونیم — کدِ بالادستی (نمایشِ پیام) فرقی نمی‌کنه.
-    """
-    answer, tokens = await _call_openrouter(**kwargs)
-    yield {'type': 'delta', 'text': answer}
-    yield {'type': 'done', 'answer': answer, 'tokens': tokens}
+def _make_compat_stream(provider_name: str):
+    """🌊 W9 — استریمِ همسان‌ساز برای providerهای سازگار با OpenAI.
+    استریم واقعی ندارن؛ کل جواب یک‌جا به‌عنوان delta واحد + done
+    برمی‌گردد — کدِ بالادستی (نمایش پیام) فرقی نمی‌کند."""
+    async def _stream(**kwargs):
+        answer, tokens = await _call_openai_compat(
+            provider=provider_name, **kwargs)
+        yield {'type': 'delta', 'text': answer}
+        yield {'type': 'done', 'answer': answer, 'tokens': tokens}
+    return _stream
 
 
-STREAM_PROVIDERS['openrouter'] = _openrouter_as_stream
+for _p in ('openrouter', 'groq', 'cerebras', 'mistral', 'deepseek'):
+    STREAM_PROVIDERS[_p] = _make_compat_stream(_p)
+
+
+# سازگاری با نامِ قدیمی (اگر جای دیگری صدا زده می‌شد)
+async def _call_openrouter(**kwargs):
+    return await _call_openai_compat(provider='openrouter', **kwargs)
 
 
 async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
@@ -1999,6 +2132,13 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG)
         return
 
+    if cfg['provider'] != 'gemini':
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(
+            "🎨 ساخت تصویر فقط با ارائه‌دهنده‌ی گوگل (Gemini) کار می‌کند؛ "
+            "فعلاً provider چیز دیگری است.")
+        return
+
     if await db.ai_is_banned(uid):
         context.user_data.pop('mode', None)
         await update.message.reply_text(AI_BANNED_MSG, disable_web_page_preview=True)
@@ -2329,6 +2469,11 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cfg['enabled'] or not cfg.get('image_enabled'):
             await query.message.reply_text(
                 "🎨 بخشِ ساخت تصویر فعلاً توسط مدیریت غیرفعال است.")
+            return
+        if cfg['provider'] != 'gemini':
+            await query.message.reply_text(
+                "🎨 ساخت تصویر فقط وقتی ارائه‌دهنده‌ی هوشیار روی گوگل "
+                "(Gemini) باشد فعال است.")
             return
         context.user_data['mode'] = 'ai_image_prompt'
         context.user_data['last_question'] = ''

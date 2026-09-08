@@ -297,14 +297,12 @@ export const api = {
   subFinance: () => req('/api/web-admin/subscription/finance'),
   // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
   subPaymentTrace: (pid) => req(`/api/web-admin/subscription/payments/${encodeURIComponent(pid)}/trace`),
-  exportWalletCsv: (p = {}) => downloadFile('/api/web-admin/exports/wallet.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-wallet-ledger-${fileDateStamp()}.csv`),
   exportPaymentsCsv: (p = {}) => downloadFile('/api/web-admin/exports/payments.csv?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-payments-${fileDateStamp()}.csv`),
   // 💰 W6 — کیف پول داخلی
   subWallets: (p = {}) => req('/api/web-admin/wallets?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   subWalletDetail: (uid, p = {}) => req(`/api/web-admin/wallets/${uid}?` + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   subWalletAdjust: (uid, body) => req(`/api/web-admin/wallets/${uid}/adjust`, { method: 'POST', body }),
   subWalletRecredit: (pid) => req('/api/web-admin/subscription/reconcile/wallet-recredit', { method: 'POST', body: { payment_id: pid, confirm: true } }),
-  subReconFinalizeTopup: (pid) => req(`/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/finalize-topup`, { method: 'POST', body: { confirm: true } }),
   subWalletResync: (uid) => req(`/api/web-admin/wallets/${uid}/resync`, { method: 'POST', body: { confirm: true } }),
   subWalletTxResolve: (txId, action) => req(`/api/web-admin/wallet-tx/${encodeURIComponent(txId)}/resolve`, { method: 'POST', body: { action, confirm: true } }),
   subSubscribers: (p) => req('/api/web-admin/subscription/subscribers?' + new URLSearchParams(p || {})),
@@ -390,6 +388,7 @@ export const api = {
   // ── ai admin ──
   aiStats: () => req('/api/web-admin/ai/stats'),
   aiConfig: () => req('/api/web-admin/ai/config'),
+  aiModels: () => req('/api/web-admin/ai/models'),
   aiConfigUpdate: (body) => req('/api/web-admin/ai/config', { method: 'PUT', body }),
   aiKeyRotate: (apiKey) => req('/api/web-admin/ai/api-key/rotate', { method: 'POST', body: { api_key: apiKey } }),
   aiTest: () => req('/api/web-admin/ai/test', { method: 'POST' }),

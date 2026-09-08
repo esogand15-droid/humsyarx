@@ -119,6 +119,22 @@ export default function AiAdmin() {
   }, [config]);
 
 
+  /* 🌊 W9 — کاتالوگ مرکزی providerها/مدل‌ها (بدون تایپ دستی) */
+  const {
+    data: catalog,
+  } = useQuery({
+    queryKey: [
+      'ai-admin-models',
+    ],
+
+    queryFn: () => api
+      .get('/api/ai-admin/models')
+      .then((response) => response.data),
+
+    staleTime: 300_000,
+  });
+
+
   const {
     data: stats,
   } = useQuery({
@@ -526,23 +542,43 @@ export default function AiAdmin() {
                   value={
                     form.provider
                   }
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const pid = event.target.value;
+
+                    const prov = (
+                      catalog?.providers || []
+                    ).find(
+                      (item) => item.id === pid
+                    );
+
+                    /* با تغییر provider، مدل فعلی
+                       نامعتبر می‌شود ⇒ پیش‌فرض
+                       همان provider */
                     setForm({
                       ...form,
 
-                      provider:
-                        event.target
-                          .value,
-                    })
-                  }
-                >
-                  <option value="gemini">
-                    Gemini
-                  </option>
+                      provider: pid,
 
-                  <option value="openrouter">
-                    OpenRouter
-                  </option>
+                      model:
+                        prov?.default_model
+                        || form.model,
+                    });
+                  }}
+                >
+                  {(
+                    catalog?.providers
+                    || [
+                      { id: 'gemini', label: 'Gemini' },
+                      { id: 'openrouter', label: 'OpenRouter' },
+                    ]
+                  ).map((item) => (
+                    <option
+                      key={item.id}
+                      value={item.id}
+                    >
+                      {item.label}
+                    </option>
+                  ))}
                 </select>
 
                 <select
@@ -571,21 +607,76 @@ export default function AiAdmin() {
               </div>
 
 
-              <input
-                className="inp"
-                value={
-                  form.model
-                }
-                onChange={(event) =>
-                  setForm({
-                    ...form,
+              {(() => {
+                const providers =
+                  catalog?.providers || [];
 
-                    model:
-                      event.target.value,
-                  })
-                }
-                placeholder="نام مدل"
-              />
+                const prov = providers.find(
+                  (item) => item.id === form.provider
+                );
+
+                const ids = (prov?.models || [])
+                  .map((item) => item.id);
+
+                const isCustom = form.model
+                  && !ids.includes(form.model);
+
+                return (
+                  <>
+                    <select
+                      className="inp"
+                      value={
+                        isCustom
+                          ? '__custom'
+                          : form.model
+                      }
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+
+                          model:
+                            event.target.value
+                            === '__custom'
+                              ? ''
+                              : event.target.value,
+                        })
+                      }
+                    >
+                      {(prov?.models || []).map(
+                        (item) => (
+                          <option
+                            key={item.id}
+                            value={item.id}
+                          >
+                            {item.label}
+                          </option>
+                        )
+                      )}
+
+                      <option value="__custom">
+                        ✏️ سفارشی (تایپ دستی)
+                      </option>
+                    </select>
+
+                    {isCustom && (
+                      <input
+                        className="inp"
+                        style={{ marginTop: 6 }}
+                        placeholder="شناسه‌ی دقیق مدل"
+                        value={form.model}
+                        onChange={(event) =>
+                          setForm({
+                            ...form,
+
+                            model:
+                              event.target.value,
+                          })
+                        }
+                      />
+                    )}
+                  </>
+                );
+              })()}
 
 
               <input
@@ -640,10 +731,12 @@ export default function AiAdmin() {
                 </option>
               </select>
 
-              <input
+              <select
                 className="inp"
                 value={
                   form.image_model
+                  || catalog?.default_image_model
+                  || ''
                 }
                 onChange={(event) =>
                   setForm({
@@ -653,10 +746,18 @@ export default function AiAdmin() {
                       event.target.value,
                   })
                 }
-                placeholder={
-                  'مدل تصویر (خالی = پیش‌فرض gemini-2.5-flash-image)'
-                }
-              />
+              >
+                {(catalog?.image_models || []).map(
+                  (item) => (
+                    <option
+                      key={item.id}
+                      value={item.id}
+                    >
+                      {item.label}
+                    </option>
+                  )
+                )}
+              </select>
 
               <input
                 className="inp"

@@ -3139,64 +3139,6 @@ _SETTINGS_CATALOG = [
          "فقط نمایشی — توسط جاب بکاپ به‌روزرسانی می‌شود",
          "readonly", "backup.manage", "INFO"),
     ]),
-    # 🌊 W7 — کلیدهایی که سیستم مصرف می‌کرد ولی UI نداشتند (نه کلید
-    # جدید: دقیقاً همان‌ها که get_setting می‌خواند — بدون موازی‌سازی)
-    ("finance", [
-        ("subscription_card_number", "شماره کارت دریافت",
-         "شماره کارتی که در ربات/مینی‌اپ برای خرید و شارژ کیف پول "
-         "نمایش داده می‌شود",
-         "text", "settings.manage", "HIGH"),
-        ("subscription_card_owner", "نام صاحب کارت",
-         "نام نمایشی صاحب کارت دریافت",
-         "text", "settings.manage", "HIGH"),
-        ("topup_min", "حداقل مبلغ شارژ کیف پول",
-         "کمترین مبلغ مجاز شارژ (تومان) — سمت سرور اعمال می‌شود",
-         "number", "settings.manage", "HIGH"),
-        ("topup_max", "حداکثر مبلغ شارژ کیف پول",
-         "بیشترین مبلغ مجاز شارژ (تومان) — سقف آپلود بات تلگرام "
-         "را هم در نظر بگیرید",
-         "number", "settings.manage", "HIGH"),
-    ]),
-    ("gift", [
-        ("gift_enabled", "خرید اشتراک هدیه",
-         "امکان هدیه دادن اشتراک به دانشجوی دیگر",
-         "bool", "settings.manage", "HIGH"),
-        ("gift_rate_max", "سقف هدیه در بازه",
-         "حداکثر تعداد هدیه‌ی هر کاربر در بازه‌ی زیر (ضد سوءاستفاده)",
-         "number", "settings.manage", "HIGH"),
-        ("gift_rate_window_h", "بازه‌ی سقف هدیه (ساعت)",
-         "طول بازه‌ی لغزان شمارش هدیه‌ها",
-         "number", "settings.manage", "HIGH"),
-    ]),
-    ("limits", [
-        ("report_rate_max", "سقف گزارش ایراد",
-         "حداکثر گزارش ایراد هر کاربر در بازه‌ی زیر",
-         "number", "settings.manage", "HIGH"),
-        ("report_rate_window_min", "بازه‌ی گزارش ایراد (دقیقه)",
-         "طول بازه‌ی لغزان شمارش گزارش‌ها",
-         "number", "settings.manage", "HIGH"),
-        ("url_import_max_mb", "سقف حجم ایمپورت URL (مگابایت)",
-         "بیشترین حجم فایل قابل ایمپورت از لینک",
-         "number", "settings.manage", "HIGH"),
-        ("qbank_ai_daily_limit", "سقف روزانه‌ی ساخت سوال با AI",
-         "حداکثر سوال AI هر ادمین در روز",
-         "number", "settings.manage", "HIGH"),
-        ("qbank_ai_topic_daily_limit", "سقف روزانه‌ی AI هر موضوع",
-         "حداکثر سوال AI هر موضوع در روز",
-         "number", "settings.manage", "HIGH"),
-        ("qbank_weak_min_attempts", "حداقل تلاش برای سوال ضعیف",
-         "کمترین پاسخ یک سوال تا آمارش معنا داشته باشد",
-         "number", "settings.manage", "HIGH"),
-        ("qbank_weak_accuracy_pct", "آستانه‌ی دقت سوال ضعیف (٪)",
-         "زیر این درصد، سوال «ضعیف» پرچم می‌خورد",
-         "number", "settings.manage", "HIGH"),
-        ("resource_notif_interval_hours", "فاصله‌ی اطلاع‌رسانی منابع (ساعت)",
-         "حداقل فاصله‌ی دو اعلان منبع جدید در ربات",
-         "number", "settings.manage", "HIGH"),
-        ("poll_channel_id", "کانال نظرسنجی",
-         "آیدی عددی کانال تلگرام نظرسنجی‌ها (عدد منفی؛ خالی=حذف)",
-         "group", "settings.manage", "HIGH"),
-    ]),
 ]
 
 
@@ -3324,18 +3266,6 @@ async def settings_center_patch(key: str, body: SettingPatch,
             val = str(val or "").strip()
             if len(val) > 400:
                 raise HTTPException(422, "متن نباید بیشتر از ۴۰۰ کاراکتر باشد")
-        elif typ == "number":
-            # 🌊 W7 — عدد صحیح نامنفی؛ مقدار خالی یعنی «حذف کلید»
-            # (fallback به پیش‌فرض کد برمی‌گردد)
-            if val in (None, ""):
-                val = None
-            else:
-                try:
-                    val = int(val)
-                except (TypeError, ValueError):
-                    raise HTTPException(422, "مقدار باید عدد صحیح باشد")
-                if val < 0 or val > 10 ** 9:
-                    raise HTTPException(422, "عدد باید بین ۰ و ۱٬۰۰۰٬۰۰۰٬۰۰۰ باشد")
         elif typ == "group":
             if val in (None, ""):
                 val = None
@@ -5123,12 +5053,10 @@ async def wa_subscription_payments(
     skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100),
     search: Optional[str] = Query(None),
-    kind: Optional[str] = Query(None, max_length=10),
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.payments(
-        status=status, skip=skip, limit=limit, search=search, kind=kind,
-        admin=user)
+        status=status, skip=skip, limit=limit, search=search, admin=user)
 
 
 @router.post("/subscription/payments/{payment_id}/decision")
@@ -5244,15 +5172,6 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         raise HTTPException(404, "رسید پیدا نشد")
     if payment.get("status") != "approved":
         raise HTTPException(409, "فقط رسید تأییدشده قابل بازگشت وجه است")
-    # 🌊 W6.2 — رسید شارژ کیف پول «بازگشت وجه به کیف پول» ندارد: مبلغ در
-    # لحظه‌ی تأیید به کیف پول رفته و اعتبار مجدد یعنی پرداخت دوبرابر.
-    # عودت بانکی = اقدام دستی مسئول مالی (+ در صورت لزوم کسر با ابزار adjust).
-    if str(payment.get("plan_id") or "") == "wallet_topup":
-        raise HTTPException(
-            409,
-            "رسید شارژ کیف پول قابل بازگشت وجه به کیف پول نیست (مبلغ هنگام "
-            "تأیید به کیف پول اعتبار یافته). عودت بانکی را دستی انجام دهید "
-            "و در صورت نیاز با ابزار «کسر موجودی» کیف پول را اصلاح کنید.")
     uid = int(payment.get("user_id") or 0)
     if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
                                        reason=reason):
@@ -5316,18 +5235,14 @@ async def wa_subscription_reconcile(
     items = []
     active_subs = {s["_id"] for s in await db.subscriptions.find(
         {"status": "active"}).to_list(length=10000)}
-    # 🌊 W6.2 — رسید شارژ کیف پول «پرداخت اشتراک» نیست: در هر دو طرف
-    # مغایرت‌گیری اشتراک excluded می‌شود تا false-positive نسازد.
     users_with_approved = {
         int(r["_id"]) for r in await db.sub_payments.aggregate([
-            {"$match": {"status": "approved",
-                        "plan_id": {"$ne": "wallet_topup"}}},
+            {"$match": {"status": "approved"}},
             {"$group": {"_id": "$user_id"}},
         ]).to_list(length=10000)}
     # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
     async for p in db.sub_payments.find(
-            {"status": "approved",
-             "plan_id": {"$ne": "wallet_topup"}}).sort("reviewed_at", -1).limit(200):
+            {"status": "approved"}).sort("reviewed_at", -1).limit(200):
         uid = int(p.get("user_id") or 0)
         if uid not in active_subs:
             items.append({"type": "approved_no_active_sub", "user_id": uid,
@@ -5431,14 +5346,6 @@ async def wa_subscription_reconcile(
                         f"شده ولی اعتبار کیف پول ایجاد نشده است.")
                 actions = [{"key": "recredit", "label": "اعتبار مجدد کیف پول",
                             "payment_id": i["payment_id"]}, go_wallet]
-            elif t == "topup_without_wallet_credit":
-                label, sev = "شارژ تأییدشده بدون اعتبار کیف پول", "critical"
-                text = (f"رسید شارژ {i['amount']:,} تومانی {who} تأیید شده "
-                        f"ولی اعتبار کیف پول ثبت نشده است (کرش بین تأیید و "
-                        f"اعتبار).")
-                actions = [{"key": "finalize_topup",
-                            "label": "اعمال اعتبار شارژ",
-                            "payment_id": i["payment_id"]}, go_wallet]
             elif t == "wallet_debit_without_payment":
                 label, sev = "کسر کیف پول بدون پرداخت تأییدشده", "critical"
                 text = (f"کسر {i['amount']:,} تومان از کیف پول {who} بدون "
@@ -5508,41 +5415,6 @@ async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
         "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
         "created_at": _now()})
     return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
-
-
-@router.post("/subscription/reconcile/{payment_id}/finalize-topup")
-async def wa_reconcile_finalize_topup(payment_id: str,
-                                      body: WaReconActivateBody,
-                                      user=Depends(_perm("subscription.manage"))):
-    """🌊 W6.2 — اقدام مغایرت «شارژ تأییدشده بدون اعتبار کیف پول»:
-    اجرای دوباره‌ی finalize_approved_payment — همان primitive مشترک و
-    idempotent (مرجع یکتای sub_payment_topup)؛ هرگز اعتبار دوم نمی‌سازد."""
-    if not body.confirm:
-        raise HTTPException(400, "برای اعمال اعتبار، تأیید صریح لازم است")
-    payment = await db.sub_payment_get(payment_id)
-    if not payment:
-        raise HTTPException(404, "رسید پیدا نشد")
-    if str(payment.get("plan_id") or "") != "wallet_topup":
-        raise HTTPException(409, "این رسید، رسید شارژ کیف پول نیست")
-    if payment.get("status") != "approved":
-        raise HTTPException(409, "فقط رسید تأییدشده قابل اعمال اعتبار است")
-    uid = int(payment.get("user_id") or 0)
-    res = await db.finalize_approved_payment(payment, int(user["id"]))
-    log_id = await _audit(
-        int(user["id"]), "رفع مغایرت مالی: اعمال اعتبار شارژ کیف پول",
-        severity="CRITICAL", target_type="sub_payment",
-        target_id=str(payment["_id"]), target_label=f"رسید شارژ کاربر {uid}",
-        before={"wallet_credited": False},
-        after={"wallet_credited": True, "amount": res.get("amount"),
-               "already": bool(res.get("already"))},
-        tags=["مالی", "کیف_پول", "مغایرت‌گیری"])
-    await db.client["medicalbot"]["bot_notifications"].insert_one({
-        "type": "event:wallet", "chat_id": uid, "sent": False,
-        "text": (f"💰 شارژ کیف پول شما ({int(res.get('amount') or 0):,} "
-                 f"تومان) اعمال شد."),
-        "created_at": _now()})
-    return {"ok": True, "amount": res.get("amount"),
-            "already_credited": bool(res.get("already")), "audit_id": log_id}
 
 
 @router.get("/subscription/finance")
@@ -5686,54 +5558,6 @@ async def wa_export_payments_csv(status: str = Query("", max_length=20),
     return Response(
         "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
-                 "X-Audit-Id": str(log_id)})
-
-
-@router.get("/exports/wallet.csv")
-async def wa_export_wallet_csv(user_id: int = Query(0),
-                               status: str = Query("", max_length=10),
-                               user=Depends(_perm("subscription.manage"))):
-    """🌊 W7 — خروجی CSV کرانه‌دار ledger کیف پول (ردپای کامل مالی:
-    نوع/جهت/مبلغ/مانده/مرجع). ledger هرگز حذف نمی‌شود؛ این فقط خواندن است."""
-    flt = {}
-    if user_id:
-        flt["user_id"] = int(user_id)
-    if status in ("ok", "pending", "failed"):
-        flt["status"] = status
-    rows = await db.wallet_transactions.find(flt).sort(
-        [("created_at", -1), ("_id", -1)]).limit(2000).to_list(2000)
-    uids = {int(t.get("user_id") or 0) for t in rows}
-    names = {}
-    if uids:
-        for u in await db.users.find(
-                {"user_id": {"$in": list(uids)}}).to_list(2000):
-            names[int(u["user_id"])] = u.get("name") or ""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "نوع", "جهت", "مبلغ",
-                "مانده قبل", "مانده بعد", "مرجع", "وضعیت", "شرح", "تاریخ"])
-    for t in rows:
-        uid = int(t.get("user_id") or 0)
-        ref = (f"{t.get('reference_type') or ''}:"
-               f"{t.get('reference_id') or ''}")
-        w.writerow([str(t["_id"]), names.get(uid, ""), uid,
-                    t.get("type") or "", t.get("direction") or "",
-                    t.get("amount") or "",
-                    t.get("balance_before") if t.get("balance_before")
-                    is not None else "",
-                    t.get("balance_after") if t.get("balance_after")
-                    is not None else "",
-                    ref, t.get("status") or "", t.get("label") or "",
-                    t.get("created_at") or ""])
-    log_id = await _audit(
-        int(user["id"]), "خروجی CSV ledger کیف پول", severity="INFO",
-        target_type="export",
-        target_id=f"wallet:{user_id or 'all'}:{status or 'all'}",
-        after={"rows": len(rows)}, tags=["مالی", "کیف_پول", "خروجی"])
-    return Response(
-        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition":
-                 "attachment; filename=humsyar-wallet-ledger.csv",
                  "X-Audit-Id": str(log_id)})
 
 
@@ -6120,7 +5944,8 @@ class WaAiConfigUpdate(BaseModel):
     """پیکربندی غیرsecret؛ extra=forbid مانع عبور دستی api_key می‌شود."""
     model_config = ConfigDict(extra="forbid")
     enabled: bool
-    provider: str = Field(pattern="^(gemini|openrouter)$")
+    provider: str = Field(
+        pattern="^(gemini|openrouter|groq|cerebras|mistral|deepseek)$")
     model: str = Field(min_length=2, max_length=150)
     daily_limit: int = Field(ge=0, le=1000)
     thinking: str = Field(pattern="^(auto|high)$")
@@ -6142,6 +5967,12 @@ class WaAiPersonaCreate(BaseModel):
 class WaAiDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     notes: str = Field(min_length=3, max_length=2000)
+
+
+@router.get("/ai/models")
+async def wa_ai_models(user=Depends(_perm("ai.manage"))):
+    """🌊 W9 — کاتالوگ مرکزی مدل‌ها برای selectهای پنل وب."""
+    return await ai_admin_api.models_catalog(admin=user)
 
 
 @router.get("/ai/config")

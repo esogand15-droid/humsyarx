@@ -21,29 +21,27 @@ from time_utils import format_datetime_fa, today_tehran
 from ai_solver import (
     get_ai_config, set_ai_setting, ask_ai, save_persona, delete_persona,
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
+    MODEL_CATALOG, PROVIDERS,
 )
 
 logger = logging.getLogger(__name__)
 
+# 🌊 W9 — از کاتالوگ مرکزی ai_solver ساخته می‌شود (منبع واحد حقیقت؛
+# بات/پنل وب/مینی‌اپ همه یک فهرست را می‌بینند)
 MODEL_PRESETS = {
-    'gemini': [
-        ('gemini-3.6-flash',      '🌟 Gemini 3.6 Flash (جدیدترین و پیشنهادیِ گوگل)'),
-        ('gemini-3.5-flash',      '🆕 Gemini 3.5 Flash (قوی، برای استدلال سنگین)'),
-        ('gemini-3.5-flash-lite', '🆕 Gemini 3.5 Flash-Lite (سریع و ارزون‌تر)'),
-        ('gemini-2.5-flash',      '⚡ Gemini 2.5 Flash (پایدار و قدیمی‌تر)'),
-        ('gemini-flash-latest',   '🔄 Gemini Flash Latest (اگه بالایی 404 داد)'),
-        ('gemini-2.5-flash-lite', '💨 Gemini 2.5 Flash-Lite (سریع‌تر و سبک‌تر)'),
-        ('gemini-2.5-pro',        '🧠 Gemini 2.5 Pro (دقیق‌تر، محدودیت کمتر)'),
-    ],
-    'openrouter': [
-        ('google/gemma-4-31b-it:free', '⚡ Gemma 4 31B (پیشنهادی، تصویر+متن)'),
-        ('openrouter/free',            '🎲 انتخاب خودکار از مدل‌های رایگان'),
-    ],
+    pid: [(mid, label) for mid, label, _free in models]
+    for pid, models in MODEL_CATALOG.items()
 }
-PROVIDER_LABELS = {
-    'gemini':     '🟦 Google Gemini',
-    'openrouter': '🟪 OpenRouter',
+PROVIDER_LABELS = {pid: meta['label'] for pid, meta in PROVIDERS.items()}
+PROVIDER_KEY_HINTS = {
+    'gemini':     'aistudio.google.com/apikey',
+    'openrouter': 'openrouter.ai/keys',
+    'groq':       'console.groq.com/keys',
+    'cerebras':   'cloud.cerebras.ai (بخش API Keys)',
+    'mistral':    'console.mistral.ai (بخش API Keys)',
+    'deepseek':   'platform.deepseek.com (بخش API Keys)',
 }
+
 
 # ══════════════════════════════════════════════════
 #  قیمتِ رسمیِ گوگل برای هر ۱ میلیون توکن، به دلار — (ورودی, خروجی).
@@ -113,7 +111,7 @@ async def show_ai_main(query):
     )
     keyboard = [
         [InlineKeyboardButton(toggle_txt, callback_data='ai:toggle')],
-        [InlineKeyboardButton("🔁 تغییر ارائه‌دهنده (Gemini/OpenRouter)", callback_data='ai:pick_provider')],
+        [InlineKeyboardButton("🔁 تغییر ارائه‌دهنده (Gemini/OpenRouter/Groq/...)", callback_data='ai:pick_provider')],
         [InlineKeyboardButton("🔑 تنظیم / تغییر API Key", callback_data='ai:set_key')],
         [InlineKeyboardButton("🧩 انتخاب مدل", callback_data='ai:pick_model')],
         [InlineKeyboardButton("👥 محدودیت روزانه هر کاربر", callback_data='ai:set_limit')],
@@ -187,8 +185,9 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔁 <b>انتخاب ارائه‌دهنده‌ی هوش مصنوعی</b>\n\n"
             "توجه: با عوض کردن ارائه‌دهنده باید API Key مخصوص همون رو هم "
             "دوباره تنظیم کنی (کلید Gemini با OpenRouter کار نمی‌کنه و برعکس).\n\n"
-            "🟦 Gemini → کلید از aistudio.google.com/apikey\n"
-            "🟪 OpenRouter → کلید از openrouter.ai/keys",
+            + "\n".join(
+                f"{PROVIDER_LABELS[k]} → کلید از {v}"
+                for k, v in PROVIDER_KEY_HINTS.items()),
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
         )
         return
@@ -205,10 +204,8 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == 'set_key':
         cfg = await get_ai_config()
         context.user_data['mode'] = 'ai_set_key'
-        hint = (
-            "aistudio.google.com/apikey" if cfg['provider'] == 'gemini'
-            else "openrouter.ai/keys"
-        )
+        hint = PROVIDER_KEY_HINTS.get(
+            cfg['provider'], "پنل مدیریت همان ارائه‌دهنده")
         await query.edit_message_text(
             "🔑 <b>تنظیم API Key</b>\n\n"
             f"کلید API مربوط به «{PROVIDER_LABELS.get(cfg['provider'], cfg['provider'])}» رو بفرست "

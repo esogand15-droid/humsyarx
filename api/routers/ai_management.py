@@ -18,6 +18,7 @@ from api.auth import (
 
 from ai_solver import (
     AIError,
+    ai_catalog_payload,
     ask_ai,
     get_ai_config,
     set_ai_setting,
@@ -34,7 +35,7 @@ class ConfigUpdate(BaseModel):
 
     provider: str = Field(
         pattern=(
-            "^(gemini|openrouter)$"
+            "^(gemini|openrouter|groq|cerebras|mistral|deepseek)$"
         )
     )
 
@@ -86,6 +87,16 @@ class UserAction(BaseModel):
     user_id: int = Field(
         gt=0
     )
+
+
+@router.get("/models")
+async def models_catalog(
+    admin=Depends(
+        get_admin_user
+    ),
+):
+    """🌊 W9 — کاتالوگ مرکزی providerها/مدل‌ها برای UI (بدون تایپ دستی)."""
+    return ai_catalog_payload()
 
 
 @router.get("/config")

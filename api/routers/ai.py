@@ -1758,6 +1758,12 @@ async def generate_image_ep(body: ImageGenBody,
     if not config.get("image_enabled"):
         raise HTTPException(
             status_code=503, detail="تولید تصویر فعلاً غیرفعال است")
+    if config.get("provider") != "gemini":
+        raise HTTPException(
+            status_code=503,
+            detail=("تولید تصویر فقط با ارائه‌دهنده‌ی گوگل (Gemini) کار "
+                    "می‌کند — provider هوشیار را در پنل ادمین روی Gemini "
+                    "بگذارید"))
 
     limit = max(0, int(config.get("image_daily_limit") or 0))
     today = today_tehran().isoformat()
