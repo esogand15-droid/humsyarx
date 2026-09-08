@@ -56,11 +56,16 @@ async def _audit(admin, action: str, module: str, *, severity: str = "INFO",
             role = await db.get_actor_role_label(uid)
         except Exception:
             role = actor.get("role", "admin")
+        # 🆕 Audit Refactor — Correlation/Request propagation (§10-§11)
+        corr = current_request_id.get() or None
+        # request_id را اگر در context موجود بود بفرست (همان correlation برای وب)
         await db.log_action(
             uid, name, role,
             action, module, "admin", severity,
             str(target_id), target_type, target_label,
-            before, after, details, tags,
+            before, after, details, tags, correlation_id=corr,
+            source="api", channel="web",
+            request_id=corr, metadata={"endpoint": module},
         )
         # سینک با گروه لاگ تلگرام — همان متنی که send_audit_log می‌سازد
         try:
@@ -1296,6 +1301,31 @@ async def audit_logs_admin(
     } for r in rows]
 
     return {"logs": logs, "total": total, "counters": counters}
+
+
+@router.get("/audit-health")
+async def audit_health(admin=Depends(get_admin_user)):
+    """🆕 Audit Refactor §52 — سلامت سیستم حسابرسی (Delivery + DB)."""
+    try:
+        db_health = await db.get_audit_health_metrics()
+    except Exception as e:
+        db_health = {"error": str(e)[:200]}
+    # delivery health از audit.py (in-memory)
+    try:
+        from audit import get_delivery_health as _adh
+        delivery = _adh()
+    except Exception:
+        delivery = {}
+    # outbox/queue عمق
+    try:
+        pending_outbox = await db.client["medicalbot"]["audit_outbox"].count_documents({"status": {"$in": ["PENDING","RETRY"]}})
+    except Exception:
+        try:
+            pending_outbox = await db.client["medicalbot"]["bot_notifications"].count_documents({"sent": False, "type": {"$regex": "audit"}})
+        except Exception:
+            pending_outbox = None
+    return {"db": db_health, "delivery": delivery, "pending_outbox": pending_outbox}
+
 
 # ══════════════════════════════════════════════
 # 📊 آمار تحلیلی (نمودارهای پنل وب)

@@ -124,8 +124,8 @@ async def _resolve_item_intake(kind: str, item_id: str) -> str:
             return await db.ref_book_intake(item_id)
         if kind == 'ref_file':
             return await db.ref_file_intake(item_id)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"_resolve_item_intake {kind}:{item_id} failed: {_e}")
     return ''
 
 
@@ -162,10 +162,11 @@ async def _audit(context, uid, action, *, severity='INFO', details='',
                  target_id='', target_type='', target_label='',
                  before=None, after=None, tags=None):
     """🧹 موج Q2/W6 — helper مشترک audit پنل محتوا (حذف ۱۲ بلوک تکراری).
-    فرمت/رفتار لاگ عیناً حفظ شده؛ خطای audit هرگز اقدام اصلی را نمی‌شکند.
-    🐛 FIX — before/after از ابتدا توسط send_audit_log پشتیبانی می‌شد ولی
-    این wrapper آنها را نداشت؛ دو فراخوان (ویرایش درس/جلسه) با before=
-    خطای TypeError می‌دادند و اقدام موفقِ ادمین با «خطای ربات» تمام می‌شد."""
+    🆕 Audit Refactor (§16,§34,§35): هرگز Silent نیست —
+       • Delivery failure → warning + outbox retry (send_audit_log مرکزی)
+       • Audit exception → logger.warning (قبلاً bare except:pass بود و شکست بی‌صدا می‌ماند)
+       • اقدام اصلی هرگز به خاطر audit نمی‌شکند (fail-open) اما ناظر می‌بیند.
+    """
     try:
         from utils import send_audit_log
         actor = await db.get_user(uid)
@@ -177,8 +178,9 @@ async def _audit(context, uid, action, *, severity='INFO', details='',
             target_id=target_id, target_type=target_type, target_label=target_label,
             before=before, after=after,
             details=details, tags=tags)
-    except Exception:
-        pass
+    except Exception as _e:
+        # §16: هرگز silently swallow نشود — حداقل warning + تشخیص نوع شکست
+        logger.warning(f"content _audit failed action={action!r} uid={uid}: {type(_e).__name__}: {_e}")
 
 
 # ══════════════════════════════════════════════════════════
@@ -207,8 +209,8 @@ async def _h_fork_session(query, context, uid: int, _cscope, is_scoped: bool, pa
             details=(f"🍴 Fork Session: {_base.get('topic', '')}\n"
                      f"🏷 ورودی: {await _intake_label(_target)}"),
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"fork_session audit failed: {_e}")
     await query.answer("⭐ نسخه‌ی اختصاصی ساخته شد — حالا قابل ویرایش است")
     _ls = await db.bs_get_session(base_id)
     await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
@@ -232,8 +234,8 @@ async def _h_unfork_session(query, context, uid: int, _cscope, is_scoped: bool, 
             severity='INFO',
             details=f"↩️ Unfork Session\n🏷 ورودی: {await _intake_label(_fi)}",
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"unfork_session audit failed: {_e}")
     await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
     _ls = await db.bs_get_session(base_id)
     await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
@@ -262,8 +264,8 @@ async def _h_fork_book(query, context, uid: int, _cscope, is_scoped: bool, parts
             details=(f"🍴 Fork Book: {_bb.get('name', '')}\n"
                      f"🏷 ورودی: {await _intake_label(_target)}"),
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"fork_book audit failed: {_e}")
     await query.answer("⭐ نسخه‌ی اختصاصی کتاب ساخته شد")
     _bk = await db.ref_get_book(base_bid)
     await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
@@ -287,8 +289,8 @@ async def _h_unfork_book(query, context, uid: int, _cscope, is_scoped: bool, par
             severity='INFO',
             details=f"↩️ Unfork Book\n🏷 ورودی: {await _intake_label(_fi)}",
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"unfork_book audit failed: {_e}")
     await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
     _bk = await db.ref_get_book(base_bid)
     await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
@@ -696,7 +698,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             ]))
 
     elif action == 'confirm_del_ref_subject':
-        sid = parts[2]; await db.ref_delete_subject(sid)
+        sid = parts[2]
+        _subj_for_audit = await db.ref_get_subject(sid) or {}
+        _subj_name = _subj_for_audit.get('name','')
+        await db.ref_delete_subject(sid)
+        try:
+            await _audit(context, uid, "حذف موضوع رفرنس",
+                severity='HIGH',
+                target_id=sid,
+                target_type='ref_subject',
+                target_label=_subj_name,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_subject audit failed: {_e}")
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await query.edit_message_text("✅ درس حذف شد.", reply_markup=_back_btn("🔙 بازگشت", back))
@@ -770,7 +784,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
                 "ابتدا نسخه‌های اختصاصی را ↩️ حذف کنید.",
                 show_alert=True)
             return ConversationHandler.END
+        _book_for_audit = await db.ref_get_book(bid) or {}
+        _book_name = _book_for_audit.get('name','')
         await db.ref_delete_book(bid)
+        try:
+            await _audit(context, uid, "حذف کتاب رفرنس",
+                severity='HIGH',
+                target_id=bid,
+                target_type='reference_book',
+                target_label=_book_name,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_book audit failed: {_e}")
         sid = context.user_data.get('ca_ref_subject_id','')
         await query.edit_message_text("✅ رفرنس حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_subject:{sid}'))
@@ -818,7 +843,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
 
     elif action == 'del_ref_file':
-        fid = parts[2]; await db.ref_delete_file(fid)
+        fid = parts[2]
+        _reffile = await db.ref_get_file(fid) if hasattr(db, 'ref_get_file') else None
+        _ref_label = f"جلد {_reffile.get('volume','')}" if _reffile else fid
+        await db.ref_delete_file(fid)
+        try:
+            await _audit(context, uid, "حذف فایل رفرنس",
+                severity='HIGH',
+                target_id=fid,
+                target_type='ref_file',
+                target_label=_ref_label,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_file audit failed: {_e}")
         bid = context.user_data.get('ca_ref_book_id','')
         await query.edit_message_text("✅ فایل حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_book:{bid}'))
@@ -850,7 +887,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", 'ca:faq'))
 
     elif action == 'del_faq':
-        await db.faq_delete(parts[2]); await _show_faq(query)
+        _faq_del_id = parts[2]
+        _faq_before = await db.faq_get(_faq_del_id) if hasattr(db, 'faq_get') else None
+        await db.faq_delete(_faq_del_id)
+        try:
+            await _audit(context, uid, "حذف سوال متداول",
+                severity='HIGH',
+                target_id=_faq_del_id,
+                target_type='faq',
+                target_label=(_faq_before.get('question','')[:60] if _faq_before else _faq_del_id),
+                tags=['حذف_FAQ'])
+        except Exception as _e:
+            logger.warning(f"del_faq audit failed: {_e}")
+        await _show_faq(query)
 
     elif action == 'urlimport':
         # 📥 URL-Import — §46: ورودی متن → job → پیشرفت با edit
@@ -1644,8 +1693,8 @@ async def _ui_run_bot(message, uid: int, url: str, lesson: str, topic: str):
             txt += f"\n{doc['error'].get('code')}: {doc['error'].get('message')}"
         try:
             await message.edit_text(txt)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"_ui_run_bot edit failed: {_e}")
         if st in uis.TERMINAL:
             break
 
@@ -1826,8 +1875,19 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست.")
             return ConversationHandler.END
-        await db.bs_add_content(sid, ct, fid, description=desc)
+        cid_new = await db.bs_add_content(sid, ct, fid, description=desc)
         tl = dict(CONTENT_TYPES).get(ct, ct)
+        try:
+            _sess_for_audit = await db.bs_get_session(sid) or {}
+            await _audit(context, uid, f"افزودن {tl}",
+                severity='INFO',
+                target_id=str(cid_new or ''),
+                target_type='content',
+                target_label=desc[:60] if desc else tl,
+                details=f"جلسه: {_sess_for_audit.get('topic','')[:50]}\nنوع: {tl}" + (f"\n📝 {desc[:120]}" if desc else ""),
+                tags=['افزودن_محتوا', ct])
+        except Exception as _e:
+            logger.warning(f"add_content audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ {tl} اضافه شد!",
             reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
@@ -1842,8 +1902,19 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
             return ConversationHandler.END
-        await db.ref_add_file(bid, lang, fid, volume=vol, description=desc)
+        fid_new = await db.ref_add_file(bid, lang, fid, volume=vol, description=desc)
         ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+        try:
+            _book_for_audit = await db.ref_get_book(bid) or {}
+            await _audit(context, uid, f"آپلود رفرنس {ll} جلد {vol}",
+                severity='INFO',
+                target_id=str(fid_new or ''),
+                target_type='ref_file',
+                target_label=f"{_book_for_audit.get('name','')} — {ll} جلد {vol}",
+                details=(f"کتاب: {_book_for_audit.get('name','')}" + (f"\n📝 {desc[:120]}" if desc else "")),
+                tags=['آپلود_رفرنس', lang])
+        except Exception as _e:
+            logger.warning(f"ref_add_file audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(
             f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else ''),
@@ -1863,6 +1934,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await db.ref_add_subject(text, intake=_ctx_intake)
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
+        if result:
+            try:
+                await _audit(context, uid, "ایجاد موضوع رفرنس",
+                    severity='INFO',
+                    target_id=str(result or ''),
+                    target_type='ref_subject',
+                    target_label=text,
+                    details=f"🏷 ورودی: {await _intake_label(_ctx_intake)}",
+                    tags=['ایجاد_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"ref_add_subject audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(
             f"✅ درس «{text}» اضافه شد!" if result else "⚠️ قبلاً وجود دارد.",
@@ -1874,7 +1956,21 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این موضوع در scope شما نیست.")
             return ConversationHandler.END
+        _old_subj = await db.ref_get_subject(sid) or {}
+        _old_name = _old_subj.get('name','')
         ok  = await db.ref_update_subject(sid, {'name': text})
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش موضوع رفرنس",
+                    severity='WARNING',
+                    target_id=sid,
+                    target_type='ref_subject',
+                    target_label=_old_name,
+                    before={'name': _old_name},
+                    after={'name': text},
+                    tags=['ویرایش_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"edit_ref_subject audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ نام به «{text}» تغییر یافت." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_subject:{sid}'))
@@ -1909,7 +2005,21 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
             return ConversationHandler.END
+        _old_book = await db.ref_get_book(bid) or {}
+        _old_bname = _old_book.get('name','')
         ok  = await db.ref_update_book(bid, {'name': text})
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش کتاب رفرنس",
+                    severity='WARNING',
+                    target_id=bid,
+                    target_type='reference_book',
+                    target_label=_old_bname,
+                    before={'name': _old_bname},
+                    after={'name': text},
+                    tags=['ویرایش_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"edit_ref_book audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ نام کتاب به «{text}» تغییر یافت." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
@@ -1921,7 +2031,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ فرمت اشتباه!\nمثال: <code>سوال | جواب | دسته</code>\n⌨️ /cancel",
                 parse_mode='HTML'); return CA_WAITING_TEXT
         question = ps[0]; answer = ps[1]; category = ps[2] if len(ps) > 2 else 'عمومی'
-        await db.faq_add(question, answer, category)
+        faq_id = await db.faq_add(question, answer, category)
+        try:
+            await _audit(context, uid, "ایجاد سوال متداول",
+                severity='INFO',
+                target_id=str(faq_id or ''),
+                target_type='faq',
+                target_label=question[:60],
+                details=f"دسته: {category}",
+                tags=['ایجاد_FAQ'])
+        except Exception as _e:
+            logger.warning(f"add_faq audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ سوال اضافه شد!",
             reply_markup=_back_btn("🔙 برگشت", 'ca:faq'))

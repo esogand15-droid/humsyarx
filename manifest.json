@@ -1,0 +1,87 @@
+{
+  "project": "humsyarx",
+  "refactor": "Observability/Audit Production-Grade",
+  "version": "v2",
+  "date": "2026-09-08T15:18:54.795679+00:00",
+  "generated_by": "Humsyar Audit Refactor Agent",
+  "runtime_files": [
+    {
+      "path": "humsyarx/audit.py",
+      "sha256": "03659af2ce821adc5ee2bb3796dcf8dbd481cae30f40afd12b1332ae33e34737",
+      "lines": 1084,
+      "bytes": 52329,
+      "purpose": "NEW central audit service — schema/sanitizer/correlation/telegram/outbox/health",
+      "status": "NEW"
+    },
+    {
+      "path": "humsyarx/db/core.py",
+      "sha256": "b0c57cb32f18de60bf68eba122b338cc6057347dbdfa3c0cfe7c5551ab92062f",
+      "lines": 3726,
+      "bytes": 206806,
+      "purpose": "MOD — 9 indexes + audit_outbox/outbox + enriched log_action + search/health/retention",
+      "status": "MODIFIED"
+    },
+    {
+      "path": "humsyarx/utils.py",
+      "sha256": "9b29baafd314a4cf84e323ffc8eb88e52d7f09c765d0828d2c13f562620b3b83",
+      "lines": 836,
+      "bytes": 43609,
+      "purpose": "MOD — HY correlation, sanitize, durable send_audit_log (persist-then-enqueue) + health helpers",
+      "status": "MODIFIED"
+    },
+    {
+      "path": "humsyarx/content_admin.py",
+      "sha256": "933c17b07f7e4e21e7eae91a9caed9b976c188d62c890973e6b50e0165d3a3f8",
+      "lines": 2052,
+      "bytes": 110252,
+      "purpose": "MOD — silent except:pass → warning + 9 missing CREATE/UPDATE/DELETE audits",
+      "status": "MODIFIED"
+    },
+    {
+      "path": "humsyarx/api/main.py",
+      "sha256": "299cb4bd89bf92d8ccea4d04449440a5049ac810b7a02b44e36cb6efe2853238",
+      "lines": 767,
+      "bytes": 33473,
+      "purpose": "MOD — HY-YYYYMMDD-XXXXXX request_id (was hex16) for correlation consistency",
+      "status": "MODIFIED"
+    },
+    {
+      "path": "humsyarx/api/routers/admin_panel.py",
+      "sha256": "269af95cd49cc30d4ed23f47788c7cce64bbd60220033aa83e8802a135a55242",
+      "lines": 1473,
+      "bytes": 77675,
+      "purpose": "MOD — correlation propagation (source/api, channel/web) + /audit-health endpoint",
+      "status": "MODIFIED"
+    }
+  ],
+  "migration": {
+    "steps": [
+      "unzip overwriting the listed files",
+      "pip install python-telegram-bot pymongo (if missing)",
+      "restart bot & api (systemctl or docker compose up -d --build)",
+      "ensure_indexes runs automatically creating 9 new indexes + audit_outbox",
+      "verify GET /api/admin/audit-health returns db/delivery/pending_outbox"
+    ],
+    "indexes_added": [
+      "audit_logs[event_id unique sparse]",
+      "audit_logs[severity+timestamp]",
+      "audit_logs[action+timestamp]",
+      "audit_logs[request_id]",
+      "audit_logs[telegram_delivery_status+timestamp]",
+      "audit_outbox[status+next_retry_at]",
+      "audit_outbox[event_id unique]",
+      "audit_outbox[correlation_id]",
+      "audit_outbox[created_at]"
+    ],
+    "collections_added": [
+      "audit_outbox",
+      "audit_delivery_metrics (optional in-memory)"
+    ],
+    "backward_compat": "All send_audit_log / db.log_action callers unchanged — new params optional"
+  },
+  "verification": {
+    "py_compile": "python -m py_compile audit.py utils.py content_admin.py db/core.py api/routers/admin_panel.py  # OK",
+    "pytest": "tests/test_static_contracts.py 4 passed, test_content_admin_audit 2 skipped",
+    "manual_audit_test": "sanitize/redact, HY correlation, build_audit_event, build_audit_log_text — ALL CHECKS PASSED"
+  }
+}

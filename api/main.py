@@ -144,7 +144,17 @@ async def request_context_and_safe_errors(request: Request, call_next):
     """
     started = time.perf_counter()
     supplied = (request.headers.get("x-request-id") or "").strip()
-    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied) else uuid.uuid4().hex[:16]
+    if supplied and re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied):
+        request_id = supplied
+    else:
+        # 🆕 Audit Refactor §10 — HY-YYYYMMDD-XXXXXX برای قابلیت جستجو/مرتب‌سازی
+        try:
+            from time_utils import now_tehran
+            today = now_tehran().strftime("%Y%m%d")
+        except Exception:
+            from datetime import datetime, timezone
+            today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        request_id = f"HY-{today}-{uuid.uuid4().hex[:6].upper()}"
     token = current_request_id.set(request_id)
     try:
         try:

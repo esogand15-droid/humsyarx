@@ -121,6 +121,9 @@ class DBCore:
         self.wa_api_metrics    = _db['wa_api_metrics']
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
+        # 🚀 Audit Observability Refactor — Outbox برای Delivery قابل Retry (§14)
+        self.audit_outbox = _db['audit_outbox']     # صف تحویل تلگرام (pending → delivered / failed)
+        self.audit_delivery_metrics = _db['audit_delivery_metrics']
         # FIX جدید: سیستم اشتراک — پلن‌ها، وضعیت هر کاربر، رسیدهای
         # در انتظار بررسی، و کدهای تخفیف
         self.sub_plans     = _db['sub_plans']
@@ -264,6 +267,17 @@ class DBCore:
                 self._index(self.audit_logs, [('actor.id', 1), ('timestamp', -1)], background=True),
                 self._index(self.audit_logs, [('correlation_id', 1), ('timestamp', 1)], background=True),
                 self._index(self.audit_logs, [('target.type', 1), ('target.id', 1), ('timestamp', -1)], background=True),
+                # 🚀 Audit Refactor — ایندکس‌های جدید برای Observability (§38)
+                self._index(self.audit_logs, [('event_id', 1)], unique=True, sparse=True, background=True),
+                self._index(self.audit_logs, [('severity', 1), ('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('action', 1), ('timestamp', -1)], background=True),
+                self._index(self.audit_logs, [('request_id', 1)], background=True),
+                self._index(self.audit_logs, [('telegram_delivery_status', 1), ('timestamp', -1)], background=True),
+                # Outbox indexes (§14, §44 — Race prevention + Retry)
+                self._index(self.audit_outbox, [('status', 1), ('next_retry_at', 1)], background=True),
+                self._index(self.audit_outbox, [('event_id', 1)], unique=True, background=True),
+                self._index(self.audit_outbox, [('correlation_id', 1)], background=True),
+                self._index(self.audit_outbox, [('created_at', -1)], background=True),
                 self._index(self.grades, [('student_id', 1), ('created_at', -1)], background=True),
                 self._index(self.grades, [('lesson', 1), ('created_at', -1)], background=True),
                 self._index(self.grades, [('exam_date', -1), ('lesson', 1)], background=True),
@@ -1875,6 +1889,14 @@ class DBCore:
         'Auth':          'ورود/خروج',
         'Subscription':  'اشتراک',   # FIX جدید
         'Grades':        'نمرات',    # FIX جدید
+        'AI':            'هوش مصنوعی',
+        'Payment':       'پرداخت',
+        'QBank':         'بانک سوال',
+        'Reference':     'رفرنس',
+        'Security':      'امنیت',
+        'Job':           'Job',
+        'Integration':   'یکپارچه‌سازی',
+        'Database':      'دیتابیس',
     }
 
 
@@ -1884,21 +1906,72 @@ class DBCore:
                           target_type: str = '', target_label: str = '',
                           before: dict = None, after: dict = None,
                           details: str = '', tags: list = None,
-                          correlation_id: str = None) -> str:
+                          correlation_id: str = None,
+                          # 🚀 Audit Refactor — فیلدهای جدید §5 (همه اختیاری برای Backward Compat)
+                          event_id: str = None, actor_type: str = None,
+                          source: str = None, channel: str = None,
+                          request_id: str = None, ip: str = None, user_agent: str = None,
+                          metadata: dict = None, result: str = None, status: str = None,
+                          error_code: str = None, error_message: str = None,
+                          target_context: dict = None) -> str:
         """
         FIX بازطراحی کامل — مدل داده غنی طبق سند:
         actor شامل نقش، target شامل برچسب قابل‌فهم (نه فقط ObjectId خام)،
         changes به‌صورت فهرست فیلد:قبل:بعد، correlation_id برای ردیابی
         عملیات چندمرحله‌ای (مثلاً ارسال همگانی)، و tags برای جستجو.
 
+        🚀 Refactor 2026-09: ذخیره‌ی کامل Schema استاندارد §5 — event_id,
+        timestamp_tehran, actor_type, source/channel, request_id,
+        correlation_id, before/after sanitize, result/status, ip/ua,
+        metadata, error_code/message, telegram_delivery_status.
+
         target_label: نام/عنوان قابل‌فهم هدف (مثلاً نام کاربر یا متن سوال)
         — این چیزی است که در پیام لاگ به‌جای ObjectId خام نشان داده می‌شود.
         """
-        # 🛡 موج۳-AUD — قبلاً شرط `before and after` بود، پس هر فراخوانی که
-        # فقط `after` می‌داد (اکثر «ایجاد»ها: پلن، کد تخفیف، اعطای دسته‌ای)
-        # مقدارش کامل دور ریخته می‌شد و لاگ با changes=[] ثبت می‌شد.
-        # برای رویداد «ایجاد» طبیعی است که before نداشته باشد؛ نبودِ حالتِ
-        # قبلی نباید باعث گم‌شدن حالتِ بعدی شود.
+        # 🚀 استفاده از audit.py مرکزی برای Sanitization + Schema یکسان
+        # وارد کردن تنبل برای جلوگیری از Circular Import
+        try:
+            from audit import build_audit_event, sanitize_audit_data
+            # اگر event_id از قبل داده شده، ترجیح می‌دهیم همان بماند (idempotency §43)
+            # وگرنه audit.py یکی می‌سازد
+            ev = build_audit_event(
+                event_id=event_id,
+                actor_id=actor_id, actor_name=actor_name, actor_role=actor_role,
+                actor_type=actor_type or "USER",
+                module=module, category=category, action=action,
+                severity=severity, target_type=target_type, target_id=target_id,
+                target_label=target_label, before=before, after=after,
+                result=result or "SUCCESS", status=status or "SUCCESS",
+                source=source or "bot", channel=channel or "telegram",
+                request_id=request_id, correlation_id=correlation_id,
+                ip=ip, user_agent=user_agent, metadata=metadata,
+                error_code=error_code, error_message=error_message,
+                tags=tags, details=details, target_context=target_context,
+            )
+            # build_audit_event قبلاً sanitize کرده؛ اینجا مستقیم ذخیره می‌کنیم
+            doc = ev
+            # audit_logs insert — event_id یکتا (§43)
+            # اگر event_id تکراری باشد (duplicate delivery)، به‌جای خطا، موجود را برگردان
+            try:
+                r = await self.audit_logs.insert_one(doc)
+            except Exception as e:
+                # DuplicateKeyError روی event_id → idempotent (§43)
+                if "duplicate" in str(e).lower() and "event_id" in str(e).lower():
+                    existing = await self.audit_logs.find_one({"event_id": doc["event_id"]})
+                    if existing:
+                        return str(existing.get("_id") or doc["event_id"])
+                raise
+            # 🚨 §۸۹ — هشدار فعال. داخل try تا هیچ‌وقت مسیر اصلی را نشکند:
+            if doc.get("severity") in self.ALERT_SEVERITIES:
+                try:
+                    await self.dispatch_critical_alert({**doc, "_id": r.inserted_id})
+                except Exception:
+                    pass
+            return str(r.inserted_id)
+        except ImportError:
+            # Fallback مسیر قدیمی (اگر audit.py در دسترس نبود — نباید رخ دهد)
+            pass
+        # Legacy fallback (حفظ رفتار قدیمی برای تست‌های بدون audit.py)
         changes = []
         if before or after:
             before = before or {}
@@ -1909,9 +1982,19 @@ class DBCore:
                     'before': before.get(key, '—'),
                     'after':  after.get(key, '—'),
                 })
-
+        # Sanitize fallback
+        try:
+            from audit import sanitize_audit_data as _san
+            before = _san(before) if before else before
+            after = _san(after) if after else after
+            details = _san(details) if details else details
+        except Exception:
+            pass
+        import uuid as _uuid
         doc = {
+            'event_id': event_id or _uuid.uuid4().hex,
             'timestamp':      utc_now_iso(),
+            'timestamp_tehran': utc_now_iso(),
             'severity':       severity,
             'module':         module,
             'category':       category,
@@ -1920,20 +2003,32 @@ class DBCore:
                 'id':   actor_id,
                 'name': actor_name,
                 'role': actor_role or 'نامشخص',
+                'type': actor_type or 'USER',
             },
             'target': {
                 'type':  target_type,
                 'id':    target_id,
                 'label': target_label,
+                'context': target_context or {},
             },
             'details':        details,
             'changes':        changes,
+            'before': before,
+            'after': after,
             'tags':           tags or [],
             'correlation_id': correlation_id or current_request_id.get(),
+            'request_id': request_id or current_request_id.get(),
+            'source': source or 'bot',
+            'channel': channel or 'telegram',
+            'result': result or 'SUCCESS',
+            'status': status or 'SUCCESS',
+            'metadata': metadata or {},
+            'error_code': error_code,
+            'error_message': error_message,
+            'telegram_delivery_status': 'PENDING',
+            'audit_version': 2,
         }
         r = await self.audit_logs.insert_one(doc)
-        # 🚨 §۸۹ — هشدار فعال. داخل try تا هیچ‌وقت مسیر اصلی را نشکند:
-        # لاگ همین حالا ثبت شده و از دست نمی‌رود.
         if severity in self.ALERT_SEVERITIES:
             try:
                 await self.dispatch_critical_alert({**doc, '_id': r.inserted_id})
@@ -2128,6 +2223,87 @@ class DBCore:
         return await self.audit_logs.find(
             {'tags': tag}
         ).sort('timestamp', -1).to_list(limit)
+
+    # ══════════════════════════════════════════════════
+    #  🚀 Audit Searchability & Health — §38 §52 §39
+    # ══════════════════════════════════════════════════
+    async def search_audit_logs(self, *, event_id: str = None, actor_id: int = None,
+                                 module: str = None, action: str = None,
+                                 category: str = None, severity: str = None,
+                                 target_id: str = None, target_type: str = None,
+                                 correlation_id: str = None, request_id: str = None,
+                                 status: str = None, date_from: str = None,
+                                 date_to: str = None, limit: int = 50,
+                                 sort_dir: int = -1) -> list:
+        """جستجوی جامع Audit — قابل Query بر اساس تمام فیلدهای §38."""
+        q: dict = {}
+        if event_id: q["event_id"] = event_id.strip()
+        if actor_id is not None: q["actor.id"] = int(actor_id)
+        if module: q["module"] = module
+        if action: q["action"] = action
+        if category: q["category"] = category
+        if severity: q["severity"] = severity
+        if target_id: q["target.id"] = target_id.strip()
+        if target_type: q["target.type"] = target_type
+        if correlation_id: q["correlation_id"] = correlation_id.strip()
+        if request_id: q["request_id"] = request_id.strip()
+        if status: q["status"] = status
+        if date_from or date_to:
+            ts_q = {}
+            if date_from: ts_q["$gte"] = date_from
+            if date_to: ts_q["$lte"] = date_to
+            q["timestamp"] = ts_q
+        return await self.audit_logs.find(q).sort("timestamp", sort_dir).limit(limit).to_list(limit)
+
+    async def get_audit_by_event_id(self, event_id: str) -> dict | None:
+        return await self.audit_logs.find_one({"event_id": event_id.strip()})
+
+    async def get_audit_health_metrics(self) -> dict:
+        """§52 — Audit Health برای Admin/Monitoring"""
+        try:
+            import audit as _audit_mod
+            health = await _audit_mod.get_audit_health()
+            # enrich with DB counts
+            health["total_logs"] = await self.audit_logs.count_documents({})
+            health["recent_24h"] = await self.audit_logs.count_documents(
+                {"timestamp": {"$gte": (now_utc() - timedelta(hours=24)).isoformat()}})
+            return health
+        except Exception as e:
+            return {"error": str(e), "audit_persistence": "UNKNOWN"}
+
+    async def audit_retention_cleanup(self, days: int = None) -> int:
+        """§39 — Retention قابل تنظیم"""
+        try:
+            import audit as _audit_mod
+            return await _audit_mod.apply_retention(days)
+        except Exception:
+            return 0
+
+    async def get_audit_stats(self, days: int = 7) -> dict:
+        """§36 — Observability aggregates (برای Dashboard)"""
+        since = (now_utc() - timedelta(days=days)).isoformat()
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": "$action", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 20},
+        ]
+        rows = await self.audit_logs.aggregate(pipeline).to_list(20)
+        # تفکیک severity
+        sev_rows = await self.audit_logs.aggregate([
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": "$severity", "count": {"$sum": 1}}},
+        ]).to_list(10)
+        delivery_rows = await self.audit_logs.aggregate([
+            {"$match": {"timestamp": {"$gte": since}}},
+            {"$group": {"_id": "$telegram_delivery_status", "count": {"$sum": 1}}},
+        ]).to_list(10)
+        return {
+            "top_actions": {r["_id"]: r["count"] for r in rows},
+            "by_severity": {r["_id"]: r["count"] for r in sev_rows},
+            "by_delivery": {r["_id"]: r["count"] for r in delivery_rows},
+            "period_days": days,
+        }
 
 
     # ══════════════════════════════════════════════════
