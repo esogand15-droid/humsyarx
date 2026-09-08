@@ -52,6 +52,7 @@ MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگی
 DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image'
 DEFAULT_IMAGE_LIMIT = 10          # سقف روزانه‌ی تصویر؛ 0 = نامحدود
 IMG_RETRY_BASE_DELAY = 0.8        # ثانیه — backoff: 0.8s سپس 1.6s
+IMG_RETRY_AFTER_CAP = 25.0        # سقف پذیرش Retry-After (ثانیه)
 IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
                        '3:2', '2:3', '21:9', '5:4', '4:5')
 IMAGE_PROMPT_MIN = 3
@@ -93,9 +94,18 @@ async def generate_image(api_key: str, model: str, prompt: str,
     headers = {'Content-Type': 'application/json',
                'x-goog-api-key': api_key}
     last_err = None
+    retry_after = None  # ثانیه — از هدر Retry-After پاسخ 429
     for attempt in range(max_retries + 1):
         if attempt:
-            await asyncio.sleep(IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+            if retry_after is not None:
+                if retry_after > IMG_RETRY_AFTER_CAP:
+                    # سقفِ انتظار بی‌فایده است — کاربر را معطل نکن
+                    raise last_err
+                delay = retry_after
+                retry_after = None
+            else:
+                delay = IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            await _img_sleep(delay)
         try:
             async with _image_http_client(timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
@@ -113,12 +123,33 @@ async def generate_image(api_key: str, model: str, prompt: str,
                            attempt, type(e).__name__)
             continue
         if resp.status_code in (429, 500, 502, 503):
-            last_err = AiImageError(
-                'GEMINI_RATE_LIMIT' if resp.status_code == 429
-                else 'GEMINI_UNAVAILABLE',
-                'سرویس تصویر شلوغ است؛ چند لحظه دیگر دوباره تلاش کن.')
-            logger.warning("imggen transient status=%s attempt=%s",
-                           resp.status_code, attempt)
+            # 🩺 بدنه‌ی پاسخِ Google علت دقیق را می‌گوید (مثلاً «سهمیه‌ی
+            # این پروژه برای مدل تصویر صفر است»). برای تشخیص، بریده‌اش را
+            # لاگ کن — بدنه‌ی پاسخ حاوی اطلاعات محرمانه نیست (کلید فقط در
+            # هدرِ درخواست است).
+            try:
+                body_snip = resp.text[:300].replace('\n', ' ')
+            except Exception:
+                body_snip = ''
+            if resp.status_code == 429:
+                last_err = AiImageError(
+                    'GEMINI_RATE_LIMIT',
+                    'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه '
+                    'بعد دوباره تلاش کن.')
+                ra = resp.headers.get('Retry-After') or \
+                    resp.headers.get('retry-after')
+                try:
+                    retry_after = float(ra) if ra else None
+                except ValueError:
+                    retry_after = None
+            else:
+                last_err = AiImageError(
+                    'GEMINI_UNAVAILABLE',
+                    'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning(
+                "imggen transient status=%s attempt=%s retry_after=%s "
+                "body=%s", resp.status_code, attempt, retry_after,
+                body_snip)
             continue
         if resp.status_code in (401, 403):
             raise AiImageError('GEMINI_AUTH_ERROR',
@@ -145,6 +176,11 @@ async def generate_image(api_key: str, model: str, prompt: str,
 def _image_http_client(timeout: int) -> httpx.AsyncClient:
     """ساخت کلاینت HTTP لایه‌ی تصویر — هوکِ تست‌پذیری (MockTransport)."""
     return httpx.AsyncClient(timeout=timeout)
+
+
+async def _img_sleep(seconds: float) -> None:
+    """هوکِ تست‌پذیری برای انتظار بین retryها."""
+    await asyncio.sleep(seconds)
 
 
 def _parse_image_response(data: dict) -> dict:

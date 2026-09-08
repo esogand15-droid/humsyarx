@@ -177,6 +177,82 @@ class ImageProviderUnitTests(unittest.TestCase):
         self.assertEqual(res["data_b64"], FAKE_PNG)
         self.assertEqual(len(calls), 3)
 
+    def test_429_retry_after_header_respected(self):
+        import httpx
+        calls = []
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        def handler(request):
+            calls.append(1)
+            if len(calls) == 1:
+                return httpx.Response(
+                    429, json={}, headers={"Retry-After": "7"})
+            return httpx.Response(200, json={
+                "candidates": [{"content": {"parts": [{
+                    "inlineData": {"mimeType": "image/png",
+                                   "data": FAKE_PNG}}]}}]})
+
+        import _rtloop
+        _rtloop.adopt()
+
+        def factory(timeout):
+            return httpx.AsyncClient(
+                transport=_mock_transport(handler), timeout=timeout)
+
+        with mock.patch.object(self.asv, "_image_http_client", factory), \
+             mock.patch.object(self.asv, "_img_sleep", fake_sleep):
+            res = _rtloop.run(self.asv.generate_image(
+                "key", "m", "prompt ok", "1:1"))
+        self.assertEqual(res["data_b64"], FAKE_PNG)
+        self.assertEqual(slept, [7.0], "باید دقیقاً Retry-After رعایت شود")
+
+    def test_429_retry_after_over_cap_fails_fast(self):
+        import httpx
+        calls = []
+
+        async def fake_sleep(seconds):
+            raise AssertionError("نباید اصلاً بخوابد")
+
+        def handler(request):
+            calls.append(1)
+            return httpx.Response(
+                429, json={}, headers={"Retry-After": "999"})
+
+        import _rtloop
+        _rtloop.adopt()
+
+        def factory(timeout):
+            return httpx.AsyncClient(
+                transport=_mock_transport(handler), timeout=timeout)
+
+        with mock.patch.object(self.asv, "_image_http_client", factory), \
+             mock.patch.object(self.asv, "_img_sleep", fake_sleep):
+            with self.assertRaises(self.asv.AiImageError) as ctx:
+                _rtloop.run(self.asv.generate_image(
+                    "key", "m", "prompt ok", "1:1"))
+        self.assertEqual(ctx.exception.code, "GEMINI_RATE_LIMIT")
+        self.assertEqual(len(calls), 1, "بدون معطلی باید شکست بخورد")
+
+    def test_429_logs_response_body_for_diagnosis(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(
+                429,
+                json={"error": {
+                    "message": "QUOTA_ZERO_FOR_IMAGE_MODEL_ON_PROJECT"}})
+
+        import logging
+        with self.assertLogs("ai_solver", level="WARNING") as logs:
+            with self.assertRaises(self.asv.AiImageError):
+                self._run_with(handler)
+        joined = "\n".join(logs.output)
+        self.assertIn("QUOTA_ZERO_FOR_IMAGE_MODEL_ON_PROJECT", joined,
+                      "علت دقیق Google باید در لاگ باشد")
+
     def test_503_always_maps_unavailable(self):
         def handler(request):
             import httpx
