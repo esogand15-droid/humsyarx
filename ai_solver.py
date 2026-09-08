@@ -2817,7 +2817,8 @@ WEEKLY_SCHEDULE_SCHEMA = {
                 'type': 'object',
                 'properties': {
                     'weekday': {'type': 'integer', 'description': '0=شنبه ... 6=جمعه'},
-                    'time': {'type': 'string', 'description': 'HH:MM like 08:00'},
+                    'time': {'type': 'string', 'description': 'HH:MM شروع مثل 08:00'},
+                    'end_time': {'type': 'string', 'description': 'HH:MM پایان مثل 10:00 — برای بازه 8-10'},
                     'lesson': {'type': 'string', 'description': 'نام درس کامل فارسی'},
                     'teacher': {'type': 'string', 'description': 'نام استاد اگر دیده شد'},
                     'location': {'type': 'string', 'description': 'مکان/کلاس'},
@@ -2880,8 +2881,8 @@ WEEKLY_SYSTEM = (
     "تو یک دستیار استخراج برنامه کلاسی دانشگاه پزشکی هستی. از روی عکس جدول هفتگی (شنبه تا جمعه، ستون‌ها روز، سطرها ساعت 8-10/10-12/13-15/15-17/17-19) تمام درس‌ها را استخراج کن.\n"
     "قواعد:\n"
     "• weekday: شنبه=0، یکشنبه=1، دوشنبه=2، سه‌شنبه=3، چهارشنبه=4، پنج‌شنبه=5، جمعه=6\n"
-    "• time: ابتدای بازه را به HH:MM تبدیل کن (8-10→08:00، 10-12→10:00، 13-15→13:00، 15-17→15:00، 17-19→17:00)\n"
-    "• اگر یک خانه دو درس موازی دارد (مثلاً 'آیین زندگی (دخترا) / عملی (پسرا)' یا 'آز بیوشیمی / بیوشیمی') هر دو را به‌صورت دو slot جداگانه با همان weekday/time تولید کن.\n"
+    "• time/end_time: بازه کامل را استخراج کن — ابتدا و انتها هر دو HH:MM (مثلاً بازه 8-10 → time=08:00 و end_time=10:00، 10-12→10:00/12:00، 13-15→13:00/15:00، 15-17→15:00/17:00، 17-19→17:00/19:00). هر slot باید نمایانگر یک کلاس ۲ساعته واحد باشد، نه دو slot مجزا.\n"
+    "• اگر یک خانه دو درس موازی دارد (مثلاً 'آیین زندگی (دخترا) / عملی (پسرا)' یا 'آز بیوشیمی / بیوشیمی') هر دو را به‌صورت دو slot جداگانه با همان weekday/time/end_time تولید کن.\n"
     "• group: اگر جدول برای گروه 1 یا 2 جداست همان را بگذار؛ اگر ستون 'هر دو' یا نامشخص است 'هر دو'.\n"
     "• flex_type: درس‌های عملی/آز/آزمایشگاه → flexible، بقیه fixed.\n"
     "• فقط JSON مطابق schema برگردان، بدون توضیح اضافه."
@@ -3009,28 +3010,73 @@ async def scan_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg'
 
 async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg', group_hint: str = None) -> dict:
     data = await scan_schedule_image(image_bytes, image_mime, kind='weekly', group_hint=group_hint)
-    # normalize
+    # normalize — interval-aware + 12h → 24h fix
     slots = data.get('slots') or []
     norm = []
+    # helper: 01:00-05:00 → 13:00-17:00 (دانشگاه بعدازظهر)
+    def _fix_pm(hhmm: str) -> str:
+        try:
+            if not hhmm:
+                return hhmm
+            hh, mm = hhmm.split(':')
+            h = int(hh)
+            if 1 <= h <= 5:
+                return f"{h+12:02d}:{mm}"
+            return hhmm
+        except Exception:
+            return hhmm
+    SYNTH_END = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
     for s in slots:
         try:
             wd = int(s.get('weekday'))
             if not 0 <= wd <= 6:
                 continue
             t = str(s.get('time') or '').strip()
+            et = str(s.get('end_time') or s.get('time_end') or '').strip()
+            # legacy: time may contain range "08:00-10:00" or "08:00 تا 10:00"
+            if t and ("-" in t or "تا" in t) and not et:
+                from time_utils import en_digits as _en
+                tmp = _en(t).replace('—','-').replace('–','-').replace('تا','-')
+                times = re.findall(r'(\d{1,2}:\d{2})', tmp)
+                if len(times) >=2:
+                    t = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                    et = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
             # ensure HH:MM
+            for val in (t, et):
+                pass
             if not re.match(r'^\d{2}:\d{2}$', t):
-                # try to fix 8:00 → 08:00
                 if re.match(r'^\d{1,2}:\d{2}$', t):
                     hh, mm = t.split(':')
                     t = f"{int(hh):02d}:{mm}"
                 else:
                     continue
+            # normalize end_time
+            if et:
+                if not re.match(r'^\d{2}:\d{2}$', et):
+                    if re.match(r'^\d{1,2}:\d{2}$', et):
+                        hh, mm = et.split(':')
+                        et = f"{int(hh):02d}:{mm}"
+                    else:
+                        et = ""
+            t = _fix_pm(t)
+            if et:
+                et = _fix_pm(et)
+            # validate times
+            from time_utils import parse_clock_time as _pct
+            try:
+                _pct(t)
+                if et:
+                    _pct(et)
+                    if int(et.split(':')[0])*60+int(et.split(':')[1]) <= int(t.split(':')[0])*60+int(t.split(':')[1]):
+                        et = SYNTH_END.get(t, "")
+            except Exception:
+                continue
+            if not et:
+                et = SYNTH_END.get(t, "")
             lesson = str(s.get('lesson') or '').strip()
             if not lesson:
                 continue
             g = str(s.get('group') or group_hint or 'هر دو').strip() or 'هر دو'
-            # canonical group
             from database import db as _db
             g = _db.normalize_group(g) or 'هر دو'
             if g not in ('1','2','هر دو'):
@@ -3041,6 +3087,7 @@ async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'imag
             norm.append({
                 'weekday': wd,
                 'time': t,
+                'end_time': et,
                 'lesson': lesson[:120],
                 'teacher': str(s.get('teacher') or '').strip()[:80],
                 'location': str(s.get('location') or '').strip()[:80],
@@ -3051,7 +3098,16 @@ async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'imag
             })
         except Exception:
             continue
-    return {'slots': norm}
+    # dedup: یک کلاس 2ساعته نباید دو ردیف شود — اگر دقیقاً (weekday,time,end_time,lesson,group) تکراری بود حذف
+    seen = set()
+    deduped = []
+    for it in norm:
+        k = (it['weekday'], it['time'], it['end_time'], it['lesson'], it['group'])
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(it)
+    return {'slots': deduped}
 
 async def scan_exam_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg') -> dict:
     data = await scan_schedule_image(image_bytes, image_mime, kind='exam')

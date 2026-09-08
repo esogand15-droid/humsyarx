@@ -594,7 +594,7 @@ export default function Schedule() {
                           {item.time && (
                             <span className="badge b-gray">
                               ⏰{' '}
-                              {item.time}
+                              {item.time}{(item.end_time||item.time_end)?` تا ${item.end_time||item.time_end}`:''}
                             </span>
                           )}
 

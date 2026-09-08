@@ -327,10 +327,13 @@ function HushyarScanPanel({ onGenerated }) {
     setWeeklyLoading(true);
     try {
       const r = await api.caScheduleTemplatesScan(weeklyFile, weeklyGroup || undefined);
-      const slots = (r.slots || []).map((s,i)=> ({ _k:i, weekday: Number(s.weekday ?? 0), time: String(s.time||'08:00'), lesson: String(s.lesson||''), teacher:String(s.teacher||''), location:String(s.location||''), group: s.group|| (weeklyGroup||'هر دو'), flex_type: s.flex_type||'fixed', notes: String(s.notes||''), type: s.type||'class' }));
-      setWeeklySlots(slots);
-      if (!slots.length) toast('هوشیار چیزی استخراج نکرد — عکس واضح‌تری امتحان کنید','err');
-      else toast(`هوشیار ${slots.length.toLocaleString('fa')} ردیف تشخیص داد — پیش‌نمایش را بررسی کنید ✅`);
+      const slots = (r.slots || []).map((s,i)=> ({ _k:i, weekday: Number(s.weekday ?? 0), time: String(s.time||'08:00'), end_time: String(s.end_time||s.time_end||''), lesson: String(s.lesson||''), teacher:String(s.teacher||''), location:String(s.location||''), group: s.group|| (weeklyGroup||'هر دو'), flex_type: s.flex_type||'fixed', notes: String(s.notes||''), type: s.type||'class' }));
+      // synthesize missing end_time for preview (08->10 etc) if empty
+      const synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"};
+      const fixed = slots.map(s=> ({...s, end_time: s.end_time || synth[s.time] || ''}));
+      setWeeklySlots(fixed);
+      if (!fixed.length) toast('هوشیار چیزی استخراج نکرد — عکس واضح‌تری امتحان کنید','err');
+      else toast(`هوشیار ${fixed.length.toLocaleString('fa')} ردیف تشخیص داد — پیش‌نمایش را بررسی کنید ✅`);
     } catch(e){ toast(errText(e),'err'); }
     setWeeklyLoading(false);
   };
@@ -338,9 +341,16 @@ function HushyarScanPanel({ onGenerated }) {
     if (!weeklySlots || !weeklySlots.length) return;
     const cleaned = weeklySlots.filter(s=> s.lesson.trim() && s.time.trim());
     if (!cleaned.length) return toast('حداقل یک ردیف با درس و ساعت لازم است','err');
+    // اعتبارسنجی محلی بازه
+    for (const s of cleaned) {
+      if (s.end_time && s.end_time.trim()) {
+        const toMin = v=> { const [h,m]=v.split(':').map(Number); return h*60+m; };
+        try { if (toMin(s.end_time.trim()) <= toMin(s.time.trim())) return toast(`بازه‌ی «${s.lesson}» نامعتبر است — پایان باید بعد از شروع باشد (${s.time} تا ${s.end_time})`,'err'); } catch {}
+      }
+    }
     setWeeklyBusy(true);
     try {
-      const body = { slots: cleaned.map(s=> ({ weekday: Number(s.weekday), time: s.time.trim(), lesson: s.lesson.trim(), teacher: (s.teacher||'').trim().slice(0,80), location: (s.location||'').trim().slice(0,80), group: s.group||'هر دو', flex_type: s.flex_type||'fixed', notes: (s.notes||'').trim().slice(0,300), type: 'class' })), clear_existing: !!weeklyClear, group: weeklyGroup||null };
+      const body = { slots: cleaned.map(s=> ({ weekday: Number(s.weekday), time: s.time.trim(), end_time: (s.end_time||'').trim(), lesson: s.lesson.trim(), teacher: (s.teacher||'').trim().slice(0,80), location: (s.location||'').trim().slice(0,80), group: s.group||'هر دو', flex_type: s.flex_type||'fixed', notes: (s.notes||'').trim().slice(0,300), type: 'class' })), clear_existing: !!weeklyClear, group: weeklyGroup||null };
       const r = await api.caScheduleTemplatesScanConfirm(body);
       toast(`الگوی هفتگی ذخیره شد — ${Number(r.total||cleaned.length).toLocaleString('fa')} ردیف ✅`);
       setWeeklySlots(null); setWeeklyFile(null); loadTpl(tplGroup); onGenerated&&onGenerated();
@@ -427,16 +437,18 @@ function HushyarScanPanel({ onGenerated }) {
                     <button className="btn primary" disabled={weeklyBusy} onClick={doWeeklyConfirm}>{weeklyBusy?'⏳…':`✅ تأیید و ذخیره الگو (${weeklySlots.length.toLocaleString('fa')})`}</button>
                   </div>
                   <div style={{ overflowX:'auto' }}>
-                    <table className="tbl" style={{ minWidth:900, fontSize:13 }}>
-                      <thead><tr><th>روز</th><th>ساعت</th><th>درس *</th><th>استاد</th><th>مکان</th><th>گروه</th><th>نوع</th><th></th></tr></thead>
+                    <table className="tbl" style={{ minWidth:980, fontSize:13 }}>
+                      <thead><tr><th>روز</th><th>از</th><th>تا</th><th>بازه</th><th>درس *</th><th>استاد</th><th>مکان</th><th>گروه</th><th>نوع</th><th></th></tr></thead>
                       <tbody>
                         {weeklySlots.map((s,idx)=>(
                           <tr key={s._k}>
                             <td><select className="inp sm" value={s.weekday} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, weekday: Number(e.target.value)}:x))}>{WEEKDAY_FA.map((lbl,i)=><option key={i} value={i}>{lbl}</option>)}</select></td>
-                            <td><input className="inp sm" type="time" value={s.time} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, time:e.target.value}:x))} style={{ width:90 }} /></td>
-                            <td><input className="inp sm" value={s.lesson} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, lesson:e.target.value}:x))} placeholder="درس" style={{ minWidth:140 }} /></td>
-                            <td><input className="inp sm" value={s.teacher} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, teacher:e.target.value}:x))} placeholder="استاد" style={{ width:110 }} /></td>
-                            <td><input className="inp sm" value={s.location} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, location:e.target.value}:x))} placeholder="مکان" style={{ width:110 }} /></td>
+                            <td><input className="inp sm" type="time" value={s.time} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, time:e.target.value}:x))} style={{ width:92 }} /></td>
+                            <td><input className="inp sm" type="time" value={s.end_time||''} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, end_time:e.target.value}:x))} style={{ width:92 }} /></td>
+                            <td className="muted small" style={{ whiteSpace:'nowrap' }}>{s.time && s.end_time ? `${s.time} تا ${s.end_time}` : '—'}</td>
+                            <td><input className="inp sm" value={s.lesson} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, lesson:e.target.value}:x))} placeholder="درس" style={{ minWidth:130 }} /></td>
+                            <td><input className="inp sm" value={s.teacher} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, teacher:e.target.value}:x))} placeholder="استاد" style={{ width:100 }} /></td>
+                            <td><input className="inp sm" value={s.location} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, location:e.target.value}:x))} placeholder="مکان" style={{ width:100 }} /></td>
                             <td><select className="inp sm" value={s.group} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, group:e.target.value}:x))}><option value="هر دو">هر دو</option><option value="1">۱</option><option value="2">۲</option></select></td>
                             <td><select className="inp sm" value={s.flex_type} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, flex_type:e.target.value}:x))}><option value="fixed">ثابت</option><option value="flexible">منعطف</option></select></td>
                             <td><button className="btn sm danger" onClick={()=> setWeeklySlots(a=> a.filter((_,i)=> i!==idx))}>✕</button></td>
@@ -445,7 +457,7 @@ function HushyarScanPanel({ onGenerated }) {
                       </tbody>
                     </table>
                   </div>
-                  <button className="btn sm" style={{ marginTop:8 }} onClick={()=> setWeeklySlots(a=> [...a, { _k: Date.now()+Math.random(), weekday:0, time:'08:00', lesson:'', teacher:'', location:'', group: weeklyGroup||'هر دو', flex_type:'fixed', notes:'', type:'class' }])}>➕ افزودن ردیف</button>
+                  <button className="btn sm" style={{ marginTop:8 }} onClick={()=> setWeeklySlots(a=> [...a, { _k: Date.now()+Math.random(), weekday:0, time:'08:00', end_time:'10:00', lesson:'', teacher:'', location:'', group: weeklyGroup||'هر دو', flex_type:'fixed', notes:'', type:'class' }])}>➕ افزودن ردیف</button>
                 </div>
               )}
 
@@ -462,7 +474,7 @@ function HushyarScanPanel({ onGenerated }) {
                     {WEEKDAY_FA.map((lbl, wd)=>{
                       const rows = templates.filter(t=> Number(t.weekday)===wd);
                       if (!rows.length) return null;
-                      return <div key={wd} className="row" style={{ gap:6, flexWrap:'wrap', alignItems:'flex-start', borderBottom:'1px solid var(--border)', paddingBottom:6 }}><B>{lbl}</B>{rows.sort((a,b)=> String(a.time).localeCompare(String(b.time))).map((r,i)=><span key={i} className="panel" style={{ padding:'4px 8px', fontSize:12 }}>{r.time} {r.lesson} <span className="muted">({r.group})</span></span>)}</div>;
+                      return <div key={wd} className="row" style={{ gap:6, flexWrap:'wrap', alignItems:'flex-start', borderBottom:'1px solid var(--border)', paddingBottom:6 }}><B>{lbl}</B>{rows.sort((a,b)=> String(a.time).localeCompare(String(b.time))||String(a.end_time||'').localeCompare(String(b.end_time||''))).map((r,i)=><span key={i} className="panel" style={{ padding:'4px 8px', fontSize:12 }}>{r.time}{r.end_time? ` تا ${r.end_time}`:''} {r.lesson} <span className="muted">({r.group})</span></span>)}</div>;
                     })}
                   </div>
                 )}
@@ -579,7 +591,7 @@ export function ScheduleTab() {
                 <b className="content-strong">{s.lesson}</b>
                 <span className="muted"> {s.teacher || ''}</span>
                 <div className="muted content-meta-top">
-                  📅 {formatFaDate(s.date)} {s.time ? formatFaTime(s.time) : ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
+                  📅 {formatFaDate(s.date)} {s.time ? formatFaTime(s.time) : ''}{(s.end_time||s.time_end) ? ` تا ${formatFaTime(s.end_time||s.time_end)}` : ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
                 </div>
                 {s.flex_note && <div className="muted content-meta-top">🔄 آخرین اعلان: {s.flex_note}</div>}
               </div>
@@ -600,7 +612,7 @@ export function ScheduleTab() {
           {Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).slice(0, 7).map(([day, rows]) => <section key={day} className="panel panel-pad">
             <div className="section-title"><span>{formatFaDate(day)}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>
             <div className="grid content-grid-tight">{rows.map(s => <button key={s.id} className="schedule-agenda-item" onClick={() => setEdit({ ...s, note: s.note || '' })}>
-              <span>{s.time ? formatFaTime(s.time) : '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
+              <span>{s.time ? `${formatFaTime(s.time)}${(s.end_time||s.time_end)?` تا ${formatFaTime(s.end_time||s.time_end)}`:''}` : '—'}</span><b>{s.lesson}</b><span className="muted">{TYPE_FA[s.type] || s.type} · {s.group}</span>
             </button>)}</div>
           </section>)}
         </div>}
@@ -609,7 +621,7 @@ export function ScheduleTab() {
           <div className="schedule-month-grid">{Array.from({ length: monthLength }, (_, i) => i + 1).map(day => {
             const rows = monthItems.filter(x => x.parts.day === day).map(x => x.item);
             return <div key={day} className={`schedule-day ${rows.length ? 'has' : ''}`}><span className="muted">{day.toLocaleString('fa')}</span>
-              {rows.slice(0, 3).map(s => <button key={s.id} onClick={() => setEdit({ ...s, note: s.note || '' })} title={`${s.lesson} · ${s.time ? formatFaTime(s.time) : ''}`}>{s.time ? formatFaTime(s.time) : '•'} {s.lesson}</button>)}
+              {rows.slice(0, 3).map(s => <button key={s.id} onClick={() => setEdit({ ...s, note: s.note || '' })} title={`${s.lesson} · ${s.time ? `${formatFaTime(s.time)}${(s.end_time||s.time_end)?` تا ${formatFaTime(s.end_time||s.time_end)}`:''}` : ''}`}>{s.time ? `${formatFaTime(s.time)}${(s.end_time||s.time_end)?`–${formatFaTime(s.end_time||s.time_end)}`:''}` : '•'} {s.lesson}</button>)}
               {rows.length > 3 && <B>+{(rows.length - 3).toLocaleString('fa')}</B>}
             </div>;
           })}</div>
@@ -628,11 +640,13 @@ export function ScheduleTab() {
 function ScheduleModal({ row, preset, onClose }) {
   const [f, setF] = useState({
     type: preset.type || 'class', lesson: preset.lesson || '', teacher: preset.teacher || '',
-    date: preset.date || '', time: preset.time || '', group: preset.group || 'هر دو',
-    location: preset.location || '', note: preset.note || '', flex_type: preset.flex_type || 'fixed',
+    date: preset.date || '', time: preset.time || '', end_time: preset.end_time || preset.time_end || '', group: preset.group || 'هر دو',
+    location: preset.location || '', note: preset.note || preset.notes || '', flex_type: preset.flex_type || 'fixed',
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  // synthesize preview for common slots
+  const synthEnd = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"};
   return (
     <Modal title={row ? '✏️ ویرایش مورد برنامه' : '➕ مورد جدید برنامه'} onClose={() => onClose(false)}>
       <div className="grid content-modal-grid">
@@ -653,8 +667,10 @@ function ScheduleModal({ row, preset, onClose }) {
         <input className="inp" placeholder="درس / عنوان *" value={f.lesson} onChange={e => set('lesson', e.target.value)} />
         <div className="row">
           <PersianDatePicker value={f.date} onChange={value => set('date', value)} placeholder="تاریخ شمسی" />
-          <input className="inp" type="time" value={f.time} onChange={e => set('time', e.target.value)} />
+          <input className="inp" type="time" value={f.time} onChange={e => { const v=e.target.value; set('time', v); if(!f.end_time && synthEnd[v]) set('end_time', synthEnd[v]); }} title="شروع" />
+          <input className="inp" type="time" value={f.end_time} onChange={e => set('end_time', e.target.value)} title="پایان" />
         </div>
+        {f.time && f.end_time && <div className="muted small">⏰ بازه: {f.time} تا {f.end_time} {(()=>{try{const [ah,am]=f.time.split(':').map(Number);const [bh,bm]=f.end_time.split(':').map(Number);if(bh*60+bm <= ah*60+am) return '⚠️ پایان باید بعد از شروع باشد';}catch{}return ''})()}</div>}
         <input className="inp" placeholder="استاد…" value={f.teacher} onChange={e => set('teacher', e.target.value)} />
         <input className="inp" placeholder="مکان…" value={f.location} onChange={e => set('location', e.target.value)} />
         <textarea className="inp" rows={2} placeholder="یادداشت…" value={f.note} onChange={e => set('note', e.target.value)} />
@@ -678,16 +694,18 @@ function ScheduleModal({ row, preset, onClose }) {
 }
 
 function FlexModal({ row, onClose }) {
-  const [f, setF] = useState({ date: row.date || '', time: row.time || '', note: '' });
+  const [f, setF] = useState({ date: row.date || '', time: row.time || '', end_time: row.end_time || row.time_end || '', note: '' });
   const [busy, setBusy] = useState(false);
   return (
     <Modal title={`🔄 اعلام زمان جدید — ${row.lesson}`} onClose={() => onClose(false)}>
       <div className="grid content-modal-grid">
-        <p className="muted">این اکشن زمان جدید را ثبت و برای دانشجویان این گروه اطلاع‌رسانی می‌کند.</p>
+        <p className="muted">این اکشن زمان جدید (بازه) را ثبت و برای دانشجویان این گروه اطلاع‌رسانی می‌کند.</p>
         <div className="row">
           <PersianDatePicker value={f.date} onChange={value => setF(x => ({ ...x, date: value }))} placeholder="تاریخ شمسی" />
-          <input className="inp" type="time" value={f.time} onChange={e => setF(x => ({ ...x, time: e.target.value }))} />
+          <input className="inp" type="time" value={f.time} onChange={e => setF(x => ({ ...x, time: e.target.value }))} title="شروع" />
+          <input className="inp" type="time" value={f.end_time} onChange={e => setF(x => ({ ...x, end_time: e.target.value }))} title="پایان" />
         </div>
+        {f.time && f.end_time && <div className="muted small">⏰ {f.time} تا {f.end_time}</div>}
         <input className="inp" placeholder="یادداشت (اختیاری)…" value={f.note} onChange={e => setF(x => ({ ...x, note: e.target.value }))} />
         <div className="row">
           <button className="btn primary" disabled={busy || !f.date} onClick={async () => {

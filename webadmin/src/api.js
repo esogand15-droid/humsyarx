@@ -456,7 +456,7 @@ export const api = {
 
 export function errText(e) {
   if (!e) return 'خطای ناشناخته';
-  const d = e.message || String(e);
+  const raw = e.message || String(e);
   const map = {
     forbidden: 'مجوز لازم برای این بخش را ندارید.',
     admin_only: 'این بخش فقط برای مالک سامانه است.',
@@ -467,8 +467,26 @@ export function errText(e) {
     content_admin_only: 'این بخش فقط برای مدیر محتواست.',
     request_timeout: 'پاسخ سرویس بیش از حد طول کشید؛ دوباره تلاش کنید.',
   };
-  const message = e.friendly || map[d] || (e.status >= 500 || /^خطا\s*\(5\d\d\)/.test(d)
-    ? friendlyStatus(e.status || 500) : d || friendlyStatus(e.status || 0));
+  // 🌊 range fix — برای 422 جزئیات اعتبارسنجی را نشان بده تا «بعضی ورودی‌ها...» مبهم نماند
+  if (e.status === 422 && e.technical) {
+    let detail = e.technical;
+    try {
+      const parsed = JSON.parse(e.technical);
+      if (Array.isArray(parsed?.detail)) {
+        detail = parsed.detail.map(x => `${(x.loc||[]).join('.')}: ${x.msg}`).join(' | ');
+      } else if (typeof parsed?.detail === 'string') detail = parsed.detail;
+    } catch {}
+    // truncate
+    if (detail.length > 500) detail = detail.slice(0, 500)+'…';
+    const base = e.friendly || map[raw] || friendlyStatus(422);
+    // اگر فقط HTTP 422 بود، همان friendly کافیست، ولی اگر detail واقعی دارد نمایش بده
+    if (detail && detail !== 'HTTP 422' && !detail.includes('HTTP 422')) {
+      const combined = `${base} — ${detail}`;
+      return e.errorId ? `${combined} · شناسه پیگیری: ${e.errorId}` : combined;
+    }
+  }
+  const message = e.friendly || map[raw] || (e.status >= 500 || /^خطا\s*\(5\d\d\)/.test(raw)
+    ? friendlyStatus(e.status || 500) : raw || friendlyStatus(e.status || 0));
   return e.errorId ? `${message} · شناسه پیگیری: ${e.errorId}` : message;
 }
 

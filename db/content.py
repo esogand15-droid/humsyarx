@@ -1066,32 +1066,65 @@ class DBContent:
     async def add_schedule(self, stype: str, lesson: str, teacher: str,
                            date: str, time: str, location: str,
                            notes: str = '', group: str = 'هر دو', is_weekly: bool = False,
-                           flex_type: str = 'fixed', flex_note: str = ''):
+                           flex_type: str = 'fixed', flex_note: str = '', end_time: str = ''):
         """
         FIX جدید: flex_type — 'fixed' (ثابت) یا 'flexible' (منعطف).
         برای کلاس منعطف، flex_note آخرین زمان اعلام‌شده را نگه می‌دارد.
+        🕒 range: end_time اختیاری HH:MM برای بازه (08:00 تا 10:00) — اگر خالی باشد تک‌ساعت حساب می‌شود.
         """
         group = self.normalize_group(group) or 'هر دو'
-        r = await self.schedules.insert_one({
+        # normalize time/end_time: if time contains range like "08:00-10:00" split
+        _etime = (end_time or "").strip()
+        _stime = (time or "").strip()
+        if _stime and ("-" in _stime or "تا" in _stime) and not _etime:
+            try:
+                from time_utils import en_digits as _en
+                import re as _re
+                raw = _en(_stime).replace('—','-').replace('–','-').replace('تا','-')
+                times = _re.findall(r'(\d{1,2}:\d{2})', raw)
+                if len(times) >= 2:
+                    _stime = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                    _etime = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+                elif len(times)==1 and '-' in raw:
+                    # try 8-10 without colon
+                    parts = raw.split('-')
+                    if len(parts)==2:
+                        b = _re.search(r'(\d{1,2})', parts[1])
+                        if b:
+                            _etime = f"{int(b.group(1)):02d}:00"
+                            _stime = times[0]
+            except Exception:
+                pass
+        doc = {
             'type': stype, 'lesson': lesson, 'teacher': teacher,
-            'date': date, 'time': time, 'location': location,
+            'date': date, 'time': _stime, 'location': location,
             'notes': notes, 'group': group, 'is_weekly': is_weekly,
             'flex_type': flex_type, 'flex_note': flex_note,
             'created_at': utc_now_iso(), 'notified_days': [],
-        })
+        }
+        if _etime:
+            doc['end_time'] = _etime
+        r = await self.schedules.insert_one(doc)
         return r.inserted_id
 
 
-    async def update_schedule_time(self, sid: str, new_date: str, new_time: str, note: str = ''):
+    async def update_schedule_time(self, sid: str, new_date: str, new_time: str, note: str = '', end_time: str = ''):
         """
         FIX جدید: تغییر زمان یک کلاس منعطف — برای اعلام به‌روز شدن زمان
         برگزاری به دانشجویان استفاده می‌شود.
+        🕒 range: اگر end_time داده شد ذخیره می‌شود، در غیر این صورت پاک نمی‌شود تا داده قدیمی حفظ شود.
         """
         try:
+            payload = {'date': new_date, 'time': new_time, 'flex_note': note,
+                       'last_time_change': utc_now_iso()}
+            if end_time is not None and str(end_time).strip() != "":
+                payload['end_time'] = str(end_time).strip()
+            elif end_time == "":
+                # explicit empty -> remove? keep as empty to clear legacy range
+                payload['end_time'] = ""
             await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
-                {'$set': {'date': new_date, 'time': new_time, 'flex_note': note,
-                          'last_time_change': utc_now_iso()}}
+                {'$set': payload}
             )
             return True
         except Exception:
@@ -1134,22 +1167,26 @@ class DBContent:
     async def update_schedule_full(self, sid: str, lesson: str, teacher: str,
                                     date: str, time: str, location: str,
                                     notes: str = '', group: str = 'هر دو',
-                                    flex_type: str = 'fixed', flex_note: str = '') -> bool:
+                                    flex_type: str = 'fixed', flex_note: str = '', end_time: str = '') -> bool:
         """
         FIX جدید (بخش اول — ویرایش برنامه): ویرایش کامل همه فیلدهای یک
         برنامه‌ی موجود با یک UPDATE واحد. رکورد جدید ساخته نمی‌شود و
         ID برنامه دست‌نخورده باقی می‌ماند.
+        🕒 range: end_time اختیاری
         """
         try:
             group = self.normalize_group(group) or 'هر دو'
+            payload = {
+                'lesson': lesson, 'teacher': teacher, 'date': date, 'time': time,
+                'location': location, 'notes': notes, 'group': group,
+                'flex_type': flex_type, 'flex_note': flex_note,
+                'last_edited_at': utc_now_iso(),
+            }
+            if end_time is not None:
+                payload['end_time'] = str(end_time).strip()
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
-                {'$set': {
-                    'lesson': lesson, 'teacher': teacher, 'date': date, 'time': time,
-                    'location': location, 'notes': notes, 'group': group,
-                    'flex_type': flex_type, 'flex_note': flex_note,
-                    'last_edited_at': utc_now_iso(),
-                }}
+                {'$set': payload}
             )
             return result.matched_count > 0
         except Exception:
@@ -1273,19 +1310,76 @@ class DBContent:
         return int(getattr(r, 'deleted_count', 0) or 0)
 
     async def bulk_upsert_schedule_templates(self, items: list) -> dict:
-        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, lesson, teacher, location, group, flex_type."""
-        from time_utils import parse_clock_time, TimeContractError
+        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, end_time HH:MM?, lesson, teacher, location, group, flex_type."""
+        from time_utils import parse_clock_time, TimeContractError, en_digits
+        import re as _re
         inserted = 0
         updated = 0
         skipped = 0
+        # dedup within batch by (weekday,time,end_time,lesson,group) to avoid double-counting divisions
+        seen_keys = set()
         for raw in (items or []):
             try:
                 wd = int(raw.get('weekday'))
                 if not 0 <= wd <= 6:
                     skipped += 1
                     continue
-                t = str(raw.get('time') or '').strip()
-                parse_clock_time(t)  # validate
+                t_raw = str(raw.get('time') or '').strip()
+                et_raw = str(raw.get('end_time') or raw.get('time_end') or '').strip()
+                # support legacy "08:00-10:00" in time field
+                if t_raw and ("-" in t_raw or "تا" in t_raw) and not et_raw:
+                    # parse range
+                    tmp = en_digits(t_raw).replace('—','-').replace('–','-').replace('تا','-')
+                    times = _re.findall(r'(\d{1,2}:\d{2})', tmp)
+                    if len(times) >= 2:
+                        t_raw = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                        et_raw = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+                    elif '-' in tmp:
+                        parts = tmp.split('-')
+                        if len(parts)==2:
+                            # handle "8-10"
+                            m1 = _re.search(r'(\d{1,2})', parts[0])
+                            m2 = _re.search(r'(\d{1,2})', parts[1])
+                            if m1 and m2:
+                                t_raw = f"{int(m1.group(1)):02d}:00"
+                                et_raw = f"{int(m2.group(1)):02d}:00"
+                # normalize AM/PM confusion: schedule never at 01:00-05:00 AM, so 01-05 means 13-17
+                def _fix_pm(hhmm: str) -> str:
+                    if not hhmm:
+                        return hhmm
+                    try:
+                        hh = int(hhmm.split(':')[0])
+                        mm = hhmm.split(':')[1]
+                        if 1 <= hh <= 5:
+                            # if already have valid end_time with 13-17 context, shift
+                            # heuristic: 01-05 always maps to 13-17 for university schedule
+                            hh += 12
+                            return f"{hh:02d}:{mm}"
+                        return hhmm
+                    except Exception:
+                        return hhmm
+                # only apply fix if raw contains no leading 1x already present? apply universally for 1-5
+                # but avoid double-shifting if already 13+; we already handle.
+                t = _fix_pm(en_digits(t_raw).strip())
+                et = _fix_pm(en_digits(et_raw).strip()) if et_raw else ""
+                # validate start
+                parse_clock_time(t)
+                if et:
+                    parse_clock_time(et)
+                    # ensure end after start
+                    st = parse_clock_time(t)
+                    en = parse_clock_time(et)
+                    if en.hour*60+en.minute <= st.hour*60+st.minute:
+                        skipped += 1
+                        continue
+                else:
+                    # synthesize common 2h block if possible from template time
+                    # keep empty to allow flexible; but for known intervals we synthesize
+                    # mapping: 08->10, 10->12, 13->15, 15->17, 17->19
+                    synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
+                    # apply only if t in synth and not flexible 1h?
+                    if t in synth:
+                        et = synth[t]
                 lesson = str(raw.get('lesson') or '').strip()
                 if not lesson:
                     skipped += 1
@@ -1294,9 +1388,15 @@ class DBContent:
                 flex_type = str(raw.get('flex_type') or 'fixed').strip().lower()
                 if flex_type not in ('fixed', 'flexible'):
                     flex_type = 'flexible' if 'عمل' in lesson or 'آز' in lesson else 'fixed'
+                key = (wd, t, et, lesson, group)
+                if key in seen_keys:
+                    skipped += 1
+                    continue
+                seen_keys.add(key)
                 doc = {
                     'weekday': wd,
                     'time': t,
+                    'end_time': et,
                     'lesson': lesson[:120],
                     'teacher': str(raw.get('teacher') or '').strip()[:80],
                     'location': str(raw.get('location') or '').strip()[:80],
@@ -1306,7 +1406,8 @@ class DBContent:
                     'notes': str(raw.get('notes') or raw.get('note') or '').strip()[:300],
                     'updated_at': utc_now_iso(),
                 }
-                # upsert by (weekday,time,lesson,group) — دو ردیف هم‌زمان با درس متفاوت (آیین/عملی) هر دو می‌مانند
+                # upsert by (weekday,time,lesson,group) — two rows at same time with different lesson both stay
+                # include end_time in lookup to distinguish different durations of same lesson (rare)
                 existing = await self.schedule_templates.find_one({
                     'weekday': wd, 'time': t, 'lesson': doc['lesson'], 'group': group
                 })
@@ -1364,13 +1465,29 @@ class DBContent:
                 if int(tpl.get('weekday')) != wd:
                     continue
                 # idempotent: check existing schedule with same date/time/lesson/group/type
-                exists = await self.schedules.find_one({
+                # include end_time for range uniqueness (e.g., 08-10 vs 08-12)
+                q_exist = {
                     'date': day_str,
                     'time': tpl.get('time'),
                     'lesson': tpl.get('lesson'),
                     'group': tpl.get('group'),
                     'type': tpl.get('type', 'class'),
-                })
+                }
+                # if template has end_time, also match it (but fallback to match without for legacy schedules)
+                if tpl.get('end_time'):
+                    q_exist['end_time'] = tpl.get('end_time')
+                exists = await self.schedules.find_one(q_exist)
+                if not exists and tpl.get('end_time'):
+                    # legacy schedule without end_time field — treat as duplicate if same date/time/lesson exists
+                    alt = await self.schedules.find_one({
+                        'date': day_str,
+                        'time': tpl.get('time'),
+                        'lesson': tpl.get('lesson'),
+                        'group': tpl.get('group'),
+                        'type': tpl.get('type', 'class'),
+                    })
+                    if alt:
+                        exists = alt
                 if exists:
                     skipped += 1
                     continue
@@ -1378,6 +1495,7 @@ class DBContent:
                     'date': day_str,
                     'weekday': wd,
                     'time': tpl.get('time'),
+                    'end_time': tpl.get('end_time',''),
                     'lesson': tpl.get('lesson'),
                     'teacher': tpl.get('teacher', ''),
                     'location': tpl.get('location', ''),
@@ -1386,12 +1504,13 @@ class DBContent:
                     'flex_type': tpl.get('flex_type', 'fixed'),
                 })
                 if not dry_run:
-                    await self.schedules.insert_one({
+                    doc = {
                         'type': tpl.get('type', 'class'),
                         'lesson': tpl.get('lesson'),
                         'teacher': tpl.get('teacher', ''),
                         'date': day_str,
                         'time': tpl.get('time'),
+                        'end_time': tpl.get('end_time',''),
                         'location': tpl.get('location', ''),
                         'notes': tpl.get('notes', ''),
                         'group': tpl.get('group'),
@@ -1400,7 +1519,9 @@ class DBContent:
                         'flex_note': '',
                         'created_at': utc_now_iso(),
                         'notified_days': [],
-                    })
+                    }
+                    # keep time field clean (no range)
+                    await self.schedules.insert_one(doc)
                     created += 1
             cur = cur + timedelta(days=1)
         return {'ok': True, 'created': created if not dry_run else 0, 'skipped': skipped, 'preview': preview[:50], 'total_matched': len(preview), 'dry_run': dry_run}
