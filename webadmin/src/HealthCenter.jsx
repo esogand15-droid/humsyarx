@@ -50,8 +50,9 @@ function HealthCard({ icon, title, state, lines = [], error }) {
   const tone = toneOf(state);
   return (
     <section
-      className={`panel panel-pad hc-card${error ? ' panel--attention' : ''}`}
+      className={`panel panel-pad hc-card ${error ? 'panel--attention' : ''} ${tone.kind==='ok' ? '' : ''}`}
       aria-label={`${title} — ${tone.label}`}
+      style={tone.kind==='ok' ? {borderColor:'rgba(58,210,155,.18)'} : undefined}
     >
       <div className="row">
         <span className={`ic ${tone.cls} hc-ic`} aria-hidden="true">{icon}</span>
@@ -81,22 +82,28 @@ export default function HealthCenter() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [at, setAt] = useState(null);
+  const [auto, setAuto] = useState(true);
 
-  const load = useCallback(async () => {
-    setBusy(true);
-    setErr('');
+  const load = useCallback(async (isAuto=false) => {
+    if (!isAuto) setBusy(true);
+    if (!isAuto) setErr('');
     try {
       const r = await api.healthDeep();
       setData(r);
       setAt(new Date().toISOString());
     } catch (e) {
-      setErr(errText(e));
+      if (!isAuto) setErr(errText(e));
     } finally {
-      setBusy(false);
+      if (!isAuto) setBusy(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(false); }, [load]);
+  useEffect(() => {
+    if (!auto) return;
+    const id = setInterval(()=> load(true), 30000);
+    return () => clearInterval(id);
+  }, [auto, load]);
 
   if (err && !data) return <ErrorState error={err} onRetry={load} />;
   if (!data) return <Loading rows={3} variant="cards" label="در حال سنجش سلامت" />;
@@ -129,16 +136,29 @@ export default function HealthCenter() {
         </button>
       </div>
 
-      <div className="row hc-summary">
-        <B kind={toneOf(data.status).kind}>وضعیت کلی: {toneOf(data.status).label}</B>
-        <span className="muted">
-          نسخه {data.version || '—'} • آپ‌تایم {uptimeText(data.uptime_s)}
-        </span>
-        <span className="spacer" />
-        {at ? (
-          <span className="muted">آخرین بررسی: <FaDateTime value={at} /></span>
-        ) : null}
-      </div>
+      {(() => {
+        const checks = [data.api?.ok, data.mongo?.ok, data.bot?.process_ok, data.bootstrap?.ready].filter(v=>v!==undefined);
+        const okCount = checks.filter(v=>v===true || v==='ok' || v==='ready').length;
+        const score = checks.length ? Math.round(okCount/checks.length*100) : 100;
+        const scoreTone = score===100 ? '' : score>=70 ? 'warn' : 'bad';
+        return (
+        <div className="glass-panel live-pulse-bar" style={{marginBottom:12}}>
+          <span className={`live-dot ${busy ? 'warn' : toneOf(data.status).kind==='bad' ? 'bad' : ''}`} />
+          <B kind={toneOf(data.status).kind}>وضعیت کلی: {toneOf(data.status).label}</B>
+          <span className="muted">نسخه {data.version || '—'} • آپ‌تایم {uptimeText(data.uptime_s)}</span>
+          <span className="pulse-meta" style={{marginInlineStart:12}}>
+            {at ? <>آخرین: <FaDateTime value={at} /></> : null}
+          </span>
+          <div className="pulse-actions" style={{marginInlineStart:'auto', gap:10}}>
+            <div className={`health-score ${scoreTone}`} style={{"--score": score}}><span>{score}%</span></div>
+            <label className="row" style={{gap:6, fontSize:'var(--fs-label)', cursor:'pointer'}}>
+              <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)} /> خودکار 30ثانیه
+            </label>
+            <button type="button" className="btn sm" onClick={()=>load(false)} disabled={busy}>{busy ? '…' : '🔄 اکنون'}</button>
+          </div>
+        </div>
+        );
+      })()}
 
       {err ? (
         <p className="hc-err" role="alert">

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { api, errText } from '../api.js';
 import { Stat, KpiCard, KpiGrid, Section, Loading, ErrorState, B, FaDateTime, RelativeTime, PageHeader, toast } from '../ui.jsx';
 
@@ -24,6 +24,28 @@ const ALERT_GO = {
   'report:manage:all': '/content',
 };
 const faW = ['این هفته', '۱ هفته پیش', '۲ هفته پیش', '۳ هفته پیش'];
+
+function SparklinePro({ values, tone="acc", width=120, height=32 }) {
+  if (!values || values.length < 2) return null;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = Math.max(max - min, 1);
+  const pad = 2;
+  const stepX = (width - pad*2) / (values.length - 1);
+  const points = values.map((v,i) => {
+    const x = pad + i*stepX;
+    const y = height - pad - ((v - min)/range)*(height - pad*2);
+    return [x,y];
+  });
+  const lineD = points.map((p,i) => `${i===0?'M':'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
+  const areaD = lineD + ` L${points[points.length-1][0].toFixed(1)},${height-pad} L${points[0][0].toFixed(1)},${height-pad} Z`;
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className={`sparkline-pro is-${tone}`} width={width} height={height} aria-hidden="true">
+      <path className="s-area" d={areaD} />
+      <path className="s-line" d={lineD} />
+    </svg>
+  );
+}
 
 export default function Dashboard({ me, go }) {
   const [ov, setOv] = useState(null);
@@ -61,8 +83,13 @@ export default function Dashboard({ me, go }) {
     setExpBusy(false);
   };
 
-  const load = async () => {
-    setErr('');
+  const [lastSync, setLastSync] = useState(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [liveBusy, setLiveBusy] = useState(false);
+
+  const load = useCallback(async (isAuto=false) => {
+    if (isAuto) setLiveBusy(true);
+    else setErr('');
     try {
       const bundle = await api.dashboardBundle();
       setOv(bundle.overview || null);
@@ -70,9 +97,32 @@ export default function Dashboard({ me, go }) {
       setAttn(bundle.attention || { items: [], backup: null });
       setFeed(bundle.activity || []);
       setIns(bundle.insights || null);
-    } catch (e) { setErr(e); }
+      setLastSync(new Date().toISOString());
+    } catch (e) { if (!isAuto) setErr(e); else toast(errText(e),'err'); }
+    finally { if (isAuto) setLiveBusy(false); }
+  }, []);
+
+  useEffect(() => { load(false); }, [load]);
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => load(true), 30000);
+    return () => clearInterval(id);
+  }, [autoRefresh, load]);
+
+  const handleIntegrityRun = async () => {
+    toast('در حال اجرای بررسی یکپارچگی…');
+    try { const r = await api.dataQuality(); toast(`بررسی کامل شد — ${r.issues?.length ?? 0} مورد`); } catch(e){ toast(errText(e),'err'); }
   };
-  useEffect(() => { load(); }, []);
+  const handleOrphanScan = async () => {
+    toast('اسکن فایل‌های یتیم…');
+    try { const r = await api.dataQuality(); const m = (r.issues||[]).filter(x=>String(x.kind).includes('orphan')).length; toast(m? `${m} فایل یتیم یافت شد` : 'هیچ فایل یتیمی نیست 🎉'); } catch(e){ toast(errText(e),'err'); }
+  };
+  const handleDlqRetry = async () => {
+    try { const r = await api.dlqList(1,1); const total = r.total ?? r.items?.length ?? 0; if(!total) return toast('DLQ خالی است 🎉'); toast(`DLQ: ${total} پیام — به مرکز DLQ بروید`); go('/system?tab=dlq'); } catch(e){ toast(errText(e),'err'); }
+  };
+  const handleBackupNow = async () => {
+    try { await api.backup('all'); toast('بکاپ آغاز شد — وضعیت در System → Backup'); } catch(e){ toast(errText(e),'err'); }
+  };
 
   if (err) return <ErrorState error={err} onRetry={load} />;
   if (!ov) return <Loading rows={5} />;
@@ -88,9 +138,12 @@ export default function Dashboard({ me, go }) {
     { icon: '🚩', label: 'گزارش‌های باز', v: ov.open_reports, tint: 'var(--warn)', go: '/content?tab=reports' },
   ].filter(card => card.v !== null && card.v !== undefined);
   const attnItems = (attn?.items || []).filter(i => i.count > 0);
+  const healthOk = attnItems.filter(i=>i.severity==='critical').length === 0;
+  const weekVals = (ins?.week_counts || []).slice().reverse(); // oldest->newest for sparkline
   return (
     <>
-      <PageHeader title="داشبورد عملیات" description="وضعیت سامانه، صف‌های نیازمند اقدام و رخدادهای امروز"
+      <PageHeader title="داشبورد عملیات" description="مرکز فرماندهی زنده — وضعیت، صف‌های نیازمند اقدام و هوشِ عملیاتی"
+
         actions={<div className="menu-anchor" ref={prefsRef}>
           <button className="btn sm" title="سفارشی‌سازی ویجت‌ها" aria-label="سفارشی‌سازی داشبورد"
                   aria-haspopup="true" aria-expanded={prefsOpen ? 'true' : 'false'}
@@ -107,6 +160,34 @@ export default function Dashboard({ me, go }) {
             </div>
           )}
         </div>} />
+
+      {/* ✨ Hybrid Pro — Live Pulse Bar */}
+      <div className="glass-panel live-pulse-bar">
+        <span className={`live-dot ${liveBusy ? 'warn' : healthOk ? '' : 'bad'}`} aria-hidden="true" />
+        <b style={{fontSize:'var(--fs-label)'}}>{liveBusy ? 'در حال همگام‌سازی…' : healthOk ? 'زنده — همه صف‌ها پایش می‌شود' : 'نیازمند توجه — مورد بحرانی'}</b>
+        <span className="pulse-meta">
+          <span>آخرین همگام‌سازی: {lastSync ? <FaDateTime value={lastSync} /> : '—'}</span>
+          <span style={{opacity:.5}}>•</span>
+          <span>30ثانیه</span>
+        </span>
+        <div className="pulse-actions">
+          <label className="row" style={{gap:6, fontSize:'var(--fs-label)', cursor:'pointer'}}>
+            <input type="checkbox" checked={autoRefresh} onChange={e=>setAutoRefresh(e.target.checked)} /> خودکار
+          </label>
+          <button className="btn sm" onClick={()=>load(false)} disabled={liveBusy}>🔄 اکنون</button>
+          <button className="btn sm" onClick={()=>{ const el=document.querySelector('.kpi-premium'); el?.scrollIntoView({behavior:'smooth'});}}>📊 KPI</button>
+        </div>
+      </div>
+
+      {/* ⚙️ Automation Quick Bar — REAL ACTIONS ONLY */}
+      <div className="automation-bar">
+        <span className="auto-label">⚡ عملیات سریع:</span>
+        <button className="btn sm" onClick={handleIntegrityRun} title="اجرای بررسی یکپارچگی داده (Data Quality)">🛡️ بررسی یکپارچگی</button>
+        <button className="btn sm" onClick={handleOrphanScan} title="اسکن فایل‌های یتیم">🧹 یتیم‌ها</button>
+        <button className="btn sm" onClick={handleDlqRetry} title="نمایش DLQ و تلاش مجدد">💀 DLQ</button>
+        <button className="btn sm primary" onClick={handleBackupNow} title="بکاپ فوری">💾 بکاپ</button>
+        <span className="muted" style={{marginInlineStart:'auto', fontSize:'var(--fs-caption)'}}>همه عملیات واقعی — با Audit</span>
+      </div>
 
       {/* ⚠️ WA2.7 — نیازمند اقدام (کلیک → مستقیم به همان صف) */}
       {attn && won('attn') && (
@@ -164,8 +245,9 @@ export default function Dashboard({ me, go }) {
 
       {/* 🧠🌊 موج Parity-Final — مرکز هوش ربات (داده‌ی واقعی db.admin_insights؛ همان صفحه‌ی ربات) */}
       {ins && won('insights') && (
-        <div className="panel panel-pad" style={{ marginBottom: 14 }}>
-          <div className="row"><b>🧠 مرکز هوش ربات</b><span className="spacer" />
+        <div className="panel panel-pad glass-panel" style={{ marginBottom: 14, position:'relative', overflow:'hidden' }}>
+          <div style={{position:'absolute', insetBlockStart:0, insetInline:0, height:2, background:'linear-gradient(90deg, var(--c-acc), var(--c-teal))', opacity:.9}} />
+          <div className="row"><b>🧠 مرکز هوش — پیش‌بینی و هشدارِ زنده</b><span className="spacer" />
             {ins.forecast_next_week != null && (
               <B kind="acc">🔮 پیش‌بینی هفته‌ی آینده: ~{Number(ins.forecast_next_week).toLocaleString('fa-IR')} ثبت‌نام</B>)}
           </div>
@@ -214,25 +296,32 @@ export default function Dashboard({ me, go }) {
       )}
 
       {won('kpis') && (
-        <div className="grid g4">
-          {cards.map((c, i) => (
-            <div key={i} onClick={() => c.go && go(c.go)} style={{ cursor: c.go ? 'pointer' : 'default' }}>
-              <Stat icon={c.icon} label={c.label} value={Number(c.v ?? 0).toLocaleString('fa')} tint={c.tint} />
-            </div>
-          ))}
+        <div className="kpi-grid" style={{marginBottom:14}}>
+          {cards.map((c, i) => {
+            const tone = c.tint === 'var(--warn)' ? 'warn' : c.tint === 'var(--bad)' ? 'bad' : c.tint === 'var(--purple)' ? 'purple' : c.tint === 'var(--teal)' ? 'ok' : 'acc';
+            // sparkline for first 4 cards if weekVals available
+            const showSpark = i < 4 && weekVals.length >= 2;
+            return (
+              <div key={i} className={`kpi-premium is-${tone}`} onClick={() => c.go && go(c.go)} style={{ cursor: c.go ? 'pointer' : 'default' }} role={c.go ? 'button' : undefined} tabIndex={c.go ? 0 : -1} onKeyDown={e=>{ if(c.go && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); go(c.go); }}}>
+                <div className="row" style={{gap:8}}>
+                  <span className="kpi-ic" style={{width:32,height:32,borderRadius:8,display:'grid',placeItems:'center',fontSize:16,background:'var(--c-acc-soft)'}}>{c.icon}</span>
+                  <span className="kpi-label" style={{fontSize:'var(--fs-label)',color:'var(--c-txt2)',flex:1}}>{c.label}</span>
+                  {c.go && <span className="muted">‹</span>}
+                </div>
+                <div className="kpi-value" style={{fontSize:'clamp(18px,1.6vw,24px)',fontWeight:850}}>{Number(c.v ?? 0).toLocaleString('fa')}</div>
+                {showSpark ? <SparklinePro values={weekVals} tone={tone==='warn'?'warn':tone==='bad'?'bad':'acc'} /> : <div className="muted" style={{fontSize:'var(--fs-caption)',height:18}}>{c.go ? 'کلیک برای جزئیات' : '—'}</div>}
+              </div>
+            );
+          })}
         </div>
       )}
 
       {stats && won('sys') && (() => {
-        // 🌊 W-Design 4 — ترند امروز نسبت به میانگین ۶ روز قبلِ هفته (client-side، بدون API جدید)
         const today = Number(stats.active_today ?? 0);
         const othersAvg = Math.max(0, (Number(stats.active_week ?? 0) - today)) / 6;
         const delta = othersAvg > 0 ? Math.round((today - othersAvg) / othersAvg * 100) : null;
         return (
-        // §DW1 — مهاجرت به primitiveهای مشترک: «tint» رنگِ خام بود و
-        // هر صفحه سلیقهٔ خودش را داشت؛ «tone» معنایی است پس یک وضعیت
-        // در کلِ پنل یک ظاهر دارد.
-        <Section title="شاخص‌های سامانه"
+        <Section title="شاخص‌های زنده — نبضِ امروز" description="مقایسه با میانگین ۶ روز قبل · دادهٔ واقعی"
                  className="dash-metrics" >
           <KpiGrid>
             <KpiCard icon="📡" label="کاربران فعال امروز" tone="ok" enter="dw-enter-1"

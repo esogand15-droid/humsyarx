@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-08T16:06:04Z",
+  "generated_at": "2026-09-08T16:28:06Z",
   "files": [
     {
       "path": "audit.py",
@@ -95,7 +95,22 @@
       "path": "api/routers/content_admin.py",
       "sha256": "97ba1ce8168c4bc5faeee3bb0247230143a3fb18a3eff37d17f51494104f89e8",
       "size": 85670
+    },
+    {
+      "path": "webadmin/src/styles.css",
+      "sha256": "87b1b7e08fc2350b667686d32a8b83f5e177c108121f076a6933239b225a615c",
+      "size": 114671
+    },
+    {
+      "path": "webadmin/src/pages/Dashboard.jsx",
+      "sha256": "d15799dcf4d40bbd953680a680eb11bd8758fa3263882fff69b463e50d93f9e3",
+      "size": 22712
+    },
+    {
+      "path": "webadmin/src/HealthCenter.jsx",
+      "sha256": "654f3ca70817568006c771e5c315e2be831fbcdddb79d500363f254e6d9edc4c",
+      "size": 9317
     }
   ],
-  "count": 19
+  "count": 22
 }
