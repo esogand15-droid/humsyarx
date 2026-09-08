@@ -1,9 +1,12 @@
 """📤 ارسال فایل به کاربر از طریق ربات — دقیقاً مطابق فرمتی که خود ربات
 (basic_science.py و references.py) استفاده می‌کنه: کپشن رسمی، دکمه‌ی
 گزارش ایراد/بازگشت، و انتخاب نوع پیام بر اساس نوع فایل."""
+import logging
 import os
 import httpx
 from database import db
+
+logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -25,20 +28,51 @@ async def upload_and_get_file_id(chat_id: int, filename: str, file_bytes: bytes,
     برگرده — چون تلگرام فقط فایلی که از طریق خود ربات فرستاده بشه رو
     file_id میده؛ آپلود مستقیم HTTP از مرورگر همچین چیزی تولید نمی‌کنه.
     فایل به‌صورت بی‌صدا برای خود ادمینی که آپلود کرده فرستاده می‌شه.
+
+    🐛 FIX آپلود ویدیو — دو تغییر ریشه‌ای:
+    ۱) timeout ساخت‌یافته: عدد ثابت ۶۰ برای ویدیوهای چندده‌مگابایتی
+       کم بود (هم آپلود write و هم انتظار پاسخ تلگرام read). حالا هر
+       مرحله کرانه‌ی مستقل و متناسب با فایل بزرگ دارد.
+    ۲) علت واقعی شکست دیگر بلعیده نمی‌شود: status/description تلگرام و
+       نوع خطای شبکه لاگ می‌شود (بدون token/URL — هرگز secret لاگ
+       نمی‌شود) تا «آپلود ناموفق» در لاگ سرور قابل تشخیص باشد.
     """
     if not BOT_TOKEN:
+        logger.warning("UPLOAD_FAILED stage=storage reason=missing_bot_token")
         return None
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{API_BASE}/sendDocument",
-            data={"chat_id": chat_id, "disable_notification": True},
-            files={"document": (filename, file_bytes, mime_type)},
-        )
+    size = len(file_bytes)
+    try:
+        timeout = httpx.Timeout(connect=15.0, read=180.0, write=300.0,
+                                pool=15.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{API_BASE}/sendDocument",
+                data={"chat_id": chat_id, "disable_notification": True},
+                files={"document": (filename, file_bytes, mime_type)},
+            )
+    except httpx.HTTPError as e:
+        # نوع خطا کافی است — URL حاوی token است و هرگز لاگ نمی‌شود
+        logger.warning(
+            "UPLOAD_FAILED stage=storage reason=telegram_http_error "
+            "err=%s size=%s mime=%s", type(e).__name__, size, mime_type)
+        return None
     if resp.status_code != 200:
+        try:
+            desc = str(resp.json().get("description") or "")[:200]
+        except Exception:
+            desc = ""
+        logger.warning(
+            "UPLOAD_FAILED stage=storage reason=telegram_status "
+            "status=%s desc=%s size=%s mime=%s",
+            resp.status_code, desc, size, mime_type)
         return None
     data = resp.json()
     if not data.get("ok"):
+        logger.warning(
+            "UPLOAD_FAILED stage=storage reason=telegram_not_ok size=%s",
+            size)
         return None
+    logger.info("STORAGE_UPLOAD_COMPLETED size=%s mime=%s", size, mime_type)
     return data["result"]["document"]["file_id"]
 
 

@@ -36,9 +36,29 @@ export const errorText = (error, fallback) => {
   const detail =
     error?.response?.data?.detail;
 
-  return typeof detail === 'string'
-    ? detail
-    : fallback;
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  // 🐛 FIX آپلود ویدیو — تایم‌اوت/قطعی شبکه هیچ response ندارند؛ پیام
+  // عمومی «عملیات انجام نشد» علت واقعی (اتصال کند/فایل بزرگ) را پنهان
+  // می‌کرد. دسته‌بندی شفاف، بدون افشای جزئیات فنی.
+  const code = error?.code || '';
+
+  if (code === 'ECONNABORTED' ||
+      /timeout/i.test(error?.message || '')) {
+    return 'زمان عملیات به پایان رسید — اتصال کند یا فایل خیلی بزرگ است. دوباره تلاش کنید.';
+  }
+
+  if (code === 'ERR_NETWORK') {
+    return 'اتصال به سرور برقرار نشد — اتصال اینترنت را بررسی کنید.';
+  }
+
+  if (error?.response?.status === 413) {
+    return 'حجم فایل بیش از حد مجاز است (۴۵ مگابایت).';
+  }
+
+  return fallback;
 };
 
 

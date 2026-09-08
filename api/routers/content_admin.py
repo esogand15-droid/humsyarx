@@ -24,6 +24,25 @@ def _qerror(exc: QuestionDomainError):
                                           **({"details": exc.details} if exc.details else {})})
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
+# سقف آپلود: زیر سقف ۵۰MB بات تلگرام (deployment رسمی) با حاشیه‌ی امن
+MAX_UPLOAD_BYTES = 45 * 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, cap: int) -> bytes:
+    """خواندن stream با سقف — فایل بیش‌ازحد به‌جای بلعیدن کامل حافظه،
+    در همان نقطه‌ی عبور از سقف با ۴۱۳ رد می‌شود (منطق قبلی: read کامل
+    و بعد چک — برای ویدیوی بزرگ هم حافظه هم پهنای باند هدر می‌رفت)."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
+        chunks.append(chunk)
+    return b"".join(chunks)
 GLOBAL_USER = get_content_global_user  # بخش‌های بدون scope (schedule/grades/reports) — رفتار دقیق قبلی
 
 
@@ -898,12 +917,26 @@ async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str =
                              admin=Depends(get_content_admin_user)):
     if ctype not in CONTENT_TYPES: raise HTTPException(422, "نوع محتوا نامعتبر")
     await _deny_intake(await db.session_intake(sid), admin)
-    raw = await file.read()
-    if len(raw) > 45 * 1024 * 1024: raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
-    file_id = await upload_and_get_file_id(admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
+    fname = file.filename or "file"
+    logger.info("UPLOAD_REQUEST_RECEIVED route=session_content sid=%s ctype=%s "
+                "filename=%s admin=%s", sid, ctype, fname, admin["id"])
+    raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    logger.info("FILE_VALIDATED size=%s mime=%s", len(raw),
+                file.content_type or "")
+    try:
+        file_id = await upload_and_get_file_id(admin["id"], fname, raw,
+            file.content_type or "application/octet-stream")
+    except Exception as e:
+        # خطای پیش‌بینی‌نشده‌ی storage هم دلیل دارد، نه ۵۰۰ بی‌توضیح
+        logger.warning("UPLOAD_FAILED stage=storage route=session_content "
+                       "err=%s size=%s", type(e).__name__, len(raw))
+        raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                 "جزئیات در لاگ سرور ثبت شد")
+    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                            "جزئیات در لاگ سرور ثبت شد")
     cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip())
+    logger.info("UPLOAD_SUCCESS route=session_content sid=%s content_id=%s "
+                "size=%s", sid, cid, len(raw))
     await _audit(admin, "افزودن فایل جلسه", "Content", severity="INFO",
         target_id=str(cid), target_type="content_item",
         target_label=description.strip() or (file.filename or "file"),
@@ -1155,12 +1188,23 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
                            admin=Depends(get_content_admin_user)):
     if lang not in ("fa","en"): raise HTTPException(422, "زبان نامعتبر")
     await _deny_intake(await db.ref_book_intake(bid), admin)
-    raw = await file.read()
-    if len(raw) > 45 * 1024 * 1024: raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
-    file_id = await upload_and_get_file_id(admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
+    fname = file.filename or "file"
+    logger.info("UPLOAD_REQUEST_RECEIVED route=ref_file bid=%s filename=%s "
+                "admin=%s", bid, fname, admin["id"])
+    raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    try:
+        file_id = await upload_and_get_file_id(admin["id"], fname, raw,
+            file.content_type or "application/octet-stream")
+    except Exception as e:
+        logger.warning("UPLOAD_FAILED stage=storage route=ref_file "
+                       "err=%s size=%s", type(e).__name__, len(raw))
+        raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                 "جزئیات در لاگ سرور ثبت شد")
+    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                            "جزئیات در لاگ سرور ثبت شد")
     fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip())
+    logger.info("UPLOAD_SUCCESS route=ref_file bid=%s file_id=%s size=%s",
+                bid, fid, len(raw))
     await _audit(admin, "افزودن فایل رفرنس", "Content", severity="INFO",
         target_id=str(fid), target_type="reference_file",
         target_label=description.strip() or (file.filename or "file"),

@@ -471,10 +471,14 @@ export function BasicScienceAdmin() {
         upload.file
       );
 
+      // 🐛 FIX آپلود ویدیو — تایم‌اوت سراسری ۱۵ ثانیه است؛ آپلود فایل
+      // (به‌ویژه ویدیو) دو هاپ دارد (مرورگر→سرور→تلگرام) و عملاً همیشه
+      // از ۱۵ ثانیه بیشتر می‌شود. فقط همین درخواست مهلت طولانی می‌گیرد.
       return api.post(
         `/api/content/basic-science/sessions/${session.id}/content`,
 
-        body
+        body,
+        { timeout: 600000 }
       );
     },
 
@@ -1327,6 +1331,16 @@ export function BasicScienceAdmin() {
               <input
                 className="inp"
                 type="file"
+                accept={
+                  // 🐛 FIX آپلود ویدیو — انتخابگر فایل هم‌راستا با نوع
+                  // محتوا؛ قبلاً بدون accept بود (انتخاب فایل اشتباه).
+                  upload.type === 'video' ? 'video/*'
+                  : upload.type === 'voice' ? 'audio/*'
+                  : upload.type === 'pdf' ? 'application/pdf,.pdf'
+                  : upload.type === 'ppt'
+                    ? '.ppt,.pptx,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                  : 'image/*,application/pdf,.pdf'
+                }
                 onChange={(event) =>
                   setUpload({
                     ...upload,
@@ -1339,12 +1353,24 @@ export function BasicScienceAdmin() {
                 }
               />
 
+              {/* 🐛 FIX آپلود ویدیو — سقف حجم قبل از ارسال (۴۵MB = سقف
+                  سرور)؛ پیام شفاف به‌جای خطای عمومی پس از آپلود کامل. */}
+              {upload.file && upload.file.size > 45 * 1024 * 1024 && (
+                <div
+                  className="muted"
+                  style={{ color: 'var(--red, #e5484d)', margin: '0 2px 9px' }}
+                >
+                  ⚠️ حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
+                </div>
+              )}
+
               <button
                 className={
                   'btn btn-p btn-full'
                 }
                 disabled={
                   !upload.file ||
+                  upload.file.size > 45 * 1024 * 1024 ||
                   mutation.isPending
                 }
                 onClick={() =>
@@ -1794,7 +1820,9 @@ export function ReferencesAdmin() {
       return api.post(
         `/api/content/references/books/${book.id}/files`,
 
-        body
+        body,
+        // 🐛 FIX آپلود ویدیو — مهلت طولانی فقط برای آپلود فایل
+        { timeout: 600000 }
       );
     },
 
@@ -1978,6 +2006,9 @@ export function ReferencesAdmin() {
                 className="btn btn-p"
                 disabled={
                   !upload.file ||
+                  // 🐛 FIX آپلود ویدیو — سقف ۴۵MB سمت کلاینت هم اعمال
+                  // می‌شود (سرور همچنان مرجع است).
+                  upload.file.size > 45 * 1024 * 1024 ||
                   mutation.isPending
                 }
                 onClick={() =>

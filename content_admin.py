@@ -159,9 +159,13 @@ def _back_btn(label, cb):
 # ══════════════════════════════════════════════════════════
 
 async def _audit(context, uid, action, *, severity='INFO', details='',
-                 target_id='', target_type='', target_label='', tags=None):
+                 target_id='', target_type='', target_label='',
+                 before=None, after=None, tags=None):
     """🧹 موج Q2/W6 — helper مشترک audit پنل محتوا (حذف ۱۲ بلوک تکراری).
-    فرمت/رفتار لاگ عیناً حفظ شده؛ خطای audit هرگز اقدام اصلی را نمی‌شکند."""
+    فرمت/رفتار لاگ عیناً حفظ شده؛ خطای audit هرگز اقدام اصلی را نمی‌شکند.
+    🐛 FIX — before/after از ابتدا توسط send_audit_log پشتیبانی می‌شد ولی
+    این wrapper آنها را نداشت؛ دو فراخوان (ویرایش درس/جلسه) با before=
+    خطای TypeError می‌دادند و اقدام موفقِ ادمین با «خطای ربات» تمام می‌شد."""
     try:
         from utils import send_audit_log
         actor = await db.get_user(uid)
@@ -171,6 +175,7 @@ async def _audit(context, uid, action, *, severity='INFO', details='',
             module='Content', severity=severity,
             actor_role=await db.get_actor_role_label(uid),
             target_id=target_id, target_type=target_type, target_label=target_label,
+            before=before, after=after,
             details=details, tags=tags)
     except Exception:
         pass
