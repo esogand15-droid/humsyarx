@@ -6911,6 +6911,65 @@ async def wa_schedule_flex_change(
     return await content_api.flex_change(sid=sid, body=body, admin=user)
 
 
+# ── 📅 الگوی هفتگی (شنبه-جمعه) + اسکن هوشیار — پروکسی وب‌ادمین ───
+@router.get("/schedule/templates")
+async def wa_schedule_templates_list(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_list(group=group, admin=user)
+
+@router.post("/schedule/templates/bulk")
+async def wa_schedule_templates_bulk(
+    body: academic_api.TemplateBulk,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_bulk(body=body, admin=user)
+
+@router.delete("/schedule/templates")
+async def wa_schedule_templates_delete(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_clear(group=group, admin=user)
+
+@router.post("/schedule/templates/generate")
+async def wa_schedule_templates_generate(
+    body: academic_api.TemplateGenerate,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_generate(body=body, admin=user)
+
+@router.post("/schedule/templates/scan")
+async def wa_schedule_templates_scan(
+    file: UploadFile = File(...),
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_scan(file=file, group=group, admin=user)
+
+@router.post("/schedule/templates/scan/confirm")
+async def wa_schedule_templates_scan_confirm(
+    body: academic_api.TemplateBulk,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_scan_confirm(body=body, admin=user)
+
+@router.post("/schedule/exams/scan")
+async def wa_schedule_exams_scan(
+    file: UploadFile = File(...),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_exams_scan(file=file, admin=user)
+
+@router.post("/schedule/exams/scan/confirm")
+async def wa_schedule_exams_scan_confirm(
+    body: academic_api.ExamBulkConfirm,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_exams_scan_confirm(body=body, admin=user)
+
+
 # ── Grades: global/scoped permissions ──────────────────────────────
 
 async def _grade_intake_scope(user: dict) -> Optional[str]:

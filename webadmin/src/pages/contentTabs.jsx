@@ -290,8 +290,244 @@ function RefAddModal({ kind, sub, book, intake, ownOnly, onClose }) {
   );
 }
 
-// ── 📅 کلاس‌ها و برنامه (schedule با flex) ──────────────────────────
+// ── 📅 کلاس‌ها و برنامه (schedule با flex + الگوی هفتگی + اسکن هوشیار) ─
 const SCHED_TYPES = [['', 'همه'], ['class', '🏫 کلاس'], ['exam', '📝 امتحان'], ['makeup', '🔄 جبرانی']];
+const WEEKDAY_FA = ['شنبه','یکشنبه','دوشنبه','سه‌شنبه','چهارشنبه','پنج‌شنبه','جمعه'];
+const WEEKDAY_SHORT = ['ش','ی','د','س','چ','پ','ج'];
+
+function HushyarScanPanel({ onGenerated }) {
+  const [mode, setMode] = useState('weekly'); // weekly | exam
+  const [weeklyFile, setWeeklyFile] = useState(null);
+  const [weeklyGroup, setWeeklyGroup] = useState('');
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
+  const [weeklySlots, setWeeklySlots] = useState(null); // preview
+  const [weeklyClear, setWeeklyClear] = useState(false);
+  const [weeklyBusy, setWeeklyBusy] = useState(false);
+  const [templates, setTemplates] = useState(null);
+  const [tplGroup, setTplGroup] = useState('');
+  const [genStart, setGenStart] = useState('');
+  const [genEnd, setGenEnd] = useState('');
+  const [genGroup, setGenGroup] = useState('');
+  const [genDry, setGenDry] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
+  const [genRes, setGenRes] = useState(null);
+  const [examFile, setExamFile] = useState(null);
+  const [examLoading, setExamLoading] = useState(false);
+  const [examPreview, setExamPreview] = useState(null);
+  const [examBusy, setExamBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+
+  const loadTpl = async (g) => {
+    try { const r = await api.caScheduleTemplates(g || undefined); setTemplates(r.templates || []); } catch (e) { setTemplates([]); }
+  };
+  useEffect(() => { loadTpl(tplGroup); }, [tplGroup]);
+
+  const doWeeklyScan = async () => {
+    if (!weeklyFile) return toast('لطفاً عکس جدول برنامه را انتخاب کنید','err');
+    setWeeklyLoading(true);
+    try {
+      const r = await api.caScheduleTemplatesScan(weeklyFile, weeklyGroup || undefined);
+      const slots = (r.slots || []).map((s,i)=> ({ _k:i, weekday: Number(s.weekday ?? 0), time: String(s.time||'08:00'), lesson: String(s.lesson||''), teacher:String(s.teacher||''), location:String(s.location||''), group: s.group|| (weeklyGroup||'هر دو'), flex_type: s.flex_type||'fixed', notes: String(s.notes||''), type: s.type||'class' }));
+      setWeeklySlots(slots);
+      if (!slots.length) toast('هوشیار چیزی استخراج نکرد — عکس واضح‌تری امتحان کنید','err');
+      else toast(`هوشیار ${slots.length.toLocaleString('fa')} ردیف تشخیص داد — پیش‌نمایش را بررسی کنید ✅`);
+    } catch(e){ toast(errText(e),'err'); }
+    setWeeklyLoading(false);
+  };
+  const doWeeklyConfirm = async () => {
+    if (!weeklySlots || !weeklySlots.length) return;
+    const cleaned = weeklySlots.filter(s=> s.lesson.trim() && s.time.trim());
+    if (!cleaned.length) return toast('حداقل یک ردیف با درس و ساعت لازم است','err');
+    setWeeklyBusy(true);
+    try {
+      const body = { slots: cleaned.map(s=> ({ weekday: Number(s.weekday), time: s.time.trim(), lesson: s.lesson.trim(), teacher: (s.teacher||'').trim().slice(0,80), location: (s.location||'').trim().slice(0,80), group: s.group||'هر دو', flex_type: s.flex_type||'fixed', notes: (s.notes||'').trim().slice(0,300), type: 'class' })), clear_existing: !!weeklyClear, group: weeklyGroup||null };
+      const r = await api.caScheduleTemplatesScanConfirm(body);
+      toast(`الگوی هفتگی ذخیره شد — ${Number(r.total||cleaned.length).toLocaleString('fa')} ردیف ✅`);
+      setWeeklySlots(null); setWeeklyFile(null); loadTpl(tplGroup); onGenerated&&onGenerated();
+    } catch(e){ toast(errText(e),'err'); }
+    setWeeklyBusy(false);
+  };
+  const doExamScan = async () => {
+    if (!examFile) return toast('عکس برنامه امتحانات را انتخاب کنید','err');
+    setExamLoading(true);
+    try {
+      const r = await api.caScheduleExamsScan(examFile);
+      const exs = (r.exams||[]).map((e,i)=> ({ _k:i, lesson:String(e.lesson||''), date:String(e.date||''), time:String(e.time||'08:00'), location:String(e.location||''), group:e.group||'هر دو' }));
+      setExamPreview(exs);
+      if (!exs.length) toast('هوشیار امتحانی تشخیص نداد','err'); else toast(`${exs.length.toLocaleString('fa')} امتحان تشخیص داده شد ✅`);
+    } catch(e){ toast(errText(e),'err'); }
+    setExamLoading(false);
+  };
+  const doExamConfirm = async () => {
+    if (!examPreview || !examPreview.length) return;
+    const cleaned = examPreview.filter(e=> e.lesson.trim() && e.date.trim());
+    if (!cleaned.length) return toast('درس و تاریخ الزامی است','err');
+    setExamBusy(true);
+    try {
+      const r = await api.caScheduleExamsScanConfirm({ exams: cleaned.map(e=> ({ lesson:e.lesson.trim(), date:e.date.trim(), time:e.time.trim()||'08:00', location:(e.location||'').trim(), group:e.group||'هر دو' })) });
+      toast(`ثبت شد — ${Number(r.created||0).toLocaleString('fa')} امتحان جدید، ${Number(r.skipped||0).toLocaleString('fa')} تکراری نادیده گرفته شد ✅`);
+      setExamPreview(null); setExamFile(null); onGenerated&&onGenerated();
+    } catch(e){ toast(errText(e),'err'); }
+    setExamBusy(false);
+  };
+  const doGenerate = async () => {
+    if (!genStart || !genEnd) return toast('بازه تاریخ شمسی را کامل کنید','err');
+    setGenBusy(true); setGenRes(null);
+    try {
+      const r = await api.caScheduleTemplatesGenerate({ start_date: genStart, end_date: genEnd, group: genGroup||null, dry_run: !!genDry });
+      setGenRes(r);
+      if (!genDry) { toast(`تولید شد — ${Number(r.created||0).toLocaleString('fa')} برنامه جدید ✅`); onGenerated&&onGenerated(); loadTpl(tplGroup); }
+      else toast(`پیش‌نمایش: ${Number(r.created||0).toLocaleString('fa')} مورد ایجاد می‌شود`);
+    } catch(e){ toast(errText(e),'err'); }
+    setGenBusy(false);
+  };
+
+  return (
+    <div className="panel" style={{ marginBottom: 12, border: collapsed ? undefined : '2px solid var(--c-accent)' }}>
+      <button type="button" onClick={()=> setCollapsed(v=>!v)} className="row content-tab-toolbar" style={{ width:'100%', cursor:'pointer', background:'transparent', border:0, padding:'10px 12px', justifyContent:'space-between' }}>
+        <span style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+          <b>🧠 اسکن برنامه کلاسی با هوشیار</b>
+          <B kind="acc">SAT-FRI هفتگی</B>
+          <span className="muted small">عکس جدول → الگوی هفتگی → تولید خودکار برنامه</span>
+        </span>
+        <span style={{ display:'flex', alignItems:'center', gap:8 }}>
+          {templates && <B>{Number(templates.length).toLocaleString('fa')} ردیف الگو</B>}
+          <span className="muted">{collapsed ? '▸ بازکردن' : '▾ بستن'}</span>
+        </span>
+      </button>
+      {!collapsed && (
+        <div style={{ padding:'0 12px 12px', display:'grid', gap:12 }}>
+          <div className="tabs content-inline-tabs" role="tablist">
+            {[['weekly','🗓 الگوی هفتگی (شنبه-جمعه)'], ['exam','📝 امتحانات']].map(([k,lbl])=>(
+              <button key={k} type="button" role="tab" aria-selected={mode===k} className={`tab ${mode===k?'on':''}`} onClick={()=> setMode(k)}>{lbl}</button>
+            ))}
+          </div>
+
+          {mode==='weekly' && (
+            <div style={{ display:'grid', gap:10 }}>
+              <div className="panel panel-pad" style={{ background:'var(--bg)', border:'1px dashed var(--border)' }}>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                  <b>📸 اسکن جدول هفتگی</b><span className="muted small">JPG/PNG/WEBP تا 12MB — هوشیار ردیف‌های جدول را می‌خواند و پیش‌نمایش می‌دهد (بدون ذخیره خودکار)</span>
+                  <span className="spacer" />
+                  <select className="inp" value={weeklyGroup} onChange={e=> setWeeklyGroup(e.target.value)} title="گروه پیش‌فرض اگر در جدول مشخص نیست">
+                    <option value="">گروه از جدول</option><option value="هر دو">👥 هر دو گروه</option><option value="1">1️⃣ گروه ۱</option><option value="2">2️⃣ گروه ۲</option>
+                  </select>
+                  <label className="btn sm" style={{ cursor:'pointer' }}><input type="file" accept="image/*" style={{ display:'none' }} onChange={e=> setWeeklyFile(e.target.files?.[0]||null)} />{weeklyFile? '📎 '+weeklyFile.name : 'انتخاب عکس'}</label>
+                  <button className="btn primary" disabled={weeklyLoading || !weeklyFile} onClick={doWeeklyScan}>{weeklyLoading?'⏳ اسکن…':'🧠 اسکن با هوشیار'}</button>
+                </div>
+                {weeklyFile && <div className="muted small" style={{ marginTop:6 }}>📎 {weeklyFile.name} · {(weeklyFile.size/1024).toFixed(0)} KB</div>}
+              </div>
+
+              {weeklySlots && (
+                <div className="panel panel-pad" style={{ background:'var(--bg)' }}>
+                  <div className="row" style={{ flexWrap:'wrap', gap:8, marginBottom:8 }}>
+                    <b>🔍 پیش‌نمایش {weeklySlots.length.toLocaleString('fa')} ردیف — ویرایش کنید سپس تأیید</b><span className="spacer" />
+                    <label className="row" style={{ gap:6, cursor:'pointer' }}><input type="checkbox" checked={weeklyClear} onChange={e=> setWeeklyClear(e.target.checked)} /> پاک‌سازی الگوی قبلی این گروه قبل از ذخیره</label>
+                    <button className="btn sm" onClick={()=> setWeeklySlots(null)}>انصراف</button>
+                    <button className="btn primary" disabled={weeklyBusy} onClick={doWeeklyConfirm}>{weeklyBusy?'⏳…':`✅ تأیید و ذخیره الگو (${weeklySlots.length.toLocaleString('fa')})`}</button>
+                  </div>
+                  <div style={{ overflowX:'auto' }}>
+                    <table className="tbl" style={{ minWidth:900, fontSize:13 }}>
+                      <thead><tr><th>روز</th><th>ساعت</th><th>درس *</th><th>استاد</th><th>مکان</th><th>گروه</th><th>نوع</th><th></th></tr></thead>
+                      <tbody>
+                        {weeklySlots.map((s,idx)=>(
+                          <tr key={s._k}>
+                            <td><select className="inp sm" value={s.weekday} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, weekday: Number(e.target.value)}:x))}>{WEEKDAY_FA.map((lbl,i)=><option key={i} value={i}>{lbl}</option>)}</select></td>
+                            <td><input className="inp sm" type="time" value={s.time} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, time:e.target.value}:x))} style={{ width:90 }} /></td>
+                            <td><input className="inp sm" value={s.lesson} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, lesson:e.target.value}:x))} placeholder="درس" style={{ minWidth:140 }} /></td>
+                            <td><input className="inp sm" value={s.teacher} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, teacher:e.target.value}:x))} placeholder="استاد" style={{ width:110 }} /></td>
+                            <td><input className="inp sm" value={s.location} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, location:e.target.value}:x))} placeholder="مکان" style={{ width:110 }} /></td>
+                            <td><select className="inp sm" value={s.group} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, group:e.target.value}:x))}><option value="هر دو">هر دو</option><option value="1">۱</option><option value="2">۲</option></select></td>
+                            <td><select className="inp sm" value={s.flex_type} onChange={e=> setWeeklySlots(a=> a.map((x,i)=> i===idx? {...x, flex_type:e.target.value}:x))}><option value="fixed">ثابت</option><option value="flexible">منعطف</option></select></td>
+                            <td><button className="btn sm danger" onClick={()=> setWeeklySlots(a=> a.filter((_,i)=> i!==idx))}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button className="btn sm" style={{ marginTop:8 }} onClick={()=> setWeeklySlots(a=> [...a, { _k: Date.now()+Math.random(), weekday:0, time:'08:00', lesson:'', teacher:'', location:'', group: weeklyGroup||'هر دو', flex_type:'fixed', notes:'', type:'class' }])}>➕ افزودن ردیف</button>
+                </div>
+              )}
+
+              <div className="panel panel-pad" style={{ background:'var(--bg)' }}>
+                <div className="row" style={{ flexWrap:'wrap', gap:8 }}>
+                  <b>📋 الگوی فعلی</b>
+                  <select className="inp sm" value={tplGroup} onChange={e=> setTplGroup(e.target.value)}><option value="">همه گروه‌ها</option><option value="هر دو">👥 هر دو</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
+                  <span className="spacer" />
+                  <button className="btn sm" onClick={()=> loadTpl(tplGroup)}>↻ تازه‌سازی</button>
+                  <button className="btn sm danger" onClick={async()=>{ if(!confirm('پاک‌سازی الگوی این گروه؟')) return; try{ await api.caScheduleTemplatesClear(tplGroup||undefined); toast('پاک شد ✅'); loadTpl(tplGroup);}catch(e){toast(errText(e),'err');}}}>🗑 پاک‌سازی این گروه</button>
+                </div>
+                {!templates ? <Loading rows={2} /> : templates.length===0 ? <div className="muted" style={{ padding:8 }}>الگویی وجود ندارد</div> : (
+                  <div style={{ display:'grid', gap:6, marginTop:8 }}>
+                    {WEEKDAY_FA.map((lbl, wd)=>{
+                      const rows = templates.filter(t=> Number(t.weekday)===wd);
+                      if (!rows.length) return null;
+                      return <div key={wd} className="row" style={{ gap:6, flexWrap:'wrap', alignItems:'flex-start', borderBottom:'1px solid var(--border)', paddingBottom:6 }}><B>{lbl}</B>{rows.sort((a,b)=> String(a.time).localeCompare(String(b.time))).map((r,i)=><span key={i} className="panel" style={{ padding:'4px 8px', fontSize:12 }}>{r.time} {r.lesson} <span className="muted">({r.group})</span></span>)}</div>;
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="panel panel-pad" style={{ background:'var(--bg)', border:'1px solid var(--border)' }}>
+                <b>⚙️ تولید برنامه از روی الگو</b><div className="muted small">بازه شمسی را انتخاب کنید؛ برنامه برای هر روز مطابق الگو ساخته می‌شود (تکراری‌ها نادیده)</div>
+                <div className="grid" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:8, marginTop:8 }}>
+                  <PersianDatePicker value={genStart} onChange={setGenStart} placeholder="شروع (شمسی)" />
+                  <PersianDatePicker value={genEnd} onChange={setGenEnd} placeholder="پایان (شمسی)" />
+                  <select className="inp" value={genGroup} onChange={e=> setGenGroup(e.target.value)}><option value="">همه گروه‌های الگو</option><option value="هر دو">👥 هر دو</option><option value="1">گروه ۱</option><option value="2">گروه ۲</option></select>
+                  <label className="row" style={{ gap:6, alignItems:'center' }}><input type="checkbox" checked={genDry} onChange={e=> setGenDry(e.target.checked)} /> پیش‌نمایش (dry-run)</label>
+                </div>
+                <div className="row" style={{ gap:8, marginTop:8 }}>
+                  <button className="btn primary" disabled={genBusy || !genStart || !genEnd} onClick={doGenerate}>{genBusy?'⏳…': genDry? '👁 پیش‌نمایش تولید' : '🚀 تولید برنامه + اطلاع‌رسانی'}</button>
+                  {genRes && <span className="muted small">نتیجه: {Number(genRes.created||0).toLocaleString('fa')} ایجاد · {Number(genRes.skipped||0).toLocaleString('fa')} تکراری</span>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {mode==='exam' && (
+            <div style={{ display:'grid', gap:10 }}>
+              <div className="panel panel-pad" style={{ background:'var(--bg)', border:'1px dashed var(--border)' }}>
+                <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                  <b>📸 اسکن برنامه امتحانات</b><span className="muted small">JPG/PNG/WEBP تا 12MB — تاریخ‌ها به‌صورت شمسی خوانده و به میلادی تبدیل می‌شوند</span>
+                  <span className="spacer" />
+                  <label className="btn sm" style={{ cursor:'pointer' }}><input type="file" accept="image/*" style={{ display:'none' }} onChange={e=> setExamFile(e.target.files?.[0]||null)} />{examFile? '📎 '+examFile.name:'انتخاب عکس'}</label>
+                  <button className="btn primary" disabled={examLoading || !examFile} onClick={doExamScan}>{examLoading?'⏳ اسکن…':'🧠 اسکن امتحانات'}</button>
+                </div>
+              </div>
+              {examPreview && (
+                <div className="panel panel-pad" style={{ background:'var(--bg)' }}>
+                  <div className="row" style={{ flexWrap:'wrap', gap:8, marginBottom:8 }}>
+                    <b>🔍 پیش‌نمایش {examPreview.length.toLocaleString('fa')} امتحان</b><span className="spacer" />
+                    <button className="btn sm" onClick={()=> setExamPreview(null)}>انصراف</button>
+                    <button className="btn primary" disabled={examBusy} onClick={doExamConfirm}>{examBusy?'⏳…':`✅ تأیید و ثبت (${examPreview.length.toLocaleString('fa')})`}</button>
+                  </div>
+                  <div style={{ overflowX:'auto' }}>
+                    <table className="tbl" style={{ minWidth:720, fontSize:13 }}>
+                      <thead><tr><th>درس *</th><th>تاریخ *</th><th>ساعت</th><th>مکان</th><th>گروه</th><th></th></tr></thead>
+                      <tbody>
+                        {examPreview.map((e,idx)=>(
+                          <tr key={e._k}>
+                            <td><input className="inp sm" value={e.lesson} onChange={ev=> setExamPreview(a=> a.map((x,i)=> i===idx? {...x, lesson:ev.target.value}:x))} placeholder="درس" style={{ minWidth:140 }} /></td>
+                            <td><input className="inp sm" dir="ltr" value={e.date} onChange={ev=> setExamPreview(a=> a.map((x,i)=> i===idx? {...x, date:ev.target.value}:x))} placeholder="YYYY/MM/DD یا 1405/01/20" style={{ width:150 }} /></td>
+                            <td><input className="inp sm" type="time" value={e.time} onChange={ev=> setExamPreview(a=> a.map((x,i)=> i===idx? {...x, time:ev.target.value}:x))} style={{ width:90 }} /></td>
+                            <td><input className="inp sm" value={e.location} onChange={ev=> setExamPreview(a=> a.map((x,i)=> i===idx? {...x, location:ev.target.value}:x))} style={{ width:110 }} /></td>
+                            <td><select className="inp sm" value={e.group} onChange={ev=> setExamPreview(a=> a.map((x,i)=> i===idx? {...x, group:ev.target.value}:x))}><option value="هر دو">هر دو</option><option value="1">۱</option><option value="2">۲</option></select></td>
+                            <td><button className="btn sm danger" onClick={()=> setExamPreview(a=> a.filter((_,i)=> i!==idx))}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button className="btn sm" style={{ marginTop:8 }} onClick={()=> setExamPreview(a=> [...a, { _k:Date.now()+Math.random(), lesson:'', date:'', time:'08:00', location:'', group:'هر دو' }])}>➕ افزودن امتحان</button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function ScheduleTab() {
   const [stype, setStype] = useState('');
@@ -321,6 +557,7 @@ export function ScheduleTab() {
   const monthLength = monthItems.length ? jalaliMonthLengthFor(monthItems[0].item.date) : 0;
   return (
     <>
+      <HushyarScanPanel onGenerated={load} />
       <div className="row content-tab-toolbar">
         <div className="tabs content-inline-tabs" role="tablist" aria-label="نوع برنامه">
           {SCHED_TYPES.map(([k, v]) => (
