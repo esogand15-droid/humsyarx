@@ -1146,3 +1146,176 @@ function WalletDrawer({ uid, onClose, onChanged }) {
     </Modal>}
   </Drawer>;
 }
+
+// ════════════════════════════════════════════════════════════════
+// 💳 W6 — درگاه زرین‌پال: وضعیت + تنظیم مرچنت/سندباکس/کالبک + تست اتصال
+// تنظیمات DB-backed است؛ ذخیره بدون ری‌استارت اعمال می‌شود (کش ۳۰ ثانیه‌ای).
+// مرچنت هرگز کامل برنمی‌گردد (masked)؛ فقط با تایپ مقدار جدید جایگزین می‌شود.
+// ════════════════════════════════════════════════════════════════
+function GatewayPanel() {
+  const [cfg, setCfg] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testRes, setTestRes] = useState(null);
+  const [mid, setMid] = useState('');
+  const [showMid, setShowMid] = useState(false);
+  const [sandbox, setSandbox] = useState(true);
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const load = async () => {
+    setErr(''); setTestRes(null);
+    try {
+      const c = await api.gatewayZarinpal();
+      setCfg(c);
+      setMid('');
+      setSandbox(!!c.sandbox);
+      setCallbackUrl(c.callback_url || '');
+      setEnabled(c.enabled !== false);
+    } catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+
+  if (err) return <ErrorState error={err} onRetry={load} />;
+  if (!cfg) return <Loading rows={5} />;
+
+  const dirty = mid.trim() !== '' || sandbox !== !!cfg.sandbox
+    || (callbackUrl.trim() || '') !== (cfg.callback_url || '')
+    || enabled !== !!cfg.enabled;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = { sandbox, callback_url: callbackUrl.trim(), enabled };
+      // مرچنت فقط وقتی ارسال می‌شود که ادمین مقدار جدید تایپ کرده باشد
+      if (mid.trim()) body.merchant_id = mid.trim();
+      await api.gatewayZarinpalUpdate(body);
+      toast('تنظیمات درگاه ذخیره شد ✅');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const runTest = async () => {
+    setTesting(true); setTestRes(null);
+    try {
+      const r = await api.gatewayZarinpalTest();
+      setTestRes(r);
+      toast(r.message || 'تست موفق بود ✅', 'ok');
+    } catch (e) { toast(errText(e), 'err'); }
+    setTesting(false);
+  };
+
+  const clearMerchant = async () => {
+    setConfirmClear(false); setBusy(true);
+    try {
+      await api.gatewayZarinpalUpdate({ merchant_id: '' });
+      toast('مرچنت حذف شد — درگاه به حالت آزمایشی (mock) برگشت');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  return <>
+    {/* وضعیت فعلی درگاه */}
+    <div className="panel panel-pad">
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <b>💳 وضعیت درگاه زرین‌پال</b>
+        <span className="spacer" />
+        <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+      </div>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+        <B kind={cfg.enabled ? 'ok' : 'bad'}>{cfg.enabled ? '✅ درگاه فعال' : '⏸ درگاه غیرفعال'}</B>
+        <B kind={cfg.sandbox ? 'warn' : 'acc'}>{cfg.sandbox ? '🧪 حالت سندباکس (تست)' : '🌐 حالت اصلی (واقعی)'}</B>
+        {cfg.merchant_id_set
+          ? <B kind="ok">🔑 مرچنت ثبت شده: <span dir="ltr">{cfg.merchant_id_masked}</span></B>
+          : <B kind="warn">🔑 مرچنت ثبت نشده</B>}
+        {cfg.is_mock
+          ? <B kind="warn">⚠️ حالت آزمایشی (mock) — پرداخت واقعی انجام نمی‌شود</B>
+          : <B kind="ok">🔗 متصل به زرین‌پال واقعی</B>}
+      </div>
+      {cfg.is_mock && <div className="panel panel-pad data-quality-note" style={{ marginTop: 10 }}>
+        <B kind="warn">حالت آزمایشی یعنی چه؟</B>
+        <span>چون مرچنت واقعی ثبت نشده، پرداخت‌ها شبیه‌سازی می‌شوند (authority با پیشوند TEST). برای دریافت پول واقعی، مرچنت ۳۶ کاراکتری پنل زرین‌پال را ثبت و سندباکس را خاموش کنید.</span>
+      </div>}
+    </div>
+
+    <div className="grid g2" style={{ marginTop: 14 }}>
+      {/* فرم تنظیمات */}
+      <div className="panel panel-pad">
+        <b>⚙️ تنظیمات درگاه</b>
+        <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+          <label className="fld"><span>مرچنت‌کد (Merchant ID)</span>
+            <div className="row" style={{ gap: 6 }}>
+              <input className="inp" dir="ltr" style={{ flex: 1 }}
+                type={showMid ? 'text' : 'password'}
+                value={mid} onChange={e => setMid(e.target.value)}
+                placeholder={cfg.merchant_id_masked || 'مثل 8a7f3b2c-… (۳۶ کاراکتر)'} />
+              <button className="btn sm" onClick={() => setShowMid(v => !v)}
+                aria-label={showMid ? 'پنهان‌کردن مرچنت' : 'نمایش مرچنت'}>{showMid ? '🙈' : '👁'}</button>
+            </div>
+            <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>
+              {cfg.merchant_id_set
+                ? 'مرچنت فعلی ذخیره است — خالی بماند یعنی بدون تغییر.'
+                : 'هنوز مرچنتی ثبت نشده — بدون آن درگاه در حالت آزمایشی کار می‌کند.'}
+            </span>
+          </label>
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <Switch on={enabled} disabled={busy} onChange={setEnabled} />
+            <div><b>فعال‌بودن درگاه</b>
+              <div className="muted">خاموش: دکمه پرداخت آنلاین در مینی‌اپ نمایش داده نمی‌شود.</div></div>
+          </div>
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <Switch on={sandbox} disabled={busy} onChange={setSandbox} />
+            <div><b>حالت سندباکس (تست زرین‌پال)</b>
+              <div className="muted">روشن: پرداخت در محیط تست زرین‌پال؛ خاموش: درگاه واقعی و کسر پول واقعی.</div></div>
+          </div>
+          <label className="fld"><span>آدرس بازگشت (Callback URL)</span>
+            <input className="inp" dir="ltr" value={callbackUrl}
+              onChange={e => setCallbackUrl(e.target.value)}
+              placeholder="مثل https://yourdomain.ir/payment/verify" />
+            <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>
+              خالی بماند یعنی پیش‌فرض خودکار (همان دامنه مینی‌اپ + ‎/payment/verify‎). باید با https شروع شود.
+            </span>
+          </label>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button className="btn primary" disabled={busy || !dirty} onClick={save}>
+              {busy ? '⏳ …' : '💾 ذخیره تنظیمات'}</button>
+            <button className="btn" disabled={testing || busy} onClick={runTest}>
+              {testing ? '⏳ …' : '🔌 تست اتصال'}</button>
+            {cfg.merchant_id_set && <button className="btn sm danger" disabled={busy}
+              onClick={() => setConfirmClear(true)}>🗑 حذف مرچنت</button>}
+          </div>
+          {testRes && <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+            <B kind={testRes.mock ? 'warn' : 'ok'}>{testRes.mock ? '🧪 نتیجه تست (mock)' : '✅ نتیجه تست'}</B>
+            <div style={{ marginTop: 6 }}>{testRes.message}</div>
+          </div>}
+        </div>
+      </div>
+
+      {/* راهنما */}
+      <div className="panel panel-pad">
+        <b>📖 راهنمای اتصال زرین‌پال</b>
+        <ol className="muted" style={{ paddingInlineStart: 18, lineHeight: 2 }}>
+          <li>در <b>پنل زرین‌پال</b> یک درگاه پرداخت بسازید و <b>مرچنت‌کد ۳۶ کاراکتری</b> را کپی کنید.</li>
+          <li>مرچنت را در فرم روبه‌رو وارد و ذخیره کنید.</li>
+          <li>برای تست، <b>سندباکس را روشن</b> نگه دارید؛ بعد از اطمینان، آن را <b>خاموش</b> کنید تا پول واقعی جابه‌جا شود.</li>
+          <li>با دکمه <b>«تست اتصال»</b> از آماده‌بودن درگاه مطمئن شوید.</li>
+        </ol>
+        <div className="panel panel-pad data-quality-note">
+          <B kind="acc">نکته‌های فنی</B>
+          <span>مبلغ پلن‌ها به تومان است و خودکار ×۱۰ به ریال تبدیل می‌شود. ذخیره تنظیمات بدون ری‌استارت اعمال می‌شود (حداکثر ۳۰ ثانیه تأخیر کش). هر تغییر با شدت بالا در حسابرسی ثبت می‌شود.</span>
+        </div>
+        {cfg.docs_url && <div style={{ marginTop: 10 }}>
+          <a className="btn sm" href={cfg.docs_url} target="_blank" rel="noreferrer">📚 مستندات زرین‌پال ↗</a>
+        </div>}
+      </div>
+    </div>
+
+    {confirmClear && <Confirm danger
+      text="مرچنت حذف شود و درگاه به حالت آزمایشی (mock) برگردد؟ پرداخت‌های واقعی تا ثبت مرچنت جدید ممکن نخواهد بود."
+      onYes={clearMerchant} onNo={() => setConfirmClear(null)} />}
+  </>;
+}
