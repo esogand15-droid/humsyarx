@@ -25,23 +25,78 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Env fallbacks (DB settings take precedence when set)
 MERCHANT_ID = os.getenv("ZARINPAL_MERCHANT_ID", "").strip()
-# if merchant empty, default sandbox mock = true
 _sandbox_env = os.getenv("ZARINPAL_SANDBOX", "").strip().lower()
 if _sandbox_env in ("1", "true", "yes", "on"):
     SANDBOX = True
 elif _sandbox_env in ("0", "false", "no", "off"):
     SANDBOX = False
 else:
-    SANDBOX = not bool(MERCHANT_ID)  # auto mock if no merchant
+    SANDBOX = not bool(MERCHANT_ID)
 
 CALLBACK_BASE = (os.getenv("ZARINPAL_CALLBACK_URL", "") or os.getenv("WEBAPP_URL", "")).strip().rstrip("/")
 
+# 🌊 W6 — DB-backed config with 30s cache (admin can change via panel without restart)
+import time as _t
+_CFG_CACHE = {"at": 0, "data": None}
+_CFG_TTL = 30
+
+async def _get_cfg() -> dict:
+    now = _t.time()
+    if _CFG_CACHE["data"] is not None and now - _CFG_CACHE["at"] < _CFG_TTL:
+        return _CFG_CACHE["data"]
+    cfg = {"merchant_id": MERCHANT_ID, "sandbox": SANDBOX, "callback_base": CALLBACK_BASE, "enabled": True}
+    try:
+        from database import db as _db
+        mid = await _db.get_setting("zarinpal_merchant_id", None)
+        if isinstance(mid, str) and mid.strip():
+            cfg["merchant_id"] = mid.strip()
+        sb = await _db.get_setting("zarinpal_sandbox", None)
+        if isinstance(sb, bool):
+            cfg["sandbox"] = sb
+        elif isinstance(sb, str):
+            cfg["sandbox"] = sb.lower() in ("1","true","yes","on")
+        cb = await _db.get_setting("zarinpal_callback_url", None)
+        if isinstance(cb, str) and cb.strip():
+            cfg["callback_base"] = cb.strip().rstrip("/")
+        en = await _db.get_setting("zarinpal_enabled", None)
+        if isinstance(en, bool):
+            cfg["enabled"] = en
+    except Exception:
+        pass
+    # fallback: if merchant still empty, mock mode
+    if not cfg["merchant_id"]:
+        cfg["sandbox"] = True
+    _CFG_CACHE["at"] = now
+    _CFG_CACHE["data"] = cfg
+    return cfg
+
+def _clear_cfg_cache():
+    _CFG_CACHE["at"] = 0
+    _CFG_CACHE["data"] = None
+
+async def _is_mock_async() -> bool:
+    cfg = await _get_cfg()
+    mid = cfg.get("merchant_id") or ""
+    return not mid or mid.lower() in ("test", "mock", "sandbox")
+
 def _is_mock() -> bool:
+    # sync fallback for legacy callers (uses env only) — prefer _is_mock_async in async paths
     return not MERCHANT_ID or MERCHANT_ID.lower() in ("test", "mock", "sandbox")
+
+async def _api_base_async() -> str:
+    cfg = await _get_cfg()
+    return "https://sandbox.zarinpal.com/pg/v4/payment" if cfg.get("sandbox") else "https://api.zarinpal.com/pg/v4/payment"
 
 def _api_base() -> str:
     return "https://sandbox.zarinpal.com/pg/v4/payment" if SANDBOX else "https://api.zarinpal.com/pg/v4/payment"
+
+async def _pay_url_async(authority: str) -> str:
+    cfg = await _get_cfg()
+    if cfg.get("sandbox"):
+        return f"https://sandbox.zarinpal.com/pg/StartPay/{authority}"
+    return f"https://www.zarinpal.com/pg/StartPay/{authority}"
 
 def _pay_url(authority: str) -> str:
     if SANDBOX:
@@ -55,25 +110,33 @@ async def zarinpal_request(amount_toman: int, description: str, callback_url: st
     amount_toman: price in Toman (int)
     callback_url: where Zarinpal redirects after pay (with Authority & Status)
     """
+    cfg = await _get_cfg()
+    merchant_id = cfg.get("merchant_id") or MERCHANT_ID
+    sandbox = cfg.get("sandbox") if cfg.get("sandbox") is not None else SANDBOX
+    callback_base = cfg.get("callback_base") or CALLBACK_BASE
+    # if gateway disabled and not mock, raise
+    if not cfg.get("enabled", True) and not (not merchant_id or merchant_id.lower() in ("test","mock","sandbox")):
+        raise RuntimeError("zarinpal gateway disabled by admin")
     amount_rial = int(amount_toman) * 10
     if amount_rial < 1000:
         raise ValueError("amount too small for Zarinpal (min 1000 Rial)")
     if not description:
         description = "خرید اشتراک هامشیار"
     description = description[:120]
-    cb = (callback_url or CALLBACK_BASE or "https://humsyar.ir/payment/verify").strip()
+    cb = (callback_url or callback_base or "https://humsyar.ir/payment/verify").strip()
     # Mock
-    if _is_mock():
+    is_mock = not merchant_id or merchant_id.lower() in ("test", "mock", "sandbox")
+    if is_mock:
         authority = f"A000000000000000000000000000{uuid.uuid4().hex[:6]}"
         # Use deterministic prefix for mock detection in verify
         authority = "TEST-" + uuid.uuid4().hex[:28].upper()
-        url = _pay_url(authority)
+        url = f"https://sandbox.zarinpal.com/pg/StartPay/{authority}" if sandbox else f"https://www.zarinpal.com/pg/StartPay/{authority}"
         logger.info(f"[ZARINPAL MOCK] request amount={amount_toman}T ({amount_rial}R) desc={description} cb={cb} -> {authority}")
         return {"authority": authority, "url": url, "code": 100, "mock": True}
 
-    url = f"{_api_base()}/request.json"
+    url = f"{'https://sandbox.zarinpal.com/pg/v4/payment' if sandbox else 'https://api.zarinpal.com/pg/v4/payment'}/request.json"
     payload = {
-        "merchant_id": MERCHANT_ID,
+        "merchant_id": merchant_id,
         "amount": amount_rial,
         "callback_url": cb,
         "description": description,
@@ -108,19 +171,23 @@ async def zarinpal_verify(authority: str, amount_toman: int) -> dict:
     Verify payment after redirect. Returns {ok, ref_id, card_pan, fee, code, mock}
     amount_toman must match original request (Toman)
     """
+    cfg = await _get_cfg()
+    merchant_id = cfg.get("merchant_id") or MERCHANT_ID
+    sandbox = cfg.get("sandbox") if cfg.get("sandbox") is not None else SANDBOX
     amount_rial = int(amount_toman) * 10
     if not authority:
         raise ValueError("authority required")
     # Mock verify
-    if authority.startswith("TEST-") or _is_mock():
+    is_mock = authority.startswith("TEST-") or not merchant_id or merchant_id.lower() in ("test","mock","sandbox")
+    if is_mock:
         # In mock, authority starting with TEST- always succeeds
         ref_id = int(uuid.uuid4().int % 900000) + 100000
         logger.info(f"[ZARINPAL MOCK] verify authority={authority} amount={amount_toman}T -> ref {ref_id}")
         return {"ok": True, "ref_id": str(ref_id), "code": 100, "mock": True, "card_pan": "6037-****-****-0000"}
 
-    url = f"{_api_base()}/verify.json"
+    url = f"{'https://sandbox.zarinpal.com/pg/v4/payment' if sandbox else 'https://api.zarinpal.com/pg/v4/payment'}/verify.json"
     payload = {
-        "merchant_id": MERCHANT_ID,
+        "merchant_id": merchant_id,
         "amount": amount_rial,
         "authority": authority,
     }

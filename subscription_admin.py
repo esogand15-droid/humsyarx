@@ -61,9 +61,18 @@ async def _show_main(query):
     )
     toggle_label  = "🔴 خاموش‌کردن اجباری اشتراک" if enforced else "🟢 اجباری‌کردن اشتراک برای همه"
     protect_label = "🔴 خاموش‌کردن محافظت فایل‌ها" if protect else "🟢 روشن‌کردن محافظت فایل‌ها"
+    # 🌊 W6 — gateway status badge
+    _gw_merchant = (await db.get_setting('zarinpal_merchant_id', '') or '').strip()
+    _gw_enabled = await db.get_setting('zarinpal_enabled', True)
+    _gw_sandbox = await db.get_setting('zarinpal_sandbox', None)
+    if _gw_sandbox is None:
+        _gw_sandbox = not bool(_gw_merchant)
+    _gw_badge = "🟢 فعال" if (_gw_enabled and _gw_merchant) else ("🟡 آزمایشی" if not _gw_merchant else "🔴 غیرفعال")
+    _gw_mode = "سندباکس" if _gw_sandbox else "اصلی"
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data='suba:toggle_enforce')],
         [InlineKeyboardButton(protect_label, callback_data='suba:toggle_protect')],
+        [InlineKeyboardButton(f"💳 درگاه زرین‌پال [{_gw_badge} • {_gw_mode}]", callback_data='suba:gateway')],
         [InlineKeyboardButton("📋 پلن‌ها", callback_data='suba:plans'),
          InlineKeyboardButton("💳 شماره کارت", callback_data='suba:card')],
         [InlineKeyboardButton(f"📥 صف در انتظار ({stats['pending']})", callback_data='suba:pending'),
@@ -1055,6 +1064,97 @@ async def handle_grant_days_text(update, context):
 #  callback اصلی
 # ══════════════════════════════════════════════════
 
+# ══════════════════════════════════════════
+#  💳 درگاه زرین‌پال — مدیریت از ربات (W6)
+# ══════════════════════════════════════════
+async def _show_gateway(query):
+    mid = (await db.get_setting('zarinpal_merchant_id', '') or '').strip()
+    masked = (mid[:4] + "****" + mid[-4:]) if len(mid) >= 8 else ("****" if mid else "— (تنظیم نشده)")
+    sb = await db.get_setting('zarinpal_sandbox', None)
+    if sb is None: sb = not bool(mid)
+    cb = (await db.get_setting('zarinpal_callback_url', '') or '').strip() or "— (پیش‌فرض از WEBAPP_URL)"
+    enabled = await db.get_setting('zarinpal_enabled', True)
+    if enabled is None: enabled = True
+    status = "🟢 فعال" if (enabled and mid) else ("🟡 آزمایشی (mock) — بدون merchant" if not mid else "🔴 غیرفعال")
+    mode = "سندباکس (sandbox.zarinpal.com)" if sb else "اصلی (api.zarinpal.com)"
+    # docs link as url button
+    kb = [
+        [InlineKeyboardButton(f"وضعیت: {status}", callback_data='suba:gateway')],
+        [InlineKeyboardButton(f"حالت: {mode}", callback_data='suba:gateway_toggle_sandbox')],
+        [InlineKeyboardButton(f"درگاه: {'فعال' if enabled else 'غیرفعال'}", callback_data='suba:gateway_toggle_enabled')],
+        [InlineKeyboardButton("✏️ Merchant ID (کلید زرین‌پال)", callback_data='suba:gateway_edit_merchant')],
+        [InlineKeyboardButton("🔗 Callback URL", callback_data='suba:gateway_edit_callback')],
+        [InlineKeyboardButton("🧪 تست اتصال", callback_data='suba:gateway_test')],
+        [InlineKeyboardButton("📖 مستندات زرین‌پال", url="https://www.zarinpal.com/docs/howToUse/")],
+        _back(),
+    ]
+    text = (
+        f"💳 <b>درگاه پرداخت زرین‌پال</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🔑 Merchant: <code>{masked}</code>\n"
+        f"🧪 حالت: {mode}\n"
+        f"🔗 Callback: <code>{cb}</code>\n"
+        f"⚙️ وضعیت کلی: {status}\n\n"
+        f"💡 برای اتصال واقعی، Merchant ID ۳۶کاراکتری (UUID) را از پنل زرین‌پال بگیر و اینجا بگذار.\n"
+        f"سندباکس = تست بدون پول واقعی (https://sandbox.zarinpal.com).\n"
+        f"Callback باید https باشد و در پنل زرین‌پال هم ثبت شده باشد."
+    )
+    await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+async def _prompt_gateway_merchant(query, context):
+    context.user_data['mode'] = 'suba_gateway_merchant'
+    await query.edit_message_text("🔑 Merchant ID زرین‌پال را بفرست (۳۶ کاراکتری UUID) — برای پاک کردن و برگشت به mock، بنویس <code>clear</code> یا <code>mock</code>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup([_back('suba:gateway')]))
+
+async def _prompt_gateway_callback(query, context):
+    context.user_data['mode'] = 'suba_gateway_callback'
+    await query.edit_message_text("🔗 آدرس Callback را بفرست (باید https:// باشد) — برای پیش‌فرض خالی بذار: بنویس <code>clear</code>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup([_back('suba:gateway')]))
+
+async def handle_gateway_merchant_text(update, context):
+    text = update.message.text.strip()
+    context.user_data.pop('mode', None)
+    if text.lower() in ("clear","mock","test","empty"):
+        await db.set_setting('zarinpal_merchant_id', '')
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await update.message.reply_text("✅ Merchant پاک شد — حالت آزمایشی (mock) فعال است.")
+        return
+    if len(text) < 10:
+        await update.message.reply_text("❌ Merchant خیلی کوتاه است. دوباره بفرست.")
+        return
+    await db.set_setting('zarinpal_merchant_id', text.strip())
+    try:
+        from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+    except: pass
+    masked = text[:4] + "****" + text[-4:] if len(text)>=8 else "****"
+    await update.message.reply_text(f"✅ ذخیره شد: <code>{masked}</code>", parse_mode='HTML')
+    try:
+        _au = await db.get_user(update.effective_user.id) or {}
+        _an = _au.get('name','مدیر ارشد')
+        _ar = await db.get_actor_role_label(update.effective_user.id)
+        await send_audit_log(context.bot, 'admin', _an, update.effective_user.id, "ویرایش Merchant زرین‌پال", module='Payment', severity='HIGH', actor_role=_ar, after={'merchant_masked': masked}, tags=['درگاه_پرداخت'])
+    except: pass
+
+async def handle_gateway_callback_text(update, context):
+    text = update.message.text.strip()
+    context.user_data.pop('mode', None)
+    if text.lower() in ("clear","empty","default"):
+        await db.set_setting('zarinpal_callback_url', '')
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await update.message.reply_text("✅ Callback به پیش‌فرض (WEBAPP_URL) برگشت.")
+        return
+    cb = text.strip().rstrip("/")
+    if not cb.startswith("https://") and not cb.startswith("http://"):
+        await update.message.reply_text("❌ باید با https:// شروع شود.")
+        return
+    await db.set_setting('zarinpal_callback_url', cb)
+    try:
+        from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+    except: pass
+    await update.message.reply_text(f"✅ Callback ذخیره شد:\n<code>{cb}</code>", parse_mode='HTML')
+
 async def subscription_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid   = update.effective_user.id
@@ -1067,6 +1167,37 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
 
     if action == 'main':
         await _show_main(query)
+    elif action == 'gateway':
+        await _show_gateway(query)
+    elif action == 'gateway_toggle_sandbox':
+        cur = await db.get_setting('zarinpal_sandbox', None)
+        if cur is None:
+            cur_mid = (await db.get_setting('zarinpal_merchant_id','') or '').strip()
+            cur = not bool(cur_mid)
+        await db.set_setting('zarinpal_sandbox', not cur)
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await _show_gateway(query)
+    elif action == 'gateway_toggle_enabled':
+        cur = await db.get_setting('zarinpal_enabled', True)
+        if cur is None: cur = True
+        await db.set_setting('zarinpal_enabled', not cur)
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await _show_gateway(query)
+    elif action == 'gateway_edit_merchant':
+        await _prompt_gateway_merchant(query, context)
+    elif action == 'gateway_edit_callback':
+        await _prompt_gateway_callback(query, context)
+    elif action == 'gateway_test':
+        mid = (await db.get_setting('zarinpal_merchant_id','') or '').strip()
+        sb = await db.get_setting('zarinpal_sandbox', None)
+        if sb is None: sb = not bool(mid)
+        is_mock = not bool(mid)
+        msg = f"🧪 تست: {'mock (بدون merchant)' if is_mock else ('sandbox' if sb else 'اصلی')} — merchant={'****' if mid else '—'}"
+        await query.answer(msg, show_alert=True)
 
     elif action == 'toggle_enforce':
         cur = await db.get_setting('subscription_enforced', False)
@@ -1228,6 +1359,8 @@ TEXT_MODE_HANDLERS = {
     'suba_grant_days':       handle_grant_days_text,
     'suba_grant_list_ids':   handle_grant_list_ids_text,
     'suba_grant_list_days':  handle_grant_list_days_text,
+    'suba_gateway_merchant': handle_gateway_merchant_text,
+    'suba_gateway_callback': handle_gateway_callback_text,
 }
 
 

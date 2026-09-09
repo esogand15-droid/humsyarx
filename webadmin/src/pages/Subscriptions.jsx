@@ -13,6 +13,7 @@ const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;
 const TABS = [
   ['control', '⚙️ مرکز کنترل'],
+  ['gateway', '💳 درگاه زرین‌پال'],
   ['payments', '🧾 رسیدها'],
   ['subscribers', '👥 مشترکین'],
   ['discounts', '🎁 تخفیف و کمپین'],
@@ -75,6 +76,7 @@ export default function Subscriptions({ route = '' }) {
       <Tabs items={TABS} value={tab} onChange={changeTab} label="بخش‌های اشتراک" />
 
       {tab === 'control' && <ControlPanel ov={ov} refresh={loadOverview} />}
+      {tab === 'gateway' && <GatewayPanel />}
       {tab === 'payments' && <PaymentsPanel initial={{ status: params.get('status') ?? 'pending', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}

@@ -1218,6 +1218,11 @@ export const api = {
   ringAuditList: (limit = 60) => req(`/api/ring/audit?limit=${limit}`),
   ringReconcile: () =>
     req("/api/ring/maintenance/reconcile", { method: "POST" }),
+  // 💳 W6 — Zarinpal Gateway (DB-backed, no restart)
+  gatewayZarinpal: () => req("/api/admin/gateway/zarinpal"),
+  gatewayZarinpalUpdate: (body) => req("/api/admin/gateway/zarinpal", { method: "PUT", body }),
+  gatewayZarinpalTest: () => req("/api/admin/gateway/zarinpal/test", { method: "POST" }),
+
   ringPurge: () =>
     req("/api/ring/maintenance/purge-evidence", { method: "POST" }),
 };

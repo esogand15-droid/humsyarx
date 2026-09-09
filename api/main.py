@@ -25,6 +25,7 @@ from api.routers import (
     global_search,
     grades,
     notifications,
+    payment_gateway,
     profile,
     questions,
     rbac,
@@ -438,6 +439,12 @@ app.include_router(
     web_admin.router,
     prefix="/api/web-admin",
     tags=["web-admin"],
+)
+
+app.include_router(
+    payment_gateway.router,
+    prefix="/api",
+    tags=["payment-gateway"],
 )
 
 
