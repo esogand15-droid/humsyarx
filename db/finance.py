@@ -651,6 +651,86 @@ class DBFinance:
                 'is_gift': bool(gift), 'days': days}
 
 
+    # ── 🌊 W2 — زرین‌پال (auto gateway) ──
+    async def sub_payment_create_zarinpal(self, user_id: int, plan_id: str, plan_name: str,
+                                           price: int, final_price: int,
+                                           authority: str, discount_code: str = None,
+                                           discount_percent: int = None,
+                                           idem_key: str = "") -> str:
+        """رسید زرین‌پال — status='zarinpal_pending' تا verify. authority یکتاست."""
+        if idem_key:
+            ex = await self.sub_payments.find_one({'idem_key': idem_key}, {'_id': 1})
+            if ex:
+                return str(ex['_id'])
+        # authority duplication guard (unique index if exists, else manual)
+        if authority and await self.sub_payments.find_one({'zarinpal_authority': authority}):
+            raise ValueError('authority_duplicate')
+        doc = {
+            'user_id': int(user_id), 'plan_id': str(plan_id), 'plan_name': plan_name,
+            'price': int(price), 'final_price': int(final_price),
+            'discount_code': discount_code, 'discount_percent': discount_percent,
+            'method': 'zarinpal', 'status': 'zarinpal_pending',
+            'zarinpal_authority': authority,
+            'zarinpal_ref_id': None,
+            'submitted_at': __import__('time_utils').utc_now_iso(),
+            'idem_key': idem_key or None,
+        }
+        r = await self.sub_payments.insert_one(doc)
+        return str(r.inserted_id)
+
+    async def sub_payment_find_by_authority(self, authority: str):
+        return await self.sub_payments.find_one({'zarinpal_authority': authority})
+
+    async def sub_payment_mark_zarinpal_pending(self, pid: str, authority: str) -> bool:
+        try:
+            from bson import ObjectId
+            res = await self.sub_payments.update_one(
+                {'_id': ObjectId(pid), 'status': {'$in': ['pending', 'zarinpal_pending', 'wallet_processing']}},
+                {'$set': {'zarinpal_authority': authority, 'method': 'zarinpal', 'status': 'zarinpal_pending'}})
+            return res.modified_count == 1 or await self.sub_payments.find_one({'_id': ObjectId(pid), 'zarinpal_authority': authority}) is not None
+        except Exception:
+            return False
+
+    async def sub_payment_verify_zarinpal(self, authority: str, ref_id: str, amount: int = None) -> dict:
+        """CAS اتمیک zarinpal_pending → approved. فقط یک بار موفق."""
+        try:
+            from bson import ObjectId
+            # atomic transition
+            doc = await self.sub_payments.find_one_and_update(
+                {'zarinpal_authority': authority, 'status': 'zarinpal_pending'},
+                {'$set': {'status': 'approved', 'zarinpal_ref_id': str(ref_id),
+                          'reviewed_by': 0, 'reviewed_at': __import__('time_utils').utc_now_iso(),
+                          'review_note': f'زرین‌پال تایید شد ref:{ref_id}'}},
+                return_document=True)
+            if not doc:
+                # already approved or not found
+                existing = await self.sub_payments.find_one({'zarinpal_authority': authority})
+                if existing and existing.get('status') == 'approved':
+                    return {'ok': True, 'already': True, 'doc': existing}
+                return {'ok': False, 'reason': 'not_pending'}
+            # activate subscription (same as finalize)
+            act = await self.finalize_approved_payment(doc, admin_id=0)
+            return {'ok': True, 'already': False, 'doc': doc, 'activation': act}
+        except Exception as e:
+            import logging; logging.getLogger('database').warning(f"zarinpal verify CAS failed {authority}: {e}")
+            return {'ok': False, 'reason': str(e)}
+
+    async def sub_payment_list_cursor(self, status: str = None, after_id: str = None, limit: int = 20, extra: dict = None) -> list:
+        """Cursor pagination (stable, indexed). after_id = last _id from previous page (exclusive)."""
+        q = {}
+        if status:
+            q['status'] = status
+        if extra:
+            q.update(extra)
+        if after_id:
+            try:
+                from bson import ObjectId
+                q['_id'] = {'$lt': ObjectId(str(after_id))}
+            except Exception:
+                pass
+        limit = max(1, min(int(limit), 50))
+        return await self.sub_payments.find(q).sort('_id', -1).limit(limit).to_list(limit)
+
     async def sub_payment_cancel(self, pid: str, admin_id: int) -> bool:
         """🌊 GIFT — لغو رسید pending توسط ادمین (CAS؛ فقط pending→cancelled).
 

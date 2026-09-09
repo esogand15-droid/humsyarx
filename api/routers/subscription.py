@@ -23,6 +23,13 @@ from pydantic import (
 from api.auth import (
     get_current_user,
 )
+try:
+    from api.rate_limit import rate_limit_user
+    from fastapi import Request
+    _HAS_RL = True
+except Exception:
+    _HAS_RL = False
+    rate_limit_user = None  # type: ignore
 
 from api.telegram_send import (
     upload_and_get_file_id,
@@ -970,6 +977,141 @@ async def buy(
     }
 
 
+
+# ══════════════════════════════════════════════════════════════════
+# 💳 W2 — زرین‌پال (درگاه خودکار + Sandbox mock)
+# ══════════════════════════════════════════════════════════════════
+class ZarinpalRequestBody(BaseModel):
+    plan_id: str = Field(..., min_length=6)
+    discount_code: str = Field(default="", max_length=40)
+    gift_to: int = Field(default=0)
+    gift_message: str = Field(default="", max_length=300)
+    callback_url: str = Field(default="", max_length=500)
+    idem: str = Field(default="", max_length=64)
+
+@router.post("/zarinpal/request")
+async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_current_user)):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "zarinpal_req", 10, 60)
+    from payments.zarinpal import zarinpal_request as _zp_req
+    user_id = user["id"]
+    plan = await db.sub_plan_get(body.plan_id)
+    if not plan or not plan.get("active"):
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد")
+    # pending guard — like buy
+    if await db.sub_payment_has_pending(user_id):
+        raise HTTPException(status_code=409, detail="یک رسید قبلی در انتظار بررسی دارید — با درگاه جدید ناسازگار است")
+    gift_to = int(body.gift_to or 0)
+    if gift_to:
+        if str(await db.get_setting("gift_enabled", "1")) != "1":
+            raise HTTPException(status_code=403, detail="هدیه غیرفعال است")
+        if gift_to == user_id:
+            raise HTTPException(status_code=422, detail="هدیه به خود مجاز نیست")
+        rec = await db.get_user(gift_to)
+        if not rec or rec.get("suspended"):
+            raise HTTPException(status_code=422, detail="گیرنده پیدا نشد")
+    price = max(0, int(plan.get("price") or 0))
+    code = (body.discount_code or "").strip().upper() or None
+    percent = None
+    if code:
+        v = await db.discount_validate(code, plan_id=str(plan["_id"]), user_id=user_id)
+        if not v.get("ok"):
+            raise HTTPException(status_code=422, detail=v.get("reason") or "کد تخفیف معتبر نیست")
+        percent = int(v.get("percent") or 0)
+        price = round(price * (100 - percent) / 100)
+    if price <= 0:
+        raise HTTPException(status_code=422, detail="این پلن با این کد رایگان است — از مسیر «خرید رایگان» استفاده کنید")
+    if gift_to and price <= 0:
+        raise HTTPException(status_code=422, detail="کد ۱۰۰٪ با هدیه قابل ترکیب نیست")
+    idem = (body.idem or "").strip()[:64] or f"zp-{user_id}-{body.plan_id[:8]}-{price}"
+    # idempotency guard
+    if idem:
+        ex = await db.sub_payments.find_one({"idem_key": idem})
+        if ex and ex.get("zarinpal_authority"):
+            return {"ok": True, "authority": ex["zarinpal_authority"], "url": f"https://sandbox.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}" if ex["zarinpal_authority"].startswith("TEST-") else f"https://www.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}", "payment_id": str(ex["_id"]), "replay": True, "final_price": int(ex.get("final_price") or price)}
+    # discount not consumed yet — will be consumed atomically at verify (after payment) to avoid stuck reservation
+    # gateway request
+    cb = (body.callback_url or "").strip()
+    if not cb:
+        base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
+        if base:
+            cb = f"{base}/payment/verify"
+        else:
+            cb = "https://humsyar.ir/payment/verify"
+    desc = f"اشتراک {plan.get('name','')} هامشیار"
+    try:
+        zp = await _zp_req(price, desc, cb)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"درگاه زرین‌پال پاسخ نداد: {e}")
+    authority = zp["authority"]
+    try:
+        pid = await db.sub_payment_create_zarinpal(user_id, str(plan["_id"]), plan.get("name",""), int(plan.get("price") or price), price, authority, discount_code=code, discount_percent=percent, idem_key=idem)
+        if gift_to:
+            await db.sub_payments.update_one({"_id": ObjectId(pid)}, {"$set": {"gift": {"to": int(gift_to), "message": (body.gift_message or "")[:300], "activated_at": None}}})
+        await _sub_audit(user, "درخواست پرداخت زرین‌پال", target_id=pid, target_label=plan.get("name",""), after={"authority": authority, "final_price": price, "discount_code": code}, severity="INFO")
+    except Exception as e:
+        if code:
+            await db.discount_release(code, user_id=user_id)
+        raise HTTPException(status_code=500, detail=f"ثبت پرداخت ناموفق: {e}")
+    return {"ok": True, "authority": authority, "url": zp["url"], "payment_id": pid, "final_price": price, "mock": zp.get("mock", False)}
+
+class ZarinpalVerifyBody(BaseModel):
+    authority: str = Field(..., min_length=6, max_length=64)
+    # Status from Zarinpal redirect (OK/NOK) — optional
+
+@router.post("/zarinpal/verify")
+async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_user)):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "zarinpal_verify", 20, 60)
+    from payments.zarinpal import zarinpal_verify as _zp_v
+    authority = (body.authority or "").strip()
+    doc = await db.sub_payment_find_by_authority(authority)
+    if not doc:
+        raise HTTPException(status_code=404, detail="پرداخت پیدا نشد")
+    if int(doc.get("user_id") or 0) != user["id"]:
+        raise HTTPException(status_code=403, detail="این پرداخت متعلق به شما نیست")
+    if doc.get("status") == "approved":
+        sub = await db.sub_get(user["id"])
+        return {"ok": True, "already": True, "end_date": (sub or {}).get("end_date"), "ref_id": doc.get("zarinpal_ref_id")}
+    if doc.get("status") != "zarinpal_pending":
+        raise HTTPException(status_code=409, detail=f"وضعیت پرداخت {doc.get('status')} قابل تایید نیست")
+    amount = int(doc.get("final_price") or doc.get("price") or 0)
+    code = (doc.get("discount_code") or "").strip().upper() or None
+    zp = await _zp_v(authority, amount)
+    if not zp.get("ok"):
+        raise HTTPException(status_code=402, detail="پرداخت تایید نشد (لغو شده یا نامعتبر)")
+    ref_id = str(zp.get("ref_id") or "")
+    # consume discount atomically after payment success (if present)
+    if code:
+        consumed = await db.discount_consume(code, user_id=user["id"])
+        if not consumed:
+            # discount exhausted after payment — refund via reversal? for gateway we treat as paid but discount lost; notify
+            # we still approve payment but with percent adjusted? For now fail and require manual refund
+            raise HTTPException(status_code=409, detail="پرداخت موفق بود اما ظرفیت کد تخفیف پر شده — مبلغ کامل لحاظ می‌شود، با پشتیبانی تماس بگیرید")
+    res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
+    if not res.get("ok"):
+        if code:
+            await db.discount_release(code, user_id=user["id"])
+        if res.get("already"):
+            sub = await db.sub_get(user["id"])
+            return {"ok": True, "already": True, "end_date": (sub or {}).get("end_date"), "ref_id": ref_id}
+        raise HTTPException(status_code=409, detail=res.get("reason") or "تایید هم‌زمان — دوباره تلاش کنید")
+    await _sub_audit(user, "تایید پرداخت زرین‌پال", target_id=str(doc["_id"]), target_label=doc.get("plan_name",""), after={"ref_id": ref_id, "authority": authority}, severity="INFO")
+    act = res.get("activation") or {}
+    return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get("mock", False)}
+
+@router.get("/zarinpal/callback")
+async def zarinpal_callback(Authority: str = Query(""), Status: str = Query("")):
+    """Callback for Zarinpal redirect (when callback_url points to API). Verifies and redirects to miniapp."""
+    from fastapi.responses import RedirectResponse
+    base = (os.getenv("WEBAPP_URL") or "https://humsyar.ir").strip().rstrip("/")
+    target = f"{base}/payment/verify?Authority={Authority}&Status={Status}"
+    if Status != "OK":
+        # user cancelled — optionally mark payment cancelled? keep pending for retry
+        return RedirectResponse(url=target + "&verified=0", status_code=302)
+    # verify will be done by frontend via POST /zarinpal/verify with auth; here just redirect
+    return RedirectResponse(url=target, status_code=302)
+
 # ═══════════════ 🌊 GIFT — تاریخچه‌ی هدیه‌ها (سمت دانشجو) ═══════════════
 @router.get("/gifts")
 async def gift_history(user=Depends(get_current_user)):
@@ -1076,9 +1218,15 @@ async def wallet_status(user=Depends(get_current_user)):
 
 @router.get("/wallet/transactions")
 async def wallet_transactions(skip: int = 0, limit: int = 20,
+                              after: str | None = Query(None, max_length=32),
                               user=Depends(get_current_user)):
-    skip = max(0, int(skip))
     limit = max(1, min(int(limit), 50))
+    if after:
+        # 🌊 W2 — cursor pagination (indexed, no skip)
+        txs = await db.wallet_tx_list_cursor(user["id"], after_id=after, limit=limit)
+        next_cursor = str(txs[-1]["_id"]) if len(txs) == limit else None
+        return {"items": [_tx_view(t) for t in txs], "next_cursor": next_cursor, "has_more": next_cursor is not None}
+    skip = max(0, int(skip))
     txs = await db.wallet_tx_list(user["id"], skip=skip, limit=limit)
     return {"items": [_tx_view(t) for t in txs],
             "total": await db.wallet_tx_count(user["id"])}

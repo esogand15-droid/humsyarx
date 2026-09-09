@@ -774,6 +774,54 @@ async def subscription_expiry_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"subscription_expiry_job error: {e}")
 
 
+async def subscription_expiry_sweep_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — sweep سبک هر ساعت: فقط expiredها را status می‌زند (بدون نوتیف تکراری).
+    نوتیف اصلی روزانه ساعت ۹:۱۵ می‌ماند؛ این فقط خلأ ۲۴ساعته را پر می‌کند
+    (کاربر ساعت ۰۹:۱۶ منقضی شود تا فردا بی‌خبر نماند)."""
+    try:
+        expired = await db.sub_expire_due()
+        if expired:
+            logger.info(f"⌛ sweep: {len(expired)} اشتراک منقضی شد (hourly)")
+    except Exception as e:
+        logger.warning(f"subscription_expiry_sweep error: {e}")
+
+async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — مغایرت‌گیری کیف پول هر ۳۰ دقیقه + گزارش به لاگ/ادمین.
+    stuck pending قدیمی را فقط لاگ می‌کند (تصمیم دستی) — auto-complete نمی‌کند
+    چون 증거 جبران نیازمند تایید انسانی است."""
+    try:
+        items = await db.wallet_reconcile_items(limit=20)
+        if items:
+            crit = [x for x in items if x.get('severity') == 'critical']
+            if crit:
+                logger.warning(f"💰 wallet reconcile {len(items)} items ({len(crit)} critical): {crit[:3]}")
+                # ping owner if critical
+                try:
+                    await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی", 'sent': False, 'created_at': __import__('time_utils').utc_now_iso()})
+                except: pass
+            else:
+                logger.info(f"wallet reconcile: {len(items)} warnings")
+    except Exception as e:
+        logger.warning(f"wallet_reconcile_job error: {e}")
+
+async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — پرداخت‌های zarinpal_pending که بیش‌از ۱ ساعت رها شده → لغو + آزادسازی کد تخفیف."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        pending = await db.sub_payments.find({'status': 'zarinpal_pending', 'submitted_at': {'$lt': cutoff}}).to_list(50)
+        for doc in pending:
+            try:
+                await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
+                code = (doc.get('discount_code') or '').strip()
+                if code:
+                    await db.discount_release(code, user_id=doc.get('user_id'))
+                logger.info(f"zarinpal cleanup cancelled {doc['_id']} authority={doc.get('zarinpal_authority')}")
+            except Exception as e:
+                logger.warning(f"zarinpal cleanup failed {doc.get('_id')}: {e}")
+    except Exception as e:
+        logger.warning(f"zarinpal_cleanup error: {e}")
+
 async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
     """
     FIX جدید: بکاپ خودکار روزانه. این job هر ساعت اجرا می‌شود و
@@ -1931,6 +1979,19 @@ async def post_init(application: Application):
             subscription_expiry_job,
             time=dtime(hour=9, minute=15, tzinfo=TEHRAN),
             name='subscription_expiry'
+        )
+        # 🌊 W2 — sweep ساعتی (بدون نوتیف تکراری) + reconcile کیف پول + cleanup زرین‌پال
+        application.job_queue.run_repeating(
+            subscription_expiry_sweep_job,
+            interval=3600, first=600, name='subscription_expiry_sweep'
+        )
+        application.job_queue.run_repeating(
+            wallet_reconcile_job,
+            interval=1800, first=300, name='wallet_reconcile'
+        )
+        application.job_queue.run_repeating(
+            zarinpal_cleanup_job,
+            interval=3600, first=1200, name='zarinpal_cleanup'
         )
 
         # بستن هفته‌ی Prestige — شنبه ۰۰:۰۵ تهران (PTB: شنبه=۶)

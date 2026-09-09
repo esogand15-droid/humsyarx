@@ -23,6 +23,7 @@
 
 استاندارد پول: تومان (int) — یکسان در Bot / Mini App / Web Admin / API.
 """
+import os
 import logging
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
@@ -32,6 +33,13 @@ logger = logging.getLogger('database')
 
 # واحد پول سراسری — از معماری موجود استخراج شده (plan.price تومان int است)
 WALLET_CURRENCY = 'تومان'
+# 🌊 W2 — thresholds (Toman)
+WALLET_DAILY_LIMIT = int(os.getenv("WALLET_DAILY_LIMIT", "5000000") or 5000000)
+WALLET_LARGE_THRESHOLD = int(os.getenv("WALLET_LARGE_THRESHOLD", "2000000") or 2000000)
+try:
+    WALLET_OWNER_ID = int(os.getenv("ADMIN_ID", "0") or 0)
+except:
+    WALLET_OWNER_ID = 0
 
 # انواع تراکنش — فقط آنچه واقعاً لازم است
 TX_REFUND_CREDIT = 'refund_credit'
@@ -51,6 +59,15 @@ _TX_LABELS = {
     TX_TOPUP: 'شارژ کیف پول',
 }
 
+def _wallet_need_owner_approval(amount: int, tx_type: str, actor_id: int) -> bool:
+    if tx_type not in (TX_ADMIN_CREDIT, TX_ADMIN_DEBIT):
+        return False
+    if amount <= WALLET_LARGE_THRESHOLD:
+        return False
+    if WALLET_OWNER_ID and int(actor_id) == WALLET_OWNER_ID:
+        return False
+    return True
+
 # عمر آستانه‌ی تراکنش pending برای پرچم‌خوردن در مغایرت‌گیری (ثانیه)
 _STUCK_PENDING_SECONDS = 600
 
@@ -65,6 +82,22 @@ class WalletError(ValueError):
 
 class DBWallet:
     """Mixin کیف پول — همان الگوی DBFinance (بدون سیستم مالی موازی)."""
+
+    # 🌊 W2 — helper داخل کلاس
+    async def _wallet_daily_toman_sum(self, user_id: int) -> int:
+        """جمع امروز (ok) برای کاربر — تومان."""
+        from time_utils import start_of_day_tehran
+        try:
+            day_start = start_of_day_tehran().isoformat()
+        except Exception:
+            import datetime
+            day_start = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        total = 0
+        async for row in self.wallet_transactions.aggregate([
+            {'$match': {'user_id': int(user_id), 'status': 'ok', 'created_at': {'$gte': day_start}}},
+            {'$group': {'_id': None, 's': {'$sum': '$amount'}}}]):
+            total = int(row['s'])
+        return total
 
     # ── پروویژن ────────────────────────────────────────────────
     async def wallet_get_or_create(self, user_id: int) -> dict:
@@ -163,6 +196,17 @@ class DBWallet:
         amount = int(amount)
         if amount <= 0:
             raise WalletError('invalid_amount', 'مبلغ باید مثبت باشد')
+        if _wallet_need_owner_approval(amount, tx_type, int(actor_id or 0)):
+            raise WalletError('needs_owner_approval', 'مبلغ بالا — نیاز به تایید مالک (ADMIN_ID)')
+        if tx_type in (TX_ADMIN_CREDIT, TX_ADMIN_DEBIT):
+            try:
+                daily = await self._wallet_daily_toman_sum(int(user_id))
+                if daily + amount > WALLET_DAILY_LIMIT:
+                    raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
+            except WalletError:
+                raise
+            except Exception:
+                pass
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:
@@ -177,6 +221,17 @@ class DBWallet:
         amount = int(amount)
         if amount <= 0:
             raise WalletError('invalid_amount', 'مبلغ باید مثبت باشد')
+        if _wallet_need_owner_approval(amount, tx_type, int(actor_id or 0)):
+            raise WalletError('needs_owner_approval', 'مبلغ بالا — نیاز به تایید مالک (ADMIN_ID)')
+        if tx_type in (TX_ADMIN_CREDIT, TX_ADMIN_DEBIT):
+            try:
+                daily = await self._wallet_daily_toman_sum(int(user_id))
+                if daily + amount > WALLET_DAILY_LIMIT:
+                    raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
+            except WalletError:
+                raise
+            except Exception:
+                pass
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:
@@ -197,6 +252,18 @@ class DBWallet:
     async def wallet_tx_count(self, user_id: int) -> int:
         return await self.wallet_transactions.count_documents(
             {'user_id': int(user_id), 'status': 'ok'})
+
+    async def wallet_tx_list_cursor(self, user_id: int, after_id: str = None, limit: int = 20) -> list:
+        """Cursor pagination برای کیف پول — بعد از after_id (exclusive)."""
+        q = {'user_id': int(user_id), 'status': 'ok'}
+        if after_id:
+            try:
+                from bson import ObjectId
+                q['_id'] = {'$lt': ObjectId(str(after_id))}
+            except Exception:
+                pass
+        limit = max(1, min(int(limit), 50))
+        return await self.wallet_transactions.find(q).sort('_id', -1).limit(limit).to_list(limit)
 
     async def wallet_pending_count(self, user_id: int) -> int:
         return await self.wallet_transactions.count_documents(

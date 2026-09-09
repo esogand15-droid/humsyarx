@@ -346,6 +346,8 @@ class DBCore:
                 # idempotency ساخت هدیه.
                 self._index(self.sub_payments, [('gift.to', 1), ('status', 1)], background=True),
                 self._index(self.sub_payments, 'idem_key', unique=True, sparse=True, background=True),
+                # 🌊 W2 — زرین‌پال authority یکتا (sparse)
+                self._index(self.sub_payments, 'zarinpal_authority', unique=True, sparse=True, background=True),
                 self._index(self.subscriptions, [('status', 1), ('end_date', 1)], background=True),
                 # 🛡 AUDIT-A5/P-9 — آدرس تیکت یکتا باشد و جست‌وجوی نام ایندکس
                 self._index(self.tickets, [('user_name', 1), ('created_at', -1)], background=True),
