@@ -823,20 +823,109 @@ async def subscription_expiry_sweep_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     """🌊 W2 — مغایرت‌گیری کیف پول هر ۳۰ دقیقه + گزارش به لاگ/ادمین.
+    🌊 W7 — ضداسپم + توضیح‌دار: dismiss respected + cooldown + hash + mute + جزئیات انسانی.
     stuck pending قدیمی را فقط لاگ می‌کند (تصمیم دستی) — auto-complete نمی‌کند
     چون 증거 جبران نیازمند تایید انسانی است."""
     try:
+        from time_utils import parse_machine_datetime as _parse_dt, now_utc as _now_utc, utc_now_iso as _utc_iso
+        import hashlib, json as _json
         items = await db.wallet_reconcile_items(limit=20)
-        if items:
-            crit = [x for x in items if x.get('severity') == 'critical']
-            if crit:
-                logger.warning(f"💰 wallet reconcile {len(items)} items ({len(crit)} critical): {crit[:3]}")
-                # ping owner if critical
+        if not items:
+            return
+        crit = [x for x in items if x.get('severity') == 'critical']
+        if not crit:
+            logger.info(f"wallet reconcile: {len(items)} warnings (no critical)")
+            return
+        logger.warning(f"💰 wallet reconcile {len(items)} items ({len(crit)} critical): {crit[:3]}")
+        # ── W7: settings ──
+        try:
+            enabled = await db.get_setting("wallet_alert_enabled", True)
+            if enabled is None:
+                enabled = True
+            if not enabled:
+                logger.info("wallet reconcile: alerts disabled via setting")
+                return
+            muted_until = await db.get_setting("wallet_alert_muted_until", None)
+            if muted_until:
                 try:
-                    await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی", 'sent': False, 'created_at': __import__('time_utils').utc_now_iso()})
-                except: pass
-            else:
-                logger.info(f"wallet reconcile: {len(items)} warnings")
+                    if _parse_dt(muted_until) > _now_utc():
+                        logger.info(f"wallet reconcile muted until {muted_until}")
+                        return
+                except Exception:
+                    pass
+            # attention dismissal for wallet_issues
+            try:
+                ddoc = await db.client["medicalbot"]["attention_dismissals"].find_one({"key": "wallet_issues"})
+                if ddoc:
+                    until = ddoc.get("dismissed_until")
+                    dismissed = not until or _parse_dt(until) > _now_utc()
+                    if dismissed:
+                        logger.info(f"wallet reconcile suppressed by attention dismissal: {ddoc.get('reason','')}")
+                        return
+            except Exception:
+                pass
+            # cooldown + hash dedup
+            cooldown = int(await db.get_setting("wallet_alert_cooldown_hours", 6) or 6)
+            last_at = await db.get_setting("wallet_alert_last_at", None)
+            last_hash = await db.get_setting("wallet_alert_last_hash", None)
+            cur_hash = hashlib.sha256(_json.dumps(sorted([(c.get("type"), c.get("user_id"), int(c.get("amount") or 0)) for c in crit]), sort_keys=True).encode()).hexdigest()[:16]
+            if last_hash and last_at and last_hash == cur_hash:
+                try:
+                    elapsed_h = (_now_utc() - _parse_dt(last_at).astimezone(__import__('datetime').timezone.utc)).total_seconds() / 3600
+                    if elapsed_h < cooldown:
+                        logger.info(f"wallet reconcile throttled: same {len(crit)} crit within {elapsed_h:.1f}h < {cooldown}h")
+                        return
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"wallet reconcile settings check failed: {e}")
+            cur_hash = "unknown"
+            cooldown = 6
+        # ── W7: ساخت پیام توضیح‌دار (تا ۳ مورد، human-readable) ──
+        try:
+            # نام کاربران برای جزئیات
+            uids = list({int(c.get("user_id") or 0) for c in crit[:5] if c.get("user_id")})
+            names = {}
+            if uids:
+                for u in await db.users.find({"user_id": {"$in": uids}}, {"user_id": 1, "name": 1}).to_list(20):
+                    names[int(u["user_id"])] = u.get("name") or ""
+            _type_fa = {
+                "wallet_balance_mismatch": "مغایرت حسابداری",
+                "refund_without_wallet_credit": "بازگشت وجه بدون اعتبار",
+                "topup_without_wallet_credit": "شارژ بدون اعتبار",
+                "wallet_debit_without_payment": "کسر بی‌پشتوانه",
+                "wallet_tx_stuck_pending": "تراکنش معلق",
+            }
+            lines = []
+            for c in crit[:3]:
+                uid = int(c.get("user_id") or 0)
+                nm = names.get(uid) or f"کاربر {uid}"
+                tp = _type_fa.get(c.get("type"), c.get("type") or "نامشخص")
+                amt = c.get("amount")
+                if amt is not None:
+                    lines.append(f"• {nm} — {tp} ({int(amt):,} تومان)")
+                else:
+                    lines.append(f"• {nm} — {tp}")
+            if len(crit) > 3:
+                lines.append(f"… و {len(crit)-3} مورد دیگر")
+            detail = "\n".join(lines) if lines else ""
+            text = f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی"
+            if detail:
+                text += "\n" + detail
+            text += "\n\n📊 مغایرت‌گیری: /subscriptions?tab=reconcile  |  👛 کیف پول‌ها: /subscriptions?tab=wallets"
+            text += "\n🔕 بستن هشدار تا ۲۴ساعته: /api/web-admin/attention/dismiss  یا از داشبورد «نیازمند اقدام» ببندید"
+            await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': text, 'sent': False, 'created_at': _utc_iso()})
+            # ذخیره برای dedup بعدی
+            try:
+                await db.set_setting("wallet_alert_last_at", _utc_iso())
+                await db.set_setting("wallet_alert_last_hash", cur_hash)
+            except Exception:
+                pass
+        except Exception as ie:
+            logger.warning(f"wallet reconcile notify failed: {ie}")
+            try:
+                await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی", 'sent': False, 'created_at': _utc_iso()})
+            except: pass
     except Exception as e:
         logger.warning(f"wallet_reconcile_job error: {e}")
 

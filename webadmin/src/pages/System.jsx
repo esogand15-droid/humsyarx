@@ -228,6 +228,7 @@ export default function System({ me, route = '' }) {
         </div>
       )}
 
+      {canObserve && <WalletAlertPanel />}
       {canObserve && <SecuritySessionsPanel data={sessions} onReload={load} />}
 
       {/* ── ⏰ بکاپ خودکار روزانه (داده واقعی settings؛ PATCH دارای audit) ── */}
@@ -355,6 +356,35 @@ function SecuritySessionsPanel({ data, onReload }) {
       <label className="fld" style={{ marginTop: 10 }}><span>دلیل لغو</span>
         <input className="inp" maxLength={300} value={reason} onChange={e => setReason(e.target.value)} placeholder="مثلاً دستگاه ناشناس یا پایان همکاری" disabled={busy} /></label>
     </Confirm>}
+  </section>;
+}
+
+function WalletAlertPanel() {
+  const [cfg,setCfg]=React.useState(null);
+  const [err,setErr]=React.useState('');
+  const [busy,setBusy]=React.useState(false);
+  const load=async()=>{ setErr(''); try{ const r=await api.walletAlerts(); setCfg(r); }catch(e){ setErr(errText(e)); } };
+  React.useEffect(()=>{ load(); },[]);
+  const toggleEnabled=async(v)=>{ setBusy(true); try{ await api.walletAlertsPatch({enabled:v}); await load(); toast(v?'هشدار کیف پول فعال شد':'هشدار کیف پول غیرفعال شد'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const setCooldown=async(h)=>{ setBusy(true); try{ await api.walletAlertsPatch({cooldown_hours:Number(h)}); await load(); toast('بازه ضداسپم ذخیره شد ✅'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const mute24=async()=>{ const until=new Date(Date.now()+24*3600*1000).toISOString(); setBusy(true); try{ await api.walletAlertsPatch({muted_until:until}); await load(); toast('تا ۲۴ ساعت بی‌صدا شد 🔕'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const unmute=async()=>{ setBusy(true); try{ await api.walletAlertsPatch({muted_until:''}); await load(); toast('بی‌صدا لغو شد'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const dismissWallet=async()=>{ const reason=prompt('دلیل بستن هشدار کیف پول؟ (حداقل ۳ حرف)'); if(!reason||reason.trim().length<3) return; const h=prompt('بازه بستن به ساعت (24/72/168 یا 0 برای دائم)','24'); const hours=Number(h||24); try{ await api.attentionDismiss('wallet_issues', reason.trim(), hours); toast('هشدار کیف پول در «نیازمند اقدام» بسته شد ✅'); await load(); }catch(e){ toast(errText(e),'err'); } };
+  const restoreWallet=async()=>{ try{ await api.attentionRestore('wallet_issues'); toast('بازگردانی شد ✅'); await load(); }catch(e){ toast(errText(e),'err'); } };
+  if(err) return <div className="panel panel-pad" style={{marginTop:14}}><ErrorState error={err} onRetry={load} /></div>;
+  if(!cfg) return <div className="panel panel-pad" style={{marginTop:14}}><Loading rows={2} /></div>;
+  const isMuted = cfg.muted_until && new Date(cfg.muted_until) > new Date();
+  const isDismissed = cfg.dismiss?.active;
+  return <section className="panel panel-pad" style={{marginTop:14}}>
+    <div className="row"><div><b>👛 هشدار مغایرت کیف پول — ضداسپم</b><div className="muted">هشدار تکراری «1 مورد بحرانی» حالا با جزئیات، cooldown و قابلیت بستن. بستن در داشبورد = بی‌صداشدن ربات.</div></div><span className="spacer"/><B kind={cfg.enabled?'ok':'bad'}>{cfg.enabled?'فعال':'غیرفعال'}</B>{isMuted && <B kind="warn">بی‌صدا تا <FaDateTime value={cfg.muted_until}/></B>}{isDismissed && <B kind="acc">بسته‌شده {cfg.dismiss.until ? <>تا <FaDateTime value={cfg.dismiss.until}/></> : 'دائم'}</B>}</div>
+    <div className="row" style={{marginTop:10,flexWrap:'wrap',gap:8}}>
+      <label className="row" style={{gap:6}}><Switch on={!!cfg.enabled} disabled={busy} onChange={toggleEnabled}/> هشدار فعال</label>
+      <span className="muted">بازه ضداسپم (تکرار یکسان):</span>
+      <select className="inp" style={{maxWidth:110}} disabled={busy} value={cfg.cooldown_hours} onChange={e=>setCooldown(e.target.value)}>{[1,2,3,6,12,24].map(h=><option key={h} value={h}>{h} ساعت</option>)}</select>
+      {!isMuted ? <button className="btn sm" disabled={busy} onClick={mute24}>🔕 ۲۴ساعت بی‌صدا</button> : <button className="btn sm" disabled={busy} onClick={unmute}>🔔 لغو بی‌صدا</button>}
+      {!isDismissed ? <button className="btn sm" disabled={busy} onClick={dismissWallet}>🔕 بستن هشدار «نیازمند اقدام»</button> : <button className="btn sm" disabled={busy} onClick={restoreWallet}>↩️ بازکردن</button>}
+    </div>
+    <div className="muted" style={{marginTop:8}}>متن جدید ربات شامل جزئیات (نام کاربر، نوع مغایرت، مبلغ) + لینک /subscriptions?tab=reconcile است و فقط وقتی هشدار جدید/متفاوت باشد و cooldown گذشته باشد ارسال می‌شود. بستن از داشبورد (🔕 بستن) همان dismissal را می‌بندد و ربات تا پایان بازه دیگر پیام نمی‌دهد.</div>
   </section>;
 }
 

@@ -209,6 +209,7 @@ async def _admin_menu(query_or_msg, edit: bool = True, uid: int = None):
             f"📊 آمار سیستم  ({s['users']} کاربر | {s.get('open_tickets', 0)} تیکت باز)",
             callback_data='admin:stats'
         )],
+        [InlineKeyboardButton("⚠️ نیازمند اقدام (بستن هشدار)", callback_data='admin:attention')],
         [InlineKeyboardButton("🧠 مرکز هوش ربات (هشدار و پیش‌بینی)", callback_data='admin:insights')],
         [
             InlineKeyboardButton("👥 کاربران و دسترسی‌ها", callback_data='admin:cat_users'),
@@ -331,6 +332,147 @@ async def _show_cat_settings(query, uid: int = None):
     await query.edit_message_text(
         "⚙️ <b>تنظیمات و سیستم</b>\n━━━━━━━━━━━━━━━━",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+
+# 🌊 W7 — نیازمند اقدام در ربات: بستن/بازکردن هشدار با دلیل + مدیریت اسپم کیف پول
+async def _show_attention(query, uid: int):
+    from time_utils import utc_now_iso, now_utc, parse_machine_datetime
+    from datetime import timedelta
+    try:
+        is_owner = uid == ADMIN_ID
+        perms = await db.get_user_perms(uid) if not is_owner else set()
+        items = []
+        try:
+            if is_owner or any(k in perms for k in ('subscription.manage',)):
+                witems = await db.wallet_reconcile_items()
+                wcrit = [x for x in witems if x.get('severity')=='critical']
+                items.append({'key':'wallet_issues','icon':'👛','label':'مغایرت مالی کیف پول','count':len(wcrit),'severity':'critical' if wcrit else 'info','urgent':bool(wcrit)})
+        except Exception: pass
+        try:
+            c = await db.users.count_documents({'approved': False, 'suspended': {'$ne': True}})
+            if c: items.append({'key':'users','icon':'🧑‍🎓','label':'کاربر در انتظار تأیید','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            c = await db.sub_payment_count_all('pending')
+            if c: items.append({'key':'payments','icon':'🧾','label':'رسید پرداخت در انتظار','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            c = await db.tickets.count_documents({'status':'open'})
+            if c: items.append({'key':'tickets','icon':'🎫','label':'تیکت بدون پاسخ','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            from api.routers.web_admin import _quality_summary
+            qs = await _quality_summary()
+            if qs['count']: items.append({'key':'data_quality','icon':'🧬','label':'ناهنجاری کیفیت داده','count':qs['count'],'severity':'critical' if qs['critical'] else 'warning','urgent':True})
+        except: pass
+        try:
+            runs = await db.get_recent_notif_runs(limit=20)
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            failed = []
+            for r in runs:
+                if int(r.get('failed') or 0)<=0: continue
+                try:
+                    from time_utils import parse_machine_datetime as _pm
+                    if _pm(r.get('started_at') or r.get('created_at')) >= cutoff:
+                        failed.append(r)
+                except: failed.append(r)
+            if failed: items.append({'key':'failed_jobs','icon':'⚙️','label':'اجرای اعلان دارای خطا','count':len(failed),'severity':'critical','urgent':True})
+        except: pass
+        try:
+            dcol = db.client["medicalbot"]["attention_dismissals"]
+            ddocs = await dcol.find({}).to_list(100)
+            from time_utils import now_utc as _nu, parse_machine_datetime as _pm2
+            now = _nu()
+            dmap = {}
+            for d in ddocs:
+                u = d.get('dismissed_until')
+                if u:
+                    try:
+                        if _pm2(u) < now: continue
+                    except: pass
+                dmap[d.get('key')] = d
+        except Exception:
+            dmap = {}
+        active = [x for x in items if x['key'] not in dmap]
+        dismissed = [x for x in items if x['key'] in dmap]
+        for k, d in list(dmap.items()):
+            if k not in [x['key'] for x in items]:
+                dismissed.append({'key':k,'icon':'🔕','label':k,'count':0,'severity':'info','urgent':False,'dismissed':True,'reason':d.get('reason')})
+        try:
+            wallet_enabled = await db.get_setting('wallet_alert_enabled', True)
+            if wallet_enabled is None: wallet_enabled = True
+            wallet_cooldown = await db.get_setting('wallet_alert_cooldown_hours', 6)
+            if wallet_cooldown is None: wallet_cooldown = 6
+            wallet_muted = await db.get_setting('wallet_alert_muted_until', None)
+        except: wallet_enabled, wallet_cooldown, wallet_muted = True, 6, None
+        text_lines = ["⚠️ <b>نیازمند اقدام</b>", "━━━━━━━━━━━━━━━━", ""]
+        if not active and not dismissed:
+            text_lines.append("✅ هیچ مورد فعالی نیست — همه صف‌ها خالی‌اند 🎉")
+        if active:
+            text_lines.append(f"<b>فعال ({len(active)}):</b>")
+            for it in active:
+                text_lines.append(f"{it['icon']} {it['label']}: <b>{it['count']}</b> — {it['key']}")
+            text_lines.append("")
+        if dismissed:
+            text_lines.append(f"<b>بسته‌شده ({len(dismissed)}):</b>")
+            for it in dismissed:
+                d = dmap.get(it['key'], {})
+                until = d.get('dismissed_until') or 'دائم'
+                text_lines.append(f"🔕 {it['key']}: {d.get('reason','—')} (تا {until})")
+            text_lines.append("")
+        text_lines.append(f"👛 هشدار کیف پول: {'فعال' if wallet_enabled else 'غیرفعال'} | ضداسپم {wallet_cooldown}ساعت" + (f" | بی‌صدا تا {wallet_muted}" if wallet_muted else ""))
+        text = "\n".join(text_lines)
+        kb = []
+        for it in active:
+            kb.append([InlineKeyboardButton(f"🔕 بستن «{it['label']}» ۲۴ساعته", callback_data=f"admin:att_dis:{it['key']}:24"), InlineKeyboardButton(f"۷۲ساعت", callback_data=f"admin:att_dis:{it['key']}:72")])
+            kb[-1].append(InlineKeyboardButton("دائم", callback_data=f"admin:att_dis:{it['key']}:0"))
+        for it in dismissed:
+            kb.append([InlineKeyboardButton(f"↩️ بازکردن «{it['key']}»", callback_data=f"admin:att_res:{it['key']}")])
+        kb.append([InlineKeyboardButton("👛 هشدار کیف پول: " + ("غیرفعال کن" if wallet_enabled else "فعال کن"), callback_data="admin:att_wallet_toggle")])
+        if wallet_muted:
+            kb.append([InlineKeyboardButton("🔔 لغو بی‌صدا", callback_data="admin:att_wallet_unmute")])
+        else:
+            kb.append([InlineKeyboardButton("🔕 بی‌صدا ۲۴ساعت", callback_data="admin:att_wallet_mute24")])
+        kb.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:main')])
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        await query.edit_message_text(f"خطا در نمایش نیازمند اقدام: {e}", parse_mode='HTML')
+
+async def _attention_dismiss_bot(query, uid, key, hours, context):
+    from time_utils import now_utc, utc_now_iso
+    from datetime import timedelta
+    allowed_keys = {"users","payments","questions","tickets","reports","failed_jobs","outbox_backlog","outbox_scheduled","dlq","imports","data_quality","wallet_issues","backup_issue"}
+    if key not in allowed_keys:
+        await query.answer("کلید نامعتبر", show_alert=True); return
+    until = None
+    if hours and hours>0:
+        until = (now_utc() + timedelta(hours=hours)).isoformat()
+    reason = "بسته شد از ربات تلگرام (بررسی ادمین)"
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    await dcol.update_one({"key": key}, {"$set": {"key": key, "reason": reason, "dismissed_at": utc_now_iso(), "dismissed_until": until, "dismissed_by": uid}}, upsert=True)
+    try:
+        u = await db.get_user(uid)
+        await db.log_action(uid, (u or {}).get("name", str(uid)), await db.get_actor_role_label(uid), f"بستن هشدار نیازمند اقدام: {key}", "BotAdmin", category="admin", severity="WARNING", target_id=key, target_type="attention", target_label=reason[:80])
+    except: pass
+    await query.answer(f"🔕 {key} بسته شد ({'دائم' if not until else f'{hours} ساعت'})", show_alert=True)
+    await _show_attention(query, uid)
+
+async def _attention_restore_bot(query, uid, key, context):
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    res = await dcol.delete_one({"key": key})
+    if not res.deleted_count:
+        await query.answer("این هشدار بسته نشده", show_alert=True); return
+    try:
+        u = await db.get_user(uid)
+        await db.log_action(uid, (u or {}).get("name", str(uid)), await db.get_actor_role_label(uid), f"بازکردن هشدار نیازمند اقدام: {key}", "BotAdmin", category="admin", severity="INFO", target_id=key, target_type="attention")
+    except: pass
+    await query.answer(f"↩️ {key} باز شد", show_alert=True)
+    await _show_attention(query, uid)
+
 
 
 async def show_admin_main(message, uid: int = None):
@@ -534,6 +676,40 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'insights':
         await _show_admin_insights(query)
+
+    elif action == 'attention':
+        await _show_attention(query, uid)
+    elif action == 'att_dis':
+        # admin:att_dis:<key>:<hours>
+        try:
+            _k = parts[2] if len(parts)>2 else ""
+            _h = int(parts[3]) if len(parts)>3 else 24
+            await _attention_dismiss_bot(query, uid, _k, _h, context)
+        except Exception as e:
+            await query.answer(f"خطا: {e}", show_alert=True)
+    elif action == 'att_res':
+        try:
+            _k = parts[2] if len(parts)>2 else ""
+            await _attention_restore_bot(query, uid, _k, context)
+        except Exception as e:
+            await query.answer(f"خطا: {e}", show_alert=True)
+    elif action == 'att_wallet_toggle':
+        cur = await db.get_setting('wallet_alert_enabled', True)
+        if cur is None: cur = True
+        await db.set_setting('wallet_alert_enabled', not cur)
+        await query.answer(f"هشدار کیف پول {'غیرفعال' if cur else 'فعال'} شد", show_alert=True)
+        await _show_attention(query, uid)
+    elif action == 'att_wallet_mute24':
+        from time_utils import now_utc
+        from datetime import timedelta
+        until = (now_utc() + timedelta(hours=24)).isoformat()
+        await db.set_setting('wallet_alert_muted_until', until)
+        await query.answer("۲۴ ساعت بی‌صدا شد 🔕", show_alert=True)
+        await _show_attention(query, uid)
+    elif action == 'att_wallet_unmute':
+        await db.set_setting('wallet_alert_muted_until', None)
+        await query.answer("بی‌صدا لغو شد 🔔", show_alert=True)
+        await _show_attention(query, uid)
 
     # ══════════════════════════════════════════════
     # 🗂 منوهای دسته‌بندی‌شده پنل ادمین (لایه ناوبری جدید)

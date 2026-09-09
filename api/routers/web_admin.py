@@ -1235,7 +1235,131 @@ async def attention(user=Depends(_guard_any_admin)):
                           "label": "پشتیبان‌گیری نیازمند بررسی است", "count": 1,
                           "go": "/system", "severity": "critical",
                           "timestamp": last_run or checked_at, "urgent": True})
+    # 🌊 W7 — dismissed items: هشدار نادرست / اسپم را ادمین با دلیل می‌بندد
+    try:
+        dcol = db.client["medicalbot"]["attention_dismissals"]
+        ddocs = await dcol.find({}).to_list(100)
+        now = now_utc()
+        dmap = {}
+        for d in ddocs:
+            until = d.get("dismissed_until")
+            if until:
+                try:
+                    if parse_machine_datetime(until) < now:
+                        continue
+                except Exception:
+                    pass
+            kk = d.get("key") or ""
+            if kk:
+                dmap[kk] = d
+        for it in items:
+            dd = dmap.get(it["key"])
+            if dd:
+                it["dismissed"] = True
+                it["dismiss_reason"] = dd.get("reason", "")
+                it["dismissed_at"] = dd.get("dismissed_at")
+                it["dismissed_until"] = dd.get("dismissed_until")
+                it["dismissed_by"] = dd.get("dismissed_by")
+                it["urgent"] = False
+                # خاکستری‌کردن: severity فقط برای رنگ؛ dismissed باید info باشد
+                if it.get("severity") in ("critical", "warning"):
+                    it["_orig_severity"] = it["severity"]
+                    it["severity"] = "info"
+            else:
+                it["dismissed"] = False
+    except Exception as e:
+        logger.warning(f"attention dismiss enrich failed: {e}")
+        for it in items:
+            it.setdefault("dismissed", False)
     return {"items": items, "backup": backup, "checked_at": checked_at}
+
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 W7 — «نیازمند اقدام» قابل‌بستن + مدیریت اسپم کیف پول
+# هر کارت می‌تواند با دلیل و بازه (۲۴/۷۲/۱۶۸h یا دائم) بسته شود؛
+# تا پایان بازه urgent=False و grey-out می‌شود و در bot اسپم نمی‌کند.
+# ══════════════════════════════════════════════════════════════════
+
+class AttentionDismissBody(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., min_length=3, max_length=300)
+    dismiss_hours: int = Field(24, ge=0, le=720, description="0=دائم")
+
+class AttentionRestoreBody(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+
+@router.get("/attention/dismissals")
+async def attention_dismissals(user=Depends(_guard_any_admin)):
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    docs = await dcol.find({}).to_list(100)
+    return {"items": [{"key": d.get("key"), "reason": d.get("reason"), "dismissed_at": d.get("dismissed_at"), "dismissed_until": d.get("dismissed_until"), "dismissed_by": d.get("dismissed_by")} for d in docs]}
+
+@router.post("/attention/dismiss")
+async def attention_dismiss(body: AttentionDismissBody, user=Depends(_guard_any_admin)):
+    key = body.key.strip()
+    reason = body.reason.strip()
+    # اعتبارسنجی کلید: باید جزو کلیدهای attention باشد (جلوگیری از کلید فیک)
+    allowed_keys = {"users","payments","questions","tickets","reports","failed_jobs","outbox_backlog","outbox_scheduled","dlq","imports","data_quality","wallet_issues","backup_issue"}
+    if key not in allowed_keys:
+        raise HTTPException(422, "کلید نیازمند اقدام نامعتبر است")
+    until = None
+    if body.dismiss_hours and body.dismiss_hours > 0:
+        until = (now_utc() + timedelta(hours=body.dismiss_hours)).isoformat()
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    await dcol.update_one({"key": key}, {"$set": {"key": key, "reason": reason, "dismissed_at": _now(), "dismissed_until": until, "dismissed_by": user["id"], "dismissed_by_name": (user.get("_db") or {}).get("name","")}}, upsert=True)
+    await _audit(user["id"], f"بستن هشدار نیازمند اقدام: {key}", severity="WARNING", target_type="attention", target_id=key, target_label=reason[:80], after={"key": key, "reason": reason, "until": until}, tags=["نیازمند_اقدام","بستن_هشدار","پنل_وب"])
+    return {"ok": True, "key": key, "dismissed_until": until}
+
+@router.post("/attention/restore")
+async def attention_restore(body: AttentionRestoreBody, user=Depends(_guard_any_admin)):
+    key = body.key.strip()
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    res = await dcol.delete_one({"key": key})
+    if not res.deleted_count:
+        raise HTTPException(404, "این هشدار بسته نشده است")
+    await _audit(user["id"], f"بازکردن هشدار نیازمند اقدام: {key}", severity="INFO", target_type="attention", target_id=key, tags=["نیازمند_اقدام","بازکردن_هشدار","پنل_وب"])
+    return {"ok": True, "key": key}
+
+class WalletAlertSettingsBody(BaseModel):
+    enabled: Optional[bool] = None
+    cooldown_hours: Optional[int] = Field(None, ge=1, le=168)
+    muted_until: Optional[str] = None
+
+@router.get("/system/wallet-alerts")
+async def wallet_alert_settings_get(user=Depends(_guard_any_admin)):
+    enabled = await db.get_setting("wallet_alert_enabled", None)
+    if enabled is None:
+        enabled = True
+    cooldown = await db.get_setting("wallet_alert_cooldown_hours", None)
+    if cooldown is None:
+        cooldown = 6
+    muted = await db.get_setting("wallet_alert_muted_until", None)
+    # همچنین وضعیت dismiss فعلی wallet_issues برای نمایش یکپارچه
+    ddoc = await db.client["medicalbot"]["attention_dismissals"].find_one({"key": "wallet_issues"})
+    return {"enabled": bool(enabled), "cooldown_hours": int(cooldown), "muted_until": muted, "dismiss": {"active": bool(ddoc and (not ddoc.get("dismissed_until") or ddoc.get("dismissed_until") > _now())), "reason": (ddoc or {}).get("reason"), "until": (ddoc or {}).get("dismissed_until")}}
+
+@router.patch("/system/wallet-alerts")
+async def wallet_alert_settings_patch(body: WalletAlertSettingsBody, user=Depends(_perm("system.manage"))):
+    before = {}
+    if body.enabled is not None:
+        before["enabled"] = await db.get_setting("wallet_alert_enabled", True)
+        await db.set_setting("wallet_alert_enabled", bool(body.enabled))
+    if body.cooldown_hours is not None:
+        before["cooldown_hours"] = await db.get_setting("wallet_alert_cooldown_hours", 6)
+        await db.set_setting("wallet_alert_cooldown_hours", int(body.cooldown_hours))
+    if body.muted_until is not None:
+        before["muted_until"] = await db.get_setting("wallet_alert_muted_until", None)
+        val = body.muted_until.strip() or None
+        # اعتبارسنجی ISO اگر داده شد
+        if val:
+            try:
+                parse_machine_datetime(val)
+            except Exception:
+                raise HTTPException(422, "زمان mute معتبر نیست")
+        await db.set_setting("wallet_alert_muted_until", val)
+    await _audit(user["id"], "تنظیم هشدار مغایرت کیف پول", severity="WARNING", target_type="wallet_alert", after=body.model_dump(exclude_none=True), before=before, tags=["کیف_پول","هشدار","پنل_وب"])
+    return await wallet_alert_settings_get(user=user)
 
 
 @router.get("/activity")

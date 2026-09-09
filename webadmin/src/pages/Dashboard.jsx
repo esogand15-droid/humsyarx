@@ -138,7 +138,9 @@ export default function Dashboard({ me, go }) {
     { icon: '🚩', label: 'گزارش‌های باز', v: ov.open_reports, tint: 'var(--warn)', go: '/content?tab=reports' },
   ].filter(card => card.v !== null && card.v !== undefined);
   const attnItems = (attn?.items || []).filter(i => i.count > 0);
-  const healthOk = attnItems.filter(i=>i.severity==='critical').length === 0;
+  const activeAttn = attnItems.filter(i => !i.dismissed);
+  const dismissedAttn = attnItems.filter(i => i.dismissed);
+  const healthOk = activeAttn.filter(i=>i.severity==='critical').length === 0;
   const weekVals = (ins?.week_counts || []).slice().reverse(); // oldest->newest for sparkline
   return (
     <>
@@ -191,7 +193,7 @@ export default function Dashboard({ me, go }) {
 
       {/* ⚠️ WA2.7 — نیازمند اقدام (کلیک → مستقیم به همان صف) */}
       {attn && won('attn') && (
-        <div className={`panel panel-pad ${attnItems.length ? 'panel--attention' : 'panel--clear'}`} style={{ marginBottom: 14 }}>
+        <div className={`panel panel-pad ${activeAttn.length ? 'panel--attention' : 'panel--clear'}`} style={{ marginBottom: 14 }}>
           <div className="row">
             <b>⚠️ نیازمند اقدام</b>
             <span className="spacer" />
@@ -214,29 +216,43 @@ export default function Dashboard({ me, go }) {
                   ['⚙️ سیستم', ['failed_jobs', 'outbox_backlog', 'outbox_scheduled', 'dlq', 'backup_issue']],
                 ];
                 const inGroup = new Set(GROUPS.flatMap(([, ks]) => ks));
-                const rest = attnItems.filter(i => !inGroup.has(i.key));
-                const groups = GROUPS.map(([title, ks]) => [title, attnItems.filter(i => ks.includes(i.key))])
+                const rest = activeAttn.filter(i => !inGroup.has(i.key));
+                const groups = GROUPS.map(([title, ks]) => [title, activeAttn.filter(i => ks.includes(i.key))])
                   .filter(([, items]) => items.length);
                 if (rest.length) groups.push(['📌 سایر', rest]);
-                return groups.map(([title, items]) => (
+                // 🌊 W7 — dismiss control per item
+                const DismissBtn = ({it}) => {
+                  const [busy,setBusy]=React.useState(false);
+                  const [show,setShow]=React.useState(false);
+                  const [reason,setReason]=React.useState('');
+                  const [hours,setHours]=React.useState(24);
+                  const doDismiss = async()=>{ if(!reason.trim()||reason.trim().length<3) return toast('دلیل حداقل ۳ حرف','err'); setBusy(true); try{ await api.attentionDismiss(it.key, reason.trim(), Number(hours)); toast('هشدار بسته شد ✅'); const b=await api.dashboardBundle(); setAttn(b.attention); setShow(false); setReason(''); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+                  return <>{!it.dismissed ? <div style={{display:'flex',gap:6,marginTop:6}}><button className="btn sm" title="بستن هشدار (با دلیل)" onClick={e=>{e.stopPropagation(); setShow(v=>!v);}} disabled={busy}>🔕 بستن</button>{show && <span className="panel panel-pad" style={{position:'absolute',zIndex:5,background:'var(--bg)',border:'1px solid var(--line)',padding:8,display:'flex',flexDirection:'column',gap:6,minWidth:220}} onClick={e=>e.stopPropagation()}><input className="inp" placeholder="دلیل بستن (مثلاً بررسی شد، هشدار نادرست)" value={reason} onChange={e=>setReason(e.target.value)} /><select className="inp" value={hours} onChange={e=>setHours(e.target.value)}><option value={24}>۲۴ ساعت</option><option value={72}>۷۲ ساعت</option><option value={168}>۱ هفته</option><option value={0}>دائم</option></select><div className="row" style={{gap:6}}><button className="btn primary sm" onClick={doDismiss} disabled={busy}>تأیید بستن</button><button className="btn sm" onClick={()=>setShow(false)}>لغو</button></div></span>}</div> : null}</>;
+                };
+                return <>{groups.map(([title, items]) => (
                   <div key={title} className="attn-group">
                     <div className="attn-group-title">{title}</div>
                     <div className="attn-grid">
                       {items.map(i => (
-                        <button type="button" key={i.key} className={`attn-item ${i.severity || ''}`} onClick={() => i.go && go(i.go)}>
+                        <div key={i.key} className={`attn-item ${i.severity || ''}`} style={{position:'relative', display:'flex', alignItems:'center', gap:8, padding:10, borderRadius:8, background:'var(--card)', cursor:'pointer'}} onClick={() => i.go && go(i.go)}>
                           <span style={{ fontSize: 'var(--fs-icon)' }}>{i.icon}</span>
-                          <div style={{ flex: 1 }}>
+                          <div style={{ flex: 1 }} onClick={() => i.go && go(i.go)}>
                             <div className="row"><b style={{ color: 'var(--txt)', fontSize: 'var(--fs-section)' }}>{Number(i.count).toLocaleString('fa')}</b>
                               {i.severity && <B kind={i.severity === 'critical' ? 'bad' : 'warn'}>{i.severity === 'critical' ? 'بحرانی' : 'هشدار'}</B>}</div>
                             <div className="muted">{i.label}</div>
                             {i.timestamp && <div className="muted" style={{ marginTop: 3 }}><FaDateTime value={i.timestamp} /></div>}
                           </div>
+                          <DismissBtn it={i} />
                           <span className="muted">‹</span>
-                        </button>
+                        </div>
                       ))}
                     </div>
                   </div>
-                ));
+                ))}
+                {dismissedAttn.length>0 && <div className="panel panel-pad" style={{marginTop:12, background:'color-mix(in srgb, var(--bg) 90%, var(--line))'}}><b>🔕 هشدارهای بسته‌شده ({dismissedAttn.length})</b><div className="muted" style={{marginTop:4}}>این موارد تا پایان بازه به‌عنوان خطا شمرده نمی‌شوند و اعلان کیف پول هم اسپم نمی‌کند. می‌توانی بازگردانی.</div><div className="grid" style={{marginTop:8, gap:8}}>{dismissedAttn.map(i=>{const RestoreBtn=()=>{const [b,setB]=React.useState(false); return <button className="btn sm" disabled={b} onClick={async e=>{e.stopPropagation(); setB(true); try{ await api.attentionRestore(i.key); toast('بازگردانی شد ✅'); const bb=await api.dashboardBundle(); setAttn(bb.attention);}catch(err){ toast(errText(err),'err'); } setB(false);}}>↩️ بازگردانی</button>;}; return <div key={i.key} className="row" style={{gap:8, background:'var(--card)', padding:8, borderRadius:8}}><span>{i.icon}</span><b>{i.label}</b><span className="muted">{i.dismiss_reason || '—'}</span><span className="spacer"/><B kind="acc">بسته‌شده</B>{i.dismissed_until ? <span className="muted" style={{fontSize:'var(--fs-caption)'}}>تا <FaDateTime value={i.dismissed_until}/></span> : <span className="muted">دائم</span>}<RestoreBtn/></div>;})}</div></div>}
+                {activeAttn.length===0 && dismissedAttn.length>0 && <div className="muted" style={{marginTop:8, textAlign:'center'}}>همهٔ هشدارهای فعال بسته شده‌اند — داشبورد در حالت آرام 🎉</div>}
+                {activeAttn.length===0 && dismissedAttn.length===0 && groups.length===0 && <div className="muted">موردی نیست</div>}
+                </>;
               })()}
             </div>
           )}

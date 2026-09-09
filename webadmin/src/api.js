@@ -1218,6 +1218,12 @@ export const api = {
   ringAuditList: (limit = 60) => req(`/api/ring/audit?limit=${limit}`),
   ringReconcile: () =>
     req("/api/ring/maintenance/reconcile", { method: "POST" }),
+  // 🌊 W7 — نیازمند اقدام قابل‌بستن + مدیریت اسپم کیف پول
+  attentionDismiss: (key, reason, dismiss_hours=24) => req("/api/web-admin/attention/dismiss", { method: "POST", body: { key, reason, dismiss_hours } }),
+  attentionRestore: (key) => req("/api/web-admin/attention/restore", { method: "POST", body: { key } }),
+  attentionDismissals: () => req("/api/web-admin/attention/dismissals"),
+  walletAlerts: () => req("/api/web-admin/system/wallet-alerts"),
+  walletAlertsPatch: (body) => req("/api/web-admin/system/wallet-alerts", { method: "PATCH", body }),
   // 💳 W6 — Zarinpal Gateway (DB-backed, no restart)
   gatewayZarinpal: () => req("/api/admin/gateway/zarinpal"),
   gatewayZarinpalUpdate: (body) => req("/api/admin/gateway/zarinpal", { method: "PUT", body }),
