@@ -7004,6 +7004,51 @@ async def wa_schedule_templates_delete(
 ):
     return await academic_api.schedule_templates_clear(group=group, admin=user)
 
+
+@router.delete("/schedule/templates/clear")
+async def wa_schedule_templates_clear_alias(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    """Alias قدیمی برای سازگاری با کش فرانت — همان پاک‌سازی الگو."""
+    return await academic_api.schedule_templates_clear(group=group, admin=user)
+
+
+@router.delete("/schedule")
+async def wa_schedule_bulk_delete(
+    group: Optional[str] = Query(None),
+    stype: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    """پاک‌سازی گروهی برنامه‌های تولیدشده (schedules) — برای «پاکسازی این گروه» یکپارچه.
+
+    بدون پارامتر ⇒ همه‌ی برنامه‌ها پاک می‌شود (با تأیید فرانت).
+    group با normalize + aliasهای legacy، stype اختیاری (class/exam/makeup).
+    هیچ‌وقت 404 نمی‌دهد؛ حتی اگر چیزی برای حذف نبود deleted=0 برمی‌گردد.
+    """
+    q: dict = {}
+    if group is not None and str(group).strip() != "":
+        norm = db.normalize_group(group)
+        # برای 1 و 2 تمام aliasها را پاک کن تا legacy نماند
+        if norm in ("1", "2"):
+            q["group"] = {"$in": db.group_aliases(norm)}
+        else:
+            q["group"] = norm
+    if stype:
+        if stype not in ("class", "exam", "makeup"):
+            raise HTTPException(400, "stype نامعتبر است")
+        q["type"] = stype
+    r = await db.schedules.delete_many(q)
+    n = int(getattr(r, "deleted_count", 0) or 0)
+    try:
+        await _audit(user["id"], f"پاک‌سازی گروهی برنامه‌ها ({n} مورد)", "Schedules", severity="WARNING",
+                     target_type="schedule", target_label=str(group or "همه"),
+                     after={"deleted": n, "group": group, "stype": stype},
+                     tags=["برنامه", "پاکسازی_گروهی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "deleted": n}
+
 @router.post("/schedule/templates/generate")
 async def wa_schedule_templates_generate(
     body: academic_api.TemplateGenerate,
