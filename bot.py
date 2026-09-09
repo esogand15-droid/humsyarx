@@ -68,6 +68,39 @@ from grades import grades_callback
 from profile import profile_callback
 from message_router import route_message
 from basic_science import basic_science_callback
+
+# 🌊 W5 — Flood-Control per-user (in-memory token bucket)
+import collections as _coll
+_FLOOD_WINDOW = 5  # seconds
+_FLOOD_LIMIT = 5  # msgs per window
+_FLOOD_BLOCK = 30  # seconds block
+_FLOOD_HIST: dict[int, _coll.deque] = {}
+_FLOOD_BLOCKED: dict[int, float] = {}
+def _check_flood(uid: int) -> tuple[bool, int]:
+    now = time.time()
+    blocked_until = _FLOOD_BLOCKED.get(uid, 0)
+    if now < blocked_until:
+        return True, int(blocked_until - now)
+    dq = _FLOOD_HIST.get(uid)
+    if dq is None:
+        dq = _coll.deque()
+        _FLOOD_HIST[uid] = dq
+    # prune
+    while dq and now - dq[0] > _FLOOD_WINDOW:
+        dq.popleft()
+    dq.append(now)
+    if len(dq) > _FLOOD_LIMIT:
+        _FLOOD_BLOCKED[uid] = now + _FLOOD_BLOCK
+        # keep only last
+        dq.clear()
+        return True, _FLOOD_BLOCK
+    # also 30 per minute guard
+    if len(dq) > 30:
+        # check 60s window approximate
+        pass
+    return False, 0
+_FLOOD_WARNED: dict[int, float] = {}
+
 from resources import resources_callback
 from references import references_callback
 from content_admin import content_admin_callback, ca_file_handler, ca_text_handler
@@ -209,14 +242,17 @@ async def daily_question_job(context: ContextTypes.DEFAULT_TYPE):
         )
         users = await db.notif_users('daily_question')
         await db.notif_run_set_message(run_id, text)
-        _qkb = webapp_kb('/learn/questions')
-        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به بانک سؤال)
+        # 🌊 W5 — Deep-Link به همان سؤال (qid)
+        _qid = str(q.get('_id') or q.get('id') or '')
+        _deep = f"/learn/questions?hl={_qid}" if _qid else '/learn/questions'
+        _qkb = webapp_kb(_deep)
+        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به همان سؤال)
         await db.inbox_add_many([
             {'user_id': u['user_id'], 'type': 'daily_question',
              'title': '🧪 سؤال روزانه رسید',
              'body': (f"📚 {q.get('lesson', '')} — {q.get('topic', '')}\n"
                       f"❓ {q.get('question', '')[:140]}"),
-             'link': '/learn/questions'}
+             'link': _deep}
             for u in users if u.get('user_id')
         ])
         for u in users:
@@ -1188,6 +1224,15 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W5 — Flood-Control برای فایل هم (جلوگیری از اسپم و هزینه)
+    if uid != ADMIN_ID:
+        is_blocked, wait = _check_flood(uid)
+        if is_blocked:
+            try:
+                await update.message.reply_text(f"⏳ لطفاً کمی صبر کنید ({wait}s)")
+            except: pass
+            return
+
 
     # ۰. FIX جدید: اسکرین‌شات رسید پرداخت اشتراک
     if context.user_data.get('sub_mode') == 'awaiting_screenshot' and update.message.photo:
@@ -1490,6 +1535,20 @@ MENU_BUTTON_TEXTS = _menu_button_texts()
 
 async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W5 — Flood-Control: 5 msg/5s → 30s block (admin exempt)
+    if uid != ADMIN_ID:
+        is_blocked, wait = _check_flood(uid)
+        if is_blocked:
+            # warn at most once per block
+            last = _FLOOD_WARNED.get(uid, 0)
+            now = time.time()
+            if now - last > 8:
+                _FLOOD_WARNED[uid] = now
+                try:
+                    await update.message.reply_text(f"⏳ لطفاً کمی صبر کنید ({wait}s) — پیام‌های شما خیلی سریع است.")
+                except: pass
+            return
+
 
     # FIX باگ لغو رول/گزارش/و غیره گیر کردن: اگر کاربر دکمه منو زده
     # و در یکی از modeهای ساده گیر بود، آن mode را پاک کن و رد شو
@@ -1882,6 +1941,44 @@ async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
+    # 🌊 W5 — ثبت دستورات تلگرام (منوی / ) و توضیح کوتاه
+    try:
+        from telegram import BotCommand
+        cmds = [
+            BotCommand("start", "شروع / ثبت‌نام"),
+            BotCommand("help", "راهنما"),
+            BotCommand("cancel", "لغو عملیات"),
+            BotCommand("profile", "پروفایل"),
+            BotCommand("schedule", "برنامه کلاسی"),
+        ]
+        await application.bot.set_my_commands(cmds)
+        try:
+            await application.bot.set_my_short_description("هامشیار — دستیار آموزشی پزشکی")
+            await application.bot.set_my_description("هامشیار: منابع، بانک سوال، برنامه کلاسی و پشتیبانی — همه در یک ربات.")
+            await application.bot.set_chat_menu_button(menu_button=None)
+        except Exception:
+            pass
+        logger.info("✅ دستورات تلگرام ثبت شد")
+    except Exception as e:
+        logger.warning(f"setMyCommands failed: {e}")
+    # 🌊 W5 — Webhook اگر تنظیم شده باشد (Railway: WEBHOOK_URL + WEBHOOK_SECRET)
+    try:
+        wh_url = (os.getenv("WEBHOOK_URL") or os.getenv("BOT_WEBHOOK_URL") or "").strip()
+        wh_secret = (os.getenv("WEBHOOK_SECRET") or os.getenv("BOT_WEBHOOK_SECRET") or "").strip() or None
+        if wh_url:
+            # اگر webhook ست شده، polling conflict می‌دهد — فقط set کن، run_polling در این حالت توسط run_webhook جایگزین می‌شود (پایین)
+            # اینجا فقط اطمینان از ثبت است؛ اگر در حالت polling باشیم، حذف webhook
+            if os.getenv("BOT_WEBHOOK_MODE", "").lower() in ("1","true","webhook"):
+                await application.bot.set_webhook(url=wh_url, secret_token=wh_secret, allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+                logger.info(f"🔗 Webhook ثبت شد: {wh_url}")
+            else:
+                # در حالت polling، webhook باید حذف باشد تا polling کار کند
+                try:
+                    await application.bot.delete_webhook(drop_pending_updates=False)
+                except: pass
+    except Exception as e:
+        logger.warning(f"webhook setup failed: {e}")
+
     # 💓 اولین تپش قلب: همان لحظه که ربات بالا آمد (قبل از هر کار کند)
     # نوشته می‌شود تا /api/health/deep بداند polling شروع شده است.
     from bot_heartbeat import write_heartbeat
@@ -2081,12 +2178,51 @@ def _run_polling_with_retry(build_app):
     شبکه‌ای با backoff retry می‌شوند و اپلیکیشن در هر تلاش بازسازی
     می‌شود. خطای پیکربندی (InvalidToken) هرگز retry نمی‌شود — باید
     همان کرش صریح بماند تا مشکل توکن دیده شود.
+    🌊 W5 — اگر BOT_WEBHOOK_MODE=1 و WEBHOOK_URL ست باشد، به‌جای polling از webhook استفاده می‌شود (پایدارتر روی Railway).
     """
     from telegram.error import TimedOut, NetworkError, RetryAfter
 
     drop_pending = _env_flag('BOT_DROP_PENDING', False)
     if drop_pending:
         logger.warning("⚠️ BOT_DROP_PENDING=1 — updateهای pending در شروع حذف می‌شوند")
+
+    # 🌊 W5 webhook mode check
+    wh_mode = _env_flag('BOT_WEBHOOK_MODE', False) or _env_flag('WEBHOOK_MODE', False)
+    wh_url = (os.getenv('WEBHOOK_URL') or os.getenv('BOT_WEBHOOK_URL') or '').strip()
+    wh_secret = (os.getenv('WEBHOOK_SECRET') or os.getenv('BOT_WEBHOOK_SECRET') or '').strip() or None
+    if wh_mode and wh_url:
+        # در حالت webhook، polling اجرا نمی‌شود — webhook server
+        attempt = 0
+        while True:
+            app = build_app()
+            logger.info("🩺 ربات پزشکی (webhook) شروع به کار کرد... url=%s (تلاش %d)", wh_url, attempt + 1)
+            try:
+                # Railway: پورت داخلی BOT_WEBHOOK_PORT (پیش‌فرض 8001) — باید از WEBHOOK_URL مسیر را جدا کنیم
+                import urllib.parse as _up
+                parsed = _up.urlparse(wh_url)
+                # مسیر webhook: اگر URL شامل path باشد همان، وگرنه /bot-webhook
+                url_path = (parsed.path or '/bot-webhook').lstrip('/') or 'bot-webhook'
+                listen = os.getenv('BOT_WEBHOOK_LISTEN', '0.0.0.0')
+                port = int(os.getenv('BOT_WEBHOOK_PORT') or os.getenv('PORT') or '8001')
+                app.run_webhook(
+                    listen=listen, port=port, url_path=url_path,
+                    webhook_url=wh_url, secret_token=wh_secret,
+                    drop_pending_updates=drop_pending, allowed_updates=Update.ALL_TYPES,
+                )
+                return
+            except (TimedOut, NetworkError, RetryAfter) as e:
+                attempt += 1
+                delay = min(30, 2 ** min(attempt, 4))
+                logger.error("⚠️ webhook startup ناپایدار (%s: %s)؛ retry در %dث", type(e).__name__, e, delay)
+                time.sleep(delay)
+            except Exception as e:
+                # InvalidToken یا خطای پیکربندی نباید retry شود
+                if 'InvalidToken' in type(e).__name__ or 'Unauthorized' in str(e):
+                    raise
+                attempt += 1
+                delay = min(30, 2 ** min(attempt, 4))
+                logger.error("⚠️ webhook error (%s) retry در %dث", e, delay)
+                time.sleep(delay)
 
     attempt = 0
     while True:

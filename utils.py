@@ -412,15 +412,82 @@ def safe_send_status(exc) -> str:
     return 'retry'
 
 
+def _split_smart(text: str, limit: int = 4096) -> list:
+    """🌊 W5 — برش هوشمند پیام طولانی: جدول/كد را وسط نمی‌برد.
+    - ترجيح: برش روی \n\n، سپس \n، سپس فاصله، هرگز وسط code-block یا |…|
+    - هر chunk ≤ limit و با header اگر چندتایی شد
+    """
+    if len(text) <= limit:
+        return [text]
+    # تشخیص بلوک کد
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        # ناحیه امن برای برش
+        window = remaining[:limit]
+        # اگر داخل بلوک کد هستیم، تا انتهای بلوک صبر کن
+        # شمارش ``` در window زوج نیست => داخل کد هستیم
+        if window.count("```") % 2 == 1:
+            # پیدا کردن بسته شدن
+            end = remaining.find("```", limit)
+            if end != -1 and end - len(remaining[:limit]) < 800:
+                # کمی فراتر برو تا بلوک کامل شود (تا 800 اضافه مجاز)
+                cut = end + 3
+                if cut > limit and cut < limit + 800:
+                    chunks.append(remaining[:cut])
+                    remaining = remaining[cut:].lstrip("\n")
+                    continue
+        # ترجیح برش روی \n\n
+        cut = window.rfind("\n\n")
+        if cut < limit * 0.5:
+            cut = window.rfind("\n")
+        if cut < limit * 0.4:
+            cut = window.rfind(" ")
+        if cut < limit * 0.3:
+            cut = limit
+        else:
+            # برای \n\n شاملش
+            if remaining[cut:cut+2] == "\n\n":
+                cut += 2
+            elif remaining[cut] in ("\n", " "):
+                cut += 1
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    # اگر چند chunks، هدر شماره اضافه کن (اختیاری)
+    if len(chunks) > 1:
+        headered = []
+        for i, ch in enumerate(chunks, 1):
+            hdr = f"[{i}/{len(chunks)}]\n" if len(chunks) > 1 else ""
+            # اگر header + ch > limit، ch را کوتاه کن (نادر)
+            if len(hdr) + len(ch) > limit:
+                ch = ch[:limit - len(hdr) - 10] + "…"
+            headered.append(hdr + ch)
+        return headered
+    return chunks
+
 async def safe_send_ex(bot, uid: int, text: str, **kwargs):
     """همان safe_send با جزئیات تشخیصی — ``(ok, error_text, exception)``.
 
     صف‌های ماندگار برای تصمیم «بستن/عقب‌انداختن/تلاش مجدد» به خودِ خطا
     نیاز دارند، نه فقط bool. safe_send روی همین تابع نشسته تا رفتار
     همه‌ی صدازننده‌ها عوض نشود.
+    🌊 W5 — اگر text > 4096، برش هوشمند و ارسال چندپیامه (همه یا هیچ نه، best-effort)
     """
     import asyncio
     from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
+    # 🌊 W5 smart chunk
+    parts = _split_smart(text, 4096)
+    if len(parts) > 1:
+        # ارسال چندپیام با تاخیر کوتاه بین هر chunk تا flood نشود
+        for idx, part in enumerate(parts):
+            ok, err, exc = await safe_send_ex(bot, uid, part, **kwargs)
+            if not ok:
+                return False, err, exc
+            if idx < len(parts) - 1:
+                await asyncio.sleep(0.35)
+        return True, "", None
     last_err = None
     for attempt in range(3):
         try:
