@@ -151,6 +151,28 @@ const LIBRARY = [
   },
 
   {
+    icon: '📄',
+
+    title:
+      'خروجی PDF بانک سوال',
+
+    desc:
+      'PDF تمرینی یا آزمونی با طراحی هامزیار — دانلود مستقیم',
+
+    meta:
+      'خروجی چاپی',
+
+    route:
+      '/learn/exams',
+
+    soft:
+      'var(--soft-acc)',
+
+    color:
+      'var(--t-acc)',
+  },
+
+  {
     icon: '✍️',
 
     title:

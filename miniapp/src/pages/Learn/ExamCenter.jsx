@@ -109,6 +109,9 @@ export default function ExamCenter() {
     minutes: 20,
   });
 
+  const [outputMode, setOutputMode] =
+    useState('app');
+
   const [
     session,
     setSession,
@@ -258,6 +261,31 @@ export default function ExamCenter() {
       ],
     });
 
+  const downloadPdf = async (sid, mode) => {
+    try {
+      const res = await api.get(
+        `/api/questions/custom-exam/${sid}/pdf?mode=${mode}`,
+        { responseType: 'blob' }
+      );
+      const blob = res.data;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `humsyar-exam-${String(sid).slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('PDF آماده شد — دانلود شروع شد 📄', 'success');
+      haptic('medium');
+    } catch (e) {
+      toast(
+        e?.response?.data?.detail || 'دانلود PDF انجام نشد',
+        'error'
+      );
+    }
+  };
+
 
   const loadNext = async (
     sessionId
@@ -341,22 +369,27 @@ export default function ExamCenter() {
               Number(
                 config.minutes
               ),
+
+            output_mode: outputMode,
           }
         ),
 
       onSuccess: async (
         response
       ) => {
-        setSession(
-          response.data
-        );
-
+        const data = response.data || {};
+        // PDF mode: directly download
+        if (String(outputMode).startsWith('pdf')) {
+          const mode = outputMode === 'pdf_practice' ? 'practice' : 'exam';
+          toast('⏳ در حال ساخت PDF...', 'info');
+          await downloadPdf(data.session_id, mode);
+          await refreshHistory();
+          setView('history');
+          return;
+        }
+        setSession(data);
         setResult(null);
-
-        await loadNext(
-          response.data
-            .session_id
-        );
+        await loadNext(data.session_id);
       },
 
       onError: (error) =>
@@ -1670,6 +1703,42 @@ export default function ExamCenter() {
                           ▶️ ادامه آزمون
                         </button>
                       )}
+
+                      {String(item.output_mode || '').startsWith('pdf') && (
+                        <button
+                          className={
+                            'btn btn-dark btn-full'
+                          }
+                          style={{
+                            marginTop: 8,
+                          }}
+                          onClick={() =>
+                            downloadPdf(
+                              item.session_id,
+                              item.output_mode === 'pdf_practice'
+                                ? 'practice'
+                                : 'exam'
+                            )
+                          }
+                        >
+                          📄 دانلود PDF
+                        </button>
+                      )}
+
+                      {String(item.output_mode || '').startsWith('pdf') && item.status !== 'active' && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: 'var(--fs-cap)',
+                            color: 'var(--txm)',
+                            textAlign: 'center',
+                          }}
+                        >
+                          {item.output_mode === 'pdf_practice'
+                            ? '📄 PDF تمرینی — پاسخ زیر هر سوال'
+                            : '📝 PDF آزمونی — پاسخنامه در انتها'}
+                        </div>
+                      )}
                     </article>
                   );
                 }
@@ -1972,6 +2041,79 @@ export default function ExamCenter() {
               </select>
             </div>
           </div>
+
+          <label className="fld-label">نوع خروجی</label>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: 8,
+            }}
+          >
+            {[
+              { id: 'app', icon: '🤖', label: 'داخل اپ', desc: 'تعاملی' },
+              { id: 'pdf_practice', icon: '📄', label: 'PDF تمرینی', desc: 'پاسخ زیر سوال' },
+              { id: 'pdf_exam', icon: '📝', label: 'PDF آزمونی', desc: 'پاسخنامه جدا' },
+            ].map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className={`card ${outputMode === m.id ? 'card-glow' : ''}`}
+                onClick={() => setOutputMode(m.id)}
+                style={{
+                  padding: '10px 6px',
+                  textAlign: 'center',
+                  border:
+                    outputMode === m.id
+                      ? '1.5px solid var(--acc)'
+                      : '1px solid var(--bd)',
+                  background:
+                    outputMode === m.id ? 'var(--acc-soft)' : 'var(--surf-card)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: 18 }}>{m.icon}</div>
+                <div
+                  style={{
+                    fontSize: 'var(--fs-cap)',
+                    fontWeight: 700,
+                    marginTop: 4,
+                    color: outputMode === m.id ? 'var(--acc)' : 'var(--tx)',
+                  }}
+                >
+                  {m.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--txm)',
+                    marginTop: 2,
+                  }}
+                >
+                  {m.desc}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {String(outputMode).startsWith('pdf') && (
+            <div
+              className="card"
+              style={{
+                background: 'var(--soft-acc)',
+                border: '1px solid var(--bd-acc)',
+                padding: 10,
+                fontSize: 'var(--fs-cap)',
+                color: 'var(--txm)',
+                lineHeight: 1.6,
+              }}
+            >
+              {outputMode === 'pdf_practice'
+                ? '📄 PDF تمرینی: هر سوال با پاسخ و تحلیل بلافاصله زیر آن — مناسب تمرین و مرور.'
+                : '📝 PDF آزمونی: سوالات بدون پاسخ + پاسخنامه جداگانه در پایان — مناسب چاپ و برگزاری آزمون.'}
+            </div>
+          )}
         </section>
 
         <button

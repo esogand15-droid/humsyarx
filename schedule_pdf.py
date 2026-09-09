@@ -1,10 +1,22 @@
 """
-📅 schedule_pdf — خروجی زیبای PDF از برنامه‌ی کلاس/امتحان/جبرانی
+📅 schedule_pdf — خروجی پریمیوم PDF از برنامه‌ی کلاس/امتحان/جبرانی — Hamsyar v2
 
-از همون موتور فونت فارسی (Vazirmatn) و رنگ‌های برند هامزیار که برای
-PDF بانک سوال (qbank/) ساخته شده استفاده می‌کند تا کاملاً یکدست و
-هم‌خانواده با بقیه‌ی خروجی‌های ربات باشد — بدون تکرار کدِ فونت/رنگ.
+ویژگی‌های v2 (Shahrivar 1405):
+  • هماهنگ با هسته‌ی interval-aware جدید: نمایش «۰۸:۰۰ تا ۱۰:۰۰» (time + end_time)
+    دقیقاً مثل webadmin / bot / miniapp، با اعداد فارسی و واژه‌ی «تا» شکل‌دهی‌شده.
+  • تاریخ شمسی یکدست: «۱۴۰۵/۰۵/۱۸ (شنبه)» با weekday درست و rtl سالم.
+  • هدر برندِ هامزیار: نوار Navy + اکسنت سبز، لوگوی دوحلقه‌ای، عنوان داینامیک
+    برحسب stype، چیپ‌های متا (گروه/تعداد/تاریخ/نام دانشجو) و کارت‌های آماری
+    تفکیکی (کلاس/امتحان/جبرانی) — حس پریمیومِ یکدست با qbank.
+  • سطرها به‌صورت کارتِ گرد با فاصله‌ی تنفسی، بجِ رنگیِ نوع، خط اکسنت باریک،
+    خطوط عمودیِ ظریف بین ستون‌ها، و واترمارک بسیار کم‌رنگ «هامزیار».
+  • فوتر برند + شماره صفحه فارسی + زمان تولید.
+  • بدون تکرار کدِ رنگ/فونت — مستقیم از qbank/styles و qbank/fonts_rtl.
+
+امضا سازگار: generate_schedule_pdf(items, group_label, student_name='', stype=None)
+که فراخوان قدیمیِ schedule.py همچنان کار می‌کند.
 """
+
 import io
 import logging
 from datetime import datetime
@@ -13,38 +25,54 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
 from reportlab.lib.colors import HexColor
 
-from qbank.fonts_rtl import ensure_fonts, rtl, fa_digits, wrap_rtl, REGULAR, MEDIUM, BOLD
+from qbank.fonts_rtl import ensure_fonts, rtl, fa_digits, wrap_rtl, text_width, REGULAR, MEDIUM, BOLD
 from qbank.styles import (
     PAGE_W, PAGE_H, MARGIN, CONTENT_W, MIN_Y, FOOTER_Y,
-    NAVY, NAVY_LIGHT, BRAND_GREEN, GRAY, TEXT_DARK, WHITE, CARD_BORDER,
+    NAVY, NAVY_LIGHT, BRAND_GREEN, GRAY, TEXT_DARK, WHITE, CARD_BORDER, CARD_BG,
 )
 
 logger = logging.getLogger(__name__)
 
+# ── رنگ‌ها ──
 _EXAM_RED = HexColor('#c62828')
+_EXAM_BG = HexColor('#fff1f1')
+_EXAM_BORDER = HexColor('#f1c0c0')
+_CLASS_BG = HexColor('#eef0f7')
+_CLASS_BORDER = HexColor('#d9dff0')
+_MAKEUP_BG = HexColor('#e6f6ee')
+_MAKEUP_BORDER = HexColor('#bfe8d0')
 _ZEBRA_BG = HexColor('#f7f8fa')
+_SOFT_BG = HexColor('#f3f4f6')
+_PILL_BORDER = HexColor('#e6e8ec')
+_TOP_BAR_H = 3.8 * mm
 
-# ── رنگ هر نوع برنامه (هم‌خانواده با آیکون‌های TYPE_NAMES در schedule.py) ──
 TYPE_STYLE = {
-    'class':  ('📖', 'کلاس',   NAVY_LIGHT),
-    'exam':   ('📝', 'امتحان', _EXAM_RED),
-    'makeup': ('🔄', 'جبرانی', BRAND_GREEN),
+    # icon,  label,     fill,        bg,        border
+    'class':  ('🏫', 'کلاس',   NAVY_LIGHT,  _CLASS_BG,  _CLASS_BORDER),
+    'exam':   ('📝', 'امتحان', _EXAM_RED,   _EXAM_BG,   _EXAM_BORDER),
+    'makeup': ('🔄', 'جبرانی', BRAND_GREEN, _MAKEUP_BG, _MAKEUP_BORDER),
 }
 
+# ستون‌ها — جمع دقیقا CONTENT_W (≈178mm روی A4 با حاشیه 16mm)
 _COL = {
-    'type': 20 * mm, 'lesson': 44 * mm, 'date': 38 * mm,
-    'time': 20 * mm, 'location': 30 * mm,
+    'type': 22 * mm,
+    'lesson': 40 * mm,
+    'date': 34 * mm,
+    'time': 32 * mm,
+    'location': 26 * mm,
 }
-_COL['teacher'] = CONTENT_W - sum(_COL.values())
-ROW_H = 12 * mm
+_COL['teacher'] = CONTENT_W - sum(_COL.values())  # ~24mm
 
+ROW_H = 13.5 * mm
+ROW_GAP = 1.8 * mm
+TABLE_HEADER_H = 9 * mm
 
-def _draw_logo(c, cx, cy, r):
-    c.setFillColor(BRAND_GREEN)
-    c.circle(cx, cy, r, fill=1, stroke=0)
-    c.setFillColor(WHITE)
-    c.setFont(BOLD, r * 0.9)
-    c.drawCentredString(cx, cy - r * 0.32, rtl("ها"))
+STYPE_TITLES = {
+    'class':  ('🏫', 'برنامه‌ی کلاسی'),
+    'exam':   ('📝', 'برنامه‌ی امتحانات'),
+    'makeup': ('🔄', 'برنامه‌ی جبرانی'),
+    None:     ('📅', 'برنامه‌ی کلاس‌ها و امتحانات'),
+}
 
 
 def _today_jalali() -> str:
@@ -52,169 +80,583 @@ def _today_jalali() -> str:
     return format_date_fa(now_utc(), long=True)
 
 
-def _draw_header(c, group_label: str, student_name: str, count: int) -> float:
-    cy = PAGE_H - 30 * mm
-    _draw_logo(c, PAGE_W / 2, cy, 11 * mm)
+def _now_tehran_str() -> str:
+    try:
+        from time_utils import format_datetime_fa, now_utc
+        return format_datetime_fa(now_utc(), long=True)
+    except Exception:
+        return _today_jalali()
 
-    c.setFont(BOLD, 17)
+
+def _fa_interval_for_item(item: dict) -> str:
+    """
+    نمایش بازه‌ی زمانی: اگر end_time موجود باشد «08:00 تا 10:00» با اعداد فارسی.
+    سازگار با همه‌ی نام‌گذاری‌های تاریخی: end_time / time_end / end
+    خروجی خام (بدون rtl) — رسم‌کننده خودش rtl می‌کند.
+    """
+    start = (item.get('time') or '').strip()
+    end = (item.get('end_time') or item.get('time_end') or item.get('end') or '').strip()
+    if end and end != start:
+        if 'تا' in start or 'تا' in end:
+            raw = start if 'تا' in start else f"{start} تا {end}"
+            return fa_digits(raw)
+        if ':' in start and ':' in end:
+            return fa_digits(f"{start} تا {end}")
+        return fa_digits(f"{start} تا {end}")
+    if start:
+        if 'تا' in start:
+            return fa_digits(start)
+        return fa_digits(start) if ':' in start else fa_digits(start)
+    return '—'
+
+
+def _counts(items: list) -> dict:
+    c = {'class': 0, 'exam': 0, 'makeup': 0}
+    for it in items:
+        t = it.get('type', 'class')
+        if t in c:
+            c[t] += 1
+    c['total'] = len(items)
+    return c
+
+
+def _days_left(item: dict):
+    try:
+        from time_utils import parse_gregorian_date, today_tehran
+        d = (item.get('date') or '')[:10]
+        if not d:
+            return None
+        target = parse_gregorian_date(d)
+        return (target - today_tehran()).days
+    except Exception:
+        return None
+
+
+def _draw_logo(c, cx, cy, r):
+    # outer subtle shadow/ring
+    c.setFillColor(HexColor('#0f1a3a'))
+    c.setFillAlpha(0.09)
+    c.circle(cx + 0.6*mm, cy - 0.6*mm, r + 1.2*mm, fill=1, stroke=0)
+    c.setFillAlpha(1)
+    # outer white ring
+    c.setFillColor(WHITE)
+    c.circle(cx, cy, r + 1.4*mm, fill=1, stroke=0)
+    c.setStrokeColor(BRAND_GREEN)
+    c.setLineWidth(0.5)
+    c.circle(cx, cy, r + 1.4*mm, fill=0, stroke=1)
+    # main green
+    c.setFillColor(BRAND_GREEN)
+    c.circle(cx, cy, r, fill=1, stroke=0)
+    # inner highlight dot (premium)
+    c.setFillColor(WHITE)
+    c.setFillAlpha(0.18)
+    c.circle(cx - r*0.28, cy + r*0.28, r*0.32, fill=1, stroke=0)
+    c.setFillAlpha(1)
+    c.setFillColor(WHITE)
+    c.setFont(BOLD, r * 0.88)
+    c.drawCentredString(cx, cy - r * 0.33, rtl("ها"))
+
+
+def _draw_brand_bar(c):
+    # solid navy top
     c.setFillColor(NAVY)
-    c.drawCentredString(PAGE_W / 2, cy - 18 * mm, rtl("هامزیار"))
+    c.rect(0, PAGE_H - _TOP_BAR_H, PAGE_W, _TOP_BAR_H, fill=1, stroke=0)
+    # thin green accent just below
+    c.setFillColor(BRAND_GREEN)
+    c.rect(0, PAGE_H - _TOP_BAR_H - 0.9*mm, PAGE_W, 0.9*mm, fill=1, stroke=0)
 
-    c.setFont(REGULAR, 9)
+
+def _draw_watermark(c):
+    c.saveState()
+    c.setFillColor(NAVY)
+    c.setFillAlpha(0.03)
+    c.setFont(BOLD, 52)
+    # center page, rotated
+    c.translate(PAGE_W/2, PAGE_H/2)
+    c.rotate(32)
+    c.drawCentredString(0, 0, rtl("هامزیار"))
+    c.restoreState()
+    c.setFillAlpha(1)
+
+
+def _draw_header(c, group_label: str, student_name: str, count: int, stype=None, items=None) -> float:
+    _draw_brand_bar(c)
+    # light watermark behind header area
+    _draw_watermark(c)
+
+    cy = PAGE_H - 24 * mm
+    _draw_logo(c, PAGE_W / 2, cy, 10.5 * mm)
+
+    c.setFont(BOLD, 18)
+    c.setFillColor(NAVY)
+    c.drawCentredString(PAGE_W / 2, cy - 17.5 * mm, rtl("هامزیار"))
+
+    c.setFont(REGULAR, 8.2)
     c.setFillColor(GRAY)
-    c.drawCentredString(PAGE_W / 2, cy - 23.5 * mm, rtl("@humsyarbot  —  سامانه‌ی آموزشی دانشجویان پزشکی"))
+    c.drawCentredString(PAGE_W / 2, cy - 22.2 * mm, rtl("@humsyarbot  —  سامانه‌ی آموزشی دانشجویان پزشکی"))
 
-    y = cy - 33 * mm
-    c.setFont(BOLD, 15)
-    c.setFillColor(TEXT_DARK)
-    c.drawCentredString(PAGE_W / 2, y, rtl("📅 برنامه‌ی کلاس‌ها و امتحانات"))
+    # dynamic title per stype
+    icon, title = STYPE_TITLES.get(stype, STYPE_TITLES[None])
+    y = cy - 32 * mm
+    # subtle pill behind title
+    title_text = f"{icon} {title}"
+    title_w = text_width(title_text, BOLD, 13) + 10 * mm
+    c.setFillColor(HexColor('#f1f5ff'))
+    c.roundRect(PAGE_W/2 - title_w/2, y - 3*mm, title_w, 9*mm, 4*mm, fill=1, stroke=0)
+    c.setStrokeColor(HexColor('#d9e1ff'))
+    c.setLineWidth(0.6)
+    c.roundRect(PAGE_W/2 - title_w/2, y - 3*mm, title_w, 9*mm, 4*mm, fill=0, stroke=1)
+    c.setFont(BOLD, 13)
+    c.setFillColor(NAVY)
+    c.drawCentredString(PAGE_W / 2, y, rtl(title_text))
 
-    y -= 7 * mm
-    meta_parts = [f"گروه {group_label}", f"{fa_digits(count)} مورد", _today_jalali()]
-    if student_name:
-        meta_parts.insert(0, student_name)
-    c.setFont(MEDIUM, 9.5)
-    c.setFillColor(NAVY_LIGHT)
-    c.drawCentredString(PAGE_W / 2, y, rtl("  •  ".join(meta_parts)))
+    y -= 9 * mm
+    # ── meta pills row ──
+    jalali = _today_jalali()
+    pills = []
+    if student_name and student_name.strip():
+        pills.append((f"👤 {student_name.strip()}", BRAND_GREEN, WHITE))
+    # group pill
+    g = (group_label or 'همه').strip()
+    if g in ('', 'هر دو'):
+        g_text = "👥 گروه هر دو"
+    else:
+        g_text = f"👥 گروه {fa_digits(g)}"
+    pills.append((g_text, NAVY, HexColor('#eef0f7')))
+    pills.append((f"🔢 {fa_digits(count)} مورد", NAVY_LIGHT, HexColor('#f3f4f6')))
+    pills.append((f"📅 {jalali}", TEXT_DARK, HexColor('#f9fafb')))
 
-    y -= 8 * mm
-    c.setStrokeColor(CARD_BORDER)
-    c.setLineWidth(1)
-    c.line(MARGIN, y, PAGE_W - MARGIN, y)
-    return y - 10 * mm
+    # measure total width
+    pill_h = 6.2 * mm
+    gap = 2.2 * mm
+    widths = []
+    for txt, _, _ in pills:
+        w = text_width(txt, MEDIUM, 7.8) + 7 * mm
+        # minimal width handling for emoji duplicates
+        w = max(w, 22*mm if len(txt) < 12 else w)
+        widths.append(w)
+    total_w = sum(widths) + gap*(len(pills)-1)
+    # if too wide, fallback to centered line style (no pills) — but on A4 should fit
+    if total_w > CONTENT_W:
+        # fallback: single line with •
+        y2 = y - 1*mm
+        meta_parts = [p[0] for p in pills]
+        # keep student at front if exists
+        line = "  •  ".join(meta_parts)
+        c.setFont(MEDIUM, 8.5)
+        c.setFillColor(NAVY_LIGHT)
+        c.drawCentredString(PAGE_W/2, y2, rtl(line))
+        y = y2 - 4*mm
+    else:
+        pill_y = y - 1*mm
+        cur_x = PAGE_W/2 - total_w/2
+        for (txt, fg, bg), w in zip(pills, widths):
+            # pill bg
+            c.setFillColor(bg)
+            c.roundRect(cur_x, pill_y - pill_h/2 - 1*mm, w, pill_h, pill_h/2, fill=1, stroke=0)
+            c.setStrokeColor(_PILL_BORDER)
+            c.setLineWidth(0.55)
+            c.roundRect(cur_x, pill_y - pill_h/2 - 1*mm, w, pill_h, pill_h/2, fill=0, stroke=1)
+            c.setFont(MEDIUM, 7.8)
+            c.setFillColor(fg if fg != WHITE else WHITE)
+            # if pill bg is dark (BRAND_GREEN), text white else dark
+            if bg == BRAND_GREEN:
+                c.setFillColor(WHITE)
+            else:
+                c.setFillColor(fg)
+            c.drawCentredString(cur_x + w/2, pill_y - 1.6*mm, rtl(txt))
+            cur_x += w + gap
+        y = pill_y - pill_h/2 - 5*mm
+
+    # ── stats strip (only if items provided and >0) ──
+    if items is not None and len(items) > 0:
+        counts = _counts(items)
+        # card dimensions
+        card_h = 15 * mm
+        card_w = (CONTENT_W - 8*mm) / 3
+        gap_c = 4 * mm
+        start_x = MARGIN
+        y_top = y + 2*mm
+        y_bottom_cards = y_top - card_h
+        kinds = ['class', 'exam', 'makeup']
+        for idx, kind in enumerate(kinds):
+            icon_k, label_k, color_k, bg_k, border_k = TYPE_STYLE[kind]
+            x = start_x + idx*(card_w+gap_c)
+            is_active_filter = (stype == kind)
+            # card bg
+            fill_bg = WHITE if not is_active_filter else bg_k
+            c.setFillColor(fill_bg)
+            c.roundRect(x, y_bottom_cards, card_w, card_h, 3*mm, fill=1, stroke=0)
+            # border: thicker if active
+            c.setStrokeColor(color_k if is_active_filter else CARD_BORDER)
+            c.setLineWidth(1 if is_active_filter else 0.7)
+            c.roundRect(x, y_bottom_cards, card_w, card_h, 3*mm, fill=0, stroke=1)
+            # top accent
+            c.setFillColor(color_k)
+            c.roundRect(x+1*mm, y_top - 2.2*mm, card_w-2*mm, 2.2*mm, 1*mm, fill=1, stroke=0)
+            # icon circle
+            cx_icon = x + card_w/2
+            cy_icon = y_top - 6*mm
+            # small icon bg light
+            c.setFillColor(bg_k)
+            c.circle(cx_icon, cy_icon, 5*mm, fill=1, stroke=0)
+            c.setFont(BOLD, 9)
+            c.setFillColor(color_k)
+            c.drawCentredString(cx_icon, cy_icon - 3, icon_k)
+            # number
+            num = counts.get(kind, 0)
+            c.setFont(BOLD, 14)
+            c.setFillColor(TEXT_DARK if not is_active_filter else color_k)
+            c.drawCentredString(cx_icon, y_bottom_cards + 6.5*mm, fa_digits(num))
+            # label
+            c.setFont(MEDIUM, 7.5)
+            c.setFillColor(GRAY)
+            c.drawCentredString(cx_icon, y_bottom_cards + 2.8*mm, rtl(label_k))
+        y = y_bottom_cards - 6*mm
+        c.setStrokeColor(_PILL_BORDER)
+        c.setLineWidth(0.6)
+        c.line(MARGIN, y, PAGE_W - MARGIN, y)
+        y -= 4*mm
+    else:
+        y -= 2*mm
+        c.setStrokeColor(_PILL_BORDER)
+        c.setLineWidth(0.6)
+        c.line(MARGIN, y, PAGE_W - MARGIN, y)
+        y -= 4*mm
+
+    return y
 
 
 def _draw_table_header(c, y: float) -> float:
-    x = PAGE_W - MARGIN
+    x_right = PAGE_W - MARGIN
+    y_top = y
+    y_bottom = y - TABLE_HEADER_H
     c.setFillColor(NAVY)
-    c.roundRect(MARGIN, y - ROW_H, CONTENT_W, ROW_H, 2 * mm, fill=1, stroke=0)
-    c.setFont(BOLD, 9.5)
+    c.roundRect(MARGIN, y_bottom, CONTENT_W, TABLE_HEADER_H, 2.2*mm, fill=1, stroke=0)
+    # subtle inner highlight line at top of header
+    c.setStrokeColor(HexColor('#2a3a8a'))
+    c.setLineWidth(0.7)
+    c.line(MARGIN+2*mm, y_top - 1*mm, PAGE_W-MARGIN-2*mm, y_top - 1*mm)
+    c.setFont(BOLD, 8.8)
     c.setFillColor(WHITE)
-    labels = [('type', 'نوع'), ('lesson', 'درس'), ('date', 'تاریخ'),
-              ('time', 'ساعت'), ('location', 'مکان'), ('teacher', 'استاد')]
-    cx = x
-    mid = y - ROW_H / 2 - 1.6
+    labels = [
+        ('type', 'نوع'),
+        ('lesson', 'درس'),
+        ('date', 'تاریخ'),
+        ('time', 'ساعت'),
+        ('location', 'مکان'),
+        ('teacher', 'استاد'),
+    ]
+    cx = x_right
+    mid = y_bottom + TABLE_HEADER_H/2 - 1.4*mm
     for key, label in labels:
         w = _COL[key]
-        c.drawCentredString(cx - w / 2, mid, rtl(label))
+        # add tiny dot before label for premium separators (optional)
+        c.drawCentredString(cx - w/2, mid, rtl(label))
         cx -= w
-    return y - ROW_H
+        # vertical divider faint white 0.15 opacity
+        if key != 'teacher':
+            c.saveState()
+            c.setStrokeColor(WHITE)
+            c.setStrokeAlpha(0.18)
+            c.setLineWidth(0.6)
+            c.line(cx, y_bottom + 2*mm, cx, y_top - 2*mm)
+            c.restoreState()
+    return y_bottom
 
 
-def _draw_row(c, item: dict, y: float, zebra: bool):
-    from utils import fmt_jalali
-    x = PAGE_W - MARGIN
-    if zebra:
-        c.setFillColor(_ZEBRA_BG)
-        c.rect(MARGIN, y - ROW_H, CONTENT_W, ROW_H, fill=1, stroke=0)
-    c.setStrokeColor(CARD_BORDER)
-    c.setLineWidth(0.5)
-    c.line(MARGIN, y - ROW_H, PAGE_W - MARGIN, y - ROW_H)
+def _draw_row(c, item: dict, y: float):
+    """
+    Draw premium card-row at y (top). Height = ROW_H, gap handled by caller.
+    No zebra — each row is isolated white card with rounded border and type accent.
+    """
+    # از time_utils مستقیم (بدون وابستگی به telegram)
+    def _fmt_jalali_local(ds: str) -> str:
+        try:
+            from time_utils import format_date_fa
+            raw = str(ds or '').strip()[:10]
+            if not raw:
+                return ''
+            return format_date_fa(raw, long=True, weekday=True, date_only=True, fallback=raw)
+        except Exception:
+            return str(ds or '')
+    _fmt = _fmt_jalali_local
 
-    mid = y - ROW_H / 2 - 1.6
-    icon, type_label, type_color = TYPE_STYLE.get(item.get('type', 'class'), TYPE_STYLE['class'])
+    x_right = PAGE_W - MARGIN
+    y_top = y
+    y_bottom = y - ROW_H
 
-    # نوع (بج رنگی)
-    cx = x
-    w = _COL['type']
-    badge_w, badge_h = w - 6 * mm, 6.5 * mm
-    c.setFillColor(type_color)
-    c.roundRect(cx - w / 2 - badge_w / 2, y - ROW_H / 2 - badge_h / 2, badge_w, badge_h, 2 * mm, fill=1, stroke=0)
+    # card background
     c.setFillColor(WHITE)
-    c.setFont(BOLD, 8)
-    c.drawCentredString(cx - w / 2, y - ROW_H / 2 - 1.4, rtl(f"{icon} {type_label}"))
-    cx -= w
+    c.roundRect(MARGIN, y_bottom, CONTENT_W, ROW_H, 2.8*mm, fill=1, stroke=0)
+    c.setStrokeColor(CARD_BORDER)
+    c.setLineWidth(0.7)
+    c.roundRect(MARGIN, y_bottom, CONTENT_W, ROW_H, 2.8*mm, fill=0, stroke=1)
 
-    # درس
+    # type accent vertical strip on the right side (type column edge)
+    icon, label, color, _, _ = TYPE_STYLE.get(item.get('type', 'class'), TYPE_STYLE['class'])
+    accent_w = 3.2 * mm
+    accent_h = ROW_H - 4*mm
+    accent_y = y_bottom + 2*mm
+    accent_x = PAGE_W - MARGIN - accent_w - 0.8*mm
+    c.setFillColor(color)
+    c.roundRect(accent_x, accent_y, accent_w, accent_h, 1.2*mm, fill=1, stroke=0)
+
+    # vertical dividers between columns (very subtle)
+    cx_iter = x_right
+    for key in ['type', 'lesson', 'date', 'time', 'location']:
+        cx_iter -= _COL[key]
+        c.saveState()
+        c.setStrokeColor(CARD_BORDER)
+        c.setStrokeAlpha(0.55)
+        c.setLineWidth(0.45)
+        # dashed-like short divider
+        c.line(cx_iter, y_bottom + 3*mm, cx_iter, y_top - 3*mm)
+        c.restoreState()
+
+    mid = y_bottom + ROW_H/2 - 1.4*mm
+
+    # ── نوع (badge) ──
+    w = _COL['type']
+    cx_type = x_right - w/2
+    badge_w = min(w - 4*mm, 18*mm)
+    badge_h = 6.6*mm
+    c.setFillColor(color)
+    c.roundRect(cx_type - badge_w/2, y_bottom + ROW_H/2 - badge_h/2, badge_w, badge_h, badge_h/2, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.setFont(BOLD, 7.4)
+    c.drawCentredString(cx_type, y_bottom + ROW_H/2 - 1.35*mm, rtl(f"{icon} {label}"))
+
+    # ── درس (+ گروه کوچک زیرش اگر لازم) ──
     w = _COL['lesson']
-    c.setFont(BOLD, 9.5)
-    c.setFillColor(TEXT_DARK)
-    lesson_lines = wrap_rtl(item.get('lesson', ''), BOLD, 9.5, w - 4 * mm)[:2]
-    ly = mid + (2 if len(lesson_lines) > 1 else 0)
-    for line in lesson_lines:
-        c.drawCentredString(cx - w / 2, ly, line)
-        ly -= 4 * mm
-    cx -= w
-
-    # تاریخ (+ روز هفته) — FIX مهم: قبلاً بدون rtl() رسم می‌شد که باعث
-    # به‌هم‌ریختگی/برعکس‌نمایی حروف فارسی می‌شد؛ و چون fmt_jalali() خودش
-    # اسم روز هفته را داخل پرانتز برمی‌گرداند، رسم جداگانه‌ی روز هفته
-    # زیرش باعث افتادن دو متن روی هم می‌شد. حالا فقط یک‌بار، درست‌شکل‌
-    # داده‌شده و با فونت خواناتر رسم می‌شود.
+    cx_lesson = x_right - _COL['type'] - w/2
+    lesson_raw = (item.get('lesson') or '').strip()
+    # group badge under lesson if needed
+    grp = (item.get('group') or '').strip()
+    show_group = grp not in ('', 'هر دو', 'both', None)
+    # wrap lesson
+    avail_w = w - 4*mm
+    lesson_lines = wrap_rtl(lesson_raw, BOLD, 8.7, avail_w)[:2]
+    # if two lines, lift up a bit; if one, centered plus group offset
+    if len(lesson_lines) == 2:
+        # slightly higher to make room for potential group
+        ly = mid + 2.2*mm
+        c.setFont(BOLD, 8.7)
+        c.setFillColor(TEXT_DARK)
+        for line in lesson_lines:
+            c.drawCentredString(cx_lesson, ly, line)
+            ly -= 3.8*mm
+        if show_group:
+            # tiny pill below
+            g_txt = f"گ{fa_digits(grp)}"
+            gw = text_width(g_txt, MEDIUM, 6.2) + 4*mm
+            gy = y_bottom + 2.3*mm
+            c.setFillColor(HexColor('#eef2ff'))
+            c.roundRect(cx_lesson - gw/2, gy, gw, 3.6*mm, 1.8*mm, fill=1, stroke=0)
+            c.setFont(MEDIUM, 6.2)
+            c.setFillColor(NAVY)
+            c.drawCentredString(cx_lesson, gy + 0.55*mm, rtl(g_txt))
+    else:
+        # single line — center vertically, leave space below for group pill if needed
+        c.setFont(BOLD, 9.0)
+        c.setFillColor(TEXT_DARK)
+        line = lesson_lines[0] if lesson_lines else rtl("—")
+        # raise a little if group exists
+        y_off = 1.2*mm if show_group else 0
+        c.drawCentredString(cx_lesson, mid + y_off, line)
+        if show_group:
+            g_txt = f"گ{fa_digits(grp)}"
+            gw = text_width(g_txt, MEDIUM, 6.2) + 4*mm
+            gy = y_bottom + 2.3*mm
+            c.setFillColor(HexColor('#eef2ff'))
+            c.roundRect(cx_lesson - gw/2, gy, gw, 3.6*mm, 1.8*mm, fill=1, stroke=0)
+            c.setFont(MEDIUM, 6.2)
+            c.setFillColor(NAVY)
+            c.drawCentredString(cx_lesson, gy + 0.55*mm, rtl(g_txt))
+    # ── تاریخ (+ روز هفته + شمارش معکوس برای امتحان) ──
     w = _COL['date']
-    full_date = fmt_jalali(item.get('date', ''))
+    cx_date = x_right - _COL['type'] - _COL['lesson'] - w/2
+    full_date = _fmt(item.get('date', '') or '')
     if '(' in full_date:
         date_part, wd_part = full_date.split('(', 1)
         date_part = date_part.strip()
         wd_part = '(' + wd_part
     else:
         date_part, wd_part = full_date, ''
-    c.setFont(BOLD, 10)
+    c.setFont(BOLD, 8.9)
     c.setFillColor(NAVY_LIGHT)
-    c.drawCentredString(cx - w / 2, mid + 2.3 * mm, rtl(fa_digits(date_part)))
     if wd_part:
-        c.setFont(REGULAR, 7.5)
+        c.drawCentredString(cx_date, mid + 2.6*mm, rtl(fa_digits(date_part)))
+        c.setFont(REGULAR, 6.9)
         c.setFillColor(GRAY)
-        c.drawCentredString(cx - w / 2, mid - 3 * mm, rtl(fa_digits(wd_part)))
-    cx -= w
+        c.drawCentredString(cx_date, mid - 1.2*mm, rtl(fa_digits(wd_part)))
+    else:
+        c.setFont(BOLD, 9)
+        c.setFillColor(NAVY_LIGHT)
+        c.drawCentredString(cx_date, mid, rtl(fa_digits(date_part)) if date_part else rtl("—"))
 
-    # ساعت
+    # urgent exam countdown small under date (if exam and within 14 days)
+    if item.get('type') == 'exam':
+        dl = _days_left(item)
+        if dl is not None and dl <= 14:
+            # label
+            if dl < 0:
+                lbl = f"({fa_digits(abs(dl))} روز پیش)"
+                col = GRAY
+            elif dl == 0:
+                lbl = "امروز!"
+                col = _EXAM_RED
+            elif dl == 1:
+                lbl = "فردا!"
+                col = HexColor('#e65100')
+            elif dl <= 3:
+                lbl = f"{fa_digits(dl)} روز دیگر"
+                col = _EXAM_RED
+            elif dl <= 7:
+                lbl = f"{fa_digits(dl)} روز دیگر"
+                col = HexColor('#ef6c00')
+            else:
+                lbl = f"{fa_digits(dl)} روز دیگر"
+                col = GRAY
+            # only show if near (<=7) or negative? show small chip below weekday
+            if dl <= 7 or dl < 0:
+                c.setFont(MEDIUM, 6.3)
+                c.setFillColor(col)
+                # position a bit lower than weekday
+                c.drawCentredString(cx_date, y_bottom + 1.6*mm, rtl(lbl))
+
+    # ── ساعت (interval) ──
     w = _COL['time']
-    c.setFont(MEDIUM, 9.5)
-    c.setFillColor(TEXT_DARK)
-    c.drawCentredString(cx - w / 2, mid, fa_digits(item.get('time', '')))
-    cx -= w
+    cx_time = x_right - _COL['type'] - _COL['lesson'] - _COL['date'] - w/2
+    interval = _fa_interval_for_item(item)
+    # flex indicator
+    is_flex = item.get('is_flex') or (item.get('flex_type') not in (None, '', 'off') and item.get('flex_type') != 'fixed')
+    has_time = bool((item.get('time') or '').strip())
+    if has_time:
+        c.setFont(MEDIUM, 8.3)
+        c.setFillColor(TEXT_DARK)
+        txt = rtl(interval)
+        c.drawCentredString(cx_time, mid + (1.4*mm if is_flex else 0), txt)
+        if is_flex:
+            c.setFont(REGULAR, 5.8)
+            c.setFillColor(BRAND_GREEN)
+            c.drawCentredString(cx_time, y_bottom + 1.9*mm, rtl("🔁 انعطاف‌پذیر"))
+    else:
+        c.setFont(REGULAR, 8)
+        c.setFillColor(GRAY)
+        c.drawCentredString(cx_time, mid, rtl("—"))
 
-    # مکان
+    # ── مکان (+ آیکون یادداشت) ──
     w = _COL['location']
-    c.setFont(REGULAR, 8.5)
+    cx_loc = x_right - _COL['type'] - _COL['lesson'] - _COL['date'] - _COL['time'] - w/2
+    loc_raw = (item.get('location') or '').strip() or '—'
+    # notes presence indicator — tiny dot
+    notes = (item.get('notes') or '').strip()
+    c.setFont(REGULAR, 7.8)
     c.setFillColor(TEXT_DARK)
-    loc_lines = wrap_rtl(item.get('location', ''), REGULAR, 8.5, w - 4 * mm)[:1]
-    for line in loc_lines:
-        c.drawCentredString(cx - w / 2, mid, line)
-    cx -= w
+    loc_line = wrap_rtl(loc_raw, REGULAR, 7.8, w - 3*mm)
+    line = loc_line[0] if loc_line else rtl("—")
+    y_loc = mid + (1*mm if notes else 0)
+    c.drawCentredString(cx_loc, y_loc, line)
+    if notes:
+        # small note icon + maybe truncated note hint (hidden) — just icon
+        c.setFont(REGULAR, 5.5)
+        c.setFillColor(NAVY_LIGHT)
+        c.drawCentredString(cx_loc, y_bottom + 1.9*mm, rtl("📝 یادداشت"))
 
-    # استاد
+    # ── استاد ──
     w = _COL['teacher']
-    c.setFont(REGULAR, 8.5)
+    cx_teacher = MARGIN + w/2
+    teacher_raw = (item.get('teacher') or '').strip() or '—'
+    c.setFont(REGULAR, 7.8)
     c.setFillColor(TEXT_DARK)
-    teacher_lines = wrap_rtl(item.get('teacher', ''), REGULAR, 8.5, w - 4 * mm)[:1]
-    for line in teacher_lines:
-        c.drawCentredString(cx - w / 2, mid, line)
+    t_lines = wrap_rtl(teacher_raw, REGULAR, 7.8, w - 3*mm)
+    t_line = t_lines[0] if t_lines else rtl("—")
+    c.drawCentredString(cx_teacher, mid, t_line)
 
 
 def _draw_footer(c, page_num: int):
     c.setStrokeColor(CARD_BORDER)
     c.setLineWidth(0.6)
     c.line(MARGIN, FOOTER_Y, PAGE_W - MARGIN, FOOTER_Y)
-    c.setFont(REGULAR, 8)
+    c.setFont(REGULAR, 7.4)
     c.setFillColor(GRAY)
-    c.drawCentredString(PAGE_W / 2, FOOTER_Y - 5.5 * mm,
-                         rtl(f"تولید شده توسط ربات هامزیار (@humsyarbot)  •  صفحه {fa_digits(page_num)}"))
+    c.drawCentredString(PAGE_W / 2, FOOTER_Y - 5.2*mm,
+                         rtl(f"تولید شده توسط ربات هامزیار (@humsyarbot)  •  {fa_digits(_now_tehran_str())}  •  صفحه {fa_digits(page_num)}"))
+    # tiny brand dot
+    c.setFillColor(BRAND_GREEN)
+    c.circle(PAGE_W/2, FOOTER_Y - 5.2*mm + 8*mm, 0.9*mm, fill=1, stroke=0)
 
 
-def generate_schedule_pdf(items: list, group_label: str, student_name: str = '') -> bytes:
+def generate_schedule_pdf(items: list, group_label: str, student_name: str = '', stype: str | None = None) -> bytes:
     """
     items: خروجی db.get_schedules() — لیست دیکشنری با کلیدهای
-    type/lesson/teacher/date/time/location (date به فرمت %Y-%m-%d میلادی)
+        type/lesson/teacher/date/time/(end_time|time_end)/location/group/notes/is_flex...
+        date به فرمت %Y-%m-%d میلادی
+    group_label: برچسب گروه برای هدر
+    student_name: نام دانشجو
+    stype: اگر مشخص باشد عنوان هدر و هایلایت کارت آماری همان نوع خواهد بود
     """
     ensure_fonts()
+    # sort chronological just in case (by date, then start time)
+    def _sort_key(it):
+        d = (it.get('date') or '9999-12-31')[:10]
+        t = (it.get('time') or '99:99')[:5]
+        # type order: exam before class? keep date order primary
+        return (d, t, it.get('type',''))
+    try:
+        items = sorted(list(items or []), key=_sort_key)
+    except Exception:
+        pass
+
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(PAGE_W, PAGE_H))
+    # improve PDF metadata
+    try:
+        c.setTitle("Hamsyar — برنامه‌ی کلاس/امتحان")
+        c.setAuthor("humsyarbot")
+    except Exception:
+        pass
     page_num = 1
 
-    y = _draw_header(c, group_label, student_name, len(items))
-    y = _draw_table_header(c, y)
+    y = _draw_header(c, group_label, student_name, len(items), stype=stype, items=items)
+    # subtle watermark for content pages already drawn via header; redraw faint for new pages later
 
-    for i, item in enumerate(items):
-        if y - ROW_H < MIN_Y:
+    if not items:
+        # empty state premium
+        c.setFillColor(CARD_BG)
+        c.roundRect(MARGIN, MIN_Y + 18*mm, CONTENT_W, 26*mm, 4*mm, fill=1, stroke=0)
+        c.setStrokeColor(CARD_BORDER)
+        c.setLineWidth(0.7)
+        c.roundRect(MARGIN, MIN_Y + 18*mm, CONTENT_W, 26*mm, 4*mm, fill=0, stroke=1)
+        c.setFont(MEDIUM, 11)
+        c.setFillColor(GRAY)
+        c.drawCentredString(PAGE_W/2, MIN_Y + 30*mm, rtl("📭 موردی برای نمایش وجود ندارد"))
+        c.setFont(REGULAR, 9)
+        c.setFillColor(NAVY_LIGHT)
+        c.drawCentredString(PAGE_W/2, MIN_Y + 24*mm, rtl("فیلتر گروه یا نوع را تغییر دهید یا بعداً دوباره تلاش کنید."))
+        _draw_footer(c, page_num)
+        c.save()
+        buf.seek(0)
+        return buf.getvalue()
+
+    y = _draw_table_header(c, y)
+    y -= ROW_GAP  # initial gap
+
+    for item in items:
+        needed = ROW_H + ROW_GAP
+        if y - needed < MIN_Y:
             _draw_footer(c, page_num)
             c.showPage()
             page_num += 1
-            y = PAGE_H - MARGIN
+            _draw_brand_bar(c)
+            # faint watermark on new page
+            _draw_watermark(c)
+            y = PAGE_H - MARGIN - 8*mm
             y = _draw_table_header(c, y)
-        _draw_row(c, item, y, zebra=(i % 2 == 1))
-        y -= ROW_H
+            y -= ROW_GAP
+        _draw_row(c, item, y)
+        y -= ROW_H + ROW_GAP
 
     _draw_footer(c, page_num)
     c.save()

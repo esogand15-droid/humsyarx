@@ -180,6 +180,9 @@ export default function Questions({ route = '', go }) {
       <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ پیشنهاد سؤال</button>
       <button className="btn" onClick={() => setImportOpen(true)}>📥 JSON نسخه‌دار</button>
       <button className="btn" title="خروجی CSV از سؤال‌های فیلترشده" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
+      <button className="btn" title="خروجی PDF تمرینی از سؤال‌های انتخاب‌شده (حد ۱۰۰)" disabled={selected.length===0} onClick={async () => { try { await api.exportQuestionsPdf(selected, 'practice'); toast('PDF تمرینی آماده شد 📄'); } catch(e){ toast(errText(e),'err'); } }}>📄 PDF تمرینی</button>
+      <button className="btn" title="خروجی PDF آزمونی از سؤال‌های انتخاب‌شده (پاسخنامه جدا)" disabled={selected.length===0} onClick={async () => { try { await api.exportQuestionsPdf(selected, 'exam'); toast('PDF آزمونی آماده شد 📝'); } catch(e){ toast(errText(e),'err'); } }}>📝 PDF آزمونی</button>
+      {selected.length > 0 && <B kind="warn">📄 {fa(selected.length)} برای PDF انتخاب</B>}
       {status === 'pending' && selected.length > 0 && <>
         <B kind="acc">{fa(selected.length)} انتخاب</B>
         {selected.every(id => rows?.find(row => row.id === id)?.can_approve) && <button className="btn sm ok" onClick={bulkApprove}>✅ تأیید گروهی</button>}

@@ -127,6 +127,30 @@ export const api = {
   ticketsBulk: (action, ids) => req('/api/web-admin/tickets/bulk', { method: 'POST', body: { action, ids } }),
   questions: (p = {}) => req('/api/web-admin/questions?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined))),
   exportQuestionsCsv: (p = {}) => downloadFile('/api/web-admin/exports/questions.csv?' + new URLSearchParams(Object.entries({ ...p, human: true }).filter(([, v]) => v !== '' && v !== null && v !== undefined)), `humsyar-questions-${fileDateStamp()}.csv`),
+  exportQuestionsPdf: async (ids, mode = 'practice') => {
+    const r = await fetch('/api/web-admin/questions/export/pdf', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/pdf' },
+      body: JSON.stringify({ ids, mode }),
+    });
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { const j = await r.json(); msg = j.detail || msg; } catch {}
+      const e = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+      e.status = r.status; throw e;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const disp = r.headers.get('Content-Disposition') || '';
+    const m = disp.match(/filename="?([^"]+)"?/);
+    a.download = (m && m[1]) || `humsyar-questions-${mode}-${ids.length}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    return { ok: true };
+  },
   questionsBulk: (action, ids, patch, reason = '') => req('/api/web-admin/questions/bulk', { method: 'POST', body: { action, ids, patch, reason } }),
   questionCreate: (body) => req('/api/web-admin/questions', { method: 'POST', body }),
   questionTaxonomy: (intake = '') => req('/api/web-admin/questions/taxonomy' + (intake ? `?intake=${encodeURIComponent(intake)}` : '')),

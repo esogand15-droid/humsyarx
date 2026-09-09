@@ -572,7 +572,7 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
         from schedule_pdf import generate_schedule_pdf
         student_name = user.get('name', '') if user else ''
         pdf_bytes = await asyncio.to_thread(
-            generate_schedule_pdf, items, user_group or 'همه', student_name
+            generate_schedule_pdf, items, user_group or 'همه', student_name, stype
         )
     except Exception as e:
         logger.exception("schedule PDF export failed")

@@ -2993,6 +2993,77 @@ async def questions_bulk(
             "skipped": skipped, "failed": failed}
 
 
+class QuestionsExportPdfInput(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=100)
+    mode: str = Field(default="practice", pattern="^(practice|exam)$")
+
+
+@router.post("/questions/export/pdf")
+async def questions_export_pdf(
+    body: QuestionsExportPdfInput,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped", "questions.edit")),
+):
+    """📄 خروجی PDF از سؤال‌های منتخب — پرمیوم Hamsyar (practice/exam).
+
+    حد ۱۰۰ سؤال، با موتور مشترک qbank.generate_exam_pdf تا طراحی و فونت
+    دقیقاً یکدست با ربات/مینی‌اپ باشد. دسترسی: questions.review یا scoped.
+    """
+    ids = [str(x).strip() for x in (body.ids or []) if str(x).strip()][:100]
+    if not ids:
+        raise HTTPException(400, "لیست سؤال‌ها خالی است")
+    if body.mode not in ("practice", "exam"):
+        raise HTTPException(400, "mode نامعتبر است")
+    from bson import ObjectId
+    # scope-aware fetch (scoped admin فقط intake خودش را ببیند)
+    scope = await _question_scope_context(user)
+    oids = [ObjectId(x) for x in ids if ObjectId.is_valid(x)]
+    if len(oids) != len(ids):
+        raise HTTPException(422, "شناسه‌ی برخی سؤال‌ها معتبر نیست")
+    docs = await db.questions.find({"_id": {"$in": oids}}).to_list(len(oids))
+    by_id = {str(d["_id"]): d for d in docs}
+    # preserve order of input, skip missing/out-of-scope
+    ordered = []
+    for qid in ids:
+        doc = by_id.get(qid)
+        if not doc:
+            continue
+        if scope.get("kind") == "scoped" and (doc.get("intake") or "") != (scope.get("intake") or ""):
+            continue
+        ordered.append(doc)
+    if not ordered:
+        raise HTTPException(404, "هیچ سؤال در دسترس/هم‌راستا با intake شما پیدا نشد")
+    # meta
+    from qbank.query import ExamMeta
+    from qbank import generate_exam_pdf
+    # lesson/topic از اکثریت
+    from collections import Counter
+    lesson = Counter([d.get("lesson","") for d in ordered]).most_common(1)[0][0] or "بانک سوال — منتخب"
+    topic = Counter([d.get("topic","") for d in ordered if d.get("topic")]).most_common(1)
+    topic_val = topic[0][0] if topic else ""
+    meta = ExamMeta(
+        lesson=lesson,
+        topic=topic_val,
+        difficulty=None,
+        student_name=user.get("name") or user.get("username") or "",
+        exam_code=f"SEL-{len(ordered):02d}-" + "".join(ids[0][-4:]) if ids else "SEL",
+        chapter=None,
+    )
+    try:
+        pdf_bytes = generate_exam_pdf(ordered, meta, mode=body.mode)
+    except Exception as exc:
+        raise HTTPException(500, f"ساخت PDF ناموفق بود: {exc}")
+    filename = f"humsyar-questions-" + ("practice" if body.mode=="practice" else "exam") + f"-{len(ordered)}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Question-Count": str(len(ordered)),
+            "X-PDF-Mode": body.mode,
+        },
+    )
+
+
 # ── Question Bank JSON ingestion (owner-only, preview-first) ──────
 @router.get("/questions/import/prompt")
 async def question_import_prompt(user=Depends(get_admin_user)):
