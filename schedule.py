@@ -581,12 +581,23 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
 
     type_slug = stype or 'hame'
     type_label = TYPE_NAMES.get(stype, '📋 همه‌ی برنامه‌ها') if stype else '📋 همه‌ی برنامه‌ها'
+    # 🔢 منطق شمارش: برای کلاسِ هفتگی، ۲۰۰ ردیفِ تاریخ‌دار نداریم، ۲۷ کلاسِ یک هفته است
+    display_count = len(items)
+    try:
+        if stype == 'class' or (stype is None and items and all((it.get('type') or 'class') == 'class' for it in items)):
+            from schedule_pdf import _should_use_weekly_grid, _collect_weekly_slots
+            if _should_use_weekly_grid(items, stype):
+                sm, wkinfo = _collect_weekly_slots(items) or (None, (None, None))
+                if sm and wkinfo and wkinfo[0]:
+                    display_count = sum(len(v) for day in sm.values() for v in day.values())
+    except Exception:
+        display_count = len(items)
     file_obj = io.BytesIO(pdf_bytes)
     fname = f"barname_{type_slug}_{user_group or 'hamzyar'}_{now_tehran().strftime('%Y%m%d')}.pdf"
     file_obj.name = fname
     await query.message.reply_document(
         document=file_obj,
-        caption=f"{type_label}\n👥 گروه {user_group or 'همه'}\n🔢 {len(items)} مورد",
+        caption=f"{type_label}\n👥 گروه {user_group or 'همه'}\n🔢 {display_count} مورد",
         parse_mode='HTML',
         filename=fname,
     )

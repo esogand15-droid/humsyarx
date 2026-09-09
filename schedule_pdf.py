@@ -214,9 +214,7 @@ def _draw_header(c, group_label: str, student_name: str, count: int, stype=None,
     # ── meta pills row ──
     jalali = _today_jalali()
     pills = []
-    if student_name and student_name.strip():
-        pills.append((f"👤 {student_name.strip()}", BRAND_GREEN, WHITE))
-    # group pill
+    # گروه و تعداد — نام دانشجو و تاریخ از هدر حذف شد (تاریخ به فوتر رفت)
     g = (group_label or 'همه').strip()
     if g in ('', 'هر دو'):
         g_text = "👥 گروه هر دو"
@@ -224,7 +222,6 @@ def _draw_header(c, group_label: str, student_name: str, count: int, stype=None,
         g_text = f"👥 گروه {fa_digits(g)}"
     pills.append((g_text, NAVY, HexColor('#eef0f7')))
     pills.append((f"🔢 {fa_digits(count)} مورد", NAVY_LIGHT, HexColor('#f3f4f6')))
-    pills.append((f"📅 {jalali}", TEXT_DARK, HexColor('#f9fafb')))
 
     # measure total width
     pill_h = 6.2 * mm
@@ -269,16 +266,23 @@ def _draw_header(c, group_label: str, student_name: str, count: int, stype=None,
         y = pill_y - pill_h/2 - 5*mm
 
     # ── stats strip (only if items provided and >0) ──
+    # حرفه‌ای: وقتی خروجی اختصاصی یک بخش است فقط همان کارت وسط‌چین نمایش داده شود
     if items is not None and len(items) > 0:
         counts = _counts(items)
-        # card dimensions
-        card_h = 15 * mm
-        card_w = (CONTENT_W - 8*mm) / 3
-        gap_c = 4 * mm
-        start_x = MARGIN
+        if stype in ('class', 'exam', 'makeup'):
+            kinds = [stype]
+            card_h = 16 * mm
+            card_w = 58 * mm
+            gap_c = 0
+            start_x = PAGE_W/2 - card_w/2
+        else:
+            card_h = 15 * mm
+            card_w = (CONTENT_W - 8*mm) / 3
+            gap_c = 4 * mm
+            start_x = MARGIN
+            kinds = ['class', 'exam', 'makeup']
         y_top = y + 2*mm
         y_bottom_cards = y_top - card_h
-        kinds = ['class', 'exam', 'makeup']
         for idx, kind in enumerate(kinds):
             icon_k, label_k, color_k, bg_k, border_k = TYPE_STYLE[kind]
             x = start_x + idx*(card_w+gap_c)
@@ -579,10 +583,11 @@ def _draw_footer(c, page_num: int):
     c.setStrokeColor(CARD_BORDER)
     c.setLineWidth(0.6)
     c.line(MARGIN, FOOTER_Y, PAGE_W - MARGIN, FOOTER_Y)
-    c.setFont(REGULAR, 7.4)
+    c.setFont(REGULAR, 7.2)
     c.setFillColor(GRAY)
-    # Fix footer order: username first, then date, then page — all RTL correctly
-    footer_text = f"تولید شده توسط ربات هامزیار @humsyarbot  •  {fa_digits(_now_tehran_str())}  •  صفحه {fa_digits(page_num)}"
+    # فوتر حرفه‌ای: تگ ربات با فاصله بیشتر از تاریخ — تاریخ رندر (۱۸ شهریور ۱۴۰۵) از هدر به اینجا منتقل شد
+    # سه بخش با بولت‌های با فاصله
+    footer_text = f"تولید شده توسط ربات هامزیار    @humsyarbot    •    {fa_digits(_now_tehran_str())}    •    صفحه {fa_digits(page_num)}"
     c.drawCentredString(PAGE_W / 2, FOOTER_Y - 5.2*mm, rtl(footer_text))
     # tiny brand dot
     c.setFillColor(BRAND_GREEN)
