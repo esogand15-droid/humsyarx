@@ -56,7 +56,7 @@ RUN npm --prefix ./webadmin run build
 # ────────────────────────────────────────────────────────────
 #  Stage 1b — telegram-bot-api binary (برای Dedicated Rename, بدون نیاز به curl/GitHub)
 # ────────────────────────────────────────────────────────────
-FROM ghcr.io/tdlib/telegram-bot-api:latest AS botapi
+FROM ghcr.io/bots-house/docker-telegram-bot-api:latest AS botapi
 
 # ────────────────────────────────────────────────────────────
 #  Stage 2 — runtime پایتون
