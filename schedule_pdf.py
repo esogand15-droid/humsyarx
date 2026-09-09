@@ -588,6 +588,284 @@ def _draw_footer(c, page_num: int):
     c.circle(PAGE_W/2, FOOTER_Y - 5.2*mm + 8*mm, 0.9*mm, fill=1, stroke=0)
 
 
+
+def _weekday_fa(idx: int) -> str:
+    # 0=شنبه ... 6=جمعه
+    names = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
+    try:
+        return names[int(idx) % 7]
+    except:
+        return str(idx)
+
+
+def _should_use_weekly_grid(items: list, stype) -> bool:
+    """تشخیص اینکه PDF کلاس باید به‌صورت جدول هفتگی یک‌صفحه‌ای رندر شود نه فهرست ۱۷۲ ردیفی."""
+    if not items:
+        return False
+    # فقط برای کلاس یا همه (که اکثر کلاس است)
+    class_items = [it for it in items if (it.get('type') or 'class') == 'class']
+    if stype not in (None, 'class') and stype != 'class':
+        return False
+    if len(class_items) < 20:
+        return False
+    # اگر الگوی هفتگی تکرار شده باشد، تعداد (weekday, time) متمایز خیلی کمتر از کل است
+    try:
+        from utils import jalali_weekday_index
+    except Exception:
+        return False
+    distinct = set()
+    for it in class_items:
+        try:
+            wd = jalali_weekday_index(it.get('date') or '')
+        except:
+            continue
+        t = (it.get('time') or '').strip()[:5]
+        e = (it.get('end_time') or it.get('time_end') or '').strip()[:5]
+        distinct.add((wd, t, e))
+    # اگر هر slot هفتگی چندین بار تکرار شده (چند هفته)، distinct خیلی کوچکتر است
+    if len(distinct) == 0:
+        return False
+    # نسبت: اگر هر slot به‌طور متوسط >2.5 بار تکرار شده، یعنی بازه‌ی چند هفته‌ای است
+    repeat_ratio = len(class_items) / max(1, len(distinct))
+    # همچنین distinct نباید خیلی بزرگ باشد (الگوی هفتگی حداکثر 30 خانه)
+    if repeat_ratio >= 2.2 and len(distinct) <= 32 and len(distinct) >= 5:
+        return True
+    # حالت دیگر: حتی اگر repeat کم باشد ولی تعداد کل >40 و distinct <=25، باز هم جدول هفتگی بهتر است
+    if len(class_items) >= 40 and len(distinct) <= 28:
+        return True
+    return False
+
+
+def _collect_weekly_slots(items: list):
+    """از فهرست تاریخ‌دار، نگاشت (weekday -> {interval_key -> [lessons]} ) می‌سازد."""
+    try:
+        from utils import jalali_weekday_index
+    except:
+        return None, None
+    # interval -> label
+    intervals = {}
+    slot_map = {i: {} for i in range(7)}  # 0=شنبه
+    for it in items:
+        if (it.get('type') or 'class') != 'class':
+            continue
+        try:
+            wd = jalali_weekday_index(it.get('date') or '')
+        except:
+            continue
+        if wd < 0 or wd > 6:
+            continue
+        start = (it.get('time') or '').strip()[:5]
+        end = (it.get('end_time') or it.get('time_end') or '').strip()[:5]
+        if not start:
+            continue
+        # normalize interval key
+        if end and end != start:
+            key = f"{start}-{end}"
+            label = f"{fa_digits(start)} تا {fa_digits(end)}"
+        else:
+            key = start
+            label = fa_digits(start)
+        # infer end if missing (1h)
+        if not end:
+            try:
+                h, m = map(int, start.split(':'))
+                end = f"{h+2:02d}:{m:02d}" if (h % 2 == 0) else f"{h+1:02d}:{m:02d}"
+                # but for 8,10,13,15,17 typical 2h
+                # use 2h for even start
+                key = f"{start}-{end}"
+                label = f"{fa_digits(start)} تا {fa_digits(end)}"
+            except:
+                pass
+        intervals[key] = label
+        # keep per slot list of distinct lessons (avoid duplicate same lesson same slot across weeks)
+        cell = slot_map[wd].get(key)
+        if cell is None:
+            slot_map[wd][key] = []
+            cell = slot_map[wd][key]
+        lesson = (it.get('lesson') or '').strip()
+        if not lesson:
+            continue
+        # dedup by lesson name within same slot
+        if lesson not in [x['lesson'] for x in cell]:
+            cell.append({
+                'lesson': lesson,
+                'teacher': (it.get('teacher') or '').strip(),
+                'group': (it.get('group') or '').strip(),
+                'location': (it.get('location') or '').strip(),
+            })
+    # sort intervals by start time
+    def _p(k):
+        try:
+            return int(k.split('-')[0].split(':')[0])*60 + int(k.split('-')[0].split(':')[1])
+        except:
+            return 9999
+    sorted_keys = sorted(intervals.keys(), key=_p)
+    sorted_labels = [intervals[k] for k in sorted_keys]
+    return slot_map, (sorted_keys, sorted_labels)
+
+
+def _draw_weekly_class_grid(c, y_top: float, slot_map, intervals, group_label: str) -> float:
+    """رسم جدول هفتگی کلاس‌ها (شنبه تا پنجشنبه) — یک صفحه، شبیه برگه‌ی دانشگاه."""
+    keys, labels = intervals
+    # layout: first col weekday, rest intervals
+    # total width CONTENT_W, weekday col 22mm, rest split equally
+    wd_w = 22 * mm
+    avail = CONTENT_W - wd_w
+    if not keys:
+        return y_top
+    col_w = avail / len(keys)
+    # header row
+    row_h_header = 9 * mm
+    row_h = 13 * mm  # per weekday row, enough for 1-2 lessons
+    # check fit
+    needed = row_h_header + 6 * row_h + 6 * mm
+    if y_top - needed < MIN_Y:
+        # will be called only when there is space (first page), assume fit
+        pass
+    x0 = MARGIN
+    # draw header background
+    y = y_top
+    y_header_bottom = y - row_h_header
+    c.setFillColor(NAVY)
+    c.roundRect(x0, y_header_bottom, CONTENT_W, row_h_header, 2.2*mm, fill=1, stroke=0)
+    c.setStrokeColor(HexColor('#2a3a8a'))
+    c.setLineWidth(0.7)
+    c.line(x0+2*mm, y - 1*mm, x0+CONTENT_W-2*mm, y - 1*mm)
+    c.setFont(BOLD, 8.4)
+    c.setFillColor(WHITE)
+    # weekday header
+    c.drawCentredString(x0 + wd_w/2, y_header_bottom + row_h_header/2 - 1.2*mm, rtl("ایام هفته"))
+    # interval headers
+    for idx, lab in enumerate(labels):
+        cx = x0 + wd_w + col_w*idx + col_w/2
+        # convert "08:00 تا 10:00" to "۸ - ۱۰" short for header
+        short = lab.replace(" تا ", " - ")
+        # fa_digits already
+        c.drawCentredString(cx, y_header_bottom + row_h_header/2 - 1.2*mm, rtl(short))
+        if idx < len(labels)-1:
+            c.saveState()
+            c.setStrokeColor(WHITE)
+            c.setStrokeAlpha(0.18)
+            c.setLineWidth(0.6)
+            cx_line = x0 + wd_w + col_w*(idx+1)
+            c.line(cx_line, y_header_bottom + 2*mm, cx_line, y - 2*mm)
+            c.restoreState()
+    # vertical dividers for header
+    c.saveState()
+    c.setStrokeColor(WHITE)
+    c.setStrokeAlpha(0.18)
+    c.setLineWidth(0.6)
+    c.line(x0+wd_w, y_header_bottom+2*mm, x0+wd_w, y-2*mm)
+    c.restoreState()
+
+    y = y_header_bottom
+    # rows شنبه(0) تا پنجشنبه(5) — جمعه(6) را نمایش نمی‌دهیم چون تعطیل است، ولی اگر داده داشت نشان بده
+    display_days = [0,1,2,3,4,5]  # شنبه تا پنجشنبه
+    # check if جمعه has any data
+    has_friday = any(slot_map.get(6, {}).get(k) for k in keys)
+    if has_friday:
+        display_days.append(6)
+
+    for d_idx, wd in enumerate(display_days):
+        y_row_top = y
+        y_row_bottom = y - row_h
+        # zebra
+        bg = WHITE if d_idx % 2 == 0 else HexColor('#f7f8fc')
+        c.setFillColor(bg)
+        c.rect(x0, y_row_bottom, CONTENT_W, row_h, fill=1, stroke=0)
+        # border
+        c.setStrokeColor(CARD_BORDER)
+        c.setLineWidth(0.6)
+        c.rect(x0, y_row_bottom, CONTENT_W, row_h, fill=0, stroke=1)
+        # weekday cell
+        c.setFillColor(NAVY_LIGHT if d_idx % 2 == 0 else NAVY)
+        # subtle left accent for weekday
+        c.setFillColor(HexColor('#eef2ff') if d_idx % 2 == 0 else HexColor('#e6ebff'))
+        c.rect(x0, y_row_bottom, wd_w, row_h, fill=1, stroke=0)
+        c.setStrokeColor(CARD_BORDER)
+        c.rect(x0, y_row_bottom, wd_w, row_h, fill=0, stroke=1)
+        c.setFont(BOLD, 8.2)
+        c.setFillColor(NAVY)
+        c.drawCentredString(x0 + wd_w/2, y_row_bottom + row_h/2 - 1.1*mm, rtl(_weekday_fa(wd)))
+        # vertical line after weekday
+        c.setStrokeColor(CARD_BORDER)
+        c.line(x0+wd_w, y_row_bottom, x0+wd_w, y_row_top)
+        # cells
+        for col_idx, key in enumerate(keys):
+            cx0 = x0 + wd_w + col_w*col_idx
+            # vertical divider
+            if col_idx > 0:
+                c.setStrokeColor(CARD_BORDER)
+                c.setStrokeAlpha(0.7)
+                c.line(cx0, y_row_bottom, cx0, y_row_top)
+                c.setStrokeAlpha(1)
+            lessons = slot_map.get(wd, {}).get(key, [])
+            if not lessons:
+                # dash
+                c.setFont(REGULAR, 8)
+                c.setFillColor(GRAY)
+                c.drawCentredString(cx0 + col_w/2, y_row_bottom + row_h/2 - 1*mm, rtl("—"))
+                continue
+            # if multiple lessons in same slot (e.g., دختر/پسر), stack vertically
+            # limit to 2 lines per cell
+            max_show = 2
+            to_show = lessons[:max_show]
+            # calculate line height
+            if len(to_show) == 1:
+                # single lesson centered
+                lesson = to_show[0]['lesson']
+                # wrap
+                avail_w = col_w - 3*mm
+                lines = wrap_rtl(lesson, MEDIUM, 7.2, avail_w)[:1]
+                line = lines[0] if lines else rtl(lesson)
+                c.setFont(MEDIUM, 7.2)
+                c.setFillColor(TEXT_DARK)
+                c.drawCentredString(cx0 + col_w/2, y_row_bottom + row_h/2 + 1*mm, line)
+                # teacher small if exists
+                teacher = to_show[0]['teacher']
+                if teacher and teacher != '—':
+                    c.setFont(REGULAR, 5.6)
+                    c.setFillColor(GRAY)
+                    # truncate
+                    t_line = wrap_rtl(teacher, REGULAR, 5.6, avail_w)[:1]
+                    t = t_line[0] if t_line else rtl(teacher)
+                    c.drawCentredString(cx0 + col_w/2, y_row_bottom + row_h/2 - 2.8*mm, t)
+            else:
+                # two lessons stacked
+                for li, lesson_obj in enumerate(to_show):
+                    wy = y_row_top - 4*mm - li*5.2*mm
+                    lesson = lesson_obj['lesson']
+                    avail_w = col_w - 3*mm
+                    lines = wrap_rtl(lesson, MEDIUM, 6.6, avail_w)[:1]
+                    line = lines[0] if lines else rtl(lesson)
+                    c.setFont(MEDIUM, 6.6)
+                    c.setFillColor(TEXT_DARK)
+                    c.drawCentredString(cx0 + col_w/2, wy, line)
+                    # small group hint if needed
+                    grp = lesson_obj['group']
+                    if grp and grp not in ('هر دو', ''):
+                        c.setFont(REGULAR, 5.0)
+                        c.setFillColor(NAVY_LIGHT)
+                        # draw tiny group pill below lesson?
+                        pass
+                if len(lessons) > max_show:
+                    c.setFont(REGULAR, 5.2)
+                    c.setFillColor(GRAY)
+                    c.drawCentredString(cx0 + col_w/2, y_row_bottom + 1.2*mm, rtl(f"+{fa_digits(len(lessons)-max_show)}"))
+        y = y_row_bottom
+        # horizontal line
+        c.setStrokeColor(CARD_BORDER)
+        c.setLineWidth(0.5)
+        c.line(x0, y, x0+CONTENT_W, y)
+
+    # footer note below grid
+    y -= 4*mm
+    c.setFont(REGULAR, 6.8)
+    c.setFillColor(GRAY)
+    c.drawRightString(PAGE_W - MARGIN, y, rtl("جدول هفتگی خلاصه — بازه‌ها پس از ادغام ۲ساعته نمایش داده شده‌اند (شنبه تا پنجشنبه، جمعه تعطیل)"))
+    y -= 4*mm
+    return y
+
 def _consolidate_intervals(items: list) -> list:
     """ادغام جلسات پیوسته‌ی هم‌نام/هم‌گروه/هم‌مکان در یک روز به یک بازه واحد.
 
@@ -692,6 +970,39 @@ def generate_schedule_pdf(items: list, group_label: str, student_name: str = '',
         c.save()
         buf.seek(0)
         return buf.getvalue()
+
+    # ── اگر الگوی هفتگی تکرار شده (۱۷۲ ردیف تاریخ‌دار برای ۲۶ خانه‌ی هفتگی)، به‌جای ۱۲ صفحه فهرست، یک جدول هفتگی یک‌صفحه‌ای بکش
+    try:
+        if _should_use_weekly_grid(items, stype):
+            slot_map, intervals = _collect_weekly_slots(items)
+            if slot_map and intervals and intervals[0]:
+                y_after_grid = _draw_weekly_class_grid(c, y, slot_map, intervals, group_label)
+                # برای PDF خالص کلاسی، همین یک صفحه کافی است — دیگر فهرست ۱۷۲ ردیفی را نکش
+                is_pure_class = (stype == 'class') or (stype is None and all((it.get('type') or 'class') == 'class' for it in items))
+                if is_pure_class:
+                    _draw_footer(c, page_num)
+                    c.save()
+                    buf.seek(0)
+                    return buf.getvalue()
+                # برای حالت ترکیبی (همه)، بعد از جدول هفتگی، فقط امتحان/جبرانی را به‌صورت فهرست ادامه بده
+                remaining = [it for it in items if (it.get('type') or 'class') != 'class']
+                if remaining:
+                    items = remaining
+                    # عنوان فرعی برای بخش بعدی
+                    y = y_after_grid - 2*mm
+                    c.setFont(BOLD, 9)
+                    c.setFillColor(NAVY)
+                    c.drawRightString(PAGE_W - MARGIN, y, rtl(" —  ادامه: فهرست امتحانات/جبرانی  — "))
+                    y -= 6*mm
+                    y = _draw_table_header(c, y)
+                    y -= ROW_GAP
+                else:
+                    _draw_footer(c, page_num)
+                    c.save()
+                    buf.seek(0)
+                    return buf.getvalue()
+    except Exception as e:
+        logger.exception(f"weekly grid failed, fallback to list: {e}")
 
     y = _draw_table_header(c, y)
     y -= ROW_GAP  # initial gap
