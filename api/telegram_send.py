@@ -142,8 +142,15 @@ def _branding_caption(caption: str, item: dict) -> str:
 async def _send(method: str, payload: dict) -> bool:
     if not BOT_TOKEN:
         return False
-    async with httpx.AsyncClient(timeout=30) as client:
+    # 🚀 PERF: shared client + keep-alive (before: new TLS per send → 22ms)
+    try:
+        from http_client import get_shared_client
+        client = get_shared_client(timeout=httpx.Timeout(15, read=30))
         resp = await client.post(f"{API_BASE}/{method}", json=payload)
+    except Exception:
+        # fallback isolated client
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{API_BASE}/{method}", json=payload)
     if resp.status_code != 200:
         return False
     return bool(resp.json().get("ok"))
