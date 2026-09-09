@@ -51,6 +51,11 @@ _BOOTSTRAP_STATE = {"ready": False, "steps": {}, "started_at": None}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _BOOTSTRAP_STATE["started_at"] = now_utc().isoformat()
+    # 🚀 WAVE2 — warm shared http client at startup (pool ready before first request)
+    try:
+        from http_client import get_shared_client
+        await get_shared_client()
+    except Exception: pass
     shared, question_indexes = await asyncio.gather(
         db.bootstrap_shared(),
         questions.ensure_indexes(),
@@ -79,6 +84,10 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    try:
+        from http_client import aclose_shared_client
+        await aclose_shared_client()
+    except Exception: pass
     db.client.close()
 
 

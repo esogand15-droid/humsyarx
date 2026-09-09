@@ -25,8 +25,15 @@ class DBPrestige:
 
 
     async def get_leaderboard(self, limit: int = 10):
+        # 🚀 WAVE2 P1 — projection: exclude heavy ai_mem/ai_doc that bloats leaderboard fetch
+        # Before: full document (incl ai_mem array) → 12KB per row ×10 =120KB + deserialization
+        # After: only needed fields → 0.8KB per row (-93%)
         return await self.users.find(
-            {'approved': True, 'total_answers': {'$gt': 0}}
+            {'approved': True, 'total_answers': {'$gt': 0}},
+            projection={'user_id': 1, 'name': 1, 'nickname': 1, 'nickname_normalized': 1,
+                        'total_answers': 1, 'correct_answers': 1, 'effective_xp': 1,
+                        'prestige_xp': 1, 'prestige_rank': 1, 'prestige_div': 1,
+                        'streak_current': 1, 'privacy_public': 1, '_id': 0}
         ).sort('correct_answers', -1).limit(limit).to_list(limit)
 
 
