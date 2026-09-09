@@ -54,6 +54,11 @@ RUN npm --prefix ./webadmin run build
 
 
 # ────────────────────────────────────────────────────────────
+#  Stage 1b — telegram-bot-api binary (برای Dedicated Rename, بدون نیاز به curl/GitHub)
+# ────────────────────────────────────────────────────────────
+FROM ghcr.io/tdlib/telegram-bot-api:latest AS botapi
+
+# ────────────────────────────────────────────────────────────
 #  Stage 2 — runtime پایتون
 # ────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -76,22 +81,11 @@ RUN apt-get update \
       libfreetype6 \
  && rm -rf /var/lib/apt/lists/*
 
-# ── Local Bot API binary (only for Dedicated Rename Pipeline, reuses same container resources) ──
-# رسمی: https://github.com/tdlib/telegram-bot-api
-# این باینری فقط وقتی TELEGRAM_API_ID/HASH ست باشد توسط supervisord بالا می‌آید
-# حجم: ~30MB، RAM: ~100-200MB برای فایل 30MB — با 1GB سرویس هامزیار مشکلی نیست
-ARG TELEGRAM_BOT_API_VERSION=7.1
-RUN set -eux; \
-    arch=$(dpkg --print-architecture); \
-    if [ "$arch" = "amd64" ]; then bin_arch="linux-x86_64"; else bin_arch="linux-aarch64"; fi; \
-    url="https://github.com/tdlib/telegram-bot-api/releases/download/v${TELEGRAM_BOT_API_VERSION}/telegram-bot-api-${bin_arch}"; \
-    echo "Downloading telegram-bot-api $TELEGRAM_BOT_API_VERSION for $bin_arch from $url"; \
-    curl -fsSL "$url" -o /usr/local/bin/telegram-bot-api || \
-      curl -fsSL "https://github.com/tdlib/telegram-bot-api/releases/download/v7.1/telegram-bot-api" -o /usr/local/bin/telegram-bot-api || \
-      echo "WARNING: telegram-bot-api download failed — Local rename will fallback to Cloud (20MB limit)"; \
-    chmod +x /usr/local/bin/telegram-bot-api 2>/dev/null || true; \
+# ── Local Bot API binary (Dedicated Rename, همون منابع) — از ایمیج رسمی کپی می‌شود (قابل اعتمادتر از curl) ──
+COPY --from=botapi /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
+RUN chmod +x /usr/local/bin/telegram-bot-api 2>/dev/null || true; \
     /usr/local/bin/telegram-bot-api --help 2>&1 | head -n 20 || true; \
-    echo "telegram-bot-api installed: $(/usr/local/bin/telegram-bot-api --version 2>&1 || echo ok)"
+    echo "telegram-bot-api copied from ghcr.io/tdlib/telegram-bot-api"
 
 WORKDIR /srv/humsyar
 
