@@ -387,6 +387,8 @@ class DBCore:
                 self._index(self.question_pdf_generations, [('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
                 self._index(self.discount_uses, [('code', 1), ('user_id', 1)], unique=True, background=True),
+                # 🛡 W1 — کد تخفیف یکتاست: ضدتکرار اتمیک در ساخت (race-safe) + کوئری داغ discount_validate
+                self._index(self.discount_codes, [('code', 1)], unique=True, background=True),
                 self._index(self.discount_bcasts, [('code', 1), ('created_at', -1)], background=True),
                 # 💰 W6 — کیف پول: هر کاربر یک wallet؛ کلید یکتای تراکنش =
                 # idempotency مالی (دو اثر اقتصادی برای یک مرجع ممنوع)؛

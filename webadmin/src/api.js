@@ -736,6 +736,11 @@ export const api = {
       `/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/activate`,
       { method: "POST", body: { confirm: true } },
     ),
+  subReconFinalizeTopup: (pid) =>
+    req(
+      `/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/finalize-topup`,
+      { method: "POST", body: { confirm: true } },
+    ),
   subFinance: () => req("/api/web-admin/subscription/finance"),
   // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
   subPaymentTrace: (pid) =>
@@ -751,6 +756,16 @@ export const api = {
           ),
         ),
       `humsyar-payments-${fileDateStamp()}.csv`,
+    ),
+  exportWalletCsv: (p = {}) =>
+    downloadFile(
+      "/api/web-admin/exports/wallet.csv?" +
+        new URLSearchParams(
+          Object.entries(p).filter(
+            ([, v]) => v !== "" && v !== null && v !== undefined,
+          ),
+        ),
+      `humsyar-wallet-${fileDateStamp()}.csv`,
     ),
   // 💰 W6 — کیف پول داخلی
   subWallets: (p = {}) =>

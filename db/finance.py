@@ -93,17 +93,21 @@ class DBFinance:
                     expires_at = parse_machine_datetime(expires_at).astimezone(UTC).isoformat()
             except ValueError:
                 raise ValueError('invalid_discount_expiry')
-        await self.discount_codes.insert_one({
-            'code': code, 'percent': max(1, min(100, percent)),
-            'max_uses': max_uses, 'used_count': 0,
-            'expires_at': expires_at, 'active': True,
-            # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
-            # غیرخالی یعنی فقط همان plan_idها
-            'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
-            # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
-            'per_user_limit': max(0, int(per_user_limit or 0)),
-            'created_by': created_by, 'created_at': utc_now_iso(),
-        })
+        try:
+            await self.discount_codes.insert_one({
+                'code': code, 'percent': max(1, min(100, percent)),
+                'max_uses': max_uses, 'used_count': 0,
+                'expires_at': expires_at, 'active': True,
+                # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
+                # غیرخالی یعنی فقط همان plan_idها
+                'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
+                # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
+                'per_user_limit': max(0, int(per_user_limit or 0)),
+                'created_by': created_by, 'created_at': utc_now_iso(),
+            })
+        except DuplicateKeyError:
+            # 🛡 W1 — race دو ساخت هم‌زمان: ایندکس یکتا داور نهایی است
+            return False
         return True
 
 

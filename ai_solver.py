@@ -231,6 +231,9 @@ IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
 IMAGE_PROMPT_MIN = 3
 IMAGE_PROMPT_MAX = 1000
 
+# 🛡 W1 — پیام واحد بن هوشیار (قبلاً تعریف‌نشده صدا زده می‌شد → NameError)
+AI_BANNED_MSG = "⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده."
+
 
 class AiImageError(Exception):
     """خطای نگاشت‌شده‌ی تولید تصویر — code ماشین‌خوان + پیام امن کاربر.
@@ -2484,7 +2487,7 @@ async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     if len(text) > MAX_INPUT_CHARS:
@@ -2587,7 +2590,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     kind = None
@@ -2788,7 +2791,7 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG, show_alert=True)
             return
         if await db.ai_is_banned(uid):
-            await query.answer("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.", show_alert=True)
+            await query.answer(AI_BANNED_MSG, show_alert=True)
             return
         if not await ai_claim_inflight(uid):
             await query.answer("⏳ صبر کن جوابِ قبلی آماده بشه.", show_alert=True)

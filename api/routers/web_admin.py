@@ -5258,13 +5258,14 @@ async def wa_subscription_overview(user=Depends(_perm("subscription.manage"))):
 @router.get("/subscription/payments")
 async def wa_subscription_payments(
     status: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100),
     search: Optional[str] = Query(None),
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.payments(
-        status=status, skip=skip, limit=limit, search=search, admin=user)
+        status=status, kind=kind, skip=skip, limit=limit, search=search, admin=user)
 
 
 @router.post("/subscription/payments/{payment_id}/decision")
@@ -5356,6 +5357,7 @@ _RECON_META = {
     "active_sub_no_approved_payment": ("high", "اشتراک فعال بدون پرداخت تأییدشده"),
     "refunded_but_active_sub": ("critical", "بازگشت وجه شده ولی اشتراک هنوز فعال"),
     "pending_stale": ("warning", "رسید قدیمی در انتظار بررسی"),
+    "approved_topup_not_credited": ("high", "شارژ تأییدشده بدون اعتبار کیف پول"),
 }
 
 
@@ -5445,17 +5447,32 @@ async def wa_subscription_reconcile(
         {"status": "active"}).to_list(length=10000)}
     users_with_approved = {
         int(r["_id"]) for r in await db.sub_payments.aggregate([
-            {"$match": {"status": "approved"}},
+            {"$match": {"status": "approved",
+                        "plan_id": {"$ne": "wallet_topup"}}},
             {"$group": {"_id": "$user_id"}},
         ]).to_list(length=10000)}
     # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
+    # 🛡 W1 — رسید شارژ ذاتاً اشتراک نمی‌سازد (آشکارساز ۱-ب)؛
+    # رسید هدیه هم اشتراکِ «گیرنده» را می‌سازد نه payer.
     async for p in db.sub_payments.find(
             {"status": "approved"}).sort("reviewed_at", -1).limit(200):
+        if str(p.get("plan_id") or "") == "wallet_topup":
+            continue
         uid = int(p.get("user_id") or 0)
-        if uid not in active_subs:
+        gift_to = int((p.get("gift") or {}).get("to") or 0)
+        if (gift_to or uid) not in active_subs:
             items.append({"type": "approved_no_active_sub", "user_id": uid,
                           "payment": p,
                           "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۱-ب) 🛡 W1 — رسید شارژِ تأییدشده که اعتبارش به کیف ننشسته
+    # (کرش بین تأیید و finalize) — اقدام: اجرای idempotent دوباره‌ی finalize.
+    async for p in db.sub_payments.find(
+            {"status": "approved", "plan_id": "wallet_topup",
+             "topup_credited_at": None}).sort("reviewed_at", -1).limit(200):
+        items.append({"type": "approved_topup_not_credited",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment": p,
+                      "at": p.get("reviewed_at") or p.get("submitted_at")})
     # ۲) اشتراک فعال (منبع پرداخت) بدون هیچ پرداخت تأییدشده
     async for s in db.subscriptions.find(
             {"status": "active", "source": "payment"}).limit(200):
@@ -5504,6 +5521,12 @@ async def wa_subscription_reconcile(
             actions = [{"key": "activate", "label": "فعال‌سازی امن اشتراک"},
                        {"key": "go", "label": "بررسی رسید",
                         "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
+        elif t == "approved_topup_not_credited":
+            text = (f"رسید شارژ {who} به مبلغ {int(amount or 0):,} تومان تأیید شده "
+                    f"ولی اعتبارش به کیف پول ننشسته است.")
+            actions = [{"key": "finalize_topup", "label": "اعمال اعتبار شارژ"},
+                       {"key": "go", "label": "بررسی کیف پول",
+                        "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}]
         elif t == "active_sub_no_approved_payment":
             text = (f"{who} اشتراک فعال دارد (منبع: پرداخت) ولی هیچ رسید "
                     f"تأییدشده‌ای برایش ثبت نشده — دسترسی بی‌حساب.")
@@ -5623,6 +5646,51 @@ async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
         "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
         "created_at": _now()})
     return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
+
+
+class WaReconFinalizeTopupBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/subscription/reconcile/{payment_id}/finalize-topup")
+async def wa_reconcile_finalize_topup(payment_id: str, body: WaReconFinalizeTopupBody,
+                                      user=Depends(_perm("subscription.manage"))):
+    """🌊 W1 — اقدام مغایرت «شارژ تأییدشده بدون اعتبار»: اجرای idempotent
+    دوباره‌ی finalize_approved_payment برای رسید شارژ (همان primitive تأیید).
+    اگر اعتبار قبلاً نشسته باشد، اثر دوم ساخته نمی‌شود (already)."""
+    if not body.confirm:
+        raise HTTPException(400, "برای اعمال اعتبار، تأیید صریح لازم است")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if str(payment.get("plan_id") or "") != "wallet_topup":
+        raise HTTPException(409, "فقط رسید شارژ کیف پول قابل finalize است")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل finalize است")
+    uid = int(payment.get("user_id") or 0)
+    try:
+        result = await db.finalize_approved_payment(payment, int(user["id"]))
+    except ValueError:
+        raise HTTPException(422, "مبلغ این رسید شارژ نامعتبر است؛ بررسی دستی لازم است")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی: اعمال اعتبار شارژ",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=str(payment["_id"]), target_label=f"رسید شارژ کاربر {uid}",
+        before={"topup_credited": False},
+        after={"topup_credited": True, "already": bool(result.get("already")),
+               "amount": result.get("amount"),
+               "balance_after": result.get("balance_after")},
+        tags=["مالی", "مغایرت‌گیری"])
+    if not result.get("already"):
+        await db.client["medicalbot"]["bot_notifications"].insert_one({
+            "type": "event:wallet_credit", "chat_id": uid, "sent": False,
+            "text": f"💰 مبلغ {int(result.get('amount') or 0):,} تومان به کیف پول شما اضافه شد.",
+            "created_at": _now()})
+    already = bool(result.get("already"))
+    return {"ok": True, "already": already, "already_credited": already,
+            "amount": result.get("amount"),
+            "balance_after": result.get("balance_after"),
+            "tx_id": result.get("tx_id"), "audit_id": log_id}
 
 
 @router.get("/subscription/finance")
@@ -5766,6 +5834,42 @@ async def wa_export_payments_csv(status: str = Query("", max_length=20),
     return Response(
         "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
+                 "X-Audit-Id": str(log_id)})
+
+
+@router.get("/exports/wallet.csv")
+async def wa_export_wallet_csv(user_id: int = Query(0),
+                               user=Depends(_perm("subscription.manage"))):
+    """🌊 W1 — خروجی CSV کرانه‌دار دفترکل کیف پول (حداکثر ۲۰۰۰ سطر آخر).
+    user_id اختیاری: فقط تراکنش‌های همان کاربر."""
+    flt = {"user_id": int(user_id)} if int(user_id or 0) else {}
+    rows = await db.wallet_transactions.find(flt).sort("_id", -1).limit(2000).to_list(2000)
+    uids = {int(t.get("user_id") or 0) for t in rows}
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(2000):
+            names[int(u["user_id"])] = u.get("name") or ""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "نوع", "جهت", "مبلغ (تومان)",
+                "موجودی پس‌از", "نوع مرجع", "شناسه مرجع", "ثبت‌کننده", "تاریخ"])
+    for t in rows:
+        uid = int(t.get("user_id") or 0)
+        w.writerow([str(t.get("_id")), names.get(uid, ""), uid,
+                    t.get("label") or t.get("type") or "",
+                    t.get("direction") or "",
+                    t.get("amount") if t.get("amount") is not None else "",
+                    t.get("balance_after") if t.get("balance_after") is not None else "",
+                    t.get("reference_type") or "", t.get("reference_id") or "",
+                    t.get("actor_id") if t.get("actor_id") is not None else t.get("actor") or "",
+                    t.get("at") or t.get("created_at") or ""])
+    log_id = await _audit(int(user["id"]), "خروجی CSV دفترکل کیف پول",
+                          severity="INFO", target_type="export",
+                          target_id=f"wallet:{user_id or 'all'}",
+                          after={"rows": len(rows)}, tags=["مالی", "خروجی"])
+    return Response(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=humsyar-wallet.csv",
                  "X-Audit-Id": str(log_id)})
 
 
