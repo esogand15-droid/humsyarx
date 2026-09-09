@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
+from typing import List, Optional
 
 from api.auth import (
     ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
@@ -7045,6 +7045,110 @@ async def wa_schedule_bulk_delete(
                      target_type="schedule", target_label=str(group or "همه"),
                      after={"deleted": n, "group": group, "stype": stype},
                      tags=["برنامه", "پاکسازی_گروهی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "deleted": n}
+
+
+class BulkScheduleDeleteIn(BaseModel):
+    ids: Optional[List[str]] = None
+    group: Optional[str] = None
+    stype: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    delete_all: bool = False
+
+
+@router.post("/schedule/bulk-delete")
+async def wa_schedule_bulk_delete_post(
+    body: BulkScheduleDeleteIn,
+    user=Depends(_perm("schedules.manage")),
+):
+    """حذف گروهی پیشرفته — انتخاب چندتایی / بازه‌ی تاریخی / همه.
+
+    - اگر ids داده شود: همان‌ها حذف می‌شوند (حتی اگر ادغام‌شده باشند).
+    - وگرنه فیلتر group/stype/date_from/date_to اعمال می‌شود.
+    - اگر هیچ‌کدام نبود و delete_all=false → 400 (جلوگیری از حذف تصادفی).
+    - هیچ‌وقت 404 نمی‌دهد؛ deleted=0 هم ok است.
+    """
+    from bson import ObjectId
+    q: dict = {}
+
+    # حالت 1: حذف بر اساس ids صریح
+    if body.ids:
+        oids = []
+        for sid in body.ids:
+            try:
+                oids.append(ObjectId(str(sid).strip()))
+            except Exception:
+                continue
+        if not oids:
+            raise HTTPException(400, "شناسه‌های نامعتبر")
+        q["_id"] = {"$in": oids}
+    else:
+        # حالت 2: فیلتر
+        has_filter = any([body.group not in (None, ""), body.stype not in (None, ""), body.date_from, body.date_to, body.delete_all])
+        if not has_filter:
+            raise HTTPException(400, "برای حذف گروهی باید ids یا فیلتر یا delete_all ارسال شود")
+
+        if body.group is not None and str(body.group).strip() != "":
+            norm = db.normalize_group(body.group)
+            if norm in ("1", "2"):
+                q["group"] = {"$in": db.group_aliases(norm)}
+            else:
+                q["group"] = norm
+        if body.stype:
+            if body.stype not in ("class", "exam", "makeup"):
+                raise HTTPException(400, "stype نامعتبر است")
+            q["type"] = body.stype
+        # بازه‌ی تاریخی
+        if body.date_from or body.date_to:
+            date_q = {}
+            def _to_gregorian(s: str) -> str:
+                s = str(s).strip()
+                if not s:
+                    return ""
+                # try jalali YYYY/MM/DD or YYYY-MM-DD
+                s_norm = s.replace("/", "-")
+                # اگر سال با 14 شروع شد، احتمالاً جلالی است
+                try:
+                    if s_norm[:2] == "14" or s_norm[:4].startswith("14"):
+                        # جلالی
+                        from time_utils import parse_jalali_date
+                        d = parse_jalali_date(s)
+                        return d.isoformat()
+                except Exception:
+                    pass
+                try:
+                    from time_utils import parse_gregorian_date
+                    d = parse_gregorian_date(s_norm[:10])
+                    return d.isoformat()
+                except Exception:
+                    return s_norm[:10]
+            if body.date_from:
+                g = _to_gregorian(body.date_from)
+                if g:
+                    date_q["$gte"] = g
+            if body.date_to:
+                g = _to_gregorian(body.date_to)
+                if g:
+                    date_q["$lte"] = g
+            if date_q:
+                q["date"] = date_q
+        # اگر delete_all بدون فیلتر دیگر، q خالی می‌ماند → حذف همه
+        if not q and body.delete_all:
+            q = {}
+
+    if not q and not body.ids and not body.delete_all:
+        raise HTTPException(400, "فیلتر حذف خالی است")
+
+    r = await db.schedules.delete_many(q)
+    n = int(getattr(r, "deleted_count", 0) or 0)
+    try:
+        await _audit(user["id"], f"حذف گروهی پیشرفته ({n} مورد)", "Schedules", severity="WARNING",
+                     target_type="schedule", target_label=str(body.group or body.stype or ("ids:"+str(len(body.ids or [])) if body.ids else "همه")),
+                     after={"deleted": n, "filters": body.model_dump()},
+                     tags=["برنامه", "حذف_گروهی", "پنل_وب"])
     except Exception:
         pass
     return {"ok": True, "deleted": n}

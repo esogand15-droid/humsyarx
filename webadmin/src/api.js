@@ -943,6 +943,8 @@ export const api = {
     const q = qs.toString() ? `?${qs.toString()}` : "";
     return req(`/api/web-admin/schedule${q}`, { method: "DELETE" });
   },
+  caScheduleBulkDelete: (body) =>
+    req("/api/web-admin/schedule/bulk-delete", { method: "POST", body }),
   caFlexChange: (sid, body) =>
     req(`/api/web-admin/schedule/${sid}/flex-change`, { method: "POST", body }),
   // ── 🧠 الگوی هفتگی (شنبه-جمعه) + اسکن هوشیار ──

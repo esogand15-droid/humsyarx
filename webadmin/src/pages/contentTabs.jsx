@@ -1903,6 +1903,11 @@ export function ScheduleTab() {
   const [edit, setEdit] = useState(null);
   const [flex, setFlex] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [showRangeModal, setShowRangeModal] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
 
   const load = async () => {
     setErr("");
@@ -1937,6 +1942,174 @@ export function ScheduleTab() {
   const monthLength = monthItems.length
     ? jalaliMonthLengthFor(monthItems[0].item.date)
     : 0;
+
+  // ── Bulk helpers ──
+  const _allListIds = (() => {
+    if (!items) return [];
+    // flattened ids for current filter (stype)
+    const ids = [];
+    for (const it of items) {
+      if (it?.id) ids.push(String(it.id));
+      if (Array.isArray(it?._mergedIds)) {
+        for (const mid of it._mergedIds)
+          if (!ids.includes(String(mid))) ids.push(String(mid));
+      }
+    }
+    // dedup
+    return [...new Set(ids)];
+  })();
+  const _mergedForBulk = (() => {
+    // same merge as list view for accurate bulk ids
+    try {
+      const _p = (t) => {
+        const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
+        return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      };
+      const _f = (m) =>
+        `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+      const s = [...(items || [])].sort(
+        (a, b) =>
+          (a.date || "").localeCompare(b.date || "") ||
+          String(a.time || "").localeCompare(String(b.time || "")),
+      );
+      const out = [];
+      for (const cur of s) {
+        const prev = out[out.length - 1];
+        if (
+          prev &&
+          prev.date === cur.date &&
+          prev.lesson === cur.lesson &&
+          (prev.group || "") === (cur.group || "") &&
+          (prev.type || "class") === (cur.type || "class") &&
+          (prev.location || "") === (cur.location || "") &&
+          (prev.teacher || "") === (cur.teacher || "")
+        ) {
+          const prevEnd =
+            _p(prev.end_time || prev.time_end || "") ??
+            (_p(prev.time) !== null ? _p(prev.time) + 60 : null);
+          const curStart = _p(cur.time);
+          const curEnd =
+            _p(cur.end_time || cur.time_end || "") ??
+            (curStart !== null ? curStart + 60 : null);
+          if (
+            prevEnd !== null &&
+            curStart !== null &&
+            prevEnd === curStart &&
+            curEnd !== null
+          ) {
+            prev.end_time = _f(curEnd);
+            prev._merged = (prev._merged || 1) + 1;
+            prev._mergedIds = [...(prev._mergedIds || [prev.id]), cur.id];
+            continue;
+          }
+        }
+        out.push({ ...cur, _mergedIds: [cur.id] });
+      }
+      return out;
+    } catch {
+      return items || [];
+    }
+  })();
+  const _bulkAllIds = (() => {
+    const ids = [];
+    for (const it of _mergedForBulk)
+      for (const mid of it._mergedIds || [it.id]) ids.push(String(mid));
+    return [...new Set(ids)];
+  })();
+  const isSelected = (id) => selected.has(String(id));
+  const toggleOne = (idOrIds) => {
+    const ids = Array.isArray(idOrIds)
+      ? idOrIds.map(String)
+      : [String(idOrIds)];
+    setSelected((prev) => {
+      const nxt = new Set(prev);
+      const allSel = ids.every((x) => nxt.has(x));
+      if (allSel) ids.forEach((x) => nxt.delete(x));
+      else ids.forEach((x) => nxt.add(x));
+      return nxt;
+    });
+  };
+  const selectAllVisible = () => setSelected(new Set(_bulkAllIds.map(String)));
+  const clearSelection = () => setSelected(new Set());
+  const selectedCount = selected.size;
+  const doBulkDeleteSelected = async () => {
+    if (selectedCount === 0) return toast("چیزی انتخاب نشده", "err");
+    if (
+      !confirm(
+        `حذف ${selectedCount.toLocaleString("fa")} مورد انتخاب‌شده؟ این عمل برگشت‌ناپذیر است.`,
+      )
+    )
+      return;
+    try {
+      const r = await api.caScheduleBulkDelete({ ids: [...selected] });
+      toast(`حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد ✅`);
+      clearSelection();
+      setBulkMode(false);
+      load();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+  };
+  const doBulkDeleteAllFiltered = async () => {
+    const n = _bulkAllIds.length;
+    if (n === 0) return toast("موردی برای حذف وجود ندارد", "err");
+    const label = stype
+      ? stype === "class"
+        ? "کلاس"
+        : stype === "exam"
+          ? "امتحان"
+          : "جبرانی"
+      : "همه در این تب";
+    if (
+      !confirm(
+        `حذف همه‌ی ${n.toLocaleString("fa")} مورد «${label}» در فیلتر فعلی؟\nاز ۲۸ شهریور تا ۲۵ دی و هر تاریخ دیگری که در این فیلتر است، همه پاک می‌شود.`,
+      )
+    )
+      return;
+    try {
+      const r = await api.caScheduleBulkDelete({
+        stype: stype || undefined,
+        group: undefined,
+        delete_all: !stype ? true : false,
+        ...(stype ? { stype } : {}),
+      });
+      // fallback to query delete if needed
+      let deleted = r.deleted;
+      if (n > 0 && deleted === 0) {
+        // try via query endpoint
+        const r2 = await api.caScheduleBulkClear(undefined, stype || undefined);
+        deleted = r2.deleted;
+      }
+      toast(`حذف شد — ${Number(deleted || 0).toLocaleString("fa")} مورد ✅`);
+      clearSelection();
+      setBulkMode(false);
+      load();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+  };
+  const doBulkDeleteRange = async () => {
+    if (!rangeFrom || !rangeTo)
+      return toast("بازه‌ی تاریخ را کامل انتخاب کنید", "err");
+    if (!confirm(`حذف بازه‌ای از ${rangeFrom} تا ${rangeTo} ؟`)) return;
+    try {
+      const r = await api.caScheduleBulkDelete({
+        date_from: rangeFrom,
+        date_to: rangeTo,
+        stype: stype || undefined,
+      });
+      toast(
+        `حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد در بازه ✅`,
+      );
+      setShowRangeModal(false);
+      clearSelection();
+      setBulkMode(false);
+      load();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+  };
+
   return (
     <>
       <HushyarScanPanel onGenerated={load} />
@@ -1975,7 +2148,19 @@ export function ScheduleTab() {
             </button>
           ))}
         </div>
-        <span className="spacer" />
+        <button
+          className={`btn ${bulkMode ? "primary" : ""}`}
+          onClick={() => {
+            setBulkMode((v) => {
+              const nxt = !v;
+              if (v) setSelected(new Set());
+              return nxt;
+            });
+          }}
+          title="انتخاب چندتایی برای حذف گروهی"
+        >
+          ☑️ انتخاب گروهی
+        </button>
         <button
           className="btn primary"
           onClick={() =>
@@ -1985,6 +2170,148 @@ export function ScheduleTab() {
           ➕ مورد جدید
         </button>
       </div>
+      {bulkMode && (
+        <div
+          className="panel"
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 8,
+            padding: "10px 12px",
+            marginBottom: 10,
+            background: "var(--c-surface2)",
+            border: "1px solid var(--c-line)",
+            borderRadius: "var(--r-lg)",
+            position: "sticky",
+            top: 8,
+            zIndex: 2,
+          }}
+        >
+          <span className="badge acc" style={{ fontSize: 12 }}>
+            {selectedCount.toLocaleString("fa")} انتخاب‌شده
+          </span>
+          <span className="muted" style={{ fontSize: 11 }}>
+            از {_bulkAllIds.length.toLocaleString("fa")} مورد در این تب
+          </span>
+          <span style={{ flex: 1 }} />
+          <button
+            className="btn sm"
+            onClick={selectAllVisible}
+            disabled={_bulkAllIds.length === 0}
+          >
+            ✅ انتخاب همه
+          </button>
+          <button
+            className="btn sm"
+            onClick={clearSelection}
+            disabled={selectedCount === 0}
+          >
+            ↩️ لغو انتخاب
+          </button>
+          <button
+            className="btn sm danger"
+            onClick={doBulkDeleteSelected}
+            disabled={selectedCount === 0}
+          >
+            🗑 حذف انتخاب‌شده
+          </button>
+          <button
+            className="btn sm danger"
+            onClick={doBulkDeleteAllFiltered}
+            disabled={_bulkAllIds.length === 0}
+            title="حذف همه‌ی موارد فیلترشده (مثلا از ۲۸ شهریور تا ۲۵ دی)"
+          >
+            🧹 حذف همه در این تب
+          </button>
+          <button
+            className="btn sm warn"
+            onClick={() => setShowRangeModal(true)}
+          >
+            📅 حذف بازه‌ای
+          </button>
+        </div>
+      )}
+      {showRangeModal && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowRangeModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(8,15,31,0.55)",
+            display: "grid",
+            placeItems: "center",
+            zIndex: 60,
+          }}
+        >
+          <div
+            className="panel panel-pad"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(420px,92vw)",
+              background: "var(--c-bg2)",
+              border: "1px solid var(--c-line2)",
+              borderRadius: "var(--r-xl)",
+            }}
+          >
+            <b>📅 حذف بازه‌ای — انتخاب بازه‌ی شمسی</b>
+            <div className="muted small" style={{ marginTop: 6 }}>
+              مثلا ۱۴۰۴/۰۶/۲۸ تا ۱۴۰۴/۱۰/۲۵ — همه‌ی برنامه‌ها در این بازه پاک
+              می‌شوند (فیلتر نوع هم اعمال می‌شود اگر تب کلاس/امتحان انتخاب
+              باشد).
+            </div>
+            <div className="grid" style={{ gap: 8, marginTop: 12 }}>
+              <div className="row" style={{ gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div
+                    className="muted"
+                    style={{ fontSize: 11, marginBottom: 4 }}
+                  >
+                    از تاریخ
+                  </div>
+                  <PersianDatePicker
+                    value={rangeFrom}
+                    onChange={setRangeFrom}
+                    placeholder="۱۴۰۴/۰۶/۲۸"
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div
+                    className="muted"
+                    style={{ fontSize: 11, marginBottom: 4 }}
+                  >
+                    تا تاریخ
+                  </div>
+                  <PersianDatePicker
+                    value={rangeTo}
+                    onChange={setRangeTo}
+                    placeholder="۱۴۰۴/۱۰/۲۵"
+                  />
+                </div>
+              </div>
+              <div
+                className="row"
+                style={{ gap: 8, justifyContent: "flex-end" }}
+              >
+                <button
+                  className="btn sm"
+                  onClick={() => setShowRangeModal(false)}
+                >
+                  انصراف
+                </button>
+                <button
+                  className="btn sm danger"
+                  onClick={doBulkDeleteRange}
+                  disabled={!rangeFrom || !rangeTo}
+                >
+                  🗑 حذف بازه
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {!items ? (
         <Loading />
       ) : items.length === 0 ? (
@@ -2105,6 +2432,36 @@ export function ScheduleTab() {
                           borderBottom: "1px solid var(--c-line)",
                         }}
                       >
+                        {bulkMode && (
+                          <input
+                            type="checkbox"
+                            checked={
+                              rows.length > 0 &&
+                              rows.every((r) =>
+                                (r._mergedIds || [r.id]).every((id) =>
+                                  selected.has(String(id)),
+                                ),
+                              )
+                            }
+                            onChange={() => {
+                              const ids = rows
+                                .flatMap((r) => r._mergedIds || [r.id])
+                                .map(String);
+                              const all = ids.every((id) => selected.has(id));
+                              setSelected((prev) => {
+                                const nxt = new Set(prev);
+                                if (all) ids.forEach((id) => nxt.delete(id));
+                                else ids.forEach((id) => nxt.add(id));
+                                return nxt;
+                              });
+                            }}
+                            style={{
+                              width: 18,
+                              height: 18,
+                              accentColor: "var(--c-acc)",
+                            }}
+                          />
+                        )}
                         <span
                           style={{
                             display: "grid",
@@ -2148,8 +2505,20 @@ export function ScheduleTab() {
                                 padding: 0,
                                 overflow: "hidden",
                                 borderRadius: 12,
-                                border: "1px solid var(--c-line)",
-                                background: "var(--c-bg2)",
+                                border:
+                                  bulkMode &&
+                                  (s._mergedIds || [s.id]).every((id) =>
+                                    selected.has(String(id)),
+                                  )
+                                    ? "1px solid var(--c-acc)"
+                                    : "1px solid var(--c-line)",
+                                background:
+                                  bulkMode &&
+                                  (s._mergedIds || [s.id]).every((id) =>
+                                    selected.has(String(id)),
+                                  )
+                                    ? "color-mix(in srgb, var(--c-acc) 9%, var(--c-bg2))"
+                                    : "var(--c-bg2)",
                                 borderInlineStart: `3px solid ${sty.col}`,
                                 boxShadow: "var(--sh-1)",
                               }}
@@ -2163,6 +2532,23 @@ export function ScheduleTab() {
                                   padding: "10px 12px",
                                 }}
                               >
+                                {bulkMode && (
+                                  <input
+                                    type="checkbox"
+                                    checked={(s._mergedIds || [s.id]).every(
+                                      (id) => selected.has(String(id)),
+                                    )}
+                                    onChange={() =>
+                                      toggleOne(s._mergedIds || [s.id])
+                                    }
+                                    style={{
+                                      width: 16,
+                                      height: 16,
+                                      accentColor: "var(--c-acc)",
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                )}
                                 <div
                                   style={{
                                     display: "grid",
