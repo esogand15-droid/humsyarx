@@ -76,9 +76,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// 🌊 W4 — offline + retry + online-awareness
+if (typeof window !== 'undefined') {
+  window.addEventListener('offline', () => window.dispatchEvent(new CustomEvent('app:offline')));
+  window.addEventListener('online', () => window.dispatchEvent(new CustomEvent('app:online')));
+}
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config || {};
     const status = error.response?.status;
     const detail = error.response?.data?.detail;
 
@@ -90,6 +97,35 @@ api.interceptors.response.use(
       window.dispatchEvent(new CustomEvent('auth:suspended'));
     } else if (status === 401) {
       window.dispatchEvent(new CustomEvent('auth:invalid'));
+    }
+
+    // retry: network error (no response) or 5xx / 429
+    const shouldRetry = (!error.response && typeof navigator !== 'undefined' && navigator.onLine !== false)
+      || (status >= 500 && status < 600)
+      || status === 429;
+    const isIdempotent = !config.method || ['get','head','options','put','delete'].includes((config.method||'').toLowerCase());
+    const maxRetries = (isIdempotent || (config.method||'').toLowerCase() === 'get') ? 2 : 1;
+    // exponential backoff: 400ms * 2^retry + jitter
+    if (shouldRetry && (config.__retryCount || 0) < maxRetries) {
+      config.__retryCount = (config.__retryCount || 0) + 1;
+      const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '0', 10);
+      const backoff = retryAfter ? retryAfter * 1000 : (400 * Math.pow(2, config.__retryCount - 1) + Math.random() * 200);
+      // respect Retry-After for 429
+      await new Promise(r => setTimeout(r, Math.min(backoff, 3000)));
+      // if offline, wait for online before retry
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await new Promise(res => {
+          const onOnline = () => { window.removeEventListener('online', onOnline); res(); };
+          window.addEventListener('online', onOnline);
+          setTimeout(() => { window.removeEventListener('online', onOnline); res(); }, 5000);
+        });
+      }
+      return api(config);
+    }
+
+    // offline hint for UI: dispatch global error for toasts
+    if (!error.response && typeof navigator !== 'undefined' && !navigator.onLine) {
+      window.dispatchEvent(new CustomEvent('app:offline_error', { detail: error }));
     }
 
     return Promise.reject(error);

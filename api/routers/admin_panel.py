@@ -527,6 +527,7 @@ async def all_tickets(
     date_to: Optional[str] = Query(None),
     sort_by: str = Query("created_at"), sort_dir: str = Query("desc"),
     page: int = Query(1, ge=1), limit: int = Query(30, ge=1, le=100),
+    after: Optional[str] = Query(None, max_length=32, description="cursor _id for keyset pagination"),
 ):
     """تک‌منبع query صف پشتیبانی برای owner route و Web wrapper."""
     # سازگاری direct-call تست‌ها/مصرف‌های قدیمی
@@ -578,6 +579,29 @@ async def all_tickets(
         except ValueError:
             raise HTTPException(422, "بازه تاریخ تیکت معتبر نیست")
         filt["created_at"] = created
+    # 🌊 W4 — cursor pagination (keyset) — if after provided, use _id > after
+    if after:
+        try:
+            from bson import ObjectId as _OID
+            if _OID.is_valid(after):
+                filt["_id"] = {"$gt": _OID(after)}
+                # when cursor used, ignore page offset
+                tickets = await (db.tickets.find(filt).sort("_id", 1).limit(limit + 1).to_list(limit + 1))
+                has_more = len(tickets) > limit
+                if has_more:
+                    tickets = tickets[:limit]
+                next_cursor = str(tickets[-1]["_id"]) if tickets and has_more else None
+                return {"tickets": [{
+                    "id": t.get("ticket_id"), "user_id": t.get("user_id"),
+                    "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
+                    "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+                    "created_at": t.get("created_at") or None,
+                    "last_reply_at": t.get("last_reply_at") or None,
+                    "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
+                    "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+                } for t in tickets], "total": None, "page": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more}
+        except Exception:
+            pass
     total = await db.tickets.count_documents(filt)
     tickets = await (db.tickets.find(filt).sort(sort_by, 1 if sort_dir == "asc" else -1)
                      .skip((page - 1) * limit).limit(limit).to_list(limit))
@@ -590,7 +614,7 @@ async def all_tickets(
         "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
         "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
     } for t in tickets], "total": total, "page": page, "limit": limit,
-        "pages": (total + limit - 1) // limit}
+        "pages": (total + limit - 1) // limit, "next_cursor": None, "has_more": False}
 
 @router.get("/tickets/{tid}")
 async def ticket_detail(tid: int, admin=Depends(get_admin_user)):

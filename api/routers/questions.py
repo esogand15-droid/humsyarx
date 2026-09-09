@@ -539,8 +539,40 @@ async def propose_ai_practice(ai_question_id: str, user=Depends(get_question_acc
 async def answer_history(
     user=Depends(get_question_access_user),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    after: Optional[str] = Query(None, max_length=32, description="cursor _id"),
 ):
     query = {"user_id": user["id"]}
+    # 🌊 W4 — cursor pagination
+    if after:
+        try:
+            from bson import ObjectId as _OID
+            if _OID.is_valid(after):
+                query["_id"] = {"$lt": _OID(after)}
+                records = await db.answers.find(query).sort("_id", -1).limit(limit + 1).to_list(limit + 1)
+                has_more = len(records) > limit
+                if has_more:
+                    records = records[:limit]
+                next_cursor = str(records[-1]["_id"]) if records and has_more else None
+                # we still need docs mapping but skip total for cursor
+                ids = [ObjectId(str(x.get("question_id"))) for x in records if ObjectId.is_valid(str(x.get("question_id")))]
+                docs = await db.questions.find({"_id": {"$in": ids}}).to_list(len(ids) or 1)
+                by_id = {str(x["_id"]): x for x in docs}
+                result = []
+                for record in records:
+                    qid = text(record.get("question_id")); question = by_id.get(qid)
+                    if not question: continue
+                    result.append({"id": text(record.get("_id")), "question_id": qid,
+                                   "lesson_id": str(question.get("lesson_id") or ""),
+                                   "topic_id": str(question.get("topic_id") or ""),
+                                   "lesson": text(question.get("lesson")), "topic": text(question.get("topic")),
+                                   "question": text(question.get("question")),
+                                   "selected": non_negative_int(record.get("selected")),
+                                   "correct_answer": non_negative_int(question.get("correct_answer")),
+                                   "is_correct": bool(record.get("is_correct")),
+                                   "answered_at": text(record.get("answered_at"))})
+                return {"answers": result, "total": None, "skip": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more}
+        except Exception:
+            pass
     total = await db.answers.count_documents(query)
     records = await db.answers.find(query).sort("answered_at", -1).skip(skip).limit(limit).to_list(limit)
     ids = [ObjectId(str(x.get("question_id"))) for x in records if ObjectId.is_valid(str(x.get("question_id")))]
@@ -559,7 +591,7 @@ async def answer_history(
                        "correct_answer": non_negative_int(question.get("correct_answer")),
                        "is_correct": bool(record.get("is_correct")),
                        "answered_at": text(record.get("answered_at"))})
-    return {"answers": result, "total": non_negative_int(total), "skip": skip, "limit": limit}
+    return {"answers": result, "total": non_negative_int(total), "skip": skip, "limit": limit, "next_cursor": None, "has_more": skip + len(result) < total}
 
 
 @router.get(

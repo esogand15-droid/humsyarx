@@ -69,6 +69,33 @@ async def search(
         else {}
     )
 
+    # 🌊 W4 — try text search first (uses txt_* indexes), fallback to regex
+    async def _q_text_or_regex():
+        try:
+            # text search respects language none (no stemming) — better for Persian
+            cur = db.questions.find({"$and": [approved_query(), {"$text": {"$search": query}}, _scope_q]})
+            # project score for sort
+            cur = cur.sort([("score", {"$meta": "textScore"})]).limit(10)
+            docs = await cur.to_list(10)
+            if docs:
+                return docs
+        except Exception:
+            pass
+        return await db.questions.find({
+            "$and": [approved_query(), {"$or": [
+                {"question": pattern}, {"lesson": pattern}, {"topic": pattern},
+            ], **_scope_q}],
+        }).limit(10).to_list(10)
+    async def _faq_text_or_regex():
+        try:
+            cur = db.faq.find({"$text": {"$search": query}}).sort([("score", {"$meta": "textScore"})]).limit(10)
+            docs = await cur.to_list(10)
+            if docs:
+                return docs
+        except Exception:
+            pass
+        return await db.faq.find({"$or": [{"question": pattern}, {"answer": pattern}]}).limit(10).to_list(10)
+
     (
         resources,
         questions,
@@ -82,42 +109,9 @@ async def search(
             intake=_filt,
         ),
 
-        db.questions.find({
-            "$and": [approved_query(), {"$or": [
-                {
-                    "question":
-                        pattern,
-                },
+        _q_text_or_regex(),
 
-                {
-                    "lesson":
-                        pattern,
-                },
-
-                {
-                    "topic":
-                        pattern,
-                },
-            ], **_scope_q}],
-        })
-        .limit(10)
-        .to_list(10),
-
-        db.faq.find({
-            "$or": [
-                {
-                    "question":
-                        pattern,
-                },
-
-                {
-                    "answer":
-                        pattern,
-                },
-            ],
-        })
-        .limit(10)
-        .to_list(10),
+        _faq_text_or_regex(),
 
         db.schedules.find({
             "$or": [

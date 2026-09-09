@@ -378,6 +378,11 @@ class DBCore:
                 self._index(self.exam_sessions, [('status', 1), ('deadline_ts', 1)], background=True),
                 # 🌊 W3 — TTL برای جلسات منقضی (7 روز پس از expires_at) — auto cleanup بدون job
                 self._index(self.exam_sessions, [('expires_at', 1)], expireAfterSeconds=0, background=True),
+                # 🌊 W4 — text index برای جستجوی سراسری فارسی (global_search) — بدون COLLSCAN
+                self._index(self.questions, [('question', 'text'), ('lesson', 'text'), ('topic', 'text')], background=True, name='txt_questions_search'),
+                self._index(self.bs_content, [('description', 'text')], background=True, name='txt_bs_content_search'),
+                self._index(self.ref_files, [('description', 'text')], background=True, name='txt_ref_files_search'),
+                self._index(self.faq, [('question', 'text'), ('answer', 'text')], background=True, name='txt_faq_search'),
                 self._index(self.question_pdf_generations, [('session_id', 1), ('generated_at', -1)], background=True),
                 self._index(self.question_pdf_generations, [('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)

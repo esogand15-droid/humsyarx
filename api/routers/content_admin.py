@@ -189,12 +189,37 @@ async def overview(admin=Depends(get_content_admin_user),
 @router.get("/questions/pending")
 async def pending_questions(admin=Depends(get_question_reviewer),
                             intake: Optional[str] = Query(None),
-                            skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+                            skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                            after: Optional[str] = Query(None, max_length=32, description="cursor _id")):
     iv = resolve_content_intake(admin, intake)
     query = {"$and": [status_query("pending"), {"intake": iv}]}
+    # 🌊 W4 — cursor pagination
+    if after:
+        try:
+            from bson import ObjectId as _OID
+            if _OID.is_valid(after):
+                query["$and"].append({"_id": {"$gt": _OID(after)}})
+                docs = await db.questions.find(query).sort("_id", 1).limit(limit + 1).to_list(limit + 1)
+                has_more = len(docs) > limit
+                if has_more:
+                    docs = docs[:limit]
+                next_cursor = str(docs[-1]["_id"]) if docs and has_more else None
+                # for cursor we don't need total
+                return {"intake": iv, "total": None, "skip": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more,
+        "questions":[{"id":str(d["_id"]),"lesson_id":str(d.get("lesson_id") or ""),
+        "topic_id":str(d.get("topic_id") or ""),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
+        "difficulty":canonical_difficulty(d.get("difficulty"), strict=False),"question":d.get("question",""),"options":d.get("options",[]),
+        "correct":d.get("correct_answer",0),"explanation":d.get("explanation",""),
+        "creator_name":d.get("creator_name",""),"creator_id":d.get("creator_id"),
+        "creator_type":d.get("creator_type","student"),"created_at":d.get("created_at") or None,
+        "updated_at":d.get("updated_at") or None,"intake":d.get("intake",""),
+        "status":canonical_status(d),"review_reason":d.get("review_reason", ""),
+        "source":d.get("source","system")} for d in docs]}
+        except Exception:
+            pass
     total = await db.questions.count_documents(query)
     docs = await db.questions.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
-    return {"intake": iv, "total": total, "skip": skip, "limit": limit,
+    return {"intake": iv, "total": total, "skip": skip, "limit": limit, "next_cursor": None, "has_more": skip + len(docs) < total,
         "questions":[{"id":str(d["_id"]),"lesson_id":str(d.get("lesson_id") or ""),
         "topic_id":str(d.get("topic_id") or ""),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
         "difficulty":canonical_difficulty(d.get("difficulty"), strict=False),"question":d.get("question",""),"options":d.get("options",[]),
