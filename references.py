@@ -5,11 +5,13 @@
 ✅ ذخیره مسیر ناوبری در context
 """
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 
 logger = logging.getLogger(__name__)
+BRAND_NAME = os.getenv("BRAND_NAME", "HumsyarX")
 
 
 async def references_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,9 +308,14 @@ async def _download_ref(query, file_id_db, uid):
     lang_label = 'ترجمه فارسی' if lang == 'fa' else 'نسخه لاتین (اصلی)'
 
     caption_parts = [f"📘 {lang_icon} {lang_label} — جلد {vol}"]
+    disp = (item.get('display_file_name') or item.get('display_name') or "").strip()
+    if disp:
+        caption_parts.append(f"📄 {disp}")
     if desc:
         caption_parts.append(f"📝 {desc}")
     caption_parts.append(f"📥 {dl} دانلود")
+    if item.get('branding_enabled') and BRAND_NAME:
+        caption_parts.append(f"🏷 {BRAND_NAME}")
     caption = "\n".join(caption_parts)
 
     # دکمه بازگشت به کتاب

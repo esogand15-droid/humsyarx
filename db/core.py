@@ -481,6 +481,7 @@ class DBCore:
                 ('rbac_seed', self.ensure_rbac_seed),
                 ('rbac_migrate', self.rbac_migrate_users),
                 ('content_scope', self.migrate_content_intake_scope),
+                ('file_naming', self.migrate_file_naming),
                 ('grades_terms', self.grades_backfill_terms),
                 ('ring', self.ring_bootstrap),
                 ('faq_seed', self.seed_subscription_copyright_faqs),

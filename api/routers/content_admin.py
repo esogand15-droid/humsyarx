@@ -936,42 +936,75 @@ async def bs_content_ep(sid: str, admin=Depends(get_content_admin_user)):
     items = await db.bs_get_content(sid)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     sdoc = await db.bs_get_session(sid) or {}
+    def _display(c):
+        return c.get("display_file_name") or c.get("display_name") or c.get("original_file_name") or c.get("description") or ""
     return {"readonly": ro, "is_fork": bool(sdoc.get("fork_of")),
         "content":[{"id":str(c["_id"]),"type":c.get("type",""),"description":c.get("description",""),
+        "display_name": _display(c), "original_name": c.get("original_file_name",""),
+        "file_extension": c.get("file_extension",""), "file_size": c.get("file_size",0),
+        "branding_enabled": c.get("branding_enabled", False),
         "extra_info":c.get("extra_info",""),"downloads":c.get("downloads",0)} for c in items]}
 
 @router.post("/basic-science/sessions/{sid}/content")
 async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str = Form(""),
-                             extra_info: str = Form(""), file: UploadFile = File(...),
+                             extra_info: str = Form(""), display_name: str = Form(""),
+                             branding_enabled: bool = Form(False),
+                             file: UploadFile = File(...),
                              admin=Depends(get_content_admin_user)):
     if ctype not in CONTENT_TYPES: raise HTTPException(422, "نوع محتوا نامعتبر")
     await _deny_intake(await db.session_intake(sid), admin)
-    fname = file.filename or "file"
+    # File naming pipeline — sanitize + preserve extension
+    orig_fname = (file.filename or "file").strip() or "file"
+    # Use utility for final name; caller may send display_name empty -> fallback to original
+    from utils_file_naming import prepare_rename, get_extension
+    # If no display_name provided, use original
+    desired = (display_name or "").strip() or orig_fname
+    # Resolve final via DB dedup logic later, but need to decide filename to upload
+    # Build upload filename as sanitized display (so Telegram stores correct name)
+    # We precompute via prepare_rename with existing set (peek)
+    existing_for_upload = set()
+    try:
+        async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing_for_upload.add(n)
+    except Exception:
+        pass
+    prep_for_upload = prepare_rename(desired, orig_fname, existing_names=existing_for_upload, fallback='فایل')
+    upload_fname = prep_for_upload['display_name']
+    # but preserve original extension if caller provided different one? prepare_rename already does
     logger.info("UPLOAD_REQUEST_RECEIVED route=session_content sid=%s ctype=%s "
-                "filename=%s admin=%s", sid, ctype, fname, admin["id"])
+                "filename=%s display=%s admin=%s", sid, ctype, orig_fname, upload_fname, admin["id"])
     raw = await _read_capped(file, MAX_UPLOAD_BYTES)
     logger.info("FILE_VALIDATED size=%s mime=%s", len(raw),
                 file.content_type or "")
+    # upload with final sanitized name (single upload, no re-upload needed per spec)
     try:
-        file_id = await upload_and_get_file_id(admin["id"], fname, raw,
+        file_id = await upload_and_get_file_id(admin["id"], upload_fname, raw,
             file.content_type or "application/octet-stream")
     except Exception as e:
-        # خطای پیش‌بینی‌نشده‌ی storage هم دلیل دارد، نه ۵۰۰ بی‌توضیح
         logger.warning("UPLOAD_FAILED stage=storage route=session_content "
                        "err=%s size=%s", type(e).__name__, len(raw))
         raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
                                  "جزئیات در لاگ سرور ثبت شد")
     if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
                                             "جزئیات در لاگ سرور ثبت شد")
-    cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip())
+    ext_for_db = get_extension(upload_fname)
+    cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip(),
+                                   original_name=orig_fname, display_name=upload_fname,
+                                   file_extension=ext_for_db,
+                                   mime_type=file.content_type or "application/octet-stream",
+                                   file_size=len(raw),
+                                   branding_enabled=bool(branding_enabled))
     logger.info("UPLOAD_SUCCESS route=session_content sid=%s content_id=%s "
-                "size=%s", sid, cid, len(raw))
+                "size=%s display=%s", sid, cid, len(raw), upload_fname)
     await _audit(admin, "افزودن فایل جلسه", "Content", severity="INFO",
         target_id=str(cid), target_type="content_item",
-        target_label=description.strip() or (file.filename or "file"),
-        after={"session_id": sid, "type": ctype, "extra_info": extra_info.strip()},
+        target_label=description.strip() or upload_fname,
+        after={"session_id": sid, "type": ctype, "display_name": upload_fname,
+               "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["محتوا", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":str(cid)}
+    return {"ok":True, "id":str(cid), "display_name": upload_fname}
 
 @router.delete("/basic-science/content/{cid}")
 async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
@@ -986,6 +1019,58 @@ async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
         before={"session_id": old.get("session_id"), "type": old.get("type")},
         after={"deleted": True}, tags=["محتوا", "حذف_فایل", "پنل_وب"])
     return {"ok":True}
+
+class RenameBody(BaseModel):
+    new_name: str = Field(min_length=1, max_length=220)
+
+@router.patch("/basic-science/content/{cid}/rename")
+async def bs_rename_content_ep(cid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_content_item(cid)
+    if not old:
+        raise HTTPException(404, "فایل پیدا نشد")
+    await _deny_intake(await db.content_intake(cid), admin)
+    sess_id = old.get("session_id", "")
+    # Build sanitized new display via utility (dedup)
+    from utils_file_naming import prepare_rename, get_extension
+    orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
+    existing = set()
+    try:
+        async for d in db.bs_content.find({'session_id': sess_id, '_id': {'$ne': old["_id"]}}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(body.new_name.strip(), orig, existing_names=existing, fallback='فایل')
+    new_display = prep['display_name']
+    # Try re-upload to change Telegram filename (best effort). If fails, just DB rename.
+    new_file_id = old.get("file_id", "")
+    reuploaded = False
+    try:
+        from api.telegram_send import download_telegram_file, upload_and_get_file_id
+        data = await download_telegram_file(old.get("file_id",""))
+        if data is not None:
+            # need mime
+            mime = old.get("mime_type", "application/octet-stream")
+            # Re-upload with new name (single upload)
+            nf = await upload_and_get_file_id(admin["id"], new_display, data, mime)
+            if nf:
+                new_file_id = nf
+                reuploaded = True
+    except Exception as e:
+        logger.warning("RENAME_REUPLOAD_FAILED cid=%s err=%s", cid, type(e).__name__)
+    await db.bs_content.update_one({'_id': old["_id"]}, {'$set': {
+        'display_file_name': new_display,
+        'display_name': new_display,
+        'file_extension': get_extension(new_display),
+        'file_id': new_file_id,
+    }})
+    await _audit(admin, "تغییر نام فایل جلسه", "Content", severity="WARNING",
+        target_id=cid, target_type="content_item",
+        target_label=old.get("display_file_name", "") or old.get("description",""),
+        before={"display_name": old.get("display_file_name","")}, after={"display_name": new_display, "reuploaded": reuploaded},
+        tags=["محتوا", "تغییر_نام", "پنل_وب"])
+    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded}
 
 # ══════════════════════════════════════════════
 # 📖 رفرنس‌ها — موضوع‌ها / کتاب‌ها / فایل‌ها
@@ -1205,24 +1290,42 @@ async def ref_files_ep(bid: str, skip: int = Query(0, ge=0),
     items, total = await db.ref_get_files_page(bid, skip=skip, limit=limit)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     bdoc = await db.ref_get_book(bid) or {}
+    def _disp(f):
+        return f.get("display_file_name") or f.get("display_name") or f.get("original_file_name") or f.get("description") or ""
     return {"readonly": ro, "is_fork": bool(bdoc.get("fork_of")),
         "total": total, "skip": skip, "limit": limit,
         "has_more": skip + len(items) < total,
         "files":[{"id":str(f["_id"]),"lang":f.get("lang","fa"),"volume":f.get("volume",1),
-        "description":f.get("description",""),"downloads":f.get("downloads",0)} for f in items]}
+        "description":f.get("description",""),"display_name": _disp(f),
+        "original_name": f.get("original_file_name",""),"file_extension": f.get("file_extension",""),
+        "downloads":f.get("downloads",0)} for f in items]}
 
 @router.post("/references/books/{bid}/files")
 async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1),
-                           description: str = Form(""), file: UploadFile = File(...),
+                           description: str = Form(""), display_name: str = Form(""),
+                           branding_enabled: bool = Form(False),
+                           file: UploadFile = File(...),
                            admin=Depends(get_content_admin_user)):
     if lang not in ("fa","en"): raise HTTPException(422, "زبان نامعتبر")
     await _deny_intake(await db.ref_book_intake(bid), admin)
-    fname = file.filename or "file"
-    logger.info("UPLOAD_REQUEST_RECEIVED route=ref_file bid=%s filename=%s "
-                "admin=%s", bid, fname, admin["id"])
+    orig_fname = (file.filename or "file").strip() or "file"
+    from utils_file_naming import prepare_rename, get_extension
+    desired = (display_name or "").strip() or orig_fname
+    existing_for_upload = set()
+    try:
+        async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing_for_upload.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(desired, orig_fname, existing_names=existing_for_upload, fallback='فایل')
+    upload_fname = prep['display_name']
+    logger.info("UPLOAD_REQUEST_RECEIVED route=ref_file bid=%s filename=%s display=%s "
+                "admin=%s", bid, orig_fname, upload_fname, admin["id"])
     raw = await _read_capped(file, MAX_UPLOAD_BYTES)
     try:
-        file_id = await upload_and_get_file_id(admin["id"], fname, raw,
+        file_id = await upload_and_get_file_id(admin["id"], upload_fname, raw,
             file.content_type or "application/octet-stream")
     except Exception as e:
         logger.warning("UPLOAD_FAILED stage=storage route=ref_file "
@@ -1231,15 +1334,21 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
                                  "جزئیات در لاگ سرور ثبت شد")
     if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
                                             "جزئیات در لاگ سرور ثبت شد")
-    fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip())
-    logger.info("UPLOAD_SUCCESS route=ref_file bid=%s file_id=%s size=%s",
-                bid, fid, len(raw))
+    ext_for_db = get_extension(upload_fname)
+    fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip(),
+                                original_name=orig_fname, display_name=upload_fname,
+                                file_extension=ext_for_db,
+                                mime_type=file.content_type or "application/octet-stream",
+                                file_size=len(raw), branding_enabled=bool(branding_enabled))
+    logger.info("UPLOAD_SUCCESS route=ref_file bid=%s file_id=%s size=%s display=%s",
+                bid, fid, len(raw), upload_fname)
     await _audit(admin, "افزودن فایل رفرنس", "Content", severity="INFO",
         target_id=str(fid), target_type="reference_file",
-        target_label=description.strip() or (file.filename or "file"),
-        after={"book_id": bid, "lang": lang, "volume": volume},
+        target_label=description.strip() or upload_fname,
+        after={"book_id": bid, "lang": lang, "volume": volume, "display_name": upload_fname,
+               "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["رفرنس", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":fid}
+    return {"ok":True, "id":fid, "display_name": upload_fname}
 
 @router.delete("/references/files/{fid}")
 async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
@@ -1253,6 +1362,51 @@ async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
                 "volume": old.get("volume")}, after={"deleted": True},
         tags=["رفرنس", "حذف_فایل", "پنل_وب"])
     return {"ok":True}
+
+@router.patch("/references/files/{fid}/rename")
+async def ref_rename_file_ep(fid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_file(fid)
+    if not old:
+        raise HTTPException(404, "فایل رفرنس پیدا نشد")
+    await _deny_intake(await db.ref_file_intake(fid), admin)
+    book_id = old.get("book_id", "")
+    from utils_file_naming import prepare_rename, get_extension
+    orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
+    existing = set()
+    try:
+        async for d in db.ref_files.find({'book_id': book_id, '_id': {'$ne': old["_id"]}}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(body.new_name.strip(), orig, existing_names=existing, fallback='فایل')
+    new_display = prep['display_name']
+    new_file_id = old.get("file_id", "")
+    reuploaded = False
+    try:
+        from api.telegram_send import download_telegram_file, upload_and_get_file_id
+        data = await download_telegram_file(old.get("file_id",""))
+        if data is not None:
+            mime = old.get("mime_type", "application/octet-stream")
+            nf = await upload_and_get_file_id(admin["id"], new_display, data, mime)
+            if nf:
+                new_file_id = nf
+                reuploaded = True
+    except Exception as e:
+        logger.warning("RENAME_REUPLOAD_FAILED fid=%s err=%s", fid, type(e).__name__)
+    await db.ref_files.update_one({'_id': old["_id"]}, {'$set': {
+        'display_file_name': new_display,
+        'display_name': new_display,
+        'file_extension': get_extension(new_display),
+        'file_id': new_file_id,
+    }})
+    await _audit(admin, "تغییر نام فایل رفرنس", "Content", severity="WARNING",
+        target_id=fid, target_type="reference_file",
+        target_label=old.get("display_file_name","") or old.get("description",""),
+        before={"display_name": old.get("display_file_name","")}, after={"display_name": new_display, "reuploaded": reuploaded},
+        tags=["رفرنس", "تغییر_نام", "پنل_وب"])
+    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded}
 
 # ══════════════════════════════════════════════
 # 🍴 موج C2 — Fork/Unfork (سفارشی‌سازی سراسری برای یک ورودی)

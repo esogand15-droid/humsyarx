@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
+BRAND_NAME = os.getenv("BRAND_NAME", "HumsyarX")
 
 CONTENT_ICONS = {
     "video": "🎥 ویدیو کلاس",
@@ -76,6 +77,59 @@ async def upload_and_get_file_id(chat_id: int, filename: str, file_bytes: bytes,
     return data["result"]["document"]["file_id"]
 
 
+async def download_telegram_file(file_id: str) -> bytes | None:
+    """Download file bytes via getFile -> download. Streaming safe, 45MB cap."""
+    if not BOT_TOKEN or not file_id:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, read=60, write=60)) as client:
+            r = await client.get(f"{API_BASE}/getFile", params={"file_id": file_id})
+            if r.status_code != 200 or not r.json().get("ok"):
+                logger.warning("TG_GETFILE_FAILED file_id=%s", file_id[:16])
+                return None
+            file_path = r.json()["result"].get("file_path")
+            if not file_path:
+                return None
+            url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+            # stream download with size cap
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15, read=180, write=60), follow_redirects=True) as dl:
+                async with dl.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        return None
+                    chunks = []
+                    total = 0
+                    async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                        total += len(chunk)
+                        if total > 45 * 1024 * 1024:
+                            logger.warning("TG_DOWNLOAD_TOO_LARGE file_id=%s", file_id[:16])
+                            return None
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+    except Exception as e:
+        logger.warning("TG_DOWNLOAD_FAILED err=%s", type(e).__name__)
+        return None
+
+
+async def reupload_with_new_filename(chat_id: int, original_file_id: str,
+                                     new_filename: str, mime_type: str = "application/octet-stream") -> str | None:
+    """Download file_id and re-upload as document with new_filename. Returns new file_id."""
+    data = await download_telegram_file(original_file_id)
+    if data is None:
+        return None
+    return await upload_and_get_file_id(chat_id, new_filename, data, mime_type)
+
+
+def _branding_caption(caption: str, item: dict) -> str:
+    """Append branding line if enabled (separate from filename per spec)."""
+    if not item.get("branding_enabled"):
+        return caption
+    # do not inject into filename, only caption
+    brand = (BRAND_NAME or "HumsyarX").strip()
+    if brand and brand not in caption:
+        return caption + f"\n🏷 {brand}"
+    return caption
+
+
 async def _send(method: str, payload: dict) -> bool:
     if not BOT_TOKEN:
         return False
@@ -90,12 +144,17 @@ async def send_bs_content(chat_id: int, content_id: str, item: dict) -> bool:
     """محتوای علوم پایه — دقیقاً مثل _download_content توی basic_science.py"""
     ctype = item.get("type", "pdf")
     parts = [CONTENT_ICONS.get(ctype, "📎")]
+    # prefer display filename if available (shown in caption as hint, but real name is Telegram file)
+    display_hint = (item.get("display_file_name") or item.get("display_name") or "").strip()
+    if display_hint:
+        parts.append(f"📄 {display_hint}")
     if item.get("description"):
         parts.append(f"📝 {item['description']}")
     if item.get("extra_info"):
         parts.append(item["extra_info"])
     parts.append(f"📥 {item.get('downloads', 0)} دانلود")
     caption = "\n".join(parts)
+    caption = _branding_caption(caption, item)
 
     protect = await db.get_setting("protect_content_enabled", True)
     reply_markup = {"inline_keyboard": [[
@@ -119,15 +178,19 @@ async def send_ref_file(chat_id: int, item: dict) -> bool:
     vol  = item.get("volume", 1)
     desc = item.get("description", "")
     dl   = item.get("downloads", 0)
+    display_hint = (item.get("display_file_name") or item.get("display_name") or "").strip()
 
     lang_icon  = "🇮🇷" if lang == "fa" else "🌐"
     lang_label = "ترجمه فارسی" if lang == "fa" else "نسخه لاتین (اصلی)"
 
     caption_parts = [f"📘 {lang_icon} {lang_label} — جلد {vol}"]
+    if display_hint:
+        caption_parts.append(f"📄 {display_hint}")
     if desc:
         caption_parts.append(f"📝 {desc}")
     caption_parts.append(f"📥 {dl} دانلود")
     caption = "\n".join(caption_parts)
+    caption = _branding_caption(caption, item)
 
     protect = await db.get_setting("protect_content_enabled", True)
     book_id = str(item.get("book_id", ""))

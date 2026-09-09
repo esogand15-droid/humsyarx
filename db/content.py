@@ -207,15 +207,77 @@ class DBContent:
         return await self.bs_content.find({'session_id': session_id}).sort('order', 1).to_list(50)
 
 
+    # ── 📄 File naming & branding — Step 4-14 of rename spec ──
     async def bs_add_content(self, session_id: str, ctype: str, file_id: str,
-                             description: str = '', extra_info: str = ''):
+                             description: str = '', extra_info: str = '',
+                             original_name: str = '', display_name: str = '',
+                             file_extension: str = '', mime_type: str = '',
+                             file_size: int = 0, branding_enabled: bool = False):
+        """
+        Extended with file-naming fields (backward compatible).
+        original_name: Telegram original file_name (or synthetic for photo)
+        display_name: admin-chosen final name (includes extension)
+        If display_name empty -> derived from original_name or fallback.
+        Handles duplicate (1), sanitization assumed done by caller; here
+        we defensively sanitize again and ensure extension preservation.
+        """
+        from utils_file_naming import (
+            prepare_rename, get_extension, sanitize_filename)
+        # Determine extension
+        ext = (file_extension or '').strip().lower().lstrip('.')
+        if not ext and display_name:
+            ext = get_extension(display_name)
+        if not ext and original_name:
+            ext = get_extension(original_name)
+        if not ext:
+            # infer from mime? keep empty
+            ext = ''
+        # Prepare display name via utility (sanitize + truncate + dedup)
+        existing = set()
+        try:
+            async for doc in self.bs_content.find({'session_id': session_id}, {'display_name': 1}):
+                dn = doc.get('display_name') or doc.get('display_file_name') or ''
+                if dn:
+                    existing.add(dn)
+        except Exception:
+            pass
+        # Choose user_input vs original
+        user_input = (display_name or '').strip()
+        orig_for_build = original_name or display_name or ''
+        # If both empty, fallback to generic
+        if not user_input and not orig_for_build:
+            fallback_base = 'فایل'
+            # use description as hint?
+            if description.strip():
+                fallback_base = sanitize_filename(description.strip()[:60]) or 'فایل'
+            user_input = fallback_base
+        prep = prepare_rename(user_input, orig_for_build or (mime_type or ''), existing_names=existing, fallback='فایل')
+        final_display = prep['display_name']
+        # If caller forced ext separately and prep didn't use it, fix
+        if ext and get_extension(final_display) != ext:
+            base = final_display.rsplit('.', 1)[0] if '.' in final_display else final_display
+            final_display = f"{base}.{ext}"
+        final_original = original_name or final_display
+        # Ensure original sanitized for storage but preserve as given for audit
+        mime = (mime_type or 'application/octet-stream').strip()[:120]
+        size = max(0, int(file_size or 0))
         count = await self.bs_content.count_documents({'session_id': session_id})
-        r = await self.bs_content.insert_one({
+        doc = {
             'session_id': session_id, 'type': ctype, 'file_id': file_id,
             'description': description, 'extra_info': extra_info,
             'order': count, 'uploaded_at': utc_now_iso(), 'downloads': 0,
-            'notif_sent': False,   # FIX جدید: برای batch نوتیف منابع جدید
-        })
+            'notif_sent': False,
+            # new naming fields
+            'original_file_name': final_original[:255],
+            'display_file_name': final_display[:255],
+            # legacy alias for older code (display || original)
+            'display_name': final_display[:255],
+            'file_extension': ext[:10],
+            'mime_type': mime,
+            'file_size': size,
+            'branding_enabled': bool(branding_enabled),
+        }
+        r = await self.bs_content.insert_one(doc)
         return r.inserted_id
 
 
@@ -416,6 +478,92 @@ class DBContent:
         except Exception:
             pass
 
+
+    def _resolve_display_name(self, doc: dict) -> str:
+        """Backward-compatible filename resolver (display||original||description||file_id)."""
+        for key in ('display_file_name', 'display_name', 'original_file_name', 'description'):
+            val = (doc or {}).get(key, '')
+            if isinstance(val, str) and val.strip():
+                # ensure extension preserved? just return
+                return val.strip()
+        # fallback: file_id short
+        fid = (doc or {}).get('file_id', '') or 'فایل'
+        return str(fid)[:40]
+
+    async def bs_update_content_filename(self, content_id: str, new_display: str) -> bool:
+        """Rename existing content (re-upload already done outside). Idempotent."""
+        try:
+            from utils_file_naming import sanitize_filename, get_extension, truncate_display_filename
+            # sanitize but keep ext
+            ext = get_extension(new_display)
+            base = new_display.rsplit('.', 1)[0] if ext and '.' in new_display else new_display
+            base = sanitize_filename(base)
+            final = f"{base}.{ext}" if ext else base
+            final = truncate_display_filename(final)
+            await self.bs_content.update_one({'_id': ObjectId(content_id)}, {'$set': {
+                'display_file_name': final[:255],
+                'display_name': final[:255],
+                'file_extension': ext[:10],
+            }})
+            return True
+        except Exception:
+            return False
+
+    async def migrate_file_naming(self):
+        """Idempotent migration: backfill missing naming fields for legacy docs."""
+        already = await self.get_setting('file_naming_migration_done', False)
+        if already:
+            return {'bs': 0, 'ref': 0, 'skipped': True}
+        bs_mod = 0
+        ref_mod = 0
+        # bs_content
+        async for doc in self.bs_content.find({'display_file_name': {'$exists': False}}):
+            # derive from description or file_id
+            hint = (doc.get('description') or '').strip()[:60] or 'فایل'
+            # use generic fallback + type as ext hint? keep plain
+            fallback = hint
+            # pick ext from type?
+            type_ext = {'pdf': 'pdf', 'ppt': 'pptx', 'video': 'mp4', 'voice': 'mp3'}.get(doc.get('type',''), '')
+            if type_ext and '.' not in fallback:
+                fallback = f"{fallback}.{type_ext}"
+            # try to store
+            try:
+                from utils_file_naming import get_extension, sanitize_filename
+                # simple
+                await self.bs_content.update_one({'_id': doc['_id']}, {'$set': {
+                    'display_file_name': fallback[:255],
+                    'display_name': fallback[:255],
+                    'original_file_name': fallback[:255],
+                    'file_extension': get_extension(fallback),
+                    'mime_type': 'application/octet-stream',
+                    'file_size': 0,
+                    'branding_enabled': False,
+                }})
+                bs_mod += 1
+            except Exception:
+                continue
+        async for doc in self.ref_files.find({'display_file_name': {'$exists': False}}):
+            hint = (doc.get('description') or '').strip()[:60] or f"رفرنس_{doc.get('volume',1)}"
+            fallback = hint
+            if '.' not in fallback:
+                fallback = f"{fallback}.pdf"
+            try:
+                from utils_file_naming import get_extension
+                await self.ref_files.update_one({'_id': doc['_id']}, {'$set': {
+                    'display_file_name': fallback[:255],
+                    'display_name': fallback[:255],
+                    'original_file_name': fallback[:255],
+                    'file_extension': get_extension(fallback),
+                    'mime_type': 'application/octet-stream',
+                    'file_size': 0,
+                    'branding_enabled': False,
+                }})
+                ref_mod += 1
+            except Exception:
+                continue
+        await self.set_setting('file_naming_migration_done', True)
+        logger.info(f"📄 file_naming migration: bs={bs_mod} ref={ref_mod}")
+        return {'bs': bs_mod, 'ref': ref_mod, 'skipped': False}
 
     async def search_resources(self, query_text: str, intake=None):
         """
@@ -741,17 +889,54 @@ class DBContent:
 
 
     async def ref_add_file(self, book_id: str, lang: str, file_id: str,
-                           volume: int = 1, description: str = ''):
-        # FIX جدید: notif_sent اضافه شد تا این فایل وارد صف نوتیف
-        # «منابع جدید» (همون jobـی که برای bs_content کار می‌کند) بشود.
-        # چه فایل کاملاً جدید باشد چه جایگزین‌شدن یک جلد/زبان موجود،
-        # از نظر دانشجو محتوای تازه است و باید در صف قرار بگیرد.
+                           volume: int = 1, description: str = '',
+                           original_name: str = '', display_name: str = '',
+                           file_extension: str = '', mime_type: str = '',
+                           file_size: int = 0, branding_enabled: bool = False):
+        # Extended with file-naming (backward compatible). See bs_add_content.
+        from utils_file_naming import prepare_rename, get_extension, sanitize_filename
+        ext = (file_extension or '').strip().lower().lstrip('.')
+        if not ext and display_name:
+            ext = get_extension(display_name)
+        if not ext and original_name:
+            ext = get_extension(original_name)
+        if not ext:
+            ext = ''
+        # collect existing display names for this book
+        existing_set = set()
+        try:
+            async for doc in self.ref_files.find({'book_id': book_id}, {'display_name': 1, 'display_file_name': 1}):
+                dn = doc.get('display_name') or doc.get('display_file_name') or ''
+                if dn:
+                    existing_set.add(dn)
+        except Exception:
+            pass
+        user_input = (display_name or '').strip()
+        orig_for_build = original_name or display_name or ''
+        if not user_input and not orig_for_build:
+            fallback_base = sanitize_filename(description.strip()[:60]) if description.strip() else 'فایل'
+            user_input = fallback_base or 'فایل'
+        prep = prepare_rename(user_input, orig_for_build or (mime_type or ''), existing_names=existing_set, fallback='فایل')
+        final_display = prep['display_name']
+        if ext and get_extension(final_display) != ext:
+            base = final_display.rsplit('.', 1)[0] if '.' in final_display else final_display
+            final_display = f"{base}.{ext}"
+        final_original = (original_name or final_display)[:255]
+        mime = (mime_type or 'application/octet-stream').strip()[:120]
+        size = max(0, int(file_size or 0))
         existing = await self.ref_files.find_one({'book_id': book_id, 'lang': lang, 'volume': volume})
         if existing:
             await self.ref_files.update_one({'_id': existing['_id']}, {'$set': {
                 'file_id': file_id, 'description': description,
                 'uploaded_at': utc_now_iso(),
                 'notif_sent': False,
+                'original_file_name': final_original,
+                'display_file_name': final_display[:255],
+                'display_name': final_display[:255],
+                'file_extension': ext[:10],
+                'mime_type': mime,
+                'file_size': size,
+                'branding_enabled': bool(branding_enabled),
             }})
             return str(existing['_id'])
         count = await self.ref_files.count_documents({'book_id': book_id})
@@ -760,6 +945,13 @@ class DBContent:
             'description': description, 'file_id': file_id,
             'uploaded_at': utc_now_iso(), 'downloads': 0, 'order': count,
             'notif_sent': False,
+            'original_file_name': final_original,
+            'display_file_name': final_display[:255],
+            'display_name': final_display[:255],
+            'file_extension': ext[:10],
+            'mime_type': mime,
+            'file_size': size,
+            'branding_enabled': bool(branding_enabled),
         })
         return str(r.inserted_id)
 
@@ -1761,6 +1953,14 @@ class DBContent:
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(c['_id']),
+                # carry file naming fields
+                'original_file_name': c.get('original_file_name', ''),
+                'display_file_name': c.get('display_file_name', ''),
+                'display_name': c.get('display_name', c.get('display_file_name', '')),
+                'file_extension': c.get('file_extension', ''),
+                'mime_type': c.get('mime_type', ''),
+                'file_size': c.get('file_size', 0),
+                'branding_enabled': c.get('branding_enabled', False),
             })
         return new_sid
 
@@ -1809,6 +2009,14 @@ class DBContent:
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(f['_id']),
+                # carry file naming fields
+                'original_file_name': f.get('original_file_name', ''),
+                'display_file_name': f.get('display_file_name', ''),
+                'display_name': f.get('display_name', f.get('display_file_name', '')),
+                'file_extension': f.get('file_extension', ''),
+                'mime_type': f.get('mime_type', ''),
+                'file_size': f.get('file_size', 0),
+                'branding_enabled': f.get('branding_enabled', False),
             })
         return new_bid
 

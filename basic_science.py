@@ -5,10 +5,12 @@
   ✅ نمایش سریع با asyncio
 """
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 from utils import TERMS, CONTENT_ICONS
+BRAND_NAME = os.getenv("BRAND_NAME", "HumsyarX")
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +249,18 @@ async def _download_content(query, content_id: str, uid: int):
 
     ctype  = item.get('type', 'pdf')
     parts  = [CONTENT_ICONS.get(ctype, '📎')]
+    # 📄 display name (new) — show sanitized final name
+    disp = (item.get('display_file_name') or item.get('display_name') or "").strip()
+    if disp:
+        parts.append(f"📄 {disp}")
     if item.get('description'):
         parts.append(f"📝 {item['description']}")
     if item.get('extra_info'):
         parts.append(item['extra_info'])
     parts.append(f"📥 {item.get('downloads', 0)} دانلود")
+    # branding tag separate from filename
+    if item.get('branding_enabled') and BRAND_NAME:
+        parts.append(f"🏷 {BRAND_NAME}")
     caption = '\n'.join(parts)
 
     # FIX طبق سند: متن دکمه باید عمومی باشد چون فایل می‌تواند

@@ -34,7 +34,8 @@ GLOBAL_INTAKE_LABEL = '🌐 سراسری'
 
 
 def _clear(context):
-    for k in ['ca_mode','ca_pending_file','ca_content_type',
+    for k in ['ca_mode','ca_pending_file','ca_pending_file_info','ca_pending_display',
+              'ca_pending_original','ca_content_type',
               'ca_edit_target','ca_edit_field','ca_ref_lang','ca_ref_volume']:
         context.user_data.pop(k, None)
 
@@ -379,9 +380,91 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
                  'upload_ref_volume_prompt','upload_content',
                  'edit_lesson_prompt','edit_session_prompt',
                  'edit_ref_subject_prompt','edit_ref_book_prompt',
-                 'urlimport')  # 📥 URL-Import — منتظر ورودی متنی URL
+                 'urlimport',
+                 'confirm_filename','skip_filename','edit_filename','cancel_filename')  # 📄 rename flow
     if action not in KEEP_MODE:
         _clear(context)
+
+    # ── 📄 File naming callbacks (must preserve pending file) ──
+    if action in ('confirm_filename','skip_filename','edit_filename','cancel_filename'):
+        # ensure pending exists
+        pending_info = context.user_data.get('ca_pending_file_info')
+        if not pending_info:
+            await query.answer("❌ فایل منقضی شده، دوباره فایل بفرستید", show_alert=True)
+            _clear(context)
+            return ConversationHandler.END
+        if action == 'cancel_filename':
+            _clear(context)
+            await query.edit_message_text("❌ عملیات لغو شد.")
+            return ConversationHandler.END
+        if action == 'edit_filename':
+            # back to waiting_filename
+            context.user_data['ca_mode'] = 'waiting_filename'
+            await query.edit_message_text(
+                "✏️ <b>نام جدید را بفرستید:</b>\n"
+                f"نام فعلی: <code>{context.user_data.get('ca_pending_original','')}</code>\n"
+                "پسوند حفظ می‌شود. ⌨️ /cancel",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+                    [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+                ]))
+            return ConversationHandler.END
+        if action == 'skip_filename':
+            # use original as display
+            orig = context.user_data.get('ca_pending_original', '') or pending_info.get('original_name','')
+            context.user_data['ca_pending_display'] = orig
+            # move to description step
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                context.user_data['ca_mode'] = 'waiting_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "(مثلاً: ویدیو قسمت اول)\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return ConversationHandler.END
+        if action == 'confirm_filename':
+            # pending_display already set via text handler
+            display = context.user_data.get('ca_pending_display', '') or context.user_data.get('ca_pending_original','')
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{display}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                context.user_data['ca_mode'] = 'waiting_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{display}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return ConversationHandler.END
 
     from_admin = action.endswith('_admin')
     back_main  = 'admin:cat_content' if from_admin else 'ca:main'
@@ -1640,39 +1723,107 @@ async def ca_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ca_mode = context.user_data.get('ca_mode','')
     if ca_mode not in ('waiting_file','waiting_ref_file'): return
 
-    file_obj = (update.message.document or update.message.video or
-                update.message.audio    or update.message.voice)
-    if not file_obj:
-        await update.message.reply_text("❌ فایل معتبر ارسال کنید.\n⌨️ /cancel")
+    # ── Extract file info (support all types incl. Photo) ──
+    msg = update.message
+    file_obj = None
+    original_name = None
+    mime_type = "application/octet-stream"
+    file_size = 0
+    media_type = "document"
+    is_photo = False
+
+    # Photo (no filename)
+    if msg.photo:
+        photo = msg.photo[-1] if isinstance(msg.photo, (list, tuple)) else msg.photo
+        file_obj = photo
+        original_name = f"photo_{photo.file_id[:8]}.jpg"
+        mime_type = "image/jpeg"
+        file_size = getattr(photo, 'file_size', 0) or 0
+        media_type = "photo"
+        is_photo = True
+    elif msg.document:
+        file_obj = msg.document
+        original_name = getattr(file_obj, 'file_name', None) or "file"
+        mime_type = getattr(file_obj, 'mime_type', None) or "application/octet-stream"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "document"
+    elif msg.video:
+        file_obj = msg.video
+        original_name = getattr(file_obj, 'file_name', None) or f"video_{file_obj.file_id[:8]}.mp4"
+        mime_type = getattr(file_obj, 'mime_type', None) or "video/mp4"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "video"
+    elif msg.audio:
+        file_obj = msg.audio
+        original_name = getattr(file_obj, 'file_name', None) or f"audio_{file_obj.file_id[:8]}.mp3"
+        mime_type = getattr(file_obj, 'mime_type', None) or "audio/mpeg"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "audio"
+    elif msg.voice:
+        file_obj = msg.voice
+        original_name = f"voice_{file_obj.file_id[:8]}.ogg"
+        mime_type = getattr(file_obj, 'mime_type', None) or "audio/ogg"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "voice"
+    else:
+        await update.message.reply_text("❌ فایل معتبر ارسال کنید (Document/Video/Audio/Photo/Voice).\n⌨️ /cancel")
         return CA_WAITING_FILE
 
     fid = file_obj.file_id
+    # Also capture forward info (spec § forward support) — no extra logic needed, file_obj same
+    info = {
+        'file_id': fid,
+        'original_name': original_name,
+        'mime_type': mime_type,
+        'file_size': file_size,
+        'media_type': media_type,
+        'is_photo': is_photo,
+    }
 
     if ca_mode == 'waiting_ref_file':
         bid  = context.user_data.get('ca_ref_book_id','')
         lang = context.user_data.get('ca_ref_lang','fa')
         vol  = context.user_data.get('ca_ref_volume', 1)
-        ll   = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
-        # بپرس توضیح اضافه بخواد بده
-        context.user_data.update({'ca_pending_file': fid, 'ca_mode': 'waiting_ref_description'})
+        # Store pending and ask for filename
+        context.user_data.update({
+            'ca_pending_file': fid,
+            'ca_pending_file_info': info,
+            'ca_pending_original': original_name,
+            'ca_mode': 'waiting_filename',
+            'ca_pending_target': 'ref',
+        })
+        # Show filename prompt with current name and skip option
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data=f"ca:ref_book:{bid}")],
+        ])
         await update.message.reply_text(
-            f"✅ فایل {ll} جلد {vol} دریافت شد!\n\n"
-            "📝 توضیح اختیاری (مثلاً: ویرایش سوم):\n"
-            "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
-            parse_mode='HTML',
-            reply_markup=_back_btn("❌ لغو (بدون توضیح)", f'ca:ref_book:{bid}'))
+            f"✅ فایل دریافت شد: <code>{original_name}</code>\n\n"
+            f"✏️ <b>نام نهایی فایل را بفرستید</b>\n"
+            f"(پسوند <code>{original_name.split('.')[-1] if '.' in original_name else ''}</code> حفظ می‌شود، کاراکترهای <code>/\\:*?\"<>|</code> حذف می‌شوند)\n"
+            f"یا روی «استفاده از نام فعلی» بزنید:\n⌨️ /cancel برای لغو",
+            parse_mode='HTML', reply_markup=kb)
         return CA_WAITING_TEXT
 
-    # فایل محتوای جلسه
-    context.user_data.update({'ca_pending_file': fid, 'ca_mode': 'waiting_description'})
+    # فایل محتوای جلسه — go to filename step
     sid = context.user_data.get('ca_session_id','')
+    context.user_data.update({
+        'ca_pending_file': fid,
+        'ca_pending_file_info': info,
+        'ca_pending_original': original_name,
+        'ca_mode': 'waiting_filename',
+        'ca_pending_target': 'session',
+    })
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+        [InlineKeyboardButton("❌ لغو", callback_data=f"ca:session:{sid}")],
+    ])
     await update.message.reply_text(
-        "✅ فایل دریافت شد!\n\n"
-        "📝 توضیح اختیاری برای این فایل:\n"
-        "(مثلاً: ویدیو قسمت اول — فیزیولوژی کلیه)\n"
-        "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
-        parse_mode='HTML',
-        reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+        f"✅ فایل دریافت شد: <code>{original_name}</code>\n\n"
+        f"✏️ <b>نام نهایی فایل را بفرستید</b>\n"
+        f"(مثلاً: <code>جزوه فیزیو - جلسه ۳</code> — پسوند خودکار اضافه می‌شود)\n"
+        f"یا روی «استفاده از نام فعلی» بزنید:\n⌨️ /cancel برای لغو",
+        parse_mode='HTML', reply_markup=kb)
     return CA_WAITING_TEXT
 
 
@@ -1751,6 +1902,7 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # نه این‌که متن را بی‌صدا نادیده بگیریم.
     VALID_CA_MODES = {
         'add_lesson', 'add_session', 'edit_lesson', 'edit_session',
+        'waiting_filename', 'confirming_filename',
         'waiting_description', 'waiting_ref_description',
         'add_faq', 'edit_faq', 'add_ref_subject', 'add_ref_book',
         'edit_ref_subject', 'edit_ref_book',
@@ -1784,6 +1936,126 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("⏳ ساخت job درون‌ریزی…")
         await _ui_run_bot(msg, uid, url, lesson, text[:100])
         return ConversationHandler.END
+
+    # ── 📄 File naming: waiting for custom filename ──
+    if ca_mode == 'waiting_filename':
+        # handle skip via text as well
+        if text in ('⏭ استفاده از نام فعلی', '⏭', 'skip', '-'):
+            orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file')
+            context.user_data['ca_pending_display'] = orig
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                await update.message.reply_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                context.user_data['ca_mode'] = 'waiting_description'
+                sid = context.user_data.get('ca_session_id','')
+                await update.message.reply_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return CA_WAITING_TEXT
+        # normal filename input
+        try:
+            from utils_file_naming import prepare_rename, get_extension
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import prepare_rename, get_extension  # fallback
+            except ImportError:
+                # minimal fallback sanitize
+                def prepare_rename(a,b,*args,**kwargs): return {'display_name': a.strip() or b}
+                def get_extension(x): return x.split('.')[-1] if '.' in x else ''
+        orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file.pdf')
+        target = context.user_data.get('ca_pending_target', 'session')
+        # collect existing for dedup
+        existing = set()
+        try:
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+        except Exception:
+            pass
+        prep = prepare_rename(text, orig, existing_names=existing, fallback='فایل')
+        display = prep['display_name']
+        context.user_data['ca_pending_display'] = display
+        context.user_data['ca_mode'] = 'confirming_filename'
+        # show confirmation with buttons
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تایید", callback_data="ca:confirm_filename"),
+             InlineKeyboardButton("✏️ ویرایش", callback_data="ca:edit_filename")],
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+        ])
+        note_dup = " (تکراری — به (1) تغییر یافت)" if prep.get('deduplicated') else ""
+        note_trunc = " (کوتاه شد)" if prep.get('truncated') else ""
+        await update.message.reply_text(
+            f"📄 نام نهایی: <code>{display}</code>{note_dup}{note_trunc}\n"
+            f"اصلی: <code>{orig}</code>\n\n"
+            "آیا تایید می‌کنید؟",
+            parse_mode='HTML', reply_markup=kb)
+        return CA_WAITING_TEXT
+
+    if ca_mode == 'confirming_filename':
+        # If user sends text while confirming, treat as new filename
+        context.user_data['ca_mode'] = 'waiting_filename'
+        # re-invoke same logic (avoid recursion, just handle as new input)
+        # Store text as new candidate and show again? reuse above block logic
+        # To avoid duplication, just set pending and call same prepare
+        try:
+            from utils_file_naming import prepare_rename, get_extension
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import prepare_rename, get_extension
+            except ImportError:
+                def prepare_rename(a,b,*args,**kwargs): return {'display_name': a.strip() or b}
+                def get_extension(x): return x.split('.')[-1] if '.' in x else ''
+        orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file.pdf')
+        target = context.user_data.get('ca_pending_target', 'session')
+        existing = set()
+        try:
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+        except Exception:
+            pass
+        prep = prepare_rename(text, orig, existing_names=existing, fallback='فایل')
+        display = prep['display_name']
+        context.user_data['ca_pending_display'] = display
+        context.user_data['ca_mode'] = 'confirming_filename'
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تایید", callback_data="ca:confirm_filename"),
+             InlineKeyboardButton("✏️ ویرایش", callback_data="ca:edit_filename")],
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+        ])
+        await update.message.reply_text(
+            f"📄 نام نهایی: <code>{display}</code>\n"
+            f"اصلی: <code>{orig}</code>\n\nآیا تایید می‌کنید؟",
+            parse_mode='HTML', reply_markup=kb)
+        return CA_WAITING_TEXT
 
     if ca_mode == 'add_lesson':
         ps = [p.strip() for p in text.split(',')]
@@ -1905,7 +2177,94 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست.")
             return ConversationHandler.END
-        cid_new = await db.bs_add_content(sid, ct, fid, description=desc)
+        # ── 📄 Resolve final filename with re-upload if needed ──
+        pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
+        orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
+        disp_name = context.user_data.get('ca_pending_display') or orig_name
+        mime = pending_info.get('mime_type', 'application/octet-stream')
+        fsize = pending_info.get('file_size', 0)
+        is_photo = pending_info.get('is_photo', False)
+        # Determine if re-upload needed (rename or photo->document)
+        need_reupload = False
+        try:
+            from utils_file_naming import get_extension as _get_ext
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import get_extension as _get_ext
+            except ImportError:
+                def _get_ext(x): return x.split('.')[-1] if '.' in x else ''
+        # Compare normalized? If display differs from original, need
+        if disp_name.strip() != orig_name.strip():
+            need_reupload = True
+        if is_photo:
+            need_reupload = True
+        final_fid = fid
+        if need_reupload and fid:
+            try:
+                # Try httpx helper first (uses BOT_TOKEN)
+                try:
+                    from api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                except ImportError:
+                    try:
+                        from humsyarx.api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                    except ImportError:
+                        _dl = None; _up = None
+                data = None
+                if _dl:
+                    data = await _dl(fid)
+                if data is None:
+                    # fallback via PTB get_file
+                    try:
+                        tg_file = await context.bot.get_file(fid)
+                        # download as bytes (PTB 21)
+                        from io import BytesIO
+                        bio = BytesIO()
+                        await tg_file.download_to_memory(bio)
+                        data = bio.getvalue()
+                    except Exception as _e2:
+                        logger.warning(f"download fallback failed: {_e2}")
+                        data = None
+                if data:
+                    # Cap already enforced in download helper (45MB). Double-check.
+                    if len(data) > 45*1024*1024:
+                        await update.message.reply_text("❌ حجم فایل بیش از حد مجاز است (۴۵MB)")
+                        return CA_WAITING_TEXT
+                    # Upload with display name
+                    new_fid = None
+                    if _up:
+                        new_fid = await _up(uid, disp_name, data, mime)
+                    else:
+                        # fallback via PTB send_document to self
+                        try:
+                            from io import BytesIO
+                            bio = BytesIO(data); bio.name = disp_name
+                            sent = await context.bot.send_document(chat_id=uid, document=bio, filename=disp_name, disable_notification=True)
+                            # extract file_id from sent message
+                            if sent.document:
+                                new_fid = sent.document.file_id
+                            elif sent.video:
+                                new_fid = sent.video.file_id
+                            else:
+                                new_fid = None
+                        except Exception as _e3:
+                            logger.warning(f"PTB reupload failed: {_e3}")
+                            new_fid = None
+                    if new_fid:
+                        final_fid = new_fid
+                        logger.info(f"REUPLOAD_SUCCESS old={fid[:10]} new={new_fid[:10]} name={disp_name}")
+                    else:
+                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name}")
+                else:
+                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]}")
+            except Exception as e:
+                logger.warning(f"reupload error: {e}")
+                final_fid = fid  # fallback to original, caption will still show display name
+        # Prepare extension from display
+        ext = _get_ext(disp_name)
+        # Insert with naming fields
+        cid_new = await db.bs_add_content(sid, ct, final_fid, description=desc,
+                                          original_name=orig_name, display_name=disp_name,
+                                          file_extension=ext, mime_type=mime, file_size=fsize)
         tl = dict(CONTENT_TYPES).get(ct, ct)
         try:
             _sess_for_audit = await db.bs_get_session(sid) or {}
@@ -1932,7 +2291,58 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
             return ConversationHandler.END
-        fid_new = await db.ref_add_file(bid, lang, fid, volume=vol, description=desc)
+        pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
+        orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
+        disp_name = context.user_data.get('ca_pending_display') or orig_name
+        mime = pending_info.get('mime_type', 'application/octet-stream')
+        fsize = pending_info.get('file_size', 0)
+        is_photo = pending_info.get('is_photo', False)
+        need_reupload = (disp_name.strip() != orig_name.strip()) or is_photo
+        final_fid = fid
+        if need_reupload and fid:
+            try:
+                try:
+                    from api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                except ImportError:
+                    try:
+                        from humsyarx.api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                    except ImportError:
+                        _dl = None; _up = None
+                data = await _dl(fid) if _dl else None
+                if data is None:
+                    try:
+                        tg_file = await context.bot.get_file(fid)
+                        from io import BytesIO
+                        bio = BytesIO()
+                        await tg_file.download_to_memory(bio)
+                        data = bio.getvalue()
+                    except Exception as _e2:
+                        data = None
+                if data and len(data) <= 45*1024*1024:
+                    new_fid = await _up(uid, disp_name, data, mime) if _up else None
+                    if not new_fid:
+                        try:
+                            from io import BytesIO
+                            bio = BytesIO(data); bio.name = disp_name
+                            sent = await context.bot.send_document(chat_id=uid, document=bio, filename=disp_name, disable_notification=True)
+                            new_fid = sent.document.file_id if sent.document else None
+                        except Exception:
+                            new_fid = None
+                    if new_fid:
+                        final_fid = new_fid
+            except Exception as e:
+                logger.warning(f"ref reupload error: {e}")
+        try:
+            from utils_file_naming import get_extension as _get_ext2
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import get_extension as _get_ext2
+            except ImportError:
+                def _get_ext2(x): return x.split('.')[-1] if '.' in x else ''
+        ext = _get_ext2(disp_name)
+        fid_new = await db.ref_add_file(bid, lang, final_fid, volume=vol, description=desc,
+                                        original_name=orig_name, display_name=disp_name,
+                                        file_extension=ext, mime_type=mime, file_size=fsize)
         ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
         try:
             _book_for_audit = await db.ref_get_book(bid) or {}
