@@ -136,23 +136,100 @@ async def upload_with_new_filename(chat_id: int, new_filename: str, data: bytes,
         logger.warning("RENAME_UPLOAD_EXC %s via=%s", type(e).__name__, "local" if _local_available() else "cloud")
         return None, None
 
+async def _rename_via_mtproto(chat_id: int, old_file_id: str, new_filename: str) -> tuple[str | None, str | None]:
+    """Fallback MTProto برای فایل‌های بزرگ (>20MB) — بدون نیاز به Local Bot API binary، همون منابع Railway."""
+    api_id = (os.getenv("TELEGRAM_API_ID") or "").strip()
+    api_hash = (os.getenv("TELEGRAM_API_HASH") or "").strip()
+    token = CLOUD_TOKEN
+    if not api_id or not api_hash or not token:
+        logger.info("MTPROTO_SKIP missing API_ID/HASH")
+        return None, None
+    try:
+        api_id_int = int(api_id)
+    except:
+        logger.warning("MTPROTO_BAD_API_ID")
+        return None, None
+    try:
+        from pyrogram import Client
+        from io import BytesIO
+        # in_memory session، بدون فایل session روی دیسک
+        async with Client(
+            name="rename_mtproto",
+            api_id=api_id_int,
+            api_hash=api_hash,
+            bot_token=token,
+            workdir="/tmp",
+            in_memory=True,
+            no_updates=True,
+        ) as app:
+            # دانلود مستقیم با file_id (تا 2GB via MTProto)
+            file_obj = await app.download_media(old_file_id, in_memory=True)
+            if not file_obj:
+                logger.warning("MTPROTO_DOWNLOAD_NONE file_id=%s", old_file_id[:12])
+                return None, None
+            try:
+                data = bytes(file_obj.getbuffer())
+            except:
+                # file_obj may be BytesIO already
+                data = file_obj.read() if hasattr(file_obj, 'read') else bytes(file_obj)
+            if not data:
+                logger.warning("MTPROTO_DOWNLOAD_EMPTY")
+                return None, None
+            logger.info("MTPROTO_DOWNLOAD_OK size=%s file_id=%s", len(data), old_file_id[:12])
+            bio = BytesIO(data)
+            bio.name = new_filename
+            # آپلود با نام جدید به چت ادمین (سایلنت)
+            msg = await app.send_document(chat_id=chat_id, document=bio, file_name=new_filename, disable_notification=True)
+            new_id = None
+            new_name = None
+            if getattr(msg, 'document', None):
+                new_id = msg.document.file_id
+                new_name = getattr(msg.document, 'file_name', new_filename)
+            elif getattr(msg, 'video', None):
+                new_id = msg.video.file_id
+                new_name = getattr(msg.video, 'file_name', new_filename)
+            elif getattr(msg, 'audio', None):
+                new_id = msg.audio.file_id
+                new_name = getattr(msg.audio, 'file_name', new_filename)
+            else:
+                logger.warning("MTPROTO_UPLOAD_NO_MEDIA")
+                return None, None
+            # سایلنت: پاک کردن پیام موقت
+            try:
+                await app.delete_messages(chat_id, msg.id)
+            except:
+                pass
+            logger.info("MTPROTO_UPLOAD_OK new_id=%s name=%s", (new_id or "")[:12], new_name)
+            return new_id, new_name
+    except Exception as e:
+        logger.warning("MTPROTO_EXC %s", type(e).__name__)
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None, None
+
 async def rename_telegram_file(chat_id: int, old_file_id: str, new_filename: str, mime_type: str = "application/octet-stream") -> tuple[str | None, str | None]:
     """
-    Pipeline اختصاصی Rename — فقط همین تابع از Local API استفاده می‌کند.
+    Pipeline اختصاصی Rename — فقط همین تابع از Local API/MTProto استفاده می‌کند.
     برمی‌گرداند (new_file_id, new_file_name) یا (None, None) اگر Fail.
     هیچ Crash ای برای ربات ایجاد نمی‌کند.
     """
     if not old_file_id or not new_filename:
         return None, None
     # اگر Local URL ست نیست، باز هم تلاش می‌کنیم با Cloud (تا 20MB) — ولی لاگ می‌کنیم که محدوده
+    # 1. تلاش با Local/Cloud (تا 20MB یا اگر Local ست باشد تا 2GB)
     if not _local_available():
-        logger.info("RENAME_VIA_CLOUD_20MB_LIMIT file_id=%s name=%s (set TELEGRAM_LOCAL_API_URL for >20MB)", old_file_id[:12], new_filename)
+        logger.info("RENAME_TRY_CLOUD file_id=%s name=%s (fallback to MTProto for >20MB)", old_file_id[:12], new_filename)
     data = await download_for_rename(old_file_id)
-    if data is None:
-        logger.warning("RENAME_FAIL_DOWNLOAD file_id=%s", old_file_id[:12])
-        return None, None
-    new_id, new_name = await upload_with_new_filename(chat_id, new_filename, data, mime_type)
-    if not new_id:
-        logger.warning("RENAME_FAIL_UPLOAD name=%s", new_filename)
-        return None, None
-    return new_id, new_name
+    if data is not None:
+        new_id, new_name = await upload_with_new_filename(chat_id, new_filename, data, mime_type)
+        if new_id:
+            return new_id, new_name
+        logger.warning("RENAME_CLOUD_UPLOAD_FAIL try MTProto")
+    else:
+        logger.warning("RENAME_CLOUD_DOWNLOAD_FAIL try MTProto file_id=%s", old_file_id[:12])
+    # 2. Fallback MTProto (Pyrogram) برای فایل‌های بزرگ — بدون نیاز به باینری Local
+    mt_id, mt_name = await _rename_via_mtproto(chat_id, old_file_id, new_filename)
+    if mt_id:
+        return mt_id, mt_name
+    logger.warning("RENAME_ALL_FAILED name=%s", new_filename)
+    return None, None

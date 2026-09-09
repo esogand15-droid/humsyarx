@@ -54,11 +54,6 @@ RUN npm --prefix ./webadmin run build
 
 
 # ────────────────────────────────────────────────────────────
-#  Stage 1b — telegram-bot-api binary (برای Dedicated Rename, بدون نیاز به curl/GitHub)
-# ────────────────────────────────────────────────────────────
-FROM ghcr.io/bots-house/docker-telegram-bot-api:latest AS botapi
-
-# ────────────────────────────────────────────────────────────
 #  Stage 2 — runtime پایتون
 # ────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -81,12 +76,8 @@ RUN apt-get update \
       libfreetype6 \
  && rm -rf /var/lib/apt/lists/*
 
-# ── Local Bot API binary (Dedicated Rename, همون منابع) — از ایمیج رسمی کپی می‌شود (قابل اعتمادتر از curl) ──
-COPY --from=botapi /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
-RUN chmod +x /usr/local/bin/telegram-bot-api 2>/dev/null || true; \
-    /usr/local/bin/telegram-bot-api --help 2>&1 | head -n 20 || true; \
-    echo "telegram-bot-api copied from ghcr.io/tdlib/telegram-bot-api"
-
+# ── MTProto برای فایل‌های بزرگ — بدون نیاز به باینری Local Bot API ──
+# رینیم بزرگ (>20MB) از طریق pyrogram (همون منابع Railway) انجام می‌شود
 WORKDIR /srv/humsyar
 
 # ── وابستگی پایتون ──
