@@ -74,7 +74,16 @@ async def upload_and_get_file_id(chat_id: int, filename: str, file_bytes: bytes,
             size)
         return None
     logger.info("STORAGE_UPLOAD_COMPLETED size=%s mime=%s", size, mime_type)
-    return data["result"]["document"]["file_id"]
+    file_id = data["result"]["document"]["file_id"]
+    # سایلنت: پیام موقت را پاک کن تا چت ادمین شلوغ نشود (فایل روی سرور تلگرام می‌ماند)
+    try:
+        msg_id = data["result"].get("message_id")
+        if msg_id:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5, read=10)) as _cl:
+                await _cl.post(f"{API_BASE}/deleteMessage", data={"chat_id": chat_id, "message_id": msg_id})
+    except Exception:
+        pass
+    return file_id
 
 
 async def download_telegram_file(file_id: str) -> bytes | None:

@@ -2224,17 +2224,24 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as _e2:
                         logger.warning(f"download fallback failed: {_e2}")
                         data = None
+                reupload_ok = False
                 if data:
                     # Cap already enforced in download helper (45MB). Double-check.
                     if len(data) > 45*1024*1024:
                         await update.message.reply_text("❌ حجم فایل بیش از حد مجاز است (۴۵MB)")
                         return CA_WAITING_TEXT
-                    # Upload with display name
+                    # Upload with display name — silent (delete after)
                     new_fid = None
                     if _up:
-                        new_fid = await _up(uid, disp_name, data, mime)
-                    else:
-                        # fallback via PTB send_document to self
+                        try:
+                            new_fid = await _up(uid, disp_name, data, mime)
+                            # _up sends to uid; try to delete its message is inside helper? fallback below handles delete for PTB path
+                            reupload_ok = bool(new_fid)
+                        except Exception as _e_up:
+                            logger.warning(f"_up failed: {_e_up}")
+                            new_fid = None
+                    if not new_fid:
+                        # fallback via PTB send_document to self (silent)
                         try:
                             from io import BytesIO
                             bio = BytesIO(data); bio.name = disp_name
@@ -2246,6 +2253,13 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 new_fid = sent.video.file_id
                             else:
                                 new_fid = None
+                            # silent: delete the intermediate message
+                            if new_fid:
+                                try:
+                                    await context.bot.delete_message(chat_id=uid, message_id=sent.message_id)
+                                except Exception:
+                                    pass
+                                reupload_ok = True
                         except Exception as _e3:
                             logger.warning(f"PTB reupload failed: {_e3}")
                             new_fid = None
@@ -2253,9 +2267,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         final_fid = new_fid
                         logger.info(f"REUPLOAD_SUCCESS old={fid[:10]} new={new_fid[:10]} name={disp_name}")
                     else:
-                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name}")
+                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name} — display name will be shown in list/caption")
                 else:
-                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]}")
+                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]} — Telegram may limit >20MB files; keep original file_id but display name remains")
             except Exception as e:
                 logger.warning(f"reupload error: {e}")
                 final_fid = fid  # fallback to original, caption will still show display name
@@ -2278,8 +2292,14 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _e:
             logger.warning(f"add_content audit failed: {_e}")
         _clear(context)
-        await update.message.reply_text(f"✅ {tl} اضافه شد!",
-            reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
+        # اطلاع به ادمین: نام نمایشی حتی اگر reupload ناموفق بود در لیست دانشجو دیده می‌شود
+        msg_extra = f"\n📄 نام فایل: <code>{disp_name}</code>"
+        if final_fid != fid:
+            msg_extra += " — ✅ نام تلگرامی هم تغییر کرد (سایلنت)"
+        elif need_reupload:
+            msg_extra += " — ⚠️ فایل حجیم بود؛ نام تلگرامی عوض نشد ولی در لیست همین نام نمایش داده می‌شود"
+        await update.message.reply_text(f"✅ {tl} اضافه شد!{msg_extra}",
+            parse_mode='HTML', reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
     elif ca_mode == 'waiting_ref_description':
         desc  = '' if text == '-' else text
@@ -2318,18 +2338,38 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         data = bio.getvalue()
                     except Exception as _e2:
                         data = None
+                reupload_ok = False
                 if data and len(data) <= 45*1024*1024:
-                    new_fid = await _up(uid, disp_name, data, mime) if _up else None
+                    new_fid = None
+                    if _up:
+                        try:
+                            new_fid = await _up(uid, disp_name, data, mime)
+                            reupload_ok = bool(new_fid)
+                        except Exception as _e_up:
+                            logger.warning(f"ref _up failed: {_e_up}")
+                            new_fid = None
                     if not new_fid:
                         try:
                             from io import BytesIO
                             bio = BytesIO(data); bio.name = disp_name
                             sent = await context.bot.send_document(chat_id=uid, document=bio, filename=disp_name, disable_notification=True)
                             new_fid = sent.document.file_id if sent.document else None
-                        except Exception:
+                            if new_fid:
+                                try:
+                                    await context.bot.delete_message(chat_id=uid, message_id=sent.message_id)
+                                except Exception:
+                                    pass
+                                reupload_ok = True
+                        except Exception as _e3:
+                            logger.warning(f"ref PTB reupload failed: {_e3}")
                             new_fid = None
                     if new_fid:
                         final_fid = new_fid
+                        logger.info(f"REF_REUPLOAD_SUCCESS {fid[:10]}->{new_fid[:10]} {disp_name}")
+                    else:
+                        logger.warning(f"REF_REUPLOAD_FAILED keep original for {disp_name}")
+                else:
+                    logger.warning(f"REF_REUPLOAD_DOWNLOAD_FAILED or too big for {fid[:10]}")
             except Exception as e:
                 logger.warning(f"ref reupload error: {e}")
         try:
@@ -2356,8 +2396,14 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as _e:
             logger.warning(f"ref_add_file audit failed: {_e}")
         _clear(context)
+        msg_extra_ref = f"\n📄 نام فایل: <code>{disp_name}</code>"
+        if final_fid != fid:
+            msg_extra_ref += " — ✅ نام تلگرامی هم تغییر کرد (سایلنت)"
+        elif need_reupload:
+            msg_extra_ref += " — ⚠️ فایل حجیم بود؛ نام تلگرامی عوض نشد ولی در لیست همین نام دیده می‌شود"
         await update.message.reply_text(
-            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else ''),
+            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else '') + msg_extra_ref,
+            parse_mode='HTML',
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
 
     elif ca_mode == 'add_ref_subject':

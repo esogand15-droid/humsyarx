@@ -198,8 +198,18 @@ async def _show_content(query, session_id: str, back_cb: str):
             icon_label = CONTENT_ICONS.get(ctype, '📎 فایل')
             for item in items:
                 cid   = str(item['_id'])
-                desc  = item.get('description', '')[:20]
-                label = icon_label + (f" — {desc}" if desc else '')
+                # 📄 priority: display name > description > type
+                disp = (item.get('display_file_name') or item.get('display_name') or '').strip()
+                if disp:
+                    # truncate label for button (Telegram 64 chars limit)
+                    label = f"{icon_label} — {disp[:40]}"
+                    # if also has description different from display, append short desc
+                    desc = item.get('description','').strip()
+                    if desc and desc[:20] not in disp:
+                        label = f"{label[:50]}"
+                else:
+                    desc  = item.get('description', '')[:20]
+                    label = icon_label + (f" — {desc}" if desc else '')
                 keyboard.append([InlineKeyboardButton(
                     label, callback_data=f'bs_dl:{cid}'
                 )])

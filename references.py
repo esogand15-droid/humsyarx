@@ -203,10 +203,14 @@ async def _show_lang_choice(query, context, book_id, back_cb='ref:main'):
             f   = lang_files[0]
             fid = str(f['_id'])
             dl  = f.get('downloads', 0)
+            disp = (f.get('display_file_name') or f.get('display_name') or '').strip()
             desc = f.get('description', '')
-            btn_label = f"{lang_icon} {lang_label} | ⬇️ {dl}"
-            if desc:
+            if disp:
+                btn_label = f"{lang_icon} {lang_label} — {disp[:30]} | ⬇️ {dl}"
+            elif desc:
                 btn_label = f"{lang_icon} {lang_label} — {desc[:20]} | ⬇️ {dl}"
+            else:
+                btn_label = f"{lang_icon} {lang_label} | ⬇️ {dl}"
             keyboard.append([InlineKeyboardButton(btn_label,
                                                   callback_data=f'ref:dl:{fid}')])
         else:
@@ -251,10 +255,13 @@ async def _show_volumes(query, context, book_id, lang, back_cb='ref:main'):
         fid  = str(f['_id'])
         vol  = f.get('volume', 1)
         dl   = f.get('downloads', 0)
+        disp = (f.get('display_file_name') or f.get('display_name') or '').strip()
         desc = f.get('description', '')
-
-        if desc:
-            btn_label = f"{lang_icon} جلد {vol} — {desc} | ⬇️ {dl}"
+        # 📄 priority: display name
+        if disp:
+            btn_label = f"{lang_icon} جلد {vol} — {disp[:35]} | ⬇️ {dl}"
+        elif desc:
+            btn_label = f"{lang_icon} جلد {vol} — {desc[:20]} | ⬇️ {dl}"
         else:
             btn_label = f"{lang_icon} جلد {vol} | ⬇️ {dl}"
 
