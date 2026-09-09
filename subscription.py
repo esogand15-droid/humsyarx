@@ -314,11 +314,12 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
         await query.answer("پرداخت هنوز تأیید نشده (لغو شده یا ناقص است).", show_alert=True)
         return
     code = (doc.get("discount_code") or "").strip().upper() or None
+    # 🌊 W3 — آینه‌ی API: پول گرفته شده پس approve + پرچم overrun.
+    discount_overrun = False
     if code:
         consumed = await db.discount_consume(code, user_id=uid)
         if not consumed:
-            await query.answer("پرداخت موفق بود اما ظرفیت کد تخفیف پر شده — با پشتیبانی تماس بگیر.", show_alert=True)
-            return
+            discount_overrun = True
     ref_id = str(zp.get("ref_id") or "")
     res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
     if not res.get("ok"):
@@ -332,6 +333,20 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
             return
         await query.answer(res.get("reason") or "تأیید هم‌زمان — دوباره تلاش کن.", show_alert=True)
         return
+    if discount_overrun:
+        try:
+            await db.sub_payment_mark_discount_overrun(authority)
+            try:
+                _rz2 = await db.get_actor_role_label(uid)
+            except Exception:
+                _rz2 = "student"
+            await send_audit_log(None, "user", (await db.get_user(uid) or {}).get("name", str(uid)), uid,
+                                 "تأیید پرداخت آنلاین با تخفیف خارج از ظرفیت (ربات)", module="Subscription",
+                                 severity="HIGH", actor_role=_rz2, target_id=str(doc["_id"]),
+                                 target_type="sub_payment", target_label=(doc.get("plan_name") or "")[:60],
+                                 after={"discount_overrun": True}, tags=["مالی", "ربات", "مغایرت"])
+        except Exception:
+            pass
     context.user_data.pop("sub_zp_authority", None)
     context.user_data.pop("sub_gift_to", None)
     context.user_data.pop("sub_gift_message", None)

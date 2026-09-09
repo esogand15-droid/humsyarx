@@ -1677,7 +1677,7 @@ export function WalletMiniCard() {
   const nav = useNavigate();
   const walletQuery = useQuery({
     queryKey: ['wallet'],
-    queryFn: () => api.get('/api/subscription/wallet'),
+    queryFn: () => api.get('/api/subscription/wallet').then((r) => r.data),
   });
   const w = walletQuery.data;
   return (

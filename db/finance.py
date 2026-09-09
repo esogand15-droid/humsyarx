@@ -833,6 +833,29 @@ class DBFinance:
             logger.warning(f"sub_payment_refund failed for {pid}: {e}")
             return False
 
+    async def sub_payment_mark_discount_overrun(self, authority: str) -> bool:
+        """🌊 W3 — پرچم overrun تخفیف روی پرداخت تأییدشده (بازبینی مغایرت‌گیری)."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"zarinpal_authority": authority},
+                {"$set": {"discount_overrun": True}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark discount_overrun failed {authority}: {e}")
+            return False
+
+    async def sub_payment_mark_gateway_reversal(self, pid: str) -> bool:
+        """🌊 W3/MISS-02 — علامت «بازوی درگاهی دستی» روی رسید refundشده."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"_id": ObjectId(pid)},
+                {"$set": {"gateway_reversal": "manual_required"}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark gateway_reversal failed {pid}: {e}")
+            return False
+
+
     async def sub_payment_list_pending(self) -> list:
         return await self.sub_payments.find({'status': 'pending'}).sort('submitted_at', 1).to_list(100)
 

@@ -937,10 +937,22 @@ async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         pending = await db.sub_payments.find({'status': 'zarinpal_pending', 'submitted_at': {'$lt': cutoff}}).to_list(50)
         for doc in pending:
             try:
-                await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
+                flipped = await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
                 code = (doc.get('discount_code') or '').strip()
                 if code:
                     await db.discount_release(code, user_id=doc.get('user_id'))
+                # 🌊 W3/MISS-02 — آزادسازی فوری hold درگاه اگر کاربر پول داده
+                # ولی verify نکرده بود؛ best-effort و ثبت نتیجه روی سند.
+                if flipped.modified_count == 1 and doc.get('zarinpal_authority'):
+                    try:
+                        from payments.zarinpal import zarinpal_reverse as _zp_rev
+                        rev = await _zp_rev(doc['zarinpal_authority'])
+                        await db.sub_payments.update_one({'_id': doc['_id']}, {'$set': {
+                            'zarinpal_reversed': bool(rev.get('ok')),
+                            'zarinpal_reverse_code': rev.get('code'),
+                            'zarinpal_reversed_at': __import__('time_utils').utc_now_iso()}})
+                    except Exception as e2:
+                        logger.warning(f"zarinpal reverse failed {doc.get('_id')}: {e2}")
                 logger.info(f"zarinpal cleanup cancelled {doc['_id']} authority={doc.get('zarinpal_authority')}")
             except Exception as e:
                 logger.warning(f"zarinpal cleanup failed {doc.get('_id')}: {e}")
@@ -2280,6 +2292,14 @@ def _run_polling_with_retry(build_app):
     wh_url = (os.getenv('WEBHOOK_URL') or os.getenv('BOT_WEBHOOK_URL') or '').strip()
     wh_secret = (os.getenv('WEBHOOK_SECRET') or os.getenv('BOT_WEBHOOK_SECRET') or '').strip() or None
     if wh_mode and wh_url:
+        # 🛡 W3/BUG-06 — حالت webhook روی Railway تک‌پورت پشتیبانی
+        # نمی‌شود (تک‌پورت با uvicorn تداخل می‌کند)؛ مسیر سالم polling
+        # است. این شاخه فقط برای سازگاری/دیباگ نگه داشته شده — جزئیات در
+        # docs/runbook.md (بخش «حالت webhook»).
+        logger.warning(
+            "BOT_WEBHOOK_MODE is set but webhook is NOT supported on "
+            "single-port Railway — use polling (unset BOT_WEBHOOK_MODE). "
+            "See docs/runbook.md.")
         # در حالت webhook، polling اجرا نمی‌شود — webhook server
         attempt = 0
         while True:

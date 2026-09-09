@@ -40,6 +40,7 @@ from api.user_metrics import (
 )
 
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from time_utils import utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
@@ -473,6 +474,8 @@ class AnswerInput(BaseModel):
 
 @router.post("/answer")
 async def answer(body: AnswerInput, user=Depends(get_question_access_user)):
+    # 🛡 W3/SEC-03 — سقف گشاد برای آزمون سرعتی، ولی ضد بات
+    await rate_limit_user(user["id"], "q_answer", 100, 60)
     question = await db.get_question_by_id(body.question_id)
     if not question:
         raise HTTPException(404, "سؤال پیدا نشد")
@@ -509,6 +512,8 @@ class AIGenerateInput(BaseModel):
 
 @router.post("/practice/ai/generate")
 async def generate_ai_practice(body: AIGenerateInput, user=Depends(get_question_access_user)):
+    # 🛡 W3/SEC-03 — تولید AI هزینه دارد؛ سقف سخت‌گیرانه
+    await rate_limit_user(user["id"], "ai_generate", 10, 60)
     taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id)
     try:
         return await ai_practice.generate(user=user, taxonomy=taxonomy,

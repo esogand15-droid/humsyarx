@@ -11,6 +11,7 @@ import logging
 import os
 from datetime import datetime
 from time_utils import utc_now_iso
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -125,6 +126,8 @@ async def register_via_miniapp(
 ):
     tg_user = _verified_tg_user(x_init_data)
     uid = tg_user["id"]
+    # 🛡 W3/SEC-03 — ضد اسپم ثبت‌نام (init-data امضاشده است؛ کلید = کاربر)
+    await rate_limit_user(uid, "register", 5, 600)
     username = tg_user.get("username")
 
     # ── لایه دفاعی بلک‌لیست (مثل بات) ──

@@ -300,6 +300,10 @@ function RefundModal({ pay, onClose, onDone }) {
       toast(r.wallet_credited
         ? `بازگشت وجه ثبت شد 💸 — ${money(amount)} به کیف پول دانشجو منتقل شد`
         : 'بازگشت وجه ثبت شد 💸', r.wallet_credited ? 'ok' : 'warn');
+      // 🌊 W3/MISS-02 — بازوی درگاهی دستی
+      if (r.gateway_reversal === 'manual_required') {
+        toast('⚠️ پول واقعی در درگاه گرفته شده — در پنل زرین‌پال هم برگشت وجه را ثبت کن', 'warn');
+      }
       onDone();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);

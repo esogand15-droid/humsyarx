@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from api.auth import get_current_user
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from request_context import current_request_id
 from time_utils import utc_now_iso
 
@@ -73,6 +74,8 @@ class NewTicket(BaseModel):
 @router.post("")
 async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
     uid = user["id"]; db_user = user["_db"]
+    # 🛡 W3/SEC-03 — ضد اسپم تیکت
+    await rate_limit_user(uid, "ticket_create", 10, 60)
     if len(body.message.strip()) < 10: raise HTTPException(422,"متن کوتاه است")
     tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip())
     # AUDIT — ticket creation
@@ -114,6 +117,7 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
     if not ticket: raise HTTPException(404)
     if ticket["user_id"] != user["id"]: raise HTTPException(403)
     if ticket.get("status") == "closed": raise HTTPException(400,"تیکت بسته است")
+    await rate_limit_user(user["id"], "ticket_reply", 30, 60)  # 🛡 W3/SEC-03
     msg = body.message.strip()
     if not msg: raise HTTPException(422)
     await db.ticket_add_reply(tid, f"[دانشجو] {msg}")

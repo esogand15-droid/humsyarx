@@ -1186,12 +1186,14 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
         raise HTTPException(status_code=402, detail="پرداخت تایید نشد (لغو شده یا نامعتبر)")
     ref_id = str(zp.get("ref_id") or "")
     # consume discount atomically after payment success (if present)
+    # 🌊 W3 — پول در درگاه قطعی گرفته شده؛ fail کردن در این نقطه یعنی
+    # «پولِ گرفته‌شده‌ی بی‌حساب». پس approve می‌کنیم + پرچم overrun برای
+    # بازبینی مغایرت‌گیری (تخفیف خارج از ظرفیت به کاربر داده شد).
+    discount_overrun = False
     if code:
         consumed = await db.discount_consume(code, user_id=user["id"])
         if not consumed:
-            # discount exhausted after payment — refund via reversal? for gateway we treat as paid but discount lost; notify
-            # we still approve payment but with percent adjusted? For now fail and require manual refund
-            raise HTTPException(status_code=409, detail="پرداخت موفق بود اما ظرفیت کد تخفیف پر شده — مبلغ کامل لحاظ می‌شود، با پشتیبانی تماس بگیرید")
+            discount_overrun = True
     res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
     if not res.get("ok"):
         if code:
@@ -1200,9 +1202,11 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
             sub = await db.sub_get(user["id"])
             return {"ok": True, "already": True, "end_date": (sub or {}).get("end_date"), "ref_id": ref_id}
         raise HTTPException(status_code=409, detail=res.get("reason") or "تایید هم‌زمان — دوباره تلاش کنید")
-    await _sub_audit(user, "تایید پرداخت زرین‌پال", target_id=str(doc["_id"]), target_label=doc.get("plan_name",""), after={"ref_id": ref_id, "authority": authority}, severity="INFO")
+    if discount_overrun:
+        await db.sub_payment_mark_discount_overrun(authority)
+    await _sub_audit(user, "تایید پرداخت زرین‌پال", target_id=str(doc["_id"]), target_label=doc.get("plan_name",""), after={"ref_id": ref_id, "authority": authority, "discount_overrun": discount_overrun}, severity=("HIGH" if discount_overrun else "INFO"))
     act = res.get("activation") or {}
-    return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get("mock", False)}
+    return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get("mock", False), "discount_overrun": discount_overrun}
 
 @router.get("/zarinpal/callback")
 async def zarinpal_callback(Authority: str = Query(""), Status: str = Query("")):

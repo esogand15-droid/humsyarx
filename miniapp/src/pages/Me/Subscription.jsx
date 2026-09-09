@@ -2115,7 +2115,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
   const qc = useQueryClient();
   const walletQuery = useQuery({
     queryKey: ['wallet'],
-    queryFn: () => api.get('/api/subscription/wallet'),
+    queryFn: () => api.get('/api/subscription/wallet').then((r) => r.data),
   });
   const [confirmBuy, setConfirmBuy] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -2174,7 +2174,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
     setLoadingMore(true);
     try {
       const r = await api.get(`/api/subscription/wallet/transactions?skip=${txs.length}&limit=10`);
-      const items = Array.isArray(r?.items) ? r.items : [];
+      const items = Array.isArray(r?.data?.items) ? r.data.items : [];
       setExtraTxs((prev) => [...prev, ...items]);
       setHasMore(items.length >= 10);
     } catch { /* خطا در UI نشان داده می‌شود؛ موجودی دست‌نخورده */ }

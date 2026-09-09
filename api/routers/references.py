@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.auth import get_resource_access_user
 from api.telegram_send import send_ref_file
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -338,6 +339,9 @@ async def download(
     user_id = int(
         user["id"]
     )
+
+    # 🛡 W3/SEC-03 — دانلود فایل = پهنای باند تلگرام؛ ضد اسکریپ
+    await rate_limit_user(user_id, "ref_download", 60, 60)
 
     # فقط رکورد همان جلدی که کاربر روی آن کلیک کرده
     # از دیتابیس گرفته می‌شود.

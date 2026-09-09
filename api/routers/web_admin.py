@@ -5358,6 +5358,7 @@ _RECON_META = {
     "refunded_but_active_sub": ("critical", "بازگشت وجه شده ولی اشتراک هنوز فعال"),
     "pending_stale": ("warning", "رسید قدیمی در انتظار بررسی"),
     "approved_topup_not_credited": ("high", "شارژ تأییدشده بدون اعتبار کیف پول"),
+    "approved_discount_overrun": ("high", "تخفیف خارج از ظرفیت در پرداخت تأییدشده"),
 }
 
 
@@ -5386,6 +5387,14 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
     if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
                                        reason=reason):
         raise HTTPException(409, "این رسید هم‌زمان بازگشت وجه شده است")
+    # 🌊 W3/MISS-02 — اگر پول واقعی در درگاه گرفته شده (ref_id دارد)،
+    # reversal خودکار ممکن نیست (فقط برای verifyنشده‌ها)؛ بازوی درگاهی
+    # «دستی» علامت می‌خورد تا اپراتور در پنل زرین‌پال هم اقدام کند.
+    gateway_reversal = None
+    if (payment.get("method") == "zarinpal" or payment.get("zarinpal_authority")) \
+            and payment.get("zarinpal_ref_id"):
+        gateway_reversal = "manual_required"
+        await db.sub_payment_mark_gateway_reversal(str(payment["_id"]))
     revoked = False
     if body.revoke_subscription:
         revoked = await db.sub_revoke(uid, f"بازگشت وجه: {reason}",
@@ -5417,7 +5426,8 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         after={"status": "refunded", "reason": reason,
                "revoked_subscription": revoked,
                "wallet_credited": bool(credit_tx),
-               "wallet_tx_id": credit_tx},
+               "wallet_tx_id": credit_tx,
+               "gateway_reversal": gateway_reversal},
         tags=["مالی", "بازگشت_وجه"])
     if amount > 0 and credit_tx:
         text = (f"💸 مبلغ {amount:,} تومان به کیف پول شما بازگشت. "
@@ -5428,6 +5438,7 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         "type": "event:refund", "chat_id": uid, "sent": False,
         "text": text, "created_at": _now()})
     return {"ok": True, "payment_id": str(payment["_id"]),
+            "gateway_reversal": gateway_reversal,
             "revoked_subscription": bool(revoked),
             "wallet_credited": bool(credit_tx),
             "wallet_tx_id": credit_tx,
@@ -5438,7 +5449,7 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
 @router.get("/subscription/reconcile")
 async def wa_subscription_reconcile(
         user=Depends(_perm("subscription.manage"))):
-    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: چهار ناهم‌خوانی بین
+    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: ناهم‌خوانی‌های بین
     sub_payments و subscriptions که هر کدام یعنی «پول/دسترسی بی‌حساب».
 
     همه‌ی خواندن‌ها کرانه‌دار است (to_list محدود) — بدون اسکن بی‌پایان."""
@@ -5470,6 +5481,14 @@ async def wa_subscription_reconcile(
             {"status": "approved", "plan_id": "wallet_topup",
              "topup_credited_at": None}).sort("reviewed_at", -1).limit(200):
         items.append({"type": "approved_topup_not_credited",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment": p,
+                      "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۱-ج) 🌊 W3 — پرداخت تأییدشده‌ای که کد تخفیفش بعد از پرداخت موفق
+    # ظرفیت نداشت (overrun) — پول گرفته و approve شده؛ بازبینی مدیریتی.
+    async for p in db.sub_payments.find(
+            {"status": "approved", "discount_overrun": True}).sort("reviewed_at", -1).limit(200):
+        items.append({"type": "approved_discount_overrun",
                       "user_id": int(p.get("user_id") or 0),
                       "payment": p,
                       "at": p.get("reviewed_at") or p.get("submitted_at")})
@@ -5527,6 +5546,12 @@ async def wa_subscription_reconcile(
             actions = [{"key": "finalize_topup", "label": "اعمال اعتبار شارژ"},
                        {"key": "go", "label": "بررسی کیف پول",
                         "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}]
+        elif t == "approved_discount_overrun":
+            text = (f"پرداخت {who} به مبلغ {int(amount or 0):,} تومان با کد تخفیف "
+                    f"«{p.get('discount_code') or '—'}» تأیید شده ولی ظرفیت کد تمام شده بود — "
+                    f"تخفیف خارج از ظرفیت داده شد؛ بازبینی شود.")
+            actions = [{"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
         elif t == "active_sub_no_approved_payment":
             text = (f"{who} اشتراک فعال دارد (منبع: پرداخت) ولی هیچ رسید "
                     f"تأییدشده‌ای برایش ثبت نشده — دسترسی بی‌حساب.")
@@ -5989,6 +6014,13 @@ async def wa_wallet_adjust(uid: int, body: WaWalletAdjustBody,
         code = getattr(e, "code", "")
         if code == "insufficient_balance":
             raise HTTPException(400, "موجودی کیف پول برای این کسر کافی نیست")
+        # 🛡 W3/SEC-02 — سقف روزانه به‌جای ۵۰۰ خام، پاسخ معنادار می‌دهد
+        if code == "daily_limit_exceeded":
+            raise HTTPException(429, str(e) or "سقف روزانه کیف پول")
+        if code == "daily_limit_unavailable":
+            raise HTTPException(
+                503, "سامانه سقف روزانه موقتاً در دسترس نیست؛ "
+                     "لطفاً دقایقی دیگر تلاش کنید")
         raise
     log_id = await _audit(
         int(user["id"]), "تنظیم دستی کیف پول", severity="CRITICAL",
