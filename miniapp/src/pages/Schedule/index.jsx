@@ -424,14 +424,47 @@ export default function Schedule() {
             ثبت نشده است.
           </EmptyState>
         ) : (
-          <section
-            style={{
-              display: 'grid',
-              gap: 9,
-            }}
-          >
-            {items.map(
-              (item, index) => {
+          (() => {
+            const _parseMin = (t) => { const m = String(t||'').match(/(\d{1,2}):(\d{2})/); if(!m) return null; return Number(m[1])*60+Number(m[2]); };
+            const _minToClock = (min) => `${String(Math.floor(min/60)).padStart(2,'0')}:${String(min%60).padStart(2,'0')}`;
+            const _merged = (() => {
+              const sorted = [...items].sort((a,b)=> (a.date||'').localeCompare(b.date||'') || String(a.time||'').localeCompare(String(b.time||'')));
+              const out = [];
+              for (const cur of sorted) {
+                const prev = out[out.length-1];
+                if (prev && prev.date===cur.date && prev.lesson===cur.lesson && (prev.group||'')===(cur.group||'') && (prev.type||'class')===(cur.type||'class') && (prev.location||'')===(cur.location||'') && (prev.teacher||'')===(cur.teacher||'')) {
+                  const prevEnd = _parseMin(prev.end_time||prev.time_end||'') ?? (_parseMin(prev.time)!==null?_parseMin(prev.time)+60:null);
+                  const curStart = _parseMin(cur.time);
+                  const curEnd = _parseMin(cur.end_time||cur.time_end||'') ?? (curStart!==null?curStart+60:null);
+                  if (prevEnd!==null && curStart!==null && prevEnd===curStart && curEnd!==null) {
+                    prev.end_time = _minToClock(curEnd);
+                    prev._merged = (prev._merged||1)+1;
+                    continue;
+                  }
+                }
+                out.push({ ...cur });
+              }
+              return out;
+            })();
+            const _grouped2 = {};
+            for (const it of _merged) { const k=it.date||'بدون تاریخ'; (_grouped2[k] ||= []).push(it); }
+            const _dates = Object.keys(_grouped2).sort((a,b)=>a.localeCompare(b));
+            return (
+              <section style={{ display: 'grid', gap: 14 }}>
+                {_dates.map(day => {
+                  const dayItems = _grouped2[day].sort((a,b)=> String(a.time||'').localeCompare(String(b.time||'')));
+                  return (
+                    <div key={day} style={{ display: 'grid', gap: 9 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px' }}>
+                        <span style={{ display: 'grid', width: 36, height: 36, placeItems: 'center', borderRadius: 10, background: 'var(--acc-soft)', fontSize: 16 }}>📅</span>
+                        <div>
+                          <b style={{ fontSize: 'var(--fs-sm)' }}>{faDate(day, '—')}</b>
+                          <div className="muted" style={{ fontSize: 'var(--fs-cap)' }}>{faNum(dayItems.length)} جلسه · {faDate(day)}</div>
+                        </div>
+                        <span className="spacer" />
+                        <span className="badge b-acc">{faNum(dayItems.length)}</span>
+                      </div>
+                      {dayItems.map((item, index) => {
                 const remaining =
                   days(
                     item.days_left
@@ -453,7 +486,7 @@ export default function Schedule() {
                   <article
                     key={
                       item.id ||
-                      `${item.lesson}-${index}`
+                      `${item.lesson}-${index}-${day}`
                     }
                     data-lidx={index}
                     className={
@@ -468,6 +501,7 @@ export default function Schedule() {
                         urgent
                           ? 'var(--bd-err)'
                           : 'var(--bd)',
+                      borderInlineStart: urgent ? '3px solid var(--err)' : item.type==='makeup' ? '3px solid var(--warn)' : '3px solid var(--acc)',
                     }}
                   >
                     <div
@@ -553,6 +587,9 @@ export default function Schedule() {
                               منعطف
                             </span>
                           )}
+                          {item._merged && (
+                            <span className="badge b-acc" style={{ fontSize: 10 }}>🔗 {faNum(item._merged)} ادغام</span>
+                          )}
                         </div>
 
                         {item.teacher && (
@@ -587,14 +624,13 @@ export default function Schedule() {
                         >
                           <span className="badge b-acc">
                             📆{' '}
-                            {item.date ||
-                              'تاریخ نامشخص'}
+                            {faDate(item.date, 'تاریخ نامشخص')}
                           </span>
 
                           {item.time && (
                             <span className="badge b-gray">
                               ⏰{' '}
-                              {item.time}{(item.end_time||item.time_end)?` تا ${item.end_time||item.time_end}`:''}
+                              {faNum(item.time)}{(item.end_time||item.time_end)?` تا ${faNum(item.end_time||item.time_end)}`:''}
                             </span>
                           )}
 
@@ -668,9 +704,13 @@ export default function Schedule() {
                     )}
                   </article>
                 );
-              }
-            )}
-          </section>
+              })}
+                    </div>
+                  );
+                })}
+              </section>
+            );
+          })()
         )}
       </main>
     </>

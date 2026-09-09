@@ -583,31 +583,103 @@ export function ScheduleTab() {
         <button className="btn primary" onClick={() => setEdit({ type: 'class', group: 'هر دو', flex_type: 'fixed' })}>➕ مورد جدید</button>
       </div>
       {!items ? <Loading /> : items.length === 0 ? <Empty icon="📅" text="موردی نیست" /> : (<>
-        <div className={`grid content-list-grid ${view === 'list' ? '' : 'is-hidden'}`}>
-          {items.map(s => (
-            <div key={s.id} className="panel panel-pad row schedule-list-item">
-              <span className="schedule-list-icon">{s.type === 'class' ? '🏫' : s.type === 'exam' ? '📝' : '🔄'}</span>
-              <div className="content-grow-min">
-                <b className="content-strong">{s.lesson}</b>
-                <span className="muted"> {s.teacher || ''}</span>
-                <div className="muted content-meta-top">
-                  📅 {formatFaDate(s.date)} {s.time ? formatFaTime(s.time) : ''}{(s.end_time||s.time_end) ? ` تا ${formatFaTime(s.end_time||s.time_end)}` : ''} · {s.group} {s.location ? `· 📍 ${s.location}` : ''}
+        {(() => {
+          // —— consolidated view: merge contiguous same-lesson blocks into one interval card
+          const _parseMin = (t) => { const m = String(t||'').match(/(\d{1,2}):(\d{2})/); if(!m) return null; return Number(m[1])*60+Number(m[2]); };
+          const _minToClock = (min) => `${String(Math.floor(min/60)).padStart(2,'0')}:${String(min%60).padStart(2,'0')}`;
+          const _mergeByDate = (list) => {
+            const sorted = [...list].sort((a,b)=> (a.date||'').localeCompare(b.date||'') || String(a.time||'').localeCompare(String(b.time||'')));
+            const out = [];
+            for (const cur of sorted) {
+              const prev = out[out.length-1];
+              if (prev
+                && prev.date === cur.date
+                && prev.lesson === cur.lesson
+                && (prev.group||'') === (cur.group||'')
+                && (prev.type||'class') === (cur.type||'class')
+                && (prev.location||'') === (cur.location||'')
+                && (prev.teacher||'') === (cur.teacher||'')
+              ) {
+                const prevEnd = _parseMin(prev.end_time||prev.time_end||'') ?? (_parseMin(prev.time) !== null ? _parseMin(prev.time)+60 : null);
+                const curStart = _parseMin(cur.time);
+                const curEnd = _parseMin(cur.end_time||cur.time_end||'') ?? (curStart!==null?curStart+60:null);
+                if (prevEnd !== null && curStart !== null && prevEnd === curStart && curEnd !== null) {
+                  // merge into prev: extend end_time
+                  prev.end_time = _minToClock(curEnd);
+                  prev._merged = (prev._merged||1)+1;
+                  prev._mergedIds = [...(prev._mergedIds||[prev.id]), cur.id];
+                  continue;
+                }
+              }
+              out.push({ ...cur, _mergedIds: [cur.id] });
+            }
+            return out;
+          };
+          const merged = _mergeByDate(items);
+          const grouped = merged.reduce((acc, it) => { const k = it.date || 'بدون تاریخ'; (acc[k] ||= []).push(it); return acc; }, {});
+          const sortedDates = Object.keys(grouped).sort((a,b)=>a.localeCompare(b));
+          const TYPE_COLOR = { class: '#3a4a8c', exam: '#c62828', makeup: '#1fae5e' };
+          const TYPE_BG = { class: '#eef0f7', exam: '#fbe9e9', makeup: '#e6f6ee' };
+          return (
+        <div className={`${view === 'list' ? '' : 'is-hidden'}`} style={{ display: 'grid', gap: 14 }}>
+          {sortedDates.map(day => {
+            const rows = grouped[day].sort((a,b)=> String(a.time||'').localeCompare(String(b.time||'')));
+            return (
+              <section key={day} className="panel" style={{ padding: 0, overflow: 'hidden', borderRadius: 14, border: '1px solid var(--bd)', background: 'var(--surf-card)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', background: 'linear-gradient(135deg, var(--surf-card), var(--soft-acc))', borderBottom: '1px solid var(--bd)' }}>
+                  <span style={{ display: 'grid', width: 38, height: 38, placeItems: 'center', borderRadius: 10, background: 'var(--acc-soft)', fontSize: 18 }}>📅</span>
+                  <div style={{ flex: 1 }}>
+                    <b style={{ fontSize: 'var(--fs-md)' }}>{formatFaDate(day, { long: true })}</b>
+                    <div className="muted" style={{ fontSize: 'var(--fs-cap)', marginTop: 2 }}>{faDigits(rows.length)} جلسه · {formatFaDate(day)}</div>
+                  </div>
+                  <B kind="acc">{faDigits(rows.length)}</B>
                 </div>
-                {s.flex_note && <div className="muted content-meta-top">🔄 آخرین اعلان: {s.flex_note}</div>}
-              </div>
-              {s.flex_type === 'flexible' && <B kind="warn">منعطف</B>}
-              <B>{TYPE_FA[s.type] || s.type}</B>
-              {s.flex_type === 'flexible' &&
-                <button className="btn sm" title="اعلام زمان جدید کلاس منعطف" onClick={() => setFlex(s)}>🔄 زمان جدید</button>}
-              <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })} aria-label={`ویرایش برنامه ${s.lesson}`}>✏️</button>
-              <button className="btn sm" onClick={() => setEdit({ ...s, id: null, lesson: `${s.lesson} — کپی`, note: s.note || '' })} aria-label={`کپی برنامه ${s.lesson}`}>📄</button>
-              <button className="btn sm danger" aria-label={`حذف برنامه ${s.lesson}`} onClick={() => setConfirm({
-                text: `حذف «${s.lesson}» (${formatFaDate(s.date)})؟`,
-                run: async () => { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); load(); },
-              })}>🗑</button>
-            </div>
-          ))}
+                <div style={{ display: 'grid', gap: 8, padding: 10 }}>
+                  {rows.map(s => {
+                    const col = TYPE_COLOR[s.type] || TYPE_COLOR.class;
+                    const bg = TYPE_BG[s.type] || TYPE_BG.class;
+                    const interval = s.time ? `${formatFaTime(s.time)}${(s.end_time||s.time_end) ? ` تا ${formatFaTime(s.end_time||s.time_end)}` : ''}` : '—';
+                    return (
+                    <div key={s.id} className="card" style={{ display: 'flex', alignItems: 'stretch', gap: 0, padding: 0, overflow: 'hidden', borderRadius: 12, border: '1px solid var(--bd)', background: 'var(--surf-card)', borderInlineStart: `4px solid ${col}`, boxShadow: '0 1px 6px rgba(0,0,0,0.04)' }}>
+                      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px' }}>
+                        <div style={{ display: 'grid', placeItems: 'center', minWidth: 86, padding: '7px 8px', borderRadius: 10, background: bg, border: `1px solid ${col}22`, textAlign: 'center' }}>
+                          <span style={{ fontSize: 11, fontWeight: 800, color: col, lineHeight: 1.2 }}>{interval}</span>
+                          {s._merged && s._merged>1 && <span style={{ fontSize: 10, color: col, opacity: 0.85, marginTop: 3 }}>🔗 {faDigits(s._merged)} بازه ادغام</span>}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <b style={{ fontSize: 'var(--fs-sm)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.lesson}</b>
+                            <span className="badge" style={{ background: bg, color: col, border: `1px solid ${col}22`, fontSize: 11 }}>{TYPE_FA[s.type] || s.type}</span>
+                            {s.flex_type === 'flexible' && <span className="badge b-yel" style={{ fontSize: 11 }}>منعطف</span>}
+                            <span className="badge b-gray" style={{ fontSize: 11 }}>{s.group === 'هر دو' ? '👥 هر دو' : `گروه ${faDigits(s.group)}`}</span>
+                          </div>
+                          <div className="muted" style={{ fontSize: 'var(--fs-cap)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                            {s.teacher && <span>👨‍🏫 {s.teacher}</span>}
+                            {s.location && <span>📍 {s.location}</span>}
+                            {s.flex_note && <span style={{ color: 'var(--warn)' }}>🔄 {s.flex_note}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '8px 8px', borderInlineStart: '1px solid var(--bd)', background: 'var(--soft-mut)', flexWrap: 'wrap' }}>
+                        {s.flex_type === 'flexible' && <button className="btn sm" title="اعلام زمان جدید کلاس منعطف" onClick={() => setFlex(s)} style={{ fontSize: 11 }}>🔄 زمان</button>}
+                        <button className="btn sm" onClick={() => setEdit({ ...s, note: s.note || '' })} aria-label={`ویرایش ${s.lesson}`} style={{ padding: '6px 8px' }}>✏️</button>
+                        <button className="btn sm" onClick={() => setEdit({ ...s, id: null, lesson: `${s.lesson} — کپی`, note: s.note || '' })} aria-label={`کپی ${s.lesson}`} style={{ padding: '6px 8px' }}>📄</button>
+                        <button className="btn sm danger" aria-label={`حذف ${s.lesson}`} onClick={() => setConfirm({ text: s._merged>1 ? `حذف «${s.lesson}» (${formatFaDate(s.date)}) — ${faDigits(s._merged)} جلسه ادغام‌شده با هم حذف می‌شود؟` : `حذف «${s.lesson}» (${formatFaDate(s.date)})؟`, run: async () => { 
+                          if (s._mergedIds && s._mergedIds.length>1) { for (const mid of s._mergedIds) { try{ await api.caScheduleDel(mid);}catch{} } toast(`${faDigits(s._mergedIds.length)} جلسه حذف شد`); }
+                          else { const r = await api.caScheduleDel(s.id); toast(`برنامه لغو و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد`); } load(); },
+                        })} style={{ padding: '6px 8px' }}>🗑</button>
+                      </div>
+                    </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
         </div>
+          );
+          })() }
+
         {view === 'week' && <div className="schedule-agenda">
           {Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).slice(0, 7).map(([day, rows]) => <section key={day} className="panel panel-pad">
             <div className="section-title"><span>{formatFaDate(day)}</span><B>{rows.length.toLocaleString('fa')} مورد</B></div>

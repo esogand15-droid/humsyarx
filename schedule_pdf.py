@@ -588,6 +588,54 @@ def _draw_footer(c, page_num: int):
     c.circle(PAGE_W/2, FOOTER_Y - 5.2*mm + 8*mm, 0.9*mm, fill=1, stroke=0)
 
 
+def _consolidate_intervals(items: list) -> list:
+    """ادغام جلسات پیوسته‌ی هم‌نام/هم‌گروه/هم‌مکان در یک روز به یک بازه واحد.
+
+    اگر دو سند متوالی با lesson/date/group/type/location/teacher یکسان
+    و end_time جلسه‌ی اول == time جلسه‌ی دوم باشد، آن‌ها یک جلسه‌ی
+    ۲ساعته (یا بیشتر) هستند که قبلاً به‌صورت دو ردیف ۱ساعته جدا ذخیره
+    شده‌اند. این تابع آن‌ها را به یک ردیف با time=start و end_time=end
+    ادغام می‌کند تا جدول و PDF «یک درس در یک بازه» را نشان دهند.
+    """
+    if not items:
+        return items
+    def _p(t):
+        m = __import__('re').match(r'(\d{1,2}):(\d{2})', str(t or '').strip())
+        return int(m.group(1))*60+int(m.group(2)) if m else None
+    def _f(m):
+        return f"{m//60:02d}:{m%60:02d}"
+    # sort first
+    try:
+        items = sorted(list(items), key=lambda it: ((it.get('date') or '9999-12-31')[:10], _p(it.get('time')) or 9999))
+    except Exception:
+        items = list(items)
+    out = []
+    for cur in items:
+        cur = dict(cur)  # copy to avoid mutating original
+        prev = out[-1] if out else None
+        if prev and prev.get('date')==cur.get('date') and prev.get('lesson')==cur.get('lesson') and (prev.get('group') or '')==(cur.get('group') or '') and (prev.get('type') or 'class')==(cur.get('type') or 'class') and (prev.get('location') or '')==(cur.get('location') or '') and (prev.get('teacher') or '')==(cur.get('teacher') or ''):
+            prev_end = _p(prev.get('end_time') or prev.get('time_end') or '') 
+            if prev_end is None:
+                prev_end = _p(prev.get('time'))
+                if prev_end is not None:
+                    prev_end += 60
+            cur_start = _p(cur.get('time'))
+            cur_end = _p(cur.get('end_time') or cur.get('time_end') or '')
+            if cur_end is None and cur_start is not None:
+                cur_end = cur_start + 60
+            if prev_end is not None and cur_start is not None and prev_end == cur_start and cur_end is not None:
+                # extend prev
+                prev['end_time'] = _f(cur_end)
+                # keep longest notes
+                if not prev.get('notes') and cur.get('notes'):
+                    prev['notes'] = cur.get('notes')
+                # mark merged
+                prev['_merged'] = int(prev.get('_merged') or 1) + 1
+                continue
+        out.append(cur)
+    return out
+
+
 def generate_schedule_pdf(items: list, group_label: str, student_name: str = '', stype: str | None = None) -> bytes:
     """
     items: خروجی db.get_schedules() — لیست دیکشنری با کلیدهای
@@ -598,6 +646,11 @@ def generate_schedule_pdf(items: list, group_label: str, student_name: str = '',
     stype: اگر مشخص باشد عنوان هدر و هایلایت کارت آماری همان نوع خواهد بود
     """
     ensure_fonts()
+    # consolidate legacy split entries before any sorting/header counts
+    try:
+        items = _consolidate_intervals(items or [])
+    except Exception:
+        pass
     # sort chronological just in case (by date, then start time)
     def _sort_key(it):
         d = (it.get('date') or '9999-12-31')[:10]
