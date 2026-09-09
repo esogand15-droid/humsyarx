@@ -103,6 +103,19 @@ def _pay_url(authority: str) -> str:
         return f"https://sandbox.zarinpal.com/pg/StartPay/{authority}"
     return f"https://www.zarinpal.com/pg/StartPay/{authority}"
 
+async def gateway_public_status() -> dict:
+    """🌊 W2 — وضعیت عمومی درگاه برای کلاینت‌ها (فقط boolean؛ بدون هیچ secret)."""
+    cfg = await _get_cfg()
+    mid = (cfg.get("merchant_id") or "").strip()
+    mock = (not mid) or (mid.lower() in ("test", "mock", "sandbox"))
+    return {
+        "online_pay_enabled": bool(cfg.get("enabled")),
+        "mock": mock,
+        "sandbox": bool(cfg.get("sandbox")),
+        "bot_username": (os.environ.get("BOT_USERNAME") or "").strip(),
+    }
+
+
 async def zarinpal_request(amount_toman: int, description: str, callback_url: str = None,
                             mobile: str = None, email: str = None) -> dict:
     """

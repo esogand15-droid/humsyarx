@@ -32,7 +32,13 @@ import {
 import {
   haptic,
   hapticNotif,
+  openExternalLink,
 } from '../../lib/telegram';
+
+import {
+  useGatewayStatus,
+  useZarinpalPay,
+} from '../../hooks/useZarinpalPay';
 
 import {
   useUIStore,
@@ -71,6 +77,24 @@ const PAYMENT_STATUS = {
     'ردشده',
     'b-red',
     '❌',
+  ],
+
+  zarinpal_pending: [
+    'در انتظار پرداخت',
+    'b-yel',
+    '💳',
+  ],
+
+  cancelled: [
+    'لغوشده',
+    'b-gray',
+    '🚫',
+  ],
+
+  refunded: [
+    'بازگشت وجه',
+    'b-gray',
+    '↩️',
   ],
 };
 
@@ -194,6 +218,64 @@ export default function Subscription() {
 
   const queryClient =
     useQueryClient();
+
+
+  // 🌊 W2 — پرداخت آنلاین زرین‌پال
+  const gatewayQuery =
+    useGatewayStatus();
+
+  const gatewayOn =
+    gatewayQuery.data
+      ?.online_pay_enabled === true;
+
+  const zp = useZarinpalPay({
+    kind: 'plan',
+
+    onDone: () => {
+      setSelectedId(null);
+      setDiscountCode('');
+      setDiscount(null);
+      setReceipt(null);
+      setAccepted(false);
+      setGiftMode(false);
+      setGiftTo(null);
+      setGiftQuery('');
+      setGiftMessage('');
+
+      idemRef.current =
+        `mp-${Date.now()}-` +
+        `${Math.random()
+          .toString(36)
+          .slice(2, 10)}`;
+    },
+  });
+
+  // 🌊 W2 — ادامه‌ی پرداخت نیمه‌تمام از دستگاه دیگر:
+  // اگر pending محلی نیست ولی در تاریخچه‌ی سرور پرداخت
+  // درگاهیِ باز هست، همان را برای «بررسی» برمی‌داریم.
+  useEffect(() => {
+    if (zp.pending) return;
+
+    const open =
+      (payments || []).find(
+        (item) =>
+          item.status ===
+            'zarinpal_pending' &&
+          item.authority
+      );
+
+    if (open) {
+      zp.setPending({
+        authority: open.authority,
+        url: null,
+        payment_id: open.id,
+        final_price: open.final_price,
+        kind: 'plan',
+        at: Date.now(),
+        resumed: true,
+      });
+    }
+  }, [payments, zp]);
 
   // 🎟 موج D1 — Deep Link از پیام کمپین:
   // ?discount=CODE → کد پیش‌پُر و پس از انتخاب پلن Auto-Validate
@@ -526,6 +608,15 @@ export default function Subscription() {
       free ||
       Boolean(receipt)
     );
+
+
+  const canOnline =
+    Boolean(selectedPlan) &&
+    accepted &&
+    !pending &&
+    !free &&
+    gatewayOn &&
+    !zp.pending;
 
 
   if (isLoading) {
@@ -1530,6 +1621,129 @@ export default function Subscription() {
                     '📤 ارسال رسید'
                   )}
                 </button>
+
+                {/* 🌊 W2 — پرداخت آنلاین (زرین‌پال) */}
+                {gatewayOn &&
+                  !free &&
+                  !zp.pending && (
+                    <button
+                      className={
+                        'btn btn-full'
+                      }
+                      style={{ marginTop: 8 }}
+                      disabled={
+                        !canOnline ||
+                        zp.busy
+                      }
+                      onClick={async () => {
+                        const go =
+                          await confirmAction(
+                            'به درگاه پرداخت منتقل می‌شوی؟'
+                          );
+
+                        if (go) {
+                          zp.request({
+                            plan_id:
+                              selectedId,
+
+                            discount_code:
+                              discountCode
+                                .trim()
+                                .toUpperCase(),
+
+                            gift_to:
+                              giftMode && giftTo
+                                ? giftTo.user_id
+                                : 0,
+
+                            gift_message:
+                              giftMode
+                                ? giftMessage
+                                : '',
+                          }).catch(() => {});
+                        }
+                      }}
+                    >
+                      {zp.busy ? (
+                        <Spinner size={16} />
+                      ) : (
+                        '⚡ پرداخت آنلاین (زرین‌پال)'
+                      )}
+                    </button>
+                  )}
+
+                {zp.pending && (
+                  <div
+                    className="card"
+                    style={{ marginTop: 10 }}
+                  >
+                    <b>
+                      💳 پرداخت در انتظار تأیید
+                    </b>
+
+                    <div
+                      className="muted"
+                      style={{ marginTop: 6 }}
+                    >
+                      مبلغ:{' '}
+                      {money(
+                        zp.pending.final_price
+                      )}{' '}
+                      • این پرداخت ۱ ساعت اعتبار دارد.
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        marginTop: 10,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="btn btn-p"
+                        disabled={zp.busy}
+                        onClick={() =>
+                          zp
+                            .verify(
+                              zp.pending.authority
+                            )
+                            .catch(() => {})
+                        }
+                      >
+                        {zp.busy ? (
+                          <Spinner size={16} />
+                        ) : (
+                          '✅ پرداخت کردم، بررسی کن'
+                        )}
+                      </button>
+
+                      {zp.pending.url && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() =>
+                            openExternalLink(
+                              zp.pending.url
+                            )
+                          }
+                        >
+                          🔗 لینک پرداخت
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={zp.busy}
+                        onClick={zp.cancelLocal}
+                      >
+                        ✖️ انصراف
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
@@ -1938,6 +2152,17 @@ export function WalletSection({ plans = [], selectedId, onDone,
     ? (topupMutation.error?.response?.data?.detail ||
         topupMutation.error?.message || 'ثبت رسید شارژ ناموفق بود.')
     : '';
+  // 🌊 W2 — شارژ آنی کیف پول با درگاه
+  const gatewayQueryW = useGatewayStatus();
+  const gatewayOnW = gatewayQueryW.data?.online_pay_enabled === true;
+  const zpTopup = useZarinpalPay({
+    kind: 'topup',
+    onDone: () => {
+      setShowTopup(false);
+      setTopupAmount('');
+      setTopupFile(null);
+    },
+  });
 
   const w = walletQuery.data;
   const balance = number(w?.balance ?? 0);
@@ -2070,6 +2295,60 @@ export function WalletSection({ plans = [], selectedId, onDone,
                 >
                   {topupMutation.isPending ? '…' : '📨 ثبت رسید شارژ'}
                 </button>
+                {/* 🌊 W2 — شارژ آنی با درگاه */}
+                {gatewayOnW && !zpTopup.pending && (
+                  <button
+                    type="button"
+                    className="btn btn-full"
+                    style={{ marginTop: 8 }}
+                    disabled={zpTopup.busy || !(Number(topupAmount) >= 10000)}
+                    onClick={async () => {
+                      const go = await confirmAction(
+                        `مبلغ ${number(Number(topupAmount))} تومان از طریق درگاه پرداخت شود؟`
+                      );
+                      if (go) {
+                        zpTopup.request({ amount: Number(topupAmount) }).catch(() => {});
+                      }
+                    }}
+                  >
+                    {zpTopup.busy ? '…' : '⚡ شارژ آنی با درگاه'}
+                  </button>
+                )}
+                {zpTopup.pending && (
+                  <div className="card" style={{ marginTop: 10 }}>
+                    <b>💳 شارژ در انتظار تأیید</b>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      مبلغ: {number(zpTopup.pending.final_price)} تومان • ۱ ساعت اعتبار دارد.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-p"
+                        disabled={zpTopup.busy}
+                        onClick={() => zpTopup.verify(zpTopup.pending.authority).catch(() => {})}
+                      >
+                        {zpTopup.busy ? '…' : '✅ پرداخت کردم، بررسی کن'}
+                      </button>
+                      {zpTopup.pending.url && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => openExternalLink(zpTopup.pending.url)}
+                        >
+                          🔗 لینک پرداخت
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={zpTopup.busy}
+                        onClick={zpTopup.cancelLocal}
+                      >
+                        ✖️ انصراف
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {topupErr && <div className="err" style={{ marginTop: 8 }}>{topupErr}</div>}
               </div>
             )}

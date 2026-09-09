@@ -116,6 +116,15 @@ def normalize_payment(
 
         "rejected":
             "ردشده",
+
+        "zarinpal_pending":
+            "در انتظار پرداخت",
+
+        "cancelled":
+            "لغوشده",
+
+        "refunded":
+            "بازگشت وجه",
     }
 
     price = max(
@@ -193,6 +202,21 @@ def normalize_payment(
                 "review_note",
                 "",
             ),
+
+        "method":
+            item.get(
+                "method",
+                "",
+            ),
+
+        "authority": (
+            item.get(
+                "zarinpal_authority",
+                "",
+            )
+            if status == "zarinpal_pending"
+            else ""
+        ),
     }
 
 
@@ -978,9 +1002,43 @@ async def buy(
 
 
 
+def _gateway_callback_default() -> str:
+    """🌊 W2 — کال‌بک پیش‌فرض درگاه (تک‌منبع برای request و topup)."""
+    base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
+    if base:
+        return f"{base}/payment/verify"
+    return "https://humsyar.ir/payment/verify"
+
+
+def _clamp_callback_url(provided: str, default: str) -> str:
+    """🌊 W2 — کال‌بک دلخواه کلاینت فقط اگر https و هم‌مبدأ با مبدأ پیکربندی‌شده باشد؛
+    در غیر این صورت نادیده گرفته و پیش‌فرض امن برگردانده می‌شود (جلوگیری از open-redirect)."""
+    p = (provided or "").strip()
+    if not p:
+        return default
+    try:
+        from urllib.parse import urlparse
+        pu, du = urlparse(p), urlparse(default)
+        if (pu.scheme == "https" and du.netloc
+                and (pu.netloc or "").lower() == (du.netloc or "").lower()):
+            return p
+    except Exception:
+        pass
+    return default
+
+
 # ══════════════════════════════════════════════════════════════════
 # 💳 W2 — زرین‌پال (درگاه خودکار + Sandbox mock)
 # ══════════════════════════════════════════════════════════════════
+@router.get("/gateway-status")
+async def gateway_status(user=Depends(get_current_user)):
+    """🌊 W2 — وضعیت عمومی درگاه برای کلاینت‌ها (فقط boolean؛ بدون secret)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "gw_status", 60, 60)
+    from payments.zarinpal import gateway_public_status
+    return await gateway_public_status()
+
+
 class ZarinpalRequestBody(BaseModel):
     plan_id: str = Field(..., min_length=6)
     discount_code: str = Field(default="", max_length=40)
@@ -1031,13 +1089,7 @@ async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_curren
             return {"ok": True, "authority": ex["zarinpal_authority"], "url": f"https://sandbox.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}" if ex["zarinpal_authority"].startswith("TEST-") else f"https://www.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}", "payment_id": str(ex["_id"]), "replay": True, "final_price": int(ex.get("final_price") or price)}
     # discount not consumed yet — will be consumed atomically at verify (after payment) to avoid stuck reservation
     # gateway request
-    cb = (body.callback_url or "").strip()
-    if not cb:
-        base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
-        if base:
-            cb = f"{base}/payment/verify"
-        else:
-            cb = "https://humsyar.ir/payment/verify"
+    cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())
     desc = f"اشتراک {plan.get('name','')} هامشیار"
     try:
         zp = await _zp_req(price, desc, cb)
@@ -1054,6 +1106,58 @@ async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_curren
             await db.discount_release(code, user_id=user_id)
         raise HTTPException(status_code=500, detail=f"ثبت پرداخت ناموفق: {e}")
     return {"ok": True, "authority": authority, "url": zp["url"], "payment_id": pid, "final_price": price, "mock": zp.get("mock", False)}
+
+class ZarinpalTopupBody(BaseModel):
+    amount: int = Field(..., ge=1, le=100_000_000)
+    callback_url: str = Field(default="", max_length=500)
+    idem: str = Field(default="", max_length=64)
+
+@router.post("/zarinpal/topup")
+async def zarinpal_topup_ep(body: ZarinpalTopupBody, user=Depends(get_current_user)):
+    """🌊 W2 — شارژ کیف پول با درگاه آنلاین (مبلغ‌محور؛ بدون پلن)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "zarinpal_topup", 10, 60)
+    from payments.zarinpal import zarinpal_request as _zp_req, gateway_public_status
+    user_id = user["id"]
+    gw = await gateway_public_status()
+    if not gw.get("online_pay_enabled"):
+        raise HTTPException(status_code=503, detail="پرداخت آنلاین در حال حاضر فعال نیست")
+    try:
+        topup_min = int(await db.get_setting("topup_min", str(TOPUP_DEFAULT_MIN)))
+        topup_max = int(await db.get_setting("topup_max", str(TOPUP_DEFAULT_MAX)))
+    except Exception:
+        topup_min, topup_max = TOPUP_DEFAULT_MIN, TOPUP_DEFAULT_MAX
+    amount = int(body.amount or 0)
+    if not topup_min <= amount <= topup_max:
+        raise HTTPException(status_code=422,
+                            detail=f"مبلغ شارژ باید بین {topup_min:,} و {topup_max:,} تومان باشد")
+    if await db.sub_payment_has_pending(user_id):
+        raise HTTPException(status_code=409, detail="یک پرداخت در انتظار قبلی دارید")
+    idem = (body.idem or "").strip()[:64] or f"zpt-{user_id}-{amount}"
+    ex = await db.sub_payments.find_one({"idem_key": idem})
+    if ex is not None and int(ex.get("user_id") or 0) == user_id and ex.get("zarinpal_authority"):
+        auth = ex["zarinpal_authority"]
+        host = "sandbox.zarinpal.com" if auth.startswith("TEST-") else "www.zarinpal.com"
+        return {"ok": True, "authority": auth, "url": f"https://{host}/pg/StartPay/{auth}",
+                "payment_id": str(ex["_id"]), "replay": True,
+                "final_price": int(ex.get("final_price") or amount)}
+    cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())
+    try:
+        zp = await _zp_req(amount, f"شارژ کیف پول هامشیار — کاربر {user_id}", cb)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"درگاه زرین‌پال پاسخ نداد: {e}")
+    try:
+        pid = await db.sub_payment_create_zarinpal(
+            user_id, "wallet_topup", "شارژ کیف پول", amount, amount,
+            zp["authority"], idem_key=idem)
+        await _sub_audit(user, "درخواست شارژ کیف پول با درگاه", target_id=str(pid),
+                         target_label="شارژ کیف پول",
+                         after={"authority": zp["authority"], "amount": amount}, severity="INFO")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ثبت پرداخت ناموفق: {e}")
+    return {"ok": True, "authority": zp["authority"], "url": zp["url"],
+            "payment_id": str(pid), "final_price": amount, "mock": zp.get("mock", False)}
+
 
 class ZarinpalVerifyBody(BaseModel):
     authority: str = Field(..., min_length=6, max_length=64)
