@@ -1572,13 +1572,21 @@ function HushyarScanPanel({ onGenerated }) {
                             .map((r, i) => (
                               <span
                                 key={i}
-                                className="panel"
-                                style={{ padding: "4px 8px", fontSize: 12 }}
+                                style={{
+                                  padding: "5px 8px",
+                                  fontSize: 12,
+                                  borderRadius: "var(--r-sm)",
+                                  background: "rgba(77,184,255,0.08)",
+                                  border: "1px solid rgba(77,184,255,0.18)",
+                                  color: "var(--c-txt2)",
+                                }}
                               >
                                 {r.time}
                                 {r.end_time ? ` تا ${r.end_time}` : ""}{" "}
                                 {r.lesson}{" "}
-                                <span className="muted">({r.group})</span>
+                                <span style={{ color: "var(--c-txt3)" }}>
+                                  ({r.group})
+                                </span>
                               </span>
                             ))}
                         </div>
@@ -1984,6 +1992,9 @@ export function ScheduleTab() {
       ) : (
         <>
           {(() => {
+            // —— consolidated view: shared merged data for all three views (theme-integrated)
+            // NOTE: merged/grouped are also recomputed below for week/month scope — kept inside for isolation;
+            // second computation is cheap (O(n log n)) for <200 items.
             // —— consolidated view: merge contiguous same-lesson blocks into one interval card
             const _parseMin = (t) => {
               const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
@@ -2048,21 +2059,26 @@ export function ScheduleTab() {
             const sortedDates = Object.keys(grouped).sort((a, b) =>
               a.localeCompare(b),
             );
-            const TYPE_COLOR = {
-              class: "#3a4a8c",
-              exam: "#c62828",
-              makeup: "#1fae5e",
+            const TYPE_STYLE = {
+              class: {
+                col: "var(--c-acc)",
+                bg: "rgba(77,184,255,0.09)",
+                bd: "rgba(77,184,255,0.22)",
+              },
+              exam: {
+                col: "var(--c-bad)",
+                bg: "rgba(248,113,113,0.09)",
+                bd: "rgba(248,113,113,0.22)",
+              },
+              makeup: {
+                col: "var(--c-ok)",
+                bg: "rgba(58,210,155,0.09)",
+                bd: "rgba(58,210,155,0.22)",
+              },
             };
-            const TYPE_BG = {
-              class: "#eef0f7",
-              exam: "#fbe9e9",
-              makeup: "#e6f6ee",
-            };
+            if (view !== "list") return null;
             return (
-              <div
-                className={`${view === "list" ? "" : "is-hidden"}`}
-                style={{ display: "grid", gap: 14 }}
-              >
+              <div style={{ display: "grid", gap: 14 }}>
                 {sortedDates.map((day) => {
                   const rows = grouped[day].sort((a, b) =>
                     String(a.time || "").localeCompare(String(b.time || "")),
@@ -2074,9 +2090,9 @@ export function ScheduleTab() {
                       style={{
                         padding: 0,
                         overflow: "hidden",
-                        borderRadius: 14,
-                        border: "1px solid var(--bd)",
-                        background: "var(--surf-card)",
+                        borderRadius: "var(--r-lg)",
+                        border: "1px solid var(--c-line)",
+                        background: "var(--c-surface)",
                       }}
                     >
                       <div
@@ -2085,9 +2101,8 @@ export function ScheduleTab() {
                           alignItems: "center",
                           gap: 10,
                           padding: "11px 14px",
-                          background:
-                            "linear-gradient(135deg, var(--surf-card), var(--soft-acc))",
-                          borderBottom: "1px solid var(--bd)",
+                          background: "var(--c-surface2)",
+                          borderBottom: "1px solid var(--c-line)",
                         }}
                       >
                         <span
@@ -2097,7 +2112,7 @@ export function ScheduleTab() {
                             height: 38,
                             placeItems: "center",
                             borderRadius: 10,
-                            background: "var(--acc-soft)",
+                            background: "var(--c-acc-soft)",
                             fontSize: 18,
                           }}
                         >
@@ -2118,8 +2133,7 @@ export function ScheduleTab() {
                       </div>
                       <div style={{ display: "grid", gap: 8, padding: 10 }}>
                         {rows.map((s) => {
-                          const col = TYPE_COLOR[s.type] || TYPE_COLOR.class;
-                          const bg = TYPE_BG[s.type] || TYPE_BG.class;
+                          const sty = TYPE_STYLE[s.type] || TYPE_STYLE.class;
                           const interval = s.time
                             ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}`
                             : "—";
@@ -2134,10 +2148,10 @@ export function ScheduleTab() {
                                 padding: 0,
                                 overflow: "hidden",
                                 borderRadius: 12,
-                                border: "1px solid var(--bd)",
-                                background: "var(--surf-card)",
-                                borderInlineStart: `4px solid ${col}`,
-                                boxShadow: "0 1px 6px rgba(0,0,0,0.04)",
+                                border: "1px solid var(--c-line)",
+                                background: "var(--c-bg2)",
+                                borderInlineStart: `3px solid ${sty.col}`,
+                                boxShadow: "var(--sh-1)",
                               }}
                             >
                               <div
@@ -2156,8 +2170,8 @@ export function ScheduleTab() {
                                     minWidth: 86,
                                     padding: "7px 8px",
                                     borderRadius: 10,
-                                    background: bg,
-                                    border: `1px solid ${col}22`,
+                                    background: sty.bg,
+                                    border: `1px solid ${sty.bd}`,
                                     textAlign: "center",
                                   }}
                                 >
@@ -2165,7 +2179,7 @@ export function ScheduleTab() {
                                     style={{
                                       fontSize: 11,
                                       fontWeight: 800,
-                                      color: col,
+                                      color: sty.col,
                                       lineHeight: 1.2,
                                     }}
                                   >
@@ -2175,7 +2189,7 @@ export function ScheduleTab() {
                                     <span
                                       style={{
                                         fontSize: 10,
-                                        color: col,
+                                        color: sty.col,
                                         opacity: 0.85,
                                         marginTop: 3,
                                       }}
@@ -2206,9 +2220,9 @@ export function ScheduleTab() {
                                     <span
                                       className="badge"
                                       style={{
-                                        background: bg,
-                                        color: col,
-                                        border: `1px solid ${col}22`,
+                                        background: sty.bg,
+                                        color: sty.col,
+                                        border: `1px solid ${sty.bd}`,
                                         fontSize: 11,
                                       }}
                                     >
@@ -2258,8 +2272,8 @@ export function ScheduleTab() {
                                   alignItems: "center",
                                   gap: 4,
                                   padding: "8px 8px",
-                                  borderInlineStart: "1px solid var(--bd)",
-                                  background: "var(--soft-mut)",
+                                  borderInlineStart: "1px solid var(--c-line)",
+                                  background: "var(--c-surface2)",
                                   flexWrap: "wrap",
                                 }}
                               >
@@ -2348,86 +2362,218 @@ export function ScheduleTab() {
             );
           })()}
 
-          {view === "week" && (
-            <div className="schedule-agenda">
-              {Object.entries(byDate)
+          {view === "week" &&
+            (() => {
+              // هفته: همان داده‌ی ادغام‌شده‌ی فهرست اما به‌صورت Agenda فشرده — recompute for isolation
+              const _wParse = (t) => {
+                const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
+                return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+              };
+              const _wMinToClock = (min) =>
+                `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+              const _wMerge = (list) => {
+                const s = [...list].sort(
+                  (a, b) =>
+                    (a.date || "").localeCompare(b.date || "") ||
+                    String(a.time || "").localeCompare(String(b.time || "")),
+                );
+                const out = [];
+                for (const cur of s) {
+                  const prev = out[out.length - 1];
+                  if (
+                    prev &&
+                    prev.date === cur.date &&
+                    prev.lesson === cur.lesson &&
+                    (prev.group || "") === (cur.group || "") &&
+                    (prev.type || "class") === (cur.type || "class") &&
+                    (prev.location || "") === (cur.location || "") &&
+                    (prev.teacher || "") === (cur.teacher || "")
+                  ) {
+                    const prevEnd =
+                      _wParse(prev.end_time || prev.time_end || "") ??
+                      (_wParse(prev.time) !== null
+                        ? _wParse(prev.time) + 60
+                        : null);
+                    const curStart = _wParse(cur.time);
+                    const curEnd =
+                      _wParse(cur.end_time || cur.time_end || "") ??
+                      (curStart !== null ? curStart + 60 : null);
+                    if (
+                      prevEnd !== null &&
+                      curStart !== null &&
+                      prevEnd === curStart &&
+                      curEnd !== null
+                    ) {
+                      prev.end_time = _wMinToClock(curEnd);
+                      prev._merged = (prev._merged || 1) + 1;
+                      prev._mergedIds = [
+                        ...(prev._mergedIds || [prev.id]),
+                        cur.id,
+                      ];
+                      continue;
+                    }
+                  }
+                  out.push({ ...cur, _mergedIds: [cur.id] });
+                }
+                return out;
+              };
+              const _wMerged = _wMerge(items);
+              const _wGrouped = _wMerged.reduce((acc, it) => {
+                (acc[it.date || "بدون تاریخ"] ||= []).push(it);
+                return acc;
+              }, {});
+              const weekEntries = Object.entries(_wGrouped)
                 .sort(([a], [b]) => a.localeCompare(b))
-                .slice(0, 7)
-                .map(([day, rows]) => (
-                  <section key={day} className="panel panel-pad">
-                    <div className="section-title">
-                      <span>{formatFaDate(day)}</span>
-                      <B>{rows.length.toLocaleString("fa")} مورد</B>
-                    </div>
-                    <div className="grid content-grid-tight">
-                      {rows.map((s) => (
-                        <button
-                          key={s.id}
-                          className="schedule-agenda-item"
-                          onClick={() => setEdit({ ...s, note: s.note || "" })}
-                        >
-                          <span>
-                            {s.time
-                              ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}`
-                              : "—"}
-                          </span>
-                          <b>{s.lesson}</b>
-                          <span className="muted">
-                            {TYPE_FA[s.type] || s.type} · {s.group}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </section>
-                ))}
-            </div>
-          )}
-          {view === "month" && (
-            <div className="schedule-month">
-              <div className="schedule-month-head">
-                <b>{monthKey ? faDigits(monthKey) : "ماه داده‌های موجود"}</b>
-                <span className="muted">
-                  نمای ماه شمسی بر اساس تاریخ‌های واقعی ثبت‌شده
-                </span>
-              </div>
-              <div className="schedule-month-grid">
-                {Array.from({ length: monthLength }, (_, i) => i + 1).map(
-                  (day) => {
-                    const rows = monthItems
-                      .filter((x) => x.parts.day === day)
-                      .map((x) => x.item);
-                    return (
-                      <div
-                        key={day}
-                        className={`schedule-day ${rows.length ? "has" : ""}`}
-                      >
-                        <span className="muted">
-                          {day.toLocaleString("fa")}
-                        </span>
-                        {rows.slice(0, 3).map((s) => (
+                .slice(0, 7);
+              return (
+                <div className="schedule-agenda">
+                  {weekEntries.map(([day, rows]) => (
+                    <section key={day} className="panel panel-pad">
+                      <div className="section-title">
+                        <span>{formatFaDate(day)}</span>
+                        <B>{rows.length.toLocaleString("fa")} مورد</B>
+                      </div>
+                      <div className="grid content-grid-tight">
+                        {rows.map((s) => (
                           <button
                             key={s.id}
+                            className="schedule-agenda-item"
                             onClick={() =>
                               setEdit({ ...s, note: s.note || "" })
                             }
-                            title={`${s.lesson} · ${s.time ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}` : ""}`}
                           >
-                            {s.time
-                              ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? `–${formatFaTime(s.end_time || s.time_end)}` : ""}`
-                              : "•"}{" "}
-                            {s.lesson}
+                            <span>
+                              {s.time
+                                ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}`
+                                : "—"}
+                            </span>
+                            <b>{s.lesson}</b>
+                            <span className="muted">
+                              {TYPE_FA[s.type] || s.type} · {s.group}
+                            </span>
                           </button>
                         ))}
-                        {rows.length > 3 && (
-                          <B>+{(rows.length - 3).toLocaleString("fa")}</B>
-                        )}
                       </div>
-                    );
-                  },
-                )}
-              </div>
-            </div>
-          )}
+                    </section>
+                  ))}
+                </div>
+              );
+            })()}
+          {view === "month" &&
+            (() => {
+              const _mParse = (t) => {
+                const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
+                return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+              };
+              const _mMinToClock = (min) =>
+                `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+              const _mMerge = (list) => {
+                const s = [...list].sort(
+                  (a, b) =>
+                    (a.date || "").localeCompare(b.date || "") ||
+                    String(a.time || "").localeCompare(String(b.time || "")),
+                );
+                const out = [];
+                for (const cur of s) {
+                  const prev = out[out.length - 1];
+                  if (
+                    prev &&
+                    prev.date === cur.date &&
+                    prev.lesson === cur.lesson &&
+                    (prev.group || "") === (cur.group || "") &&
+                    (prev.type || "class") === (cur.type || "class") &&
+                    (prev.location || "") === (cur.location || "") &&
+                    (prev.teacher || "") === (cur.teacher || "")
+                  ) {
+                    const prevEnd =
+                      _mParse(prev.end_time || prev.time_end || "") ??
+                      (_mParse(prev.time) !== null
+                        ? _mParse(prev.time) + 60
+                        : null);
+                    const curStart = _mParse(cur.time);
+                    const curEnd =
+                      _mParse(cur.end_time || cur.time_end || "") ??
+                      (curStart !== null ? curStart + 60 : null);
+                    if (
+                      prevEnd !== null &&
+                      curStart !== null &&
+                      prevEnd === curStart &&
+                      curEnd !== null
+                    ) {
+                      prev.end_time = _mMinToClock(curEnd);
+                      prev._merged = (prev._merged || 1) + 1;
+                      prev._mergedIds = [
+                        ...(prev._mergedIds || [prev.id]),
+                        cur.id,
+                      ];
+                      continue;
+                    }
+                  }
+                  out.push({ ...cur, _mergedIds: [cur.id] });
+                }
+                return out;
+              };
+              const _mMerged = _mMerge(items);
+              const _mDated = _mMerged
+                .map((item) => ({ item, parts: jalaliDateParts(item.date) }))
+                .filter((x) => x.parts);
+              const _mMonthKey = _mDated[0]?.parts.monthKey || monthKey;
+              const _mMonthItems = _mMonthKey
+                ? _mDated.filter((x) => x.parts.monthKey === _mMonthKey)
+                : [];
+              const _mMonthLength = _mMonthItems.length
+                ? jalaliMonthLengthFor(_mMonthItems[0].item.date)
+                : monthLength;
+              const _mMonthItemsFlat = _mMonthItems;
+              return (
+                <div className="schedule-month">
+                  <div className="schedule-month-head">
+                    <b>
+                      {_mMonthKey ? faDigits(_mMonthKey) : "ماه داده‌های موجود"}
+                    </b>
+                    <span className="muted">
+                      نمای ماه شمسی بر اساس تاریخ‌های واقعی ثبت‌شده
+                    </span>
+                  </div>
+                  <div className="schedule-month-grid">
+                    {Array.from({ length: _mMonthLength }, (_, i) => i + 1).map(
+                      (day) => {
+                        const rows = _mMonthItemsFlat
+                          .filter((x) => x.parts.day === day)
+                          .map((x) => x.item);
+                        return (
+                          <div
+                            key={day}
+                            className={`schedule-day ${rows.length ? "has" : ""}`}
+                          >
+                            <span className="muted">
+                              {day.toLocaleString("fa")}
+                            </span>
+                            {rows.slice(0, 3).map((s) => (
+                              <button
+                                key={s.id}
+                                onClick={() =>
+                                  setEdit({ ...s, note: s.note || "" })
+                                }
+                                title={`${s.lesson} · ${s.time ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}` : ""}`}
+                              >
+                                {s.time
+                                  ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? `–${formatFaTime(s.end_time || s.time_end)}` : ""}`
+                                  : "•"}{" "}
+                                {s.lesson}
+                              </button>
+                            ))}
+                            {rows.length > 3 && (
+                              <B>+{(rows.length - 3).toLocaleString("fa")}</B>
+                            )}
+                          </div>
+                        );
+                      },
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
         </>
       )}
       {edit && (
