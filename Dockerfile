@@ -76,6 +76,23 @@ RUN apt-get update \
       libfreetype6 \
  && rm -rf /var/lib/apt/lists/*
 
+# ── Local Bot API binary (only for Dedicated Rename Pipeline, reuses same container resources) ──
+# رسمی: https://github.com/tdlib/telegram-bot-api
+# این باینری فقط وقتی TELEGRAM_API_ID/HASH ست باشد توسط supervisord بالا می‌آید
+# حجم: ~30MB، RAM: ~100-200MB برای فایل 30MB — با 1GB سرویس هامزیار مشکلی نیست
+ARG TELEGRAM_BOT_API_VERSION=7.1
+RUN set -eux; \
+    arch=$(dpkg --print-architecture); \
+    if [ "$arch" = "amd64" ]; then bin_arch="linux-x86_64"; else bin_arch="linux-aarch64"; fi; \
+    url="https://github.com/tdlib/telegram-bot-api/releases/download/v${TELEGRAM_BOT_API_VERSION}/telegram-bot-api-${bin_arch}"; \
+    echo "Downloading telegram-bot-api $TELEGRAM_BOT_API_VERSION for $bin_arch from $url"; \
+    curl -fsSL "$url" -o /usr/local/bin/telegram-bot-api || \
+      curl -fsSL "https://github.com/tdlib/telegram-bot-api/releases/download/v7.1/telegram-bot-api" -o /usr/local/bin/telegram-bot-api || \
+      echo "WARNING: telegram-bot-api download failed — Local rename will fallback to Cloud (20MB limit)"; \
+    chmod +x /usr/local/bin/telegram-bot-api 2>/dev/null || true; \
+    /usr/local/bin/telegram-bot-api --help 2>&1 | head -n 20 || true; \
+    echo "telegram-bot-api installed: $(/usr/local/bin/telegram-bot-api --version 2>&1 || echo ok)"
+
 WORKDIR /srv/humsyar
 
 # ── وابستگی پایتون ──
@@ -108,6 +125,7 @@ ENV PORT=8000 \
 
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/start_botapi.sh /usr/local/bin/start_botapi.sh
 
 # bit اجرایی را خودمان قطعی می‌کنیم: git معمولاً آن را نگه می‌دارد،
 # ولی اگر فایل از ZIP/ویرایشگر ویندوزی رد شود ممکن است ۰۶۴۴ بیاید و
@@ -118,6 +136,8 @@ COPY docker/entrypoint.sh /entrypoint.sh
 # می‌ایستد — نه اینکه سرویس بالا بیاید و /app/ سفید بدهد.
 RUN set -eu; \
     chmod 0755 /entrypoint.sh; \
+    chmod 0755 /usr/local/bin/start_botapi.sh; \
+    chmod 0755 /usr/local/bin/telegram-bot-api || true; \
     test -x /entrypoint.sh                || { echo "Dockerfile selfcheck: /entrypoint.sh executable نیست"; exit 1; }; \
     test -f /etc/supervisor/conf.d/supervisord.conf \
                                           || { echo "Dockerfile selfcheck: supervisord.conf کپی نشده"; exit 1; }; \

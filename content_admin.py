@@ -2201,78 +2201,23 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         final_fid = fid
         if need_reupload and fid:
             try:
-                # Try httpx helper first (uses BOT_TOKEN)
+                # Dedicated Rename Pipeline — فقط همین سرویس از Local Bot API استفاده می‌کند
                 try:
-                    from api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                    from telegram_file_rename_service import rename_telegram_file
                 except ImportError:
-                    try:
-                        from humsyarx.api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
-                    except ImportError:
-                        _dl = None; _up = None
-                data = None
-                if _dl:
-                    data = await _dl(fid)
-                if data is None:
-                    # fallback via PTB get_file
-                    try:
-                        tg_file = await context.bot.get_file(fid)
-                        # download as bytes (PTB 21)
-                        from io import BytesIO
-                        bio = BytesIO()
-                        await tg_file.download_to_memory(bio)
-                        data = bio.getvalue()
-                    except Exception as _e2:
-                        logger.warning(f"download fallback failed: {_e2}")
-                        data = None
-                reupload_ok = False
-                if data:
-                    # Cap already enforced in download helper (45MB). Double-check.
-                    if len(data) > 2000*1024*1024:
-                        logger.warning(f"file too large >2GB {fid[:10]}")
-                        # proceed fallback to display name only
-                    # Upload with display name — silent (delete after)
-                    new_fid = None
-                    if _up:
-                        try:
-                            new_fid = await _up(uid, disp_name, data, mime)
-                            # _up sends to uid; try to delete its message is inside helper? fallback below handles delete for PTB path
-                            reupload_ok = bool(new_fid)
-                        except Exception as _e_up:
-                            logger.warning(f"_up failed: {_e_up}")
-                            new_fid = None
-                    if not new_fid:
-                        # fallback via PTB send_document to self (silent)
-                        try:
-                            from io import BytesIO
-                            bio = BytesIO(data); bio.name = disp_name
-                            sent = await context.bot.send_document(chat_id=uid, document=bio, filename=disp_name, disable_notification=True)
-                            # extract file_id from sent message
-                            if sent.document:
-                                new_fid = sent.document.file_id
-                            elif sent.video:
-                                new_fid = sent.video.file_id
-                            else:
-                                new_fid = None
-                            # silent: delete the intermediate message
-                            if new_fid:
-                                try:
-                                    await context.bot.delete_message(chat_id=uid, message_id=sent.message_id)
-                                except Exception:
-                                    pass
-                                reupload_ok = True
-                        except Exception as _e3:
-                            logger.warning(f"PTB reupload failed: {_e3}")
-                            new_fid = None
-                    if new_fid:
-                        final_fid = new_fid
-                        logger.info(f"REUPLOAD_SUCCESS old={fid[:10]} new={new_fid[:10]} name={disp_name}")
-                    else:
-                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name}")
+                    from humsyarx.telegram_file_rename_service import rename_telegram_file
+                new_id, new_name = await rename_telegram_file(uid, fid, disp_name, mime)
+                if new_id:
+                    final_fid = new_id
+                    # Verify filename از Telegram برگشتی
+                    if new_name and new_name != disp_name:
+                        logger.warning(f"RENAME_VERIFY_MISMATCH expected={disp_name} got={new_name}")
+                    logger.info(f"DEDICATED_RENAME_OK old={fid[:10]} new={new_id[:10]} name={new_name or disp_name} via={'local' if (__import__('os').getenv('TELEGRAM_LOCAL_API_URL') or '').strip() else 'cloud'}")
                 else:
-                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]} keep original file_id")
+                    logger.warning(f"DEDICATED_RENAME_FAIL keep original file_id for {disp_name} — display_name همچنان در لیست/کپشن دیده می‌شود")
             except Exception as e:
-                logger.warning(f"reupload error: {e}")
-                final_fid = fid  # fallback to original, caption will still show display name
+                logger.warning(f"dedicated rename error: {e}")
+                final_fid = fid
         # Prepare extension from display
         ext = _get_ext(disp_name)
         # Insert with naming fields
@@ -2321,56 +2266,19 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if need_reupload and fid:
             try:
                 try:
-                    from api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
+                    from telegram_file_rename_service import rename_telegram_file
                 except ImportError:
-                    try:
-                        from humsyarx.api.telegram_send import download_telegram_file as _dl, upload_and_get_file_id as _up
-                    except ImportError:
-                        _dl = None; _up = None
-                data = await _dl(fid) if _dl else None
-                if data is None:
-                    try:
-                        tg_file = await context.bot.get_file(fid)
-                        from io import BytesIO
-                        bio = BytesIO()
-                        await tg_file.download_to_memory(bio)
-                        data = bio.getvalue()
-                    except Exception as _e2:
-                        data = None
-                reupload_ok = False
-                if data and len(data) <= 2000*1024*1024:
-                    new_fid = None
-                    if _up:
-                        try:
-                            new_fid = await _up(uid, disp_name, data, mime)
-                            reupload_ok = bool(new_fid)
-                        except Exception as _e_up:
-                            logger.warning(f"ref _up failed: {_e_up}")
-                            new_fid = None
-                    if not new_fid:
-                        try:
-                            from io import BytesIO
-                            bio = BytesIO(data); bio.name = disp_name
-                            sent = await context.bot.send_document(chat_id=uid, document=bio, filename=disp_name, disable_notification=True)
-                            new_fid = sent.document.file_id if sent.document else None
-                            if new_fid:
-                                try:
-                                    await context.bot.delete_message(chat_id=uid, message_id=sent.message_id)
-                                except Exception:
-                                    pass
-                                reupload_ok = True
-                        except Exception as _e3:
-                            logger.warning(f"ref PTB reupload failed: {_e3}")
-                            new_fid = None
-                    if new_fid:
-                        final_fid = new_fid
-                        logger.info(f"REF_REUPLOAD_SUCCESS {fid[:10]}->{new_fid[:10]} {disp_name}")
-                    else:
-                        logger.warning(f"REF_REUPLOAD_FAILED keep original file_id for {disp_name}")
+                    from humsyarx.telegram_file_rename_service import rename_telegram_file
+                new_id, new_name = await rename_telegram_file(uid, fid, disp_name, mime)
+                if new_id:
+                    final_fid = new_id
+                    if new_name and new_name != disp_name:
+                        logger.warning(f"REF_RENAME_VERIFY_MISMATCH expected={disp_name} got={new_name}")
+                    logger.info(f"DEDICATED_REF_RENAME_OK old={fid[:10]} new={new_id[:10]} name={new_name or disp_name} via={'local' if (__import__('os').getenv('TELEGRAM_LOCAL_API_URL') or '').strip() else 'cloud'}")
                 else:
-                    logger.warning(f"REF_REUPLOAD_DOWNLOAD_FAILED for {fid[:10]}")
+                    logger.warning(f"DEDICATED_REF_RENAME_FAIL keep original for {disp_name}")
             except Exception as e:
-                logger.warning(f"ref reupload error: {e}")
+                logger.warning(f"dedicated ref rename error: {e}")
         try:
             from utils_file_naming import get_extension as _get_ext2
         except ImportError:
