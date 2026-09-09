@@ -2052,21 +2052,19 @@ export function ScheduleTab() {
   };
   const doBulkDeleteSelected = async () => {
     if (selectedCount === 0) return toast("چیزی انتخاب نشده", "err");
-    if (
-      !confirm(
-        `حذف ${selectedCount.toLocaleString("fa")} مورد انتخاب‌شده؟ این عمل برگشت‌ناپذیر است.`,
-      )
-    )
-      return;
-    try {
-      const r = await api.caScheduleBulkDelete({ ids: [...selected] });
-      toast(`حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد ✅`);
-      clearSelection();
-      setBulkMode(false);
-      load();
-    } catch (e) {
-      toast(errText(e), "err");
-    }
+    setConfirm({
+      text: `حذف ${selectedCount.toLocaleString("fa")} مورد انتخاب‌شده؟ این عمل برگشت‌ناپذیر است.`,
+      danger: true,
+      run: async () => {
+        const r = await api.caScheduleBulkDelete({ ids: [...selected] });
+        toast(
+          `حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد ✅`,
+        );
+        clearSelection();
+        setBulkMode(false);
+        load();
+      },
+    });
   };
   const doBulkDeleteAllFiltered = async () => {
     const n = _bulkAllIds.length;
@@ -2078,54 +2076,52 @@ export function ScheduleTab() {
           ? "امتحان"
           : "جبرانی"
       : "همه در این تب";
-    if (
-      !confirm(
-        `حذف همه‌ی ${n.toLocaleString("fa")} مورد «${label}» در فیلتر فعلی؟\nاز ۲۸ شهریور تا ۲۵ دی و هر تاریخ دیگری که در این فیلتر است، همه پاک می‌شود.`,
-      )
-    )
-      return;
-    try {
-      const r = await api.caScheduleBulkDelete({
-        stype: stype || undefined,
-        group: undefined,
-        delete_all: !stype ? true : false,
-        ...(stype ? { stype } : {}),
-      });
-      // fallback to query delete if needed
-      let deleted = r.deleted;
-      if (n > 0 && deleted === 0) {
-        // try via query endpoint
-        const r2 = await api.caScheduleBulkClear(undefined, stype || undefined);
-        deleted = r2.deleted;
-      }
-      toast(`حذف شد — ${Number(deleted || 0).toLocaleString("fa")} مورد ✅`);
-      clearSelection();
-      setBulkMode(false);
-      load();
-    } catch (e) {
-      toast(errText(e), "err");
-    }
+    setConfirm({
+      text: `حذف همه‌ی ${n.toLocaleString("fa")} مورد «${label}» در فیلتر فعلی؟ از ۲۸ شهریور تا ۲۵ دی و هر تاریخ دیگری که در این فیلتر است، همه پاک می‌شود.`,
+      danger: true,
+      run: async () => {
+        const r = await api.caScheduleBulkDelete({
+          stype: stype || undefined,
+          group: undefined,
+          delete_all: !stype ? true : false,
+          ...(stype ? { stype } : {}),
+        });
+        let deleted = r.deleted;
+        if (n > 0 && deleted === 0) {
+          const r2 = await api.caScheduleBulkClear(
+            undefined,
+            stype || undefined,
+          );
+          deleted = r2.deleted;
+        }
+        toast(`حذف شد — ${Number(deleted || 0).toLocaleString("fa")} مورد ✅`);
+        clearSelection();
+        setBulkMode(false);
+        load();
+      },
+    });
   };
   const doBulkDeleteRange = async () => {
     if (!rangeFrom || !rangeTo)
       return toast("بازه‌ی تاریخ را کامل انتخاب کنید", "err");
-    if (!confirm(`حذف بازه‌ای از ${rangeFrom} تا ${rangeTo} ؟`)) return;
-    try {
-      const r = await api.caScheduleBulkDelete({
-        date_from: rangeFrom,
-        date_to: rangeTo,
-        stype: stype || undefined,
-      });
-      toast(
-        `حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد در بازه ✅`,
-      );
-      setShowRangeModal(false);
-      clearSelection();
-      setBulkMode(false);
-      load();
-    } catch (e) {
-      toast(errText(e), "err");
-    }
+    setConfirm({
+      text: `حذف بازه‌ای از ${rangeFrom} تا ${rangeTo} ؟`,
+      danger: true,
+      run: async () => {
+        const r = await api.caScheduleBulkDelete({
+          date_from: rangeFrom,
+          date_to: rangeTo,
+          stype: stype || undefined,
+        });
+        toast(
+          `حذف شد — ${Number(r.deleted || 0).toLocaleString("fa")} مورد در بازه ✅`,
+        );
+        setShowRangeModal(false);
+        clearSelection();
+        setBulkMode(false);
+        load();
+      },
+    });
   };
 
   return (
