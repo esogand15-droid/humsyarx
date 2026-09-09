@@ -2032,6 +2032,24 @@ export function ScheduleTab() {
   const selectAllVisible = () => setSelected(new Set(_bulkAllIds.map(String)));
   const clearSelection = () => setSelected(new Set());
   const selectedCount = selected.size;
+  const _faInterval = (s) => {
+    const _ie = (st) => {
+      const m = String(st || "").match(/(\d{1,2}):(\d{2})/);
+      if (!m) return "";
+      return `${String(Number(m[1]) + 2).padStart(2, "0")}:${String(Number(m[2])).padStart(2, "0")}`;
+    };
+    const _er = s.end_time || s.time_end || _ie(s.time);
+    return s.time ? `${formatFaTime(s.time)} تا ${formatFaTime(_er)}` : "—";
+  };
+  const _faIntervalShort = (s) => {
+    const _ie = (st) => {
+      const m = String(st || "").match(/(\d{1,2}):(\d{2})/);
+      if (!m) return "";
+      return `${String(Number(m[1]) + 2).padStart(2, "0")}:${String(Number(m[2])).padStart(2, "0")}`;
+    };
+    const _er = s.end_time || s.time_end || _ie(s.time);
+    return s.time ? `${formatFaTime(s.time)}–${formatFaTime(_er)}` : "•";
+  };
   const doBulkDeleteSelected = async () => {
     if (selectedCount === 0) return toast("چیزی انتخاب نشده", "err");
     if (
@@ -2348,20 +2366,34 @@ export function ScheduleTab() {
                   (prev.location || "") === (cur.location || "") &&
                   (prev.teacher || "") === (cur.teacher || "")
                 ) {
+                  const prevStart = _parseMin(prev.time);
+                  const prevEndRaw = _parseMin(
+                    prev.end_time || prev.time_end || "",
+                  );
                   const prevEnd =
-                    _parseMin(prev.end_time || prev.time_end || "") ??
-                    (_parseMin(prev.time) !== null
-                      ? _parseMin(prev.time) + 60
-                      : null);
+                    prevEndRaw ?? (prevStart !== null ? prevStart + 60 : null);
+                  const prevDur =
+                    prevEnd !== null && prevStart !== null
+                      ? prevEnd - prevStart
+                      : null;
                   const curStart = _parseMin(cur.time);
+                  const curEndRaw = _parseMin(
+                    cur.end_time || cur.time_end || "",
+                  );
                   const curEnd =
-                    _parseMin(cur.end_time || cur.time_end || "") ??
-                    (curStart !== null ? curStart + 60 : null);
+                    curEndRaw ?? (curStart !== null ? curStart + 60 : null);
+                  const curDur =
+                    curEnd !== null && curStart !== null
+                      ? curEnd - curStart
+                      : null;
+                  // فقط دو ردیف ۱ساعته‌ی تکراری (باگ قدیمی) را ادغام کن، نه دو بازه‌ی ۲ساعته‌ی جدا
                   if (
                     prevEnd !== null &&
                     curStart !== null &&
                     prevEnd === curStart &&
-                    curEnd !== null
+                    curEnd !== null &&
+                    prevDur === 60 &&
+                    curDur === 60
                   ) {
                     // merge into prev: extend end_time
                     prev.end_time = _minToClock(curEnd);
@@ -2486,14 +2518,29 @@ export function ScheduleTab() {
                             {faDigits(rows.length)} جلسه · {formatFaDate(day)}
                           </div>
                         </div>
+                        <button
+                          className="btn sm"
+                          onClick={() =>
+                            setEdit({
+                              type: stype || "class",
+                              date: day,
+                              group: "هر دو",
+                              flex_type: "fixed",
+                              time: "08:00",
+                              end_time: "10:00",
+                            })
+                          }
+                          title="افزودن برنامه برای این روز (کلاس/امتحان/جبرانی)"
+                          style={{ padding: "4px 8px", fontSize: 11 }}
+                        >
+                          ＋ افزودن
+                        </button>
                         <B kind="acc">{faDigits(rows.length)}</B>
                       </div>
                       <div style={{ display: "grid", gap: 8, padding: 10 }}>
                         {rows.map((s) => {
                           const sty = TYPE_STYLE[s.type] || TYPE_STYLE.class;
-                          const interval = s.time
-                            ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}`
-                            : "—";
+                          const interval = _faInterval(s);
                           return (
                             <div
                               key={s.id}
@@ -2828,11 +2875,7 @@ export function ScheduleTab() {
                               setEdit({ ...s, note: s.note || "" })
                             }
                           >
-                            <span>
-                              {s.time
-                                ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}`
-                                : "—"}
-                            </span>
+                            <span>{_faInterval(s)}</span>
                             <b>{s.lesson}</b>
                             <span className="muted">
                               {TYPE_FA[s.type] || s.type} · {s.group}
@@ -2941,12 +2984,9 @@ export function ScheduleTab() {
                                 onClick={() =>
                                   setEdit({ ...s, note: s.note || "" })
                                 }
-                                title={`${s.lesson} · ${s.time ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? ` تا ${formatFaTime(s.end_time || s.time_end)}` : ""}` : ""}`}
+                                title={`${s.lesson} · ${_faInterval(s)}`}
                               >
-                                {s.time
-                                  ? `${formatFaTime(s.time)}${s.end_time || s.time_end ? `–${formatFaTime(s.end_time || s.time_end)}` : ""}`
-                                  : "•"}{" "}
-                                {s.lesson}
+                                {_faIntervalShort(s)} {s.lesson}
                               </button>
                             ))}
                             {rows.length > 3 && (

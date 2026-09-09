@@ -581,8 +581,9 @@ def _draw_footer(c, page_num: int):
     c.line(MARGIN, FOOTER_Y, PAGE_W - MARGIN, FOOTER_Y)
     c.setFont(REGULAR, 7.4)
     c.setFillColor(GRAY)
-    c.drawCentredString(PAGE_W / 2, FOOTER_Y - 5.2*mm,
-                         rtl(f"تولید شده توسط ربات هامزیار (@humsyarbot)  •  {fa_digits(_now_tehran_str())}  •  صفحه {fa_digits(page_num)}"))
+    # Fix footer order: username first, then date, then page — all RTL correctly
+    footer_text = f"تولید شده توسط ربات هامزیار @humsyarbot  •  {fa_digits(_now_tehran_str())}  •  صفحه {fa_digits(page_num)}"
+    c.drawCentredString(PAGE_W / 2, FOOTER_Y - 5.2*mm, rtl(footer_text))
     # tiny brand dot
     c.setFillColor(BRAND_GREEN)
     c.circle(PAGE_W/2, FOOTER_Y - 5.2*mm + 8*mm, 0.9*mm, fill=1, stroke=0)
@@ -733,29 +734,35 @@ def _draw_weekly_class_grid(c, y_top: float, slot_map, intervals, group_label: s
     c.line(x0+2*mm, y - 1*mm, x0+CONTENT_W-2*mm, y - 1*mm)
     c.setFont(BOLD, 8.4)
     c.setFillColor(WHITE)
-    # weekday header
-    c.drawCentredString(x0 + wd_w/2, y_header_bottom + row_h_header/2 - 1.2*mm, rtl("ایام هفته"))
-    # interval headers
+    # RTL: weekday header on the right
+    x_wd = x0 + CONTENT_W - wd_w
+    c.drawCentredString(x_wd + wd_w/2, y_header_bottom + row_h_header/2 - 1.2*mm, rtl("ایام هفته"))
+    # interval headers from right to left (intervals to the left of weekday)
     for idx, lab in enumerate(labels):
-        cx = x0 + wd_w + col_w*idx + col_w/2
-        # convert "08:00 تا 10:00" to "۸ - ۱۰" short for header
+        # idx 0 is earliest interval (08-10) should be rightmost among intervals (closest to weekday)
+        # So we place intervals from right to left
+        rev_idx = len(labels) - 1 - idx
+        # Actually keep chronological left-to-right but weekday on right means intervals fill left side
+        # For RTL, earliest interval should be rightmost interval column (just left of weekday)
+        # So we map idx 0 -> rightmost interval slot
+        col_x = x0 + col_w * rev_idx
+        cx = col_x + col_w/2
         short = lab.replace(" تا ", " - ")
-        # fa_digits already
         c.drawCentredString(cx, y_header_bottom + row_h_header/2 - 1.2*mm, rtl(short))
         if idx < len(labels)-1:
             c.saveState()
             c.setStrokeColor(WHITE)
             c.setStrokeAlpha(0.18)
             c.setLineWidth(0.6)
-            cx_line = x0 + wd_w + col_w*(idx+1)
+            cx_line = col_x
             c.line(cx_line, y_header_bottom + 2*mm, cx_line, y - 2*mm)
             c.restoreState()
-    # vertical dividers for header
+    # vertical divider between weekday and intervals
     c.saveState()
     c.setStrokeColor(WHITE)
     c.setStrokeAlpha(0.18)
     c.setLineWidth(0.6)
-    c.line(x0+wd_w, y_header_bottom+2*mm, x0+wd_w, y-2*mm)
+    c.line(x_wd, y_header_bottom+2*mm, x_wd, y-2*mm)
     c.restoreState()
 
     y = y_header_bottom
@@ -777,22 +784,22 @@ def _draw_weekly_class_grid(c, y_top: float, slot_map, intervals, group_label: s
         c.setStrokeColor(CARD_BORDER)
         c.setLineWidth(0.6)
         c.rect(x0, y_row_bottom, CONTENT_W, row_h, fill=0, stroke=1)
-        # weekday cell
-        c.setFillColor(NAVY_LIGHT if d_idx % 2 == 0 else NAVY)
-        # subtle left accent for weekday
+        # weekday cell on the RIGHT
+        x_wd = x0 + CONTENT_W - wd_w
         c.setFillColor(HexColor('#eef2ff') if d_idx % 2 == 0 else HexColor('#e6ebff'))
-        c.rect(x0, y_row_bottom, wd_w, row_h, fill=1, stroke=0)
+        c.rect(x_wd, y_row_bottom, wd_w, row_h, fill=1, stroke=0)
         c.setStrokeColor(CARD_BORDER)
-        c.rect(x0, y_row_bottom, wd_w, row_h, fill=0, stroke=1)
+        c.rect(x_wd, y_row_bottom, wd_w, row_h, fill=0, stroke=1)
         c.setFont(BOLD, 8.2)
         c.setFillColor(NAVY)
-        c.drawCentredString(x0 + wd_w/2, y_row_bottom + row_h/2 - 1.1*mm, rtl(_weekday_fa(wd)))
-        # vertical line after weekday
+        c.drawCentredString(x_wd + wd_w/2, y_row_bottom + row_h/2 - 1.1*mm, rtl(_weekday_fa(wd)))
+        # vertical line before weekday (left edge of weekday column)
         c.setStrokeColor(CARD_BORDER)
-        c.line(x0+wd_w, y_row_bottom, x0+wd_w, y_row_top)
-        # cells
+        c.line(x_wd, y_row_bottom, x_wd, y_row_top)
+        # cells to the left of weekday
         for col_idx, key in enumerate(keys):
-            cx0 = x0 + wd_w + col_w*col_idx
+            rev_idx = len(keys) - 1 - col_idx
+            cx0 = x0 + col_w*rev_idx
             # vertical divider
             if col_idx > 0:
                 c.setStrokeColor(CARD_BORDER)
@@ -858,12 +865,8 @@ def _draw_weekly_class_grid(c, y_top: float, slot_map, intervals, group_label: s
         c.setLineWidth(0.5)
         c.line(x0, y, x0+CONTENT_W, y)
 
-    # footer note below grid
-    y -= 4*mm
-    c.setFont(REGULAR, 6.8)
-    c.setFillColor(GRAY)
-    c.drawRightString(PAGE_W - MARGIN, y, rtl("جدول هفتگی خلاصه — بازه‌ها پس از ادغام ۲ساعته نمایش داده شده‌اند (شنبه تا پنجشنبه، جمعه تعطیل)"))
-    y -= 4*mm
+    # (subtitle removed per user request)
+    y -= 2*mm
     return y
 
 def _consolidate_intervals(items: list) -> list:
@@ -892,16 +895,24 @@ def _consolidate_intervals(items: list) -> list:
         cur = dict(cur)  # copy to avoid mutating original
         prev = out[-1] if out else None
         if prev and prev.get('date')==cur.get('date') and prev.get('lesson')==cur.get('lesson') and (prev.get('group') or '')==(cur.get('group') or '') and (prev.get('type') or 'class')==(cur.get('type') or 'class') and (prev.get('location') or '')==(cur.get('location') or '') and (prev.get('teacher') or '')==(cur.get('teacher') or ''):
-            prev_end = _p(prev.get('end_time') or prev.get('time_end') or '') 
-            if prev_end is None:
-                prev_end = _p(prev.get('time'))
-                if prev_end is not None:
-                    prev_end += 60
+            # فقط دو ردیف ۱ساعته‌ی پشت‌سرهمِ یک درس را ادغام کن (باگ قدیمی ۰۸:۰۰-۰۹:۰۰ + ۰۹:۰۰-۱۰:۰۰ → ۰۸:۰۰ تا ۱۰:۰۰)
+            # دو بازه‌ی ۲ساعته‌ی مجزا (مثل ۱۵:۰۰-۱۷:۰۰ + ۱۷:۰۰-۱۹:۰۰) نباید ادغام شوند — هر کدام یک کلاس جدا در ستون خودش است
+            prev_start = _p(prev.get('time'))
+            prev_end = _p(prev.get('end_time') or prev.get('time_end') or '')
+            if prev_end is None and prev_start is not None:
+                prev_end = prev_start + 60
+                prev_dur = 60
+            else:
+                prev_dur = (prev_end - prev_start) if (prev_end is not None and prev_start is not None) else None
             cur_start = _p(cur.get('time'))
             cur_end = _p(cur.get('end_time') or cur.get('time_end') or '')
             if cur_end is None and cur_start is not None:
                 cur_end = cur_start + 60
-            if prev_end is not None and cur_start is not None and prev_end == cur_start and cur_end is not None:
+                cur_dur = 60
+            else:
+                cur_dur = (cur_end - cur_start) if (cur_end is not None and cur_start is not None) else None
+            # فقط اگر هر دو ۶۰ دقیقه‌ای بودند و پشت‌سرهم بودند، ادغام کن
+            if prev_end is not None and cur_start is not None and prev_end == cur_start and cur_end is not None and prev_dur == 60 and cur_dur == 60:
                 # extend prev
                 prev['end_time'] = _f(cur_end)
                 # keep longest notes
@@ -950,7 +961,24 @@ def generate_schedule_pdf(items: list, group_label: str, student_name: str = '',
         pass
     page_num = 1
 
-    y = _draw_header(c, group_label, student_name, len(items), stype=stype, items=items)
+    # پیش‌محاسبه برای هدر: اگر جدول هفتگی استفاده می‌شود، تعداد باید تعداد کلاس‌های یک هفته باشد نه مجموع تاریخ‌دار
+    _weekly_for_header = False
+    _weekly_header_items = None
+    _weekly_header_count = len(items)
+    try:
+        if _should_use_weekly_grid(items, stype):
+            _sm, (_wk_keys, _wk_labels) = _collect_weekly_slots(items) or (None, (None, None))
+            if _sm and _wk_keys:
+                # تعداد خانه‌های پر در هفته (distinct lessons)
+                _weekly_header_count = sum(len(v) for day in _sm.values() for v in day.values())
+                # برای کارت‌های آماری هدر: یک لیست مصنوعی با همان تعداد بساز تا _counts درست کار کند
+                _weekly_header_items = [{"type":"class"} for _ in range(_weekly_header_count)]
+                _weekly_for_header = True
+    except Exception:
+        pass
+    header_count = _weekly_header_count if _weekly_for_header else len(items)
+    header_items = _weekly_header_items if _weekly_for_header else items
+    y = _draw_header(c, group_label, student_name, header_count, stype=stype, items=header_items)
     # subtle watermark for content pages already drawn via header; redraw faint for new pages later
 
     if not items:
