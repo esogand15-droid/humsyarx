@@ -1212,8 +1212,11 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
 async def zarinpal_callback(Authority: str = Query(""), Status: str = Query("")):
     """Callback for Zarinpal redirect (when callback_url points to API). Verifies and redirects to miniapp."""
     from fastapi.responses import RedirectResponse
+    from urllib.parse import quote
     base = (os.getenv("WEBAPP_URL") or "https://humsyar.ir").strip().rstrip("/")
-    target = f"{base}/payment/verify?Authority={Authority}&Status={Status}"
+    # 🛡 W4/SEC-05 — بازتاب پارامترهای درگاه با encode (ضد query-injection)
+    target = (f"{base}/payment/verify?Authority={quote(Authority or '', safe='')}"
+              f"&Status={quote(Status or '', safe='')}")
     if Status != "OK":
         # user cancelled — optionally mark payment cancelled? keep pending for retry
         return RedirectResponse(url=target + "&verified=0", status_code=302)

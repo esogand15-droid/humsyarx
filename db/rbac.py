@@ -918,6 +918,25 @@ class DBRbac:
         }
 
 
+    async def get_users_roles_keys(self, uids: list) -> dict:
+        """🗄 W4/PERF-01 — فقط کلیدهای نقش (بدون resolve) با یک کوئری."""
+        ids = []
+        for u in (uids or []):
+            try:
+                ids.append(int(u))
+            except (TypeError, ValueError):
+                continue
+        out = {i: [] for i in ids}
+        if not ids:
+            return out
+        async for doc in self.user_roles.find({'_id': {'$in': ids}}):
+            try:
+                out[int(doc['_id'])] = list(doc.get('roles') or [])
+            except (TypeError, ValueError):
+                continue
+        return out
+
+
     async def get_user_perms(self, uid: int) -> set:
         """Union مجوزهای نقش‌های «فعال» — §۷ قرارداد (Multi Role).
 

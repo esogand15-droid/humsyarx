@@ -110,10 +110,19 @@ async def lifespan(app: FastAPI):
     except: pass
 
 
+# 🛡 W4/SEC-01 — مستندات تعاملی API به‌صورت پیش‌فرض بسته است؛ اسکیمای
+# اندپوینت‌های ادمین نباید عمومی باشد. برای بازکردن در dev:
+# API_DOCS_ENABLED=1
+_DOCS_ON = (os.getenv("API_DOCS_ENABLED", "0").strip().lower()
+            in ("1", "true", "yes", "on"))
+
 app = FastAPI(
     title="Humsyar API",
     version="2.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
 #: مبنای محاسبه‌ی uptime برای /api/health — در زمان import تنظیم می‌شود.

@@ -929,6 +929,38 @@ async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"wallet_reconcile_job error: {e}")
 
+async def audit_retention_job(context: ContextTypes.DEFAULT_TYPE):
+    """🗄 W4/DB-02 — retention روزانه‌ی audit_logs + هشدار حجم.
+
+    اگر audit_retention_days=0 باشد نگهداری نامحدود است (apply_retention
+    خودش ۰ برمی‌گرداند). آستانه‌ی هشدار حجم با audit_log_alert_count
+    قابل تنظیم است (پیش‌فرض ۵۰۰٬۰۰۰ سند)."""
+    try:
+        deleted = await db.audit_retention_cleanup()
+        try:
+            await db.set_setting("audit_retention_last_run",
+                                 __import__("time_utils").utc_now_iso())
+            await db.set_setting("audit_retention_last_deleted",
+                                 int(deleted or 0))
+        except Exception:
+            pass
+        try:
+            alert_at = int(
+                await db.get_setting("audit_log_alert_count", 500000)
+                or 500000)
+        except Exception:
+            alert_at = 500000
+        if alert_at > 0:
+            total = await db.audit_logs.count_documents({})
+            if total > alert_at:
+                logger.warning(
+                    "audit_logs volume %d exceeds alert threshold %d",
+                    total, alert_at)
+        logger.info("audit retention cleanup deleted=%d", deleted)
+    except Exception as e:
+        logger.warning(f"audit_retention error: {e}")
+
+
 async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     """🌊 W2 — پرداخت‌های zarinpal_pending که بیش‌از ۱ ساعت رها شده → لغو + آزادسازی کد تخفیف."""
     try:
@@ -2193,6 +2225,13 @@ async def post_init(application: Application):
             subscription_expiry_job,
             time=dtime(hour=9, minute=15, tzinfo=TEHRAN),
             name='subscription_expiry'
+        )
+        # 🗄 W4/DB-02 — retention روزانه‌ی audit_logs (۰۳:۳۰ تهران؛
+        # خارج از ساعت بکاپ و رینگ)
+        application.job_queue.run_daily(
+            audit_retention_job,
+            time=dtime(hour=3, minute=30, tzinfo=TEHRAN),
+            name='audit_retention'
         )
         # 🌊 W2 — sweep ساعتی (بدون نوتیف تکراری) + reconcile کیف پول + cleanup زرین‌پال
         application.job_queue.run_repeating(

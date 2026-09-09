@@ -403,6 +403,17 @@ class DBCore:
                             [('status', 1), ('created_at', -1)], background=True),
                 # 🛡 W1 — nonce یک‌بارمصرف initData (TTL خودکار پاک‌سازی)
                 self._index(self.init_nonces, [('at', 1)], expireAfterSeconds=3600, background=True),
+                # 🗄 W4/DB-04 — کالکشن‌های بدون ایندکس (پوشش کوئری داغ):
+                # فهرست گفت‌وگوهای هر کاربر؛ تله‌متری jobها؛ آمار نقش‌ها (multikey).
+                # عمداً بدون ایندکس مانده‌اند (تک‌سند/tiny یا _idمحور):
+                # settings، settings_meta، perm_catalog، roles، migrations،
+                # db_counters، sub_plans، blacklist، admin_roles، audit_delivery_metrics.
+                self._index(self.ai_conversations,
+                            [('user_id', 1), ('updated_at', -1)], background=True),
+                self._index(self.notif_runs,
+                            [('job_name', 1), ('started_at', -1)], background=True),
+                self._index(self.user_roles,
+                            [('roles', 1)], background=True),
             ]
             coros = [
                 collection.create_index(*keys, **options)
@@ -608,6 +619,26 @@ class DBCore:
                 self._user_cache[int(uid)] = (dict(doc), _t.monotonic())
             except: pass
         return doc
+
+
+    async def get_users_by_ids(self, uids: list) -> dict:
+        """🗄 W4/PERF-01 — خواندن بچ کاربران با یک کوئری ($in) برای عملیات
+        گروهی؛ کش ۵ ثانیه‌ای get_user دور زده می‌شود (خوانش تازه)."""
+        ids = []
+        for u in (uids or []):
+            try:
+                ids.append(int(u))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return {}
+        out = {}
+        async for doc in self.users.find({'user_id': {'$in': ids}}):
+            try:
+                out[int(doc.get('user_id'))] = doc
+            except (TypeError, ValueError):
+                continue
+        return out
 
 
     async def create_user(self, uid: int, name: str, student_id: str,

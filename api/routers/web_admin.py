@@ -909,10 +909,14 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
         raise HTTPException(422, "نقش ناشناخته است")
 
     will_apply, will_skip, not_found = [], [], []
+    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (رفتار skipها عیناً حفظ می‌شود)
+    _users = await db.get_users_by_ids(ids)
+    _need_roles = body.action in ("add_role", "remove_role")
+    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     for uid in ids:
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             will_skip.append({"id": uid, "reason": "owner_protected"}); continue
-        target = await db.get_user(uid)
+        target = _users.get(uid)
         if not target:
             not_found.append({"id": uid, "reason": "user_not_found"}); continue
         label = target.get("name") or str(uid)
@@ -925,11 +929,9 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
             reason = "not_suspended"
         elif body.action == "set_intake" and (target.get("intake") or "") == value:
             reason = "already_set"
-        elif body.action == "add_role" and value in (
-                (await db.get_user_roles(uid)).get("keys") or []):
+        elif body.action == "add_role" and value in (_roles.get(uid) or []):
             reason = "already_has_role"
-        elif body.action == "remove_role" and value not in (
-                (await db.get_user_roles(uid)).get("keys") or []):
+        elif body.action == "remove_role" and value not in (_roles.get(uid) or []):
             reason = "role_not_assigned"
         if reason:
             will_skip.append({"id": uid, "name": label, "reason": reason})
@@ -974,6 +976,11 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     succeeded, skipped, failed = [], [], []
     granted: list[dict] = []
     value = (body.value or "").strip()
+    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (نوشتن‌ها تکی می‌ماند تا
+    # گزارش success/failed/skipped دقیق بماند)
+    _users = await db.get_users_by_ids(ids)
+    _need_roles = body.action in ("add_role", "remove_role")
+    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     # 🛡 AUDIT-§۷۹ — اشتراک گروهی: فقط orchestration؛ نوشتنِ واقعی با همان
     # endpoint تک‌موردیِ مالی است (op_claim + sub_activate + نوتیف + audit).
     sub_extend = None
@@ -997,7 +1004,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             skipped.append({"id": uid, "reason": "owner_protected"})
             continue
-        target = await db.get_user(uid)
+        target = _users.get(uid)
         if not target:
             skipped.append({"id": uid, "reason": "user_not_found"})
             continue
@@ -1026,8 +1033,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 await db.update_user(uid, {"group": normalized})
             elif body.action in ("add_role", "remove_role"):
-                info = await db.get_user_roles(uid)
-                has_role = value in info.get("keys", [])
+                has_role = value in (_roles.get(uid) or [])
                 if (body.action == "add_role" and has_role) or (body.action == "remove_role" and not has_role):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 payload = rbac_api.AssignBody(
