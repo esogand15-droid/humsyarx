@@ -26,13 +26,18 @@ def _fmt_price(p: int) -> str:
 # ══════════════════════════════════════════════════
 
 async def has_access(uid: int) -> bool:
-    """آیا این کاربر اجازه‌ی دسترسی به منابع/بانک‌سوال را دارد؟"""
-    enforced = await db.get_setting('subscription_enforced', False)
-    if not enforced:
-        return True
-    if uid == ADMIN_ID:
-        return True
-    return await db.sub_is_active(uid)
+    """آیا این کاربر اجازه‌ی دسترسی به منابع/بانک‌سوال را دارد؟ — W8: تفویض به هسته"""
+    try:
+        from core.access import has_access as _core_has
+        return (await _core_has(int(uid))).allowed
+    except Exception:
+        # fallback بدون هسته
+        enforced = await db.get_setting('subscription_enforced', False)
+        if not enforced:
+            return True
+        if int(uid) == ADMIN_ID:
+            return True
+        return await db.sub_is_active(int(uid))
 
 
 async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:

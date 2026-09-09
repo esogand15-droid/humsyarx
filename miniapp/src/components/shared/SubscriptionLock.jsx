@@ -43,15 +43,20 @@ const BENEFITS = [
 
 
 
-/* تشخیص قفل اشتراک از روی خطای axios —
-   بک‌اند با 403 + این detail پاسخ می‌دهد */
+/* تشخیص قفل اشتراک — W8 هسته: بک‌اند {code: SUB_REQUIRED} برمی‌گرداند
+   (402 یا 403). برای سازگاری عقب‌رو، رشته‌ی قدیمی هم پذیرفته می‌شود. */
 export function isSubscriptionLock(
   error,
 ) {
+  const d = error?.response?.data?.detail;
+  const code = typeof d === 'object' ? d?.code : null;
+  const msg = typeof d === 'object' ? d?.message : d;
+  const status = error?.response?.status;
+  if (code === 'SUB_REQUIRED' || code === 'SUB_EXPIRED' || code === 'SUB_PENDING') return true;
+  if (status === 402 && code) return true;
   return (
-    error?.response?.status === 403 &&
-    error?.response?.data?.detail ===
-      'subscription_required'
+    status === 403 &&
+    (msg === 'subscription_required' || d === 'subscription_required')
   );
 }
 

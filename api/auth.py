@@ -224,16 +224,21 @@ async def get_admin_user(user=Depends(get_current_user)) -> dict:
 
 
 def require_perm(permission: str):
-    """🛡 گیت مجوز RBAC — موج W1 (قرارداد §۸: تصمیم فقط با Permission).
+    """🛡 گیت مجوز RBAC — موج W8: thin-wrapper روی core.rbac.
 
     هر روتر جدید باید به‌جای چسبیدن به role/ADMIN_ID، از این کارخانه
     استفاده کند: Depends(require_perm('roles.manage'))
-    بای‌پسها (قفل سازگاری، داخل db.has_perm): مالک + role=='admin' میراثی.
-    رفتار روی عدم دسترسی دقیقاً مثل گیت‌های فعلی: 403و detail فارسی."""
+    تفویض به core/rbac — قرارداد واحد در هر ۳ لایه."""
     async def _guard(user=Depends(get_current_user)) -> dict:
-        if await db.has_perm(user["id"], permission):
-            return user
-        raise HTTPException(status_code=403, detail="forbidden")
+        # W8 core path — واحد با Bot
+        try:
+            from core.rbac import has_permission
+            if await has_permission(user["id"], permission):
+                return user
+        except Exception:
+            if await db.has_perm(user["id"], permission):
+                return user
+        raise HTTPException(status_code=403, detail={"code": "PERMISSION_DENIED", "message": "forbidden"})
 
     _guard.__name__ = f"require_perm_{permission.replace('.', '_')}"
     return _guard
@@ -279,26 +284,34 @@ def resolve_content_intake(user: dict, requested=None) -> str:
 
 
 async def get_question_access_user(user=Depends(get_current_user)) -> dict:
-    """Single server-side subscription gate for every student Question Bank API."""
-    from subscription import has_access
-    if not await has_access(user["id"]):
-        raise HTTPException(status_code=403, detail="subscription_required")
+    """Single server-side subscription gate for every student Question Bank API — W8 core."""
+    try:
+        from core.access import require_access
+        await require_access(user["id"])
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
     return user
 
 
 async def get_resource_access_user(user=Depends(get_current_user)) -> dict:
-    """گیت اشتراک برای «منابع علوم پایه» و «رفرنس‌ها».
+    """گیت اشتراک برای «منابع علوم پایه» و «رفرنس‌ها» — W8 core.
 
-    دقیقاً همان قانونِ واحد ربات (subscription.has_access) اجرا می‌شود:
-    کلید سراسری subscription_enforced → بای‌پس مدیر اصلی → db.sub_is_active.
-    بدون این گیت، مینی‌اپ محتوای قفلِ ربات را آزاد سرو می‌کرد؛ بک‌اند
-    مرجع نهایی است و فرانت فقط UI قفل را نشان می‌دهد.
+    دقیقاً همان قانونِ واحد ربات از هسته (core.access) اجرا می‌شود.
+    کد خطا ساختاریافته: {code: SUB_REQUIRED, message} تا MiniApp با کد
+    تصمیم بگیرد نه با تطبیق رشته فارسی.
     """
-    # import تنبل — گرفتن has_access از ماژول ربات بدون کشیدن وابستگی‌های
-    # تلگرام به گرافِ بوت FastAPI و بدون دوباره‌نویسی منطق
-    from subscription import has_access
-
-    if not await has_access(user["id"]):
-        raise HTTPException(status_code=403, detail="subscription_required")
+    try:
+        from core.access import require_access
+        await require_access(user["id"])
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
     return user
 
