@@ -782,6 +782,8 @@ async def start_exam(
         selected_ids = list(chk.get("pool") or [])
         apex = bool(chk.get("apex"))
         now_ts = int(time.time())
+        # 🌊 W3 TTL — Date for TTL index
+        _expires_at_dt = __import__('datetime', fromlist=['datetime']).datetime.fromtimestamp(now_ts + db.CH_TTL_HOURS * 3600, tz=__import__('datetime', fromlist=['timezone']).timezone.utc)
         document = {
             "session_id": uuid.uuid4().hex[:16],
             "user_id": user["id"],
@@ -801,6 +803,7 @@ async def start_exam(
             "target_rank": view.get("target_rank") or "",
             "apex": apex,
             "expires_ts": now_ts + db.CH_TTL_HOURS * 3600,
+            "expires_at": _expires_at_dt,
         }
         await exam_sessions.insert_one(document)
         await db.users.update_one({"user_id": user["id"]},

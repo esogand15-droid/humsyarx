@@ -62,6 +62,9 @@ class ExamService:
         now = now_utc()
         session_id = uuid.uuid4().hex[:20]
         deadline = now + timedelta(minutes=int(minutes)) if minutes else None
+        # 🌊 W3 — TTL field for auto-cleanup (7d after deadline or start) — Date for TTL
+        from datetime import timedelta as _td
+        expires_at = (deadline + _td(days=7) if deadline else now + _td(days=7))
         document = {
             "session_id": session_id, "user_id": int(user.get("id") or 0),
             "lesson_id": str(taxonomy.get("lesson_id") or ""),
@@ -72,6 +75,7 @@ class ExamService:
             "minutes": int(minutes), "duration_seconds": int(minutes) * 60,
             "deadline": deadline.isoformat() if deadline else None,
             "deadline_ts": int(deadline.timestamp()) if deadline else None,
+            "expires_at": expires_at,
             "index": 0, "current_index": 0, "correct": 0, "correct_count": 0,
             "answered": 0, "answers": [], "status": "active",
             "output_mode": output_mode, "started_at": now.isoformat(), "created_at": now.isoformat(),

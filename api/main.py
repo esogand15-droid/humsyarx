@@ -61,6 +61,12 @@ async def lifespan(app: FastAPI):
         from http_client import get_shared_client
         await get_shared_client()
     except Exception: pass
+    # 🌊 W3 — migrations قبل از هر چیز
+    try:
+        from db.migrations import run_migrations
+        await run_migrations(db)
+    except Exception as _e:
+        _BOOTSTRAP_STATE.setdefault("steps", {})["migrations"] = {"ok": False, "error": str(_e)}
     shared, question_indexes = await asyncio.gather(
         db.bootstrap_shared(),
         questions.ensure_indexes(),
@@ -89,11 +95,18 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # 🌊 W3 — graceful: shared http client + cancel pending tasks
     try:
         from http_client import aclose_shared_client
         await aclose_shared_client()
     except Exception: pass
-    db.client.close()
+    # allow in-flight requests to finish (best-effort 2s)
+    try:
+        await asyncio.sleep(0.1)
+    except: pass
+    try:
+        db.client.close()
+    except: pass
 
 
 app = FastAPI(

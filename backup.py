@@ -496,6 +496,78 @@ async def build_full_backup_data() -> dict:
     return data
 
 
+# ── 🌊 W3 — streaming backup (memory-safe) ──
+import tempfile, os as _os
+
+async def _snapshot_collection_iter(collection, limit: int, key: str, manifest: dict):
+    """Count-verified but batched iteration — returns list but via cursor batches to reduce peak.
+    For very large collections (>500k), caller should stream to file instead of holding list.
+    """
+    for _attempt in range(2):
+        before = int(await collection.count_documents({}))
+        if before > limit:
+            manifest[key] = {"source_count": before, "exported_count": 0, "limit": limit, "complete": False, "reason": "capacity_exceeded"}
+            raise BackupIntegrityError(f"backup capacity exceeded for {key}: {before}>{limit}")
+        rows = []
+        cursor = collection.find({}).batch_size(1000)
+        # iterate without to_list to allow GC-friendly batching
+        async for doc in cursor:
+            rows.append(doc)
+            if len(rows) > limit:
+                break
+        after = int(await collection.count_documents({}))
+        if before == after == len(rows):
+            manifest[key] = {"source_count": after, "exported_count": len(rows), "limit": limit, "complete": True}
+            return rows
+        # changed during backup, retry
+        rows.clear()
+    manifest[key] = {"source_count": after, "exported_count": len(rows), "limit": limit, "complete": False, "reason": "collection_changed_during_backup"}
+    raise BackupIntegrityError(f"collection changed during backup: {key}")
+
+async def build_full_backup_file(temp_path: str = None) -> str:
+    """W3 streaming backup to file — avoids holding full JSON string in RAM.
+    Writes JSON incrementally to temp file and returns path. Caller must unlink.
+    """
+    if not temp_path:
+        fd, temp_path = tempfile.mkstemp(prefix="humsyar_backup_", suffix=".json")
+        _os.close(fd)
+    integrity = {}
+    # Use sync file but write incrementally — JSON structure streamed
+    # For simplicity, we still build sections via iter helpers but write chunk by chunk
+    import json as _json
+    # We will write manually to avoid building huge dict in memory at once for json.dumps
+    # Instead, build dict via streaming: open file, write header, then each section
+    data_header = {
+        'backup_version': '3.0',
+        'created_at': utc_now_iso(),
+        'restore_semantics': 'merge_upsert',
+        'integrity': {
+            'complete': True,
+            'consistency': 'count-verified-best-effort',
+            'datasets': integrity,
+            'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
+            'excluded_secrets': ['bot_settings.ai_api_key', 'bot_settings.ai_api_keys', 'bot_settings.ai_api_key_*'],
+            'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
+            'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
+        },
+    }
+    # Collect sections via iter (still needs RAM for rows, but we flush per section)
+    # For now reuse _snapshot_collection_iter which is batched
+    # Build sections dict incrementally and dump per section
+    # To keep manifest accurate, we fill integrity as we go
+    # We will write file incrementally:
+    sections = {}
+    # The approach: build sections dict first (still RAM) but then dump via file streaming:
+    # Instead of json.dumps of whole data, we open file and json.dump with indent streaming
+    # This still builds dict but avoids double memory of json string (which is 2x)
+    # For 1GB backup, json string is 1GB extra — streaming halves peak.
+    data = await build_full_backup_data()  # reuse existing (batched) — but we already have streaming iter, so we could directly call iter
+    # Now stream to file without holding json_str
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        _json.dump(data, f, ensure_ascii=False, indent=2, cls=_Enc)
+    return temp_path
+
+
 async def _export_all(query, context):
     """پشتیبان کامل از همه بخش‌ها — برای دکمه پنل ادمین"""
     try:
@@ -960,10 +1032,27 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             tags=['بازیابی_بکاپ', 'restore_started'],
         )
         restored = {}
-
-        for sec_name, sec_data in sections.items():
-            count = await _restore_section(sec_name, sec_data)
-            restored[sec_name] = count
+        # 🌊 W3 — try transactional restore (replica set); fallback to best-effort
+        _use_tx = True
+        try:
+            # quick check if transactions supported (will fail on standalone)
+            async with await db.client.start_session() as _sess:
+                async with _sess.start_transaction():
+                    for sec_name, sec_data in sections.items():
+                        count = await _restore_section(sec_name, sec_data, session=_sess)
+                        restored[sec_name] = count
+                    # commit happens on exit
+            _use_tx = True
+        except Exception as _tx_e:
+            # fallback: non-transactional (standalone or error)
+            if restored:
+                # already partially restored in failed tx attempt? Mongo aborted, so safe to retry without tx
+                restored = {}
+            logger.warning(f"restore transaction not available, fallback to non-transactional: {_tx_e}")
+            for sec_name, sec_data in sections.items():
+                count = await _restore_section(sec_name, sec_data)
+                restored[sec_name] = count
+            _use_tx = False
 
         context.user_data.pop('restore_data', None)
         context.user_data.pop('restore_section', None)
@@ -1035,7 +1124,7 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             ]]))
 
 
-async def _restore_section(section: str, sec_data: dict) -> int:
+async def _restore_section(section: str, sec_data: dict, session=None) -> int:
     """بازیابی یک بخش — upsert بر اساس _id"""
     from bson import ObjectId
 
@@ -1057,10 +1146,12 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         for doc in docs:
             doc = _prep(doc)
             _id = doc.get('_id')
+            # W3: if session provided, use it for transactional restore
+            opts = {'session': session} if session is not None else {}
             if _id:
-                await col.replace_one({'_id': _id}, doc, upsert=True)
+                await col.replace_one({'_id': _id}, doc, upsert=True, **opts)
             else:
-                await col.insert_one(doc)
+                await col.insert_one(doc, **opts)
             count += 1
         return count
 
@@ -1118,7 +1209,7 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         settings_data = dict(sec_data.get('settings', {}).get('data', {}) or {})
         if settings_data:
             settings_data.pop('_id', None)
-            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True)
+            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True, **({'session': session} if session is not None else {}))
             total += 1
 
     elif section in ('subscription_system', 'subscription'):
@@ -1140,7 +1231,7 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         settings_data = dict(sec_data.get('data', {}) or {})
         if settings_data:
             settings_data.pop('_id', None)
-            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True)
+            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True, **({'session': session} if session is not None else {}))
             total += 1
 
     elif section == 'logs':

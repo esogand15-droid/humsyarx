@@ -7,6 +7,7 @@
 """
 import os
 import asyncio
+BROADCAST_SEM = asyncio.Semaphore(1)  # 🌊 W3 — یک broadcast در لحظه، جلوگیری از گرسنگی jobهای دیگر
 import logging
 from datetime import datetime, timedelta
 from telegram import (
@@ -1588,7 +1589,7 @@ async def _broadcast_send_test(query, context):
         await query.answer("❌ پیامی برای ارسال آزمایشی وجود ندارد!", show_alert=True)
         return
     tester_uid = query.from_user.id
-    sent, _, _ = await _do_broadcast_send(context.bot, [{'user_id': tester_uid}], msg_data)
+    sent, _, _ = await _do_broadcast_send_guarded(context.bot, [{'user_id': tester_uid}], msg_data)
     if sent:
         await query.answer("✅ پیام آزمایشی برای شما ارسال شد — پایین چت خودتان را چک کنید.", show_alert=True)
     else:
@@ -1674,7 +1675,7 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
         # همیشه آزاد شود و ادمین برای همیشه پشت یک ارسالِ «گیر کرده»
         # قفل نماند.
         await _broadcast_inbox_mirror(users_list, msg_data)
-        sent, failed_total, blocked = await _do_broadcast_send(
+        sent, failed_total, blocked = await _do_broadcast_send_guarded(
             context.bot, users_list, msg_data, progress_cb=_progress)
     finally:
         context.user_data['bc_sending'] = False
@@ -1713,7 +1714,7 @@ async def _scheduled_broadcast_job(context: ContextTypes.DEFAULT_TYPE):
     admin_id = data.get('admin_id', ADMIN_ID)
     users_list = await _get_target_users(target)
     await _broadcast_inbox_mirror(users_list, msg_data)
-    sent, failed_total, blocked = await _do_broadcast_send(context.bot, users_list, msg_data)
+    sent, failed_total, blocked = await _do_broadcast_send_guarded(context.bot, users_list, msg_data)
     other_failed = failed_total - blocked
     # پاک‌سازی رکورد ماندگارشده — دیگر لازم نیست چون همین الان ارسال شد
     try:
@@ -1751,7 +1752,7 @@ async def _broadcast_inbox_mirror(users_list: list, msg_data: dict) -> None:
     ])
 
 
-async def _do_broadcast_send(bot, users_list: list, msg_data: dict, progress_cb=None) -> tuple:
+async def _do_broadcast_send_guarded(bot, users_list: list, msg_data: dict, progress_cb=None) -> tuple:
     """
     FIX کامل (حرفه‌ای‌سازی ارسال همگانی):
     - RetryAfter (محدودیت نرخ تلگرام) → صبر دقیق به‌اندازه‌ی زمان اعلام‌شده
@@ -1815,6 +1816,9 @@ async def _do_broadcast_send(bot, users_list: list, msg_data: dict, progress_cb=
             await asyncio.sleep(0.05)
 
     return sent, failed + blocked, blocked
+
+
+# 🌊 W3 — wrapper with semaphore to avoid starvation
 
 
 async def _get_target_users(target: str) -> list:

@@ -376,6 +376,8 @@ class DBCore:
                 self._index(self.exam_sessions, [('user_id', 1), ('status', 1), ('started_at', -1)], background=True),
                 self._index(self.exam_sessions, [('output_mode', 1), ('created_at', -1)], background=True),
                 self._index(self.exam_sessions, [('status', 1), ('deadline_ts', 1)], background=True),
+                # 🌊 W3 — TTL برای جلسات منقضی (7 روز پس از expires_at) — auto cleanup بدون job
+                self._index(self.exam_sessions, [('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self._index(self.question_pdf_generations, [('session_id', 1), ('generated_at', -1)], background=True),
                 self._index(self.question_pdf_generations, [('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
@@ -436,6 +438,12 @@ class DBCore:
                 'failed': len(failures),
                 'critical_missing': critical_missing,
             }
+            # 🌊 W3 — versioned migrations (exam_sessions expires_at backfill etc)
+            try:
+                from db.migrations import run_migrations
+                await run_migrations(self)
+            except Exception as _mig_e:
+                logger.warning(f"migration warning: {_mig_e}")
             try:
                 await self.discount_codes.update_many(
                     {'target_plan_ids': {'$exists': False}},

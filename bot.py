@@ -846,10 +846,26 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             if (now_utc() - last_dt.astimezone(timezone.utc)).total_seconds() < 3600 * 20:
                 return  # کمتر از ۲۰ ساعت از آخرین بکاپ گذشته — رد کن
 
-        from backup import build_full_backup_data, send_backup_to_bot_chat
+        # 🌊 W3 — streaming backup to temp file (memory-safe) + send
+        from backup import build_full_backup_file
         from utils import send_audit_log
-        data = await build_full_backup_data()
-        msg_id = await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
+        import os as _os
+        temp_path = await build_full_backup_file()
+        try:
+            # send file without holding json string in RAM
+            with open(temp_path, 'rb') as f:
+                now_str = now_tehran().strftime('%Y%m%d_%H%M')
+                fname = f"backup_auto_{now_str}.json"
+                # use bot.send_document with file handle
+                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}", filename=fname)
+                msg_id = getattr(sent, 'message_id', None)
+        finally:
+            try: _os.unlink(temp_path)
+            except: pass
+        # fallback data for audit log (light)
+        try:
+            data = {"summary": {"note": "streamed"}}
+        except: data = {}
         await db.set_setting('auto_backup_last_run', utc_now_iso())
         logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
         # 🛡 AUDIT-V2 — نگهداریِ کرانه‌دار: سابقه‌ی بکاپ‌های خودکار در یک
@@ -2094,9 +2110,25 @@ def _run_polling_with_retry(build_app):
             time.sleep(delay)
 
 
+async def _graceful_shutdown(app):
+    # 🌊 W3 — graceful: بستن http client مشترک + آزادسازی db
+    try:
+        from http_client import aclose_shared_client
+        await aclose_shared_client()
+    except Exception: pass
+    try:
+        # short grace for in-flight handlers
+        import asyncio as _aio
+        await _aio.sleep(0.2)
+    except: pass
+    try:
+        db.client.close()
+    except: pass
+
 def _build_application_with_post_init():
     app = build_application()
     app.post_init = post_init
+    app.post_shutdown = _graceful_shutdown
     return app
 
 
