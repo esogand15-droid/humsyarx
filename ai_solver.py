@@ -31,6 +31,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from database import db
+try:
+    from utils_crypto import decrypt_value, encrypt_value, is_encryption_enabled
+except Exception:
+    decrypt_value = lambda x: x if isinstance(x,str) else (x.get("c","") if isinstance(x,dict) else str(x or ""))
+    encrypt_value = lambda x: x
+    is_encryption_enabled = lambda: False
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -615,9 +621,22 @@ def _detect_provider_for_model(model_id: str) -> str | None:
     return None
 
 
+def _maybe_decrypt(v):
+    if isinstance(v, dict) and "c" in v:
+        return decrypt_value(v)
+    if isinstance(v, str) and v.startswith("gAAAAA"):
+        # bare Fernet token stored as string (legacy)
+        return decrypt_value(v)
+    return v
+
 def _load_vault(raw: dict) -> dict:
     vault: dict = {}
     raw_vault = raw.get('ai_api_keys', '')
+    # W1: decrypt if encrypted dict
+    if isinstance(raw_vault, dict) and raw_vault.get("enc"):
+        try:
+            raw_vault = decrypt_value(raw_vault)
+        except: raw_vault = ""
     if raw_vault:
         if isinstance(raw_vault, dict):
             vault = dict(raw_vault)
@@ -628,14 +647,26 @@ def _load_vault(raw: dict) -> dict:
                     loaded = json.loads(raw_vault)
                     if isinstance(loaded, dict):
                         vault = loaded
+                    elif isinstance(loaded, str) and loaded.startswith("gAAAAA"):
+                        vault = json.loads(decrypt_value(loaded) or "{}") if decrypt_value(loaded) else {}
                 except Exception:
-                    vault = {}
-    legacy = (raw.get('ai_api_key') or '').strip()
+                    # maybe encrypted JSON string
+                    try:
+                        dec = decrypt_value(raw_vault)
+                        loaded = json.loads(dec)
+                        if isinstance(loaded, dict): vault = loaded
+                    except: vault = {}
+    # legacy single key fallback (may be encrypted)
+    legacy = raw.get('ai_api_key')
+    legacy = _maybe_decrypt(legacy) if legacy is not None else ""
+    legacy = (legacy or "").strip()
     provider = raw.get('ai_provider', 'gemini')
     if legacy and not vault:
         vault[provider] = legacy
     for pid in PROVIDERS:
-        k = (raw.get(f'ai_api_key_{pid}') or '').strip()
+        kv = raw.get(f'ai_api_key_{pid}')
+        kv = _maybe_decrypt(kv) if kv is not None else ""
+        k = (kv or "").strip()
         if k and pid not in vault:
             vault[pid] = k
     return vault
@@ -698,14 +729,22 @@ async def set_api_key_for_provider(provider: str, key: str) -> None:
         vault[provider] = key
     else:
         vault.pop(provider, None)
-    await db.set_setting('ai_api_keys', json.dumps(vault, ensure_ascii=False))
+    # W1: encrypt vault JSON if FERNET_KEY enabled
+    vault_json = json.dumps(vault, ensure_ascii=False)
+    if is_encryption_enabled():
+        await db.set_setting('ai_api_keys', encrypt_value(vault_json))
+    else:
+        await db.set_setting('ai_api_keys', vault_json)
+    enc_key = encrypt_value(key) if is_encryption_enabled() and key else (key or "")
     if key:
-        await db.set_setting(f'ai_api_key_{provider}', key)
+        await db.set_setting(f'ai_api_key_{provider}', enc_key)
     else:
         await db.set_setting(f'ai_api_key_{provider}', '')
     cur = (raw.get('ai_provider') or 'gemini').strip() or 'gemini'
     if provider == cur and key:
-        await db.set_setting('ai_api_key', key)
+        await db.set_setting('ai_api_key', enc_key if is_encryption_enabled() else key)
+    elif provider == cur and not key:
+        await db.set_setting('ai_api_key', '')
 
 
 async def delete_api_key_for_provider(provider: str) -> None:

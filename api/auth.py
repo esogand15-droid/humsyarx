@@ -31,6 +31,38 @@ except (TypeError, ValueError):
     INIT_DATA_MAX_AGE = 3600
 
 
+# ── W1 Nonce (Replay) — best-effort, fails open if DB unavailable ──
+# Stores hash(init_data) with TTL = INIT_DATA_MAX_AGE to reject replay.
+# Nonce check is AFTER HMAC verification (never store unverified data).
+_INIT_NONCE_TTL = INIT_DATA_MAX_AGE
+try:
+    _NONCE_ENABLED = os.getenv("INIT_NONCE_ENABLED", "0").strip().lower() not in ("0","false","no","off")
+except: _NONCE_ENABLED = False
+# If enabled, every init_data hash is stored once (TTL=INIT_DATA_MAX_AGE) and replay → 401.
+# Disabled by default to allow Telegram's own re-sends (same initData on page reload).
+# Enable with INIT_NONCE_ENABLED=1 when you need strict replay protection.
+
+async def _check_init_nonce_once(init_data: str) -> None:
+    """Strict once-only nonce using insert+DuplicateKeyError. Raises 401 on replay if DB available."""
+    if not _NONCE_ENABLED or not init_data:
+        return
+    h = hashlib.sha256(init_data.encode("utf-8")).hexdigest()
+    try:
+        await db.init_nonces.insert_one({"_id": h, "at": utc_now(), "hash": h})
+    except Exception as e:
+        try:
+            from pymongo.errors import DuplicateKeyError as DKE
+            if isinstance(e, DKE):
+                raise HTTPException(status_code=401, detail="init_data_reused")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        try:
+            import logging as _lg
+            _lg.getLogger("api.auth").debug(f"nonce check fail-open: {e}")
+        except: pass
+
 def _auth_error(detail: str = "invalid_init_data") -> HTTPException:
     return HTTPException(status_code=401, detail=detail)
 
@@ -148,6 +180,8 @@ async def get_current_user(
         sess = await resolve_web_session(request.cookies.get(WA_SESSION_COOKIE, ""))
         if sess:
             uid = int(sess["uid"])
+            try: request.state.user_id = uid
+            except: pass
             db_user = await db.get_user(uid)
             if not db_user:
                 raise HTTPException(status_code=403, detail="not_registered")
@@ -159,10 +193,19 @@ async def get_current_user(
                     "_db": db_user, "_wa_session": sess}
         raise _auth_error("missing_init_data")
     tg_user = verify_telegram_init_data(x_init_data)
+    # W1 — after HMAC verified, enforce once-only nonce (if enabled)
+    try:
+        await _check_init_nonce_once(x_init_data)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     try:
         uid = int(tg_user["id"])
     except (KeyError, TypeError, ValueError):
         raise _auth_error("invalid_user_data")
+    try: request.state.user_id = uid
+    except: pass
 
     db_user = await db.get_user(uid)
     if not db_user:

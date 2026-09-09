@@ -344,6 +344,8 @@ async def validate_discount(
         get_current_user
     ),
 ):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "sub_discount", 20, 60)
     plan = (
         await db.sub_plan_get(
             body.plan_id
@@ -457,6 +459,8 @@ async def buy(
         get_current_user
     ),
 ):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "sub_buy", 12, 60)
     user_id = user["id"]
 
     database_user = user["_db"]
@@ -1098,6 +1102,8 @@ async def _wallet_purchase_result(payment: dict, user_id: int,
 
 @router.post("/buy-wallet")
 async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "sub_wallet", 12, 60)
     """خرید اشتراک از کیف پول — روی همان سیستم خرید موجود؛ کیف پول فقط
     روش پرداخت جدید است. منطق واحد در db.wallet_purchase (Bot هم همان را
     صدا می‌زند). خطاها با پیام فارسی و کد ماشین‌خوان برمی‌گردند."""
@@ -1161,6 +1167,8 @@ async def topup(
     idem: str = Form(""),
     user=Depends(get_current_user),
 ):
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "topup", 12, 60)
     user_id = user["id"]
     database_user = user["_db"]
     try:

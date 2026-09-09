@@ -43,6 +43,41 @@ async def _read_capped(file: UploadFile, cap: int) -> bytes:
             raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
         chunks.append(chunk)
     return b"".join(chunks)
+
+# 🛡 W1 — magic-byte validation (content-type spoofing defence)
+# Only checks obvious mismatches; passes unknown types through (fail-open for valid but rare formats).
+def _validate_magic(data: bytes, declared_mime: str, filename: str = "") -> None:
+    if not data or len(data) < 4:
+        return
+    head = data[:12]
+    mime = (declared_mime or "").lower()
+    name = (filename or "").lower()
+    # PDF must be %PDF
+    if mime == "application/pdf" or name.endswith(".pdf"):
+        if not head.startswith(b"%PDF"):
+            raise HTTPException(422, "فایل PDF نامعتبر است (امضای فایل هم‌خوانی ندارد)")
+    # ZIP-based: pptx/xlsx/docx are ZIP archives (PK..)
+    if any(name.endswith(x) for x in (".pptx",".xlsx",".docx",".zip")):
+        if not head.startswith(b"PK"):
+            # Some old .ppt/.doc are OLE (D0 CF 11 E0) — allow both
+            if not head.startswith(b"\xD0\xCF\x11\xE0"):
+                raise HTTPException(422, "فایل Office نامعتبر است")
+    if mime.startswith("image/"):
+        # JPEG FF D8, PNG 89 50 4E 47, GIF 47 49 46, WEBP RIFF....WEBP
+        if head.startswith(b"\xFF\xD8\xFF"):
+            return
+        if head.startswith(b"\x89PNG"):
+            return
+        if head.startswith(b"GIF8"):
+            return
+        if head.startswith(b"RIFF") and b"WEBP" in head:
+            return
+        # allow but log mismatch for images
+        logger.warning("IMAGE_MAGIC_MISMATCH mime=%s filename=%s head=%s", mime, filename, head[:8].hex())
+    if mime.startswith("video/"):
+        # MP4 ftyp, WEBM 1A 45 DF A3, etc — just ensure not PDF/zip masquerading as video
+        if head.startswith(b"%PDF") or head.startswith(b"PK"):
+            raise HTTPException(422, "فایل ویدیویی نامعتبر است")
 GLOBAL_USER = get_content_global_user  # بخش‌های بدون scope (schedule/grades/reports) — رفتار دقیق قبلی
 
 
@@ -976,6 +1011,7 @@ async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str =
     logger.info("UPLOAD_REQUEST_RECEIVED route=session_content sid=%s ctype=%s "
                 "filename=%s display=%s admin=%s", sid, ctype, orig_fname, upload_fname, admin["id"])
     raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    _validate_magic(raw, file.content_type or "", upload_fname)
     logger.info("FILE_VALIDATED size=%s mime=%s", len(raw),
                 file.content_type or "")
     # upload with final sanitized name (single upload, no re-upload needed per spec)
@@ -1324,6 +1360,7 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
     logger.info("UPLOAD_REQUEST_RECEIVED route=ref_file bid=%s filename=%s display=%s "
                 "admin=%s", bid, orig_fname, upload_fname, admin["id"])
     raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    _validate_magic(raw, file.content_type or "", upload_fname)
     try:
         file_id = await upload_and_get_file_id(admin["id"], upload_fname, raw,
             file.content_type or "application/octet-stream")
@@ -1647,6 +1684,7 @@ async def qbank_file_upload(
     if not await db.can_access_intake(admin["id"], target):
         raise HTTPException(403, "intake_out_of_scope")
     raw = await _read_capped(file, 50 * 1024 * 1024)
+    _validate_magic(raw, file.content_type or "", file.filename or "")
     if not raw:
         raise HTTPException(413, "حجم فایل باید بین ۱ بایت و ۵۰ مگابایت باشد")
     telegram_file_id = await upload_and_get_file_id(

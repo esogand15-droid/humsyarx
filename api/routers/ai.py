@@ -41,6 +41,7 @@ from ai_solver import (
     record_token_usage,
 )
 from api.auth import get_current_user
+from api.rate_limit import rate_limit_dependency, rate_limit_user
 from database import db
 from time_utils import now_utc, parse_machine_datetime, today_tehran, utc_now_iso
 
@@ -1198,12 +1199,13 @@ async def duplicate_conversation(
     return {"id": new_id}
 
 
-@router.post("/ask")
+@router.post("/ask", dependencies=[Depends(rate_limit_dependency("ai_ask", 30, 60, by_user=True))])
 async def ask(
     body: AskRequest,
     user=Depends(get_current_user),
 ):
     user_id = user["id"]
+    await rate_limit_user(user_id, "ai_ask", 30, 60)
 
     message = _validate_message(
         body.message,
@@ -1286,7 +1288,7 @@ async def ask(
         )
 
 
-@router.post("/ask-media")
+@router.post("/ask-media", dependencies=[Depends(rate_limit_dependency("ai_ask_media", 30, 60, by_user=True))])
 async def ask_media(
     message: str = Form(default=""),
     file: UploadFile = File(...),
@@ -1296,6 +1298,7 @@ async def ask_media(
     """Ask with image, PDF or audio."""
 
     user_id = user["id"]
+    await rate_limit_user(user_id, "ai_ask_media", 30, 60)
 
     prompt = _validate_message(
         message,
@@ -1511,7 +1514,7 @@ async def ask_media(
         )
 
 
-@router.post("/reference")
+@router.post("/reference", dependencies=[Depends(rate_limit_dependency("ai_ref", 15, 60, by_user=True))])
 async def upload_reference(
     file: UploadFile = File(...),
     user=Depends(get_current_user),
@@ -1741,7 +1744,7 @@ class ImageGenBody(BaseModel):
     aspect_ratio: str = Field('1:1', description='مثلاً 1:1 یا 16:9')
 
 
-@router.post("/generate-image")
+@router.post("/generate-image", dependencies=[Depends(rate_limit_dependency("ai_image", 20, 3600, by_user=True))])
 async def generate_image_ep(body: ImageGenBody,
                             user=Depends(get_current_user)):
     import time as _time

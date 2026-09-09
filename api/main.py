@@ -43,6 +43,11 @@ from api.routers import (
 from database import db
 from request_context import current_request_id
 from time_utils import now_utc
+# 🛡 W1 — rate limiter (optional, env RATE_LIMIT_ENABLED=1)
+try:
+    from api.rate_limit import check_global as _rl_check_global
+except Exception:
+    _rl_check_global = None
 
 
 _BOOTSTRAP_STATE = {"ready": False, "steps": {}, "started_at": None}
@@ -736,6 +741,23 @@ async def _spa_cache_headers(request, call_next):
     # X-Frame-Options/CSPframe-ancestors روی /app/* بگذاریم.
     # (پالیسی امنیتی وب‌ادمین عمداً به اینجا سرایت نمی‌کند.)
     return resp
+
+
+# 🛡 W1 — global rate limit (120/min per IP on /api/*) — best-effort
+@app.middleware("http")
+async def _w1_rate_limit(request, call_next):
+    if _rl_check_global is not None:
+        try:
+            await _rl_check_global(request)
+        except Exception as e:
+            # rate limited → return 429 (preserves Retry-After header)
+            from fastapi import HTTPException as _HE
+            if isinstance(e, _HE) and getattr(e, "status_code", None) == 429:
+                from fastapi.responses import JSONResponse as _JR
+                return _JR(status_code=429, content={"detail": "rate_limited"}, headers=getattr(e, "headers", None) or {"Retry-After": "60"})
+            # other errors → fail-open
+            pass
+    return await call_next(request)
 
 
 # ──────────────────────────────────────────────────────────

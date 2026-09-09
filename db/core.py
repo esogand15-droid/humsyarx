@@ -137,6 +137,8 @@ class DBCore:
         self.subscriptions = _db['subscriptions']
         self.sub_payments  = _db['sub_payments']
         self.discount_codes = _db['discount_codes']
+        # 🛡 W1 — Anti-replay nonce برای initData (TTL = INIT_DATA_MAX_AGE)
+        self.init_nonces         = _db['init_data_nonces']
         # 💰 W6 — کیف پول داخلی: ledger (منبع حقیقت) + موجودی کش‌شده
         self.wallets             = _db['wallets']
         self.wallet_transactions = _db['wallet_transactions']
@@ -388,6 +390,8 @@ class DBCore:
                             [('user_id', 1), ('created_at', -1)], background=True),
                 self._index(self.wallet_transactions,
                             [('status', 1), ('created_at', -1)], background=True),
+                # 🛡 W1 — nonce یک‌بارمصرف initData (TTL خودکار پاک‌سازی)
+                self._index(self.init_nonces, [('at', 1)], expireAfterSeconds=3600, background=True),
             ]
             coros = [
                 collection.create_index(*keys, **options)

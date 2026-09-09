@@ -19,3 +19,5 @@ python-multipart==0.0.20
 qrcode[pil]==8.2  # 👑 P2 — QR اشتراک HeroCard (SVG سروری)
 pyrogram==2.0.106
 tgcrypto==1.2.5
+# 🛡 W1 — at-rest encryption for secrets (Fernet)
+cryptography>=42.0.0
