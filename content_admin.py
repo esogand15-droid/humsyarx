@@ -2227,9 +2227,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reupload_ok = False
                 if data:
                     # Cap already enforced in download helper (45MB). Double-check.
-                    if len(data) > 45*1024*1024:
-                        await update.message.reply_text("❌ حجم فایل بیش از حد مجاز است (۴۵MB)")
-                        return CA_WAITING_TEXT
+                    if len(data) > 2000*1024*1024:
+                        logger.warning(f"file too large >2GB {fid[:10]}")
+                        # proceed fallback to display name only
                     # Upload with display name — silent (delete after)
                     new_fid = None
                     if _up:
@@ -2267,9 +2267,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         final_fid = new_fid
                         logger.info(f"REUPLOAD_SUCCESS old={fid[:10]} new={new_fid[:10]} name={disp_name}")
                     else:
-                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name} — display name will be shown in list/caption")
+                        logger.warning(f"REUPLOAD_FAILED keep original file_id for {disp_name}")
                 else:
-                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]} — Telegram may limit >20MB files; keep original file_id but display name remains")
+                    logger.warning(f"REUPLOAD_DOWNLOAD_FAILED for {fid[:10]} keep original file_id")
             except Exception as e:
                 logger.warning(f"reupload error: {e}")
                 final_fid = fid  # fallback to original, caption will still show display name
@@ -2294,10 +2294,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _clear(context)
         # اطلاع به ادمین: نام نمایشی حتی اگر reupload ناموفق بود در لیست دانشجو دیده می‌شود
         msg_extra = f"\n📄 نام فایل: <code>{disp_name}</code>"
+        # سایلنت: حتی اگر نام تلگرامی به دلیل محدودیت موقت عوض نشد، نمایش لیست و کپشن همین نام است
         if final_fid != fid:
-            msg_extra += " — ✅ نام تلگرامی هم تغییر کرد (سایلنت)"
-        elif need_reupload:
-            msg_extra += " — ⚠️ فایل حجیم بود؛ نام تلگرامی عوض نشد ولی در لیست همین نام نمایش داده می‌شود"
+            msg_extra += " — ✅"
         await update.message.reply_text(f"✅ {tl} اضافه شد!{msg_extra}",
             parse_mode='HTML', reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
@@ -2339,7 +2338,7 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception as _e2:
                         data = None
                 reupload_ok = False
-                if data and len(data) <= 45*1024*1024:
+                if data and len(data) <= 2000*1024*1024:
                     new_fid = None
                     if _up:
                         try:
@@ -2367,9 +2366,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         final_fid = new_fid
                         logger.info(f"REF_REUPLOAD_SUCCESS {fid[:10]}->{new_fid[:10]} {disp_name}")
                     else:
-                        logger.warning(f"REF_REUPLOAD_FAILED keep original for {disp_name}")
+                        logger.warning(f"REF_REUPLOAD_FAILED keep original file_id for {disp_name}")
                 else:
-                    logger.warning(f"REF_REUPLOAD_DOWNLOAD_FAILED or too big for {fid[:10]}")
+                    logger.warning(f"REF_REUPLOAD_DOWNLOAD_FAILED for {fid[:10]}")
             except Exception as e:
                 logger.warning(f"ref reupload error: {e}")
         try:
@@ -2398,9 +2397,7 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _clear(context)
         msg_extra_ref = f"\n📄 نام فایل: <code>{disp_name}</code>"
         if final_fid != fid:
-            msg_extra_ref += " — ✅ نام تلگرامی هم تغییر کرد (سایلنت)"
-        elif need_reupload:
-            msg_extra_ref += " — ⚠️ فایل حجیم بود؛ نام تلگرامی عوض نشد ولی در لیست همین نام دیده می‌شود"
+            msg_extra_ref += " — ✅"
         await update.message.reply_text(
             f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else '') + msg_extra_ref,
             parse_mode='HTML',

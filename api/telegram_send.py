@@ -109,7 +109,7 @@ async def download_telegram_file(file_id: str) -> bytes | None:
                     total = 0
                     async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
                         total += len(chunk)
-                        if total > 45 * 1024 * 1024:
+                        if total > 2000 * 1024 * 1024:
                             logger.warning("TG_DOWNLOAD_TOO_LARGE file_id=%s", file_id[:16])
                             return None
                         chunks.append(chunk)
