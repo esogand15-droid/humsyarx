@@ -7101,19 +7101,18 @@ async def wa_schedule_bulk_delete_post(
             if body.stype not in ("class", "exam", "makeup"):
                 raise HTTPException(400, "stype نامعتبر است")
             q["type"] = body.stype
-        # بازه‌ی تاریخی
+        # بازه‌ی تاریخی — هماهنگ با time.js جلالی→میلادی و ارقام فارسی
         if body.date_from or body.date_to:
             date_q = {}
             def _to_gregorian(s: str) -> str:
-                s = str(s).strip()
+                from time_utils import en_digits as _en
+                s = _en(str(s)).strip()
                 if not s:
                     return ""
-                # try jalali YYYY/MM/DD or YYYY-MM-DD
-                s_norm = s.replace("/", "-")
-                # اگر سال با 14 شروع شد، احتمالاً جلالی است
+                s_norm = s.replace("/", "-").replace("٫", "-").replace("،", "-")
+                # جلالی با ارقام فارسی یا لاتین: 14xx-xx-xx
                 try:
-                    if s_norm[:2] == "14" or s_norm[:4].startswith("14"):
-                        # جلالی
+                    if s_norm[:2] == "14" or (len(s_norm) >= 4 and s_norm[:4].startswith("14")):
                         from time_utils import parse_jalali_date
                         d = parse_jalali_date(s)
                         return d.isoformat()
@@ -7134,6 +7133,9 @@ async def wa_schedule_bulk_delete_post(
                 if g:
                     date_q["$lte"] = g
             if date_q:
+                # اعتبارسنجی ترتیب بازه (هماهنگ با فرانت PersianDatePicker)
+                if "$gte" in date_q and "$lte" in date_q and date_q["$gte"] > date_q["$lte"]:
+                    raise HTTPException(400, "بازه‌ی تاریخ نامعتبر است: تاریخ شروع باید قبل از پایان باشد")
                 q["date"] = date_q
         # اگر delete_all بدون فیلتر دیگر، q خالی می‌ماند → حذف همه
         if not q and body.delete_all:

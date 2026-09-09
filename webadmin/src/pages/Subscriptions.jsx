@@ -1045,6 +1045,7 @@ function WalletDrawer({ uid, onClose, onChanged }) {
   const [askAdjust, setAskAdjust] = useState(false);
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
+  const [txConfirm, setTxConfirm] = useState(null);
   const load = () => { setErr(''); api.subWalletDetail(uid, { limit: 30 }).then(setData).catch(e => setErr(errText(e))); };
   useEffect(load, [uid]);
   const adjust = async () => {
@@ -1098,15 +1099,7 @@ function WalletDrawer({ uid, onClose, onChanged }) {
                   </div>
                 </div>
                 {pending
-                  ? <button className="btn sm" disabled={busy === `tx-${t.id}`} onClick={async () => {
-                      setBusy(`tx-${t.id}`);
-                      try {
-                        const action = window.confirm('تکمیل تراکنش معلق؟ (لغو: از مغایرت‌گیری اقدام کنید)') ? 'complete' : 'cancel';
-                        const r = await api.subWalletTxResolve(t.id, action);
-                        toast(`تعیین تکلیف شد: ${r.resolution}`, 'ok'); load();
-                      } catch (e) { toast(errText(e), 'err'); }
-                      finally { setBusy(''); }
-                    }}>⏳ تعیین تکلیف</button>
+                  ? <button className="btn sm" disabled={busy === `tx-${t.id}`} onClick={() => setTxConfirm(t)}>⏳ تعیین تکلیف</button>
                   : <B kind={t.direction === 'credit' ? 'ok' : 'bad'}>
                       {t.direction === 'credit' ? '+' : '−'}{money(t.amount)}
                     </B>}
@@ -1118,5 +1111,36 @@ function WalletDrawer({ uid, onClose, onChanged }) {
           })}
         </div>}
     </>}
+    {txConfirm && <Modal title="⏳ تعیین تکلیف تراکنش معلق" onClose={() => setTxConfirm(null)}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        تراکنش <b>{txConfirm.label || txConfirm.type}</b> در حالت معلق است (احتمال کرش بین مراحل).
+        بک‌اند با بررسی ledger تشخیص می‌دهد اثر مالی قبلاً اعمال شده یا نه — هیچ‌وقت اثر دوم ساخته نمی‌شود.
+      </p>
+      <div className="row q-missing" style={{ marginBottom: 10 }}>
+        <B kind="acc">👤 {txConfirm.label || txConfirm.type}</B>
+        <B kind={txConfirm.direction === 'credit' ? 'ok' : 'bad'}>{txConfirm.direction === 'credit' ? '+' : '−'}{money(txConfirm.amount)}</B>
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ok" disabled={!!busy} onClick={async () => {
+          const tx = txConfirm; setBusy(`tx-${tx.id}`);
+          try {
+            const r = await api.subWalletTxResolve(tx.id, 'complete');
+            toast(r.resolution === 'applied_now' ? 'اثر تراکنش همین حالا اتمیک اعمال شد ✅' : 'اثر مالی قبلاً اعمال شده بود — فقط نشان‌گذاری شد ✅', 'ok');
+            setTxConfirm(null); load(); onChanged?.();
+          } catch (e) { toast(errText(e), 'err'); }
+          finally { setBusy(''); }
+        }}>✅ تکمیل — اعمال اثر اگر نشده</button>
+        <button className="btn danger" disabled={!!busy} onClick={async () => {
+          const tx = txConfirm; setBusy(`tx-${tx.id}`);
+          try {
+            const r = await api.subWalletTxResolve(tx.id, 'cancel');
+            toast('تراکنش لغو شد — در صورت لزوم جبران مالی ثبت شد ✅', 'ok');
+            setTxConfirm(null); load(); onChanged?.();
+          } catch (e) { toast(errText(e), 'err'); }
+          finally { setBusy(''); }
+        }}>🚫 لغو — جبران اگر لازم است</button>
+        <button className="btn" onClick={() => setTxConfirm(null)}>انصراف</button>
+      </div>
+    </Modal>}
   </Drawer>;
 }

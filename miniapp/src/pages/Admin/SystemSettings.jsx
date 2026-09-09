@@ -25,6 +25,7 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { confirmAction } from '../../lib/confirm';
 
 import {
   useUIStore,
@@ -1799,14 +1800,11 @@ function PrestigeConfigSection() {
             disabled={
               saveMutation.isPending
             }
-            onClick={() => {
-              if (
-                window.confirm(
-                  'همه‌ی اوررایدها پاک و مقادیر پیش‌فرض برگردد؟'
-                )
-              ) {
-                saveMutation.mutate({});
-              }
+            onClick={async () => {
+              const ok = await confirmAction(
+                'همه‌ی اوررایدها پاک و مقادیر پیش‌فرض برگردد؟',
+              );
+              if (ok) saveMutation.mutate({});
             }}
           >
             ↺ پیش‌فرض

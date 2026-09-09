@@ -10,6 +10,35 @@ import { Spinner } from "../../components/shared/Loading";
 
 import { ScheduleSkeleton } from "../../components/shared/skeletons";
 import { haptic } from "../../lib/telegram";
+
+function mergeScheduleBlocks(list) {
+  const _p = (v) => {
+    const m = String(v || "").match(/(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const _f = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+  const sorted = [...(list || [])].sort((a, b) => (a.date || "").localeCompare(b.date || "") || String(a.time || "").localeCompare(String(b.time || "")));
+  const out = [];
+  for (const cur of sorted) {
+    const prev = out[out.length - 1];
+    if (prev && prev.date === cur.date && prev.lesson === cur.lesson && (prev.group || "") === (cur.group || "") && (prev.type || "class") === (cur.type || "class") && (prev.location || "") === (cur.location || "") && (prev.teacher || "") === (cur.teacher || "")) {
+      const prevEnd = _p(prev.end_time || prev.time_end || "") ?? (_p(prev.time) !== null ? _p(prev.time) + 60 : null);
+      const prevStart = _p(prev.time);
+      const prevDur = prevEnd !== null && prevStart !== null ? prevEnd - prevStart : null;
+      const curStart = _p(cur.time);
+      const curEnd = _p(cur.end_time || cur.time_end || "") ?? (curStart !== null ? curStart + 60 : null);
+      const curDur = curEnd !== null && curStart !== null ? curEnd - curStart : null;
+      if (prevEnd !== null && curStart !== null && prevEnd === curStart && curEnd !== null && prevDur === 60 && curDur === 60) {
+        prev.end_time = _f(curEnd);
+        prev._merged = (prev._merged || 1) + 1;
+        continue;
+      }
+    }
+    out.push({ ...cur });
+  }
+  return out;
+}
+
 import { useAuthStore } from "../../stores/authStore";
 
 const TYPES = {
@@ -291,55 +320,7 @@ export default function Schedule() {
           </EmptyState>
         ) : (
           (() => {
-            const _parseMin = (t) => {
-              const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
-              if (!m) return null;
-              return Number(m[1]) * 60 + Number(m[2]);
-            };
-            const _minToClock = (min) =>
-              `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-            const _merged = (() => {
-              const sorted = [...items].sort(
-                (a, b) =>
-                  (a.date || "").localeCompare(b.date || "") ||
-                  String(a.time || "").localeCompare(String(b.time || "")),
-              );
-              const out = [];
-              for (const cur of sorted) {
-                const prev = out[out.length - 1];
-                if (
-                  prev &&
-                  prev.date === cur.date &&
-                  prev.lesson === cur.lesson &&
-                  (prev.group || "") === (cur.group || "") &&
-                  (prev.type || "class") === (cur.type || "class") &&
-                  (prev.location || "") === (cur.location || "") &&
-                  (prev.teacher || "") === (cur.teacher || "")
-                ) {
-                  const prevEnd =
-                    _parseMin(prev.end_time || prev.time_end || "") ??
-                    (_parseMin(prev.time) !== null
-                      ? _parseMin(prev.time) + 60
-                      : null);
-                  const curStart = _parseMin(cur.time);
-                  const curEnd =
-                    _parseMin(cur.end_time || cur.time_end || "") ??
-                    (curStart !== null ? curStart + 60 : null);
-                  if (
-                    prevEnd !== null &&
-                    curStart !== null &&
-                    prevEnd === curStart &&
-                    curEnd !== null
-                  ) {
-                    prev.end_time = _minToClock(curEnd);
-                    prev._merged = (prev._merged || 1) + 1;
-                    continue;
-                  }
-                }
-                out.push({ ...cur });
-              }
-              return out;
-            })();
+            const _merged = mergeScheduleBlocks(items);
             const _grouped2 = {};
             for (const it of _merged) {
               const k = it.date || "بدون تاریخ";

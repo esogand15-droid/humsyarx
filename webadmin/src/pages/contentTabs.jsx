@@ -44,6 +44,47 @@ import {
   useContentDensity,
 } from "../ContentPrimitives.jsx";
 
+// ── 🔗 Harmonized schedule merge helper (single source of truth for 1h→2h) ──
+function mergeScheduleBlocks(list) {
+  const _p = (v) => {
+    const m = String(v || "").match(/(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const _f = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+  const sorted = [...(list || [])].sort(
+    (a, b) => (a.date || "").localeCompare(b.date || "") || String(a.time || "").localeCompare(String(b.time || "")),
+  );
+  const out = [];
+  for (const cur of sorted) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.date === cur.date &&
+      prev.lesson === cur.lesson &&
+      (prev.group || "") === (cur.group || "") &&
+      (prev.type || "class") === (cur.type || "class") &&
+      (prev.location || "") === (cur.location || "") &&
+      (prev.teacher || "") === (cur.teacher || "")
+    ) {
+      const prevEnd = _p(prev.end_time || prev.time_end || "") ?? (_p(prev.time) !== null ? _p(prev.time) + 60 : null);
+      const prevStart = _p(prev.time);
+      const prevDur = prevEnd !== null && prevStart !== null ? prevEnd - prevStart : null;
+      const curStart = _p(cur.time);
+      const curEnd = _p(cur.end_time || cur.time_end || "") ?? (curStart !== null ? curStart + 60 : null);
+      const curDur = curEnd !== null && curStart !== null ? curEnd - curStart : null;
+      if (prevEnd !== null && curStart !== null && prevEnd === curStart && curEnd !== null && prevDur === 60 && curDur === 60) {
+        prev.end_time = _f(curEnd);
+        prev._merged = (prev._merged || 1) + 1;
+        prev._mergedIds = [...(prev._mergedIds || [prev.id]), cur.id];
+        continue;
+      }
+    }
+    out.push({ ...cur, _mergedIds: [cur.id] });
+  }
+  return out;
+}
+
+
 // ════════════════════════════════════════════════════════════════════
 // 🌊 WA3 — تب‌های پریتی «مرکز فرماندهی محتوا» (همه روی API موجود، scope-aware)
 // ════════════════════════════════════════════════════════════════════
@@ -913,6 +954,7 @@ function HushyarScanPanel({ onGenerated }) {
   const [examPreview, setExamPreview] = useState(null);
   const [examBusy, setExamBusy] = useState(false);
   const [collapsed, setCollapsed] = useState(true);
+  const [scanConfirm, setScanConfirm] = useState(null);
 
   const loadTpl = async (g) => {
     try {
@@ -1506,31 +1548,31 @@ function HushyarScanPanel({ onGenerated }) {
                   </button>
                   <button
                     className="btn sm danger"
-                    onClick={async () => {
-                      if (
-                        !confirm(
-                          "پاک‌سازی الگوی این گروه؟\n\nالگوهای هفتگی این گروه حذف می‌شود.\nبرای حذف برنامه‌های تولیدشده هم از فهرست زیر اقدام کنید.",
-                        )
-                      )
-                        return;
-                      try {
-                        const r = await api.caScheduleTemplatesClear(
-                          tplGroup || undefined,
-                        );
-                        toast(
-                          `پاک شد — ${Number(r.deleted ?? 0).toLocaleString("fa-IR")} ردیف الگو حذف شد ✅`,
-                        );
-                        loadTpl(tplGroup);
-                      } catch (e) {
-                        if (e.status === 404) {
-                          toast(
-                            "الگویی برای این گروه وجود نداشت — چیزی برای پاک‌سازی نیست",
-                            "info",
-                          );
-                          loadTpl(tplGroup);
-                        } else toast(errText(e), "err");
-                      }
-                    }}
+                    onClick={() =>
+                      setScanConfirm({
+                        text: "پاک‌سازی الگوی این گروه؟ الگوهای هفتگی این گروه حذف می‌شود. برای حذف برنامه‌های تولیدشده هم از فهرست زیر اقدام کنید.",
+                        danger: true,
+                        run: async () => {
+                          try {
+                            const r = await api.caScheduleTemplatesClear(
+                              tplGroup || undefined,
+                            );
+                            toast(
+                              `پاک شد — ${Number(r.deleted ?? 0).toLocaleString("fa-IR")} ردیف الگو حذف شد ✅`,
+                            );
+                            loadTpl(tplGroup);
+                          } catch (e) {
+                            if (e.status === 404) {
+                              toast(
+                                "الگویی برای این گروه وجود نداشت — چیزی برای پاک‌سازی نیست",
+                                "info",
+                              );
+                              loadTpl(tplGroup);
+                            } else toast(errText(e), "err");
+                          }
+                        },
+                      })
+                    }
                   >
                     🗑 پاک‌سازی این گروه
                   </button>
@@ -1890,6 +1932,17 @@ function HushyarScanPanel({ onGenerated }) {
           )}
         </div>
       )}
+      {scanConfirm && (
+        <Confirm
+          text={scanConfirm.text}
+          danger={scanConfirm.danger}
+          onYes={async () => {
+            await scanConfirm.run();
+            setScanConfirm(null);
+          }}
+          onNo={() => setScanConfirm(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1959,55 +2012,10 @@ export function ScheduleTab() {
     return [...new Set(ids)];
   })();
   const _mergedForBulk = (() => {
-    // same merge as list view for accurate bulk ids
     try {
-      const _p = (t) => {
-        const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
-        return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-      };
-      const _f = (m) =>
-        `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-      const s = [...(items || [])].sort(
-        (a, b) =>
-          (a.date || "").localeCompare(b.date || "") ||
-          String(a.time || "").localeCompare(String(b.time || "")),
-      );
-      const out = [];
-      for (const cur of s) {
-        const prev = out[out.length - 1];
-        if (
-          prev &&
-          prev.date === cur.date &&
-          prev.lesson === cur.lesson &&
-          (prev.group || "") === (cur.group || "") &&
-          (prev.type || "class") === (cur.type || "class") &&
-          (prev.location || "") === (cur.location || "") &&
-          (prev.teacher || "") === (cur.teacher || "")
-        ) {
-          const prevEnd =
-            _p(prev.end_time || prev.time_end || "") ??
-            (_p(prev.time) !== null ? _p(prev.time) + 60 : null);
-          const curStart = _p(cur.time);
-          const curEnd =
-            _p(cur.end_time || cur.time_end || "") ??
-            (curStart !== null ? curStart + 60 : null);
-          if (
-            prevEnd !== null &&
-            curStart !== null &&
-            prevEnd === curStart &&
-            curEnd !== null
-          ) {
-            prev.end_time = _f(curEnd);
-            prev._merged = (prev._merged || 1) + 1;
-            prev._mergedIds = [...(prev._mergedIds || [prev.id]), cur.id];
-            continue;
-          }
-        }
-        out.push({ ...cur, _mergedIds: [cur.id] });
-      }
-      return out;
+      return mergeScheduleBlocks(items || []);
     } catch {
-      return items || [];
+      return (items || []).map((c) => ({ ...c, _mergedIds: [c.id] }));
     }
   })();
   const _bulkAllIds = (() => {
@@ -2104,6 +2112,8 @@ export function ScheduleTab() {
   const doBulkDeleteRange = async () => {
     if (!rangeFrom || !rangeTo)
       return toast("بازه‌ی تاریخ را کامل انتخاب کنید", "err");
+    if (rangeFrom > rangeTo)
+      return toast("بازه‌ی تاریخ نامعتبر است: تاریخ شروع باید قبل از پایان باشد", "err");
     setConfirm({
       text: `حذف بازه‌ای از ${rangeFrom} تا ${rangeTo} ؟`,
       danger: true,
@@ -2336,76 +2346,7 @@ export function ScheduleTab() {
             // —— consolidated view: shared merged data for all three views (theme-integrated)
             // NOTE: merged/grouped are also recomputed below for week/month scope — kept inside for isolation;
             // second computation is cheap (O(n log n)) for <200 items.
-            // —— consolidated view: merge contiguous same-lesson blocks into one interval card
-            const _parseMin = (t) => {
-              const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
-              if (!m) return null;
-              return Number(m[1]) * 60 + Number(m[2]);
-            };
-            const _minToClock = (min) =>
-              `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-            const _mergeByDate = (list) => {
-              const sorted = [...list].sort(
-                (a, b) =>
-                  (a.date || "").localeCompare(b.date || "") ||
-                  String(a.time || "").localeCompare(String(b.time || "")),
-              );
-              const out = [];
-              for (const cur of sorted) {
-                const prev = out[out.length - 1];
-                if (
-                  prev &&
-                  prev.date === cur.date &&
-                  prev.lesson === cur.lesson &&
-                  (prev.group || "") === (cur.group || "") &&
-                  (prev.type || "class") === (cur.type || "class") &&
-                  (prev.location || "") === (cur.location || "") &&
-                  (prev.teacher || "") === (cur.teacher || "")
-                ) {
-                  const prevStart = _parseMin(prev.time);
-                  const prevEndRaw = _parseMin(
-                    prev.end_time || prev.time_end || "",
-                  );
-                  const prevEnd =
-                    prevEndRaw ?? (prevStart !== null ? prevStart + 60 : null);
-                  const prevDur =
-                    prevEnd !== null && prevStart !== null
-                      ? prevEnd - prevStart
-                      : null;
-                  const curStart = _parseMin(cur.time);
-                  const curEndRaw = _parseMin(
-                    cur.end_time || cur.time_end || "",
-                  );
-                  const curEnd =
-                    curEndRaw ?? (curStart !== null ? curStart + 60 : null);
-                  const curDur =
-                    curEnd !== null && curStart !== null
-                      ? curEnd - curStart
-                      : null;
-                  // فقط دو ردیف ۱ساعته‌ی تکراری (باگ قدیمی) را ادغام کن، نه دو بازه‌ی ۲ساعته‌ی جدا
-                  if (
-                    prevEnd !== null &&
-                    curStart !== null &&
-                    prevEnd === curStart &&
-                    curEnd !== null &&
-                    prevDur === 60 &&
-                    curDur === 60
-                  ) {
-                    // merge into prev: extend end_time
-                    prev.end_time = _minToClock(curEnd);
-                    prev._merged = (prev._merged || 1) + 1;
-                    prev._mergedIds = [
-                      ...(prev._mergedIds || [prev.id]),
-                      cur.id,
-                    ];
-                    continue;
-                  }
-                }
-                out.push({ ...cur, _mergedIds: [cur.id] });
-              }
-              return out;
-            };
-            const merged = _mergeByDate(items);
+            const merged = mergeScheduleBlocks(items);
             const grouped = merged.reduce((acc, it) => {
               const k = it.date || "بدون تاریخ";
               (acc[k] ||= []).push(it);
@@ -2794,59 +2735,7 @@ export function ScheduleTab() {
           {view === "week" &&
             (() => {
               // هفته: همان داده‌ی ادغام‌شده‌ی فهرست اما به‌صورت Agenda فشرده — recompute for isolation
-              const _wParse = (t) => {
-                const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
-                return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-              };
-              const _wMinToClock = (min) =>
-                `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-              const _wMerge = (list) => {
-                const s = [...list].sort(
-                  (a, b) =>
-                    (a.date || "").localeCompare(b.date || "") ||
-                    String(a.time || "").localeCompare(String(b.time || "")),
-                );
-                const out = [];
-                for (const cur of s) {
-                  const prev = out[out.length - 1];
-                  if (
-                    prev &&
-                    prev.date === cur.date &&
-                    prev.lesson === cur.lesson &&
-                    (prev.group || "") === (cur.group || "") &&
-                    (prev.type || "class") === (cur.type || "class") &&
-                    (prev.location || "") === (cur.location || "") &&
-                    (prev.teacher || "") === (cur.teacher || "")
-                  ) {
-                    const prevEnd =
-                      _wParse(prev.end_time || prev.time_end || "") ??
-                      (_wParse(prev.time) !== null
-                        ? _wParse(prev.time) + 60
-                        : null);
-                    const curStart = _wParse(cur.time);
-                    const curEnd =
-                      _wParse(cur.end_time || cur.time_end || "") ??
-                      (curStart !== null ? curStart + 60 : null);
-                    if (
-                      prevEnd !== null &&
-                      curStart !== null &&
-                      prevEnd === curStart &&
-                      curEnd !== null
-                    ) {
-                      prev.end_time = _wMinToClock(curEnd);
-                      prev._merged = (prev._merged || 1) + 1;
-                      prev._mergedIds = [
-                        ...(prev._mergedIds || [prev.id]),
-                        cur.id,
-                      ];
-                      continue;
-                    }
-                  }
-                  out.push({ ...cur, _mergedIds: [cur.id] });
-                }
-                return out;
-              };
-              const _wMerged = _wMerge(items);
+              const _wMerged = mergeScheduleBlocks(items);
               const _wGrouped = _wMerged.reduce((acc, it) => {
                 (acc[it.date || "بدون تاریخ"] ||= []).push(it);
                 return acc;
@@ -2886,59 +2775,7 @@ export function ScheduleTab() {
             })()}
           {view === "month" &&
             (() => {
-              const _mParse = (t) => {
-                const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
-                return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-              };
-              const _mMinToClock = (min) =>
-                `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-              const _mMerge = (list) => {
-                const s = [...list].sort(
-                  (a, b) =>
-                    (a.date || "").localeCompare(b.date || "") ||
-                    String(a.time || "").localeCompare(String(b.time || "")),
-                );
-                const out = [];
-                for (const cur of s) {
-                  const prev = out[out.length - 1];
-                  if (
-                    prev &&
-                    prev.date === cur.date &&
-                    prev.lesson === cur.lesson &&
-                    (prev.group || "") === (cur.group || "") &&
-                    (prev.type || "class") === (cur.type || "class") &&
-                    (prev.location || "") === (cur.location || "") &&
-                    (prev.teacher || "") === (cur.teacher || "")
-                  ) {
-                    const prevEnd =
-                      _mParse(prev.end_time || prev.time_end || "") ??
-                      (_mParse(prev.time) !== null
-                        ? _mParse(prev.time) + 60
-                        : null);
-                    const curStart = _mParse(cur.time);
-                    const curEnd =
-                      _mParse(cur.end_time || cur.time_end || "") ??
-                      (curStart !== null ? curStart + 60 : null);
-                    if (
-                      prevEnd !== null &&
-                      curStart !== null &&
-                      prevEnd === curStart &&
-                      curEnd !== null
-                    ) {
-                      prev.end_time = _mMinToClock(curEnd);
-                      prev._merged = (prev._merged || 1) + 1;
-                      prev._mergedIds = [
-                        ...(prev._mergedIds || [prev.id]),
-                        cur.id,
-                      ];
-                      continue;
-                    }
-                  }
-                  out.push({ ...cur, _mergedIds: [cur.id] });
-                }
-                return out;
-              };
-              const _mMerged = _mMerge(items);
+              const _mMerged = mergeScheduleBlocks(items);
               const _mDated = _mMerged
                 .map((item) => ({ item, parts: jalaliDateParts(item.date) }))
                 .filter((x) => x.parts);
