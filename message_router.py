@@ -98,8 +98,8 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── حالت ساخت سؤال؛ اشتراک در هر پیام دوباره server-side بررسی می‌شود ──
     if context.user_data.get('mode') == 'creating_question':
-        from subscription import has_access
-        if not await has_access(uid):
+        from subscription import feature_allowed
+        if not await feature_allowed(uid, "question_bank"):
             context.user_data.pop('mode', None); context.user_data.pop('create_step', None)
             await update.message.reply_text("🔒 اشتراک فعال نیست؛ پیش‌نویس ارسال نشد.")
             return
@@ -165,7 +165,8 @@ async def _route_menu_button(update, context, text: str, uid: int, user: dict):
 
     elif text == "📚 منابع":
         from subscription import check_and_show_paywall
-        if not await check_and_show_paywall(update, context, uid):
+        if not await check_and_show_paywall(update, context, uid,
+                                            feature="resources"):
             return
         keyboard = [
             [InlineKeyboardButton("🔬 علوم پایه", callback_data='bs:main')],
@@ -182,7 +183,8 @@ async def _route_menu_button(update, context, text: str, uid: int, user: dict):
 
     elif text == "🧪 بانک سوال":
         from subscription import check_and_show_paywall
-        if not await check_and_show_paywall(update, context, uid):
+        if not await check_and_show_paywall(update, context, uid,
+                                            feature="question_bank"):
             return
         from questions import _main_menu_msg
         await _main_menu_msg(update.message)

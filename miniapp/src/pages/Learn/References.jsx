@@ -26,6 +26,7 @@ import ResourceAccessGate
 
 import SubscriptionLock, {
   isSubscriptionLock,
+  lockKind,
 } from '../../components/shared/SubscriptionLock';
 
 import {
@@ -469,6 +470,9 @@ function ReferencesPage({ hlFlash = false }) {
     isSubscriptionLock(booksErr) ||
     isSubscriptionLock(filesErr);
 
+  /* 🌊 W7 — خطای قفل برای mode و ایونت */
+  const lockErr = [subjectsErr, booksErr, filesErr].find(isSubscriptionLock);
+
 
   const goBack = () => {
     haptic('light');
@@ -562,6 +566,8 @@ function ReferencesPage({ hlFlash = false }) {
         {subLock && (
           <SubscriptionLock
             feature="رفرنس‌های درسی"
+            featureKey="references"
+            mode={lockKind(lockErr).kind}
           />
         )}
 
@@ -1241,6 +1247,7 @@ export default function References() {
 
   return (
     <ResourceAccessGate
+      featureKey="references"
       feature="رفرنس‌های درسی"
     >
       <ReferencesPage

@@ -4,6 +4,10 @@ import {
 } from 'react';
 
 import Header from '../../components/layout/Header';
+import SubscriptionLock, {
+  isSubscriptionLock,
+  lockKind,
+} from '../../components/shared/SubscriptionLock';
 import api from '../../lib/api';
 import {
   haptic,
@@ -61,6 +65,7 @@ export default function AiImage() {
   const [busy, setBusy] = useState(false);
 
   const [error, setError] = useState('');
+  const [errObj, setErrObj] = useState(null);
 
   const [result, setResult] = useState(null);
 
@@ -105,6 +110,7 @@ export default function AiImage() {
       hapticNotif();
     } catch (err) {
       setResult(null);
+      setErrObj(err);
 
       setError(getErrorMessage(
         err,
@@ -188,7 +194,15 @@ export default function AiImage() {
         )}
       </section>
 
-      {error && (
+      {error && isSubscriptionLock(errObj) && (
+        <SubscriptionLock
+          feature="ساخت تصویر"
+          featureKey="ai_image"
+          mode={lockKind(errObj).kind}
+        />
+      )}
+
+      {error && !isSubscriptionLock(errObj) && (
         <section className="card aiimg-error" role="alert">
           ⚠️
           {' '}

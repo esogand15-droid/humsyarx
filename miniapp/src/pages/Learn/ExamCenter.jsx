@@ -14,6 +14,10 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import SubscriptionLock, {
+  isSubscriptionLock,
+  lockKind,
+} from '../../components/shared/SubscriptionLock';
 import QuestionCard from '../../components/shared/QuestionCard';
 import CelebrationOverlay from '../../components/shared/CelebrationOverlay';
 
@@ -232,6 +236,7 @@ export default function ExamCenter() {
     data: history = [],
     isLoading: historyLoading,
     isError: historyError,
+    error: historyErr,
     refetch: refetchHistory,
   } = useQuery({
     queryKey: [
@@ -1544,6 +1549,13 @@ export default function ExamCenter() {
           {historyLoading ? (
             <ExamHistorySkeleton />
           ) : historyError ? (
+            isSubscriptionLock(historyErr) ? (
+              <SubscriptionLock
+                feature="آزمون‌ها"
+                featureKey="mock_exam"
+                mode={lockKind(historyErr).kind}
+              />
+            ) : (
             <div className="empty card">
               دریافت تاریخچه انجام نشد.
 
@@ -1560,6 +1572,7 @@ export default function ExamCenter() {
                 تلاش دوباره
               </button>
             </div>
+            )
           ) : rows.length === 0 ? (
             <div className="empty card">
               هنوز آزمونی ثبت نشده است.

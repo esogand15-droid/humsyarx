@@ -23,6 +23,7 @@ import api from '../../lib/api';
 
 import SubscriptionLock, {
   isSubscriptionLock,
+  lockKind,
 } from '../../components/shared/SubscriptionLock';
 
 import ResourceAccessGate
@@ -591,6 +592,9 @@ function ResourcesPage({ hlFlash = false }) {
     isSubscriptionLock(filesErr) ||
     isSubscriptionLock(searchErr);
 
+  /* 🌊 W7 — خطای قفل برای mode و ایونت */
+  const lockErr = [termsErr, lessonsErr, sessionsErr, filesErr, searchErr].find(isSubscriptionLock);
+
 
   const goBack = () => {
     haptic('light');
@@ -696,6 +700,8 @@ function ResourcesPage({ hlFlash = false }) {
         {subLock && (
           <SubscriptionLock
             feature="منابع علوم پایه"
+            featureKey="resources"
+            mode={lockKind(lockErr).kind}
           />
         )}
 
@@ -1485,6 +1491,7 @@ export default function Resources() {
 
   return (
     <ResourceAccessGate
+      featureKey="resources"
       feature="منابع علوم پایه"
     >
       <ResourcesPage

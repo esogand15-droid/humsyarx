@@ -2021,6 +2021,11 @@ async def record_token_usage(uid: int, tokens: int) -> None:
 
 async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     cfg = await get_ai_config()
 
     if not cfg['enabled']:
@@ -2389,6 +2394,12 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
     می‌شود تا شکستِ provider سهمیه‌ی کاربر را نسوزاند.
     """
     uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_image"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_image")
+        return
     text = (update.message.text or '').strip()
     if not text:
         return
@@ -2477,6 +2488,12 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     text = (update.message.text or '').strip()
     if not text:
         return
@@ -2583,6 +2600,12 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     مدلِ هزینه (این‌ها هم جزوِ همون Free Tier هستن).
     """
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
 
     cfg = await get_ai_config()
     if not cfg['enabled']:

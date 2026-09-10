@@ -1203,6 +1203,15 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'toggle_enforce':
         cur = await db.get_setting('subscription_enforced', False)
         await db.set_setting('subscription_enforced', not cur)
+        # 🌊 W7 — ماکرو روی پالیسی‌ها (تک‌منبع حقیقت)
+        try:
+            from core.access import invalidate_policy_cache
+            _mode = "subscription" if not cur else "free"
+            for _f in ("question_bank", "resources", "references"):
+                await db.set_feature_policy(_f, {"access": _mode}, uid, "")
+                invalidate_policy_cache(_f)
+        except Exception:
+            pass
         await send_audit_log(
             context.bot, 'admin', 'ادمین ارشد', uid,
             f"{'فعال‌سازی' if not cur else 'خاموش‌کردن'} اجباری اشتراک",

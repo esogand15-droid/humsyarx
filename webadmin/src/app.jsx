@@ -10,6 +10,7 @@ const Actions = lazy(() => import('./pages/Actions.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Tickets = lazy(() => import('./pages/Tickets.jsx'));
 const Subscriptions = lazy(() => import('./pages/Subscriptions.jsx'));
+const Features = lazy(() => import('./pages/Features.jsx'));
 const Rbac = lazy(() => import('./pages/Rbac.jsx'));
 const Audit = lazy(() => import('./pages/Audit.jsx'));
 const Content = lazy(() => import('./pages/Content.jsx'));
@@ -56,6 +57,7 @@ const NAV_GROUPS = [
     { path: '/subscriptions', icon: '💎', label: 'اشتراک‌ها', any: ['subscription.manage'] },
     { path: '/subscriptions?tab=payments', icon: '🧾', label: 'رسیدها', any: ['subscription.manage'] },
     { path: '/subscriptions?tab=discounts', icon: '🎁', label: 'تخفیف‌ها', any: ['subscription.manage'] },
+    { path: '/features', icon: '🎚', label: 'دسترسی فیچرها', any: ['subscription.manage'] },
   ] },
   { sec: 'سیستم', items: [
     { path: '/analytics', icon: '📈', label: 'تحلیل‌ها', any: ['stats.view'] },
@@ -69,7 +71,7 @@ const NAV_GROUPS = [
 const PAGES = {
   '/dashboard': Dashboard, '/users': Users, '/tickets': Tickets,
   '/actions': Actions,
-  '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
+  '/subscriptions': Subscriptions, '/features': Features, '/rbac': Rbac, '/audit': Audit,
   '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   '/transfer': TransferCenter, '/operations': Operations,

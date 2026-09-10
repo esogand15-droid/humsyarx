@@ -127,6 +127,9 @@ class DBCore:
         self.wa_saved_filters  = _db['wa_saved_filters']
         self.wa_api_metrics    = _db['wa_api_metrics']
         self.client_errors     = _db['client_errors']  # 🌊 W5/REL-03
+        self.feature_policies  = _db['feature_policies']  # 🌊 W7
+        self.feature_usage     = _db['feature_usage']  # 🌊 W7
+        self.feature_events    = _db['feature_events']  # 🌊 W7
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # 🚀 Audit Observability Refactor — Outbox برای Delivery قابل Retry (§14)
@@ -325,6 +328,10 @@ class DBCore:
                 # 🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی کلاینت (TTL ۳۰ روزه)
                 self._index(self.client_errors, [('at', 1)], expireAfterSeconds=2592000, background=True),
                 self._index(self.client_errors, [('message', 1), ('at', -1)], background=True),
+                # 🌊 W7 — مصرف سهمیه (TTL ۴۵ روزه) و ایونت‌های فیچر (TTL ۳۰ روزه)
+                self._index(self.feature_usage, [('updated_at', 1)], expireAfterSeconds=3888000, background=True),
+                self._index(self.feature_events, [('at', 1)], expireAfterSeconds=2592000, background=True),
+                self._index(self.feature_events, [('feature', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('route', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('status', 1), ('at', -1)], background=True),
                 self._index(self.broadcast_campaigns, [('created_at', -1)], background=True),
@@ -3586,6 +3593,131 @@ class DBCore:
                                       {'ai_image_count': 1})
         return int((u or {}).get('ai_image_count') or 0)
 
+    async def plan_for_sub(self, sub: dict | None) -> dict | None:
+        """🌊 W7 — پلنِ یک اشتراک (تک‌منبع: اول plan_id، بعد تطبیق نام فعال).
+
+        استخراج‌شده از ai_limit_for_user تا entitlement و سهمیه یک منطق
+        داشته باشند؛ رفتار ai_limit عیناً حفظ می‌شود.
+        """
+        if not sub:
+            return None
+        try:
+            pid = str(sub.get("plan_id") or "")
+            if pid:
+                plan = await self.sub_plan_get(pid)
+                if plan:
+                    return plan
+            if sub.get("plan_name"):
+                plans = await self.sub_plan_list(only_active=True)
+                return next((x for x in plans
+                             if x.get("name") == sub.get("plan_name")), None)
+        except Exception:
+            return None
+        return None
+
+    # ── 🌊 W7 — پالیسی فیچر ──
+    async def get_feature_policy(self, feature: str) -> dict | None:
+        try:
+            return await self.feature_policies.find_one({"_id": str(feature)})
+        except Exception:
+            return None
+
+    async def set_feature_policy(self, feature: str, patch: dict,
+                                 actor_id: int = 0,
+                                 actor_name: str = "") -> dict:
+        """ذخیره‌ی پالیسی + اسنپ‌شات prev برای rollback. برمی‌گرداند {before, after}."""
+        feature = str(feature)
+        cur = await self.feature_policies.find_one({"_id": feature}) or {}
+        before = {k: cur.get(k) for k in (
+            "enabled", "access", "trial_allowed", "quota", "fail_open",
+            "note", "pending_access", "effective_from")}
+        clean = {k: patch[k] for k in before if k in patch}
+        prev = dict(before)
+        prev["_by"] = cur.get("updated_by", 0)
+        prev["_by_name"] = cur.get("updated_by_name", "")
+        prev["_at"] = cur.get("updated_at")
+        after = dict(before)
+        after.update(clean)
+        await self.feature_policies.update_one(
+            {"_id": feature},
+            {"$set": {**clean, "prev": prev, "updated_at": utc_now_iso(),
+                      "updated_by": int(actor_id or 0),
+                      "updated_by_name": actor_name or ""}},
+            upsert=True)
+        return {"before": before, "after": after}
+
+    async def rollback_feature_policy(self, feature: str, actor_id: int = 0,
+                                      actor_name: str = "") -> dict | None:
+        """بازگردانی به prev (و جابه‌جایی prev/current ⇒ rollback دو‌باره = redo)."""
+        cur = await self.feature_policies.find_one({"_id": str(feature)}) or {}
+        prev = cur.get("prev")
+        if not prev:
+            return None
+        restore = {k: prev.get(k) for k in (
+            "enabled", "access", "trial_allowed", "quota", "fail_open",
+            "note", "pending_access", "effective_from")}
+        return await self.set_feature_policy(feature, restore, actor_id,
+                                             actor_name)
+
+    # ── 🌊 W7 — سهمیه‌ی ژنریک (روزانه/ماهانه، اتمیک) ──
+    @staticmethod
+    def _usage_period(kind: str) -> str:
+        today = today_tehran().isoformat()  # YYYY-MM-DD
+        return today if kind == "daily" else today[:7]
+
+    async def feature_usage_get(self, uid: int, feature: str,
+                                kind: str) -> int:
+        try:
+            doc = await self.feature_usage.find_one({
+                "_id": f"{int(uid)}:{feature}:{self._usage_period(kind)}"})
+        except Exception:
+            return 0
+        return int((doc or {}).get("count", 0) or 0)
+
+    async def feature_consume(self, uid: int, feature: str, kind: str,
+                              limit: int) -> tuple:
+        """مصرف اتمیک یک واحد؛ برمی‌گرداند (allowed, used_after)."""
+        if kind not in ("daily", "monthly") or int(limit or 0) <= 0:
+            return True, 0
+        from pymongo import ReturnDocument
+        try:
+            from pymongo.errors import DuplicateKeyError
+        except ImportError:  # pragma: no cover
+            DuplicateKeyError = Exception
+        filt = {"_id": f"{int(uid)}:{feature}:{self._usage_period(kind)}",
+                "count": {"$lt": int(limit)}}
+        upd = {"$inc": {"count": 1},
+               "$set": {"updated_at": now_utc()}}  # datetime برای TTL
+        for attempt in range(2):
+            try:
+                res = await self.feature_usage.find_one_and_update(
+                    filt, upd, upsert=True,
+                    return_document=ReturnDocument.AFTER)
+            except DuplicateKeyError:
+                # یا race ساخت سند بود یا سقف واقعاً پر است: بخوان و تصمیم بگیر
+                used = await self.feature_usage_get(uid, feature, kind)
+                if used < int(limit) and attempt == 0:
+                    continue  # race بود؛ دوباره مصرف کن (نه واحد مجانی)
+                return used < int(limit), used
+            # با upsert همیشه سند برمی‌گردد (ساخته یا $incشده)
+            if res:
+                return True, int(res.get("count", 0) or 0)
+            break
+        used = await self.feature_usage_get(uid, feature, kind)
+        return used < int(limit), used
+
+    async def log_feature_event(self, feature: str, event: str, uid: int,
+                                extra: dict | None = None) -> None:
+        """ایونت سبک فیچر (TTL ۳۰ روزه) برای آنالیتیکس تبدیل/پی‌وال."""
+        try:
+            await self.feature_events.insert_one({
+                "feature": str(feature), "event": str(event),
+                "user_id": int(uid), "extra": extra or {},
+                "at": now_utc()})  # datetime برای TTL
+        except Exception:
+            pass
+
+
     async def ai_limit_for_user(self, uid: int, global_limit: int) -> int:
         """🌊 W6/MISS-04 — سهمیه روزانه هوشیار این کاربر.
 
@@ -3599,17 +3731,7 @@ class DBCore:
             return int(global_limit or 0)
         if not sub or sub.get("status") != "active":
             return int(global_limit or 0)
-        plan = None
-        try:
-            pid = str(sub.get("plan_id") or "")
-            if pid:
-                plan = await self.sub_plan_get(pid)
-            if not plan and sub.get("plan_name"):
-                plans = await self.sub_plan_list(only_active=True)
-                plan = next((x for x in plans
-                             if x.get("name") == sub.get("plan_name")), None)
-        except Exception:
-            plan = None
+        plan = await self.plan_for_sub(sub)
         if plan:
             try:
                 pl = int(plan.get("ai_daily_limit") or 0)

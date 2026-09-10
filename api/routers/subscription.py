@@ -108,6 +108,15 @@ def normalize_plan(
                 or 0
             ),
         ),
+
+        # 🌊 W7
+        "entitlements": dict(
+            item.get(
+                "entitlements",
+                {},
+            )
+            or {}
+        ),
     }
 
 
@@ -353,6 +362,9 @@ async def get_status(
         # 🌊 W6/MISS-03 — فرانت فقط می‌خواند؛ تصمیم با claim است
         "trial": await db.trial_status(user_id),
 
+        # 🌊 W7 — نقشه‌ی سبک فیچرها برای هماهنگی UI (مرجع نهایی: API)
+        "features": await _features_map(),
+
         "payments": [
             normalize_payment(item)
             for item in history
@@ -483,6 +495,53 @@ async def validate_discount(
         "final_price":
             final_price,
     }
+
+
+async def _features_map() -> dict:
+    """🌊 W7 — {feature: {label, enabled, access}} برای فرانت (best-effort)."""
+    try:
+        from core.features import FEATURE_CATALOG
+        docs = await db.feature_policies.find(
+            {"_id": {"$in": list(FEATURE_CATALOG)}}).to_list(50)
+        by_id = {d.get("_id"): d for d in docs}
+        out = {}
+        for key, spec in FEATURE_CATALOG.items():
+            d = by_id.get(key) or {}
+            out[key] = {"label": spec.get("label", key),
+                        "enabled": bool(d.get("enabled", True)),
+                        "access": d.get("access", "free")}
+        return out
+    except Exception:
+        return {}
+
+
+class FeatureEventBody(BaseModel):
+    feature: str = Field(max_length=40)
+    event: str = Field(max_length=40)  # paywall_viewed|subscription_cta_clicked|feature_opened
+    extra: dict = Field(default_factory=dict)
+
+
+@router.post("/feature-events")
+async def feature_event_ep(
+    body: FeatureEventBody,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W7 — ایونت فرانت (paywall/CTA)؛ کرانه‌دار و best-effort."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "feature_event", 30, 60)
+    from core.features import FEATURE_CATALOG
+    if body.feature not in FEATURE_CATALOG:
+        raise HTTPException(status_code=404, detail="فیچر ناشناخته")
+    if body.event not in ("paywall_viewed", "subscription_cta_clicked",
+                          "feature_opened"):
+        raise HTTPException(status_code=422, detail="ایونت نامعتبر")
+    extra = {str(k)[:40]: str(v)[:200]
+             for k, v in (body.extra or {}).items()} if isinstance(
+                 body.extra, dict) else {}
+    await db.log_feature_event(body.feature, body.event, user["id"], extra)
+    return {"ok": True}
 
 
 _TRIAL_FA = {

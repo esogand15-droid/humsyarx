@@ -66,6 +66,9 @@ class PlanBody(BaseModel):
         le=100000,
     )
 
+    # 🌊 W7 — {feature: bool}؛ فقط کلیدهای true/false ذخیره می‌شوند
+    entitlements: dict = Field(default_factory=dict)
+
 
 class SubscriptionSettingsBody(BaseModel):
     subscription_enforced: bool | None = None
@@ -379,6 +382,13 @@ async def overview(
                         "ai_daily_limit",
                         0,
                     ) or 0,
+
+                # 🌊 W7
+                "entitlements":
+                    plan.get(
+                        "entitlements",
+                        {},
+                    ) or {},
             }
 
             for plan in plans
@@ -420,6 +430,20 @@ async def update_subscription_settings(
             before[key] = old
             after[key] = bool(value)
             changed.append(key)
+            # 🌊 W7 — سوییچ legacy حالا ماکرو است: روی هر ۳ پالیسی محتوا می‌نویسد
+            # (تک‌منبع حقیقت = feature_policies؛ کلید قدیمی فقط برای rollback نگه داشته می‌شود)
+            if key == "subscription_enforced":
+                from core.access import invalidate_policy_cache
+                _mode = "subscription" if value else "free"
+                for _f in ("question_bank", "resources", "references"):
+                    await db.set_feature_policy(
+                        _f, {"access": _mode}, admin["id"],
+                        (admin.get("_db") or {}).get("name", ""))
+                    invalidate_policy_cache(_f)
+                after["feature_policies"] = f"qb+resources+references → {_mode}"
+                await db.log_feature_event(
+                    "question_bank", "feature_policy_changed", admin["id"],
+                    {"via": "legacy_enforced_macro", "access": _mode})
     if changed:
         await _audit(
             admin, "به‌روزرسانی سیاست اشتراک", "Subscription", severity="HIGH",
@@ -437,8 +461,12 @@ async def update_plan(
     old = await db.sub_plan_get(plan_id)
     if not old:
         raise HTTPException(status_code=404, detail="پلن پیدا نشد")
+    # 🌊 W7 — سفیدسازی entitlements با کاتالوگ (کلید ناشناخته دور ریخته می‌شود)
+    from core.features import FEATURE_CATALOG as _FCAT
+    _ent = {k: bool(v) for k, v in (body.entitlements or {}).items()
+            if k in _FCAT}
     patch = {"name": body.name.strip(), "days": body.days, "price": body.price,
-             "ai_daily_limit": body.ai_daily_limit}
+             "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent}
     ok = await db.sub_plan_update(plan_id, patch)
     if not ok:
         raise HTTPException(status_code=500, detail="ویرایش پلن انجام نشد")
@@ -457,12 +485,16 @@ async def add_plan(
 
     admin=Depends(require_perm("subscription.manage")),
 ):
+    from core.features import FEATURE_CATALOG as _FCAT2
+    _ent2 = {k: bool(v) for k, v in (body.entitlements or {}).items()
+             if k in _FCAT2}
     plan_id = (
         await db.sub_plan_add(
             body.name.strip(),
             body.days,
             body.price,
             body.ai_daily_limit,
+            _ent2,
         )
     )
 
@@ -470,7 +502,7 @@ async def add_plan(
         admin, "ایجاد پلن اشتراک", "Subscription", severity="HIGH",
         target_id=str(plan_id), target_type="plan", target_label=body.name.strip(),
         after={"name": body.name.strip(), "days": body.days, "price": body.price,
-               "ai_daily_limit": body.ai_daily_limit},
+               "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent2},
         tags=["اشتراک", "پلن", "پنل_وب"],
     )
     return {

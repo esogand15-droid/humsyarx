@@ -6887,6 +6887,149 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
             "retention_days": 30, "persisted": True}
 
 
+class FeaturePolicyBody(BaseModel):
+    enabled: bool | None = None
+    access: str | None = None
+    trial_allowed: bool | None = None
+    quota_kind: str | None = None
+    quota_limit: int | None = None
+    fail_open: bool | None = None
+    note: str | None = Field(default=None, max_length=300)
+    pending_access: str | None = None
+    effective_from: str | None = Field(default=None, max_length=40)
+
+
+@router.get("/features")
+async def wa_features_list(user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — کاتالوگ + پالیسی همه‌ی فیچرها برای پنل دسترسی."""
+    from core.features import FEATURE_CATALOG, default_policy
+    docs = await db.feature_policies.find(
+        {"_id": {"$in": list(FEATURE_CATALOG)}}).to_list(50)
+    by_id = {d.get("_id"): d for d in docs}
+    items = []
+    for key, spec in FEATURE_CATALOG.items():
+        d = by_id.get(key) or {}
+        pol = default_policy(key)
+        for k in ("enabled", "access", "trial_allowed", "quota", "fail_open",
+                  "note", "pending_access", "effective_from"):
+            if k in d:
+                pol[k] = d[k]
+        prev = d.get("prev") or {}
+        items.append({
+            "key": key, "label": spec.get("label", key),
+            "category": spec.get("category", ""),
+            "desc": spec.get("desc", ""),
+            "enforced": bool(spec.get("enforced")),
+            "stored": bool(d), "policy": pol,
+            "updated_by": d.get("updated_by_name", "") or "",
+            "updated_at": d.get("updated_at"),
+            "has_prev": bool(prev),
+            "prev_at": prev.get("_at"), "prev_by": prev.get("_by_name", ""),
+        })
+    return {"items": items}
+
+
+@router.put("/features/{key}")
+async def wa_feature_update(key: str, body: FeaturePolicyBody,
+                            user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — تغییر پالیسی یک فیچر (audit اجباری + جبران در شکست audit)."""
+    from core.features import FEATURE_CATALOG, ACCESS_MODES, QUOTA_KINDS
+    if key not in FEATURE_CATALOG:
+        raise HTTPException(404, "فیچر ناشناخته")
+    patch = {}
+    if body.enabled is not None:
+        patch["enabled"] = bool(body.enabled)
+    if body.access is not None:
+        if body.access not in ACCESS_MODES:
+            raise HTTPException(422, "حالت دسترسی نامعتبر")
+        patch["access"] = body.access
+    if body.trial_allowed is not None:
+        patch["trial_allowed"] = bool(body.trial_allowed)
+    if body.quota_kind is not None or body.quota_limit is not None:
+        cur = await db.get_feature_policy(key) or {}
+        q = dict(cur.get("quota") or {"kind": "none", "limit": 0})
+        if body.quota_kind is not None:
+            if body.quota_kind not in QUOTA_KINDS:
+                raise HTTPException(422, "نوع سهمیه نامعتبر")
+            q["kind"] = body.quota_kind
+        if body.quota_limit is not None:
+            if body.quota_limit < 0 or body.quota_limit > 1000000:
+                raise HTTPException(422, "سقف سهمیه نامعتبر")
+            q["limit"] = int(body.quota_limit)
+        patch["quota"] = q
+    if body.fail_open is not None:
+        patch["fail_open"] = bool(body.fail_open)
+    if body.note is not None:
+        patch["note"] = (body.note or "")[:300]
+    if body.pending_access is not None:
+        if body.pending_access not in ("", *ACCESS_MODES):
+            raise HTTPException(422, "حالت زمان‌بندی نامعتبر")
+        patch["pending_access"] = body.pending_access or None
+    if body.effective_from is not None:
+        eff = (body.effective_from or "").strip() or None
+        if eff:
+            try:
+                from datetime import datetime
+                datetime.fromisoformat(eff)
+            except ValueError:
+                raise HTTPException(422, "زمان شروع نامعتبر (ISO)")
+        patch["effective_from"] = eff
+    if not patch:
+        raise HTTPException(422, "تغییری ارسال نشده")
+    res = await db.set_feature_policy(
+        key, patch, user["id"], (user.get("_db") or {}).get("name", ""))
+    from core.access import invalidate_policy_cache
+    invalidate_policy_cache(key)
+    try:
+        await _audit(user["id"], f"تغییر دسترسی فیچر «{key}»",
+                     severity="HIGH", target_id=key, target_type="feature",
+                     target_label=(FEATURE_CATALOG[key].get("label") or key),
+                     before=res["before"], after=res["after"],
+                     tags=["فیچر", "دسترسی", "پنل_وب", f"feature:{key}"])
+    except Exception:
+        # جبران: مثل settings_center — برگرداندن پالیسیِ قبلی
+        try:
+            await db.set_feature_policy(key, res["before"], user["id"], "")
+            invalidate_policy_cache(key)
+        except Exception:
+            pass
+        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
+    try:
+        await db.log_feature_event(key, "feature_policy_changed",
+                                   user["id"], {"after": res["after"]})
+    except Exception:
+        pass
+    return {"ok": True, "after": res["after"]}
+
+
+@router.post("/features/{key}/rollback")
+async def wa_feature_rollback(key: str,
+                              user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — بازگردانی به پالیسی قبلی (دو بار = redo)."""
+    from core.features import FEATURE_CATALOG
+    if key not in FEATURE_CATALOG:
+        raise HTTPException(404, "فیچر ناشناخته")
+    res = await db.rollback_feature_policy(
+        key, user["id"], (user.get("_db") or {}).get("name", ""))
+    if not res:
+        raise HTTPException(409, "پالیسی قبلی وجود ندارد")
+    from core.access import invalidate_policy_cache
+    invalidate_policy_cache(key)
+    try:
+        await _audit(user["id"], f"بازگردانی دسترسی فیچر «{key}»",
+                     severity="HIGH", target_id=key, target_type="feature",
+                     before=res["before"], after=res["after"],
+                     tags=["فیچر", "دسترسی", "بازگردانی", f"feature:{key}"])
+    except Exception:
+        try:
+            await db.set_feature_policy(key, res["before"], user["id"], "")
+            invalidate_policy_cache(key)
+        except Exception:
+            pass
+        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
+    return {"ok": True, "after": res["after"]}
+
+
 @router.get("/system/client-errors")
 async def wa_system_client_errors(hours: int = Query(24, ge=1, le=720),
                                   limit: int = Query(50, ge=1, le=200),

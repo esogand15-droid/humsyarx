@@ -186,11 +186,15 @@ function CardPanel({ card, refresh }) {
 function PlanModal({ plan, onClose, onDone }) {
   const clone = !!plan?._clone; const edit = !!plan && !clone;
   const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0, ai_daily_limit: plan?.ai_daily_limit || 0 });
+  const [ent, setEnt] = useState({ ...(plan?.entitlements || {}) });
+  const [featList, setFeatList] = useState([]);
+  // 🌊 W7 — کاتالوگ فیچرها از همان API پنل دسترسی (تک‌منبع)
+  useEffect(() => { api.featuresList().then(r => setFeatList(r.items || [])).catch(() => {}); }, []);
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price), ai_daily_limit: Number(f.ai_daily_limit) || 0 };
+      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price), ai_daily_limit: Number(f.ai_daily_limit) || 0, entitlements: ent };
       if (edit) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
       toast(edit ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
     } catch (e) { toast(errText(e), 'err'); }
@@ -205,6 +209,14 @@ function PlanModal({ plan, onClose, onDone }) {
         <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
         <label className="fld" style={{ flex: 1 }}><span>سهمیه هوشیار/روز (۰=سراسری)</span>
         <input className="inp" type="number" min="0" max="100000" value={f.ai_daily_limit} onChange={e => setF({ ...f, ai_daily_limit: e.target.value })} /></label></div>
+      {!!featList.length && <div><span className="muted">فیچرهای این پلن (پیش‌فرض: همه باز)</span>
+        <div className="grid g3" style={{ marginTop: 6 }}>
+          {featList.map(it => <label key={it.key} className="row" style={{ gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={ent[it.key] !== false}
+              onChange={e => setEnt({ ...ent, [it.key]: e.target.checked })} />
+            <span>{it.label}</span>
+          </label>)}
+        </div></div>}
       <div className="row"><button className="btn primary" disabled={busy || f.name.trim().length < 2 || Number(f.days) < 1}
         onClick={save}>{busy ? '⏳ …' : 'ذخیره'}</button><button className="btn" onClick={onClose}>انصراف</button></div>
     </div>

@@ -32,12 +32,15 @@ class DBFinance:
 
     # ── پلن‌ها ──
     async def sub_plan_add(self, name: str, days: int, price: int,
-                         ai_daily_limit: int = 0) -> str:
+                         ai_daily_limit: int = 0,
+                         entitlements: dict | None = None) -> str:
         count = await self.sub_plans.count_documents({})
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
             # 🌊 W6/MISS-04 — سهمیه روزانه هوشیار این پلن؛ ۰ = ارث از سراسری
             'ai_daily_limit': max(0, int(ai_daily_limit or 0)),
+            # 🌊 W7 — نقشه‌ی فیچرها؛ خالی/ناقص = سازگار عقب‌رو (دسترسی کامل)
+            'entitlements': dict(entitlements or {}),
             'active': True, 'order': count,
             'created_at': utc_now_iso(),
         })

@@ -639,6 +639,12 @@ export const api = {
   // 🌊 W5/REL-03
   systemClientErrors: (hours = 24, limit = 20) =>
     req(`/api/web-admin/system/client-errors?hours=${hours}&limit=${limit}`),
+  // 🌊 W7 — دسترسی فیچرها
+  featuresList: () => req('/api/web-admin/features'),
+  featureUpdate: (key, body) =>
+    req(`/api/web-admin/features/${encodeURIComponent(key)}`, { method: 'PUT', body }),
+  featureRollback: (key) =>
+    req(`/api/web-admin/features/${encodeURIComponent(key)}/rollback`, { method: 'POST', body: {} }),
   securitySessions: (page = 1, limit = 30) =>
     req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),
   revokeSecuritySession: (id, reason) =>

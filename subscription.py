@@ -40,15 +40,25 @@ async def has_access(uid: int) -> bool:
         return await db.sub_is_active(int(uid))
 
 
-async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
+async def feature_allowed(uid: int, feature: str) -> bool:
+    """🌊 W7 — چک بولین فیچر برای ربات (thin روی core؛ هرگز raise نمی‌کند)."""
+    try:
+        from core.access import check_feature
+        return (await check_feature(int(uid), feature)).allowed
+    except Exception:
+        return False
+
+
+async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                 uid: int, feature: str = "question_bank") -> bool:
     """
     اگر دسترسی داشت True برمی‌گرداند (ادامه‌ی مسیر عادی).
     اگر نداشت، خودش صفحه‌ی قفل را نشان می‌دهد و False برمی‌گرداند —
     فراخوان فقط کافیست چک کند و در صورت False چیز دیگری نفرستد.
     """
-    if await has_access(uid):
+    if await feature_allowed(uid, feature):
         return True
-    await show_paywall(update.message, uid)
+    await show_paywall(update.message, uid, feature=feature)
     return False
 
 
@@ -56,17 +66,30 @@ async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_T
 #  صفحه‌ی قفل / انتخاب پلن
 # ══════════════════════════════════════════════════
 
-async def show_paywall(target, uid: int, edit: bool = False):
+async def show_paywall(target, uid: int, edit: bool = False, feature: str = ""):
     plans = await db.sub_plan_list(only_active=True)
+    # 🌊 W7 — سرخط فیچرمحور (پس‌رو سازگار: بدون فیچر همان متن قبلی)
+    try:
+        from core.features import FEATURE_CATALOG
+        _flabel = (FEATURE_CATALOG.get(feature) or {}).get("label", "")
+    except Exception:
+        _flabel = ""
     discount = None
     if hasattr(target, 'get'):  # نباید پیش بیاد، فقط ایمنی
         pass
 
-    header = (
-        "🔒 <b>این بخش مخصوص دانشجوهای مشترک است</b>\n\n"
-        "برای دسترسی به منابع درسی و بانک سوال، یکی از پلن‌های زیر رو انتخاب کن:\n"
-        "━━━━━━━━━━━━━━━━\n"
-    )
+    if _flabel:
+        header = (
+            f"🔒 <b>«{_flabel}» مخصوص دانشجوهای مشترک است</b>\n\n"
+            f"برای دسترسی به {_flabel}، یکی از پلن‌های زیر رو انتخاب کن:\n"
+            "━━━━━━━━━━━━━━━━\n"
+        )
+    else:
+        header = (
+            "🔒 <b>این بخش مخصوص دانشجوهای مشترک است</b>\n\n"
+            "برای دسترسی به منابع درسی و بانک سوال، یکی از پلن‌های زیر رو انتخاب کن:\n"
+            "━━━━━━━━━━━━━━━━\n"
+        )
     if not plans:
         text = header + "⚠️ فعلاً هیچ پلنی تعریف نشده. با ادمین در تماس باش."
         kb = InlineKeyboardMarkup([])
