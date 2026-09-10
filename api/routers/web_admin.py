@@ -41,6 +41,7 @@ from api.auth import (
     expiry_is_past, get_content_global_user, new_session_token, resolve_content_intake,
     resolve_web_session, utc_now, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
+from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from api.routers import admin_panel as owner_api
 from api.routers import subscription_management as subscription_api
@@ -822,6 +823,7 @@ async def export_users_csv(
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
+    await rate_limit_user(user["id"], "export_users_csv", 10, 60)  # 🛡 W10
     smart = smart if isinstance(smart, str) else None
     allowed_sort = {"registered_at", "last_active", "name", "total_answers", "correct_answers", "streak_current", "ai_total_usage"}
     if sort_by not in allowed_sort or sort_dir not in ("asc", "desc"):
@@ -888,6 +890,7 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
     خروجی سه سطل است: `will_apply` / `will_skip` / `not_found` تا ادمین
     پیش از زدنِ دکمه بداند دقیقاً روی چند نفر اثر می‌گذارد.
     """
+    await rate_limit_user(user["id"], "bulk_preview", 10, 60)  # 🛡 W10
     action_perm = _BULK_ACTION_PERM
     need = action_perm.get(body.action)
     if not need:
@@ -2470,6 +2473,7 @@ class TicketsBulk(BaseModel):
 @router.post("/tickets/bulk")
 async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage"))):
     """⚡ اکشن گروهی تیکت (سقف ۱۰۰) — با همان متدهای موجود db."""
+    await rate_limit_user(user["id"], "tickets_bulk", 10, 60)  # 🛡 W10
     ids = [int(i) for i in (body.ids or []) if isinstance(i, (int, str)) and str(i).isdigit()][:100]
     if not ids:
         raise HTTPException(400, "لیست تیکت‌ها خالی است")
@@ -4887,7 +4891,7 @@ async def wa_rbac_roles_picker(user=Depends(_perm("users.manage"))):
 
 @router.get("/tickets")
 async def wa_tickets_list(
-    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
     q: Optional[str] = Query(None, max_length=120),
     intake: Optional[str] = Query(None, max_length=80),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
@@ -4920,7 +4924,7 @@ async def wa_tickets_list(
 
 @router.get("/exports/tickets.csv")
 async def export_tickets_csv(
-    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
     q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
     assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
@@ -4929,6 +4933,7 @@ async def export_tickets_csv(
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
+    await rate_limit_user(user["id"], "export_tickets_csv", 10, 60)  # 🛡 W10
     await _audit(user["id"], "خروجی CSV تیکت‌ها", severity="HIGH",
                  target_type="export", target_label="tickets.csv",
                  tags=["خروجی", "تیکت", "پنل_وب"])

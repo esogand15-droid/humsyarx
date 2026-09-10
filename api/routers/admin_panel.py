@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 from api.auth import require_perm
+from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from question_bank.contracts import approved_query, status_query
 from request_context import current_request_id
@@ -770,6 +771,7 @@ class BroadcastSend(BaseModel):
 
 @router.post("/broadcast")
 async def broadcast(body: BroadcastSend, admin=Depends(require_perm("broadcast.send"))):
+    await rate_limit_user(admin["id"], "broadcast_send", 5, 60)  # 🛡 W10
     try:
         result = await broadcast_service.create_campaign(
             payload=body.payload(), target=body.target.model_dump(),
@@ -961,6 +963,7 @@ async def notif_retry(run_id: str, admin=Depends(require_perm("notifications.man
 
 @router.post("/export/excel")
 async def export_excel(admin=Depends(require_perm("users.manage"))):
+    await rate_limit_user(admin["id"], "export_excel", 10, 60)  # 🛡 W10
     await _notify(ADMIN_ID, "__EXCEL_EXPORT__", "excel_export_request")
     return {"ok":True,"message":"📊 فایل اکسل از طریق ربات ارسال می‌شود."}
 

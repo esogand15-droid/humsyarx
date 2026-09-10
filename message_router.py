@@ -49,16 +49,34 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from profile import profile_text_handler
         return await profile_text_handler(update, context)
 
-    if uid == ADMIN_ID:
-        mode = context.user_data.get('mode', '')
-        ADMIN_TEXT_MODES = (
-            'search_user', 'edit_user',
-            'add_lesson', 'add_topic',
-            'add_intake',
-        )
-        if mode in ADMIN_TEXT_MODES:
+    # 🌊 W10 — روت حالت‌های متنی ادمین با RBAC (به‌جای ADMIN_ID خالص)
+    mode = context.user_data.get('mode', '')
+    _MODE_PERM = {
+        'search_user': 'users.view', 'edit_user': 'users.manage',
+        'add_lesson': 'content.manage', 'add_topic': 'content.manage',
+        'add_intake': 'settings.manage',
+    }
+    if mode in _MODE_PERM:
+        try:
+            _ok = await db.has_permission(uid, _MODE_PERM[mode])
+        except Exception:
+            _ok = (uid == ADMIN_ID)
+        if _ok:
             from admin import handle_admin_text
             await handle_admin_text(update, context)
+        else:
+            await update.message.reply_text("❌ دسترسی ندارید.")
+        return
+    # 🌊 W10 — broadcast و اشتراک هم با پرمیشن (نه ADMIN_ID خالص)
+    if mode == 'broadcast' or mode == 'sub_reject_reason' or mode.startswith('suba_'):
+        _need = ('broadcast.send' if mode == 'broadcast'
+                 else 'subscription.manage')
+        try:
+            _ok = await db.has_permission(uid, _need)
+        except Exception:
+            _ok = (uid == ADMIN_ID)
+        if not _ok:
+            await update.message.reply_text("❌ دسترسی ندارید.")
             return
         if mode == 'broadcast':
             from admin import admin_broadcast_handler
@@ -92,7 +110,8 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await handle_bulk_list_text(update, context)
 
     # ── ویرایش تک‌فیلدی برنامه (بخش اول) ──
-    if uid == ADMIN_ID and context.user_data.get('mode') == 'edit_schedule_field':
+    if context.user_data.get('mode') == 'edit_schedule_field' and (  # 🌊 W10
+            await db.has_permission(uid, 'schedules.manage')):
         from schedule import handle_edit_schedule_field_text
         return await handle_edit_schedule_field_text(update, context)
 

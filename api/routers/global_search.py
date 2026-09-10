@@ -14,6 +14,7 @@ from api.auth import (
     get_current_user,
 )
 
+from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from question_bank.contracts import approved_query
 
@@ -45,6 +46,8 @@ async def search(
         get_current_user
     ),
 ):
+    await rate_limit_user(user["id"], "search_q", 30, 60)  # 🛡 W10
+
     query = " ".join(
         q.split()
     )

@@ -1,5 +1,5 @@
 """
-💳 پنل مدیریت اشتراک — فقط ادمین ارشد (ADMIN_ID)
+💳 پنل مدیریت اشتراک — پرمیشن subscription.manage (🌊 W10؛ قبلاً فقط ADMIN_ID)
   ✅ کلید اجباری‌سازی سراسری (پیش‌فرض خاموش)
   ✅ چند پلن هم‌زمان — قیمت/روز هرکدام مستقل
   ✅ شماره کارت
@@ -1159,8 +1159,13 @@ async def handle_gateway_callback_text(update, context):
 async def subscription_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid   = update.effective_user.id
-    if uid != ADMIN_ID:
-        await query.answer("❌ این بخش فقط در اختیار مدیر ارشد است.", show_alert=True)
+    # 🌊 W10 — پنل اشتراک با پرمیشن (ADMIN_ID همیشه پاس می‌شود)
+    try:
+        _ok = await db.has_permission(uid, 'subscription.manage')
+    except Exception:
+        _ok = (uid == ADMIN_ID)
+    if not _ok:
+        await query.answer("❌ مجوز مدیریت اشتراک ندارید.", show_alert=True)
         return
     await query.answer()
     parts  = query.data.split(':')
