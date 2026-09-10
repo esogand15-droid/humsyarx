@@ -598,7 +598,7 @@ async def all_tickets(
                 return {"tickets": [{
                     "id": t.get("ticket_id"), "user_id": t.get("user_id"),
                     "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
-                    "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+                    "status": db.ticket_norm_status(t.get("status")), "reply_count": len(t.get("replies", [])),
                     "created_at": t.get("created_at") or None,
                     "last_reply_at": t.get("last_reply_at") or None,
                     "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
@@ -613,7 +613,7 @@ async def all_tickets(
     return {"tickets": [{
         "id": t.get("ticket_id"), "user_id": t.get("user_id"),
         "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
-        "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+        "status": db.ticket_norm_status(t.get("status")), "reply_count": len(t.get("replies", [])),
         "created_at": t.get("created_at") or None,
         "last_reply_at": t.get("last_reply_at") or None,
         "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],

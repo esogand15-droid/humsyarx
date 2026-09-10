@@ -963,6 +963,7 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
             f"🎫 <b>تیکت #{tid}</b>\n"
             f"📋 {_h(ticket.get('subject',''))}\n"
             f"🔘 {status_icon}\n"
+            f"🥇 {TICKET_PRIORITY_FA.get(ticket.get('priority', 'normal'), '⚪ عادی')}\n"
             f"📅 {fmt_jalali_dt(ticket['created_at'], with_time=False)}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
             f"💬 <b>پیام شما:</b>\n{_h(ticket['message'])}\n"
@@ -1037,7 +1038,8 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
 
 async def _ticket_main(query, uid: int):
     tickets    = await db.ticket_get_user(uid)
-    open_count = sum(1 for t in tickets if t['status'] == 'open')
+    open_count = sum(1 for t in tickets
+                     if db.ticket_norm_status(t.get('status')) != 'closed')
     done_count = len(tickets) - open_count
     keyboard   = [
         [InlineKeyboardButton("🎫 ارسال تیکت جدید",            callback_data='ticket:new')],
@@ -1090,7 +1092,8 @@ async def _ticket_list(query, uid: int):
 
 async def show_ticket_main(message: Message, uid: int):
     tickets    = await db.ticket_get_user(uid)
-    open_count = sum(1 for t in tickets if t['status'] == 'open')
+    open_count = sum(1 for t in tickets
+                     if db.ticket_norm_status(t.get('status')) != 'closed')
     done_count = len(tickets) - open_count
     keyboard   = [
         [InlineKeyboardButton("🎫 ارسال تیکت جدید",              callback_data='ticket:new')],

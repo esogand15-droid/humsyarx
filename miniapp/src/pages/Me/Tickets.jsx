@@ -709,6 +709,17 @@ export default function Tickets() {
                       }
                     </span>
                   </span>
+
+                  {/* 🌊 W10.1 — انتظار پاسخ‌گویی (یکپارچه با SLA ادمین) */}
+                  {!!ticket.sla?.sla_hours &&
+                    !ticket.sla?.responded &&
+                    ticket.status !== 'closed' && (
+                      <div className="muted">
+                        ⏱ هدف پاسخ‌گویی: تا{' '}
+                        {ticket.sla.sla_hours}{' '}
+                        ساعت پس از ثبت
+                      </div>
+                    )}
                 </div>
 
                 <div

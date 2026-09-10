@@ -119,7 +119,7 @@ export default function Tickets({ go, me }) {
           <button className="btn sm" onClick={() => setBulkConfirm('reopen')}>🔓 بازگشایی</button></>}</>} />
 
       {analytics && <div className="row" style={{ marginBottom: 10, flexWrap: 'wrap' }}>
-        <B kind="warn">باز: {Number(analytics.status?.open || 0).toLocaleString('fa')}</B>
+        <B kind="warn">باز: {Number((analytics.status?.open || 0) + (analytics.status?.in_progress || 0) + (analytics.status?.waiting_user || 0) + (analytics.status?.resolved || 0)).toLocaleString('fa')}</B>
         <B kind="ok">بسته: {Number(analytics.status?.closed || 0).toLocaleString('fa')}</B>
         {analytics.avg_first_response_minutes != null && <B kind="acc">میانگین پاسخ نخست: {Number(analytics.avg_first_response_minutes).toLocaleString('fa')} دقیقه</B>}
         {analytics.avg_resolution_minutes != null && <B>میانگین حل: {Number(analytics.avg_resolution_minutes).toLocaleString('fa')} دقیقه</B>}
@@ -127,7 +127,7 @@ export default function Tickets({ go, me }) {
       </div>}
       <FilterBar>
         <div className="tabs" style={{ flex: 1, marginBottom: 0 }} role="tablist" aria-label="وضعیت تیکت‌ها">
-          {[['open', '🟡 باز'], ['in_progress', '🔵 در حال بررسی'], ['waiting_user', '🟣 منتظر کاربر'], ['resolved', '✅ حل‌شده'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
+          {[['open', '🟡 باز'], ['in_progress', '🔵 در حال بررسی'], ['waiting_user', '🟣 منتظر کاربر'], ['resolved', '✅ حل‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
             <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{v}</button>
           ))}
         </div>
@@ -189,8 +189,8 @@ export default function Tickets({ go, me }) {
                 {t.priority !== 'normal' && <B kind={t.priority === 'urgent' ? 'bad' : 'warn'}>{t.priority === 'urgent' ? 'فوری' : t.priority === 'high' ? 'بالا' : 'کم'}</B>}
                 {t.sla?.breached && <B kind="bad">🔴 SLA</B>}
                 {t.assignee_name && <B>{t.assignee_name}</B>}
-                <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
-                  {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}
+                <B kind={t.status === 'closed' ? 'ok' : t.status === 'open' ? 'bad' : 'warn'}>
+                  {{ open: 'باز', in_progress: 'در حال بررسی', waiting_user: 'منتظر کاربر', resolved: 'حل‌شده', answered: 'پاسخ', closed: 'بسته' }[t.status] || t.status}
                 </B>
               </div>
             );
