@@ -126,6 +126,7 @@ class DBCore:
         # و متای آخرین تغییر تنظیمات (Last-Modified-By/At) برای Settings Center.
         self.wa_saved_filters  = _db['wa_saved_filters']
         self.wa_api_metrics    = _db['wa_api_metrics']
+        self.client_errors     = _db['client_errors']  # 🌊 W5/REL-03
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # 🚀 Audit Observability Refactor — Outbox برای Delivery قابل Retry (§14)
@@ -321,6 +322,9 @@ class DBCore:
                 self._index(self.web_admin_otps, [('uid', 1)], background=True),
                 self._index(self.web_admin_otps, [('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self._index(self.wa_api_metrics, [('at', 1)], expireAfterSeconds=2592000, background=True),
+                # 🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی کلاینت (TTL ۳۰ روزه)
+                self._index(self.client_errors, [('at', 1)], expireAfterSeconds=2592000, background=True),
+                self._index(self.client_errors, [('message', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('route', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('status', 1), ('at', -1)], background=True),
                 self._index(self.broadcast_campaigns, [('created_at', -1)], background=True),

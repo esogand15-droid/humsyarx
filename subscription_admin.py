@@ -1243,7 +1243,10 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
         await _show_plans(query)
     elif action == 'plan_del':
         _pd_old = await db.sub_plan_get(parts[2]) or {}
-        await db.sub_plan_delete(parts[2])
+        if not await db.sub_plan_delete(parts[2]):
+            await query.answer("❌ حذف پلن ناموفق بود؛ دوباره تلاش کن.",
+                               show_alert=True)
+            return
         try:
             _au = await db.get_user(uid) or {}
             _an = _au.get('name', 'مدیر ارشد')

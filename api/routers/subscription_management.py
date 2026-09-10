@@ -528,9 +528,13 @@ async def delete_plan(
             detail="پلن پیدا نشد",
         )
 
-    await db.sub_plan_delete(
+    if not await db.sub_plan_delete(
         plan_id
-    )
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail="حذف پلن ناموفق بود؛ دوباره تلاش کنید.",
+        )
     await _audit(
         admin, "حذف پلن اشتراک", "Subscription", severity="HIGH",
         target_id=plan_id, target_type="plan", target_label=plan.get("name", plan_id),

@@ -5471,9 +5471,22 @@ async def wa_subscription_reconcile(
     # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
     # 🛡 W1 — رسید شارژ ذاتاً اشتراک نمی‌سازد (آشکارساز ۱-ب)؛
     # رسید هدیه هم اشتراکِ «گیرنده» را می‌سازد نه payer.
+    # 🌊 W5 — پنجره‌ی زمانی: اشتراکی که خیلی وقت پیش به‌صورت طبیعی
+    # منقضی شده «ناهم‌خوانی» نیست؛ فقط پنجره‌ی اخیر پرچم می‌خورد تا
+    # لیست با نویز انقضاهای قدیمی دفن نشود.
+    try:
+        _w5win = max(7, int(await db.get_setting("recon_window_days", 90) or 90))
+    except Exception:
+        _w5win = 90
+    _cutoff = (datetime.now(timezone.utc) - timedelta(days=_w5win)).isoformat()
+    _skipped_stale = 0
     async for p in db.sub_payments.find(
             {"status": "approved"}).sort("reviewed_at", -1).limit(200):
         if str(p.get("plan_id") or "") == "wallet_topup":
+            continue
+        _at = str(p.get("reviewed_at") or p.get("submitted_at") or "")
+        if _at < _cutoff:
+            _skipped_stale += 1
             continue
         uid = int(p.get("user_id") or 0)
         gift_to = int((p.get("gift") or {}).get("to") or 0)
@@ -5637,6 +5650,8 @@ async def wa_subscription_reconcile(
     return {"items": out_items,
             "summary": {**summary, "total": len(out_items),
                         "resolved_today": resolved_today,
+                        "window_days": _w5win,
+                        "skipped_stale": _skipped_stale,
                         "checked_at": _now()}}
 
 
@@ -6837,7 +6852,14 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
         "route": 1, "method": 1, "status": 1, "duration_ms": 1, "request_id": 1, "at": 1,
     }).sort("at", -1).limit(30).to_list(30)
     total, errors = int(total or 0), int(errors or 0)
+    # 🌊 W5/REL-03 — شمارنده‌های همه‌ی /api/* (افزایشی؛ قرارداد قبلی سر جایش)
+    try:
+        from api.api_counters import snapshot as _api_snapshot
+        _api = _api_snapshot()
+    except Exception:
+        _api = {"routes": [], "recent_5xx": [], "total": 0, "ephemeral": True}
     return {"hours": hours, "total": total, "errors": errors,
+            "api": _api,
             "error_rate": round(errors * 100 / total, 2) if total else None,
             "routes": [{"route": row.get("_id"), "requests": row.get("requests", 0),
                         "errors": row.get("errors", 0), "avg_ms": round(float(row.get("avg_ms") or 0), 2),
@@ -6847,6 +6869,35 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
                                "at": item.get("at").isoformat() if hasattr(item.get("at"), "isoformat") else str(item.get("at") or "")}
                               for item in recent],
             "retention_days": 30, "persisted": True}
+
+
+@router.get("/system/client-errors")
+async def wa_system_client_errors(hours: int = Query(24, ge=1, le=720),
+                                  limit: int = Query(50, ge=1, le=200),
+                                  user=Depends(_perm("system.manage"))):
+    """🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی فرانت (مینی‌اپ/وب‌ادمین)."""
+    since = now_utc() - timedelta(hours=hours)
+    rows = await db.client_errors.find(
+        {"at": {"$gte": since}}).sort("at", -1).to_list(limit)
+    groups = await db.client_errors.aggregate([
+        {"$match": {"at": {"$gte": since}}},
+        {"$group": {"_id": {"app": "$app", "message": "$message"},
+                    "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}}, {"$limit": 20},
+    ]).to_list(20)
+    items = []
+    for r in rows:
+        at = r.get("at")
+        items.append({
+            "app": r.get("app") or "", "path": r.get("path") or "",
+            "message": (r.get("message") or "")[:200],
+            "user_id": r.get("user_id"),
+            "at": at.isoformat() if hasattr(at, "isoformat") else str(at or ""),
+        })
+    return {"hours": hours, "items": items,
+            "groups": [{"app": (g.get("_id") or {}).get("app") or "",
+                        "message": ((g.get("_id") or {}).get("message") or "")[:200],
+                        "count": int(g.get("n") or 0)} for g in groups]}
 
 
 @router.get("/system/jobs")

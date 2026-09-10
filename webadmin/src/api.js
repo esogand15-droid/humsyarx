@@ -636,6 +636,9 @@ export const api = {
   systemTimeStandard: () => req("/api/web-admin/system/time-standard"),
   systemObservability: (hours = 24) =>
     req(`/api/web-admin/system/observability?hours=${hours}`),
+  // 🌊 W5/REL-03
+  systemClientErrors: (hours = 24, limit = 20) =>
+    req(`/api/web-admin/system/client-errors?hours=${hours}&limit=${limit}`),
   securitySessions: (page = 1, limit = 30) =>
     req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),
   revokeSecuritySession: (id, reason) =>

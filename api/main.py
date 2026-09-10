@@ -19,6 +19,7 @@ from api.routers import (
     admin_panel,
     ai,
     ai_management,
+    client_errors,
     content_admin,
     dashboard,
     faq,
@@ -222,6 +223,19 @@ async def request_context_and_safe_errors(request: Request, call_next):
             # 🛡 AUDIT-M1 — تسک با مرجع و لاگ خطا
             from utils import spawn_bg
             spawn_bg(persist_metric(), 'wa_api_metric')
+        # 🌊 W5/REL-03 — شمارنده‌ی ارزانِ همه‌ی /api/* (درون‌حافظه‌ای؛
+        # wa_api_metrics همچنان منبع ماندگار وب‌ادمین است)
+        try:
+            from api.api_counters import record as _api_count
+            _p = _raw_path(request)
+            if _p.startswith("/api/"):
+                _tpl = (getattr(request.scope.get("route"), "path", "")
+                        or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)",
+                                  "/:id", _p))
+                _api_count(request.method, _tpl,
+                           int(response.status_code), request_id)
+        except Exception:
+            pass
         return response
     finally:
         current_request_id.reset(token)
@@ -324,6 +338,11 @@ app.add_middleware(
 app.include_router(
     dashboard.router,
     prefix="/api/dashboard",
+)
+
+app.include_router(
+    client_errors.router,
+    prefix="/api",
 )
 
 app.include_router(

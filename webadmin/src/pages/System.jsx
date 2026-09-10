@@ -29,6 +29,7 @@ export default function System({ me, route = '' }) {
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
   const [observability, setObservability] = useState(null);
+  const [clientErrs, setClientErrs] = useState(null); // 🌊 W5/REL-03
   const [timeStandard, setTimeStandard] = useState(null);
   const [sessions, setSessions] = useState(null);
   const [err, setErr] = useState('');
@@ -57,14 +58,15 @@ export default function System({ me, route = '' }) {
   const load = async () => {
     setErr('');
     try {
-      const [b, s, j, o, ts, sec] = await Promise.all([
+      const [b, s, j, o, ts, sec, ce] = await Promise.all([
         api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
         api.systemJobs().catch(() => ({ jobs: [] })),
         canObserve ? api.systemObservability().catch(() => null) : Promise.resolve(null),
         canObserve ? api.systemTimeStandard().catch(() => null) : Promise.resolve(null),
         canObserve ? api.securitySessions().catch(() => null) : Promise.resolve(null),
+        canObserve ? api.systemClientErrors(24, 20).catch(() => null) : Promise.resolve(null),
       ]);
-      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setTimeStandard(ts); setSessions(sec);
+      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setTimeStandard(ts); setSessions(sec); setClientErrs(ce);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
@@ -218,6 +220,12 @@ export default function System({ me, route = '' }) {
           { k: 'max_ms', label: 'بیشینه ms', render: r => fa(r.max_ms) },
         ]} rows={observability.routes || []} rowKey="route" colToggle /></div>
         {!!observability.recent_errors?.length && <details style={{ marginTop: 10 }}><summary>خطاهای اخیر و Request ID</summary><div className="grid">{observability.recent_errors.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
+        {/* 🌊 W5/REL-03 — شمارنده‌ی موقت همه‌ی /api (با ری‌استارت صفر می‌شود) */}
+        {!!observability.api && <div style={{ marginTop: 10 }} className="row"><B kind="acc">{fa(observability.api.total)} درخواست /api</B><B kind={observability.api.recent_5xx?.length ? 'bad' : 'ok'}>{fa(observability.api.recent_5xx?.length || 0)} خطای 5xx</B><span className="muted">موقت (ری‌استارت: صفر)</span></div>}
+        {!!observability.api?.routes?.length && <details style={{ marginTop: 10 }}><summary>پرترافیک‌ترین روت‌های /api</summary><div className="grid">{observability.api.routes.slice(0, 12).map((r) => <div className="row" key={r.route}><span className="code">{r.route}</span><span className="spacer" /><B kind="acc">{fa(r.requests)}</B></div>)}</div></details>}
+        {!!observability.api?.recent_5xx?.length && <details style={{ marginTop: 10 }}><summary>خطاهای 5xx اخیر همه‌ی API</summary><div className="grid">{observability.api.recent_5xx.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.method} {e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
+        {/* 🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی فرانت */}
+        {!!clientErrs?.items?.length && <details style={{ marginTop: 10 }} open><summary>خطاهای کلاینت ۲۴ساعت اخیر ({fa(clientErrs.items.length)})</summary><div className="grid">{clientErrs.items.map((e, i) => <div className="row" key={i}><B kind={e.app === 'webadmin' ? 'acc' : 'bad'}>{e.app}</B><span className="code">{e.message}</span><span className="spacer" /><span className="muted">{e.path}</span></div>)}</div></details>}
       </div>}
 
       {/* 💀 DLQ — پیام‌های مرده‌ی صف. خواندن با notifications.manage هم مجاز است

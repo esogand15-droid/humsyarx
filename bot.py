@@ -1020,13 +1020,44 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
         from utils import send_audit_log
         import os as _os
         temp_path = await build_full_backup_file()
+        # 🌊 W5/REL-04 — گیت حجم: ارسالِ محکوم‌به‌شکستِ بالای ۵۰MB تلگرام
+        # انجام نمی‌شود؛ خطا به مسیر consec_fail/alert موجود می‌رود.
+        try:
+            import os as _sz
+            _size = _sz.path.getsize(temp_path)
+        except Exception:
+            _size = 0
+        if _size >= 48 * 1024 * 1024:
+            raise RuntimeError(
+                f"backup file too large for Telegram ({_size // (1024 * 1024)}MB ≥ 48MB) — "
+                f"offsite لازم است (docs/runbook.md §۸)")
+        if _size >= 40 * 1024 * 1024:
+            logger.warning("backup size %dMB approaching Telegram 50MB limit",
+                           _size // (1024 * 1024))
+        # 🌊 W5/REL-04 — رمزنگاری بکاپ خودکار اگر کلید تنظیم شده باشد
+        _enc_suffix = ""
+        try:
+            from utils_crypto import is_encryption_enabled, encrypt_bytes
+            if is_encryption_enabled():
+                with open(temp_path, 'rb') as _rf:
+                    _enc = encrypt_bytes(_rf.read())
+                if _enc is not None:
+                    with open(temp_path, 'wb') as _wf:
+                        _wf.write(_enc)
+                    _enc_suffix = ".enc"
+                    logger.info("auto backup encrypted (Fernet)")
+        except Exception as _ee:
+            logger.warning(f"backup encryption skipped: {_ee}")
         try:
             # send file without holding json string in RAM
             with open(temp_path, 'rb') as f:
                 now_str = now_tehran().strftime('%Y%m%d_%H%M')
-                fname = f"backup_auto_{now_str}.json"
+                fname = f"backup_auto_{now_str}.json{_enc_suffix}"
+                _cap = f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}"
+                if _enc_suffix:
+                    _cap += " 🔐"
                 # use bot.send_document with file handle
-                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}", filename=fname)
+                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=_cap, filename=fname)
                 msg_id = getattr(sent, 'message_id', None)
         finally:
             try: _os.unlink(temp_path)

@@ -71,11 +71,15 @@ class DBFinance:
         return True
 
 
-    async def sub_plan_delete(self, plan_id: str):
+    async def sub_plan_delete(self, plan_id: str) -> bool:
+        """🛡 W5/CODE-02 — حذف دیگر بی‌صدا fail نمی‌شود؛ caller باید
+        False را هندل کند (قبلاً audit «حذف شد» دروغ می‌گفت)."""
         try:
-            await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
-        except Exception:
-            pass
+            r = await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
+            return r.deleted_count == 1
+        except Exception as e:
+            logger.warning(f"sub_plan_delete failed {plan_id}: {e}")
+            return False
 
 
     # ── کدهای تخفیف ──
