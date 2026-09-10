@@ -203,8 +203,6 @@ export default function Learn() {
 
   const {
     data: statsData = [],
-    isError: statsError,
-    refetch: refetchStats,
   } = useQuery({
     queryKey: [
       'stats-by-lesson',
@@ -754,17 +752,6 @@ export default function Learn() {
           </div>
         </section>
 
-
-        {/* 🌊 W8/UX-02 — خطای آمار هاب */}
-        {statsError && stats.length === 0 && (
-          <button
-            type="button"
-            className="btn btn-full"
-            onClick={() => refetchStats()}
-          >
-            🌐 دریافت آمار ناموفق بود — تلاش دوباره
-          </button>
-        )}
 
         {stats.length > 0 && (
           <section>

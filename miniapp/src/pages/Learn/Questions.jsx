@@ -16,10 +16,6 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import SubscriptionLock, {
-  isSubscriptionLock,
-  lockKind,
-} from '../../components/shared/SubscriptionLock';
 import QuestionCard from '../../components/shared/QuestionCard';
 import CelebrationOverlay from '../../components/shared/CelebrationOverlay';
 
@@ -806,8 +802,6 @@ export default function Questions() {
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
-    isError: lessonsError,
-    refetch: refetchLessons,
   } = useQuery({
     queryKey: [
       'question-lessons',
@@ -904,12 +898,6 @@ export default function Questions() {
           );
 
         } catch (error) {
-          /* 🌊 W7 — قفل دسترسی فیچر: پی‌وال به‌جای تست */
-          if (isSubscriptionLock(error)) {
-            setLockErr(error);
-            return;
-          }
-
           toast(
             error?.response
               ?.data
@@ -1063,14 +1051,7 @@ export default function Questions() {
   };
 
 
-  const [
-    lockErr,
-    setLockErr,
-  ] = useState(null);
-
-
   const back = () => {
-    setLockErr(null);
     setView('menu');
     setQuestion(null);
     setResult(null);
@@ -1082,20 +1063,6 @@ export default function Questions() {
       <DesignQuestion
         onBack={back}
       />
-    );
-  }
-
-
-  /* 🌊 W7 — پی‌وال بانک سؤال */
-  if (lockErr) {
-    return (
-      <main className="page">
-        <SubscriptionLock
-          feature="بانک سؤال"
-          featureKey="question_bank"
-          mode={lockKind(lockErr).kind}
-        />
-      </main>
     );
   }
 
@@ -1479,14 +1446,6 @@ export default function Questions() {
 
             {lessonsLoading ? (
               <SkTileGrid n={6} />
-            ) : lessonsError && lessons.length === 0 ? (
-              <button
-                type="button"
-                className="btn btn-full"
-                onClick={() => refetchLessons()}
-              >
-                🌐 دریافت درس‌ها ناموفق بود — تلاش دوباره
-              </button>
             ) : (
               <section className="grid2">
                 {lessons.map(

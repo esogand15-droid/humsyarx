@@ -17,8 +17,6 @@ import {
   useDebouncedValue,
 } from '../../lib/useDebounce';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 
 import SearchField from '../../components/shared/SearchField';
 
@@ -407,18 +405,30 @@ export default function GlobalSearch() {
             )}
           </section>
         ) : isError ? (
-          <PageError
-            text="جست‌وجو انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty card">
+            جست‌وجو انجام نشد.
+
+            <button
+              className="btn btn-p"
+              style={{
+                marginTop:
+                  12,
+              }}
+              onClick={() =>
+                refetch()
+              }
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : (
           !isFetching &&
           allResults.length === 0
         ) ? (
-          <EmptyState icon="🔍">
+          <div className="empty card">
             نتیجه‌ای برای «{query}» پیدا
             نشد.
-          </EmptyState>
+          </div>
         ) : (
           <>
             {availableTypes.length >

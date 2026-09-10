@@ -37,23 +37,25 @@ import {
 
 
 
-/* 🌊 W9 — برچسب وضعیت (هم‌گام با ورک‌فلو سرور) */
-const statusInfo = (status) => ({
-  open: { label: '🟡 باز', badge: 'b-grn' },
-  in_progress: { label: '🔵 در حال بررسی', badge: '' },
-  waiting_user: { label: '🟣 منتظر شما', badge: 'b-yel' },
-  resolved: { label: '✅ حل‌شده', badge: 'b-grn' },
-  closed: { label: 'بسته‌شده', badge: 'b-gray' },
-}[status] || { label: 'باز', badge: 'b-grn' });
+const statusInfo = (status) => {
+  if (status === 'closed') {
+    return {
+      label:
+        'بسته‌شده',
 
+      badge:
+        'b-gray',
+    };
+  }
 
-/* 🌊 W8/UX-04 — برچسب اولویت */
-const prioInfo = (prio) => ({
-  low: { label: '🟢 کم‌اهمیت', badge: 'b-gray' },
-  normal: { label: '⚪ عادی', badge: 'b-gray' },
-  high: { label: '🟠 مهم', badge: 'b-warn' },
-  urgent: { label: '🔴 فوری', badge: 'b-red' },
-}[prio] || { label: '⚪ عادی', badge: 'b-gray' });
+  return {
+    label:
+      'باز',
+
+    badge:
+      'b-grn',
+  };
+};
 
 
 export default function Tickets() {
@@ -73,7 +75,6 @@ export default function Tickets() {
   ] = useState({
     subject: '',
     message: '',
-    priority: 'normal',
   });
 
   /* 🔔 موج ۴.۹۰ — Deep Link از مرکز اعلان:
@@ -217,9 +218,6 @@ export default function Tickets() {
 
             message:
               form.message.trim(),
-
-            priority:
-              form.priority,
           }
         ),
 
@@ -238,7 +236,6 @@ export default function Tickets() {
         setForm({
           subject: '',
           message: '',
-          priority: 'normal',
         });
 
         setSelectedId(
@@ -466,43 +463,6 @@ export default function Tickets() {
 
 
             <label className="fld-label">
-              اولویت
-            </label>
-
-            <select
-              className="inp"
-              value={
-                form.priority
-              }
-              onChange={(event) =>
-                setForm({
-                  ...form,
-
-                  priority:
-                    event.target
-                      .value,
-                })
-              }
-            >
-              <option value="low">
-                🟢 کم‌اهمیت
-              </option>
-
-              <option value="normal">
-                ⚪ عادی
-              </option>
-
-              <option value="high">
-                🟠 مهم
-              </option>
-
-              <option value="urgent">
-                🔴 فوری
-              </option>
-            </select>
-
-
-            <label className="fld-label">
               شرح درخواست
             </label>
 
@@ -679,47 +639,12 @@ export default function Tickets() {
                   </div>
 
                   <span
-                    style={{
-                      display:
-                        'flex',
-
-                      gap:
-                        6,
-                    }}
+                    className={`badge ${
+                      status.badge
+                    }`}
                   >
-                    <span
-                      className={`badge ${
-                        status.badge
-                      }`}
-                    >
-                      {status.label}
-                    </span>
-
-                    <span
-                      className={`badge ${
-                        prioInfo(
-                          ticket.priority
-                        ).badge
-                      }`}
-                    >
-                      {
-                        prioInfo(
-                          ticket.priority
-                        ).label
-                      }
-                    </span>
+                    {status.label}
                   </span>
-
-                  {/* 🌊 W10.1 — انتظار پاسخ‌گویی (یکپارچه با SLA ادمین) */}
-                  {!!ticket.sla?.sla_hours &&
-                    !ticket.sla?.responded &&
-                    ticket.status !== 'closed' && (
-                      <div className="muted">
-                        ⏱ هدف پاسخ‌گویی: تا{' '}
-                        {ticket.sla.sla_hours}{' '}
-                        ساعت پس از ثبت
-                      </div>
-                    )}
                 </div>
 
                 <div

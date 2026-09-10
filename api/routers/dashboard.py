@@ -13,7 +13,6 @@ from api.user_metrics import (
     normalize_weekly,
     same_user_id,
 )
-from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from time_utils import parse_gregorian_date
 from utils import now_tehran
@@ -100,8 +99,6 @@ async def leaderboard(
     limit: int = 50,
     user=Depends(get_current_user),
 ):
-    await rate_limit_user(user["id"], "leaderboard", 60, 60)  # 🛡 W10
-
     # 👑 P2 — حالت توسعه‌یافته (با حتی یک پارامتر): ماتریس بازه×دامنه×تب.
     # بدون پارامتر: شکل legacy دست‌نخورده (قرارداد Dashboard FE قدیمی).
     if range_ is None and scope is None and tab is None:

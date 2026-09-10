@@ -493,16 +493,6 @@ async def build_full_backup_data() -> dict:
         'settings_meta':   len(settings_meta),
         'migrations':      len(migrations),
     }
-    # 🌊 W5/REL-04 — اثر tamper-evident: sha256 روی sections کانونیکال.
-    # restore دوباره حساب می‌کند؛ ناسازگاری = توقف بازیابی.
-    try:
-        import hashlib as _hl
-        _canon = json.dumps(data.get('sections', {}), ensure_ascii=False,
-                            sort_keys=True, default=str)
-        data['integrity']['sha256_sections'] = _hl.sha256(
-            _canon.encode('utf-8')).hexdigest()
-    except Exception as _e:
-        logger.warning(f"backup sha256 failed (non-blocking): {_e}")
     return data
 
 
@@ -933,10 +923,9 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if context.user_data.get('backup_mode') != 'waiting_restore': return
 
     doc = update.message.document
-    _fname = (doc.file_name if doc else "") or ""
-    if not doc or not (_fname.endswith('.json') or _fname.endswith('.json.enc')):
+    if not doc or not doc.file_name.endswith('.json'):
         await update.message.reply_text(
-            "❌ لطفاً یک فایل <b>.json</b> یا <b>.json.enc</b> ارسال کنید.",
+            "❌ لطفاً یک فایل <b>.json</b> ارسال کنید.",
             parse_mode='HTML')
         return
 
@@ -948,29 +937,12 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         tg_file    = await context.bot.get_file(doc.file_id)
-        file_bytes = bytes(await tg_file.download_as_bytearray())
-        # 🌊 W5/REL-04 — رمزگشایی بکاپ خودکارِ رمزنگاری‌شده
-        if _fname.endswith('.enc'):
-            from utils_crypto import decrypt_bytes
-            _dec = decrypt_bytes(file_bytes)
-            if _dec is None:
-                await update.message.reply_text("❌ فایل رمزنگاری‌شده است ولی کلید (FERNET_KEY) در دسترس/معتبر نیست.")
-                return
-            file_bytes = _dec
+        file_bytes = await tg_file.download_as_bytearray()
         data       = json.loads(file_bytes.decode('utf-8'))
         integrity = data.get('integrity') if isinstance(data, dict) else None
         if isinstance(integrity, dict) and integrity.get('complete') is not True:
             await update.message.reply_text("❌ این فایل پشتیبان ناقص است و بازیابی نمی‌شود.")
             return
-        # 🌊 W5/REL-04 — راستی‌آزمایی sha (بکاپ‌های جدید)؛ legacy بدون هش رد می‌شود با هشدار
-        _expect = integrity.get('sha256_sections') if isinstance(integrity, dict) else None
-        if _expect:
-            import hashlib as _hl
-            _canon = json.dumps(data.get('sections', {}), ensure_ascii=False,
-                                sort_keys=True, default=str)
-            if _hl.sha256(_canon.encode('utf-8')).hexdigest() != _expect:
-                await update.message.reply_text("❌ جمع‌بندی یکپارچگی (sha256) ناسازگار است — فایل خراب یا دست‌کاری‌شده؛ بازیابی متوقف شد.")
-                return
 
         version = data.get('backup_version', '1.0')
         created_raw = data.get('created_at')

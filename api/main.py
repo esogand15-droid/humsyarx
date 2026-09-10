@@ -19,7 +19,6 @@ from api.routers import (
     admin_panel,
     ai,
     ai_management,
-    client_errors,
     content_admin,
     dashboard,
     faq,
@@ -111,19 +110,10 @@ async def lifespan(app: FastAPI):
     except: pass
 
 
-# 🛡 W4/SEC-01 — مستندات تعاملی API به‌صورت پیش‌فرض بسته است؛ اسکیمای
-# اندپوینت‌های ادمین نباید عمومی باشد. برای بازکردن در dev:
-# API_DOCS_ENABLED=1
-_DOCS_ON = (os.getenv("API_DOCS_ENABLED", "0").strip().lower()
-            in ("1", "true", "yes", "on"))
-
 app = FastAPI(
     title="Humsyar API",
     version="2.0.0",
     lifespan=lifespan,
-    docs_url="/docs" if _DOCS_ON else None,
-    redoc_url="/redoc" if _DOCS_ON else None,
-    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
 #: مبنای محاسبه‌ی uptime برای /api/health — در زمان import تنظیم می‌شود.
@@ -223,19 +213,6 @@ async def request_context_and_safe_errors(request: Request, call_next):
             # 🛡 AUDIT-M1 — تسک با مرجع و لاگ خطا
             from utils import spawn_bg
             spawn_bg(persist_metric(), 'wa_api_metric')
-        # 🌊 W5/REL-03 — شمارنده‌ی ارزانِ همه‌ی /api/* (درون‌حافظه‌ای؛
-        # wa_api_metrics همچنان منبع ماندگار وب‌ادمین است)
-        try:
-            from api.api_counters import record as _api_count
-            _p = _raw_path(request)
-            if _p.startswith("/api/"):
-                _tpl = (getattr(request.scope.get("route"), "path", "")
-                        or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)",
-                                  "/:id", _p))
-                _api_count(request.method, _tpl,
-                           int(response.status_code), request_id)
-        except Exception:
-            pass
         return response
     finally:
         current_request_id.reset(token)
@@ -338,11 +315,6 @@ app.add_middleware(
 app.include_router(
     dashboard.router,
     prefix="/api/dashboard",
-)
-
-app.include_router(
-    client_errors.router,
-    prefix="/api",
 )
 
 app.include_router(

@@ -9,8 +9,6 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 
 import {
   Spinner,
@@ -543,14 +541,31 @@ export default function AuditLog() {
         {isLoading ? (
           <AuditLogSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت لاگ انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty card">
+            دریافت لاگ انجام نشد.
+
+            <button
+              className="btn btn-p"
+              onClick={() => refetch()}
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : logs.length === 0 ? (
-          <EmptyState icon="📭">
-            موردی با این فیلترها پیدا نشد.
-          </EmptyState>
+          <div className="empty card">
+            <div
+              style={{ fontSize: 38 }}
+            >
+              📭
+            </div>
+
+            <div
+              style={{ marginTop: 8 }}
+            >
+              موردی با این فیلترها
+              پیدا نشد.
+            </div>
+          </div>
         ) : (
           <>
             <div

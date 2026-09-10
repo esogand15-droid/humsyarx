@@ -18,10 +18,6 @@ import {
 } from 'react-router-dom';
 
 import Header from '../../components/layout/Header';
-import SubscriptionLock, {
-  isSubscriptionLock,
-  lockKind,
-} from '../../components/shared/SubscriptionLock';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -1564,16 +1560,6 @@ export default function AiChat() {
   });
 
 
-  /* 🌊 W7 — قفل دسترسی ai_chat (از خطای پیام‌ها یا ارسال) */
-  const chatLock = (
-    isSubscriptionLock(msgsQuery.error)
-      ? msgsQuery.error
-      : isSubscriptionLock(askMutation.error)
-        ? askMutation.error
-        : null
-  );
-
-
   const reportMutation = useMutation({
     mutationFn: ({ question, answer }) => api.post(
       '/api/ai/report',
@@ -1685,7 +1671,6 @@ export default function AiChat() {
 
   const canSend = (
     !unavailable
-    && !chatLock
     && !statusLoading
     && !askMutation.isPending
     && !isRecording
@@ -2391,17 +2376,6 @@ export default function AiChat() {
           )
         }
 
-        {
-          chatLock
-          && (
-            <SubscriptionLock
-              feature="هوشیار"
-              featureKey="ai_chat"
-              mode={lockKind(chatLock).kind}
-            />
-          )
-        }
-
         <section
           className="chat-scroll"
           aria-live="polite"
@@ -2443,22 +2417,6 @@ export default function AiChat() {
                   }}
                 />
               </div>
-            )
-          }
-
-          {/* 🌊 W8/UX-02 — خطای غیرقفلی پیام‌ها */}
-          {
-            !msgsQuery.isPending
-            && msgsQuery.isError
-            && !chatLock
-            && (
-              <button
-                type="button"
-                className="btn btn-full"
-                onClick={() => msgsQuery.refetch()}
-              >
-                🌐 دریافت پیام‌ها ناموفق بود — تلاش دوباره
-              </button>
             )
           }
 

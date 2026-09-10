@@ -228,12 +228,6 @@ const SubscriptionScreen = lazyScreen(
   SubscriptionSkeleton
 );
 
-// 🌊 W2 — لندینگ بازگشت از درگاه زرین‌پال
-const PaymentVerifyScreen = lazyScreen(
-  () => import('./pages/Payment/Verify'),
-  SubscriptionSkeleton
-);
-
 const TicketsScreen = lazyScreen(
   () => import('./pages/Me/Tickets'),
   TicketsSkeleton
@@ -1061,13 +1055,6 @@ export default function App() {
           path="/me/subscription"
           element={
             <SubscriptionScreen />
-          }
-        />
-
-        <Route
-          path="/payment/verify"
-          element={
-            <PaymentVerifyScreen />
           }
         />
 

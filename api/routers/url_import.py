@@ -14,7 +14,6 @@ from typing import Optional
 from api.auth import get_content_admin_user, resolve_content_intake
 from api.routers.admin_panel import _audit
 from database import db
-from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 import url_import_service as svc
 
 logger = logging.getLogger("url_import")
@@ -75,8 +74,6 @@ async def create_job(body: ImportCreateBody,
                      admin=Depends(get_content_admin_user)):
     """ساخت job درون‌ریزی — پاسخ سریع با job_id (§24)؛ پایپ‌لاین در
     worker اجرا می‌شود. اعتبارسنجی مقصد همین‌جا سرور-ساید است."""
-    # 🛡 W3/SEC-03 — ساخت job هزینه‌بر است (worker + پهنای باند)
-    await rate_limit_user(admin["id"], "urlimport_job", 30, 60)
     payload = body.dict()
     kind = body.kind
     if kind == "qbank":

@@ -205,19 +205,8 @@ class DBWallet:
                     raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
             except WalletError:
                 raise
-            except Exception as e:
-                # 🛡 W3/SEC-02 — fail-closed: اگر جمع روزانه قابل
-                # محاسبه نباشد (خطای DB)، سقف نادیده گرفته نمی‌شود؛
-                # تراکنش متوقف می‌شود تا دور زدن سقف مالی در شرایط
-                # خطا ممکن نباشد.
-                logger.critical(
-                    'wallet daily-cap unavailable; blocking %s of %s '
-                    'for user %s: %s',
-                    tx_type, amount, user_id, e)
-                raise WalletError(
-                    'daily_limit_unavailable',
-                    'سامانه سقف روزانه موقتاً در دسترس نیست؛ '
-                    'لطفاً دقایقی دیگر تلاش کنید')
+            except Exception:
+                pass
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:
@@ -241,19 +230,8 @@ class DBWallet:
                     raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
             except WalletError:
                 raise
-            except Exception as e:
-                # 🛡 W3/SEC-02 — fail-closed: اگر جمع روزانه قابل
-                # محاسبه نباشد (خطای DB)، سقف نادیده گرفته نمی‌شود؛
-                # تراکنش متوقف می‌شود تا دور زدن سقف مالی در شرایط
-                # خطا ممکن نباشد.
-                logger.critical(
-                    'wallet daily-cap unavailable; blocking %s of %s '
-                    'for user %s: %s',
-                    tx_type, amount, user_id, e)
-                raise WalletError(
-                    'daily_limit_unavailable',
-                    'سامانه سقف روزانه موقتاً در دسترس نیست؛ '
-                    'لطفاً دقایقی دیگر تلاش کنید')
+            except Exception:
+                pass
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:

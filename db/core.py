@@ -78,7 +78,6 @@ class DBCore:
         self.ref_files    = _db['ref_files']
         self.faq          = _db['faq']
         self.tickets      = _db['tickets']
-        self.ticket_canned  = _db['ticket_canned']  # 🌊 W8/UX-04
         # 🛡 AUDIT-V3 — مقصد بایگانی پاسخ/یادداشت‌هایی که از کرانه‌ی درون‌سند
         # رد می‌شوند (جلوگیری از سقف ۱۶ مگابایت بدون حذف داده).
         self.ticket_overflow = _db['ticket_overflow']
@@ -127,11 +126,6 @@ class DBCore:
         # و متای آخرین تغییر تنظیمات (Last-Modified-By/At) برای Settings Center.
         self.wa_saved_filters  = _db['wa_saved_filters']
         self.wa_api_metrics    = _db['wa_api_metrics']
-        self.client_errors     = _db['client_errors']  # 🌊 W5/REL-03
-        self.feature_policies  = _db['feature_policies']  # 🌊 W7
-        self.feature_usage     = _db['feature_usage']  # 🌊 W7
-        self.feature_events    = _db['feature_events']  # 🌊 W7
-        self.family_invites    = _db['family_invites']  # 🌊 W8/MISS-03
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # 🚀 Audit Observability Refactor — Outbox برای Delivery قابل Retry (§14)
@@ -327,14 +321,6 @@ class DBCore:
                 self._index(self.web_admin_otps, [('uid', 1)], background=True),
                 self._index(self.web_admin_otps, [('expires_at', 1)], expireAfterSeconds=0, background=True),
                 self._index(self.wa_api_metrics, [('at', 1)], expireAfterSeconds=2592000, background=True),
-                # 🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی کلاینت (TTL ۳۰ روزه)
-                self._index(self.client_errors, [('at', 1)], expireAfterSeconds=2592000, background=True),
-                self._index(self.client_errors, [('message', 1), ('at', -1)], background=True),
-                # 🌊 W7 — مصرف سهمیه (TTL ۴۵ روزه) و ایونت‌های فیچر (TTL ۳۰ روزه)
-                self._index(self.feature_usage, [('updated_at', 1)], expireAfterSeconds=3888000, background=True),
-                self._index(self.feature_events, [('at', 1)], expireAfterSeconds=2592000, background=True),
-                self._index(self.feature_events, [('feature', 1), ('at', -1)], background=True),
-                self._index(self.family_invites, [('owner_id', 1)], background=True),  # 🌊 W8
                 self._index(self.wa_api_metrics, [('route', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('status', 1), ('at', -1)], background=True),
                 self._index(self.broadcast_campaigns, [('created_at', -1)], background=True),
@@ -401,8 +387,6 @@ class DBCore:
                 self._index(self.question_pdf_generations, [('user_id', 1), ('generated_at', -1)], background=True),
                 # 🎟 موج D1 — یک مصرف از هر کد توسط هر کاربر (ضدتکرار اتمیک)
                 self._index(self.discount_uses, [('code', 1), ('user_id', 1)], unique=True, background=True),
-                # 🛡 W1 — کد تخفیف یکتاست: ضدتکرار اتمیک در ساخت (race-safe) + کوئری داغ discount_validate
-                self._index(self.discount_codes, [('code', 1)], unique=True, background=True),
                 self._index(self.discount_bcasts, [('code', 1), ('created_at', -1)], background=True),
                 # 💰 W6 — کیف پول: هر کاربر یک wallet؛ کلید یکتای تراکنش =
                 # idempotency مالی (دو اثر اقتصادی برای یک مرجع ممنوع)؛
@@ -417,17 +401,6 @@ class DBCore:
                             [('status', 1), ('created_at', -1)], background=True),
                 # 🛡 W1 — nonce یک‌بارمصرف initData (TTL خودکار پاک‌سازی)
                 self._index(self.init_nonces, [('at', 1)], expireAfterSeconds=3600, background=True),
-                # 🗄 W4/DB-04 — کالکشن‌های بدون ایندکس (پوشش کوئری داغ):
-                # فهرست گفت‌وگوهای هر کاربر؛ تله‌متری jobها؛ آمار نقش‌ها (multikey).
-                # عمداً بدون ایندکس مانده‌اند (تک‌سند/tiny یا _idمحور):
-                # settings، settings_meta، perm_catalog، roles، migrations،
-                # db_counters، sub_plans، blacklist، admin_roles، audit_delivery_metrics.
-                self._index(self.ai_conversations,
-                            [('user_id', 1), ('updated_at', -1)], background=True),
-                self._index(self.notif_runs,
-                            [('job_name', 1), ('started_at', -1)], background=True),
-                self._index(self.user_roles,
-                            [('roles', 1)], background=True),
             ]
             coros = [
                 collection.create_index(*keys, **options)
@@ -633,26 +606,6 @@ class DBCore:
                 self._user_cache[int(uid)] = (dict(doc), _t.monotonic())
             except: pass
         return doc
-
-
-    async def get_users_by_ids(self, uids: list) -> dict:
-        """🗄 W4/PERF-01 — خواندن بچ کاربران با یک کوئری ($in) برای عملیات
-        گروهی؛ کش ۵ ثانیه‌ای get_user دور زده می‌شود (خوانش تازه)."""
-        ids = []
-        for u in (uids or []):
-            try:
-                ids.append(int(u))
-            except (TypeError, ValueError):
-                continue
-        if not ids:
-            return {}
-        out = {}
-        async for doc in self.users.find({'user_id': {'$in': ids}}):
-            try:
-                out[int(doc.get('user_id'))] = doc
-            except (TypeError, ValueError):
-                continue
-        return out
 
 
     async def create_user(self, uid: int, name: str, student_id: str,
@@ -965,130 +918,12 @@ class DBCore:
         ).sort('created_at', -1).to_list(limit)
 
 
-    # 🌊 W8/UX-04 — SLA پیش‌فرض هر اولویت (ساعت)؛ قابل‌تنظیم از مرکز تنظیمات
-    TICKET_SLA_DEFAULTS = {'low': 72, 'normal': 48, 'high': 24, 'urgent': 8}
-    TICKET_PRIORITIES = ('low', 'normal', 'high', 'urgent')
-
-    async def ticket_sla_hours(self, priority: str) -> int:
-        try:
-            v = await self.get_setting(f'ticket_sla_{priority}',
-                                       self.TICKET_SLA_DEFAULTS.get(priority, 48))
-            return max(0, int(v or 0))
-        except Exception:
-            return self.TICKET_SLA_DEFAULTS.get(priority, 48)
-
-    @staticmethod
-    def ticket_sla_info(t: dict) -> dict:
-        """وضعیت SLA تیکت (first-response): {sla_hours, due_at, responded, breached}."""
-        from time_utils import parse_machine_datetime, now_utc
-        from datetime import timedelta
-        sla = 0
-        try:
-            sla = max(0, int((t or {}).get('sla_hours') or 0))
-        except (TypeError, ValueError):
-            sla = 0
-        responded = bool((t or {}).get('first_response_at'))
-        due_at, breached = None, False
-        if sla > 0 and not responded and (t or {}).get('status') != 'closed':
-            try:
-                due = parse_machine_datetime(t.get('created_at')) + timedelta(hours=sla)
-                due_at = due.isoformat()
-                breached = now_utc() > due
-            except (ValueError, TypeError):
-                pass
-        return {'sla_hours': sla, 'due_at': due_at, 'responded': responded,
-                'breached': breached}
-
-    # 🌊 W9 — ورک‌فلو وضعیت تیکت (هسته‌ی خالص؛ ریس‌سیف با آپدیت شرطی)
-    TICKET_STATUSES = ('open', 'in_progress', 'waiting_user',
-                       'resolved', 'closed')
-    # legacy: فیلتر قدیمی answered یعنی «پاسخ داده شده، منتظر کاربر»
-    TICKET_STATUS_LEGACY = {'answered': 'waiting_user'}
-    TICKET_TRANSITIONS = {
-        'open': ('in_progress', 'resolved', 'closed'),
-        'in_progress': ('open', 'waiting_user', 'resolved', 'closed'),
-        'waiting_user': ('in_progress', 'resolved', 'closed'),
-        'resolved': ('in_progress', 'closed'),
-        'closed': ('in_progress',),
-    }
-
-    @staticmethod
-    def ticket_norm_status(s) -> str:
-        s = str(s or 'open').strip()
-        s = DBCore.TICKET_STATUS_LEGACY.get(s, s)
-        return s if s in DBCore.TICKET_STATUSES else 'open'
-
-    @staticmethod
-    def ticket_transition_allowed(frm, to) -> bool:
-        frm = DBCore.ticket_norm_status(frm)
-        to = DBCore.ticket_norm_status(to)
-        if frm == to:
-            return True  # no-op مجاز است
-        return to in DBCore.TICKET_TRANSITIONS.get(frm, ())
-
-    async def ticket_assignee_ok(self, uid) -> bool:
-        """🌊 W9 — آیا assignee هنوز مجوز پاسخ‌گویی دارد؟
-        رفتار امن: فقط flag برای نمایش؛ سلب خودکار ممنوع."""
-        try:
-            uid = int(uid or 0)
-        except (TypeError, ValueError):
-            return False
-        if uid <= 0:
-            return False
-        try:
-            u = await self.get_user(uid)
-            if not u:
-                return False
-            return bool(await self.has_permission(uid, 'tickets.reply'))
-        except Exception:
-            return False
-
-    async def ticket_set_status(self, ticket_id: int, to: str) -> dict:
-        """تغییر وضعیت گاردشده: {'ok', 'frm', 'to'}؛ ریس ⇒ ok=False.
-
-        آپدیت شرطی روی status موردانتظار + ۱ retry؛ اگر هم‌زمان عوض
-        شده بود، به‌جای last-write-wins کور، ۴۰۹ منطقی برمی‌گردد.
-        """
-        to = self.ticket_norm_status(to)
-        for _ in range(2):
-            t = await self.ticket_get(ticket_id)
-            if not t:
-                return {'ok': False, 'frm': '', 'to': to,
-                        'error': 'not_found'}
-            frm = self.ticket_norm_status(t.get('status'))
-            if frm == to:
-                return {'ok': True, 'frm': frm, 'to': to,
-                        'noop': True}
-            if not self.ticket_transition_allowed(frm, to):
-                return {'ok': False, 'frm': frm, 'to': to,
-                        'error': 'invalid_transition'}
-            ops = {'$set': {'status': to}}
-            if to == 'closed':
-                ops['$set']['closed_at'] = utc_now_iso()
-            elif frm == 'closed':
-                ops['$unset'] = {'closed_at': ''}
-            r = await self.tickets.update_one(
-                {'ticket_id': ticket_id, 'status': t.get('status')},
-                ops)
-            if r.matched_count:
-                return {'ok': True, 'frm': frm, 'to': to}
-        cur = await self.ticket_get(ticket_id) or {}
-        return {'ok': False,
-                'frm': self.ticket_norm_status(cur.get('status')),
-                'to': to, 'error': 'race'}
-
-    async def ticket_create(self, uid: int, name: str, subject: str,
-                            message: str, priority: str = 'normal') -> int:
+    async def ticket_create(self, uid: int, name: str, subject: str, message: str) -> int:
         tid = await self._next_ticket_id()
-        prio = priority if priority in self.TICKET_PRIORITIES else 'normal'
         await self.tickets.insert_one({
             'ticket_id': tid, 'user_id': uid, 'user_name': name,
             'subject': subject, 'message': message, 'status': 'open',
             'created_at': utc_now_iso(), 'replies': [],
-            # 🌊 W8/UX-04 — اولویت + SLA (legacyها فاقدند ⇒ عادی/بدون SLA)
-            'priority': prio, 'sla_hours': await self.ticket_sla_hours(prio),
-            'assignee_id': None, 'assignee_name': '',
-            'first_response_at': None, 'stale_nudged_at': None,
         })
         return tid
 
@@ -1098,11 +933,7 @@ class DBCore:
 
 
     async def ticket_get_all(self, status: str = None):
-        # 🌊 W9 — «باز» یعنی نیازمند توجه (غیربسته)؛ بقیه exact-match
-        if status == 'open':
-            q = {'status': {'$ne': 'closed'}}
-        else:
-            q = {'status': status} if status else {}
+        q = {'status': status} if status else {}
         return await self.tickets.find(q).sort('created_at', -1).to_list(100)
 
 
@@ -1169,137 +1000,42 @@ class DBCore:
             out.extend(r.get('items') or [])
         return out
 
-    async def ticket_add_reply(self, ticket_id: int, reply_text: str) -> dict:
-        t = await self.ticket_get(ticket_id)
-        frm = self.ticket_norm_status((t or {}).get('status'))
+    async def ticket_add_reply(self, ticket_id: int, reply_text: str):
         await self._push_capped(
             'tickets', {'ticket_id': ticket_id}, 'replies',
             {'text': reply_text, 'at': utc_now_iso()}, self.TICKET_INLINE_CAP,
             archive_kind='replies')
-        now = utc_now_iso()
         await self.tickets.update_one(
             {'ticket_id': ticket_id},
-            {'$set': {'last_reply_at': now}}
+            {'$set': {'last_reply_at': utc_now_iso()}}
         )
-        # 🌊 W9 — گذار خودکار وضعیت (best-effort؛ خطا هرگز reply را خراب نمی‌کند)
-        to = frm
-        try:
-            if str(reply_text or '').startswith('[دانشجو]'):
-                if frm in ('waiting_user', 'resolved'):
-                    to = 'in_progress'
-            elif frm in ('open', 'in_progress'):
-                to = 'waiting_user'
-            elif frm == 'resolved':
-                to = 'waiting_user'
-            if to != frm and self.ticket_transition_allowed(frm, to):
-                await self.tickets.update_one(
-                    {'ticket_id': ticket_id, 'status': (t or {}).get('status')},
-                    {'$set': {'status': to}})
-            else:
-                to = frm
-        except Exception:
-            to = frm
-        # 🌊 W8/UX-04 — اولین پاسخ پشتیبانی (هر ۳ مسیر: ربات/API/وب) ساعت SLA را می‌بندد
-        if not str(reply_text or '').startswith('[دانشجو]'):
-            await self.tickets.update_one(
-                {'ticket_id': ticket_id,
-                 '$or': [{'first_response_at': None},
-                         {'first_response_at': {'$exists': False}}]},
-                {'$set': {'first_response_at': now}})
-        return {'status_from': frm, 'status_to': to}
 
 
     async def ticket_reply(self, ticket_id: int, reply: str):
         await self.ticket_add_reply(ticket_id, reply)
 
 
-    async def ticket_close(self, ticket_id: int) -> dict:
-        # 🌊 W9 — بستن گاردشده (از هر وضعیت غیربسته)
-        return await self.ticket_set_status(ticket_id, 'closed')
+    async def ticket_close(self, ticket_id: int):
+        await self.tickets.update_one(
+            {'ticket_id': ticket_id},
+            {'$set': {'status': 'closed', 'closed_at': utc_now_iso()}}
+        )
 
 
-    async def ticket_reopen(self, ticket_id: int) -> dict:
+    async def ticket_reopen(self, ticket_id: int):
         """
         FIX جدید طبق سند: بازگشایی تیکت — قبلاً این قابلیت اصلاً
         وجود نداشت و دانشجو مجبور بود تیکت جدید بسازد.
-        🌊 W9 — بازگشایی به in_progress (نیازمند رسیدگی مجدد) + گارد.
         """
-        t = await self.ticket_get(ticket_id)
-        frm = self.ticket_norm_status((t or {}).get('status'))
-        if frm not in ('closed', 'resolved'):
-            return {'ok': True, 'frm': frm, 'to': frm, 'noop': True}
-        return await self.ticket_set_status(ticket_id, 'in_progress')
+        await self.tickets.update_one(
+            {'ticket_id': ticket_id},
+            {'$set': {'status': 'open'}, '$unset': {'closed_at': ''}}
+        )
 
 
     # ══════════════════════════════════════════════════
     #  آمار
     # ══════════════════════════════════════════════════
-    # ── 🌊 W8/UX-04 — پاسخ‌های آماده ──
-    @staticmethod
-    def canned_clean_category(c) -> str:
-        """🌊 W9 — دسته‌ی پاسخ آماده (خالص): trim + سقف ۴۰ کاراکتر."""
-        return str(c or '').strip()[:40]
-
-    async def canned_list(self, only_active: bool = False,
-                          category: str = '') -> list:
-        q = {'active': True} if only_active else {}
-        if self.canned_clean_category(category):
-            q['category'] = self.canned_clean_category(category)
-        return await self.ticket_canned.find(q).sort('order', 1).to_list(100)
-
-    async def canned_add(self, title: str, text: str, actor_id: int = 0,
-                         category: str = '') -> str:
-        from bson import ObjectId
-        count = await self.ticket_canned.count_documents({})
-        r = await self.ticket_canned.insert_one({
-            'title': (title or '').strip()[:80], 'text': (text or '').strip()[:2000],
-            'active': True, 'order': count,
-            'category': self.canned_clean_category(category),
-            'created_by': int(actor_id or 0), 'created_at': utc_now_iso()})
-        return str(r.inserted_id)
-
-    async def canned_update(self, cid: str, patch: dict) -> bool:
-        from bson import ObjectId
-        try:
-            oid = ObjectId(cid)
-        except Exception:
-            return False
-        clean = {}
-        if 'title' in patch:
-            clean['title'] = str(patch['title'] or '').strip()[:80]
-        if 'text' in patch:
-            clean['text'] = str(patch['text'] or '').strip()[:2000]
-        if 'active' in patch:
-            clean['active'] = bool(patch['active'])
-        if 'category' in patch:
-            clean['category'] = self.canned_clean_category(
-                patch['category'])
-        if not clean:
-            return False
-        r = await self.ticket_canned.update_one({'_id': oid}, {'$set': clean})
-        return r.matched_count > 0
-
-    async def canned_delete(self, cid: str) -> bool:
-        from bson import ObjectId
-        try:
-            r = await self.ticket_canned.delete_one({'_id': ObjectId(cid)})
-            return r.deleted_count > 0
-        except Exception:
-            return False
-
-    async def tickets_needing_nudge(self, stale_hours: int,
-                                    limit: int = 30) -> list:
-        """تیکت‌های باز بدون پاسخ پشتیبانی که از stale_hours گذشته‌اند."""
-        from time_utils import now_utc
-        from datetime import timedelta
-        cutoff = (now_utc() - timedelta(hours=max(1, stale_hours))).isoformat()
-        return await self.tickets.find({
-            'status': 'open', 'first_response_at': None,
-            'created_at': {'$lt': cutoff},
-            '$or': [{'stale_nudged_at': None},
-                    {'stale_nudged_at': {'$lt': cutoff}}],
-        }).sort('created_at', 1).to_list(limit)
-
 
     async def log(self, uid: int, action: str, data: dict = None):
         await self.stats_col.insert_one({
@@ -3812,155 +3548,6 @@ class DBCore:
         u = await self.users.find_one({'user_id': int(uid)},
                                       {'ai_image_count': 1})
         return int((u or {}).get('ai_image_count') or 0)
-
-    async def plan_for_sub(self, sub: dict | None) -> dict | None:
-        """🌊 W7 — پلنِ یک اشتراک (تک‌منبع: اول plan_id، بعد تطبیق نام فعال).
-
-        استخراج‌شده از ai_limit_for_user تا entitlement و سهمیه یک منطق
-        داشته باشند؛ رفتار ai_limit عیناً حفظ می‌شود.
-        """
-        if not sub:
-            return None
-        try:
-            pid = str(sub.get("plan_id") or "")
-            if pid:
-                plan = await self.sub_plan_get(pid)
-                if plan:
-                    return plan
-            if sub.get("plan_name"):
-                plans = await self.sub_plan_list(only_active=True)
-                return next((x for x in plans
-                             if x.get("name") == sub.get("plan_name")), None)
-        except Exception:
-            return None
-        return None
-
-    # ── 🌊 W7 — پالیسی فیچر ──
-    async def get_feature_policy(self, feature: str) -> dict | None:
-        try:
-            return await self.feature_policies.find_one({"_id": str(feature)})
-        except Exception:
-            return None
-
-    async def set_feature_policy(self, feature: str, patch: dict,
-                                 actor_id: int = 0,
-                                 actor_name: str = "") -> dict:
-        """ذخیره‌ی پالیسی + اسنپ‌شات prev برای rollback. برمی‌گرداند {before, after}."""
-        feature = str(feature)
-        cur = await self.feature_policies.find_one({"_id": feature}) or {}
-        before = {k: cur.get(k) for k in (
-            "enabled", "access", "trial_allowed", "quota", "fail_open",
-            "note", "pending_access", "effective_from")}
-        clean = {k: patch[k] for k in before if k in patch}
-        prev = dict(before)
-        prev["_by"] = cur.get("updated_by", 0)
-        prev["_by_name"] = cur.get("updated_by_name", "")
-        prev["_at"] = cur.get("updated_at")
-        after = dict(before)
-        after.update(clean)
-        await self.feature_policies.update_one(
-            {"_id": feature},
-            {"$set": {**clean, "prev": prev, "updated_at": utc_now_iso(),
-                      "updated_by": int(actor_id or 0),
-                      "updated_by_name": actor_name or ""}},
-            upsert=True)
-        return {"before": before, "after": after}
-
-    async def rollback_feature_policy(self, feature: str, actor_id: int = 0,
-                                      actor_name: str = "") -> dict | None:
-        """بازگردانی به prev (و جابه‌جایی prev/current ⇒ rollback دو‌باره = redo)."""
-        cur = await self.feature_policies.find_one({"_id": str(feature)}) or {}
-        prev = cur.get("prev")
-        if not prev:
-            return None
-        restore = {k: prev.get(k) for k in (
-            "enabled", "access", "trial_allowed", "quota", "fail_open",
-            "note", "pending_access", "effective_from")}
-        return await self.set_feature_policy(feature, restore, actor_id,
-                                             actor_name)
-
-    # ── 🌊 W7 — سهمیه‌ی ژنریک (روزانه/ماهانه، اتمیک) ──
-    @staticmethod
-    def _usage_period(kind: str) -> str:
-        today = today_tehran().isoformat()  # YYYY-MM-DD
-        return today if kind == "daily" else today[:7]
-
-    async def feature_usage_get(self, uid: int, feature: str,
-                                kind: str) -> int:
-        try:
-            doc = await self.feature_usage.find_one({
-                "_id": f"{int(uid)}:{feature}:{self._usage_period(kind)}"})
-        except Exception:
-            return 0
-        return int((doc or {}).get("count", 0) or 0)
-
-    async def feature_consume(self, uid: int, feature: str, kind: str,
-                              limit: int) -> tuple:
-        """مصرف اتمیک یک واحد؛ برمی‌گرداند (allowed, used_after)."""
-        if kind not in ("daily", "monthly") or int(limit or 0) <= 0:
-            return True, 0
-        from pymongo import ReturnDocument
-        try:
-            from pymongo.errors import DuplicateKeyError
-        except ImportError:  # pragma: no cover
-            DuplicateKeyError = Exception
-        filt = {"_id": f"{int(uid)}:{feature}:{self._usage_period(kind)}",
-                "count": {"$lt": int(limit)}}
-        upd = {"$inc": {"count": 1},
-               "$set": {"updated_at": now_utc()}}  # datetime برای TTL
-        for attempt in range(2):
-            try:
-                res = await self.feature_usage.find_one_and_update(
-                    filt, upd, upsert=True,
-                    return_document=ReturnDocument.AFTER)
-            except DuplicateKeyError:
-                # یا race ساخت سند بود یا سقف واقعاً پر است: بخوان و تصمیم بگیر
-                used = await self.feature_usage_get(uid, feature, kind)
-                if used < int(limit) and attempt == 0:
-                    continue  # race بود؛ دوباره مصرف کن (نه واحد مجانی)
-                return used < int(limit), used
-            # با upsert همیشه سند برمی‌گردد (ساخته یا $incشده)
-            if res:
-                return True, int(res.get("count", 0) or 0)
-            break
-        used = await self.feature_usage_get(uid, feature, kind)
-        return used < int(limit), used
-
-    async def log_feature_event(self, feature: str, event: str, uid: int,
-                                extra: dict | None = None) -> None:
-        """ایونت سبک فیچر (TTL ۳۰ روزه) برای آنالیتیکس تبدیل/پی‌وال."""
-        try:
-            await self.feature_events.insert_one({
-                "feature": str(feature), "event": str(event),
-                "user_id": int(uid), "extra": extra or {},
-                "at": now_utc()})  # datetime برای TTL
-        except Exception:
-            pass
-
-
-    async def ai_limit_for_user(self, uid: int, global_limit: int) -> int:
-        """🌊 W6/MISS-04 — سهمیه روزانه هوشیار این کاربر.
-
-        اشتراک فعال ← پلن (plan_id، وگرنه تطبیق نام میان پلن‌های فعال)؛
-        اگر پلن `ai_daily_limit>0` داشت همان، وگرنه سقف سراسری.
-        بدون اشتراک فعال ← سقف سراسری. ۰ یعنی نامحدود (قرارداد قبلی).
-        """
-        try:
-            sub = await self.sub_get(int(uid))
-        except Exception:
-            return int(global_limit or 0)
-        if not sub or sub.get("status") != "active":
-            return int(global_limit or 0)
-        plan = await self.plan_for_sub(sub)
-        if plan:
-            try:
-                pl = int(plan.get("ai_daily_limit") or 0)
-            except (TypeError, ValueError):
-                pl = 0
-            if pl > 0:
-                return pl
-        return int(global_limit or 0)
-
 
     async def ai_consume_quota(self, uid: int, daily_limit: int, today: str) -> tuple:
         """Atomically reserve one AI request across all API/Bot workers.

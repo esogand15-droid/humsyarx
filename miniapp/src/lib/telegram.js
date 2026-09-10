@@ -57,23 +57,3 @@ export const hapticNotif = (type = 'success') => {
 };
 
 export const isTelegram = Boolean(tg);
-
-/* 🌊 W2 — بازکردن لینک خارجی (درگاه پرداخت) در مرورگر بیرون تلگرام؛
-   در کلاینت قدیمی یا وب، fallback به window.open */
-export const openExternalLink = (url) => {
-  if (!url) return false;
-  if (typeof tg?.openLink === 'function') {
-    try {
-      tg.openLink(url);
-      return true;
-    } catch {
-      /* fallback پایین */
-    }
-  }
-  try {
-    window.open(url, '_blank', 'noopener');
-    return true;
-  } catch {
-    return false;
-  }
-};

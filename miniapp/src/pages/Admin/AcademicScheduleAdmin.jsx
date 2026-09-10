@@ -7,8 +7,6 @@ import {
 } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -591,14 +589,20 @@ export default function AcademicScheduleAdmin() {
         {isLoading ? (
           <ScheduleAdminSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت برنامه‌ها انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty">
+            دریافت برنامه‌ها انجام نشد.
+
+            <button
+              className="btn btn-p"
+              onClick={() => refetch()}
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : items.length === 0 ? (
-          <EmptyState icon="📭">
+          <div className="empty">
             موردی ثبت نشده است.
-          </EmptyState>
+          </div>
         ) : (
           items.map((item) => (
             <div

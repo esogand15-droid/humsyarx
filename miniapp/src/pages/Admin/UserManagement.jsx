@@ -1,4 +1,3 @@
-import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
 import { faNum, number, errorText } from '../../lib/format';
@@ -473,10 +472,22 @@ export function AdminUsers() {
         {isLoading ? (
           <UsersActionsSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت کاربران انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <EmptyState icon="🌐">
+            دریافت کاربران انجام نشد.
+
+            <button
+              className="btn btn-p"
+              style={{
+                marginTop:
+                  12,
+              }}
+              onClick={() =>
+                refetch()
+              }
+            >
+              تلاش دوباره
+            </button>
+          </EmptyState>
         ) : users.length === 0 ? (
           <EmptyState>
             کاربری با این فیلتر پیدا نشد.

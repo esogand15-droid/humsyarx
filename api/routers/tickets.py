@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from api.auth import get_current_user
 from database import db
-from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from request_context import current_request_id
 from time_utils import utc_now_iso
 
@@ -15,9 +14,8 @@ SUBJECTS = ["🔬 مشکل در منابع","🧪 مشکل در بانک سوا�
 
 def _fmt(t, detail=False):
     replies = t.get("replies",[])
-    r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":db.ticket_norm_status(t.get("status")),
-        "created_at": t.get("created_at") or None,"reply_count":len(replies),
-        "priority":t.get("priority","normal"),"sla":db.ticket_sla_info(t)}
+    r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":t.get("status","open"),
+        "created_at": t.get("created_at") or None,"reply_count":len(replies)}
     if detail:
         r["message"] = t.get("message","")
         r["replies"] = [{"text":rep.get("text","").removeprefix("[دانشجو]").strip(),
@@ -70,16 +68,13 @@ async def get_ticket(tid: int, user=Depends(get_current_user)):
     return {"ticket":_fmt(ticket,detail=True)}
 
 class NewTicket(BaseModel):
-    subject: str; message: str; priority: str = "normal"
+    subject: str; message: str
 
 @router.post("")
 async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
     uid = user["id"]; db_user = user["_db"]
-    # 🛡 W3/SEC-03 — ضد اسپم تیکت
-    await rate_limit_user(uid, "ticket_create", 10, 60)
     if len(body.message.strip()) < 10: raise HTTPException(422,"متن کوتاه است")
-    tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip(),
-        priority=body.priority if body.priority in ("low","normal","high","urgent") else "normal")
+    tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip())
     # AUDIT — ticket creation
     try:
         _role = await db.get_actor_role_label(uid)
@@ -119,7 +114,6 @@ async def reply(tid: int, body: ReplyBody, user=Depends(get_current_user)):
     if not ticket: raise HTTPException(404)
     if ticket["user_id"] != user["id"]: raise HTTPException(403)
     if ticket.get("status") == "closed": raise HTTPException(400,"تیکت بسته است")
-    await rate_limit_user(user["id"], "ticket_reply", 30, 60)  # 🛡 W3/SEC-03
     msg = body.message.strip()
     if not msg: raise HTTPException(422)
     await db.ticket_add_reply(tid, f"[دانشجو] {msg}")

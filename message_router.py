@@ -49,34 +49,16 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from profile import profile_text_handler
         return await profile_text_handler(update, context)
 
-    # 🌊 W10 — روت حالت‌های متنی ادمین با RBAC (به‌جای ADMIN_ID خالص)
-    mode = context.user_data.get('mode', '')
-    _MODE_PERM = {
-        'search_user': 'users.view', 'edit_user': 'users.manage',
-        'add_lesson': 'content.manage', 'add_topic': 'content.manage',
-        'add_intake': 'settings.manage',
-    }
-    if mode in _MODE_PERM:
-        try:
-            _ok = await db.has_permission(uid, _MODE_PERM[mode])
-        except Exception:
-            _ok = (uid == ADMIN_ID)
-        if _ok:
+    if uid == ADMIN_ID:
+        mode = context.user_data.get('mode', '')
+        ADMIN_TEXT_MODES = (
+            'search_user', 'edit_user',
+            'add_lesson', 'add_topic',
+            'add_intake',
+        )
+        if mode in ADMIN_TEXT_MODES:
             from admin import handle_admin_text
             await handle_admin_text(update, context)
-        else:
-            await update.message.reply_text("❌ دسترسی ندارید.")
-        return
-    # 🌊 W10 — broadcast و اشتراک هم با پرمیشن (نه ADMIN_ID خالص)
-    if mode == 'broadcast' or mode == 'sub_reject_reason' or mode.startswith('suba_'):
-        _need = ('broadcast.send' if mode == 'broadcast'
-                 else 'subscription.manage')
-        try:
-            _ok = await db.has_permission(uid, _need)
-        except Exception:
-            _ok = (uid == ADMIN_ID)
-        if not _ok:
-            await update.message.reply_text("❌ دسترسی ندارید.")
             return
         if mode == 'broadcast':
             from admin import admin_broadcast_handler
@@ -110,15 +92,14 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await handle_bulk_list_text(update, context)
 
     # ── ویرایش تک‌فیلدی برنامه (بخش اول) ──
-    if context.user_data.get('mode') == 'edit_schedule_field' and (  # 🌊 W10
-            await db.has_permission(uid, 'schedules.manage')):
+    if uid == ADMIN_ID and context.user_data.get('mode') == 'edit_schedule_field':
         from schedule import handle_edit_schedule_field_text
         return await handle_edit_schedule_field_text(update, context)
 
     # ── حالت ساخت سؤال؛ اشتراک در هر پیام دوباره server-side بررسی می‌شود ──
     if context.user_data.get('mode') == 'creating_question':
-        from subscription import feature_allowed
-        if not await feature_allowed(uid, "question_bank"):
+        from subscription import has_access
+        if not await has_access(uid):
             context.user_data.pop('mode', None); context.user_data.pop('create_step', None)
             await update.message.reply_text("🔒 اشتراک فعال نیست؛ پیش‌نویس ارسال نشد.")
             return
@@ -170,11 +151,6 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from subscription import topup_amount_text_handler
         return await topup_amount_text_handler(update, context)
 
-    # 🌊 W8/MISS-03 — کد دعوت خانواده
-    if context.user_data.get('sub_mode') == 'awaiting_family_code':
-        from subscription import family_code_text_handler
-        return await family_code_text_handler(update, context)
-
     # ── مسیریابی دکمه‌های منو ──
     await _route_menu_button(update, context, text, uid, user)
 
@@ -189,8 +165,7 @@ async def _route_menu_button(update, context, text: str, uid: int, user: dict):
 
     elif text == "📚 منابع":
         from subscription import check_and_show_paywall
-        if not await check_and_show_paywall(update, context, uid,
-                                            feature="resources"):
+        if not await check_and_show_paywall(update, context, uid):
             return
         keyboard = [
             [InlineKeyboardButton("🔬 علوم پایه", callback_data='bs:main')],
@@ -207,8 +182,7 @@ async def _route_menu_button(update, context, text: str, uid: int, user: dict):
 
     elif text == "🧪 بانک سوال":
         from subscription import check_and_show_paywall
-        if not await check_and_show_paywall(update, context, uid,
-                                            feature="question_bank"):
+        if not await check_and_show_paywall(update, context, uid):
             return
         from questions import _main_menu_msg
         await _main_menu_msg(update.message)

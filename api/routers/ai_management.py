@@ -13,7 +13,7 @@ from pydantic import (
 )
 
 from api.auth import (
-    require_perm,
+    get_admin_user,
 )
 
 from ai_solver import (
@@ -120,7 +120,9 @@ class UserAction(BaseModel):
 
 @router.get("/models")
 async def models_catalog(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     """🌊 W9 — کاتالوگ مرکزی providerها/مدل‌ها برای UI (بدون تایپ دستی)."""
     return ai_catalog_payload()
@@ -128,7 +130,9 @@ async def models_catalog(
 
 @router.get("/config")
 async def config(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     value = (
         await get_ai_config()
@@ -191,7 +195,9 @@ async def config(
 async def update_config(
     body: ConfigUpdate,
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     editable_fields = (
         "enabled",
@@ -249,7 +255,7 @@ class VaultUpdate(BaseModel):
 
 @router.get("/vault")
 async def vault_status(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(get_admin_user),
 ):
     cfg = await get_ai_config()
     vault = cfg.get("vault") or {}
@@ -264,7 +270,7 @@ async def vault_status(
 async def vault_set(
     provider: str,
     body: VaultUpdate,
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(get_admin_user),
 ):
     provider = provider.strip()
     if provider not in ("gemini","openrouter","groq","cerebras","mistral","deepseek","nvidia","huggingface","together"):
@@ -273,28 +279,24 @@ async def vault_set(
     if not key:
         raise HTTPException(status_code=400, detail="کلید نمی‌تواند خالی باشد")
     await set_api_key_for_provider(provider, key)
-    # 🌊 W6/RBAC — نوشتن سکرت با actor تفویض‌شده: audit بدون ماده‌ی کلید
-    await _ai_audit(admin["id"], "ثبت کلید API هوشیار",
-                    target_id=provider, target_label=provider)
     return {"ok": True, "provider": provider}
 
 
 @router.delete("/vault/{provider}")
 async def vault_delete(
     provider: str,
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(get_admin_user),
 ):
     provider = provider.strip()
     await delete_api_key_for_provider(provider)
-    # 🌊 W6/RBAC — حذف سکرت: audit
-    await _ai_audit(admin["id"], "حذف کلید API هوشیار",
-                    target_id=provider, target_label=provider)
     return {"ok": True, "provider": provider}
 
 
 @router.get("/stats")
 async def stats(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     raw = await db.ai_usage_stats(
         10
@@ -325,7 +327,9 @@ async def reports(
         le=100,
     ),
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     items = (
         await db.ai_recent_reports(
@@ -378,7 +382,9 @@ async def reports(
 
 @router.get("/banned")
 async def banned(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     items = (
         await db.ai_list_banned(
@@ -414,7 +420,9 @@ async def users(
         max_length=100,
     ),
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     items = (
         await db.search_users(
@@ -469,7 +477,9 @@ async def users(
 async def toggle_ban(
     body: UserAction,
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     user = (
         await db.get_user(
@@ -509,7 +519,9 @@ async def toggle_ban(
 async def reset_quota(
     body: UserAction,
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     result = (
         await db.users.update_one(
@@ -553,7 +565,9 @@ async def reset_quota(
 async def clear_profile(
     user_id: int,
 
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     user = (
         await db.get_user(
@@ -582,7 +596,9 @@ async def clear_profile(
 
 @router.post("/test")
 async def test_connection(
-    admin=Depends(require_perm("ai.manage")),
+    admin=Depends(
+        get_admin_user
+    ),
 ):
     try:
         answer, tokens = (

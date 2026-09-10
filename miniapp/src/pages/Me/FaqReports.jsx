@@ -12,8 +12,6 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 
 import {
   Spinner,
@@ -384,10 +382,22 @@ export function Faq() {
         {isLoading ? (
           <FaqListSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت راهنما انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty card">
+            دریافت راهنما انجام نشد.
+
+            <button
+              className="btn btn-p"
+              style={{
+                marginTop:
+                  12,
+              }}
+              onClick={() =>
+                refetch()
+              }
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : searching ? (
           <section
             style={{
@@ -419,9 +429,9 @@ export function Faq() {
               )
             ) : (
               !isFetching && (
-                <EmptyState icon="🔍">
+                <div className="empty card">
                   نتیجه‌ای پیدا نشد.
-                </EmptyState>
+                </div>
               )
             )}
           </section>

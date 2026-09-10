@@ -11,7 +11,6 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
 
 import {
 } from '../../components/shared/Loading';
@@ -407,10 +406,16 @@ export default function Analytics() {
         {isLoading ? (
           <AnalyticsSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت آمار انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty card">
+            دریافت آمار انجام نشد.
+
+            <button
+              className="btn btn-p"
+              onClick={() => refetch()}
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : (
           <>
             {/* KPI ها */}

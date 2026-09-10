@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from typing import Optional
 from api.auth import get_current_user
 from database import db
-from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from request_context import current_request_id
 from time_utils import utc_now_iso
 
@@ -29,8 +28,6 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
     if body.target_type not in ("question","resource"): raise HTTPException(422)
     if body.reason not in {r["key"] for r in REASONS}: raise HTTPException(422)
     uid = user["id"]; db_user = user["_db"]
-    # 🛡 W3/SEC-03 — ضد اسپم گزارش تخلف
-    await rate_limit_user(uid, "report_create", 10, 60)
     designer_id = None; target_label = "فایل"
     if body.target_type == "question":
         q = await db.get_question_by_id(body.target_id)

@@ -1,8 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 
 import {
 
@@ -209,15 +207,35 @@ export default function QuestionHistory() {
             icon={42}
           />
         ) : isError ? (
-          <PageError
-            text="دریافت تاریخچه انجام نشد."
-            onRetry={() => refetch()}
-            pending={isRefetching}
-          />
+          <div className="empty card">
+            <div className="empty__ic">
+              🌐
+            </div>
+
+            <div>
+              دریافت تاریخچه انجام نشد.
+            </div>
+
+            <button
+              className="btn btn-p"
+              onClick={() =>
+                refetch()
+              }
+              disabled={
+                isRefetching
+              }
+            >
+              {isRefetching ? (
+                <Spinner size={15} />
+              ) : (
+                'تلاش دوباره'
+              )}
+            </button>
+          </div>
         ) : answers.length === 0 ? (
-          <EmptyState icon="📭">
+          <div className="empty card">
             هنوز پاسخی ثبت نشده است.
-          </EmptyState>
+          </div>
         ) : (
           <section
             style={{

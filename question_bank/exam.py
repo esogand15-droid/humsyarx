@@ -1,7 +1,6 @@
 """Persistent shared exam domain for Bot, API and PDF output."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import time
 import uuid
@@ -16,13 +15,6 @@ from .service import QuestionBankService
 
 OUTPUT_MODES = frozenset({"bot", "app", "pdf_practice", "pdf_exam"})
 EXAM_STATUSES = frozenset({"active", "finished", "expired", "abandoned"})
-
-
-# 🌊 W6/PERF-03 — کش کوتاه‌مدت PDF (همان ورودی ⇒ همان بایت؛ باطل‌سازی با
-# updated_at سؤال). کرانه‌دار و TTLدار تا حافظه نشت نکند.
-_PDF_CACHE: dict = {}
-_PDF_CACHE_TTL_S = 600
-_PDF_CACHE_MAX = 30
 
 
 class ExamService:
@@ -237,17 +229,7 @@ class ExamService:
                         difficulty=session.get("difficulty") or None,
                         student_name=self.db.display_name_of(db_user),
                         exam_code=session.get("exam_code") or session_id)
-        # 🌊 W6/PERF-03 — کش + عدم‌بلاک event-loop (reportlab همگام است)
-        _pdf_key_src = "|".join(
-            sorted(f"{q.get('_id')}:{q.get('updated_at', '')}"
-                   for q in questions))
-        _pdf_key = hashlib.sha256(
-            f"{session_id}:{mode}:{_pdf_key_src}".encode("utf-8")).hexdigest()
-        _pdf_hit = _PDF_CACHE.get(_pdf_key)
-        if _pdf_hit and _pdf_hit[0] > time.monotonic():
-            return _pdf_hit[1], _pdf_hit[2]
-        content = await asyncio.to_thread(
-            generate_exam_pdf, questions, meta, mode=mode)
+        content = generate_exam_pdf(questions, meta, mode=mode)
         generated_at = utc_now_iso(); generation_id = uuid.uuid4().hex
         checksum = hashlib.sha256(content).hexdigest()
         generation = {"generation_id": generation_id, "session_id": session_id,
@@ -268,15 +250,10 @@ class ExamService:
                 # اینجا فقط ۱۰۰ اشاره‌گرِ آخر نگه داشته می‌شود.
                 {"$set": session_set,
                  "$push": {"generation_ids": {"$each": [generation_id], "$slice": -100}}})
-        _pdf_out = {"session_id": session_id, "generation_id": generation_id,
-                      "exam_code": meta.exam_code, "mode": mode,
-                      "questions": len(questions), "generated_at": generated_at,
-                      "sha256": checksum, "file_name": generation["file_name"]}
-        if len(_PDF_CACHE) >= _PDF_CACHE_MAX:
-            _PDF_CACHE.pop(next(iter(_PDF_CACHE)))
-        _PDF_CACHE[_pdf_key] = (time.monotonic() + _PDF_CACHE_TTL_S,
-                                content, _pdf_out)
-        return content, _pdf_out
+        return content, {"session_id": session_id, "generation_id": generation_id,
+                         "exam_code": meta.exam_code, "mode": mode,
+                         "questions": len(questions), "generated_at": generated_at,
+                         "sha256": checksum, "file_name": generation["file_name"]}
 
     @staticmethod
     def summary(session: Mapping) -> dict:

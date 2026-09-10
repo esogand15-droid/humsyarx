@@ -16,8 +16,6 @@ import {
 } from 'react-router-dom';
 
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -918,10 +916,23 @@ export default function NotificationCenter() {
         {
           isError
           && (
-            <PageError
-              text="اعلان‌ها بارگذاری نشد"
-              onRetry={() => refetch()}
-            />
+            <div className="empty card">
+              <div style={{ fontSize: 28 }}>
+                📡
+              </div>
+
+              <p>
+                اعلان‌ها بارگذاری نشد
+              </p>
+
+              <button
+                type="button"
+                className="btn btn-d"
+                onClick={() => refetch()}
+              >
+                تلاش دوباره
+              </button>
+            </div>
           )
         }
 
@@ -930,12 +941,25 @@ export default function NotificationCenter() {
           && !isError
           && items.length === 0
           && (
-            <EmptyState icon="🔔">
-              هنوز اعلانی نداری
-              <br />
-              هر اتفاق مهم حسابت
-              این‌جا خبرت می‌کنیم
-            </EmptyState>
+            <div className="empty card">
+              <div style={{ fontSize: 28 }}>
+                🔔
+              </div>
+
+              <p>
+                هنوز اعلانی نداری
+              </p>
+
+              <span
+                style={{
+                  color: 'var(--txm)',
+                  fontSize: 'var(--fs-cap)',
+                }}
+              >
+                هر اتفاق مهم حسابت
+                این‌جا خبرت می‌کنیم
+              </span>
+            </div>
           )
         }
 

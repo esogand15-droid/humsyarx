@@ -1,12 +1,6 @@
 import {
-  useEffect,
-} from 'react';
-
-import {
   useNavigate,
 } from 'react-router-dom';
-
-import api from '../../lib/api';
 
 import {
   haptic,
@@ -60,8 +54,6 @@ export function isSubscriptionLock(
   const status = error?.response?.status;
   if (code === 'SUB_REQUIRED' || code === 'SUB_EXPIRED' || code === 'SUB_PENDING') return true;
   if (status === 402 && code) return true;
-  // 🌊 W7 — سهمیه‌ی فیچر (429) هم قفل است؛ ولی ریت‌لیمیت (429 بدون کد سهمیه) نه
-  if (status === 429 && code === 'QUOTA_EXHAUSTED') return true;
   return (
     status === 403 &&
     (msg === 'subscription_required' || d === 'subscription_required')
@@ -69,52 +61,20 @@ export function isSubscriptionLock(
 }
 
 
-/* 🌊 W7 — نوع قفل از روی خطا: بنر/پی‌وال درست + ایونت درست */
-export function lockKind(
-  error,
-) {
-  const d = error?.response?.data?.detail;
-  const code = typeof d === 'object' ? d?.code : null;
-  const feature = typeof d === 'object' ? d?.feature : null;
-  if (code === 'FEATURE_DISABLED') return { kind: 'disabled', feature };
-  if (code === 'QUOTA_EXHAUSTED') return { kind: 'quota', feature };
-  return { kind: 'sub', feature };
-}
-
-
 export default function SubscriptionLock({
   feature = 'این بخش',
-  featureKey = '',
-  mode = 'sub',
 }) {
   const navigate =
     useNavigate();
-
-  /* 🌊 W7 — ایونت دیده‌شدن پی‌وال (best-effort، بدون اثر روی UX) */
-  useEffect(() => {
-    if (!featureKey) return;
-    api.post('/api/subscription/feature-events', {
-      feature: featureKey, event: 'paywall_viewed', extra: { mode },
-    }).catch(() => {});
-  }, [featureKey]);
 
 
   const goPlans = () => {
     haptic('light');
 
-    if (featureKey) {
-      api.post('/api/subscription/feature-events', {
-        feature: featureKey, event: 'subscription_cta_clicked', extra: {},
-      }).catch(() => {});
-    }
-
     navigate(
       '/me/subscription',
     );
   };
-
-  const isDisabled = mode === 'disabled';
-  const isQuota = mode === 'quota';
 
 
   return (
@@ -152,7 +112,7 @@ export default function SubscriptionLock({
           fontSize: 30,
         }}
       >
-        {isDisabled ? '🛠' : isQuota ? '📊' : '🔒'}
+        🔒
       </div>
 
       <h2
@@ -162,11 +122,7 @@ export default function SubscriptionLock({
           fontWeight: 900,
         }}
       >
-        {isDisabled
-          ? `${feature} فعلاً غیرفعال است`
-          : isQuota
-            ? `سقف مصرف ${feature} تمام شد`
-            : `${feature} مخصوص مشترک‌هاست`}
+        {feature} مخصوص مشترک‌هاست
       </h2>
 
       <p
@@ -177,14 +133,10 @@ export default function SubscriptionLock({
           lineHeight: 1.9,
         }}
       >
-        {isDisabled
-          ? 'این قابلیت موقتاً توسط تیم فنی خاموش شده است؛ به‌زودی برمی‌گردد.'
-          : isQuota
-            ? 'سهمیه‌ی این دوره تمام شد؛ با شروع دوره‌ی بعد یا ارتقای اشتراک دوباره باز می‌شود.'
-            : `برای باز شدن کامل ${feature}، یکی از
+        برای باز شدن کامل این بخش، یکی از
         پلن‌های اشتراک را فعال کنید؛ دسترسی
         شما بلافاصله در ربات و مینی‌اپ
-        هم‌زمان باز می‌شود.`}
+        هم‌زمان باز می‌شود.
       </p>
 
       <div
@@ -232,20 +184,18 @@ export default function SubscriptionLock({
         )}
       </div>
 
-      {!isDisabled && (
-        <button
-          type="button"
-          className={
-            'btn btn-p btn-full'
-          }
-          style={{
-            marginTop: 16,
-          }}
-          onClick={goPlans}
-        >
-          💎 مشاهده پلن‌ها و فعال‌سازی
-        </button>
-      )}
+      <button
+        type="button"
+        className={
+          'btn btn-p btn-full'
+        }
+        style={{
+          marginTop: 16,
+        }}
+        onClick={goPlans}
+      >
+        💎 مشاهده پلن‌ها و فعال‌سازی
+      </button>
     </section>
   );
 }

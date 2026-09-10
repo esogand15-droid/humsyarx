@@ -546,11 +546,7 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
                "group": group, "notified": notice.get("notified", 0)},
         tags=["برنامه", body.type, "پنل_وب"],
     )
-    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
-    conflicts = await db.schedule_find_conflicts(
-        group, body.date, body.time, '', exclude_id=str(sid))
-    return {"ok": True, "id": str(sid), "notified": notice.get("notified", 0),
-            "warnings": {"schedule_conflicts": conflicts}}
+    return {"ok": True, "id": str(sid), "notified": notice.get("notified", 0)}
 
 
 class ScheduleUpdate(BaseModel):

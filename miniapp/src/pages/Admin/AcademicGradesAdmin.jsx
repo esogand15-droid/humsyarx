@@ -7,8 +7,6 @@ import {
 } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
-import EmptyState from '../../components/shared/EmptyState';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -1031,16 +1029,27 @@ export default function AcademicGradesAdmin() {
         {isLoading ? (
           <GradesAdminSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت نمرات انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty">
+            دریافت نمرات انجام نشد.
+
+            <button
+              className="btn btn-p"
+              style={{
+                marginTop: 12,
+              }}
+              onClick={() =>
+                refetch()
+              }
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : grades.length === 0 ? (
-          <EmptyState icon="📭">
+          <div className="empty">
             {termFilter
               ? `برای «${termFilter}» نمره‌ای ثبت نشده است. ترم دیگری را انتخاب کنید.`
               : 'هنوز نمره‌ای ثبت نشده است.'}
-          </EmptyState>
+          </div>
         ) : (
           grades.map((grade) => (
             <div

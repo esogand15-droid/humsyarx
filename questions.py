@@ -90,8 +90,8 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # FIX جدید: دفاع لایه‌دوم اشتراک — اکشن‌های ca_* (بررسی سوال توسط
     # ادمین محتوا) از این گیت مستثنی‌اند، چون کار مدیریتی است نه مصرف محتوا
     if not action.startswith('ca_'):
-        from subscription import feature_allowed
-        if not await feature_allowed(uid, "question_bank"):
+        from subscription import has_access
+        if not await has_access(uid):
             await query.answer("🔒 اول باید اشتراک فعال کنی — از «🧪 بانک سوال» شروع کن.", show_alert=True)
             return
     await query.answer()

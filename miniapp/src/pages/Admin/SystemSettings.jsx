@@ -11,7 +11,6 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
 import Switch from '../../components/shared/Switch';
 
 import {
@@ -911,10 +910,16 @@ export default function SystemSettings() {
         {isLoading ? (
           <SettingsSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت تنظیمات انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <div className="empty card">
+            دریافت تنظیمات انجام نشد.
+
+            <button
+              className="btn btn-p"
+              onClick={() => refetch()}
+            >
+              تلاش دوباره
+            </button>
+          </div>
         ) : (
           <>
             {maintenanceOn && (

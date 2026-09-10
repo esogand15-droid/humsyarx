@@ -23,11 +23,9 @@ import api from '../../lib/api';
 
 import ResourceAccessGate
   from '../../components/shared/ResourceAccessGate';
-import PreviewModal from '../../components/shared/PreviewModal';
 
 import SubscriptionLock, {
   isSubscriptionLock,
-  lockKind,
 } from '../../components/shared/SubscriptionLock';
 
 import {
@@ -103,7 +101,6 @@ function ReferenceFile({
   sendDisabled,
   language,
   onSend,
-  onPreview,
 }) {
   // فقط همان ردیفی که روی آن کلیک شده،
   // حالت لودینگ خواهد داشت.
@@ -177,18 +174,6 @@ function ReferenceFile({
           )
         }
       </div>
-
-      {!!item?.preview && (
-        <button
-          type="button"
-          className="btn sm"
-          style={{ flexShrink: 0 }}
-          onClick={() => onPreview(item)}
-          aria-label="پیش‌نمایش فایل"
-        >
-          👁
-        </button>
-      )}
 
       <button
         type="button"
@@ -437,12 +422,6 @@ function ReferencesPage({ hlFlash = false }) {
       },
     });
 
-  /* 🌊 W8/UX-03 — فایل در حال پیش‌نمایش */
-  const [
-    previewFile,
-    setPreviewFile,
-  ] = useState(null);
-
   const sendFile = (
     id,
     key,
@@ -489,9 +468,6 @@ function ReferencesPage({ hlFlash = false }) {
     isSubscriptionLock(subjectsErr) ||
     isSubscriptionLock(booksErr) ||
     isSubscriptionLock(filesErr);
-
-  /* 🌊 W7 — خطای قفل برای mode و ایونت */
-  const lockErr = [subjectsErr, booksErr, filesErr].find(isSubscriptionLock);
 
 
   const goBack = () => {
@@ -586,8 +562,6 @@ function ReferencesPage({ hlFlash = false }) {
         {subLock && (
           <SubscriptionLock
             feature="رفرنس‌های درسی"
-            featureKey="references"
-            mode={lockKind(lockErr).kind}
           />
         )}
 
@@ -1018,9 +992,6 @@ function ReferencesPage({ hlFlash = false }) {
                                       onSend={
                                         sendFile
                                       }
-                                      onPreview={
-                                        setPreviewFile
-                                      }
                                     />
                                   );
                                 }
@@ -1033,13 +1004,6 @@ function ReferencesPage({ hlFlash = false }) {
                 )
           )
         }
-        {previewFile && (
-          <PreviewModal
-            scope="references"
-            file={previewFile}
-            onClose={() => setPreviewFile(null)}
-          />
-        )}
       </main>
     </>
   );
@@ -1277,7 +1241,6 @@ export default function References() {
 
   return (
     <ResourceAccessGate
-      featureKey="references"
       feature="رفرنس‌های درسی"
     >
       <ReferencesPage

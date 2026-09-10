@@ -1,4 +1,3 @@
-import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
 import { number, errorText } from '../../lib/format';
@@ -637,10 +636,22 @@ export function AdminTickets() {
         {isLoading ? (
           <AdminOpsSkeleton />
         ) : isError ? (
-          <PageError
-            text="دریافت تیکت‌ها انجام نشد."
-            onRetry={() => refetch()}
-          />
+          <EmptyState>
+            دریافت تیکت‌ها انجام نشد.
+
+            <button
+              className="btn btn-p"
+              style={{
+                marginTop:
+                  12,
+              }}
+              onClick={() =>
+                refetch()
+              }
+            >
+              تلاش دوباره
+            </button>
+          </EmptyState>
         ) : tickets.length === 0 ? (
           <EmptyState>
             تیکتی در این وضعیت نیست.

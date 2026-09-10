@@ -55,43 +55,9 @@ SUBJECTS = [
 # ══════════════════════════════════════════════════
 
 USER_TICKET_ACTIONS = {
-    'main', 'new', 'subject', 'prio', 'preview_confirm', 'preview_cancel',
+    'main', 'new', 'subject', 'preview_confirm', 'preview_cancel',
     'list', 'view', 'reply_user',
 }
-
-# 🌊 W8/UX-04 — اولویت تیکت (مشترک با API/وب)
-TICKET_PRIORITY_FA = {
-    'low': '🟢 کم‌اهمیت', 'normal': '⚪ عادی',
-    'high': '🟠 مهم', 'urgent': '🔴 فوری',
-}
-
-# 🌊 W9 — وضعیت تیکت (هم‌گام با TICKET_STATUSES دیتابیس)
-TICKET_STATUS_FA = {
-    'open': '🟡 باز', 'in_progress': '🔵 در حال بررسی',
-    'waiting_user': '🟣 منتظر کاربر', 'resolved': '✅ حل‌شده',
-    'closed': '🟢 بسته',
-}
-TICKET_STATUS_ICON = {
-    'open': '🟡', 'in_progress': '🔵', 'waiting_user': '🟣',
-    'resolved': '✅', 'closed': '🟢',
-}
-
-
-async def _tperm(uid: int, perm: str) -> bool:
-    """🌊 W10 — گیت RBAC تیکت در ربات.
-
-    ADMIN_ID همیشه True (داخل has_permission) ⇒ بوت‌استرپ حفظ می‌شود؛
-    خطای DB ⇒ رفتار قدیمی (فقط ADMIN_ID) تا قفل‌نشدن/بازنشدن ناامن.
-    """
-    try:
-        return bool(await db.has_permission(uid, perm))
-    except Exception:
-        return uid == ADMIN_ID
-
-
-async def _is_ticket_staff(uid: int) -> bool:
-    return (await _tperm(uid, 'tickets.manage')
-            or await _tperm(uid, 'tickets.reply'))
 
 
 async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,7 +70,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # دکمه‌ی شیشه‌ای قدیمی «تیکت جدید» یا «مشاهده‌ی تیکت» را در چت
     # قبلی‌اش داشته باشد. بدون این چک می‌توانست با لمس همان دکمه،
     # بدون هیچ رکوردی در دیتابیس، تیکت خالی/اسپم بسازد.
-    if action in USER_TICKET_ACTIONS and not await _is_ticket_staff(uid):
+    if action in USER_TICKET_ACTIONS and uid != ADMIN_ID:
         u = await db.get_user(uid)
         if not u or not u.get('approved'):
             await query.answer(
@@ -132,34 +98,9 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'subject':
         subject = SUBJECTS[int(parts[2])]
         context.user_data['ticket_subject'] = subject
-        # 🌊 W8/UX-04 — انتخاب اولویت قبل از نوشتن متن
-        await query.edit_message_text(
-            f"🎫 <b>{subject}</b>\n\n"
-            "🥇 اولویت تیکت را انتخاب کنید:",
-            parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(TICKET_PRIORITY_FA['urgent'],
-                                      callback_data=f"ticket:prio:{parts[2]}:urgent"),
-                 InlineKeyboardButton(TICKET_PRIORITY_FA['high'],
-                                      callback_data=f"ticket:prio:{parts[2]}:high")],
-                [InlineKeyboardButton(TICKET_PRIORITY_FA['normal'],
-                                      callback_data=f"ticket:prio:{parts[2]}:normal"),
-                 InlineKeyboardButton(TICKET_PRIORITY_FA['low'],
-                                      callback_data=f"ticket:prio:{parts[2]}:low")],
-                [InlineKeyboardButton("❌ لغو", callback_data='ticket:main')],
-            ])
-        )
-
-    elif action == 'prio':
-        subject = SUBJECTS[int(parts[2])]
-        prio = parts[3] if len(parts) > 3 else 'normal'
-        if prio not in TICKET_PRIORITY_FA:
-            prio = 'normal'
-        context.user_data['ticket_subject'] = subject
-        context.user_data['ticket_priority'] = prio
         context.user_data['ticket_mode']    = 'waiting_message'
         await query.edit_message_text(
-            f"🎫 <b>{subject}</b> ({TICKET_PRIORITY_FA[prio]})\n\n"
+            f"🎫 <b>{subject}</b>\n\n"
             "✍️ توضیح کامل مشکل خود را بنویسید:\n"
             "<i>هرچه دقیق‌تر بنویسید، سریع‌تر پاسخ می‌گیرید.</i>",
             parse_mode='HTML',
@@ -224,16 +165,16 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # بخش ادمین — مدیریت پیشرفته
     # ══════════════════════════════════════════════
 
-    elif action == 'manage' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'manage' and uid == ADMIN_ID:
         await _admin_manage(query, context)
 
-    elif action == 'admin_filter' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_filter' and uid == ADMIN_ID:
         ftype = parts[2] if len(parts) > 2 else 'status'
         fval  = parts[3] if len(parts) > 3 else 'all'
         context.user_data[f'tkt_f_{ftype}'] = fval
         await _admin_manage(query, context)
 
-    elif action == 'admin_search' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_search' and uid == ADMIN_ID:
         context.user_data['ticket_mode']   = 'admin_search'
         context.user_data['mode']          = 'ticket_search'
         await query.edit_message_text(
@@ -245,7 +186,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action == 'admin_view' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_view' and uid == ADMIN_ID:
         tid    = int(parts[2])
         ticket = await db.ticket_get(tid)
         if not ticket:
@@ -253,114 +194,36 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await _show_ticket_detail(query, ticket, is_admin=True)
 
-    elif action == 'admin_prio' and await _tperm(uid, 'tickets.manage'):
-        tid, prio = int(parts[2]), parts[3] if len(parts) > 3 else 'normal'
-        ticket = await db.ticket_get(tid)
-        if prio in TICKET_PRIORITY_FA and ticket:
-            _frm = ticket.get('priority', 'normal')
-            _sla = await db.ticket_sla_hours(prio)
-            await db.tickets.update_one(
-                {'ticket_id': tid},
-                {'$set': {'priority': prio, 'sla_hours': _sla}})
-            try:
-                _au = await db.get_user(uid) or {}
-                await send_audit_log(
-                    context.bot, 'admin', _au.get('name', 'ادمین'), uid,
-                    "تغییر اولویت تیکت (ربات)", module='Tickets',
-                    severity='INFO',
-                    actor_role=await db.get_actor_role_label(uid),
-                    target_id=str(tid), target_type='ticket',
-                    target_label=(ticket.get('subject') or '')[:60],
-                    before={'priority': _frm},
-                    after={'priority': prio, 'sla_hours': _sla},
-                    tags=['اولویت_تیکت', 'ربات'])
-            except Exception:
-                pass
-        ticket = await db.ticket_get(tid)
-        await _show_ticket_detail(query, ticket, is_admin=True)
-
-    elif action == 'admin_status' and await _tperm(uid, 'tickets.manage'):
-        # 🌊 W9 — تغییر وضعیت گاردشده از ربات
-        tid, to = int(parts[2]), parts[3] if len(parts) > 3 else ''
-        res = await db.ticket_set_status(tid, to)
-        if not res.get('ok'):
-            await query.answer("⛔ این گذار وضعیت مجاز نیست",
-                               show_alert=True)
-        else:
-            try:
-                _au = await db.get_user(uid) or {}
-                await send_audit_log(
-                    context.bot, 'admin', _au.get('name', 'ادمین'), uid,
-                    "تغییر وضعیت تیکت (ربات)", module='Tickets',
-                    severity='INFO',
-                    actor_role=await db.get_actor_role_label(uid),
-                    target_id=str(tid), target_type='ticket',
-                    target_label=f"تیکت #{tid}",
-                    before={'status': res.get('frm')},
-                    after={'status': res.get('to')},
-                    tags=['وضعیت_تیکت', 'ربات'])
-            except Exception:
-                pass
-        ticket = await db.ticket_get(tid)
-        await _show_ticket_detail(query, ticket, is_admin=True)
-
-    elif action == 'admin_canned' and await _tperm(uid, 'tickets.reply'):
-        tid, cid = int(parts[2]), parts[3] if len(parts) > 3 else ''
-        _canned = None
-        for _c in await db.canned_list(only_active=True):
-            if str(_c.get('_id')) == cid:
-                _canned = _c
-                break
-        if not _canned:
-            await query.answer("❌ پاسخ آماده پیدا نشد", show_alert=True)
-            return
-        await _send_ticket_reply(context.bot, tid, _canned['text'],
-                                 actor_id=uid)
-        context.user_data['ticket_mode'] = ''
-        await query.edit_message_text(
-            f"✅ پاسخ آماده «{_canned['title']}» به تیکت #{tid} ارسال شد!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"📋 تیکت #{tid}",
-                                      callback_data=f'ticket:admin_view:{tid}')],
-                [InlineKeyboardButton("🔙 مدیریت تیکت‌ها",
-                                      callback_data='ticket:manage')],
-            ]))
-
-    elif action == 'admin_reply' and await _tperm(uid, 'tickets.reply'):
+    elif action == 'admin_reply' and uid == ADMIN_ID:
         tid = int(parts[2])
         context.user_data['replying_ticket'] = tid
         context.user_data['ticket_mode']     = 'admin_reply'
         ticket  = await db.ticket_get(tid)
         rc      = len(ticket.get('replies', [])) if ticket else 0
-        # 🌊 W8/UX-04 — پاسخ‌های آماده (ارسال فوری با یک لمس)
-        _kb = []
-        for _c in (await db.canned_list(only_active=True))[:6]:
-            _kb.append([InlineKeyboardButton(
-                f"⚡ {_c.get('title', '')[:30]}",
-                callback_data=f"ticket:admin_canned:{tid}:{_c.get('_id')}")])
-        _kb.append([InlineKeyboardButton("🤖 پیش‌نویسِ هوشیار", callback_data=f'ticket:ai_draft:{tid}')])
-        _kb.append([InlineKeyboardButton("❌ لغو", callback_data=f'ticket:admin_view:{tid}')])
         await query.edit_message_text(
             f"✏️ <b>پاسخ به تیکت #{tid}</b>\n"
             f"پاسخ‌های قبلی: {rc}\n\n"
-            "پاسخ جدید خود را بنویسید یا یک پاسخ آماده بفرستید:",
+            "پاسخ جدید خود را بنویسید:",
             parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(_kb)
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🤖 پیش‌نویسِ هوشیار", callback_data=f'ticket:ai_draft:{tid}')],
+                [InlineKeyboardButton("❌ لغو", callback_data=f'ticket:admin_view:{tid}')],
+            ])
         )
         return TICKET_REPLY_WAITING
 
     # ── ⚠️ قابلیتِ جدید: پیش‌نویسِ پاسخِ تیکت با هوشیار ──
-    elif action == 'ai_draft' and await _tperm(uid, 'tickets.reply'):
+    elif action == 'ai_draft' and uid == ADMIN_ID:
         tid = int(parts[2])
         await _ticket_ai_draft(query, context, tid)
 
-    elif action == 'ai_send' and await _tperm(uid, 'tickets.reply'):
+    elif action == 'ai_send' and uid == ADMIN_ID:
         tid   = int(parts[2])
         draft = context.user_data.get('ai_ticket_draft', '')
         if not draft:
             await query.answer("⚠️ پیش‌نویسی برای ارسال نیست.", show_alert=True)
             return
-        await _send_ticket_reply(context.bot, tid, draft, actor_id=uid)
+        await _send_ticket_reply(context.bot, tid, draft)
         context.user_data.pop('ai_ticket_draft', None)
         context.user_data.pop('replying_ticket', None)
         context.user_data['ticket_mode'] = ''
@@ -375,7 +238,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
-    elif action == 'admin_close' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_close' and uid == ADMIN_ID:
         tid = int(parts[2])
         await query.edit_message_text(
             f"🔒 <b>بستن تیکت #{tid}</b>\n\n"
@@ -387,7 +250,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
 
-    elif action == 'admin_close_confirm' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_close_confirm' and uid == ADMIN_ID:
         tid    = int(parts[2])
         ticket = await db.ticket_get(tid)
         await db.ticket_close(tid)
@@ -431,7 +294,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
-    elif action == 'admin_reopen' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_reopen' and uid == ADMIN_ID:
         # FIX جدید طبق سند: بازگشایی تیکت — قابلیت کاملاً جدید
         tid    = int(parts[2])
         ticket = await db.ticket_get(tid)
@@ -445,7 +308,7 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "بازگشایی تیکت", module='Tickets', severity='WARNING',
             actor_role=actor_role,
             target_id=str(tid), target_type='ticket', target_label=ticket_label,
-            before={'وضعیت': 'بسته شده'}, after={'وضعیت': 'در حال بررسی'},
+            before={'وضعیت': 'بسته شده'}, after={'وضعیت': 'باز'},
             tags=['بازگشایی_تیکت']
         )
         if ticket:
@@ -472,10 +335,10 @@ async def ticket_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # سازگاری با callback های قدیمی
-    elif action == 'admin_list' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_list' and uid == ADMIN_ID:
         await _admin_manage(query, context)
 
-    elif action == 'admin_all' and await _tperm(uid, 'tickets.manage'):
+    elif action == 'admin_all' and uid == ADMIN_ID:
         context.user_data['tkt_f_status'] = 'all'
         await _admin_manage(query, context)
 
@@ -503,7 +366,6 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
             # کل پیام می‌گشت.
             f"👁 <b>پیش‌نمایش تیکت</b>\n\n"
             f"📋 موضوع: <b>{_h(subject)}</b>\n"
-            f"🥇 اولویت: {TICKET_PRIORITY_FA.get(context.user_data.get('ticket_priority', 'normal'), '⚪ عادی')}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
             f"💬 {_h(text)}\n\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -574,18 +436,18 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
 
     # ── جستجوی تیکت توسط ادمین ──
-    elif mode == 'admin_search' and await _tperm(uid, 'tickets.manage'):
+    elif mode == 'admin_search' and uid == ADMIN_ID:
         context.user_data.pop('ticket_mode', None)
         context.user_data.pop('mode', None)
         await _search_tickets(update, text)
 
     # ── پاسخ ادمین به تیکت ──
-    elif mode == 'admin_reply' and await _tperm(uid, 'tickets.reply'):
+    elif mode == 'admin_reply' and uid == ADMIN_ID:
         tid = context.user_data.pop('replying_ticket', None)
         if not tid:
             return
         context.user_data['ticket_mode'] = ''
-        await _send_ticket_reply(context.bot, tid, text, actor_id=uid)
+        await _send_ticket_reply(context.bot, tid, text)
 
         await update.message.reply_text(
             f"✅ پاسخ به تیکت #{tid} ارسال شد!",
@@ -599,8 +461,7 @@ async def ticket_message_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
 
 
-async def _send_ticket_reply(bot, tid: int, text: str,
-                             actor_id: int = 0) -> None:
+async def _send_ticket_reply(bot, tid: int, text: str) -> None:
     """
     منطقِ مشترکِ «ثبت و ارسالِ پاسخِ ادمین به یک تیکت» — چه پاسخ دستی
     تایپ شده باشه، چه از پیش‌نویسِ هوشیار تاییدشده. اینجا فقط یه بارِ
@@ -610,12 +471,11 @@ async def _send_ticket_reply(bot, tid: int, text: str,
     await db.ticket_add_reply(tid, text)
     # AUDIT — admin reply via bot (if called by admin)
     try:
-        # 🌊 W10 — actor واقعی (RBAC)؛ پیش‌فرض ADMIN_ID برای سازگاری
-        _actor = int(actor_id or ADMIN_ID)
-        _admin_u = await db.get_user(_actor)
+        # attempt to infer actor: if ticket exists, actor is ADMIN_ID (caller is admin via ticket_message_handler or ai_send)
+        _admin_u = await db.get_user(ADMIN_ID)
         _admin_name = (_admin_u or {}).get('name', 'ادمین')
-        _admin_role = await db.get_actor_role_label(_actor)
-        await send_audit_log(None, 'admin', _admin_name, _actor, "پاسخ پشتیبانی به تیکت (ربات)", module='Tickets', severity='INFO', actor_role=_admin_role, target_id=str(tid), target_type='ticket', target_label=(ticket or {}).get('subject','')[:60], after={"reply_len": len(text)}, tags=['پاسخ_تیکت', 'ربات'])
+        _admin_role = await db.get_actor_role_label(ADMIN_ID)
+        await send_audit_log(None, 'admin', _admin_name, ADMIN_ID, "پاسخ پشتیبانی به تیکت (ربات)", module='Tickets', severity='INFO', actor_role=_admin_role, target_id=str(tid), target_type='ticket', target_label=(ticket or {}).get('subject','')[:60], after={"reply_len": len(text)}, tags=['پاسخ_تیکت', 'ربات'])
     except Exception:
         pass
 
@@ -723,8 +583,7 @@ async def _do_create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     intake  = user.get('intake', '')    if user else ''
     uname   = f"@{user.get('username','')}" if user and user.get('username') else 'ندارد'
 
-    tid = await db.ticket_create(uid, name, subject, text,
-        priority=context.user_data.get('ticket_priority', 'normal'))
+    tid = await db.ticket_create(uid, name, subject, text)
     # AUDIT — ticket create via bot
     try:
         _role2 = await db.get_actor_role_label(uid)
@@ -734,7 +593,6 @@ async def _do_create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     context.user_data.pop('ticket_mode', None)
     context.user_data.pop('ticket_draft', None)
     context.user_data.pop('ticket_subject', None)
-    context.user_data.pop('ticket_priority', None)
 
     # 🔔 موج ۴.۹۰ — ثبت تیکت در مرکز اعلان مینی‌اپ (پارتی با مسیر وب)
     await db.inbox_add(uid, 'ticket_created',
@@ -800,8 +658,7 @@ async def _admin_manage(query, context):
         tickets = [t for t in tickets if t.get('user_id') in user_ids_in_intake]
 
     total  = len(tickets)
-    open_c = sum(1 for t in tickets
-                 if db.ticket_norm_status(t.get('status')) != 'closed')
+    open_c = sum(1 for t in tickets if t.get('status') == 'open')
     closed_c = total - open_c
 
     # دکمه‌های فیلتر وضعیت
@@ -838,15 +695,11 @@ async def _admin_manage(query, context):
         keyboard.append(i_btns[idx:idx+2])
 
     # لیست تیکت‌ها
-    _PICON = {'low': '🟢', 'normal': '⚪', 'high': '🟠', 'urgent': '🔴'}
     for t in tickets[:12]:
-        icon = TICKET_STATUS_ICON.get(
-            db.ticket_norm_status(t.get('status')), '🟡')
+        icon = "🟢" if t['status'] == 'closed' else "🟡"
         rc   = len(t.get('replies', []))
-        _pi = _PICON.get(t.get('priority', 'normal'), '⚪')
-        _br = '🔴' if db.ticket_sla_info(t).get('breached') else ''
         keyboard.append([InlineKeyboardButton(
-            f"{icon}{_br} #{t['ticket_id']} {_pi} | {t.get('user_name','')[:8]} | {t.get('subject','')[:14]} | {rc}💬",
+            f"{icon} #{t['ticket_id']} | {t.get('user_name','')[:8]} | {t.get('subject','')[:16]} | {rc}💬",
             callback_data=f"ticket:admin_view:{t['ticket_id']}"
         )])
 
@@ -888,8 +741,7 @@ async def _search_tickets(update: Update, query_text: str):
 
     keyboard = []
     for t in results[:10]:
-        icon = TICKET_STATUS_ICON.get(
-            db.ticket_norm_status(t.get('status')), '🟡')
+        icon = "🟢" if t['status'] == 'closed' else "🟡"
         keyboard.append([InlineKeyboardButton(
             f"{icon} #{t['ticket_id']} | {t.get('user_name','')} | {t.get('subject','')[:20]}",
             callback_data=f"ticket:admin_view:{t['ticket_id']}"
@@ -909,8 +761,8 @@ async def _search_tickets(update: Update, query_text: str):
 
 async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
     tid         = ticket['ticket_id']
-    status      = db.ticket_norm_status(ticket.get('status'))
-    status_icon = TICKET_STATUS_FA.get(status, '🟡 باز')
+    status      = ticket.get('status', 'open')
+    status_icon = "🟢 بسته شده" if status == 'closed' else "🟡 در جریان"
     replies     = ticket.get('replies', [])
 
     if is_admin:
@@ -921,26 +773,6 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
         group  = user.get('group', '')  if user else ''
         sid    = user.get('student_id', '') if user else ''
 
-        # 🌊 W8/UX-04 — اولویت/SLA/مسئول
-        _prio = TICKET_PRIORITY_FA.get(ticket.get('priority', 'normal'), '⚪ عادی')
-        _sla = db.ticket_sla_info(ticket)
-        _sla_line = ''
-        if _sla['sla_hours'] > 0:
-            if _sla['responded']:
-                _sla_line = f"⏱ SLA: ✅ پاسخ داده شده\n"
-            elif _sla['breached']:
-                _sla_line = "⏱ SLA: 🔴 <b>مهلت گذشته!</b>\n"
-            else:
-                _sla_line = f"⏱ SLA: تا {fmt_jalali_dt(_sla['due_at'])}\n"
-        _assign = ticket.get('assignee_name') or '—'
-        # 🌊 W9 — پرچم مسئول غیرفعال (بدون سلب خودکار)
-        if ticket.get('assignee_id'):
-            try:
-                if not await db.ticket_assignee_ok(
-                        ticket.get('assignee_id')):
-                    _assign = f"{_assign} ⚠️(غیرفعال)"
-            except Exception:
-                pass
         text = (
             f"🎫 <b>تیکت #{tid}</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -951,9 +783,6 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
             f"👥 گروه: {group or '—'}\n"
             f"📋 موضوع: {_h(ticket.get('subject',''))}\n"
             f"🔘 وضعیت: {status_icon}\n"
-            f"🥇 اولویت: {_prio}\n"
-            f"{_sla_line}"
-            f"👔 مسئول: {_h(_assign)}\n"
             f"📅 تاریخ ثبت: {fmt_jalali_dt(ticket['created_at'])}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
             f"💬 <b>پیام اولیه:</b>\n{_h(ticket['message'])}\n"
@@ -963,7 +792,6 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
             f"🎫 <b>تیکت #{tid}</b>\n"
             f"📋 {_h(ticket.get('subject',''))}\n"
             f"🔘 {status_icon}\n"
-            f"🥇 {TICKET_PRIORITY_FA.get(ticket.get('priority', 'normal'), '⚪ عادی')}\n"
             f"📅 {fmt_jalali_dt(ticket['created_at'], with_time=False)}\n"
             f"━━━━━━━━━━━━━━━━\n\n"
             f"💬 <b>پیام شما:</b>\n{_h(ticket['message'])}\n"
@@ -985,31 +813,15 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
 
     keyboard = []
     if is_admin:
-        if status != 'closed':
+        if status == 'open':
             keyboard.append([InlineKeyboardButton("✏️ پاسخ جدید", callback_data=f'ticket:admin_reply:{tid}')])
-            # 🌊 W8/UX-04 — تغییر سریع اولویت
-            _cur = ticket.get('priority', 'normal')
-            keyboard.append([
-                InlineKeyboardButton(f"{'✅' if _cur == p else ''}{lbl}",
-                                     callback_data=f'ticket:admin_prio:{tid}:{p}')
-                for p, lbl in (('low', '🟢'), ('normal', '⚪'),
-                               ('high', '🟠'), ('urgent', '🔴'))])
-            # 🌊 W9 — تغییر سریع وضعیت (فقط گذارهای مجاز)
-            _nxt = [s for s in db.TICKET_TRANSITIONS.get(status, ())
-                    if s != 'closed']
-            if _nxt:
-                keyboard.append([
-                    InlineKeyboardButton(
-                        TICKET_STATUS_FA.get(s, s),
-                        callback_data=f'ticket:admin_status:{tid}:{s}')
-                    for s in _nxt])
             keyboard.append([InlineKeyboardButton("🔒 بستن تیکت",  callback_data=f'ticket:admin_close:{tid}')])
         else:
             # FIX جدید طبق سند: بازگشایی تیکت بسته‌شده
             keyboard.append([InlineKeyboardButton("🔓 بازگشایی تیکت", callback_data=f'ticket:admin_reopen:{tid}')])
         keyboard.append([InlineKeyboardButton("🔙 مدیریت تیکت‌ها", callback_data='ticket:manage')])
     else:
-        if status != 'closed':
+        if status == 'open':
             keyboard.append([InlineKeyboardButton("💬 ادامه گفتگو", callback_data=f'ticket:reply_user:{tid}')])
         keyboard.append([InlineKeyboardButton("🔙 تیکت‌های من", callback_data='ticket:list')])
 
@@ -1038,14 +850,13 @@ async def _show_ticket_detail(query, ticket: dict, is_admin: bool):
 
 async def _ticket_main(query, uid: int):
     tickets    = await db.ticket_get_user(uid)
-    open_count = sum(1 for t in tickets
-                     if db.ticket_norm_status(t.get('status')) != 'closed')
+    open_count = sum(1 for t in tickets if t['status'] == 'open')
     done_count = len(tickets) - open_count
     keyboard   = [
         [InlineKeyboardButton("🎫 ارسال تیکت جدید",            callback_data='ticket:new')],
         [InlineKeyboardButton(f"📋 تیکت‌های من ({len(tickets)})", callback_data='ticket:list')],
     ]
-    if await _tperm(uid, 'tickets.manage'):
+    if uid == ADMIN_ID:
         open_t = await db.ticket_get_all('open')
         all_t  = await db.ticket_get_all()
         keyboard.append([InlineKeyboardButton(
@@ -1074,11 +885,9 @@ async def _ticket_list(query, uid: int):
         return
     keyboard = []
     for t in tickets[:12]:
-        icon = TICKET_STATUS_ICON.get(
-            db.ticket_norm_status(t.get('status')), '🟡')
+        icon = "🟢" if t['status'] == 'closed' else "🟡"
         rc   = len(t.get('replies', []))
-        status_str = TICKET_STATUS_FA.get(
-            db.ticket_norm_status(t.get('status')), 'باز').split(' ', 1)[-1]
+        status_str = "بسته" if t['status'] == 'closed' else "در جریان"
         keyboard.append([InlineKeyboardButton(
             f"{icon} #{t['ticket_id']} | {t.get('subject','')[:20]} | {status_str} | {rc} پیام",
             callback_data=f"ticket:view:{t['ticket_id']}"
@@ -1092,14 +901,13 @@ async def _ticket_list(query, uid: int):
 
 async def show_ticket_main(message: Message, uid: int):
     tickets    = await db.ticket_get_user(uid)
-    open_count = sum(1 for t in tickets
-                     if db.ticket_norm_status(t.get('status')) != 'closed')
+    open_count = sum(1 for t in tickets if t['status'] == 'open')
     done_count = len(tickets) - open_count
     keyboard   = [
         [InlineKeyboardButton("🎫 ارسال تیکت جدید",              callback_data='ticket:new')],
         [InlineKeyboardButton(f"📋 تیکت‌های من ({len(tickets)})", callback_data='ticket:list')],
     ]
-    if await _tperm(uid, 'tickets.manage'):
+    if uid == ADMIN_ID:
         open_t = await db.ticket_get_all('open')
         all_t  = await db.ticket_get_all()
         keyboard.append([InlineKeyboardButton(

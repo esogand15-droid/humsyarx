@@ -23,8 +23,8 @@ async def basic_science_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # FIX جدید: دفاع لایه‌دوم — حتی اگه از دکمه‌ی قدیمیِ توی چت وارد بشه
     if action != 'main_admin':
-        from subscription import feature_allowed
-        if not await feature_allowed(update.effective_user.id, "resources"):
+        from subscription import has_access
+        if not await has_access(update.effective_user.id):
             await query.answer("🔒 اول باید اشتراک فعال کنی — از «📚 منابع» شروع کن.", show_alert=True)
             return
     await query.answer()

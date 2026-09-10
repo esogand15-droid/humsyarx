@@ -14,7 +14,6 @@ import {
 } from '@tanstack/react-query';
 
 import Header from '../../components/layout/Header';
-import PageError from '../../components/shared/PageError';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -662,10 +661,17 @@ export function AdminRoles() {
           ))}
 
         {rolesQuery.isError && (
-          <PageError
-            text="نقش‌ها بارگذاری نشد"
-            onRetry={() => rolesQuery.refetch()}
-          />
+          <div className="empty card">
+            <div style={{ fontSize: 28 }}>📡</div>
+            <p>نقش‌ها بارگذاری نشد</p>
+            <button
+              type="button"
+              className="btn btn-d"
+              onClick={() => rolesQuery.refetch()}
+            >
+              تلاش دوباره
+            </button>
+          </div>
         )}
 
         {roles.map((role, index) => (

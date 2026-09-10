@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
-import EmptyState from '../../components/shared/EmptyState';
 import { haptic, hapticNotif } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
 
@@ -135,7 +134,7 @@ export default function UrlImport() {
         <section>
           <div className="sec-title">🕘 Jobهای من</div>
           {jobs.length === 0 && (
-            <EmptyState icon="📥">هنوز درون‌ریزی‌ای ثبت نشده است.</EmptyState>
+            <div className="empty card">هنوز درون‌ریزی‌ای ثبت نشده است.</div>
           )}
           <div style={{ display: 'grid', gap: 8 }}>
             {jobs.map((j) => {

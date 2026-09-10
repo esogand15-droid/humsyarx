@@ -37,11 +37,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 from api.auth import (
-    ADMIN_ID, _hash_token, get_current_user, get_content_admin_user,
+    ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
     expiry_is_past, get_content_global_user, new_session_token, resolve_content_intake,
     resolve_web_session, utc_now, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
-from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from api.routers import admin_panel as owner_api
 from api.routers import subscription_management as subscription_api
@@ -823,7 +822,6 @@ async def export_users_csv(
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
-    await rate_limit_user(user["id"], "export_users_csv", 10, 60)  # 🛡 W10
     smart = smart if isinstance(smart, str) else None
     allowed_sort = {"registered_at", "last_active", "name", "total_answers", "correct_answers", "streak_current", "ai_total_usage"}
     if sort_by not in allowed_sort or sort_dir not in ("asc", "desc"):
@@ -890,7 +888,6 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
     خروجی سه سطل است: `will_apply` / `will_skip` / `not_found` تا ادمین
     پیش از زدنِ دکمه بداند دقیقاً روی چند نفر اثر می‌گذارد.
     """
-    await rate_limit_user(user["id"], "bulk_preview", 10, 60)  # 🛡 W10
     action_perm = _BULK_ACTION_PERM
     need = action_perm.get(body.action)
     if not need:
@@ -912,14 +909,10 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
         raise HTTPException(422, "نقش ناشناخته است")
 
     will_apply, will_skip, not_found = [], [], []
-    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (رفتار skipها عیناً حفظ می‌شود)
-    _users = await db.get_users_by_ids(ids)
-    _need_roles = body.action in ("add_role", "remove_role")
-    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     for uid in ids:
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             will_skip.append({"id": uid, "reason": "owner_protected"}); continue
-        target = _users.get(uid)
+        target = await db.get_user(uid)
         if not target:
             not_found.append({"id": uid, "reason": "user_not_found"}); continue
         label = target.get("name") or str(uid)
@@ -932,9 +925,11 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
             reason = "not_suspended"
         elif body.action == "set_intake" and (target.get("intake") or "") == value:
             reason = "already_set"
-        elif body.action == "add_role" and value in (_roles.get(uid) or []):
+        elif body.action == "add_role" and value in (
+                (await db.get_user_roles(uid)).get("keys") or []):
             reason = "already_has_role"
-        elif body.action == "remove_role" and value not in (_roles.get(uid) or []):
+        elif body.action == "remove_role" and value not in (
+                (await db.get_user_roles(uid)).get("keys") or []):
             reason = "role_not_assigned"
         if reason:
             will_skip.append({"id": uid, "name": label, "reason": reason})
@@ -979,11 +974,6 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     succeeded, skipped, failed = [], [], []
     granted: list[dict] = []
     value = (body.value or "").strip()
-    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (نوشتن‌ها تکی می‌ماند تا
-    # گزارش success/failed/skipped دقیق بماند)
-    _users = await db.get_users_by_ids(ids)
-    _need_roles = body.action in ("add_role", "remove_role")
-    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     # 🛡 AUDIT-§۷۹ — اشتراک گروهی: فقط orchestration؛ نوشتنِ واقعی با همان
     # endpoint تک‌موردیِ مالی است (op_claim + sub_activate + نوتیف + audit).
     sub_extend = None
@@ -1007,7 +997,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             skipped.append({"id": uid, "reason": "owner_protected"})
             continue
-        target = _users.get(uid)
+        target = await db.get_user(uid)
         if not target:
             skipped.append({"id": uid, "reason": "user_not_found"})
             continue
@@ -1036,7 +1026,8 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 await db.update_user(uid, {"group": normalized})
             elif body.action in ("add_role", "remove_role"):
-                has_role = value in (_roles.get(uid) or [])
+                info = await db.get_user_roles(uid)
+                has_role = value in info.get("keys", [])
                 if (body.action == "add_role" and has_role) or (body.action == "remove_role" and not has_role):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 payload = rbac_api.AssignBody(
@@ -2473,7 +2464,6 @@ class TicketsBulk(BaseModel):
 @router.post("/tickets/bulk")
 async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage"))):
     """⚡ اکشن گروهی تیکت (سقف ۱۰۰) — با همان متدهای موجود db."""
-    await rate_limit_user(user["id"], "tickets_bulk", 10, 60)  # 🛡 W10
     ids = [int(i) for i in (body.ids or []) if isinstance(i, (int, str)) and str(i).isdigit()][:100]
     if not ids:
         raise HTTPException(400, "لیست تیکت‌ها خالی است")
@@ -2490,8 +2480,7 @@ async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage")))
                     skipped.append({"id": tid, "reason": "already_closed"}); continue
                 await db.ticket_close(tid)
             else:
-                # 🌊 W9 — بازگشایی از بسته یا حل‌شده
-                if db.ticket_norm_status(t.get("status")) not in ("closed", "resolved"):
+                if t.get("status") != "closed":
                     skipped.append({"id": tid, "reason": "already_open"}); continue
                 await db.ticket_reopen(tid)
             succeeded.append(tid)
@@ -3201,12 +3190,12 @@ async def questions_export_pdf(
 
 # ── Question Bank JSON ingestion (owner-only, preview-first) ──────
 @router.get("/questions/import/prompt")
-async def question_import_prompt(user=Depends(_perm("questions.import"))):
+async def question_import_prompt(user=Depends(get_admin_user)):
     return question_imports.prompt()
 
 
 @router.post("/questions/import/upload")
-async def question_import_upload(file: UploadFile = File(...), user=Depends(_perm("questions.import"))):
+async def question_import_upload(file: UploadFile = File(...), user=Depends(get_admin_user)):
     raw = await file.read(10 * 1024 * 1024 + 1)
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(413, "حجم فایل JSON بیشتر از ۱۰MB است")
@@ -3226,7 +3215,7 @@ async def question_import_upload(file: UploadFile = File(...), user=Depends(_per
 
 
 @router.get("/questions/import/{job_id}")
-async def question_import_preview(job_id: str, user=Depends(_perm("questions.import"))):
+async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
     try:
         preview = await question_imports.preview(job_id)
     except QuestionDomainError as exc:
@@ -3239,7 +3228,7 @@ async def question_import_preview(job_id: str, user=Depends(_perm("questions.imp
 @router.get("/questions/import/{job_id}/items")
 async def question_import_items(job_id: str, classification: Optional[str] = Query(None),
                                 skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
-                                user=Depends(_perm("questions.import"))):
+                                user=Depends(get_admin_user)):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     return await question_imports.list_items(job_id, classification=classification, skip=skip, limit=limit)
@@ -3252,7 +3241,7 @@ class ImportMapInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/mapping")
 async def question_import_mapping(job_id: str, item_id: str, body: ImportMapInput,
-                                  user=Depends(_perm("questions.import"))):
+                                  user=Depends(get_admin_user)):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -3274,7 +3263,7 @@ class ImportDecisionInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/decision")
 async def question_import_decision(job_id: str, item_id: str, body: ImportDecisionInput,
-                                   user=Depends(_perm("questions.import"))):
+                                   user=Depends(get_admin_user)):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -3290,7 +3279,7 @@ async def question_import_decision(job_id: str, item_id: str, body: ImportDecisi
 
 
 @router.post("/questions/import/{job_id}/confirm")
-async def question_import_confirm(job_id: str, user=Depends(_perm("questions.import"))):
+async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
     try:
         result = await question_imports.confirm(job_id=job_id, admin=user)
     except QuestionDomainError as exc:
@@ -3304,7 +3293,7 @@ async def question_import_confirm(job_id: str, user=Depends(_perm("questions.imp
 
 
 @router.post("/questions/import/{job_id}/cancel")
-async def question_import_cancel(job_id: str, user=Depends(_perm("questions.import"))):
+async def question_import_cancel(job_id: str, user=Depends(get_admin_user)):
     try: result = await question_imports.cancel(job_id=job_id, admin_id=user["id"])
     except QuestionDomainError as exc: raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
     await _audit(user["id"], "لغو درون‌ریزی بانک سؤال", severity="INFO",
@@ -3344,33 +3333,6 @@ _SETTINGS_CATALOG = [
         ("donation_link", "لینک حمایت مالی",
          "آدرس صفحه‌ی حمایت (با http/https؛ خالی=حذف)",
          "link", "settings.manage", "HIGH"),
-    ]),
-    # 🌊 W6/MISS-03 — trial اشتراک
-    ("subscription", [
-        ("trial_enabled", "دوره‌ی آزمایشی",
-         "نمایش و امکان دریافت trial برای کاربران بدون اشتراک",
-         "bool", "subscription.manage", "HIGH"),
-        ("trial_days", "مدت trial (روز)",
-         "طول دوره‌ی آزمایشی؛ بین ۱ تا ۳۰ (پیش‌فرض ۷)",
-         "number", "subscription.manage", "HIGH"),
-    ]),
-    # 🌊 W8/UX-04 — SLA تیکت (ساعت مهلت اولین پاسخ به‌تفکیک اولویت)
-    ("support", [
-        ("ticket_sla_urgent", "مهلت پاسخ فوری (ساعت)",
-         "تیکت‌های فوری؛ ۰ = بدون SLA (پیش‌فرض ۸)",
-         "number", "tickets.manage", "HIGH"),
-        ("ticket_sla_high", "مهلت پاسخ مهم (ساعت)",
-         "تیکت‌های مهم؛ ۰ = بدون SLA (پیش‌فرض ۲۴)",
-         "number", "tickets.manage", "HIGH"),
-        ("ticket_sla_normal", "مهلت پاسخ عادی (ساعت)",
-         "تیکت‌های عادی؛ ۰ = بدون SLA (پیش‌فرض ۴۸)",
-         "number", "tickets.manage", "HIGH"),
-        ("ticket_sla_low", "مهلت پاسخ کم‌اهمیت (ساعت)",
-         "تیکت‌های کم‌اهمیت؛ ۰ = بدون SLA (پیش‌فرض ۷۲)",
-         "number", "tickets.manage", "HIGH"),
-        ("ticket_stale_hours", "آستانه‌ی یادآوری تیکت مانده (ساعت)",
-         "تیکت باز بدون پاسخ پس از این ساعت به مسئول یادآوری می‌شود (پیش‌فرض ۲۴)",
-         "number", "tickets.manage", "HIGH"),
     ]),
     ("backup", [
         ("auto_backup_enabled", "بکاپ خودکار روزانه",
@@ -3533,13 +3495,6 @@ async def settings_center_patch(key: str, body: SettingPatch,
                 raise HTTPException(422, "ساعت باید عدد باشد")
             if not 0 <= val <= 23:
                 raise HTTPException(422, "ساعت بکاپ باید بین ۰ تا ۲۳ باشد")
-        elif typ == "number":
-            # 🌊 W6/MISS-03 — فرانت از قبل number را رندر می‌کرد ولی بک‌اند
-            # اعتبارسنجی نداشت (مقدار خام ذخیره می‌شد)
-            try:
-                val = int(val)
-            except (TypeError, ValueError):
-                raise HTTPException(422, "مقدار باید عدد صحیح باشد")
         await db.set_setting(key, val)
         before, after = old, val
 
@@ -3707,12 +3662,8 @@ async def exams_create(body: ExamIn, user=Depends(_perm("schedules.manage"))):
                  after={"تاریخ": d, "گروه": grp,
                         "اطلاع‌رسانی": notice.get("notified", 0)},
                  tags=["امتحان", "پنل_وب"])
-    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
-    conflicts = await db.schedule_find_conflicts(
-        grp, d, t, '', exclude_id=str(sid))
     return {"ok": True, "id": str(sid),
-            "notified": notice.get("notified", 0),
-            "warnings": {"schedule_conflicts": conflicts}}
+            "notified": notice.get("notified", 0)}
 
 
 @router.patch("/exams/{sid}")
@@ -4891,7 +4842,7 @@ async def wa_rbac_roles_picker(user=Depends(_perm("users.manage"))):
 
 @router.get("/tickets")
 async def wa_tickets_list(
-    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
     q: Optional[str] = Query(None, max_length=120),
     intake: Optional[str] = Query(None, max_length=80),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
@@ -4924,7 +4875,7 @@ async def wa_tickets_list(
 
 @router.get("/exports/tickets.csv")
 async def export_tickets_csv(
-    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
     q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
     assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
@@ -4933,7 +4884,6 @@ async def export_tickets_csv(
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
-    await rate_limit_user(user["id"], "export_tickets_csv", 10, 60)  # 🛡 W10
     await _audit(user["id"], "خروجی CSV تیکت‌ها", severity="HIGH",
                  target_type="export", target_label="tickets.csv",
                  tags=["خروجی", "تیکت", "پنل_وب"])
@@ -5009,7 +4959,6 @@ class TicketMetaPatch(BaseModel):
     priority: Optional[str] = None
     tags: Optional[list[str]] = None
     assignee_id: Optional[int] = None
-    status: Optional[str] = None  # 🌊 W9 — تغییر وضعیت گاردشده
 
 
 @router.patch("/tickets/{tid}/meta")
@@ -5025,8 +4974,6 @@ async def wa_ticket_meta(
         if body.priority not in ("low", "normal", "high", "urgent"):
             raise HTTPException(422, "اولویت نامعتبر است")
         updates["priority"] = body.priority
-        # 🌊 W8/UX-04 — ارتقا/تنزل اولویت، مهلت SLA را بازمحاسبه می‌کند
-        updates["sla_hours"] = await db.ticket_sla_hours(body.priority)
     if body.tags is not None:
         updates["tags"] = list(dict.fromkeys(
             str(tag).strip()[:30] for tag in body.tags if str(tag).strip()
@@ -5042,20 +4989,8 @@ async def wa_ticket_meta(
                             "assignee_name": assignee.get("name", str(body.assignee_id))})
     if not updates:
         raise HTTPException(422, "تغییری ارسال نشده است")
-    # 🌊 W9 — وضعیت از مسیر گارد می‌گذرد (transition نامعتبر ⇒ 409)
-    if body.status is not None:
-        res = await db.ticket_set_status(tid, body.status)
-        if not res.get("ok"):
-            raise HTTPException(
-                409 if res.get("error") in ("invalid_transition", "race")
-                else 404, "تغییر وضعیت مجاز نیست")
-        updates["status"] = res["to"]
-    before = {key: ticket.get(key) for key in updates
-              if key != "status"}
-    if "status" in updates:
-        before["status"] = res.get("frm")
-    if updates:
-        await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
+    before = {key: ticket.get(key) for key in updates}
+    await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
     await _audit(user["id"], "ویرایش صف/متادیتای تیکت", severity="WARNING",
                  target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
                  before=before, after=updates, tags=["تیکت", "متادیتا", "پنل_وب"])
@@ -5130,29 +5065,6 @@ async def wa_ticket_reply(
 @router.post("/tickets/{tid}/close")
 async def wa_ticket_close(tid: int, user=Depends(_perm("tickets.manage"))):
     return await owner_api.close_ticket(tid=tid, admin=user)
-
-
-@router.get("/tickets/canned")
-async def wa_canned_list(user=Depends(_perm("tickets.manage"))):
-    """🌊 W8/UX-04 — پاسخ‌های آماده."""
-    return await owner_api.canned_list_ep(admin=user)
-
-
-@router.post("/tickets/canned")
-async def wa_canned_add(body: owner_api.CannedBody,
-                        user=Depends(_perm("tickets.manage"))):
-    return await owner_api.canned_add_ep(body=body, admin=user)
-
-
-@router.put("/tickets/canned/{cid}")
-async def wa_canned_update(cid: str, body: owner_api.CannedBody,
-                           user=Depends(_perm("tickets.manage"))):
-    return await owner_api.canned_update_ep(cid=cid, body=body, admin=user)
-
-
-@router.delete("/tickets/canned/{cid}")
-async def wa_canned_delete(cid: str, user=Depends(_perm("tickets.manage"))):
-    return await owner_api.canned_delete_ep(cid=cid, admin=user)
 
 
 @router.post("/tickets/{tid}/reopen")
@@ -5346,14 +5258,13 @@ async def wa_subscription_overview(user=Depends(_perm("subscription.manage"))):
 @router.get("/subscription/payments")
 async def wa_subscription_payments(
     status: Optional[str] = Query(None),
-    kind: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100),
     search: Optional[str] = Query(None),
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.payments(
-        status=status, kind=kind, skip=skip, limit=limit, search=search, admin=user)
+        status=status, skip=skip, limit=limit, search=search, admin=user)
 
 
 @router.post("/subscription/payments/{payment_id}/decision")
@@ -5445,8 +5356,6 @@ _RECON_META = {
     "active_sub_no_approved_payment": ("high", "اشتراک فعال بدون پرداخت تأییدشده"),
     "refunded_but_active_sub": ("critical", "بازگشت وجه شده ولی اشتراک هنوز فعال"),
     "pending_stale": ("warning", "رسید قدیمی در انتظار بررسی"),
-    "approved_topup_not_credited": ("high", "شارژ تأییدشده بدون اعتبار کیف پول"),
-    "approved_discount_overrun": ("high", "تخفیف خارج از ظرفیت در پرداخت تأییدشده"),
 }
 
 
@@ -5475,14 +5384,6 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
     if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
                                        reason=reason):
         raise HTTPException(409, "این رسید هم‌زمان بازگشت وجه شده است")
-    # 🌊 W3/MISS-02 — اگر پول واقعی در درگاه گرفته شده (ref_id دارد)،
-    # reversal خودکار ممکن نیست (فقط برای verifyنشده‌ها)؛ بازوی درگاهی
-    # «دستی» علامت می‌خورد تا اپراتور در پنل زرین‌پال هم اقدام کند.
-    gateway_reversal = None
-    if (payment.get("method") == "zarinpal" or payment.get("zarinpal_authority")) \
-            and payment.get("zarinpal_ref_id"):
-        gateway_reversal = "manual_required"
-        await db.sub_payment_mark_gateway_reversal(str(payment["_id"]))
     revoked = False
     if body.revoke_subscription:
         revoked = await db.sub_revoke(uid, f"بازگشت وجه: {reason}",
@@ -5514,8 +5415,7 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         after={"status": "refunded", "reason": reason,
                "revoked_subscription": revoked,
                "wallet_credited": bool(credit_tx),
-               "wallet_tx_id": credit_tx,
-               "gateway_reversal": gateway_reversal},
+               "wallet_tx_id": credit_tx},
         tags=["مالی", "بازگشت_وجه"])
     if amount > 0 and credit_tx:
         text = (f"💸 مبلغ {amount:,} تومان به کیف پول شما بازگشت. "
@@ -5526,7 +5426,6 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         "type": "event:refund", "chat_id": uid, "sent": False,
         "text": text, "created_at": _now()})
     return {"ok": True, "payment_id": str(payment["_id"]),
-            "gateway_reversal": gateway_reversal,
             "revoked_subscription": bool(revoked),
             "wallet_credited": bool(credit_tx),
             "wallet_tx_id": credit_tx,
@@ -5537,7 +5436,7 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
 @router.get("/subscription/reconcile")
 async def wa_subscription_reconcile(
         user=Depends(_perm("subscription.manage"))):
-    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: ناهم‌خوانی‌های بین
+    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: چهار ناهم‌خوانی بین
     sub_payments و subscriptions که هر کدام یعنی «پول/دسترسی بی‌حساب».
 
     همه‌ی خواندن‌ها کرانه‌دار است (to_list محدود) — بدون اسکن بی‌پایان."""
@@ -5546,53 +5445,17 @@ async def wa_subscription_reconcile(
         {"status": "active"}).to_list(length=10000)}
     users_with_approved = {
         int(r["_id"]) for r in await db.sub_payments.aggregate([
-            {"$match": {"status": "approved",
-                        "plan_id": {"$ne": "wallet_topup"}}},
+            {"$match": {"status": "approved"}},
             {"$group": {"_id": "$user_id"}},
         ]).to_list(length=10000)}
     # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
-    # 🛡 W1 — رسید شارژ ذاتاً اشتراک نمی‌سازد (آشکارساز ۱-ب)؛
-    # رسید هدیه هم اشتراکِ «گیرنده» را می‌سازد نه payer.
-    # 🌊 W5 — پنجره‌ی زمانی: اشتراکی که خیلی وقت پیش به‌صورت طبیعی
-    # منقضی شده «ناهم‌خوانی» نیست؛ فقط پنجره‌ی اخیر پرچم می‌خورد تا
-    # لیست با نویز انقضاهای قدیمی دفن نشود.
-    try:
-        _w5win = max(7, int(await db.get_setting("recon_window_days", 90) or 90))
-    except Exception:
-        _w5win = 90
-    _cutoff = (datetime.now(timezone.utc) - timedelta(days=_w5win)).isoformat()
-    _skipped_stale = 0
     async for p in db.sub_payments.find(
             {"status": "approved"}).sort("reviewed_at", -1).limit(200):
-        if str(p.get("plan_id") or "") == "wallet_topup":
-            continue
-        _at = str(p.get("reviewed_at") or p.get("submitted_at") or "")
-        if _at < _cutoff:
-            _skipped_stale += 1
-            continue
         uid = int(p.get("user_id") or 0)
-        gift_to = int((p.get("gift") or {}).get("to") or 0)
-        if (gift_to or uid) not in active_subs:
+        if uid not in active_subs:
             items.append({"type": "approved_no_active_sub", "user_id": uid,
                           "payment": p,
                           "at": p.get("reviewed_at") or p.get("submitted_at")})
-    # ۱-ب) 🛡 W1 — رسید شارژِ تأییدشده که اعتبارش به کیف ننشسته
-    # (کرش بین تأیید و finalize) — اقدام: اجرای idempotent دوباره‌ی finalize.
-    async for p in db.sub_payments.find(
-            {"status": "approved", "plan_id": "wallet_topup",
-             "topup_credited_at": None}).sort("reviewed_at", -1).limit(200):
-        items.append({"type": "approved_topup_not_credited",
-                      "user_id": int(p.get("user_id") or 0),
-                      "payment": p,
-                      "at": p.get("reviewed_at") or p.get("submitted_at")})
-    # ۱-ج) 🌊 W3 — پرداخت تأییدشده‌ای که کد تخفیفش بعد از پرداخت موفق
-    # ظرفیت نداشت (overrun) — پول گرفته و approve شده؛ بازبینی مدیریتی.
-    async for p in db.sub_payments.find(
-            {"status": "approved", "discount_overrun": True}).sort("reviewed_at", -1).limit(200):
-        items.append({"type": "approved_discount_overrun",
-                      "user_id": int(p.get("user_id") or 0),
-                      "payment": p,
-                      "at": p.get("reviewed_at") or p.get("submitted_at")})
     # ۲) اشتراک فعال (منبع پرداخت) بدون هیچ پرداخت تأییدشده
     async for s in db.subscriptions.find(
             {"status": "active", "source": "payment"}).limit(200):
@@ -5640,18 +5503,6 @@ async def wa_subscription_reconcile(
                     f"ولی هیچ اشتراک فعالی برایش وجود ندارد.")
             actions = [{"key": "activate", "label": "فعال‌سازی امن اشتراک"},
                        {"key": "go", "label": "بررسی رسید",
-                        "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
-        elif t == "approved_topup_not_credited":
-            text = (f"رسید شارژ {who} به مبلغ {int(amount or 0):,} تومان تأیید شده "
-                    f"ولی اعتبارش به کیف پول ننشسته است.")
-            actions = [{"key": "finalize_topup", "label": "اعمال اعتبار شارژ"},
-                       {"key": "go", "label": "بررسی کیف پول",
-                        "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}]
-        elif t == "approved_discount_overrun":
-            text = (f"پرداخت {who} به مبلغ {int(amount or 0):,} تومان با کد تخفیف "
-                    f"«{p.get('discount_code') or '—'}» تأیید شده ولی ظرفیت کد تمام شده بود — "
-                    f"تخفیف خارج از ظرفیت داده شد؛ بازبینی شود.")
-            actions = [{"key": "go", "label": "بررسی رسید",
                         "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
         elif t == "active_sub_no_approved_payment":
             text = (f"{who} اشتراک فعال دارد (منبع: پرداخت) ولی هیچ رسید "
@@ -5732,8 +5583,6 @@ async def wa_subscription_reconcile(
     return {"items": out_items,
             "summary": {**summary, "total": len(out_items),
                         "resolved_today": resolved_today,
-                        "window_days": _w5win,
-                        "skipped_stale": _skipped_stale,
                         "checked_at": _now()}}
 
 
@@ -5774,51 +5623,6 @@ async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
         "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
         "created_at": _now()})
     return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
-
-
-class WaReconFinalizeTopupBody(BaseModel):
-    confirm: bool = False
-
-
-@router.post("/subscription/reconcile/{payment_id}/finalize-topup")
-async def wa_reconcile_finalize_topup(payment_id: str, body: WaReconFinalizeTopupBody,
-                                      user=Depends(_perm("subscription.manage"))):
-    """🌊 W1 — اقدام مغایرت «شارژ تأییدشده بدون اعتبار»: اجرای idempotent
-    دوباره‌ی finalize_approved_payment برای رسید شارژ (همان primitive تأیید).
-    اگر اعتبار قبلاً نشسته باشد، اثر دوم ساخته نمی‌شود (already)."""
-    if not body.confirm:
-        raise HTTPException(400, "برای اعمال اعتبار، تأیید صریح لازم است")
-    payment = await db.sub_payment_get(payment_id)
-    if not payment:
-        raise HTTPException(404, "رسید پیدا نشد")
-    if str(payment.get("plan_id") or "") != "wallet_topup":
-        raise HTTPException(409, "فقط رسید شارژ کیف پول قابل finalize است")
-    if payment.get("status") != "approved":
-        raise HTTPException(409, "فقط رسید تأییدشده قابل finalize است")
-    uid = int(payment.get("user_id") or 0)
-    try:
-        result = await db.finalize_approved_payment(payment, int(user["id"]))
-    except ValueError:
-        raise HTTPException(422, "مبلغ این رسید شارژ نامعتبر است؛ بررسی دستی لازم است")
-    log_id = await _audit(
-        int(user["id"]), "رفع مغایرت مالی: اعمال اعتبار شارژ",
-        severity="CRITICAL", target_type="sub_payment",
-        target_id=str(payment["_id"]), target_label=f"رسید شارژ کاربر {uid}",
-        before={"topup_credited": False},
-        after={"topup_credited": True, "already": bool(result.get("already")),
-               "amount": result.get("amount"),
-               "balance_after": result.get("balance_after")},
-        tags=["مالی", "مغایرت‌گیری"])
-    if not result.get("already"):
-        await db.client["medicalbot"]["bot_notifications"].insert_one({
-            "type": "event:wallet_credit", "chat_id": uid, "sent": False,
-            "text": f"💰 مبلغ {int(result.get('amount') or 0):,} تومان به کیف پول شما اضافه شد.",
-            "created_at": _now()})
-    already = bool(result.get("already"))
-    return {"ok": True, "already": already, "already_credited": already,
-            "amount": result.get("amount"),
-            "balance_after": result.get("balance_after"),
-            "tx_id": result.get("tx_id"), "audit_id": log_id}
 
 
 @router.get("/subscription/finance")
@@ -5965,42 +5769,6 @@ async def wa_export_payments_csv(status: str = Query("", max_length=20),
                  "X-Audit-Id": str(log_id)})
 
 
-@router.get("/exports/wallet.csv")
-async def wa_export_wallet_csv(user_id: int = Query(0),
-                               user=Depends(_perm("subscription.manage"))):
-    """🌊 W1 — خروجی CSV کرانه‌دار دفترکل کیف پول (حداکثر ۲۰۰۰ سطر آخر).
-    user_id اختیاری: فقط تراکنش‌های همان کاربر."""
-    flt = {"user_id": int(user_id)} if int(user_id or 0) else {}
-    rows = await db.wallet_transactions.find(flt).sort("_id", -1).limit(2000).to_list(2000)
-    uids = {int(t.get("user_id") or 0) for t in rows}
-    names = {}
-    if uids:
-        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(2000):
-            names[int(u["user_id"])] = u.get("name") or ""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "نوع", "جهت", "مبلغ (تومان)",
-                "موجودی پس‌از", "نوع مرجع", "شناسه مرجع", "ثبت‌کننده", "تاریخ"])
-    for t in rows:
-        uid = int(t.get("user_id") or 0)
-        w.writerow([str(t.get("_id")), names.get(uid, ""), uid,
-                    t.get("label") or t.get("type") or "",
-                    t.get("direction") or "",
-                    t.get("amount") if t.get("amount") is not None else "",
-                    t.get("balance_after") if t.get("balance_after") is not None else "",
-                    t.get("reference_type") or "", t.get("reference_id") or "",
-                    t.get("actor_id") if t.get("actor_id") is not None else t.get("actor") or "",
-                    t.get("at") or t.get("created_at") or ""])
-    log_id = await _audit(int(user["id"]), "خروجی CSV دفترکل کیف پول",
-                          severity="INFO", target_type="export",
-                          target_id=f"wallet:{user_id or 'all'}",
-                          after={"rows": len(rows)}, tags=["مالی", "خروجی"])
-    return Response(
-        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=humsyar-wallet.csv",
-                 "X-Audit-Id": str(log_id)})
-
-
 # ── 💰 W6 — مدیریت کیف پول‌ها ──────────────────────────────────
 class WaWalletAdjustBody(BaseModel):
     amount: int = Field(..., description="مبلغ به تومان؛ مثبت=افزایش، منفی=کسر")
@@ -6117,13 +5885,6 @@ async def wa_wallet_adjust(uid: int, body: WaWalletAdjustBody,
         code = getattr(e, "code", "")
         if code == "insufficient_balance":
             raise HTTPException(400, "موجودی کیف پول برای این کسر کافی نیست")
-        # 🛡 W3/SEC-02 — سقف روزانه به‌جای ۵۰۰ خام، پاسخ معنادار می‌دهد
-        if code == "daily_limit_exceeded":
-            raise HTTPException(429, str(e) or "سقف روزانه کیف پول")
-        if code == "daily_limit_unavailable":
-            raise HTTPException(
-                503, "سامانه سقف روزانه موقتاً در دسترس نیست؛ "
-                     "لطفاً دقایقی دیگر تلاش کنید")
         raise
     log_id = await _audit(
         int(user["id"]), "تنظیم دستی کیف پول", severity="CRITICAL",
@@ -6454,7 +6215,7 @@ async def wa_ai_config_update(
 
 @router.post("/ai/api-key/rotate")
 async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
-                               user=Depends(_perm("ai.manage"))):
+                               user=Depends(get_admin_user)):
     """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود. Vault-aware: کلید برای provider فعلی در vault ذخیره می‌شود."""
     secret = body.api_key.strip()
     if len(secret) < 8:
@@ -6480,7 +6241,7 @@ async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
 
 
 @router.post("/ai/test")
-async def wa_ai_test(user=Depends(_perm("ai.manage"))):
+async def wa_ai_test(user=Depends(get_admin_user)):
     started = time.perf_counter()
     result = await ai_admin_api.test_connection(admin=user)
     result["response_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
@@ -6493,7 +6254,7 @@ async def wa_ai_test(user=Depends(_perm("ai.manage"))):
 
 
 @router.get("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile(user_id: int, user=Depends(_perm("ai.manage"))):
+async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -6506,7 +6267,7 @@ async def wa_ai_user_profile(user_id: int, user=Depends(_perm("ai.manage"))):
 
 
 @router.delete("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile_clear(user_id: int, user=Depends(_perm("ai.manage"))):
+async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -6528,7 +6289,7 @@ async def wa_ai_user_profile_clear(user_id: int, user=Depends(_perm("ai.manage")
 
 
 @router.get("/ai/personas")
-async def wa_ai_personas(user=Depends(_perm("ai.manage"))):
+async def wa_ai_personas(user=Depends(get_admin_user)):
     cfg = await ai_admin_api.get_ai_config()
     meta_raw = await db.get_setting("ai_personas_meta", {})
     meta = meta_raw if isinstance(meta_raw, dict) else {}
@@ -6541,7 +6302,7 @@ async def wa_ai_personas(user=Depends(_perm("ai.manage"))):
 
 
 @router.post("/ai/personas")
-async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(_perm("ai.manage"))):
+async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_user)):
     cfg = await ai_admin_api.get_ai_config()
     name = body.name.strip()
     prompt = (body.prompt or cfg.get("system_prompt") or "").strip()
@@ -6569,7 +6330,7 @@ async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(_perm("ai.m
 
 
 @router.post("/ai/personas/{name}/activate")
-async def wa_ai_persona_activate(name: str, user=Depends(_perm("ai.manage"))):
+async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
     cfg = await ai_admin_api.get_ai_config()
     prompt = (cfg.get("personas") or {}).get(name)
     if not prompt:
@@ -6588,7 +6349,7 @@ async def wa_ai_persona_activate(name: str, user=Depends(_perm("ai.manage"))):
 
 
 @router.delete("/ai/personas/{name}")
-async def wa_ai_persona_delete(name: str, user=Depends(_perm("ai.manage"))):
+async def wa_ai_persona_delete(name: str, user=Depends(get_admin_user)):
     cfg = await ai_admin_api.get_ai_config()
     old_prompt = (cfg.get("personas") or {}).get(name)
     if old_prompt is None:
@@ -6934,14 +6695,7 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
         "route": 1, "method": 1, "status": 1, "duration_ms": 1, "request_id": 1, "at": 1,
     }).sort("at", -1).limit(30).to_list(30)
     total, errors = int(total or 0), int(errors or 0)
-    # 🌊 W5/REL-03 — شمارنده‌های همه‌ی /api/* (افزایشی؛ قرارداد قبلی سر جایش)
-    try:
-        from api.api_counters import snapshot as _api_snapshot
-        _api = _api_snapshot()
-    except Exception:
-        _api = {"routes": [], "recent_5xx": [], "total": 0, "ephemeral": True}
     return {"hours": hours, "total": total, "errors": errors,
-            "api": _api,
             "error_rate": round(errors * 100 / total, 2) if total else None,
             "routes": [{"route": row.get("_id"), "requests": row.get("requests", 0),
                         "errors": row.get("errors", 0), "avg_ms": round(float(row.get("avg_ms") or 0), 2),
@@ -6951,178 +6705,6 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
                                "at": item.get("at").isoformat() if hasattr(item.get("at"), "isoformat") else str(item.get("at") or "")}
                               for item in recent],
             "retention_days": 30, "persisted": True}
-
-
-class FeaturePolicyBody(BaseModel):
-    enabled: bool | None = None
-    access: str | None = None
-    trial_allowed: bool | None = None
-    quota_kind: str | None = None
-    quota_limit: int | None = None
-    fail_open: bool | None = None
-    note: str | None = Field(default=None, max_length=300)
-    pending_access: str | None = None
-    effective_from: str | None = Field(default=None, max_length=40)
-
-
-@router.get("/features")
-async def wa_features_list(user=Depends(_perm("subscription.manage"))):
-    """🌊 W7 — کاتالوگ + پالیسی همه‌ی فیچرها برای پنل دسترسی."""
-    from core.features import FEATURE_CATALOG, default_policy
-    docs = await db.feature_policies.find(
-        {"_id": {"$in": list(FEATURE_CATALOG)}}).to_list(50)
-    by_id = {d.get("_id"): d for d in docs}
-    items = []
-    for key, spec in FEATURE_CATALOG.items():
-        d = by_id.get(key) or {}
-        pol = default_policy(key)
-        for k in ("enabled", "access", "trial_allowed", "quota", "fail_open",
-                  "note", "pending_access", "effective_from"):
-            if k in d:
-                pol[k] = d[k]
-        prev = d.get("prev") or {}
-        items.append({
-            "key": key, "label": spec.get("label", key),
-            "category": spec.get("category", ""),
-            "desc": spec.get("desc", ""),
-            "enforced": bool(spec.get("enforced")),
-            "stored": bool(d), "policy": pol,
-            "updated_by": d.get("updated_by_name", "") or "",
-            "updated_at": d.get("updated_at"),
-            "has_prev": bool(prev),
-            "prev_at": prev.get("_at"), "prev_by": prev.get("_by_name", ""),
-        })
-    return {"items": items}
-
-
-@router.put("/features/{key}")
-async def wa_feature_update(key: str, body: FeaturePolicyBody,
-                            user=Depends(_perm("subscription.manage"))):
-    """🌊 W7 — تغییر پالیسی یک فیچر (audit اجباری + جبران در شکست audit)."""
-    from core.features import FEATURE_CATALOG, ACCESS_MODES, QUOTA_KINDS
-    if key not in FEATURE_CATALOG:
-        raise HTTPException(404, "فیچر ناشناخته")
-    patch = {}
-    if body.enabled is not None:
-        patch["enabled"] = bool(body.enabled)
-    if body.access is not None:
-        if body.access not in ACCESS_MODES:
-            raise HTTPException(422, "حالت دسترسی نامعتبر")
-        patch["access"] = body.access
-    if body.trial_allowed is not None:
-        patch["trial_allowed"] = bool(body.trial_allowed)
-    if body.quota_kind is not None or body.quota_limit is not None:
-        cur = await db.get_feature_policy(key) or {}
-        q = dict(cur.get("quota") or {"kind": "none", "limit": 0})
-        if body.quota_kind is not None:
-            if body.quota_kind not in QUOTA_KINDS:
-                raise HTTPException(422, "نوع سهمیه نامعتبر")
-            q["kind"] = body.quota_kind
-        if body.quota_limit is not None:
-            if body.quota_limit < 0 or body.quota_limit > 1000000:
-                raise HTTPException(422, "سقف سهمیه نامعتبر")
-            q["limit"] = int(body.quota_limit)
-        patch["quota"] = q
-    if body.fail_open is not None:
-        patch["fail_open"] = bool(body.fail_open)
-    if body.note is not None:
-        patch["note"] = (body.note or "")[:300]
-    if body.pending_access is not None:
-        if body.pending_access not in ("", *ACCESS_MODES):
-            raise HTTPException(422, "حالت زمان‌بندی نامعتبر")
-        patch["pending_access"] = body.pending_access or None
-    if body.effective_from is not None:
-        eff = (body.effective_from or "").strip() or None
-        if eff:
-            try:
-                from datetime import datetime
-                datetime.fromisoformat(eff)
-            except ValueError:
-                raise HTTPException(422, "زمان شروع نامعتبر (ISO)")
-        patch["effective_from"] = eff
-    if not patch:
-        raise HTTPException(422, "تغییری ارسال نشده")
-    res = await db.set_feature_policy(
-        key, patch, user["id"], (user.get("_db") or {}).get("name", ""))
-    from core.access import invalidate_policy_cache
-    invalidate_policy_cache(key)
-    try:
-        await _audit(user["id"], f"تغییر دسترسی فیچر «{key}»",
-                     severity="HIGH", target_id=key, target_type="feature",
-                     target_label=(FEATURE_CATALOG[key].get("label") or key),
-                     before=res["before"], after=res["after"],
-                     tags=["فیچر", "دسترسی", "پنل_وب", f"feature:{key}"])
-    except Exception:
-        # جبران: مثل settings_center — برگرداندن پالیسیِ قبلی
-        try:
-            await db.set_feature_policy(key, res["before"], user["id"], "")
-            invalidate_policy_cache(key)
-        except Exception:
-            pass
-        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
-    try:
-        await db.log_feature_event(key, "feature_policy_changed",
-                                   user["id"], {"after": res["after"]})
-    except Exception:
-        pass
-    return {"ok": True, "after": res["after"]}
-
-
-@router.post("/features/{key}/rollback")
-async def wa_feature_rollback(key: str,
-                              user=Depends(_perm("subscription.manage"))):
-    """🌊 W7 — بازگردانی به پالیسی قبلی (دو بار = redo)."""
-    from core.features import FEATURE_CATALOG
-    if key not in FEATURE_CATALOG:
-        raise HTTPException(404, "فیچر ناشناخته")
-    res = await db.rollback_feature_policy(
-        key, user["id"], (user.get("_db") or {}).get("name", ""))
-    if not res:
-        raise HTTPException(409, "پالیسی قبلی وجود ندارد")
-    from core.access import invalidate_policy_cache
-    invalidate_policy_cache(key)
-    try:
-        await _audit(user["id"], f"بازگردانی دسترسی فیچر «{key}»",
-                     severity="HIGH", target_id=key, target_type="feature",
-                     before=res["before"], after=res["after"],
-                     tags=["فیچر", "دسترسی", "بازگردانی", f"feature:{key}"])
-    except Exception:
-        try:
-            await db.set_feature_policy(key, res["before"], user["id"], "")
-            invalidate_policy_cache(key)
-        except Exception:
-            pass
-        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
-    return {"ok": True, "after": res["after"]}
-
-
-@router.get("/system/client-errors")
-async def wa_system_client_errors(hours: int = Query(24, ge=1, le=720),
-                                  limit: int = Query(50, ge=1, le=200),
-                                  user=Depends(_perm("system.manage"))):
-    """🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی فرانت (مینی‌اپ/وب‌ادمین)."""
-    since = now_utc() - timedelta(hours=hours)
-    rows = await db.client_errors.find(
-        {"at": {"$gte": since}}).sort("at", -1).to_list(limit)
-    groups = await db.client_errors.aggregate([
-        {"$match": {"at": {"$gte": since}}},
-        {"$group": {"_id": {"app": "$app", "message": "$message"},
-                    "n": {"$sum": 1}}},
-        {"$sort": {"n": -1}}, {"$limit": 20},
-    ]).to_list(20)
-    items = []
-    for r in rows:
-        at = r.get("at")
-        items.append({
-            "app": r.get("app") or "", "path": r.get("path") or "",
-            "message": (r.get("message") or "")[:200],
-            "user_id": r.get("user_id"),
-            "at": at.isoformat() if hasattr(at, "isoformat") else str(at or ""),
-        })
-    return {"hours": hours, "items": items,
-            "groups": [{"app": (g.get("_id") or {}).get("app") or "",
-                        "message": ((g.get("_id") or {}).get("message") or "")[:200],
-                        "count": int(g.get("n") or 0)} for g in groups]}
 
 
 @router.get("/system/jobs")
