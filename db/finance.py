@@ -31,10 +31,13 @@ class DBFinance:
     # ══════════════════════════════════════════════════════════════
 
     # ── پلن‌ها ──
-    async def sub_plan_add(self, name: str, days: int, price: int) -> str:
+    async def sub_plan_add(self, name: str, days: int, price: int,
+                         ai_daily_limit: int = 0) -> str:
         count = await self.sub_plans.count_documents({})
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
+            # 🌊 W6/MISS-04 — سهمیه روزانه هوشیار این پلن؛ ۰ = ارث از سراسری
+            'ai_daily_limit': max(0, int(ai_daily_limit or 0)),
             'active': True, 'order': count,
             'created_at': utc_now_iso(),
         })
@@ -413,7 +416,7 @@ class DBFinance:
 
     async def sub_activate(self, user_id: int, days: int, plan_name: str,
                             source: str = 'payment', granted_by: int = 0,
-                            extend: bool = False):
+                            extend: bool = False, plan_id: str = ''):
         """
         فعال‌سازی/تمدید اشتراک. اگر extend=True و اشتراک فعلی هنوز فعاله،
         روزها از تاریخ پایان فعلی جمع می‌شوند نه از الان (تا تمدید،
@@ -438,6 +441,8 @@ class DBFinance:
             {'_id': user_id},
             {'$set': {
                 'status': 'active', 'plan_name': plan_name,
+                # 🌊 W6/MISS-04 — اتصال اشتراک به پلن (سهمیه پلنی؛ خالی=قدیمی/دستی)
+                'plan_id': plan_id or '',
                 'start_date': now.isoformat(), 'end_date': end_date,
                 'source': source, 'granted_by': granted_by,
                 'last_plan_days': days,
@@ -448,6 +453,76 @@ class DBFinance:
             upsert=True
         )
         return end_date
+
+
+    async def trial_status(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — وضعیت trial (نمایشی؛ claim دوباره چک می‌کند).
+
+        خروجی: {eligible, reason, days} ـ days از تنظیمات (۱..۳۰، پیش‌فرض ۷).
+        """
+        try:
+            enabled = await self.get_setting('trial_enabled', 1)
+            days = int(await self.get_setting('trial_days', 7) or 7)
+        except (TypeError, ValueError):
+            enabled, days = 1, 7
+        days = min(max(days, 1), 30)
+        if str(enabled).lower() in ('0', 'false', '', 'none'):
+            return {"eligible": False, "reason": "trial_disabled", "days": days}
+        try:
+            if await self.sub_is_active(int(uid)):
+                return {"eligible": False, "reason": "already_subscribed",
+                        "days": days}
+            u = await self.users.find_one({'user_id': int(uid)},
+                                          {'trial_used': 1})
+            if u is None:
+                return {"eligible": False, "reason": "unknown_user",
+                        "days": days}
+            if u.get('trial_used'):
+                return {"eligible": False, "reason": "already_used",
+                        "days": days}
+            plans = await self.sub_plan_list(only_active=True)
+            if not plans:
+                return {"eligible": False, "reason": "no_plan", "days": days}
+        except Exception:
+            return {"eligible": False, "reason": "error", "days": days}
+        return {"eligible": True, "reason": "", "days": days}
+
+    async def trial_claim(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — دریافت trial: یک‌بار برای هر کاربر، معادل
+        ارزان‌ترین پلن فعال (plan_id همان پلن ⇒ سهمیه پلنی هم اعمال می‌شود).
+
+        توکن اتمیک روی users.trial_used جلوی دابل‌کلیک/مسابقه را می‌گیرد؛
+        اگر فعال‌سازی شکست خورد، توکن آزاد می‌شود. خطا: ValueError(reason).
+        """
+        uid = int(uid)
+        st = await self.trial_status(uid)
+        if not st["eligible"]:
+            raise ValueError(st["reason"])
+        plans = await self.sub_plan_list(only_active=True)
+        if not plans:
+            raise ValueError("no_plan")
+        cheapest = min(plans, key=lambda q: (int(q.get('price', 0) or 0),
+                                             int(q.get('days', 0) or 0)))
+        tok = await self.users.update_one(
+            {'user_id': uid, 'trial_used': {'$ne': True}},
+            {'$set': {'trial_used': True,
+                      'trial_claimed_at': utc_now_iso()}})
+        if not tok.matched_count:
+            raise ValueError('already_used')
+        try:
+            end_date = await self.sub_activate(
+                uid, st["days"],
+                f"آزمایشی {st['days']}روزه ({cheapest.get('name', '')})",
+                source='trial', plan_id=str(cheapest.get('_id', '') or ''))
+        except Exception:
+            try:
+                await self.users.update_one(
+                    {'user_id': uid}, {'$set': {'trial_used': False}})
+            except Exception:
+                pass
+            raise
+        return {"end_date": end_date, "days": st["days"],
+                "plan_name": str(cheapest.get('name', ''))}
 
 
     async def sub_revoke(self, user_id: int, reason: str, revoked_by: int) -> bool:
@@ -650,7 +725,8 @@ class DBFinance:
         end_date = await self.sub_activate(
             target, days, payment.get('plan_name', 'اشتراک'),
             source='gift' if gift else 'payment',
-            granted_by=admin_id, extend=True)
+            granted_by=admin_id, extend=True,
+            plan_id=str(payment.get('plan_id', '') or ''))
         if gift:
             await self.sub_payments.update_one(
                 {'_id': payment['_id'], 'gift.activated_at': None},

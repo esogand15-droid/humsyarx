@@ -1997,7 +1997,8 @@ async def check_and_consume_quota(uid: int) -> tuple:
     می‌شه (خودِ record_token_usage بعد از جواب گرفتن رویش $inc می‌زند).
     """
     cfg = await get_ai_config()
-    limit = cfg['daily_limit']
+    # 🌊 W6/MISS-04 — سقف پلنی (پیش‌فرض: سراسری)؛ همه‌ی صداکننده‌ها خودکار پلنی شدند
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     today = today_tehran().isoformat()
     # The DB conditional update is the source of truth; this remains correct
     # when Bot and Mini App requests land on different processes.
@@ -2030,7 +2031,7 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['mode'] = 'ai_query'
 
-    limit = cfg['daily_limit']
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     if uid == ADMIN_ID or limit <= 0:
         quota_line = "🔓 امروز محدودیتی نداری — هر چقدر دلت خواست بپرس"
     else:

@@ -79,6 +79,15 @@ async def show_paywall(target, uid: int, edit: bool = False):
                 callback_data=f"sub:plan:{p['_id']}"
             )])
         keyboard.append([InlineKeyboardButton("🎟 کد تخفیف دارم", callback_data='sub:discount')])
+        # 🌊 W6/MISS-03 — دکمه‌ی trial فقط برای واجدین
+        try:
+            _trial = await db.trial_status(uid)
+        except Exception:
+            _trial = {"eligible": False}
+        if _trial.get("eligible"):
+            keyboard.append([InlineKeyboardButton(
+                f"🎁 شروع {_trial.get('days', 7)} روز آزمایشی رایگان",
+                callback_data='sub:trial')])
         # 🌊 GIFT — ورودی هدیه (feature flag از settings، بدون کد سخت)
         if str(await db.get_setting('gift_enabled', '1')) == '1':
             keyboard.append([InlineKeyboardButton(
@@ -507,7 +516,8 @@ async def _activate_free_via_discount(query, context, plan: dict, discount_code:
         _percent = consumed.get('percent')
 
     await db.sub_activate(uid, plan['days'], plan['name'], source='payment',
-                           granted_by=0, extend=True)
+                           granted_by=0, extend=True,
+                           plan_id=str(plan.get('_id', '') or ''))  # 🌊 W6/MISS-04
     if discount_code:
         # ثبت به‌عنوان یک تراکنش approved با مبلغ صفر — برای آمار و تاریخچه
         pid = await db.sub_payment_create(
@@ -1021,6 +1031,27 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop('sub_gift_message', None)
         context.user_data.pop('mode', None)
         await show_paywall(query.message, uid, edit=True)
+
+    elif action == 'trial':
+        # 🌊 W6/MISS-03 — دریافت trial از ربات (همان primitive مینی‌اپ)
+        try:
+            res = await db.trial_claim(uid)
+        except ValueError as e:
+            _msg = {
+                'trial_disabled': '❌ دوره‌ی آزمایشی فعلاً فعال نیست.',
+                'already_subscribed': 'ℹ️ اشتراک فعال داری؛ نیازی به trial نیست.',
+                'already_used': '❌ قبلاً از دوره‌ی آزمایشی استفاده کرده‌ای.',
+                'no_plan': '❌ فعلاً پلنی برای trial تعریف نشده.',
+            }.get(str(e), '❌ خطای موقت؛ دوباره تلاش کن.')
+            await query.answer(_msg, show_alert=True)
+            return
+        except Exception:
+            await query.answer('❌ خطای موقت؛ دوباره تلاش کن.', show_alert=True)
+            return
+        await query.answer(f"🎉 {res['days']} روز اشتراک آزمایشی فعال شد!",
+                           show_alert=True)
+        await _show_my_status(query, uid)
+        return
 
     elif action == 'back':
         context.user_data.pop('sub_mode', None)

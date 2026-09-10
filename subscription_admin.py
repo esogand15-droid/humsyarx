@@ -145,7 +145,8 @@ async def _show_plans(query):
     for p in plans:
         mark = "✅" if p.get('active') else "⛔️"
         sold = await db.sub_payments.count_documents({'plan_id': str(p['_id']), 'status': 'approved'})
-        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش")
+        _aiq = int(p.get('ai_daily_limit') or 0)
+        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش" + (f" — 🤖 {_aiq}/روز" if _aiq > 0 else ""))
         keyboard.append([
             InlineKeyboardButton("✏️ ویرایش", callback_data=f"suba:plan_edit:{p['_id']}"),
             InlineKeyboardButton(f"{'⛔️ غیرفعال' if p.get('active') else '✅ فعال'}",

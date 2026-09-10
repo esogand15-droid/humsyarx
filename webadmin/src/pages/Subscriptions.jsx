@@ -139,7 +139,7 @@ function ControlPanel({ ov, refresh }) {
           {(ov.plans || []).map(p => <div key={p.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
             <div className="row"><b>{p.name}</b><span className="spacer" />
               <B kind={p.active ? 'ok' : 'bad'}>{p.active ? 'فعال' : 'غیرفعال'}</B></div>
-            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B></div>
+            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B>{Number(p.ai_daily_limit) > 0 && <B>🤖 {fa(p.ai_daily_limit)}/روز</B>}</div>
             <div className="row" style={{ marginTop: 10, gap: 5 }}>
               <button className="btn sm" onClick={() => setPlanEdit(p)}>✏️ ویرایش</button>
               <button className="btn sm" onClick={() => setPlanEdit({ ...p, _clone: true })}>📄 کپی</button>
@@ -185,12 +185,12 @@ function CardPanel({ card, refresh }) {
 
 function PlanModal({ plan, onClose, onDone }) {
   const clone = !!plan?._clone; const edit = !!plan && !clone;
-  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0 });
+  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0, ai_daily_limit: plan?.ai_daily_limit || 0 });
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price) };
+      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price), ai_daily_limit: Number(f.ai_daily_limit) || 0 };
       if (edit) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
       toast(edit ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
     } catch (e) { toast(errText(e), 'err'); }
@@ -202,7 +202,9 @@ function PlanModal({ plan, onClose, onDone }) {
       <div className="row"><label className="fld" style={{ flex: 1 }}><span>تعداد روز</span>
         <input className="inp" type="number" min="1" max="3650" value={f.days} onChange={e => setF({ ...f, days: e.target.value })} /></label>
         <label className="fld" style={{ flex: 1 }}><span>قیمت (تومان)</span>
-        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label></div>
+        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+        <label className="fld" style={{ flex: 1 }}><span>سهمیه هوشیار/روز (۰=سراسری)</span>
+        <input className="inp" type="number" min="0" max="100000" value={f.ai_daily_limit} onChange={e => setF({ ...f, ai_daily_limit: e.target.value })} /></label></div>
       <div className="row"><button className="btn primary" disabled={busy || f.name.trim().length < 2 || Number(f.days) < 1}
         onClick={save}>{busy ? '⏳ …' : 'ذخیره'}</button><button className="btn" onClick={onClose}>انصراف</button></div>
     </div>

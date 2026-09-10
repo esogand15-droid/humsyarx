@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 from api.auth import (
-    ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
+    ADMIN_ID, _hash_token, get_current_user, get_content_admin_user,
     expiry_is_past, get_content_global_user, new_session_token, resolve_content_intake,
     resolve_web_session, utc_now, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
@@ -3196,12 +3196,12 @@ async def questions_export_pdf(
 
 # ── Question Bank JSON ingestion (owner-only, preview-first) ──────
 @router.get("/questions/import/prompt")
-async def question_import_prompt(user=Depends(get_admin_user)):
+async def question_import_prompt(user=Depends(_perm("questions.import"))):
     return question_imports.prompt()
 
 
 @router.post("/questions/import/upload")
-async def question_import_upload(file: UploadFile = File(...), user=Depends(get_admin_user)):
+async def question_import_upload(file: UploadFile = File(...), user=Depends(_perm("questions.import"))):
     raw = await file.read(10 * 1024 * 1024 + 1)
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(413, "حجم فایل JSON بیشتر از ۱۰MB است")
@@ -3221,7 +3221,7 @@ async def question_import_upload(file: UploadFile = File(...), user=Depends(get_
 
 
 @router.get("/questions/import/{job_id}")
-async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
+async def question_import_preview(job_id: str, user=Depends(_perm("questions.import"))):
     try:
         preview = await question_imports.preview(job_id)
     except QuestionDomainError as exc:
@@ -3234,7 +3234,7 @@ async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
 @router.get("/questions/import/{job_id}/items")
 async def question_import_items(job_id: str, classification: Optional[str] = Query(None),
                                 skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
-                                user=Depends(get_admin_user)):
+                                user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     return await question_imports.list_items(job_id, classification=classification, skip=skip, limit=limit)
@@ -3247,7 +3247,7 @@ class ImportMapInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/mapping")
 async def question_import_mapping(job_id: str, item_id: str, body: ImportMapInput,
-                                  user=Depends(get_admin_user)):
+                                  user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -3269,7 +3269,7 @@ class ImportDecisionInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/decision")
 async def question_import_decision(job_id: str, item_id: str, body: ImportDecisionInput,
-                                   user=Depends(get_admin_user)):
+                                   user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -3285,7 +3285,7 @@ async def question_import_decision(job_id: str, item_id: str, body: ImportDecisi
 
 
 @router.post("/questions/import/{job_id}/confirm")
-async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
+async def question_import_confirm(job_id: str, user=Depends(_perm("questions.import"))):
     try:
         result = await question_imports.confirm(job_id=job_id, admin=user)
     except QuestionDomainError as exc:
@@ -3299,7 +3299,7 @@ async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
 
 
 @router.post("/questions/import/{job_id}/cancel")
-async def question_import_cancel(job_id: str, user=Depends(get_admin_user)):
+async def question_import_cancel(job_id: str, user=Depends(_perm("questions.import"))):
     try: result = await question_imports.cancel(job_id=job_id, admin_id=user["id"])
     except QuestionDomainError as exc: raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
     await _audit(user["id"], "لغو درون‌ریزی بانک سؤال", severity="INFO",
@@ -3339,6 +3339,15 @@ _SETTINGS_CATALOG = [
         ("donation_link", "لینک حمایت مالی",
          "آدرس صفحه‌ی حمایت (با http/https؛ خالی=حذف)",
          "link", "settings.manage", "HIGH"),
+    ]),
+    # 🌊 W6/MISS-03 — trial اشتراک
+    ("subscription", [
+        ("trial_enabled", "دوره‌ی آزمایشی",
+         "نمایش و امکان دریافت trial برای کاربران بدون اشتراک",
+         "bool", "subscription.manage", "HIGH"),
+        ("trial_days", "مدت trial (روز)",
+         "طول دوره‌ی آزمایشی؛ بین ۱ تا ۳۰ (پیش‌فرض ۷)",
+         "number", "subscription.manage", "HIGH"),
     ]),
     ("backup", [
         ("auto_backup_enabled", "بکاپ خودکار روزانه",
@@ -3501,6 +3510,13 @@ async def settings_center_patch(key: str, body: SettingPatch,
                 raise HTTPException(422, "ساعت باید عدد باشد")
             if not 0 <= val <= 23:
                 raise HTTPException(422, "ساعت بکاپ باید بین ۰ تا ۲۳ باشد")
+        elif typ == "number":
+            # 🌊 W6/MISS-03 — فرانت از قبل number را رندر می‌کرد ولی بک‌اند
+            # اعتبارسنجی نداشت (مقدار خام ذخیره می‌شد)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                raise HTTPException(422, "مقدار باید عدد صحیح باشد")
         await db.set_setting(key, val)
         before, after = old, val
 
@@ -6372,7 +6388,7 @@ async def wa_ai_config_update(
 
 @router.post("/ai/api-key/rotate")
 async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
-                               user=Depends(get_admin_user)):
+                               user=Depends(_perm("ai.manage"))):
     """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود. Vault-aware: کلید برای provider فعلی در vault ذخیره می‌شود."""
     secret = body.api_key.strip()
     if len(secret) < 8:
@@ -6398,7 +6414,7 @@ async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
 
 
 @router.post("/ai/test")
-async def wa_ai_test(user=Depends(get_admin_user)):
+async def wa_ai_test(user=Depends(_perm("ai.manage"))):
     started = time.perf_counter()
     result = await ai_admin_api.test_connection(admin=user)
     result["response_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
@@ -6411,7 +6427,7 @@ async def wa_ai_test(user=Depends(get_admin_user)):
 
 
 @router.get("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
+async def wa_ai_user_profile(user_id: int, user=Depends(_perm("ai.manage"))):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -6424,7 +6440,7 @@ async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
 
 
 @router.delete("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
+async def wa_ai_user_profile_clear(user_id: int, user=Depends(_perm("ai.manage"))):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -6446,7 +6462,7 @@ async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
 
 
 @router.get("/ai/personas")
-async def wa_ai_personas(user=Depends(get_admin_user)):
+async def wa_ai_personas(user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     meta_raw = await db.get_setting("ai_personas_meta", {})
     meta = meta_raw if isinstance(meta_raw, dict) else {}
@@ -6459,7 +6475,7 @@ async def wa_ai_personas(user=Depends(get_admin_user)):
 
 
 @router.post("/ai/personas")
-async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_user)):
+async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     name = body.name.strip()
     prompt = (body.prompt or cfg.get("system_prompt") or "").strip()
@@ -6487,7 +6503,7 @@ async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_u
 
 
 @router.post("/ai/personas/{name}/activate")
-async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
+async def wa_ai_persona_activate(name: str, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     prompt = (cfg.get("personas") or {}).get(name)
     if not prompt:
@@ -6506,7 +6522,7 @@ async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
 
 
 @router.delete("/ai/personas/{name}")
-async def wa_ai_persona_delete(name: str, user=Depends(get_admin_user)):
+async def wa_ai_persona_delete(name: str, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     old_prompt = (cfg.get("personas") or {}).get(name)
     if old_prompt is None:

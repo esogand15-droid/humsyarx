@@ -6,6 +6,7 @@ import re
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
 )
 
@@ -18,6 +19,10 @@ from question_bank.contracts import approved_query
 
 
 router = APIRouter()
+
+# 🌊 W6/PERF-02 — سقف‌های شفاف fan-out: هر کوئری maxTimeMS، کل گدر timeout.
+_SEARCH_TIMEOUT_S = 8
+_SEARCH_MAX_TIME_MS = 5000
 
 
 def text(
@@ -96,65 +101,73 @@ async def search(
             pass
         return await db.faq.find({"$or": [{"question": pattern}, {"answer": pattern}]}).limit(10).to_list(10)
 
-    (
-        resources,
-        questions,
-        faqs,
-        schedules,
-        subjects,
-        books,
-    ) = await asyncio.gather(
-        db.search_resources(
-            query,
-            intake=_filt,
-        ),
+    # 🌊 W6/PERF-02 — timeout کلی: به‌جای آویزان‌ماندن، ۵۰۳ صادقانه
+    try:
+        (
+            resources,
+            questions,
+            faqs,
+            schedules,
+            subjects,
+            books,
+        ) = await asyncio.wait_for(asyncio.gather(
+            db.search_resources(
+                query,
+                intake=_filt,
+            ),
+    
+            _q_text_or_regex(),
+    
+            _faq_text_or_regex(),
+    
+            db.schedules.find({
+                "$or": [
+                    {
+                        "lesson":
+                            pattern,
+                    },
+    
+                    {
+                        "teacher":
+                            pattern,
+                    },
+    
+                    {
+                        "notes":
+                            pattern,
+                    },
+                ],
+            })
+            .sort(
+                "date",
+                -1,
+            )
+            .limit(10)
+            .max_time_ms(_SEARCH_MAX_TIME_MS)
+            .to_list(10),
+    
+            db.ref_subjects.find({
+                "name":
+                    pattern,
+    
+                **_scope_q,
+            })
+            .limit(10)
+            .max_time_ms(_SEARCH_MAX_TIME_MS)
+            .to_list(10),
+    
+            db.ref_books.find({
+                "name":
+                    pattern,
+            })
+            .limit(10)
+            .max_time_ms(_SEARCH_MAX_TIME_MS)
+            .to_list(10),
 
-        _q_text_or_regex(),
-
-        _faq_text_or_regex(),
-
-        db.schedules.find({
-            "$or": [
-                {
-                    "lesson":
-                        pattern,
-                },
-
-                {
-                    "teacher":
-                        pattern,
-                },
-
-                {
-                    "notes":
-                        pattern,
-                },
-            ],
-        })
-        .sort(
-            "date",
-            -1,
-        )
-        .limit(10)
-        .to_list(10),
-
-        db.ref_subjects.find({
-            "name":
-                pattern,
-
-            **_scope_q,
-        })
-        .limit(10)
-        .to_list(10),
-
-        db.ref_books.find({
-            "name":
-                pattern,
-        })
-        .limit(10)
-        .to_list(10),
-
-    )
+        ), timeout=_SEARCH_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=503,
+                                detail="جستجو طولانی شد؛ دوباره تلاش کن.")
 
 
     results = []

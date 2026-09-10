@@ -96,6 +96,18 @@ def normalize_plan(
                 or 0
             ),
         ),
+
+        # 🌊 W6/MISS-04 — ۰ = ارث از سقف سراسری
+        "ai_daily_limit": max(
+            0,
+            int(
+                item.get(
+                    "ai_daily_limit",
+                    0,
+                )
+                or 0
+            ),
+        ),
     }
 
 
@@ -338,6 +350,9 @@ async def get_status(
             for item in plans
         ],
 
+        # 🌊 W6/MISS-03 — فرانت فقط می‌خواند؛ تصمیم با claim است
+        "trial": await db.trial_status(user_id),
+
         "payments": [
             normalize_payment(item)
             for item in history
@@ -468,6 +483,45 @@ async def validate_discount(
         "final_price":
             final_price,
     }
+
+
+_TRIAL_FA = {
+    "trial_disabled": "دوره‌ی آزمایشی فعلاً فعال نیست.",
+    "already_subscribed": "اشتراک فعال داری؛ نیازی به trial نیست.",
+    "already_used": "قبلاً از دوره‌ی آزمایشی استفاده کرده‌ای.",
+    "no_plan": "فعلاً پلنی برای trial تعریف نشده است.",
+    "unknown_user": "کاربر شناخته نشد.",
+    "error": "خطای موقت؛ دوباره تلاش کن.",
+}
+
+
+@router.get("/trial/status")
+async def trial_status_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W6/MISS-03 — وضعیت trial کاربر جاری."""
+    return await db.trial_status(user["id"])
+
+
+@router.post("/trial")
+async def trial_claim_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W6/MISS-03 — دریافت trial (یک‌بار، ضد دابل‌کلیک)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "trial_claim", 3, 3600)
+    try:
+        res = await db.trial_claim(user["id"])
+    except ValueError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=_TRIAL_FA.get(str(e), _TRIAL_FA["error"]),
+        )
+    return {"ok": True, **res}
 
 
 @router.post("/buy")
@@ -692,6 +746,10 @@ async def buy(
 
                     source=
                         "discount",
+
+                    # 🌊 W6/MISS-04 — اتصال اشتراک به پلن (سهمیه پلنی)
+                    plan_id=
+                        plan_id,
 
                     granted_by=
                         0,

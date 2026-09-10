@@ -844,10 +844,13 @@ async def status(
         user["id"]
     )
 
+    # 🌊 W6/MISS-04 — نمایش سقف پلنی (نه سراسری)
     limit = max(
         0,
         _safe_int(
-            config.get("daily_limit")
+            await db.ai_limit_for_user(
+                user["id"], config.get("daily_limit")
+            )
         ),
     )
 

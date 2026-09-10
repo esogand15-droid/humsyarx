@@ -24,7 +24,7 @@ from pydantic import (
 )
 
 from api.auth import (
-    get_admin_user,
+    require_perm,
 )
 
 from api.telegram_send import (
@@ -57,6 +57,13 @@ class PlanBody(BaseModel):
     price: int = Field(
         ge=0,
         le=2_000_000_000,
+    )
+
+    # 🌊 W6/MISS-04 — سهمیه روزانه هوشیار؛ ۰ = ارث از سقف سراسری
+    ai_daily_limit: int = Field(
+        default=0,
+        ge=0,
+        le=100000,
     )
 
 
@@ -296,9 +303,7 @@ class CardBody(BaseModel):
 
 @router.get("/overview")
 async def overview(
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     stats = (
         await db.sub_stats()
@@ -367,6 +372,13 @@ async def overview(
                         "active",
                         True,
                     ),
+
+                # 🌊 W6/MISS-04
+                "ai_daily_limit":
+                    plan.get(
+                        "ai_daily_limit",
+                        0,
+                    ) or 0,
             }
 
             for plan in plans
@@ -394,7 +406,7 @@ async def overview(
 @router.patch("/settings")
 async def update_subscription_settings(
     body: SubscriptionSettingsBody,
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     changed = []
     before, after = {}, {}
@@ -420,12 +432,13 @@ async def update_subscription_settings(
 async def update_plan(
     plan_id: str,
     body: PlanBody,
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     old = await db.sub_plan_get(plan_id)
     if not old:
         raise HTTPException(status_code=404, detail="پلن پیدا نشد")
-    patch = {"name": body.name.strip(), "days": body.days, "price": body.price}
+    patch = {"name": body.name.strip(), "days": body.days, "price": body.price,
+             "ai_daily_limit": body.ai_daily_limit}
     ok = await db.sub_plan_update(plan_id, patch)
     if not ok:
         raise HTTPException(status_code=500, detail="ویرایش پلن انجام نشد")
@@ -442,22 +455,22 @@ async def update_plan(
 async def add_plan(
     body: PlanBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     plan_id = (
         await db.sub_plan_add(
             body.name.strip(),
             body.days,
             body.price,
+            body.ai_daily_limit,
         )
     )
 
     await _audit(
         admin, "ایجاد پلن اشتراک", "Subscription", severity="HIGH",
         target_id=str(plan_id), target_type="plan", target_label=body.name.strip(),
-        after={"name": body.name.strip(), "days": body.days, "price": body.price},
+        after={"name": body.name.strip(), "days": body.days, "price": body.price,
+               "ai_daily_limit": body.ai_daily_limit},
         tags=["اشتراک", "پلن", "پنل_وب"],
     )
     return {
@@ -475,9 +488,7 @@ async def add_plan(
 async def toggle_plan(
     plan_id: str,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     old = await db.sub_plan_get(plan_id)
     changed = (
@@ -512,9 +523,7 @@ async def toggle_plan(
 async def delete_plan(
     plan_id: str,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     plan = (
         await db.sub_plan_get(
@@ -573,9 +582,7 @@ async def payments(
         description="topup | gift | normal — 🌊 W7 تفکیک نوع رسید",
     ),
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     extra = (
         await _payment_search_filter(
@@ -775,7 +782,7 @@ async def payments(
 @router.get("/payments/{payment_id}/receipt")
 async def payment_receipt(
     payment_id: str,
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     """پروکسی امن تصویر رسید از Telegram؛ token هرگز به مرورگر نمی‌رود."""
     payment = await db.sub_payment_get(payment_id)
@@ -830,9 +837,7 @@ async def decide_payment(
 
     body: DecisionBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     payment = (
         await db.sub_payment_get(
@@ -1019,9 +1024,7 @@ async def decide_payment(
 async def send_receipt(
     payment_id: str,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     payment = (
         await db.sub_payment_get(
@@ -1105,9 +1108,7 @@ async def subscribers(
         default=None
     ),
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     extra = (
         await _subscriber_search_filter(
@@ -1234,7 +1235,7 @@ async def subscribers(
 @router.get("/subscribers/{user_id}")
 async def subscriber_detail(
     user_id: int,
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     user = await db.get_user(user_id)
     if not user:
@@ -1287,9 +1288,7 @@ async def search_users_for_grant(
         max_length=80,
     ),
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     """🔎 جست‌وجوی فشرده‌ی دانشجو برای
     «اعطای دستی» — همان موتور مشترک
@@ -1372,9 +1371,7 @@ def _grant_key(admin, uids, days, extend, plan_name: str = '') -> str:
 async def grant_subscription(
     body: GrantBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     user = (
         await db.get_user(
@@ -1461,7 +1458,7 @@ async def grant_subscription(
 @router.post("/subscribers/grant-bulk")
 async def grant_subscription_bulk(
     body: BulkGrantBody,
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     target_ids: list[int] = []
     unresolved: list[str] = []
@@ -1549,9 +1546,7 @@ async def revoke_subscription(
 
     body: RevokeBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     user = await db.get_user(user_id)
     revoked = (
@@ -1595,9 +1590,7 @@ async def revoke_subscription(
 
 @router.get("/discounts")
 async def discounts(
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     items = (
         await db.discount_list()
@@ -1662,9 +1655,7 @@ async def discounts(
 async def add_discount(
     body: DiscountBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     try:
         created = await db.discount_add(
@@ -1701,9 +1692,7 @@ async def add_discount(
 async def toggle_discount(
     code: str,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     old = await db.discount_get(code)
     changed = (
@@ -1740,9 +1729,7 @@ async def toggle_discount(
 async def delete_discount(
     code: str,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     old = await db.discount_get(code)
     deleted = (
@@ -1795,7 +1782,7 @@ async def _campaign_msg(discount: dict, title=None, description=None):
 async def preview_discount_campaign(
     code: str,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     discount = await db.discount_get(code)
     if not discount:
@@ -1818,7 +1805,7 @@ async def start_discount_broadcast(
 
     body: DiscountBroadcastBody,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     from api.telegram_send import _send as _tg_send
     import asyncio as _asyncio
@@ -1969,7 +1956,7 @@ async def start_discount_broadcast(
 async def discount_broadcast_status(
     code: str, bid: str,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     bc = await db.discount_bcast_get(bid)
     if not bc or bc.get("code") != code:
@@ -1991,7 +1978,7 @@ async def discount_broadcast_status(
 async def cancel_discount_broadcast(
     code: str, bid: str,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     bc = await db.discount_bcast_get(bid)
     if not bc or bc.get("code") != code:
@@ -2010,7 +1997,7 @@ async def cancel_discount_broadcast(
 async def discount_broadcasts_list(
     code: str,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     items = await db.discount_bcast_list(code, 10)
     return {
@@ -2034,7 +2021,7 @@ async def discount_broadcasts_list(
 async def discount_stats(
     code: str,
 
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     discount = await db.discount_get(code)
     if not discount:
@@ -2067,9 +2054,7 @@ async def discount_stats(
 async def update_card(
     body: CardBody,
 
-    admin=Depends(
-        get_admin_user
-    ),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     old_number = await db.get_setting("subscription_card_number", "")
     old_owner = await db.get_setting("subscription_card_owner", "")
@@ -2107,7 +2092,7 @@ async def list_gifts(
     recipient: int = Query(0),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("subscription.manage")),
 ):
     """لیست هدیه‌ها با صفحه‌بندی اجباری (قرارداد W4).
 
@@ -2150,7 +2135,7 @@ async def list_gifts(
 
 
 @router.post("/gifts/{payment_id}/cancel")
-async def cancel_gift(payment_id: str, admin=Depends(get_admin_user)):
+async def cancel_gift(payment_id: str, admin=Depends(require_perm("subscription.manage"))):
     """لغو هدیه‌ی pending (CAS). فعال‌سازی دستی کور وجود ندارد —
     تنها مسیر فعال‌سازی، تأیید رسید است (تصمیم §۵۸)."""
     payment = await db.sub_payment_get(payment_id)
@@ -2179,7 +2164,7 @@ async def cancel_gift(payment_id: str, admin=Depends(get_admin_user)):
 
 
 @router.post("/gifts/{payment_id}/retry-notify")
-async def retry_gift_notify(payment_id: str, admin=Depends(get_admin_user)):
+async def retry_gift_notify(payment_id: str, admin=Depends(require_perm("subscription.manage"))):
     """ارسال دوباره‌ی اعلان گیرنده از طریق همان outbox —
     نوتیفیکیشن هرگز تراکنش را rollback نکرده و همیشه قابل retry است."""
     payment = await db.sub_payment_get(payment_id)

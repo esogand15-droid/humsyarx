@@ -3586,6 +3586,40 @@ class DBCore:
                                       {'ai_image_count': 1})
         return int((u or {}).get('ai_image_count') or 0)
 
+    async def ai_limit_for_user(self, uid: int, global_limit: int) -> int:
+        """🌊 W6/MISS-04 — سهمیه روزانه هوشیار این کاربر.
+
+        اشتراک فعال ← پلن (plan_id، وگرنه تطبیق نام میان پلن‌های فعال)؛
+        اگر پلن `ai_daily_limit>0` داشت همان، وگرنه سقف سراسری.
+        بدون اشتراک فعال ← سقف سراسری. ۰ یعنی نامحدود (قرارداد قبلی).
+        """
+        try:
+            sub = await self.sub_get(int(uid))
+        except Exception:
+            return int(global_limit or 0)
+        if not sub or sub.get("status") != "active":
+            return int(global_limit or 0)
+        plan = None
+        try:
+            pid = str(sub.get("plan_id") or "")
+            if pid:
+                plan = await self.sub_plan_get(pid)
+            if not plan and sub.get("plan_name"):
+                plans = await self.sub_plan_list(only_active=True)
+                plan = next((x for x in plans
+                             if x.get("name") == sub.get("plan_name")), None)
+        except Exception:
+            plan = None
+        if plan:
+            try:
+                pl = int(plan.get("ai_daily_limit") or 0)
+            except (TypeError, ValueError):
+                pl = 0
+            if pl > 0:
+                return pl
+        return int(global_limit or 0)
+
+
     async def ai_consume_quota(self, uid: int, daily_limit: int, today: str) -> tuple:
         """Atomically reserve one AI request across all API/Bot workers.
 

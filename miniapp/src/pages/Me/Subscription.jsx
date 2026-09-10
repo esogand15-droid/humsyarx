@@ -205,6 +205,26 @@ export default function Subscription() {
     setGiftMessage,
   ] = useState('');
 
+  // 🌊 W6/MISS-03
+  const [
+    trialBusy,
+    setTrialBusy,
+  ] = useState(false);
+
+  // 🌊 W6/MISS-03 — دریافت trial (بک‌اند ضد دابل‌کلیک است؛ این فقط UX است)
+  const claimTrial = async () => {
+    if (trialBusy) return;
+    setTrialBusy(true);
+    try {
+      await api.post('/api/subscription/trial');
+      toast('🎉 اشتراک آزمایشی فعال شد');
+      refetch();
+    } catch (e) {
+      toast(e?.response?.data?.detail || 'خطا در فعال‌سازی trial', 'err');
+    }
+    setTrialBusy(false);
+  };
+
   // توکن یکتا برای هر تلاش خرید — double-submit یک رسید می‌سازد نه دو تا
   const idemRef = useRef(
     `mp-${Date.now()}-${Math.random()
@@ -798,6 +818,19 @@ export default function Subscription() {
                   </span>
                 )}
               </div>
+
+              {/* 🌊 W6/MISS-03 — بنر trial فقط برای واجدین بدون اشتراک */}
+              {!data?.active && data?.trial?.eligible && (
+                <button
+                  type="button"
+                  className="btn btn-p btn-full"
+                  disabled={trialBusy}
+                  onClick={claimTrial}
+                  style={{ marginTop: 12 }}
+                >
+                  {trialBusy ? '⏳ …' : `🎁 شروع ${number(data.trial.days)} روز آزمایشی رایگان`}
+                </button>
+              )}
             </section>
 
 
@@ -1159,6 +1192,12 @@ export default function Subscription() {
                               )}{' '}
 
                               روز دسترسی
+                              {/* 🌊 W6/MISS-04 */}
+                              {Number(plan.ai_daily_limit) > 0 && (
+                                <span style={{ display: 'block', marginTop: 2 }}>
+                                  🤖 {number(plan.ai_daily_limit)} سوال هوشیار/روز
+                                </span>
+                              )}
                             </span>
                           </span>
 
