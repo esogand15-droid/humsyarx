@@ -15,7 +15,7 @@ SUBJECTS = ["🔬 مشکل در منابع","🧪 مشکل در بانک سوا�
 
 def _fmt(t, detail=False):
     replies = t.get("replies",[])
-    r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":t.get("status","open"),
+    r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":db.ticket_norm_status(t.get("status")),
         "created_at": t.get("created_at") or None,"reply_count":len(replies),
         "priority":t.get("priority","normal"),"sla":db.ticket_sla_info(t)}
     if detail:

@@ -127,7 +127,7 @@ export default function Tickets({ go, me }) {
       </div>}
       <FilterBar>
         <div className="tabs" style={{ flex: 1, marginBottom: 0 }} role="tablist" aria-label="وضعیت تیکت‌ها">
-          {[['open', '🟠 باز'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
+          {[['open', '🟡 باز'], ['in_progress', '🔵 در حال بررسی'], ['waiting_user', '🟣 منتظر کاربر'], ['resolved', '✅ حل‌شده'], ['answered', '🟡 پاسخ‌داده‌شده'], ['closed', '🟢 بسته'], ['', 'همه']].map(([k, v]) => (
             <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{v}</button>
           ))}
         </div>
@@ -212,8 +212,8 @@ export default function Tickets({ go, me }) {
                 <b style={{ color: 'var(--txt)', fontSize: 'var(--fs-card)' }}>{detail.subject || `تیکت ${detail.id}`}</b>
                 <span className="muted">#{detail.id} · <FaDateTime value={detail.created_at} /></span>
                 <span className="spacer" />
-                <B kind={detail.status === 'open' ? 'bad' : detail.status === 'answered' ? 'warn' : 'ok'}>
-                  {detail.status === 'open' ? 'باز' : detail.status === 'answered' ? 'پاسخ‌داده‌شده' : 'بسته'}
+                <B kind={detail.status === 'closed' ? 'ok' : detail.status === 'open' ? 'bad' : 'warn'}>
+                  {{ open: 'باز', in_progress: 'در حال بررسی', waiting_user: 'منتظر کاربر', resolved: 'حل‌شده', answered: 'پاسخ‌داده‌شده', closed: 'بسته' }[detail.status] || detail.status}
                 </B>
                 {detail.sla?.breached && <B kind="bad">🔴 مهلت SLA گذشته</B>}
                 {!detail.sla?.breached && !detail.sla?.responded && !!detail.sla?.due_at && <B>⏱ <FaDateTime value={detail.sla.due_at} fallback="" /></B>}
@@ -238,7 +238,7 @@ export default function Tickets({ go, me }) {
                 {canReply && !!canned.filter(c => c.active !== false).length && <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
                   <select className="inp" style={{ flex: 1 }} value="" onChange={e => { const c = canned.find(x => x.id === e.target.value); if (c) setText(c.text); }}>
                     <option value="">⚡ درج پاسخ آماده…</option>
-                    {canned.filter(c => c.active !== false).map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+                    {canned.filter(c => c.active !== false).map(c => <option key={c.id} value={c.id}>{c.category ? `[${c.category}] ` : ''}{c.title}</option>)}
                   </select>
                   {canManage && <button className="btn sm" onClick={() => setCannedOpen(true)}>مدیریت</button>}
                 </div>}
@@ -307,6 +307,10 @@ export default function Tickets({ go, me }) {
                 <select className="inp" style={{ flex: 1 }} value={detail.assignee_id || ''} onChange={e => patchMeta({ assignee_id: e.target.value ? Number(e.target.value) : null })}>
                   <option value="">بدون مسئول</option>{(options.assignees || []).map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
                 </select></div>
+                <div className="row"><select className="inp" style={{ flex: 1 }} value={detail.status || 'open'} onChange={e => patchMeta({ status: e.target.value })}>
+                  <option value="open">🟡 باز</option><option value="in_progress">🔵 در حال بررسی</option><option value="waiting_user">🟣 منتظر کاربر</option><option value="resolved">✅ حل‌شده</option><option value="closed">🟢 بسته</option>
+                </select>
+                {detail.assignee_id != null && detail.assignee_active === false && <B kind="bad">⚠️ مسئول غیرفعال</B>}</div>
                 <div className="row"><input className="inp" style={{ flex: 1 }} placeholder="برچسب‌ها با ویرگول…" value={tags} onChange={e => setTags(e.target.value)} />
                   <button className="btn sm" onClick={() => patchMeta({ tags: tags.split(/[،,]/).map(x => x.trim()).filter(Boolean) })}>ذخیره برچسب</button></div>
                 {!!(detail.internal_notes || []).length && <div className="grid" style={{ gap: 5 }}>
@@ -340,16 +344,20 @@ export default function Tickets({ go, me }) {
 function CannedModal({ items, onClose, onChanged }) {
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
+  const [cat, setCat] = useState('');
+  const [fcat, setFcat] = useState('');
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
+  const cats = [...new Set((items || []).map(c => c.category).filter(Boolean))];
+  const shown = fcat ? (items || []).filter(c => c.category === fcat) : (items || []);
   const save = async () => {
     if (!title.trim() || !text.trim()) return;
     setBusy(true);
     try {
-      if (edit) await api.cannedUpdate(edit, { title: title.trim(), text: text.trim(), active: true });
-      else await api.cannedAdd({ title: title.trim(), text: text.trim(), active: true });
+      if (edit) await api.cannedUpdate(edit, { title: title.trim(), text: text.trim(), active: true, category: cat.trim() });
+      else await api.cannedAdd({ title: title.trim(), text: text.trim(), active: true, category: cat.trim() });
       toast(edit ? 'ویرایش شد ✅' : 'افزوده شد ✅');
-      setTitle(''); setText(''); setEdit(null); onChanged();
+      setTitle(''); setText(''); setCat(''); setEdit(null); onChanged();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -361,18 +369,23 @@ function CannedModal({ items, onClose, onChanged }) {
   };
   return <Modal title="⚡ پاسخ‌های آماده" onClose={onClose} wide>
     <div className="grid" style={{ gap: 8 }}>
-      {(items || []).map(c => <div key={c.id} className="panel panel-pad">
+      {!!cats.length && <div className="row"><select className="inp" style={{ flex: 1 }} value={fcat} onChange={e => setFcat(e.target.value)}>
+        <option value="">همه دسته‌ها</option>{cats.map(k => <option key={k} value={k}>{k}</option>)}
+      </select></div>}
+      {shown.map(c => <div key={c.id} className="panel panel-pad">
         <div className="row"><b style={{ flex: 1 }}>{c.title}</b>
-          <button className="btn sm" onClick={() => { setEdit(c.id); setTitle(c.title); setText(c.text); }}>✏️</button>
+          {c.category && <B>{c.category}</B>}
+          <button className="btn sm" onClick={() => { setEdit(c.id); setTitle(c.title); setText(c.text); setCat(c.category || ''); }}>✏️</button>
           <button className="btn sm" disabled={busy} onClick={() => del(c.id)}>🗑</button></div>
         <div className="muted" style={{ whiteSpace: 'pre-wrap' }}>{(c.text || '').slice(0, 200)}</div>
       </div>)}
       {!items?.length && <Empty text="هنوز پاسخ آماده‌ای ثبت نشده" />}
       <div className="panel panel-pad"><b>{edit ? '✏️ ویرایش' : '➕ جدید'}</b>
-        <input className="inp" style={{ marginTop: 6 }} placeholder="عنوان…" value={title} onChange={e => setTitle(e.target.value)} />
+        <div className="row" style={{ marginTop: 6 }}><input className="inp" style={{ flex: 2 }} placeholder="عنوان…" value={title} onChange={e => setTitle(e.target.value)} />
+          <input className="inp" style={{ flex: 1 }} placeholder="دسته…" value={cat} onChange={e => setCat(e.target.value)} /></div>
         <textarea className="inp" style={{ marginTop: 6 }} rows={3} placeholder="متن پاسخ…" value={text} onChange={e => setText(e.target.value)} />
         <div className="row" style={{ marginTop: 6 }}><button className="btn primary sm" disabled={busy || !title.trim() || !text.trim()} onClick={save}>💾 ذخیره</button>
-          {edit && <button className="btn sm" onClick={() => { setEdit(null); setTitle(''); setText(''); }}>انصراف</button>}</div>
+          {edit && <button className="btn sm" onClick={() => { setEdit(null); setTitle(''); setText(''); setCat(''); }}>انصراف</button>}</div>
       </div>
     </div>
   </Modal>;

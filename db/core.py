@@ -999,6 +999,84 @@ class DBCore:
         return {'sla_hours': sla, 'due_at': due_at, 'responded': responded,
                 'breached': breached}
 
+    # 🌊 W9 — ورک‌فلو وضعیت تیکت (هسته‌ی خالص؛ ریس‌سیف با آپدیت شرطی)
+    TICKET_STATUSES = ('open', 'in_progress', 'waiting_user',
+                       'resolved', 'closed')
+    # legacy: فیلتر قدیمی answered یعنی «پاسخ داده شده، منتظر کاربر»
+    TICKET_STATUS_LEGACY = {'answered': 'waiting_user'}
+    TICKET_TRANSITIONS = {
+        'open': ('in_progress', 'resolved', 'closed'),
+        'in_progress': ('open', 'waiting_user', 'resolved', 'closed'),
+        'waiting_user': ('in_progress', 'resolved', 'closed'),
+        'resolved': ('in_progress', 'closed'),
+        'closed': ('in_progress',),
+    }
+
+    @staticmethod
+    def ticket_norm_status(s) -> str:
+        s = str(s or 'open').strip()
+        s = DBCore.TICKET_STATUS_LEGACY.get(s, s)
+        return s if s in DBCore.TICKET_STATUSES else 'open'
+
+    @staticmethod
+    def ticket_transition_allowed(frm, to) -> bool:
+        frm = DBCore.ticket_norm_status(frm)
+        to = DBCore.ticket_norm_status(to)
+        if frm == to:
+            return True  # no-op مجاز است
+        return to in DBCore.TICKET_TRANSITIONS.get(frm, ())
+
+    async def ticket_assignee_ok(self, uid) -> bool:
+        """🌊 W9 — آیا assignee هنوز مجوز پاسخ‌گویی دارد؟
+        رفتار امن: فقط flag برای نمایش؛ سلب خودکار ممنوع."""
+        try:
+            uid = int(uid or 0)
+        except (TypeError, ValueError):
+            return False
+        if uid <= 0:
+            return False
+        try:
+            u = await self.get_user(uid)
+            if not u:
+                return False
+            return bool(await self.has_permission(uid, 'tickets.reply'))
+        except Exception:
+            return False
+
+    async def ticket_set_status(self, ticket_id: int, to: str) -> dict:
+        """تغییر وضعیت گاردشده: {'ok', 'frm', 'to'}؛ ریس ⇒ ok=False.
+
+        آپدیت شرطی روی status موردانتظار + ۱ retry؛ اگر هم‌زمان عوض
+        شده بود، به‌جای last-write-wins کور، ۴۰۹ منطقی برمی‌گردد.
+        """
+        to = self.ticket_norm_status(to)
+        for _ in range(2):
+            t = await self.ticket_get(ticket_id)
+            if not t:
+                return {'ok': False, 'frm': '', 'to': to,
+                        'error': 'not_found'}
+            frm = self.ticket_norm_status(t.get('status'))
+            if frm == to:
+                return {'ok': True, 'frm': frm, 'to': to,
+                        'noop': True}
+            if not self.ticket_transition_allowed(frm, to):
+                return {'ok': False, 'frm': frm, 'to': to,
+                        'error': 'invalid_transition'}
+            ops = {'$set': {'status': to}}
+            if to == 'closed':
+                ops['$set']['closed_at'] = utc_now_iso()
+            elif frm == 'closed':
+                ops['$unset'] = {'closed_at': ''}
+            r = await self.tickets.update_one(
+                {'ticket_id': ticket_id, 'status': t.get('status')},
+                ops)
+            if r.matched_count:
+                return {'ok': True, 'frm': frm, 'to': to}
+        cur = await self.ticket_get(ticket_id) or {}
+        return {'ok': False,
+                'frm': self.ticket_norm_status(cur.get('status')),
+                'to': to, 'error': 'race'}
+
     async def ticket_create(self, uid: int, name: str, subject: str,
                             message: str, priority: str = 'normal') -> int:
         tid = await self._next_ticket_id()
@@ -1020,7 +1098,11 @@ class DBCore:
 
 
     async def ticket_get_all(self, status: str = None):
-        q = {'status': status} if status else {}
+        # 🌊 W9 — «باز» یعنی نیازمند توجه (غیربسته)؛ بقیه exact-match
+        if status == 'open':
+            q = {'status': {'$ne': 'closed'}}
+        else:
+            q = {'status': status} if status else {}
         return await self.tickets.find(q).sort('created_at', -1).to_list(100)
 
 
@@ -1087,7 +1169,9 @@ class DBCore:
             out.extend(r.get('items') or [])
         return out
 
-    async def ticket_add_reply(self, ticket_id: int, reply_text: str):
+    async def ticket_add_reply(self, ticket_id: int, reply_text: str) -> dict:
+        t = await self.ticket_get(ticket_id)
+        frm = self.ticket_norm_status((t or {}).get('status'))
         await self._push_capped(
             'tickets', {'ticket_id': ticket_id}, 'replies',
             {'text': reply_text, 'at': utc_now_iso()}, self.TICKET_INLINE_CAP,
@@ -1097,6 +1181,24 @@ class DBCore:
             {'ticket_id': ticket_id},
             {'$set': {'last_reply_at': now}}
         )
+        # 🌊 W9 — گذار خودکار وضعیت (best-effort؛ خطا هرگز reply را خراب نمی‌کند)
+        to = frm
+        try:
+            if str(reply_text or '').startswith('[دانشجو]'):
+                if frm in ('waiting_user', 'resolved'):
+                    to = 'in_progress'
+            elif frm in ('open', 'in_progress'):
+                to = 'waiting_user'
+            elif frm == 'resolved':
+                to = 'waiting_user'
+            if to != frm and self.ticket_transition_allowed(frm, to):
+                await self.tickets.update_one(
+                    {'ticket_id': ticket_id, 'status': (t or {}).get('status')},
+                    {'$set': {'status': to}})
+            else:
+                to = frm
+        except Exception:
+            to = frm
         # 🌊 W8/UX-04 — اولین پاسخ پشتیبانی (هر ۳ مسیر: ربات/API/وب) ساعت SLA را می‌بندد
         if not str(reply_text or '').startswith('[دانشجو]'):
             await self.tickets.update_one(
@@ -1104,44 +1206,55 @@ class DBCore:
                  '$or': [{'first_response_at': None},
                          {'first_response_at': {'$exists': False}}]},
                 {'$set': {'first_response_at': now}})
+        return {'status_from': frm, 'status_to': to}
 
 
     async def ticket_reply(self, ticket_id: int, reply: str):
         await self.ticket_add_reply(ticket_id, reply)
 
 
-    async def ticket_close(self, ticket_id: int):
-        await self.tickets.update_one(
-            {'ticket_id': ticket_id},
-            {'$set': {'status': 'closed', 'closed_at': utc_now_iso()}}
-        )
+    async def ticket_close(self, ticket_id: int) -> dict:
+        # 🌊 W9 — بستن گاردشده (از هر وضعیت غیربسته)
+        return await self.ticket_set_status(ticket_id, 'closed')
 
 
-    async def ticket_reopen(self, ticket_id: int):
+    async def ticket_reopen(self, ticket_id: int) -> dict:
         """
         FIX جدید طبق سند: بازگشایی تیکت — قبلاً این قابلیت اصلاً
         وجود نداشت و دانشجو مجبور بود تیکت جدید بسازد.
+        🌊 W9 — بازگشایی به in_progress (نیازمند رسیدگی مجدد) + گارد.
         """
-        await self.tickets.update_one(
-            {'ticket_id': ticket_id},
-            {'$set': {'status': 'open'}, '$unset': {'closed_at': ''}}
-        )
+        t = await self.ticket_get(ticket_id)
+        frm = self.ticket_norm_status((t or {}).get('status'))
+        if frm not in ('closed', 'resolved'):
+            return {'ok': True, 'frm': frm, 'to': frm, 'noop': True}
+        return await self.ticket_set_status(ticket_id, 'in_progress')
 
 
     # ══════════════════════════════════════════════════
     #  آمار
     # ══════════════════════════════════════════════════
     # ── 🌊 W8/UX-04 — پاسخ‌های آماده ──
-    async def canned_list(self, only_active: bool = False) -> list:
+    @staticmethod
+    def canned_clean_category(c) -> str:
+        """🌊 W9 — دسته‌ی پاسخ آماده (خالص): trim + سقف ۴۰ کاراکتر."""
+        return str(c or '').strip()[:40]
+
+    async def canned_list(self, only_active: bool = False,
+                          category: str = '') -> list:
         q = {'active': True} if only_active else {}
+        if self.canned_clean_category(category):
+            q['category'] = self.canned_clean_category(category)
         return await self.ticket_canned.find(q).sort('order', 1).to_list(100)
 
-    async def canned_add(self, title: str, text: str, actor_id: int = 0) -> str:
+    async def canned_add(self, title: str, text: str, actor_id: int = 0,
+                         category: str = '') -> str:
         from bson import ObjectId
         count = await self.ticket_canned.count_documents({})
         r = await self.ticket_canned.insert_one({
             'title': (title or '').strip()[:80], 'text': (text or '').strip()[:2000],
             'active': True, 'order': count,
+            'category': self.canned_clean_category(category),
             'created_by': int(actor_id or 0), 'created_at': utc_now_iso()})
         return str(r.inserted_id)
 
@@ -1158,6 +1271,9 @@ class DBCore:
             clean['text'] = str(patch['text'] or '').strip()[:2000]
         if 'active' in patch:
             clean['active'] = bool(patch['active'])
+        if 'category' in patch:
+            clean['category'] = self.canned_clean_category(
+                patch['category'])
         if not clean:
             return False
         r = await self.ticket_canned.update_one({'_id': oid}, {'$set': clean})

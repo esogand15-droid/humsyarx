@@ -37,25 +37,14 @@ import {
 
 
 
-const statusInfo = (status) => {
-  if (status === 'closed') {
-    return {
-      label:
-        'بسته‌شده',
-
-      badge:
-        'b-gray',
-    };
-  }
-
-  return {
-    label:
-      'باز',
-
-    badge:
-      'b-grn',
-  };
-};
+/* 🌊 W9 — برچسب وضعیت (هم‌گام با ورک‌فلو سرور) */
+const statusInfo = (status) => ({
+  open: { label: '🟡 باز', badge: 'b-grn' },
+  in_progress: { label: '🔵 در حال بررسی', badge: '' },
+  waiting_user: { label: '🟣 منتظر شما', badge: 'b-yel' },
+  resolved: { label: '✅ حل‌شده', badge: 'b-grn' },
+  closed: { label: 'بسته‌شده', badge: 'b-gray' },
+}[status] || { label: 'باز', badge: 'b-grn' });
 
 
 /* 🌊 W8/UX-04 — برچسب اولویت */

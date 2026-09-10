@@ -2486,7 +2486,8 @@ async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage")))
                     skipped.append({"id": tid, "reason": "already_closed"}); continue
                 await db.ticket_close(tid)
             else:
-                if t.get("status") != "closed":
+                # 🌊 W9 — بازگشایی از بسته یا حل‌شده
+                if db.ticket_norm_status(t.get("status")) not in ("closed", "resolved"):
                     skipped.append({"id": tid, "reason": "already_open"}); continue
                 await db.ticket_reopen(tid)
             succeeded.append(tid)
@@ -5003,6 +5004,7 @@ class TicketMetaPatch(BaseModel):
     priority: Optional[str] = None
     tags: Optional[list[str]] = None
     assignee_id: Optional[int] = None
+    status: Optional[str] = None  # 🌊 W9 — تغییر وضعیت گاردشده
 
 
 @router.patch("/tickets/{tid}/meta")
@@ -5035,8 +5037,20 @@ async def wa_ticket_meta(
                             "assignee_name": assignee.get("name", str(body.assignee_id))})
     if not updates:
         raise HTTPException(422, "تغییری ارسال نشده است")
-    before = {key: ticket.get(key) for key in updates}
-    await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
+    # 🌊 W9 — وضعیت از مسیر گارد می‌گذرد (transition نامعتبر ⇒ 409)
+    if body.status is not None:
+        res = await db.ticket_set_status(tid, body.status)
+        if not res.get("ok"):
+            raise HTTPException(
+                409 if res.get("error") in ("invalid_transition", "race")
+                else 404, "تغییر وضعیت مجاز نیست")
+        updates["status"] = res["to"]
+    before = {key: ticket.get(key) for key in updates
+              if key != "status"}
+    if "status" in updates:
+        before["status"] = res.get("frm")
+    if updates:
+        await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
     await _audit(user["id"], "ویرایش صف/متادیتای تیکت", severity="WARNING",
                  target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
                  before=before, after=updates, tags=["تیکت", "متادیتا", "پنل_وب"])

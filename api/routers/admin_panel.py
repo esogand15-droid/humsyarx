@@ -543,12 +543,15 @@ async def all_tickets(
     page = page if isinstance(page, int) else 1
     limit = limit if isinstance(limit, int) else 30
     filt = {}
+    # 🌊 W9 — «باز» = غیربسته؛ وضعیت‌های جدید فیلتر exact دارند
     if status == "closed":
         filt["status"] = "closed"
     elif status == "answered":
         filt.update({"status": {"$ne": "closed"}, "replies.0": {"$exists": True}})
     elif status == "open":
-        filt["status"] = "open"
+        filt["status"] = {"$ne": "closed"}
+    elif status in ("in_progress", "waiting_user", "resolved"):
+        filt["status"] = status
     if q and q.strip():
         import re
         rx = {"$regex": re.escape(q.strip()), "$options": "i"}
@@ -629,6 +632,7 @@ async def ticket_detail(tid: int, admin=Depends(require_perm("tickets.manage")))
         "status":t.get("status","open"),"created_at": t.get("created_at") or None,"replies":replies,
         "priority":t.get("priority","normal"),"assignee_id":t.get("assignee_id"),
         "assignee_name":t.get("assignee_name",""),"sla":db.ticket_sla_info(t),
+        "assignee_active": await db.ticket_assignee_ok(t.get("assignee_id")) if t.get("assignee_id") else None,
         "user":{"id":uid,"name":t.get("user_name",""),"student_id":u.get("student_id","") if u else "","group":u.get("group","") if u else "","intake":u.get("intake","") if u else ""}}}
 
 class AdminReply(BaseModel):
@@ -650,16 +654,26 @@ async def admin_reply(tid: int, body: AdminReply, admin=Depends(require_perm("ti
 
 @router.post("/tickets/{tid}/close")
 async def close_ticket(tid: int, admin=Depends(require_perm("tickets.manage"))):
-    await db.ticket_close(tid)
+    t = await db.ticket_get(tid)
+    if not t:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    res = await db.ticket_close(tid)
     await _audit(admin, "بستن تیکت", "Tickets", severity="INFO",
-        target_id=tid, target_type="ticket", tags=["تیکت","پنل_وب"])
+        target_id=tid, target_type="ticket",
+        before={"status": res.get("frm")}, after={"status": res.get("to")},
+        tags=["تیکت","پنل_وب"])
     return {"ok":True}
 
 @router.post("/tickets/{tid}/reopen")
 async def reopen_ticket(tid: int, admin=Depends(require_perm("tickets.manage"))):
-    await db.ticket_reopen(tid)
+    t = await db.ticket_get(tid)
+    if not t:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    res = await db.ticket_reopen(tid)
     await _audit(admin, "بازگشایی تیکت", "Tickets", severity="INFO",
-        target_id=tid, target_type="ticket", tags=["تیکت","پنل_وب"])
+        target_id=tid, target_type="ticket",
+        before={"status": res.get("frm")}, after={"status": res.get("to")},
+        tags=["تیکت","پنل_وب"])
     return {"ok":True}
 
 
@@ -667,12 +681,14 @@ class CannedBody(BaseModel):
     title: str
     text: str
     active: bool = True
+    category: str = ""  # 🌊 W9 — دسته‌بندی پاسخ آماده
 
 
 @router.get("/tickets/canned")
-async def canned_list_ep(admin=Depends(require_perm("tickets.manage"))):
-    """🌊 W8/UX-04 — پاسخ‌های آماده."""
-    items = await db.canned_list()
+async def canned_list_ep(category: str = "",
+                         admin=Depends(require_perm("tickets.manage"))):
+    """🌊 W8/UX-04 — پاسخ‌های آماده. 🌊 W9 — فیلتر دسته."""
+    items = await db.canned_list(category=category)
     return {"items": [{**c, "id": str(c.pop("_id", ""))} for c in items]}
 
 
@@ -680,7 +696,8 @@ async def canned_list_ep(admin=Depends(require_perm("tickets.manage"))):
 async def canned_add_ep(body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
     if not body.title.strip() or not body.text.strip():
         raise HTTPException(422, "عنوان و متن لازم است")
-    cid = await db.canned_add(body.title, body.text, admin["id"])
+    cid = await db.canned_add(body.title, body.text, admin["id"],
+                                category=body.category)
     await _audit(admin, "افزودن پاسخ آماده", "Tickets", severity="INFO",
         target_id=cid, target_type="canned", target_label=body.title[:60],
         tags=["تیکت","پنل_وب"])
@@ -690,9 +707,13 @@ async def canned_add_ep(body: CannedBody, admin=Depends(require_perm("tickets.ma
 @router.put("/tickets/canned/{cid}")
 async def canned_update_ep(cid: str, body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
     ok = await db.canned_update(cid, {"title": body.title, "text": body.text,
-                                      "active": body.active})
+                                      "active": body.active,
+                                      "category": body.category})
     if not ok:
         raise HTTPException(404, "پاسخ آماده پیدا نشد")
+    await _audit(admin, "ویرایش پاسخ آماده", "Tickets", severity="INFO",
+        target_id=cid, target_type="canned", target_label=body.title[:60],
+        tags=["تیکت","پنل_وب"])
     return {"ok": True}
 
 
