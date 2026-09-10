@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from api.auth import get_references_access_user
-from api.telegram_send import send_ref_file
+from api.auth import (
+    get_current_user, get_references_access_user,
+)
+from api.telegram_send import (
+    is_previewable, preview_token, proxy_telegram_preview,
+    send_ref_file, verify_preview_token,
+)
 from database import db
 from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 
@@ -73,6 +78,12 @@ def _public_reference_file(
                 item.get("downloads")
             ),
         ),
+        # 🌊 W8/UX-03 — پیش‌نمایش داخل مینی‌اپ
+        "mime": _text(item.get("mime_type")),
+        "size": max(0, _safe_int(item.get("file_size"))),
+        "preview": bool(is_previewable(
+            _text(item.get("mime_type")),
+            _text(item.get("file_extension")))),
     }
 
 
@@ -469,3 +480,91 @@ async def download(
         _sending_users.discard(
             user_id
         )
+
+
+async def _preview_user(request: Request) -> dict:
+    """🌊 W8/UX-03 — احراز پیش‌نمایش رفرنس (هدر یا توکن تک‌فایل)."""
+    from core.access import require_feature_access
+    if request.headers.get("X-Init-Data"):
+        user = await get_current_user(
+            request, request.headers.get("X-Init-Data", ""))
+        await require_feature_access(user["id"], "references")
+        return user
+    qp = request.query_params
+    try:
+        uid, exp = int(qp.get("uid") or 0), int(qp.get("exp") or 0)
+    except (TypeError, ValueError):
+        uid, exp = 0, 0
+    fid = (request.path_params.get("file_id") or "")
+    if uid and verify_preview_token(qp.get("token", ""), uid, "ref",
+                                    fid, exp):
+        db_user = await db.get_user(uid) or {}
+        if db_user:
+            await require_feature_access(uid, "references")
+            return {"id": uid, "_db": db_user}
+    raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@router.get("/preview-url/{file_id}")
+async def preview_url(
+    file_id: str,
+    user=Depends(get_references_access_user),
+):
+    """🌊 W8/UX-03 — صدور آدرس امضاشده‌ی پیش‌نمایش رفرنس."""
+    import time as _t
+    item = await db.ref_get_file(file_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="فایل رفرنس پیدا نشد")
+    _filt = await _viewer_intake(user)
+    _intake_guard(await db.ref_file_intake(file_id), _filt, "این فایل")
+    mime = _text(item.get("mime_type")) or "application/octet-stream"
+    if not is_previewable(mime, _text(item.get("file_extension"))):
+        raise HTTPException(
+            status_code=415,
+            detail="این نوع فایل پیش‌نمایش ندارد؛ از دانلود استفاده کنید")
+    exp = int(_t.time()) + 600
+    tok = preview_token(int(user["id"]), "ref", file_id, exp)
+    return {"url": (f"/api/references/preview/{file_id}"
+                    f"?uid={int(user['id'])}&exp={exp}&token={tok}")}
+
+
+@router.get("/preview/{file_id}")
+async def preview(
+    file_id: str,
+    request: Request,
+    user=Depends(_preview_user),
+):
+    """🌊 W8/UX-03 — استریم فایل رفرنس برای پیش‌نمایش داخل مینی‌اپ."""
+    user_id = int(user["id"])
+    await rate_limit_user(user_id, "ref_preview", 300, 3600)
+
+    item = await db.ref_get_file(file_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="فایل رفرنس پیدا نشد")
+    _filt = await _viewer_intake(user)
+    _intake_guard(await db.ref_file_intake(file_id), _filt, "این فایل")
+    if _filt is not None:
+        _fork_b = await db.book_superseded_by_fork(
+            item.get("book_id", ""),
+            (user.get("_db") or {}).get("intake", ""),
+        )
+        if _fork_b:
+            _fk_file = await db.ref_files.find_one({
+                "book_id": str(_fork_b["_id"]),
+                "fork_of": file_id,
+            })
+            if _fk_file:
+                item = _fk_file
+    tg_id = _text(item.get("file_id"))
+    if not tg_id:
+        raise HTTPException(status_code=422,
+                            detail="شناسه تلگرام این فایل ثبت نشده است")
+    mime = _text(item.get("mime_type")) or "application/octet-stream"
+    if not is_previewable(mime, _text(item.get("file_extension"))):
+        raise HTTPException(
+            status_code=415,
+            detail="این نوع فایل پیش‌نمایش ندارد؛ از دانلود استفاده کنید")
+    name = (_text(item.get("display_file_name"))
+            or _text(item.get("description")) or "file")
+    return await proxy_telegram_preview(
+        tg_id, mime, name, request.headers.get("range"))

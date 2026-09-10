@@ -16,7 +16,8 @@ SUBJECTS = ["🔬 مشکل در منابع","🧪 مشکل در بانک سوا�
 def _fmt(t, detail=False):
     replies = t.get("replies",[])
     r = {"id":t.get("ticket_id"),"subject":t.get("subject",""),"status":t.get("status","open"),
-        "created_at": t.get("created_at") or None,"reply_count":len(replies)}
+        "created_at": t.get("created_at") or None,"reply_count":len(replies),
+        "priority":t.get("priority","normal"),"sla":db.ticket_sla_info(t)}
     if detail:
         r["message"] = t.get("message","")
         r["replies"] = [{"text":rep.get("text","").removeprefix("[دانشجو]").strip(),
@@ -69,7 +70,7 @@ async def get_ticket(tid: int, user=Depends(get_current_user)):
     return {"ticket":_fmt(ticket,detail=True)}
 
 class NewTicket(BaseModel):
-    subject: str; message: str
+    subject: str; message: str; priority: str = "normal"
 
 @router.post("")
 async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
@@ -77,7 +78,8 @@ async def create_ticket(body: NewTicket, user=Depends(get_current_user)):
     # 🛡 W3/SEC-03 — ضد اسپم تیکت
     await rate_limit_user(uid, "ticket_create", 10, 60)
     if len(body.message.strip()) < 10: raise HTTPException(422,"متن کوتاه است")
-    tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip())
+    tid = await db.ticket_create(uid, db_user.get("name",""), body.subject, body.message.strip(),
+        priority=body.priority if body.priority in ("low","normal","high","urgent") else "normal")
     # AUDIT — ticket creation
     try:
         _role = await db.get_actor_role_label(uid)

@@ -599,6 +599,7 @@ async def all_tickets(
                     "last_reply_at": t.get("last_reply_at") or None,
                     "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
                     "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+                    "sla": db.ticket_sla_info(t),
                 } for t in tickets], "total": None, "page": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more}
         except Exception:
             pass
@@ -613,6 +614,7 @@ async def all_tickets(
         "last_reply_at": t.get("last_reply_at") or None,
         "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
         "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+        "sla": db.ticket_sla_info(t),
     } for t in tickets], "total": total, "page": page, "limit": limit,
         "pages": (total + limit - 1) // limit, "next_cursor": None, "has_more": False}
 
@@ -625,6 +627,8 @@ async def ticket_detail(tid: int, admin=Depends(require_perm("tickets.manage")))
         "sender":"user" if r.get("text","").startswith("[دانشجو]") else "support","at": r.get("at") or None} for r in t.get("replies",[])]
     return {"ticket":{"id":t.get("ticket_id"),"subject":t.get("subject",""),"message":t.get("message",""),
         "status":t.get("status","open"),"created_at": t.get("created_at") or None,"replies":replies,
+        "priority":t.get("priority","normal"),"assignee_id":t.get("assignee_id"),
+        "assignee_name":t.get("assignee_name",""),"sla":db.ticket_sla_info(t),
         "user":{"id":uid,"name":t.get("user_name",""),"student_id":u.get("student_id","") if u else "","group":u.get("group","") if u else "","intake":u.get("intake","") if u else ""}}}
 
 class AdminReply(BaseModel):
@@ -657,6 +661,48 @@ async def reopen_ticket(tid: int, admin=Depends(require_perm("tickets.manage")))
     await _audit(admin, "بازگشایی تیکت", "Tickets", severity="INFO",
         target_id=tid, target_type="ticket", tags=["تیکت","پنل_وب"])
     return {"ok":True}
+
+
+class CannedBody(BaseModel):
+    title: str
+    text: str
+    active: bool = True
+
+
+@router.get("/tickets/canned")
+async def canned_list_ep(admin=Depends(require_perm("tickets.manage"))):
+    """🌊 W8/UX-04 — پاسخ‌های آماده."""
+    items = await db.canned_list()
+    return {"items": [{**c, "id": str(c.pop("_id", ""))} for c in items]}
+
+
+@router.post("/tickets/canned")
+async def canned_add_ep(body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
+    if not body.title.strip() or not body.text.strip():
+        raise HTTPException(422, "عنوان و متن لازم است")
+    cid = await db.canned_add(body.title, body.text, admin["id"])
+    await _audit(admin, "افزودن پاسخ آماده", "Tickets", severity="INFO",
+        target_id=cid, target_type="canned", target_label=body.title[:60],
+        tags=["تیکت","پنل_وب"])
+    return {"ok": True, "id": cid}
+
+
+@router.put("/tickets/canned/{cid}")
+async def canned_update_ep(cid: str, body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
+    ok = await db.canned_update(cid, {"title": body.title, "text": body.text,
+                                      "active": body.active})
+    if not ok:
+        raise HTTPException(404, "پاسخ آماده پیدا نشد")
+    return {"ok": True}
+
+
+@router.delete("/tickets/canned/{cid}")
+async def canned_delete_ep(cid: str, admin=Depends(require_perm("tickets.manage"))):
+    if not await db.canned_delete(cid):
+        raise HTTPException(404, "پاسخ آماده پیدا نشد")
+    await _audit(admin, "حذف پاسخ آماده", "Tickets", severity="WARNING",
+        target_id=cid, target_type="canned", tags=["تیکت","پنل_وب"])
+    return {"ok": True}
 
 # ══════════════════════════════════════════════
 # 📢 Broadcast پیشرفته — preview / تأیید / زمان‌دار / هدفمند

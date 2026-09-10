@@ -806,6 +806,8 @@ export default function Questions() {
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
+    isError: lessonsError,
+    refetch: refetchLessons,
   } = useQuery({
     queryKey: [
       'question-lessons',
@@ -1477,6 +1479,14 @@ export default function Questions() {
 
             {lessonsLoading ? (
               <SkTileGrid n={6} />
+            ) : lessonsError && lessons.length === 0 ? (
+              <button
+                type="button"
+                className="btn btn-full"
+                onClick={() => refetchLessons()}
+              >
+                🌐 دریافت درس‌ها ناموفق بود — تلاش دوباره
+              </button>
             ) : (
               <section className="grid2">
                 {lessons.map(

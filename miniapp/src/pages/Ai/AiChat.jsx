@@ -2446,6 +2446,22 @@ export default function AiChat() {
             )
           }
 
+          {/* 🌊 W8/UX-02 — خطای غیرقفلی پیام‌ها */}
+          {
+            !msgsQuery.isPending
+            && msgsQuery.isError
+            && !chatLock
+            && (
+              <button
+                type="button"
+                className="btn btn-full"
+                onClick={() => msgsQuery.refetch()}
+              >
+                🌐 دریافت پیام‌ها ناموفق بود — تلاش دوباره
+              </button>
+            )
+          }
+
           {
             !msgsQuery.isPending
             /* دفاع لایه‌ی دوم: Empty-State فقط

@@ -1255,6 +1255,60 @@ class DBContent:
     #  برنامه
     # ══════════════════════════════════════════════════
 
+    @staticmethod
+    def _sched_minutes(hm: str) -> int | None:
+        """HH:MM → دقیقه از نیمه‌شب؛ نامعتبر ⇒ None."""
+        try:
+            h, m = str(hm or '').strip().split(':')
+            h, m = int(h), int(m)
+            if 0 <= h < 24 and 0 <= m < 60:
+                return h * 60 + m
+        except (ValueError, AttributeError):
+            pass
+        return None
+
+    async def schedule_find_conflicts(self, group: str, date: str,
+                                      time: str, end_time: str = '',
+                                      exclude_id: str = '') -> list:
+        """🌊 W8/UX-05 — برنامه‌های هم‌گروهِ هم‌روز که بازه‌ی زمانی‌شان
+        با بازه‌ی داده‌شده هم‌پوشانی دارد (هشدار، نه خطا).
+
+        بدون ساعت ⇒ بدون تداخل؛ بدون end_time ⇒ ‎۹۰ دقیقه پیش‌فرض.
+        گروه «هر دو» با همه تداخل می‌کند. قالب‌های هفتگی (is_weekly)
+        چون تاریخ عینی ندارند لحاظ نمی‌شوند.
+        """
+        start = self._sched_minutes(time)
+        if start is None:
+            return []
+        end = self._sched_minutes(end_time)
+        if end is None or end <= start:
+            end = start + 90
+        group = (group or 'هر دو').strip()
+        cur = await self.schedules.find(
+            {'date': date, 'is_weekly': {'$ne': True}}).to_list(200)
+        out = []
+        for s in cur or []:
+            if exclude_id and str(s.get('_id')) == str(exclude_id):
+                continue
+            g = (s.get('group') or 'هر دو').strip()
+            if group != 'هر دو' and g != 'هر دو' and g != group:
+                continue
+            s0 = self._sched_minutes(s.get('time') or '')
+            if s0 is None:
+                continue
+            s1 = self._sched_minutes(s.get('end_time') or '')
+            if s1 is None or s1 <= s0:
+                s1 = s0 + 90
+            if start < s1 and s0 < end:
+                out.append({'id': str(s.get('_id')),
+                            'type': s.get('type', ''),
+                            'lesson': s.get('lesson', ''),
+                            'teacher': s.get('teacher', ''),
+                            'time': s.get('time', ''),
+                            'end_time': s.get('end_time', ''),
+                            'group': g})
+        return out
+
     async def add_schedule(self, stype: str, lesson: str, teacher: str,
                            date: str, time: str, location: str,
                            notes: str = '', group: str = 'هر دو', is_weekly: bool = False,

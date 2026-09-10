@@ -69,6 +69,9 @@ class PlanBody(BaseModel):
     # 🌊 W7 — {feature: bool}؛ فقط کلیدهای true/false ذخیره می‌شوند
     entitlements: dict = Field(default_factory=dict)
 
+    # 🌊 W8/MISS-03 — ظرفیت خانواده (۱ = شخصی)
+    max_members: int = Field(default=1, ge=1, le=50)
+
 
 class SubscriptionSettingsBody(BaseModel):
     subscription_enforced: bool | None = None
@@ -389,6 +392,13 @@ async def overview(
                         "entitlements",
                         {},
                     ) or {},
+
+                # 🌊 W8/MISS-03
+                "max_members":
+                    plan.get(
+                        "max_members",
+                        1,
+                    ) or 1,
             }
 
             for plan in plans
@@ -466,7 +476,8 @@ async def update_plan(
     _ent = {k: bool(v) for k, v in (body.entitlements or {}).items()
             if k in _FCAT}
     patch = {"name": body.name.strip(), "days": body.days, "price": body.price,
-             "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent}
+             "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent,
+             "max_members": body.max_members}
     ok = await db.sub_plan_update(plan_id, patch)
     if not ok:
         raise HTTPException(status_code=500, detail="ویرایش پلن انجام نشد")
@@ -495,6 +506,7 @@ async def add_plan(
             body.price,
             body.ai_daily_limit,
             _ent2,
+            body.max_members,
         )
     )
 
@@ -502,7 +514,8 @@ async def add_plan(
         admin, "ایجاد پلن اشتراک", "Subscription", severity="HIGH",
         target_id=str(plan_id), target_type="plan", target_label=body.name.strip(),
         after={"name": body.name.strip(), "days": body.days, "price": body.price,
-               "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent2},
+               "ai_daily_limit": body.ai_daily_limit, "entitlements": _ent2,
+               "max_members": body.max_members},
         tags=["اشتراک", "پلن", "پنل_وب"],
     )
     return {
@@ -586,6 +599,87 @@ async def delete_plan(
     return {
         "ok": True,
     }
+
+
+class _FamilyAddBody(BaseModel):
+    owner_id: int = Field(gt=0)
+    user_id: int = Field(gt=0)
+
+
+@router.get("/family")
+async def family_overview_admin(
+    owner_id: int,
+    admin=Depends(require_perm("subscription.manage")),
+):
+    """🌊 W8/MISS-03 — اعضای خانواده‌ی یک مالک (ادمین)."""
+    seats = await db.family_plan_seats(int(owner_id))
+    members = []
+    for m in await db.family_members(int(owner_id)):
+        u = await db.get_user(int(m["_id"])) or {}
+        members.append({
+            "user_id": int(m["_id"]), "name": u.get("name", ""),
+            "status": m.get("status", ""), "end_date": m.get("end_date"),
+        })
+    return {**seats, "members": members}
+
+
+@router.post("/family/members")
+async def family_add_admin(
+    body: _FamilyAddBody,
+    admin=Depends(require_perm("subscription.manage")),
+):
+    """🌊 W8/MISS-03 — افزودن مستقیم عضو توسط ادمین (بدون کد)."""
+    owner_id, user_id = int(body.owner_id), int(body.user_id)
+    if owner_id == user_id:
+        raise HTTPException(status_code=422, detail="مالک و عضو یکی است")
+    if not await db.sub_is_active(owner_id):
+        raise HTTPException(status_code=409, detail="اشتراک مالک فعال نیست")
+    if await db.sub_is_active(user_id):
+        raise HTTPException(status_code=409, detail="این کاربر اشتراک فعال دارد")
+    seats = await db.family_plan_seats(owner_id)
+    if seats["total"] <= 1:
+        raise HTTPException(status_code=409, detail="پلن مالک خانوادگی نیست")
+    if seats["left"] <= 0:
+        raise HTTPException(status_code=409, detail="ظرفیت خانواده پر شده")
+    owner_sub = await db.sub_get(owner_id)
+    now = utc_now_iso()
+    await db.subscriptions.update_one(
+        {"_id": user_id},
+        {"$set": {"status": "active",
+                  "plan_name": str(owner_sub.get("plan_name") or "خانواده"),
+                  "plan_id": str(owner_sub.get("plan_id") or ""),
+                  "start_date": now, "end_date": owner_sub.get("end_date"),
+                  "source": "family", "granted_by": admin["id"],
+                  "family_owner_id": owner_id, "family_code": "admin",
+                  "last_plan_days": int(owner_sub.get("last_plan_days") or 0),
+                  "reminder_3d_sent": False, "reminder_1d_sent": False,
+                  "updated_at": now}},
+        upsert=True)
+    await _audit(
+        admin, "افزودن عضو خانواده", "Subscription", severity="HIGH",
+        target_id=str(user_id), target_type="user",
+        after={"owner_id": owner_id},
+        tags=["اشتراک", "خانواده", "پنل_وب"],
+    )
+    return {"ok": True}
+
+
+@router.delete("/family/members/{user_id}")
+async def family_remove_admin(
+    user_id: int,
+    owner_id: int,
+    admin=Depends(require_perm("subscription.manage")),
+):
+    """🌊 W8/MISS-03 — حذف عضو توسط ادمین."""
+    res = await db.family_remove(int(owner_id), int(user_id), admin["id"])
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    await _audit(
+        admin, "حذف عضو خانواده", "Subscription", severity="HIGH",
+        target_id=str(user_id), target_type="user",
+        tags=["اشتراک", "خانواده", "پنل_وب"],
+    )
+    return {"ok": True}
 
 
 @router.get("/payments")

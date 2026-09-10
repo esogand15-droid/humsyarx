@@ -78,6 +78,7 @@ class DBCore:
         self.ref_files    = _db['ref_files']
         self.faq          = _db['faq']
         self.tickets      = _db['tickets']
+        self.ticket_canned  = _db['ticket_canned']  # 🌊 W8/UX-04
         # 🛡 AUDIT-V3 — مقصد بایگانی پاسخ/یادداشت‌هایی که از کرانه‌ی درون‌سند
         # رد می‌شوند (جلوگیری از سقف ۱۶ مگابایت بدون حذف داده).
         self.ticket_overflow = _db['ticket_overflow']
@@ -130,6 +131,7 @@ class DBCore:
         self.feature_policies  = _db['feature_policies']  # 🌊 W7
         self.feature_usage     = _db['feature_usage']  # 🌊 W7
         self.feature_events    = _db['feature_events']  # 🌊 W7
+        self.family_invites    = _db['family_invites']  # 🌊 W8/MISS-03
         self.settings_meta     = _db['settings_meta']
         self.audit_logs   = _db['audit_logs']       # FIX جدید: لاگ فعالیت‌های حساس
         # 🚀 Audit Observability Refactor — Outbox برای Delivery قابل Retry (§14)
@@ -332,6 +334,7 @@ class DBCore:
                 self._index(self.feature_usage, [('updated_at', 1)], expireAfterSeconds=3888000, background=True),
                 self._index(self.feature_events, [('at', 1)], expireAfterSeconds=2592000, background=True),
                 self._index(self.feature_events, [('feature', 1), ('at', -1)], background=True),
+                self._index(self.family_invites, [('owner_id', 1)], background=True),  # 🌊 W8
                 self._index(self.wa_api_metrics, [('route', 1), ('at', -1)], background=True),
                 self._index(self.wa_api_metrics, [('status', 1), ('at', -1)], background=True),
                 self._index(self.broadcast_campaigns, [('created_at', -1)], background=True),
@@ -962,12 +965,52 @@ class DBCore:
         ).sort('created_at', -1).to_list(limit)
 
 
-    async def ticket_create(self, uid: int, name: str, subject: str, message: str) -> int:
+    # 🌊 W8/UX-04 — SLA پیش‌فرض هر اولویت (ساعت)؛ قابل‌تنظیم از مرکز تنظیمات
+    TICKET_SLA_DEFAULTS = {'low': 72, 'normal': 48, 'high': 24, 'urgent': 8}
+    TICKET_PRIORITIES = ('low', 'normal', 'high', 'urgent')
+
+    async def ticket_sla_hours(self, priority: str) -> int:
+        try:
+            v = await self.get_setting(f'ticket_sla_{priority}',
+                                       self.TICKET_SLA_DEFAULTS.get(priority, 48))
+            return max(0, int(v or 0))
+        except Exception:
+            return self.TICKET_SLA_DEFAULTS.get(priority, 48)
+
+    @staticmethod
+    def ticket_sla_info(t: dict) -> dict:
+        """وضعیت SLA تیکت (first-response): {sla_hours, due_at, responded, breached}."""
+        from time_utils import parse_machine_datetime, now_utc
+        from datetime import timedelta
+        sla = 0
+        try:
+            sla = max(0, int((t or {}).get('sla_hours') or 0))
+        except (TypeError, ValueError):
+            sla = 0
+        responded = bool((t or {}).get('first_response_at'))
+        due_at, breached = None, False
+        if sla > 0 and not responded and (t or {}).get('status') != 'closed':
+            try:
+                due = parse_machine_datetime(t.get('created_at')) + timedelta(hours=sla)
+                due_at = due.isoformat()
+                breached = now_utc() > due
+            except (ValueError, TypeError):
+                pass
+        return {'sla_hours': sla, 'due_at': due_at, 'responded': responded,
+                'breached': breached}
+
+    async def ticket_create(self, uid: int, name: str, subject: str,
+                            message: str, priority: str = 'normal') -> int:
         tid = await self._next_ticket_id()
+        prio = priority if priority in self.TICKET_PRIORITIES else 'normal'
         await self.tickets.insert_one({
             'ticket_id': tid, 'user_id': uid, 'user_name': name,
             'subject': subject, 'message': message, 'status': 'open',
             'created_at': utc_now_iso(), 'replies': [],
+            # 🌊 W8/UX-04 — اولویت + SLA (legacyها فاقدند ⇒ عادی/بدون SLA)
+            'priority': prio, 'sla_hours': await self.ticket_sla_hours(prio),
+            'assignee_id': None, 'assignee_name': '',
+            'first_response_at': None, 'stale_nudged_at': None,
         })
         return tid
 
@@ -1049,10 +1092,18 @@ class DBCore:
             'tickets', {'ticket_id': ticket_id}, 'replies',
             {'text': reply_text, 'at': utc_now_iso()}, self.TICKET_INLINE_CAP,
             archive_kind='replies')
+        now = utc_now_iso()
         await self.tickets.update_one(
             {'ticket_id': ticket_id},
-            {'$set': {'last_reply_at': utc_now_iso()}}
+            {'$set': {'last_reply_at': now}}
         )
+        # 🌊 W8/UX-04 — اولین پاسخ پشتیبانی (هر ۳ مسیر: ربات/API/وب) ساعت SLA را می‌بندد
+        if not str(reply_text or '').startswith('[دانشجو]'):
+            await self.tickets.update_one(
+                {'ticket_id': ticket_id,
+                 '$or': [{'first_response_at': None},
+                         {'first_response_at': {'$exists': False}}]},
+                {'$set': {'first_response_at': now}})
 
 
     async def ticket_reply(self, ticket_id: int, reply: str):
@@ -1080,6 +1131,59 @@ class DBCore:
     # ══════════════════════════════════════════════════
     #  آمار
     # ══════════════════════════════════════════════════
+    # ── 🌊 W8/UX-04 — پاسخ‌های آماده ──
+    async def canned_list(self, only_active: bool = False) -> list:
+        q = {'active': True} if only_active else {}
+        return await self.ticket_canned.find(q).sort('order', 1).to_list(100)
+
+    async def canned_add(self, title: str, text: str, actor_id: int = 0) -> str:
+        from bson import ObjectId
+        count = await self.ticket_canned.count_documents({})
+        r = await self.ticket_canned.insert_one({
+            'title': (title or '').strip()[:80], 'text': (text or '').strip()[:2000],
+            'active': True, 'order': count,
+            'created_by': int(actor_id or 0), 'created_at': utc_now_iso()})
+        return str(r.inserted_id)
+
+    async def canned_update(self, cid: str, patch: dict) -> bool:
+        from bson import ObjectId
+        try:
+            oid = ObjectId(cid)
+        except Exception:
+            return False
+        clean = {}
+        if 'title' in patch:
+            clean['title'] = str(patch['title'] or '').strip()[:80]
+        if 'text' in patch:
+            clean['text'] = str(patch['text'] or '').strip()[:2000]
+        if 'active' in patch:
+            clean['active'] = bool(patch['active'])
+        if not clean:
+            return False
+        r = await self.ticket_canned.update_one({'_id': oid}, {'$set': clean})
+        return r.matched_count > 0
+
+    async def canned_delete(self, cid: str) -> bool:
+        from bson import ObjectId
+        try:
+            r = await self.ticket_canned.delete_one({'_id': ObjectId(cid)})
+            return r.deleted_count > 0
+        except Exception:
+            return False
+
+    async def tickets_needing_nudge(self, stale_hours: int,
+                                    limit: int = 30) -> list:
+        """تیکت‌های باز بدون پاسخ پشتیبانی که از stale_hours گذشته‌اند."""
+        from time_utils import now_utc
+        from datetime import timedelta
+        cutoff = (now_utc() - timedelta(hours=max(1, stale_hours))).isoformat()
+        return await self.tickets.find({
+            'status': 'open', 'first_response_at': None,
+            'created_at': {'$lt': cutoff},
+            '$or': [{'stale_nudged_at': None},
+                    {'stale_nudged_at': {'$lt': cutoff}}],
+        }).sort('created_at', 1).to_list(limit)
+
 
     async def log(self, uid: int, action: str, data: dict = None):
         await self.stats_col.insert_one({

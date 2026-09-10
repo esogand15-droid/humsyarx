@@ -23,6 +23,7 @@ import api from '../../lib/api';
 
 import ResourceAccessGate
   from '../../components/shared/ResourceAccessGate';
+import PreviewModal from '../../components/shared/PreviewModal';
 
 import SubscriptionLock, {
   isSubscriptionLock,
@@ -102,6 +103,7 @@ function ReferenceFile({
   sendDisabled,
   language,
   onSend,
+  onPreview,
 }) {
   // فقط همان ردیفی که روی آن کلیک شده،
   // حالت لودینگ خواهد داشت.
@@ -175,6 +177,18 @@ function ReferenceFile({
           )
         }
       </div>
+
+      {!!item?.preview && (
+        <button
+          type="button"
+          className="btn sm"
+          style={{ flexShrink: 0 }}
+          onClick={() => onPreview(item)}
+          aria-label="پیش‌نمایش فایل"
+        >
+          👁
+        </button>
+      )}
 
       <button
         type="button"
@@ -422,6 +436,12 @@ function ReferencesPage({ hlFlash = false }) {
         );
       },
     });
+
+  /* 🌊 W8/UX-03 — فایل در حال پیش‌نمایش */
+  const [
+    previewFile,
+    setPreviewFile,
+  ] = useState(null);
 
   const sendFile = (
     id,
@@ -998,6 +1018,9 @@ function ReferencesPage({ hlFlash = false }) {
                                       onSend={
                                         sendFile
                                       }
+                                      onPreview={
+                                        setPreviewFile
+                                      }
                                     />
                                   );
                                 }
@@ -1010,6 +1033,13 @@ function ReferencesPage({ hlFlash = false }) {
                 )
           )
         }
+        {previewFile && (
+          <PreviewModal
+            scope="references"
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+          />
+        )}
       </main>
     </>
   );

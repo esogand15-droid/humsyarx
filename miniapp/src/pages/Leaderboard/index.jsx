@@ -13,6 +13,8 @@ import NameChip from '../../components/shared/NameChip';
 import {
   UsersListSkeleton,
 } from '../../components/shared/skeletons';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 
 import { haptic } from '../../lib/telegram';
 
@@ -122,7 +124,7 @@ export default function Leaderboard() {
   const [tab, setTab] =
     useState('xp');
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch, isRefetching } = useQuery({
     queryKey: [
       'leaderboard',
       range,
@@ -354,19 +356,21 @@ export default function Leaderboard() {
 
         {isLoading && <UsersListSkeleton />}
 
-        {!isLoading &&
+        {/* 🌊 W8/UX-02 */}
+        {!isLoading && isError && (
+          <PageError
+            text="دریافت جدول رقابت انجام نشد."
+            onRetry={() => refetch()}
+            pending={isRefetching}
+          />
+        )}
+
+        {!isLoading && !isError &&
           !rows.length && (
-            <div
-              className="card"
-              style={{
-                color: 'var(--txm)',
-                fontSize: 'var(--fs-meta)',
-                textAlign: 'center',
-              }}
-            >
+            <EmptyState icon="🌱">
               هنوز کسی در این جدول نیست —
-              اولین نفر باش! 🌱
-            </div>
+              اولین نفر باش!
+            </EmptyState>
           )}
 
         <div

@@ -117,6 +117,18 @@ def normalize_plan(
             )
             or {}
         ),
+
+        # 🌊 W8/MISS-03 — ظرفیت خانواده (۱ = شخصی)
+        "max_members": max(
+            1,
+            int(
+                item.get(
+                    "max_members",
+                    1,
+                )
+                or 1
+            ),
+        ),
     }
 
 
@@ -581,6 +593,96 @@ async def trial_claim_ep(
             detail=_TRIAL_FA.get(str(e), _TRIAL_FA["error"]),
         )
     return {"ok": True, **res}
+
+
+class _FamilyRedeemBody(BaseModel):
+    code: str = Field(min_length=8, max_length=12)
+
+
+@router.get("/family")
+async def family_overview_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — نمای خانواده: مالک (اعضا+ظرفیت) یا عضو (مالک+پایان)."""
+    uid = int(user["id"])
+    sub = await db.sub_get(uid) or {}
+    if (sub.get("source") == "family") and sub.get("family_owner_id"):
+        owner_id = int(sub["family_owner_id"])
+        owner = await db.get_user(owner_id) or {}
+        return {
+            "role": "member",
+            "owner_id": owner_id,
+            "owner_name": owner.get("name", ""),
+            "end_date": sub.get("end_date"),
+            "plan_name": sub.get("plan_name", ""),
+        }
+    seats = await db.family_plan_seats(uid)
+    members = []
+    if seats["total"] > 1:
+        for m in await db.family_members(uid):
+            u = await db.get_user(int(m["_id"])) or {}
+            members.append({
+                "user_id": int(m["_id"]),
+                "name": u.get("name", ""),
+                "status": m.get("status", ""),
+                "end_date": m.get("end_date"),
+            })
+    return {
+        "role": "owner",
+        "seats_total": seats["total"],
+        "seats_used": seats["used"],
+        "seats_left": seats["left"],
+        "plan_id": seats["plan_id"],
+        "members": members,
+    }
+
+
+@router.post("/family/code")
+async def family_code_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — ساخت کد دعوت یک‌بارمصرف توسط مالک."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "family_code", 10, 3600)
+    res = await db.family_code_create(int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
+
+
+@router.post("/family/redeem")
+async def family_redeem_ep(
+    body: _FamilyRedeemBody,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — ثبت کد دعوت و لینک‌شدن به خانواده."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "family_redeem", 10, 3600)
+    res = await db.family_redeem(body.code, int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
+
+
+@router.delete("/family/members/{member_id}")
+async def family_remove_ep(
+    member_id: int,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — حذف عضو توسط مالک."""
+    res = await db.family_remove(int(user["id"]), int(member_id),
+                                 int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
 
 
 @router.post("/buy")

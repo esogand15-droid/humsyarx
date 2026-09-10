@@ -28,6 +28,8 @@ import SubscriptionLock, {
 
 import ResourceAccessGate
   from '../../components/shared/ResourceAccessGate';
+import PreviewModal
+  from '../../components/shared/PreviewModal';
 
 import SearchField
   from '../../components/shared/SearchField';
@@ -118,6 +120,7 @@ function ResourceFile({
   sendDisabled,
   searchMode = false,
   onSend,
+  onPreview,
 }) {
   const [
     icon,
@@ -193,6 +196,18 @@ function ResourceFile({
           )
         }
       </div>
+
+      {!!item?.preview && (
+        <button
+          type="button"
+          className="btn sm"
+          style={{ flexShrink: 0 }}
+          onClick={() => onPreview(item)}
+          aria-label="پیش‌نمایش فایل"
+        >
+          👁
+        </button>
+      )}
 
       <button
         type="button"
@@ -540,6 +555,12 @@ function ResourcesPage({ hlFlash = false }) {
       },
     });
 
+  /* 🌊 W8/UX-03 — فایل در حال پیش‌نمایش */
+  const [
+    previewFile,
+    setPreviewFile,
+  ] = useState(null);
+
   const sendFile = (
     id,
     key,
@@ -820,6 +841,9 @@ function ResourcesPage({ hlFlash = false }) {
                                             searchMode
                                             onSend={
                                               sendFile
+                                            }
+                                            onPreview={
+                                              setPreviewFile
                                             }
                                           />
                                         );
@@ -1255,6 +1279,9 @@ function ResourcesPage({ hlFlash = false }) {
                                   onSend={
                                     sendFile
                                   }
+                                  onPreview={
+                                    setPreviewFile
+                                  }
                                 />
                               );
                             }
@@ -1265,6 +1292,13 @@ function ResourcesPage({ hlFlash = false }) {
                   )
           )
         }
+        {previewFile && (
+          <PreviewModal
+            scope="resources"
+            file={previewFile}
+            onClose={() => setPreviewFile(null)}
+          />
+        )}
       </main>
     </>
   );

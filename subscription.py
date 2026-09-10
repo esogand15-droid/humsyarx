@@ -1088,6 +1088,22 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == 'my_history':
         await _show_my_history(query, uid)
 
+    # 🌊 W8/MISS-03 — خانواده
+    elif action == 'family':
+        await _show_family(query, context, uid)
+    elif action == 'famcode':
+        await _family_new_code(query, context, uid)
+    elif action == 'famredeem':
+        context.user_data['sub_mode'] = 'awaiting_family_code'
+        await query.edit_message_text(
+            "🎟 <b>ثبت کد دعوت خانواده</b>\n\nکد ۸ حرفی‌ای که مالک خانواده فرستاده رو تایپ کن و بفرست:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔙 انصراف", callback_data="sub:my_status")]]))
+    elif action == 'famrm':
+        await _family_remove_member(query, context, uid,
+                                    parts[2] if len(parts) > 2 else '')
+
     elif action == 'appr' and uid == ADMIN_ID:
         await _admin_approve(query, context, parts[2])
 
@@ -1258,6 +1274,8 @@ _SOURCE_LABELS = {
     'payment':      '💳 خریداری‌شده',
     'admin_manual': '🛠 فعال‌سازی دستی ادمین',
     'free_grant':   '🎁 اشتراک رایگان هدیه‌ای',
+    'trial':        '🆓 دوره‌ی آزمایشی',
+    'family':       '👨‍👩‍👧 خانواده',
 }
 
 
@@ -1313,6 +1331,23 @@ async def _build_my_status(uid: int):
         )
         keyboard.append([InlineKeyboardButton("🔄 تمدید کن", callback_data='sub:back')])
 
+    # 🌊 W8/MISS-03 — ورودی خانواده: مالک/عضو → مدیریت؛ بی‌اشتراک → ثبت کد
+    try:
+        _s = await db.sub_get(uid)
+        if _s and _s.get('source') == 'family' and _s.get('family_owner_id'):
+            keyboard.append([InlineKeyboardButton(
+                "👨‍👩‍👧 خانواده‌ی من", callback_data='sub:family')])
+        elif _s and _s.get('status') == 'active' and await db.sub_is_active(uid):
+            _seats = await db.family_plan_seats(uid)
+            if _seats['total'] > 1:
+                keyboard.append([InlineKeyboardButton(
+                    f"👨‍👩‍👧 خانواده ({_seats['used']}/{_seats['total']-1} عضو)",
+                    callback_data='sub:family')])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                "🎟 ثبت کد دعوت خانواده", callback_data='sub:famredeem')])
+    except Exception:
+        pass
     # 💰 W6 — کیف پول در صفحه‌ی وضعیت اشتراک (موجودی همیشه از بک‌اند)
     w = await db.wallet_get_for_user_id(uid)
     wb = int((w or {}).get('balance', 0))
@@ -1362,6 +1397,106 @@ async def _show_my_history(query, uid: int):
         await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception:
         await query.message.reply_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+# ══════════════════════════════════════════════════
+#  🌊 W8/MISS-03 — خانواده/گروهی (بات)
+# ══════════════════════════════════════════════════
+
+async def _show_family(query, context, uid: int):
+    from utils import fmt_jalali_dt
+    s = await db.sub_get(uid) or {}
+    kb = []
+    # نمای عضو
+    if s.get('source') == 'family' and s.get('family_owner_id'):
+        owner = await db.get_user(int(s['family_owner_id'])) or {}
+        text = (
+            "👨‍👩‍👧 <b>خانواده‌ی من</b>\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"👑 مالک: <b>{owner.get('name', '—')}</b>\n"
+            f"📦 پلن: {s.get('plan_name', '—')}\n"
+            f"📅 پایان: <b>{fmt_jalali_dt(s.get('end_date', ''), with_time=False)}</b>\n\n"
+            "اشتراکت به مالک وصله؛ با پایان/لغو اشتراک مالک، دسترسی تو هم قطع می‌شه."
+        )
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')])
+    else:
+        seats = await db.family_plan_seats(uid)
+        if seats['total'] <= 1:
+            text = ("👨‍👩‍👧 <b>خانواده</b>\n\nپلن فعلیت خانوادگی نیست؛ "
+                    "با ارتقا به پلن خانواده می‌تونی اعضا اضافه کنی.")
+            kb.append([InlineKeyboardButton("💳 مشاهده‌ی پلن‌ها", callback_data='sub:back')])
+        else:
+            members = await db.family_members(uid)
+            lines = [f"👨‍👩‍👧 <b>خانواده‌ی من</b> — {seats['used']} از {seats['total']-1} صندلی پر",
+                     "━━━━━━━━━━━━━━━━"]
+            for m in members:
+                if m.get('status') != 'active':
+                    continue
+                u = await db.get_user(int(m['_id'])) or {}
+                lines.append(f"👤 {u.get('name', m['_id'])} — تا "
+                             f"{fmt_jalali_dt(m.get('end_date', ''), with_time=False)}")
+                kb.append([InlineKeyboardButton(
+                    f"➖ حذف {u.get('name', m['_id'])}",
+                    callback_data=f"sub:famrm:{m['_id']}")])
+            if seats['left'] > 0:
+                kb.append([InlineKeyboardButton("➕ ساخت کد دعوت جدید",
+                                                callback_data='sub:famcode')])
+            else:
+                lines.append("\n⚠️ ظرفیت پر شده؛ برای عضو جدید یکی رو حذف کن.")
+            text = "\n".join(lines)
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')])
+    try:
+        await query.edit_message_text(text, parse_mode='HTML',
+                                      reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        await query.message.reply_text(text, parse_mode='HTML',
+                                       reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def _family_new_code(query, context, uid: int):
+    res = await db.family_code_create(uid)
+    if not res.get('ok'):
+        await query.answer(f"❌ {res.get('error')}", show_alert=True)
+        return
+    code = res['code']
+    kb = [[InlineKeyboardButton("🔙 خانواده‌ی من", callback_data='sub:family')]]
+    try:
+        await query.edit_message_text(
+            "🎟 <b>کد دعوت ساخته شد</b>\n\n"
+            f"<code>{code[:4]}-{code[4:]}</code>\n\n"
+            "این کد رو برای عضو جدید بفرست؛ یک‌بارمصرفه و با ثبت، "
+            f"اشتراکش تا پایان اشتراک تو فعال می‌شه. (صندلی خالی: {res.get('seats_left', 0)})",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        pass
+
+
+async def _family_remove_member(query, context, uid: int, member: str):
+    try:
+        mid = int(member)
+    except (TypeError, ValueError):
+        await query.answer("❌ شناسه نامعتبر", show_alert=True)
+        return
+    res = await db.family_remove(uid, mid, uid)
+    await query.answer(("✅ عضو حذف شد" if res.get('ok')
+                        else f"❌ {res.get('error')}"), show_alert=True)
+    await _show_family(query, context, uid)
+
+
+async def family_code_text_handler(update, context):
+    """🎟 ثبت کد دعوت خانواده (sub_mode=awaiting_family_code)."""
+    context.user_data.pop('sub_mode', None)
+    code = (update.message.text or '').strip()
+    res = await db.family_redeem(code, update.effective_user.id)
+    if res.get('ok'):
+        from utils import fmt_jalali_dt
+        await update.message.reply_text(
+            "🎉 <b>به خانواده پیوستی!</b>\n\n"
+            f"📦 پلن: {res.get('plan_name', '')}\n"
+            f"📅 پایان: <b>{fmt_jalali_dt(res.get('end_date', ''), with_time=False)}</b>",
+            parse_mode='HTML')
+    else:
+        await update.message.reply_text(f"❌ {res.get('error')}")
 
 
 # ══════════════════════════════════════════════════

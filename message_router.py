@@ -151,6 +151,11 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from subscription import topup_amount_text_handler
         return await topup_amount_text_handler(update, context)
 
+    # 🌊 W8/MISS-03 — کد دعوت خانواده
+    if context.user_data.get('sub_mode') == 'awaiting_family_code':
+        from subscription import family_code_text_handler
+        return await family_code_text_handler(update, context)
+
     # ── مسیریابی دکمه‌های منو ──
     await _route_menu_button(update, context, text, uid, user)
 

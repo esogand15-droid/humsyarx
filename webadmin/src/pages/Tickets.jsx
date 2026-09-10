@@ -65,9 +65,13 @@ export default function Tickets({ go, me }) {
     page: page > 1 ? page : '' });
   }, [status, search, intake, priority, assignee, unanswered, dateFrom, dateTo, sortBy, sortDir, page]);
   useEffect(() => { load(); setSel([]); }, [status, q, intake, priority, assignee, unanswered, dateFrom, dateTo, sortBy, sortDir, page]);
+  // 🌊 W8/UX-04 — پاسخ‌های آماده
+  const [canned, setCanned] = useState([]);
+  const [cannedOpen, setCannedOpen] = useState(false);
   useEffect(() => {
     api.ticketAssignees().then(setOptions).catch(() => {});
     if (canManage) api.ticketAnalytics().then(setAnalytics).catch(() => {});
+    api.cannedList().then(r => setCanned(r.items || [])).catch(() => {});
   }, [canManage]);
 
   const open = async (t) => {
@@ -183,6 +187,7 @@ export default function Tickets({ go, me }) {
                   </div>
                 </div>
                 {t.priority !== 'normal' && <B kind={t.priority === 'urgent' ? 'bad' : 'warn'}>{t.priority === 'urgent' ? 'فوری' : t.priority === 'high' ? 'بالا' : 'کم'}</B>}
+                {t.sla?.breached && <B kind="bad">🔴 SLA</B>}
                 {t.assignee_name && <B>{t.assignee_name}</B>}
                 <B kind={t.status === 'open' ? 'bad' : t.status === 'answered' ? 'warn' : 'ok'}>
                   {t.status === 'open' ? 'باز' : t.status === 'answered' ? 'پاسخ' : 'بسته'}
@@ -210,6 +215,8 @@ export default function Tickets({ go, me }) {
                 <B kind={detail.status === 'open' ? 'bad' : detail.status === 'answered' ? 'warn' : 'ok'}>
                   {detail.status === 'open' ? 'باز' : detail.status === 'answered' ? 'پاسخ‌داده‌شده' : 'بسته'}
                 </B>
+                {detail.sla?.breached && <B kind="bad">🔴 مهلت SLA گذشته</B>}
+                {!detail.sla?.breached && !detail.sla?.responded && !!detail.sla?.due_at && <B>⏱ <FaDateTime value={detail.sla.due_at} fallback="" /></B>}
               </div>
               <div className="chat" style={{ flex: 1, overflowY: 'auto', maxHeight: '48vh' }}>
                 {detail.message && (
@@ -227,7 +234,14 @@ export default function Tickets({ go, me }) {
                   </div>
                 ))}
               </div>
-              {detail.status !== 'closed' ? (
+              {detail.status !== 'closed' ? (<>
+                {canReply && !!canned.filter(c => c.active !== false).length && <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
+                  <select className="inp" style={{ flex: 1 }} value="" onChange={e => { const c = canned.find(x => x.id === e.target.value); if (c) setText(c.text); }}>
+                    <option value="">⚡ درج پاسخ آماده…</option>
+                    {canned.filter(c => c.active !== false).map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+                  </select>
+                  {canManage && <button className="btn sm" onClick={() => setCannedOpen(true)}>مدیریت</button>}
+                </div>}
                 <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)', flexWrap: 'nowrap' }}>
                   {canReply ? <>
                     <textarea className="inp" rows={1} style={{ flex: 1, resize: 'none' }}
@@ -238,7 +252,7 @@ export default function Tickets({ go, me }) {
                   </> : <span className="muted">مجوز پاسخ‌گویی ندارید</span>}
                   {canManage && <button className="btn sm" onClick={() => act(api.ticketClose, 'تیکت بسته شد ✅')}>✅ بستن</button>}
                 </div>
-              ) : (
+              </>) : (
                 <div className="panel-pad row" style={{ borderTop: '1px solid var(--line)' }}>
                   <span className="muted">این تیکت بسته شده است.</span>
                   <span className="spacer" />
@@ -310,6 +324,8 @@ export default function Tickets({ go, me }) {
       </div>
       {bulkConfirm && <Confirm danger={bulkConfirm === 'close'} text={`${bulkConfirm === 'close' ? 'بستن' : 'بازگشایی'} ${sel.length} تیکت انتخاب‌شده؟`}
         onNo={() => setBulkConfirm(null)} onYes={async () => { const action = bulkConfirm; setBulkConfirm(null); await bulk(action); }} />}
+      {cannedOpen && <CannedModal items={canned} onClose={() => setCannedOpen(false)}
+        onChanged={() => api.cannedList().then(r => setCanned(r.items || [])).catch(() => {})} />}
       {bulkResult && <Modal title="گزارش عملیات گروهی تیکت" onClose={() => setBulkResult(null)}>
         <div className="row"><B kind="ok">موفق: {bulkResult.succeeded?.length || 0}</B><B>ردشده: {bulkResult.skipped?.length || 0}</B><B kind="bad">ناموفق: {bulkResult.failed?.length || 0}</B></div>
         {[...(bulkResult.skipped || []).map(x => ({ ...x, message: x.reason })), ...(bulkResult.failed || []).map(x => ({ ...x, message: x.error }))].slice(0, 30)
@@ -318,4 +334,46 @@ export default function Tickets({ go, me }) {
       </Modal>}
     </>
   );
+}
+
+// 🌊 W8/UX-04 — مدیریت پاسخ‌های آماده
+function CannedModal({ items, onClose, onChanged }) {
+  const [title, setTitle] = useState('');
+  const [text, setText] = useState('');
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (!title.trim() || !text.trim()) return;
+    setBusy(true);
+    try {
+      if (edit) await api.cannedUpdate(edit, { title: title.trim(), text: text.trim(), active: true });
+      else await api.cannedAdd({ title: title.trim(), text: text.trim(), active: true });
+      toast(edit ? 'ویرایش شد ✅' : 'افزوده شد ✅');
+      setTitle(''); setText(''); setEdit(null); onChanged();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  const del = async (id) => {
+    setBusy(true);
+    try { await api.cannedDelete(id); toast('حذف شد'); onChanged(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <Modal title="⚡ پاسخ‌های آماده" onClose={onClose} wide>
+    <div className="grid" style={{ gap: 8 }}>
+      {(items || []).map(c => <div key={c.id} className="panel panel-pad">
+        <div className="row"><b style={{ flex: 1 }}>{c.title}</b>
+          <button className="btn sm" onClick={() => { setEdit(c.id); setTitle(c.title); setText(c.text); }}>✏️</button>
+          <button className="btn sm" disabled={busy} onClick={() => del(c.id)}>🗑</button></div>
+        <div className="muted" style={{ whiteSpace: 'pre-wrap' }}>{(c.text || '').slice(0, 200)}</div>
+      </div>)}
+      {!items?.length && <Empty text="هنوز پاسخ آماده‌ای ثبت نشده" />}
+      <div className="panel panel-pad"><b>{edit ? '✏️ ویرایش' : '➕ جدید'}</b>
+        <input className="inp" style={{ marginTop: 6 }} placeholder="عنوان…" value={title} onChange={e => setTitle(e.target.value)} />
+        <textarea className="inp" style={{ marginTop: 6 }} rows={3} placeholder="متن پاسخ…" value={text} onChange={e => setText(e.target.value)} />
+        <div className="row" style={{ marginTop: 6 }}><button className="btn primary sm" disabled={busy || !title.trim() || !text.trim()} onClick={save}>💾 ذخیره</button>
+          {edit && <button className="btn sm" onClick={() => { setEdit(null); setTitle(''); setText(''); }}>انصراف</button>}</div>
+      </div>
+    </div>
+  </Modal>;
 }

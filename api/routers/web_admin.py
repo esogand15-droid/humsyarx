@@ -3349,6 +3349,24 @@ _SETTINGS_CATALOG = [
          "طول دوره‌ی آزمایشی؛ بین ۱ تا ۳۰ (پیش‌فرض ۷)",
          "number", "subscription.manage", "HIGH"),
     ]),
+    # 🌊 W8/UX-04 — SLA تیکت (ساعت مهلت اولین پاسخ به‌تفکیک اولویت)
+    ("support", [
+        ("ticket_sla_urgent", "مهلت پاسخ فوری (ساعت)",
+         "تیکت‌های فوری؛ ۰ = بدون SLA (پیش‌فرض ۸)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_high", "مهلت پاسخ مهم (ساعت)",
+         "تیکت‌های مهم؛ ۰ = بدون SLA (پیش‌فرض ۲۴)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_normal", "مهلت پاسخ عادی (ساعت)",
+         "تیکت‌های عادی؛ ۰ = بدون SLA (پیش‌فرض ۴۸)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_low", "مهلت پاسخ کم‌اهمیت (ساعت)",
+         "تیکت‌های کم‌اهمیت؛ ۰ = بدون SLA (پیش‌فرض ۷۲)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_stale_hours", "آستانه‌ی یادآوری تیکت مانده (ساعت)",
+         "تیکت باز بدون پاسخ پس از این ساعت به مسئول یادآوری می‌شود (پیش‌فرض ۲۴)",
+         "number", "tickets.manage", "HIGH"),
+    ]),
     ("backup", [
         ("auto_backup_enabled", "بکاپ خودکار روزانه",
          "هر روز در ساعت مشخص‌شده نسخه‌ی پشتیبان ساخته می‌شود",
@@ -3684,8 +3702,12 @@ async def exams_create(body: ExamIn, user=Depends(_perm("schedules.manage"))):
                  after={"تاریخ": d, "گروه": grp,
                         "اطلاع‌رسانی": notice.get("notified", 0)},
                  tags=["امتحان", "پنل_وب"])
+    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
+    conflicts = await db.schedule_find_conflicts(
+        grp, d, t, '', exclude_id=str(sid))
     return {"ok": True, "id": str(sid),
-            "notified": notice.get("notified", 0)}
+            "notified": notice.get("notified", 0),
+            "warnings": {"schedule_conflicts": conflicts}}
 
 
 @router.patch("/exams/{sid}")
@@ -4996,6 +5018,8 @@ async def wa_ticket_meta(
         if body.priority not in ("low", "normal", "high", "urgent"):
             raise HTTPException(422, "اولویت نامعتبر است")
         updates["priority"] = body.priority
+        # 🌊 W8/UX-04 — ارتقا/تنزل اولویت، مهلت SLA را بازمحاسبه می‌کند
+        updates["sla_hours"] = await db.ticket_sla_hours(body.priority)
     if body.tags is not None:
         updates["tags"] = list(dict.fromkeys(
             str(tag).strip()[:30] for tag in body.tags if str(tag).strip()
@@ -5087,6 +5111,29 @@ async def wa_ticket_reply(
 @router.post("/tickets/{tid}/close")
 async def wa_ticket_close(tid: int, user=Depends(_perm("tickets.manage"))):
     return await owner_api.close_ticket(tid=tid, admin=user)
+
+
+@router.get("/tickets/canned")
+async def wa_canned_list(user=Depends(_perm("tickets.manage"))):
+    """🌊 W8/UX-04 — پاسخ‌های آماده."""
+    return await owner_api.canned_list_ep(admin=user)
+
+
+@router.post("/tickets/canned")
+async def wa_canned_add(body: owner_api.CannedBody,
+                        user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_add_ep(body=body, admin=user)
+
+
+@router.put("/tickets/canned/{cid}")
+async def wa_canned_update(cid: str, body: owner_api.CannedBody,
+                           user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_update_ep(cid=cid, body=body, admin=user)
+
+
+@router.delete("/tickets/canned/{cid}")
+async def wa_canned_delete(cid: str, user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_delete_ep(cid=cid, admin=user)
 
 
 @router.post("/tickets/{tid}/reopen")

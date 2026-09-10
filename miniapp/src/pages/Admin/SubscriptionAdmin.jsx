@@ -1,3 +1,4 @@
+import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
 import { number, errorText } from '../../lib/format';
@@ -963,9 +964,10 @@ export default function SubscriptionAdmin() {
 
 
         {isError ? (
-          <EmptyState>
-            دریافت اطلاعات انجام نشد.
-          </EmptyState>
+          <PageError
+            text="دریافت اطلاعات انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : tab ===
           'overview' ? (
           <>

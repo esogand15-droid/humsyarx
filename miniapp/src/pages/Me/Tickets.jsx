@@ -58,6 +58,15 @@ const statusInfo = (status) => {
 };
 
 
+/* 🌊 W8/UX-04 — برچسب اولویت */
+const prioInfo = (prio) => ({
+  low: { label: '🟢 کم‌اهمیت', badge: 'b-gray' },
+  normal: { label: '⚪ عادی', badge: 'b-gray' },
+  high: { label: '🟠 مهم', badge: 'b-warn' },
+  urgent: { label: '🔴 فوری', badge: 'b-red' },
+}[prio] || { label: '⚪ عادی', badge: 'b-gray' });
+
+
 export default function Tickets() {
   const [
     view,
@@ -75,6 +84,7 @@ export default function Tickets() {
   ] = useState({
     subject: '',
     message: '',
+    priority: 'normal',
   });
 
   /* 🔔 موج ۴.۹۰ — Deep Link از مرکز اعلان:
@@ -218,6 +228,9 @@ export default function Tickets() {
 
             message:
               form.message.trim(),
+
+            priority:
+              form.priority,
           }
         ),
 
@@ -236,6 +249,7 @@ export default function Tickets() {
         setForm({
           subject: '',
           message: '',
+          priority: 'normal',
         });
 
         setSelectedId(
@@ -463,6 +477,43 @@ export default function Tickets() {
 
 
             <label className="fld-label">
+              اولویت
+            </label>
+
+            <select
+              className="inp"
+              value={
+                form.priority
+              }
+              onChange={(event) =>
+                setForm({
+                  ...form,
+
+                  priority:
+                    event.target
+                      .value,
+                })
+              }
+            >
+              <option value="low">
+                🟢 کم‌اهمیت
+              </option>
+
+              <option value="normal">
+                ⚪ عادی
+              </option>
+
+              <option value="high">
+                🟠 مهم
+              </option>
+
+              <option value="urgent">
+                🔴 فوری
+              </option>
+            </select>
+
+
+            <label className="fld-label">
               شرح درخواست
             </label>
 
@@ -639,11 +690,35 @@ export default function Tickets() {
                   </div>
 
                   <span
-                    className={`badge ${
-                      status.badge
-                    }`}
+                    style={{
+                      display:
+                        'flex',
+
+                      gap:
+                        6,
+                    }}
                   >
-                    {status.label}
+                    <span
+                      className={`badge ${
+                        status.badge
+                      }`}
+                    >
+                      {status.label}
+                    </span>
+
+                    <span
+                      className={`badge ${
+                        prioInfo(
+                          ticket.priority
+                        ).badge
+                      }`}
+                    >
+                      {
+                        prioInfo(
+                          ticket.priority
+                        ).label
+                      }
+                    </span>
                   </span>
                 </div>
 

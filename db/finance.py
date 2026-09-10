@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import difflib
+import secrets
 from datetime import timedelta
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
@@ -33,7 +34,8 @@ class DBFinance:
     # ── پلن‌ها ──
     async def sub_plan_add(self, name: str, days: int, price: int,
                          ai_daily_limit: int = 0,
-                         entitlements: dict | None = None) -> str:
+                         entitlements: dict | None = None,
+                         max_members: int = 1) -> str:
         count = await self.sub_plans.count_documents({})
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
@@ -41,6 +43,8 @@ class DBFinance:
             'ai_daily_limit': max(0, int(ai_daily_limit or 0)),
             # 🌊 W7 — نقشه‌ی فیچرها؛ خالی/ناقص = سازگار عقب‌رو (دسترسی کامل)
             'entitlements': dict(entitlements or {}),
+            # 🌊 W8/MISS-03 — ظرفیت خانواده/گروه (۱ = شخصی)؛ مالک یک صندلی می‌گیرد
+            'max_members': max(1, min(50, int(max_members or 1))),
             'active': True, 'order': count,
             'created_at': utc_now_iso(),
         })
@@ -401,6 +405,17 @@ class DBFinance:
         s = await self.sub_get(user_id)
         if not s or s.get('status') != 'active':
             return False
+        # 🌊 W8/MISS-03 — عضو خانواده فقط وقتی فعال است که مالک هم فعال باشد
+        # (revoke مالک را بدون job پوشش می‌دهد؛ بدون بازگشت برای جلوگیری از حلقه)
+        if (s.get('source') == 'family') and s.get('family_owner_id'):
+            try:
+                o = await self.sub_get(int(s['family_owner_id']))
+                if not o or o.get('status') != 'active':
+                    return False
+                if parse_machine_datetime(o.get('end_date')) < now_utc():
+                    return False
+            except ValueError:
+                return False
         try:
             return parse_machine_datetime(s.get('end_date')) >= now_utc()
         except ValueError:
@@ -455,6 +470,15 @@ class DBFinance:
             }},
             upsert=True
         )
+        # 🌊 W8/MISS-03 — تمدید/فعال‌سازی مالک، end_date اعضای فعال را هم‌ردیف می‌کند
+        try:
+            await self.subscriptions.update_many(
+                {'source': 'family', 'family_owner_id': int(user_id),
+                 'status': 'active'},
+                {'$set': {'end_date': end_date,
+                          'updated_at': now.isoformat()}})
+        except Exception:
+            pass
         return end_date
 
 
@@ -537,6 +561,116 @@ class DBFinance:
             }}
         )
         return result.matched_count > 0
+
+    # ── 🌊 W8/MISS-03 — پلن خانواده/گروهی ──
+    _FAMILY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+
+    async def family_plan_seats(self, owner_id: int) -> dict:
+        """ظرفیت خانواده‌ی مالک: {total, used, left, plan_id}."""
+        sub = await self.sub_get(int(owner_id)) or {}
+        plan_id = str(sub.get('plan_id') or '')
+        total = 1
+        if plan_id:
+            try:
+                plan = await self.sub_plan_get(plan_id)
+                total = max(1, int((plan or {}).get('max_members') or 1))
+            except Exception:
+                total = 1
+        used = await self.subscriptions.count_documents(
+            {'source': 'family', 'family_owner_id': int(owner_id),
+             'status': 'active'})
+        return {'total': total, 'used': int(used),
+                'left': max(0, total - 1 - int(used)), 'plan_id': plan_id}
+
+    async def family_members(self, owner_id: int) -> list:
+        cur = await self.subscriptions.find(
+            {'source': 'family', 'family_owner_id': int(owner_id)}
+        ).sort('start_date', -1).to_list(60)
+        return cur or []
+
+    async def family_code_create(self, owner_id: int) -> dict:
+        """ساخت کد دعوت یک‌بارمصرف. {ok, code?/error?}."""
+        owner_id = int(owner_id)
+        if not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک فعالی نداری'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['total'] <= 1:
+            return {'ok': False, 'error': 'پلن تو خانوادگی نیست'}
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        for _ in range(5):
+            code = ''.join(secrets.choice(self._FAMILY_CODE_ALPHABET)
+                           for _ in range(8))
+            try:
+                await self.family_invites.insert_one({
+                    '_id': code, 'owner_id': owner_id,
+                    'created_at': utc_now_iso(),
+                    'used_by': 0, 'used_at': None, 'active': True})
+                return {'ok': True, 'code': code, 'seats_left': seats['left']}
+            except DuplicateKeyError:
+                continue
+        return {'ok': False, 'error': 'ساخت کد ناموفق بود؛ دوباره تلاش کن'}
+
+    async def family_redeem(self, code: str, user_id: int) -> dict:
+        """ثبت کد دعوت: ساخت اشتراک عضو با end_date مالک. {ok, end_date?/error?}."""
+        code = (code or '').strip().upper().replace('-', '').replace(' ', '')
+        user_id = int(user_id)
+        if len(code) != 8:
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        if await self.sub_is_active(user_id):
+            return {'ok': False, 'error': 'تو الان اشتراک فعال داری'}
+        inv = await self.family_invites.find_one({'_id': code})
+        if not inv or not inv.get('active') or inv.get('used_by'):
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        owner_id = int(inv['owner_id'])
+        if owner_id == user_id:
+            return {'ok': False, 'error': 'نمی‌توانی کد خودت را ثبت کنی'}
+        owner_sub = await self.sub_get(owner_id)
+        if not owner_sub or not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک مالک خانواده فعال نیست'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        # قفل اتمیک کد (جلوگیری از دابل‌ردیم) — سپس ساخت اشتراک عضو
+        locked = await self.family_invites.find_one_and_update(
+            {'_id': code, 'active': True, 'used_by': 0},
+            {'$set': {'used_by': user_id, 'used_at': utc_now_iso()}})
+        if not locked:
+            return {'ok': False, 'error': 'این کد قبلاً استفاده شده'}
+        end_date = owner_sub.get('end_date')
+        now = utc_now_iso()
+        await self.subscriptions.update_one(
+            {'_id': user_id},
+            {'$set': {'status': 'active',
+                      'plan_name': str(owner_sub.get('plan_name') or 'خانواده'),
+                      'plan_id': str(owner_sub.get('plan_id') or ''),
+                      'start_date': now, 'end_date': end_date,
+                      'source': 'family', 'granted_by': owner_id,
+                      'family_owner_id': owner_id,
+                      'family_code': code,
+                      'last_plan_days': int(owner_sub.get('last_plan_days') or 0),
+                      'reminder_3d_sent': False, 'reminder_1d_sent': False,
+                      'updated_at': now}},
+            upsert=True)
+        return {'ok': True, 'end_date': end_date,
+                'plan_name': str(owner_sub.get('plan_name') or '')}
+
+    async def family_remove(self, owner_id: int, member_id: int,
+                            actor_id: int = 0) -> dict:
+        """حذف عضو (توسط مالک یا ادمین): revoke اشتراک عضو."""
+        owner_id, member_id = int(owner_id), int(member_id)
+        if member_id == owner_id:
+            return {'ok': False, 'error': 'مالک را نمی‌شود حذف کرد'}
+        m = await self.sub_get(member_id)
+        if not m or m.get('source') != 'family' or \
+                int(m.get('family_owner_id') or 0) != owner_id:
+            return {'ok': False, 'error': 'این کاربر عضو خانواده‌ی تو نیست'}
+        await self.subscriptions.update_one(
+            {'_id': member_id},
+            {'$set': {'status': 'revoked', 'revoke_reason': 'family_remove',
+                      'revoked_by': int(actor_id or owner_id),
+                      'revoked_at': utc_now_iso()}})
+        return {'ok': True}
 
 
     async def sub_expire_due(self) -> list:

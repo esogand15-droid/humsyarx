@@ -143,7 +143,11 @@ function ExamModal({ row, seed, onClose }) {
     setBusy(true);
     try {
       const r = row ? await api.examUpdate(row.id, f) : await api.examCreate(f);
-      toast(`${row ? 'ویرایش آزمون' : 'آزمون جدید'} ثبت و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد ✅`); onClose(true);
+      toast(`${row ? 'ویرایش آزمون' : 'آزمون جدید'} ثبت و به ${Number(r.notified || 0).toLocaleString('fa')} نفر اطلاع داده شد ✅`);
+      // 🌊 W8/UX-05 — هشدار تداخل زمانی (غیرمسدودکننده)
+      if (!row && r.warnings?.schedule_conflicts?.length)
+        toast(`⚠️ تداخل با ${r.warnings.schedule_conflicts.length} برنامه: ${r.warnings.schedule_conflicts.map(c => c.lesson).join('، ')}`, 'warn');
+      onClose(true);
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };

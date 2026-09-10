@@ -13,6 +13,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 
 import {
   Spinner,
@@ -501,18 +502,10 @@ export default function AdminHome() {
         {isLoading ? (
           <AdminHomeSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            دریافت آمار انجام نشد.
-
-            <button
-              className="btn btn-p"
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت آمار انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : (
           <section
             className="grid2"

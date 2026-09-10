@@ -10,6 +10,7 @@ import { Spinner } from "../../components/shared/Loading";
 
 import { ScheduleSkeleton } from "../../components/shared/skeletons";
 import { haptic } from "../../lib/telegram";
+import { useUIStore } from "../../stores/uiStore";
 
 function mergeScheduleBlocks(list) {
   const _p = (v) => {
@@ -88,6 +89,29 @@ const groupName = (value) => {
 
 export default function Schedule() {
   const [tab, setTab] = useState("class");
+  const toast = useUIStore((s) => s.toast);
+  const [calBusy, setCalBusy] = useState(false);
+
+  /* 🌊 W8/UX-05 — دانلود iCal (blob با احراز initData) */
+  const downloadCal = async () => {
+    if (calBusy) return;
+    setCalBusy(true);
+    try {
+      const r = await api.get("/api/schedule/ical", { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([r.data], { type: "text/calendar" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "humsyar-schedule.ics";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast("📅 فایل تقویم دانلود شد");
+    } catch {
+      toast("دانلود تقویم ناموفق بود", "err");
+    }
+    setCalBusy(false);
+  };
 
   const userGroup = useAuthStore((state) => state.user?.group || "");
 
@@ -287,6 +311,12 @@ export default function Schedule() {
             )}
           </div>
         </section>
+
+        <div className="row" style={{ marginBottom: 8 }}>
+          <button type="button" className="btn sm" disabled={calBusy} onClick={downloadCal}>
+            {calBusy ? "⏳ …" : "📅 افزودن به تقویم (.ics)"}
+          </button>
+        </div>
 
         <div className="tab-bar" role="tablist">
           {Object.entries(TYPES).map(([key, item]) => (

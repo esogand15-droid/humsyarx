@@ -821,6 +821,46 @@ async def subscription_expiry_sweep_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"subscription_expiry_sweep error: {e}")
 
+async def ticket_stale_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W8/UX-04 — یادآوری تیکت‌های بازِ بدون پاسخ (هر ۶ ساعت).
+
+    برای هر تیکت: به مسئول تخصیص‌یافته (وگرنه مالک) پیام می‌دهد؛
+    اگر SLA هم رد شده باشد با پرچم 🔴. ضدتکرار با stale_nudged_at.
+    """
+    try:
+        try:
+            stale_h = max(1, int(await db.get_setting('ticket_stale_hours', 24) or 24))
+        except Exception:
+            stale_h = 24
+        tickets = await db.tickets_needing_nudge(stale_h)
+        if not tickets:
+            return
+        from time_utils import utc_now_iso
+        now = utc_now_iso()
+        for t in tickets:
+            tid = t.get('ticket_id')
+            sla = db.ticket_sla_info(t)
+            target = int(t.get('assignee_id') or 0) or ADMIN_ID
+            icon = '🔴' if sla.get('breached') else '⏳'
+            extra = ' — <b>مهلت SLA گذشته!</b>' if sla.get('breached') else ''
+            try:
+                await safe_send(
+                    context.bot, target,
+                    f"{icon} <b>تیکت #{tid} بی‌پاسخ مانده</b>{extra}\n"
+                    f"👤 {t.get('user_name', '')} — 📋 {t.get('subject', '')[:60]}",
+                    parse_mode='HTML')
+            except Exception:
+                pass
+            try:
+                await db.tickets.update_one(
+                    {'ticket_id': tid}, {'$set': {'stale_nudged_at': now}})
+            except Exception:
+                pass
+        logger.info(f"🎫 ticket stale nudge: {len(tickets)}")
+    except Exception as e:
+        logger.warning(f"ticket_stale_job error: {e}")
+
+
 async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     """🌊 W2 — مغایرت‌گیری کیف پول هر ۳۰ دقیقه + گزارش به لاگ/ادمین.
     🌊 W7 — ضداسپم + توضیح‌دار: dismiss respected + cooldown + hash + mute + جزئیات انسانی.
@@ -2240,6 +2280,14 @@ async def post_init(application: Application):
             interval=3600,
             first=120,
             name='new_resources_notif'
+        )
+
+        # 🌊 W8/UX-04 — یادآوری تیکت‌های مانده (هر ۶ ساعت)
+        application.job_queue.run_repeating(
+            ticket_stale_job,
+            interval=21600,
+            first=600,
+            name='ticket_stale'
         )
 
         # FIX جدید: بکاپ خودکار — هر ساعت چک می‌شود، فقط در ساعت

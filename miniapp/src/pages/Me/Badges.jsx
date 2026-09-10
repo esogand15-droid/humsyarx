@@ -12,6 +12,8 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 
 import {
   TicketsSkeleton,
@@ -163,6 +165,9 @@ export default function Badges() {
   const {
     data,
     isLoading,
+    isError,
+    refetch,
+    isRefetching,
   } = useQuery({
     queryKey: ['prestige-badges'],
     queryFn: () =>
@@ -228,6 +233,26 @@ export default function Badges() {
       hapticNotif('success');
     },
   });
+
+  /* 🌊 W8/UX-02 — خطا دیگر اسکلت ابدی نیست */
+  if (isError && !data) {
+    return (
+      <>
+        <Header
+          title="نشان‌های من"
+          onBack={() => navigate('/me')}
+        />
+
+        <main className="page">
+          <PageError
+            text="دریافت نشان‌ها انجام نشد."
+            onRetry={() => refetch()}
+            pending={isRefetching}
+          />
+        </main>
+      </>
+    );
+  }
 
   if (isLoading || !data) {
     return (
@@ -654,16 +679,10 @@ export default function Badges() {
             }}
           >
             {!historyItems.length && (
-              <div
-                className="card"
-                style={{
-                  color: 'var(--txm)',
-                  fontSize: 'var(--fs-meta)',
-                }}
-              >
+              <EmptyState icon="⚡">
                 هنوز رویدادی ثبت نشده — اولین
-                قدم را بردار ⚡
-              </div>
+                قدم را بردار
+              </EmptyState>
             )}
 
             {historyItems.map((row, i) => (

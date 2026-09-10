@@ -557,6 +557,14 @@ export const api = {
     req(`/api/web-admin/tickets/${tid}/close`, { method: "POST" }),
   ticketReopen: (tid) =>
     req(`/api/web-admin/tickets/${tid}/reopen`, { method: "POST" }),
+  // 🌊 W8/UX-04 — پاسخ‌های آماده
+  cannedList: () => req("/api/web-admin/tickets/canned"),
+  cannedAdd: (body) =>
+    req("/api/web-admin/tickets/canned", { method: "POST", body }),
+  cannedUpdate: (cid, body) =>
+    req(`/api/web-admin/tickets/canned/${cid}`, { method: "PUT", body }),
+  cannedDelete: (cid) =>
+    req(`/api/web-admin/tickets/canned/${cid}`, { method: "DELETE" }),
   broadcast: (body) =>
     req("/api/web-admin/broadcast", { method: "POST", body }),
   broadcastPreview: (body) =>
@@ -833,6 +841,18 @@ export const api = {
     req(`/api/web-admin/subscription/subscribers/${uid}/revoke`, {
       method: "POST",
       body: { reason },
+    }),
+  // 🌊 W8/MISS-03 — خانواده
+  subFamily: (ownerId) =>
+    req(`/api/web-admin/subscription/family?owner_id=${ownerId}`),
+  subFamilyAdd: (ownerId, userId) =>
+    req("/api/web-admin/subscription/family/members", {
+      method: "POST",
+      body: { owner_id: ownerId, user_id: userId },
+    }),
+  subFamilyRemove: (ownerId, userId) =>
+    req(`/api/web-admin/subscription/family/members/${userId}?owner_id=${ownerId}`, {
+      method: "DELETE",
     }),
   discountAdd: (body) =>
     req("/api/web-admin/subscription/discounts", { method: "POST", body }),

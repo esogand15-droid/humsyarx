@@ -6,6 +6,8 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 import Switch from '../../components/shared/Switch';
 
 import {
@@ -408,30 +410,16 @@ export function Notifications() {
         {isLoading ? (
           <NotificationsSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            <div className="empty__ic">
-              🌐
-            </div>
-
-            <div>
-              دریافت تنظیمات انجام نشد.
-            </div>
-
-            <button
-              className="btn btn-p"
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت تنظیمات انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : settings.length ===
           0 ? (
-          <div className="empty card">
+          <EmptyState icon="🔔">
             تنظیمی برای اعلان‌ها تعریف
             نشده است.
-          </div>
+          </EmptyState>
         ) : (
           <section
             className="card"

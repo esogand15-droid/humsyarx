@@ -20,6 +20,9 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
+import FamilySection from './FamilySection';
 
 import {
   Spinner,
@@ -663,23 +666,10 @@ export default function Subscription() {
 
       <main className="page fade-up">
         {isError ? (
-          <div className="empty card">
-            دریافت اطلاعات اشتراک انجام
-            نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت اطلاعات اشتراک انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : (
           <div
             style={{
@@ -832,6 +822,9 @@ export default function Subscription() {
                 </button>
               )}
             </section>
+
+            {/* 🌊 W8/MISS-03 — خانواده */}
+            <FamilySection hasActive={!!data?.active} />
 
 
             {pending && (
@@ -1074,9 +1067,9 @@ export default function Subscription() {
               >
                 {plans.length ===
                 0 ? (
-                  <div className="empty card">
+                  <EmptyState icon="💎">
                     پلن فعالی وجود ندارد.
-                  </div>
+                  </EmptyState>
                 ) : (
                   plans.map(
                     (plan) => {
@@ -1192,6 +1185,12 @@ export default function Subscription() {
                               )}{' '}
 
                               روز دسترسی
+                              {/* 🌊 W8/MISS-03 */}
+                              {Number(plan.max_members) > 1 && (
+                                <span style={{ display: 'block', marginTop: 2 }}>
+                                  👨‍👩‍👧 خانوادگی ({number(plan.max_members)} نفره)
+                                </span>
+                              )}
                               {/* 🌊 W6/MISS-04 */}
                               {Number(plan.ai_daily_limit) > 0 && (
                                 <span style={{ display: 'block', marginTop: 2 }}>
@@ -1982,9 +1981,9 @@ export default function Subscription() {
 
               {payments.length ===
                 0 ? (
-                <div className="empty card">
+                <EmptyState icon="🧾">
                   هنوز پرداختی ثبت نشده است.
-                </div>
+                </EmptyState>
               ) : (
                 <div
                   style={{
@@ -2420,7 +2419,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
             {showHistory && (
               <div style={{ marginTop: 10 }}>
                 {txs.length === 0 ? (
-                  <div className="empty card">هنوز تراکنشی نداری.</div>
+                  <EmptyState icon="👛">هنوز تراکنشی نداری.</EmptyState>
                 ) : (
                   <>
                     {txs.map((t) => (
