@@ -273,33 +273,6 @@ export default function Subscription() {
     },
   });
 
-  // 🌊 W2 — ادامه‌ی پرداخت نیمه‌تمام از دستگاه دیگر:
-  // اگر pending محلی نیست ولی در تاریخچه‌ی سرور پرداخت
-  // درگاهیِ باز هست، همان را برای «بررسی» برمی‌داریم.
-  useEffect(() => {
-    if (zp.pending) return;
-
-    const open =
-      (payments || []).find(
-        (item) =>
-          item.status ===
-            'zarinpal_pending' &&
-          item.authority
-      );
-
-    if (open) {
-      zp.setPending({
-        authority: open.authority,
-        url: null,
-        payment_id: open.id,
-        final_price: open.final_price,
-        kind: 'plan',
-        at: Date.now(),
-        resumed: true,
-      });
-    }
-  }, [payments, zp]);
-
   // 🎟 موج D1 — Deep Link از پیام کمپین:
   // ?discount=CODE → کد پیش‌پُر و پس از انتخاب پلن Auto-Validate
   const [
@@ -372,6 +345,35 @@ export default function Subscription() {
       data
         ?.has_pending_payment
     );
+
+
+  // 🌊 W2 — ادامه‌ی پرداخت نیمه‌تمام از دستگاه دیگر:
+  // اگر pending محلی نیست ولی در تاریخچه‌ی سرور پرداخت
+  // درگاهیِ باز هست، همان را برای «بررسی» برمی‌داریم.
+  // ⚠️ ترتیب مهم: این افکت باید بعد از تعریف payments باشد (deps هنگام رندر خوانده می‌شود)
+  useEffect(() => {
+    if (zp.pending) return;
+
+    const open =
+      (payments || []).find(
+        (item) =>
+          item.status ===
+            'zarinpal_pending' &&
+          item.authority
+      );
+
+    if (open) {
+      zp.setPending({
+        authority: open.authority,
+        url: null,
+        payment_id: open.id,
+        final_price: open.final_price,
+        kind: 'plan',
+        at: Date.now(),
+        resumed: true,
+      });
+    }
+  }, [payments, zp]);
 
 
   // 🌊 GIFT — تاریخچه‌ی هدیه‌ها (داده‌شده / دریافت‌شده)

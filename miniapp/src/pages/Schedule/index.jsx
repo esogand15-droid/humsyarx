@@ -11,6 +11,7 @@ import { Spinner } from "../../components/shared/Loading";
 import { ScheduleSkeleton } from "../../components/shared/skeletons";
 import { haptic } from "../../lib/telegram";
 import { useUIStore } from "../../stores/uiStore";
+import { faNum, faDate } from "../../lib/format";
 
 function mergeScheduleBlocks(list) {
   const _p = (v) => {
