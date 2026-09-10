@@ -474,8 +474,12 @@ async def schedule_create(
                "notified": notice.get("notified", 0)},
         tags=["برنامه", body.type, "پنل_وب"],
     )
+    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
+    conflicts = await db.schedule_find_conflicts(
+        group, date, time, end_time, exclude_id=str(schedule_id))
     return {"ok": True, "id": str(schedule_id),
-            "notified": notice.get("notified", 0)}
+            "notified": notice.get("notified", 0),
+            "warnings": {"schedule_conflicts": conflicts}}
 
 
 @router.patch("/schedule/{schedule_id}")

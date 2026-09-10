@@ -87,6 +87,20 @@ export default class ErrorBoundary
           info?.componentStack || ''
         ).slice(0, 220),
     });
+
+    /* 🌊 W5/REL-03 — گزارش best-effort به سرور تا خطای فرانت فقط در
+       localStorage نماند؛ dynamic-import = صفر ریسک چرخه‌ی وارداتی،
+       هیچ‌وقت رندر fallback را خراب نمی‌کند */
+    try {
+      import('../../lib/api').then(({ default: api }) => {
+        api.post('/api/client-errors', {
+          app: 'miniapp',
+          path: window.location?.pathname || '?',
+          message: String(error?.message || error).slice(0, 500),
+          stack: String(info?.componentStack || '').slice(0, 2000),
+        }).catch(() => {});
+      }).catch(() => {});
+    } catch (_) { /* سکوت — گزارش اختیاری است */ }
   }
 
 

@@ -283,11 +283,24 @@ def resolve_content_intake(user: dict, requested=None) -> str:
     return own
 
 
+def require_feature(feature: str):
+    """🌊 W7 — کارخانه‌ی گیت فیچر: تنها نقطه‌ی اعمال سمت API.
+
+    402 دسترسی / 429 سهمیه / 503 موقت — همیشه با {code, message, feature}.
+    """
+    async def _gate(user=Depends(get_current_user)) -> dict:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], feature)
+        return user
+    _gate.__name__ = f"require_feature_{feature}"
+    return _gate
+
+
 async def get_question_access_user(user=Depends(get_current_user)) -> dict:
     """Single server-side subscription gate for every student Question Bank API — W8 core."""
     try:
-        from core.access import require_access
-        await require_access(user["id"])
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "question_bank")
     except HTTPException:
         raise
     except Exception:
@@ -305,8 +318,22 @@ async def get_resource_access_user(user=Depends(get_current_user)) -> dict:
     تصمیم بگیرد نه با تطبیق رشته فارسی.
     """
     try:
-        from core.access import require_access
-        await require_access(user["id"])
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "resources")
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
+    return user
+
+
+async def get_references_access_user(user=Depends(get_current_user)) -> dict:
+    """🌊 W7 — گیت اشتراک رفرنس‌ها (جدا از منابع؛ سوییچ مستقل)."""
+    try:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "references")
     except HTTPException:
         raise
     except Exception:

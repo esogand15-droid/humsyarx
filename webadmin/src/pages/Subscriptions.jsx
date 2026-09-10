@@ -139,7 +139,7 @@ function ControlPanel({ ov, refresh }) {
           {(ov.plans || []).map(p => <div key={p.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
             <div className="row"><b>{p.name}</b><span className="spacer" />
               <B kind={p.active ? 'ok' : 'bad'}>{p.active ? 'فعال' : 'غیرفعال'}</B></div>
-            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B></div>
+            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B>{Number(p.ai_daily_limit) > 0 && <B>🤖 {fa(p.ai_daily_limit)}/روز</B>}{Number(p.max_members) > 1 && <B kind="ok">👨‍👩‍👧 {fa(p.max_members)} نفره</B>}</div>
             <div className="row" style={{ marginTop: 10, gap: 5 }}>
               <button className="btn sm" onClick={() => setPlanEdit(p)}>✏️ ویرایش</button>
               <button className="btn sm" onClick={() => setPlanEdit({ ...p, _clone: true })}>📄 کپی</button>
@@ -185,12 +185,16 @@ function CardPanel({ card, refresh }) {
 
 function PlanModal({ plan, onClose, onDone }) {
   const clone = !!plan?._clone; const edit = !!plan && !clone;
-  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0 });
+  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0, ai_daily_limit: plan?.ai_daily_limit || 0, max_members: plan?.max_members || 1 });
+  const [ent, setEnt] = useState({ ...(plan?.entitlements || {}) });
+  const [featList, setFeatList] = useState([]);
+  // 🌊 W7 — کاتالوگ فیچرها از همان API پنل دسترسی (تک‌منبع)
+  useEffect(() => { api.featuresList().then(r => setFeatList(r.items || [])).catch(() => {}); }, []);
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price) };
+      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price), ai_daily_limit: Number(f.ai_daily_limit) || 0, entitlements: ent, max_members: Math.max(1, Math.min(50, Number(f.max_members) || 1)) };
       if (edit) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
       toast(edit ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
     } catch (e) { toast(errText(e), 'err'); }
@@ -202,7 +206,19 @@ function PlanModal({ plan, onClose, onDone }) {
       <div className="row"><label className="fld" style={{ flex: 1 }}><span>تعداد روز</span>
         <input className="inp" type="number" min="1" max="3650" value={f.days} onChange={e => setF({ ...f, days: e.target.value })} /></label>
         <label className="fld" style={{ flex: 1 }}><span>قیمت (تومان)</span>
-        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label></div>
+        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+        <label className="fld" style={{ flex: 1 }}><span>سهمیه هوشیار/روز (۰=سراسری)</span>
+        <input className="inp" type="number" min="0" max="100000" value={f.ai_daily_limit} onChange={e => setF({ ...f, ai_daily_limit: e.target.value })} /></label>
+        <label className="fld" style={{ flex: 1 }}><span>ظرفیت خانواده (۱=شخصی)</span>
+        <input className="inp" type="number" min="1" max="50" value={f.max_members} onChange={e => setF({ ...f, max_members: e.target.value })} /></label></div>
+      {!!featList.length && <div><span className="muted">فیچرهای این پلن (پیش‌فرض: همه باز)</span>
+        <div className="grid g3" style={{ marginTop: 6 }}>
+          {featList.map(it => <label key={it.key} className="row" style={{ gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={ent[it.key] !== false}
+              onChange={e => setEnt({ ...ent, [it.key]: e.target.checked })} />
+            <span>{it.label}</span>
+          </label>)}
+        </div></div>}
       <div className="row"><button className="btn primary" disabled={busy || f.name.trim().length < 2 || Number(f.days) < 1}
         onClick={save}>{busy ? '⏳ …' : 'ذخیره'}</button><button className="btn" onClick={onClose}>انصراف</button></div>
     </div>
@@ -300,6 +316,10 @@ function RefundModal({ pay, onClose, onDone }) {
       toast(r.wallet_credited
         ? `بازگشت وجه ثبت شد 💸 — ${money(amount)} به کیف پول دانشجو منتقل شد`
         : 'بازگشت وجه ثبت شد 💸', r.wallet_credited ? 'ok' : 'warn');
+      // 🌊 W3/MISS-02 — بازوی درگاهی دستی
+      if (r.gateway_reversal === 'manual_required') {
+        toast('⚠️ پول واقعی در درگاه گرفته شده — در پنل زرین‌پال هم برگشت وجه را ثبت کن', 'warn');
+      }
       onDone();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
@@ -820,6 +840,34 @@ function BulkGrantModal({ roles, onClose, onDone }) {
   </Modal>;
 }
 
+// 🌊 W8/MISS-03 — مدیریت خانواده‌ی این کاربر (به‌عنوان مالک)
+function FamilyBlock({ uid }) {
+  const [fam, setFam] = useState(null);
+  const [newUid, setNewUid] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => { try { setFam(await api.subFamily(uid)); } catch (e) { /* پلن شخصی/بدون اشتراک */ } };
+  useEffect(() => { load(); }, [uid]);
+  if (!fam || Number(fam.total) <= 1) return null;
+  const act = async (fn, okMsg) => {
+    setBusy(true);
+    try { await fn(); toast(okMsg); setNewUid(''); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}><b>👨‍👩‍👧 خانواده</b>
+    <span className="muted"> ({fa(fam.used)} از {fa(Number(fam.total) - 1)} صندلی)</span>
+    <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+      {(fam.members || []).filter(m => m.status === 'active').map(m => <div key={m.user_id} className="row">
+        <span style={{ flex: 1 }}>👤 {m.name || `#${m.user_id}`}</span>
+        <button className="btn sm" disabled={busy} onClick={() => act(() => api.subFamilyRemove(uid, m.user_id), 'عضو حذف شد')}>حذف</button>
+      </div>)}
+    </div>
+    <div className="row" style={{ marginTop: 8 }}><input className="inp" style={{ flex: 1 }} placeholder="user_id عضو جدید…"
+      value={newUid} onChange={e => setNewUid(e.target.value)} />
+      <button className="btn primary sm" disabled={busy || !newUid.trim()} onClick={() => act(() => api.subFamilyAdd(uid, Number(newUid)), 'عضو اضافه شد ✅')}>➕ افزودن</button></div>
+  </div>;
+}
+
 function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
   const [data, setData] = useState(null);
   const [days, setDays] = useState(30);
@@ -855,6 +903,7 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
         {data.subscription?.status === 'active' && <div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={reason}
           onChange={e => setReason(e.target.value)} placeholder="دلیل لغو…" /><button className="btn danger" disabled={reason.trim().length < 2} onClick={() => setConfirm(true)}>لغو اشتراک</button></div>}
       </div>
+      <FamilyBlock uid={uid} />
       <div className="sec" style={{ marginTop: 'var(--sp4)' }}>
         <div className="sec-main"><div className="sec-title">📜 تاریخچه پرداخت</div></div>
       </div>

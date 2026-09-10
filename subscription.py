@@ -40,15 +40,25 @@ async def has_access(uid: int) -> bool:
         return await db.sub_is_active(int(uid))
 
 
-async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int) -> bool:
+async def feature_allowed(uid: int, feature: str) -> bool:
+    """🌊 W7 — چک بولین فیچر برای ربات (thin روی core؛ هرگز raise نمی‌کند)."""
+    try:
+        from core.access import check_feature
+        return (await check_feature(int(uid), feature)).allowed
+    except Exception:
+        return False
+
+
+async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                 uid: int, feature: str = "question_bank") -> bool:
     """
     اگر دسترسی داشت True برمی‌گرداند (ادامه‌ی مسیر عادی).
     اگر نداشت، خودش صفحه‌ی قفل را نشان می‌دهد و False برمی‌گرداند —
     فراخوان فقط کافیست چک کند و در صورت False چیز دیگری نفرستد.
     """
-    if await has_access(uid):
+    if await feature_allowed(uid, feature):
         return True
-    await show_paywall(update.message, uid)
+    await show_paywall(update.message, uid, feature=feature)
     return False
 
 
@@ -56,17 +66,30 @@ async def check_and_show_paywall(update: Update, context: ContextTypes.DEFAULT_T
 #  صفحه‌ی قفل / انتخاب پلن
 # ══════════════════════════════════════════════════
 
-async def show_paywall(target, uid: int, edit: bool = False):
+async def show_paywall(target, uid: int, edit: bool = False, feature: str = ""):
     plans = await db.sub_plan_list(only_active=True)
+    # 🌊 W7 — سرخط فیچرمحور (پس‌رو سازگار: بدون فیچر همان متن قبلی)
+    try:
+        from core.features import FEATURE_CATALOG
+        _flabel = (FEATURE_CATALOG.get(feature) or {}).get("label", "")
+    except Exception:
+        _flabel = ""
     discount = None
     if hasattr(target, 'get'):  # نباید پیش بیاد، فقط ایمنی
         pass
 
-    header = (
-        "🔒 <b>این بخش مخصوص دانشجوهای مشترک است</b>\n\n"
-        "برای دسترسی به منابع درسی و بانک سوال، یکی از پلن‌های زیر رو انتخاب کن:\n"
-        "━━━━━━━━━━━━━━━━\n"
-    )
+    if _flabel:
+        header = (
+            f"🔒 <b>«{_flabel}» مخصوص دانشجوهای مشترک است</b>\n\n"
+            f"برای دسترسی به {_flabel}، یکی از پلن‌های زیر رو انتخاب کن:\n"
+            "━━━━━━━━━━━━━━━━\n"
+        )
+    else:
+        header = (
+            "🔒 <b>این بخش مخصوص دانشجوهای مشترک است</b>\n\n"
+            "برای دسترسی به منابع درسی و بانک سوال، یکی از پلن‌های زیر رو انتخاب کن:\n"
+            "━━━━━━━━━━━━━━━━\n"
+        )
     if not plans:
         text = header + "⚠️ فعلاً هیچ پلنی تعریف نشده. با ادمین در تماس باش."
         kb = InlineKeyboardMarkup([])
@@ -79,6 +102,15 @@ async def show_paywall(target, uid: int, edit: bool = False):
                 callback_data=f"sub:plan:{p['_id']}"
             )])
         keyboard.append([InlineKeyboardButton("🎟 کد تخفیف دارم", callback_data='sub:discount')])
+        # 🌊 W6/MISS-03 — دکمه‌ی trial فقط برای واجدین
+        try:
+            _trial = await db.trial_status(uid)
+        except Exception:
+            _trial = {"eligible": False}
+        if _trial.get("eligible"):
+            keyboard.append([InlineKeyboardButton(
+                f"🎁 شروع {_trial.get('days', 7)} روز آزمایشی رایگان",
+                callback_data='sub:trial')])
         # 🌊 GIFT — ورودی هدیه (feature flag از settings، بدون کد سخت)
         if str(await db.get_setting('gift_enabled', '1')) == '1':
             keyboard.append([InlineKeyboardButton(
@@ -149,6 +181,249 @@ async def _show_rules(query, plan_id: str):
     await query.edit_message_text(RULES_TEXT, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+async def _gateway_status() -> dict:
+    """🌊 W2 — وضعیت درگاه برای دکمه‌ی پرداخت آنلاین ربات (فقط boolean؛ بدون secret)."""
+    try:
+        from payments.zarinpal import gateway_public_status
+        return await gateway_public_status()
+    except Exception:
+        return {"online_pay_enabled": False, "mock": False}
+
+
+def _bot_gateway_callback() -> str:
+    """🌊 W2 — کال‌بک درگاه برای پرداخت‌های ربات (مسیر API که به مینی‌اپ ریدایرکت می‌کند)."""
+    base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
+    if base.startswith("http"):
+        return f"{base}/api/subscription/zarinpal/callback"
+    return ""
+
+
+async def _zarinpal_start(query, context, uid: int, kind: str, ref: str):
+    """🌊 W2 — شروع پرداخت آنلاین (plan یا topup)؛ آینه‌ی منطق API."""
+    from payments.zarinpal import zarinpal_request as _zp_req
+    gw = await _gateway_status()
+    if not gw.get("online_pay_enabled"):
+        await query.answer("پرداخت آنلاین فعلاً فعال نیست.", show_alert=True)
+        return
+    if await db.sub_payment_has_pending(uid):
+        await query.answer("یه پرداخت در انتظار داری؛ اول اون مشخص بشه.", show_alert=True)
+        return
+    gift_to = 0
+    gift_message = ""
+    code = None
+    percent = None
+    if kind == "plan":
+        plan = await db.sub_plan_get(ref)
+        if not plan or not plan.get("active"):
+            await query.answer("❌ این پلن دیگه در دسترس نیست.", show_alert=True)
+            return
+        gift_to = int(context.user_data.get("sub_gift_to") or 0)
+        gift_message = str(context.user_data.get("sub_gift_message") or "")[:300]
+        if gift_to:
+            if str(await db.get_setting("gift_enabled", "1")) != "1":
+                await query.answer("خرید هدیه فعلاً غیرفعال است.", show_alert=True)
+                return
+            if gift_to == uid:
+                await query.answer("هدیه به خودت مجاز نیست.", show_alert=True)
+                return
+            rec = await db.get_user(gift_to)
+            if not rec or rec.get("suspended"):
+                context.user_data.pop("sub_gift_to", None)
+                await query.answer("گیرنده‌ی هدیه پیدا نشد.", show_alert=True)
+                return
+        code = (context.user_data.get("sub_discount_code") or "").strip().upper() or None
+        price = max(0, int(plan.get("price") or 0))
+        if code:
+            v = await db.discount_validate(code, plan_id=str(plan["_id"]), user_id=uid)
+            if not v.get("ok"):
+                await query.answer(v.get("reason") or "کد تخفیف معتبر نیست.", show_alert=True)
+                return
+            percent = int(v.get("percent") or 0)
+            price = round(price * (100 - percent) / 100)
+        if price <= 0:
+            await query.answer("این خرید رایگان است؛ از مسیر خرید رایگان اقدام کن.", show_alert=True)
+            return
+        if gift_to and price <= 0:
+            await query.answer("کد ۱۰۰٪ با هدیه ترکیب نمی‌شود.", show_alert=True)
+            return
+        plan_id, plan_name = str(plan["_id"]), plan.get("name", "")
+        desc = f"اشتراک {plan_name} هامشیار"
+        idem = f"zpb:{uid}:{plan_id[:8]}:{price}"
+        back_cb, back_label = "sub:back", "🔙 بازگشت به پلن‌ها"
+    else:
+        tmin, tmax = await _topup_bounds()
+        try:
+            price = int(ref)
+        except (TypeError, ValueError):
+            price = 0
+        if not tmin <= price <= tmax:
+            await query.answer(f"مبلغ شارژ باید بین {tmin:,} و {tmax:,} تومان باشد.", show_alert=True)
+            return
+        plan_id, plan_name = "wallet_topup", "شارژ کیف پول"
+        desc = f"شارژ کیف پول هامشیار — کاربر {uid}"
+        idem = f"zpb:{uid}:topup:{price}"
+        back_cb, back_label = "sub:wallet", "🔙 بازگشت به کیف پول"
+    try:
+        zp = await _zp_req(price, desc, _bot_gateway_callback())
+    except Exception as e:
+        await query.answer(f"درگاه پاسخ نداد؛ دوباره تلاش کن. ({e})", show_alert=True)
+        return
+    authority = zp["authority"]
+    try:
+        pid = await db.sub_payment_create_zarinpal(
+            uid, plan_id, plan_name, price, price, authority,
+            discount_code=code, discount_percent=percent, idem_key=idem)
+        if gift_to:
+            from bson import ObjectId
+            await db.sub_payments.update_one(
+                {"_id": ObjectId(pid)},
+                {"$set": {"gift": {"to": gift_to, "message": gift_message, "activated_at": None}}})
+        try:
+            _rz = await db.get_actor_role_label(uid)
+        except Exception:
+            _rz = "student"
+        try:
+            await send_audit_log(None, "user", (await db.get_user(uid) or {}).get("name", str(uid)), uid,
+                                 "درخواست پرداخت آنلاین (ربات)", module="Subscription", severity="INFO",
+                                 actor_role=_rz, target_id=str(pid), target_type="sub_payment",
+                                 target_label=plan_name[:60], after={"final_price": price}, tags=["مالی", "ربات"])
+        except Exception:
+            pass
+    except Exception as e:
+        if code:
+            try:
+                await db.discount_release(code, user_id=uid)
+            except Exception:
+                pass
+        await query.answer(f"ثبت پرداخت ناموفق بود؛ دوباره تلاش کن. ({e})", show_alert=True)
+        return
+    context.user_data.pop("sub_mode", None)
+    context.user_data["sub_zp_authority"] = authority
+    mock_note = "\n\n<i>حالت نمایشی درگاه فعال است (پرداخت واقعی انجام نمی‌شود).</i>" if zp.get("mock") else ""
+    gift_line = f"🎁 هدیه برای: <b>{(await db.get_user(gift_to) or {}).get('name', '—')}</b>\n" if gift_to else ""
+    text = (
+        f"⚡ <b>پرداخت آنلاین — {plan_name}</b>\n\n"
+        f"{gift_line}"
+        f"💰 مبلغ: <b>{_fmt_price(price)}</b>\n\n"
+        f"۱️⃣ دکمه‌ی «پرداخت در زرین‌پال» رو بزن و پرداخت رو کامل کن.\n"
+        f"۲️⃣ برگرد همینجا و «پرداخت کردم، بررسی کن» رو بزن.\n\n"
+        f"<i>این لینک ۱ ساعت اعتبار دارد.</i>{mock_note}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 پرداخت در زرین‌پال", url=zp["url"])],
+        [InlineKeyboardButton("✅ پرداخت کردم، بررسی کن", callback_data=f"sub:zchk:{authority}")],
+        [InlineKeyboardButton(back_label, callback_data=back_cb)],
+    ])
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+async def _zarinpal_check(query, context, uid: int, authority: str):
+    """🌊 W2 — بررسی نتیجه‌ی پرداخت آنلاین؛ آینه‌ی منطق API (verify)."""
+    from payments.zarinpal import zarinpal_verify as _zp_v
+    authority = (authority or "").strip()
+    doc = await db.sub_payment_find_by_authority(authority)
+    if not doc:
+        await query.answer("پرداخت پیدا نشد.", show_alert=True)
+        return
+    if int(doc.get("user_id") or 0) != uid:
+        await query.answer("این پرداخت متعلق به شما نیست.", show_alert=True)
+        return
+    status = doc.get("status")
+    if status == "approved":
+        await query.answer("این پرداخت قبلاً تأیید و فعال شده است ✅", show_alert=True)
+        await _show_my_status(query, uid)
+        return
+    if status != "zarinpal_pending":
+        await query.answer("این پرداخت منقضی یا بسته شده؛ یک پرداخت جدید بساز.", show_alert=True)
+        return
+    amount = int(doc.get("final_price") or doc.get("price") or 0)
+    try:
+        zp = await _zp_v(authority, amount)
+    except Exception as e:
+        await query.answer(f"خطا در استعلام درگاه؛ دوباره تلاش کن. ({e})", show_alert=True)
+        return
+    if not zp.get("ok"):
+        await query.answer("پرداخت هنوز تأیید نشده (لغو شده یا ناقص است).", show_alert=True)
+        return
+    code = (doc.get("discount_code") or "").strip().upper() or None
+    # 🌊 W3 — آینه‌ی API: پول گرفته شده پس approve + پرچم overrun.
+    discount_overrun = False
+    if code:
+        consumed = await db.discount_consume(code, user_id=uid)
+        if not consumed:
+            discount_overrun = True
+    ref_id = str(zp.get("ref_id") or "")
+    res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
+    if not res.get("ok"):
+        if code:
+            try:
+                await db.discount_release(code, user_id=uid)
+            except Exception:
+                pass
+        if res.get("already"):
+            await _show_my_status(query, uid)
+            return
+        await query.answer(res.get("reason") or "تأیید هم‌زمان — دوباره تلاش کن.", show_alert=True)
+        return
+    if discount_overrun:
+        try:
+            await db.sub_payment_mark_discount_overrun(authority)
+            try:
+                _rz2 = await db.get_actor_role_label(uid)
+            except Exception:
+                _rz2 = "student"
+            await send_audit_log(None, "user", (await db.get_user(uid) or {}).get("name", str(uid)), uid,
+                                 "تأیید پرداخت آنلاین با تخفیف خارج از ظرفیت (ربات)", module="Subscription",
+                                 severity="HIGH", actor_role=_rz2, target_id=str(doc["_id"]),
+                                 target_type="sub_payment", target_label=(doc.get("plan_name") or "")[:60],
+                                 after={"discount_overrun": True}, tags=["مالی", "ربات", "مغایرت"])
+        except Exception:
+            pass
+    context.user_data.pop("sub_zp_authority", None)
+    context.user_data.pop("sub_gift_to", None)
+    context.user_data.pop("sub_gift_message", None)
+    context.user_data.pop("sub_discount_code", None)
+    context.user_data.pop("sub_final_price", None)
+    act = res.get("activation") or {}
+    is_topup = str(doc.get("plan_id") or "") == "wallet_topup"
+    if is_topup:
+        balance = int((await db.wallet_get_for_user_id(uid) or {}).get("balance", 0))
+        text = (
+            f"💰 <b>کیف پولت شارژ شد!</b>\n\n"
+            f"➕ مبلغ: {_fmt_price(amount)}\n"
+            f"👛 موجودی فعلی: <b>{_fmt_price(balance)}</b>\n"
+            f"🧾 شماره پیگیری: <code>{ref_id}</code>"
+        )
+        back = "sub:wallet"
+    else:
+        gift = doc.get("gift") or {}
+        if gift.get("to"):
+            rec = await db.get_user(int(gift["to"])) or {}
+            text = (
+                f"🎁 <b>هدیه‌ات فعال شد!</b>\n\n"
+                f"اشتراک «{doc.get('plan_name', '')}» برای "
+                f"<b>{rec.get('name', 'گیرنده')}</b> فعال شد ✅\n"
+                f"🧾 شماره پیگیری: <code>{ref_id}</code>"
+            )
+        else:
+            text = (
+                f"🎉 <b>اشتراکت فعال شد!</b>\n\n"
+                f"📦 {doc.get('plan_name', '')}\n"
+                f"📅 تا: {act.get('end_date', '')}\n"
+                f"🧾 شماره پیگیری: <code>{ref_id}</code>"
+            )
+        back = "sub:my_status"
+    try:
+        await db.inbox_add(uid, "sub_payment", "✅ پرداخت آنلاین تأیید شد",
+                           f"{doc.get('plan_name', '')} — {_fmt_price(amount)}",
+                           link="/me/subscription")
+    except Exception:
+        pass
+    await query.edit_message_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data=back)]]))
+
+
 async def _show_payment_details(query, context, plan_id: str):
     plan = await db.sub_plan_get(plan_id)
     if not plan or not plan.get('active'):
@@ -212,6 +487,11 @@ async def _show_payment_details(query, context, plan_id: str):
         f"<i>یادت باشه: قوانین ذکرشده در مرحله‌ی قبل رو قبول کردی 📜</i>"
     )
     keyboard = []
+    # 🌊 W2 — پرداخت آنلاین (هدیه هم پشتیبانی می‌شود؛ اعتبارسنجی سمت سرور)
+    if (await _gateway_status()).get("online_pay_enabled"):
+        keyboard.append([InlineKeyboardButton(
+            "⚡ پرداخت آنلاین (زرین‌پال)",
+            callback_data=f"sub:zpay:{plan_id}")])
     # 💰 W6 — کیف پول روش پرداخت جدید است (هدیه فقط با رسید بانکی)
     if not gift_to:
         _w = await db.wallet_get_for_user_id(query.from_user.id)
@@ -259,7 +539,8 @@ async def _activate_free_via_discount(query, context, plan: dict, discount_code:
         _percent = consumed.get('percent')
 
     await db.sub_activate(uid, plan['days'], plan['name'], source='payment',
-                           granted_by=0, extend=True)
+                           granted_by=0, extend=True,
+                           plan_id=str(plan.get('_id', '') or ''))  # 🌊 W6/MISS-04
     if discount_code:
         # ثبت به‌عنوان یک تراکنش approved با مبلغ صفر — برای آمار و تاریخچه
         pid = await db.sub_payment_create(
@@ -571,8 +852,14 @@ async def _prompt_topup_receipt(target, context, uid: int, amount: int,
         f"رسید/اسکرین‌شات</b> رو همینجا بفرست.\n"
         f"بعد از تأیید ادمین، مبلغ فوراً به کیف پولت اضافه می‌شه ✅"
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "🔙 انصراف", callback_data="sub:wallet")]])
+    _kb_rows = []
+    # 🌊 W2 — شارژ آنی با درگاه
+    if (await _gateway_status()).get("online_pay_enabled"):
+        _kb_rows.append([InlineKeyboardButton(
+            "⚡ پرداخت آنلاین (زرین‌پال)",
+            callback_data=f"sub:ztop:{amount}")])
+    _kb_rows.append([InlineKeyboardButton("🔙 انصراف", callback_data="sub:wallet")])
+    kb = InlineKeyboardMarkup(_kb_rows)
     if is_query:
         await target.edit_message_text(text, parse_mode='HTML',
                                        reply_markup=kb)
@@ -688,6 +975,14 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif action == 'wbuy':
         await _wallet_buy(query, context, parts[2] if len(parts) > 2 else '', uid)
 
+    # 🌊 W2 — پرداخت آنلاین زرین‌پال
+    elif action == 'zpay':
+        await _zarinpal_start(query, context, uid, 'plan', parts[2] if len(parts) > 2 else '')
+    elif action == 'zchk':
+        await _zarinpal_check(query, context, uid, parts[2] if len(parts) > 2 else '')
+    elif action == 'ztop':
+        await _zarinpal_start(query, context, uid, 'topup', parts[2] if len(parts) > 2 else '')
+
     elif action == 'wallet':
         _skip = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await _show_wallet(query, uid, _skip)
@@ -760,6 +1055,27 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop('mode', None)
         await show_paywall(query.message, uid, edit=True)
 
+    elif action == 'trial':
+        # 🌊 W6/MISS-03 — دریافت trial از ربات (همان primitive مینی‌اپ)
+        try:
+            res = await db.trial_claim(uid)
+        except ValueError as e:
+            _msg = {
+                'trial_disabled': '❌ دوره‌ی آزمایشی فعلاً فعال نیست.',
+                'already_subscribed': 'ℹ️ اشتراک فعال داری؛ نیازی به trial نیست.',
+                'already_used': '❌ قبلاً از دوره‌ی آزمایشی استفاده کرده‌ای.',
+                'no_plan': '❌ فعلاً پلنی برای trial تعریف نشده.',
+            }.get(str(e), '❌ خطای موقت؛ دوباره تلاش کن.')
+            await query.answer(_msg, show_alert=True)
+            return
+        except Exception:
+            await query.answer('❌ خطای موقت؛ دوباره تلاش کن.', show_alert=True)
+            return
+        await query.answer(f"🎉 {res['days']} روز اشتراک آزمایشی فعال شد!",
+                           show_alert=True)
+        await _show_my_status(query, uid)
+        return
+
     elif action == 'back':
         context.user_data.pop('sub_mode', None)
         context.user_data.pop('sub_gift_to', None)
@@ -771,6 +1087,22 @@ async def subscription_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif action == 'my_history':
         await _show_my_history(query, uid)
+
+    # 🌊 W8/MISS-03 — خانواده
+    elif action == 'family':
+        await _show_family(query, context, uid)
+    elif action == 'famcode':
+        await _family_new_code(query, context, uid)
+    elif action == 'famredeem':
+        context.user_data['sub_mode'] = 'awaiting_family_code'
+        await query.edit_message_text(
+            "🎟 <b>ثبت کد دعوت خانواده</b>\n\nکد ۸ حرفی‌ای که مالک خانواده فرستاده رو تایپ کن و بفرست:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "🔙 انصراف", callback_data="sub:my_status")]]))
+    elif action == 'famrm':
+        await _family_remove_member(query, context, uid,
+                                    parts[2] if len(parts) > 2 else '')
 
     elif action == 'appr' and uid == ADMIN_ID:
         await _admin_approve(query, context, parts[2])
@@ -942,6 +1274,8 @@ _SOURCE_LABELS = {
     'payment':      '💳 خریداری‌شده',
     'admin_manual': '🛠 فعال‌سازی دستی ادمین',
     'free_grant':   '🎁 اشتراک رایگان هدیه‌ای',
+    'trial':        '🆓 دوره‌ی آزمایشی',
+    'family':       '👨‍👩‍👧 خانواده',
 }
 
 
@@ -997,6 +1331,23 @@ async def _build_my_status(uid: int):
         )
         keyboard.append([InlineKeyboardButton("🔄 تمدید کن", callback_data='sub:back')])
 
+    # 🌊 W8/MISS-03 — ورودی خانواده: مالک/عضو → مدیریت؛ بی‌اشتراک → ثبت کد
+    try:
+        _s = await db.sub_get(uid)
+        if _s and _s.get('source') == 'family' and _s.get('family_owner_id'):
+            keyboard.append([InlineKeyboardButton(
+                "👨‍👩‍👧 خانواده‌ی من", callback_data='sub:family')])
+        elif _s and _s.get('status') == 'active' and await db.sub_is_active(uid):
+            _seats = await db.family_plan_seats(uid)
+            if _seats['total'] > 1:
+                keyboard.append([InlineKeyboardButton(
+                    f"👨‍👩‍👧 خانواده ({_seats['used']}/{_seats['total']-1} عضو)",
+                    callback_data='sub:family')])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                "🎟 ثبت کد دعوت خانواده", callback_data='sub:famredeem')])
+    except Exception:
+        pass
     # 💰 W6 — کیف پول در صفحه‌ی وضعیت اشتراک (موجودی همیشه از بک‌اند)
     w = await db.wallet_get_for_user_id(uid)
     wb = int((w or {}).get('balance', 0))
@@ -1024,7 +1375,10 @@ async def show_my_status_msg(update):
 async def _show_my_history(query, uid: int):
     from utils import fmt_jalali_dt
     history = await db.sub_payment_history(uid)
-    status_icons = {'pending': '⏳', 'approved': '✅', 'rejected': '❌'}
+    status_icons = {'pending': '⏳', 'approved': '✅', 'rejected': '❌',
+                    'zarinpal_pending': '💳', 'cancelled': '🚫', 'refunded': '↩️'}
+    status_labels = {'zarinpal_pending': 'در انتظار پرداخت', 'cancelled': 'لغوشده',
+                     'refunded': 'بازگشت وجه'}
     if not history:
         text = "🧾 <b>تاریخچه‌ی پرداخت‌ها</b>\n\nهنوز رسیدی ثبت نکردی."
     else:
@@ -1032,7 +1386,9 @@ async def _show_my_history(query, uid: int):
         for p in history[:15]:
             icon = status_icons.get(p['status'], '•')
             date = fmt_jalali_dt(p.get('submitted_at', ''))
-            lines.append(f"{icon} {p['plan_name']} — {_fmt_price(p['final_price'])} — {date}")
+            _sl = status_labels.get(p['status'])
+            lines.append(f"{icon} {p['plan_name']} — {_fmt_price(p['final_price'])} — {date}"
+                         + (f" ({_sl})" if _sl else ""))
             if p['status'] == 'rejected' and p.get('review_note'):
                 lines.append(f"   ↳ دلیل رد: {p['review_note']}")
         text = "\n".join(lines)
@@ -1041,6 +1397,106 @@ async def _show_my_history(query, uid: int):
         await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception:
         await query.message.reply_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+# ══════════════════════════════════════════════════
+#  🌊 W8/MISS-03 — خانواده/گروهی (بات)
+# ══════════════════════════════════════════════════
+
+async def _show_family(query, context, uid: int):
+    from utils import fmt_jalali_dt
+    s = await db.sub_get(uid) or {}
+    kb = []
+    # نمای عضو
+    if s.get('source') == 'family' and s.get('family_owner_id'):
+        owner = await db.get_user(int(s['family_owner_id'])) or {}
+        text = (
+            "👨‍👩‍👧 <b>خانواده‌ی من</b>\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"👑 مالک: <b>{owner.get('name', '—')}</b>\n"
+            f"📦 پلن: {s.get('plan_name', '—')}\n"
+            f"📅 پایان: <b>{fmt_jalali_dt(s.get('end_date', ''), with_time=False)}</b>\n\n"
+            "اشتراکت به مالک وصله؛ با پایان/لغو اشتراک مالک، دسترسی تو هم قطع می‌شه."
+        )
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')])
+    else:
+        seats = await db.family_plan_seats(uid)
+        if seats['total'] <= 1:
+            text = ("👨‍👩‍👧 <b>خانواده</b>\n\nپلن فعلیت خانوادگی نیست؛ "
+                    "با ارتقا به پلن خانواده می‌تونی اعضا اضافه کنی.")
+            kb.append([InlineKeyboardButton("💳 مشاهده‌ی پلن‌ها", callback_data='sub:back')])
+        else:
+            members = await db.family_members(uid)
+            lines = [f"👨‍👩‍👧 <b>خانواده‌ی من</b> — {seats['used']} از {seats['total']-1} صندلی پر",
+                     "━━━━━━━━━━━━━━━━"]
+            for m in members:
+                if m.get('status') != 'active':
+                    continue
+                u = await db.get_user(int(m['_id'])) or {}
+                lines.append(f"👤 {u.get('name', m['_id'])} — تا "
+                             f"{fmt_jalali_dt(m.get('end_date', ''), with_time=False)}")
+                kb.append([InlineKeyboardButton(
+                    f"➖ حذف {u.get('name', m['_id'])}",
+                    callback_data=f"sub:famrm:{m['_id']}")])
+            if seats['left'] > 0:
+                kb.append([InlineKeyboardButton("➕ ساخت کد دعوت جدید",
+                                                callback_data='sub:famcode')])
+            else:
+                lines.append("\n⚠️ ظرفیت پر شده؛ برای عضو جدید یکی رو حذف کن.")
+            text = "\n".join(lines)
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='sub:my_status')])
+    try:
+        await query.edit_message_text(text, parse_mode='HTML',
+                                      reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        await query.message.reply_text(text, parse_mode='HTML',
+                                       reply_markup=InlineKeyboardMarkup(kb))
+
+
+async def _family_new_code(query, context, uid: int):
+    res = await db.family_code_create(uid)
+    if not res.get('ok'):
+        await query.answer(f"❌ {res.get('error')}", show_alert=True)
+        return
+    code = res['code']
+    kb = [[InlineKeyboardButton("🔙 خانواده‌ی من", callback_data='sub:family')]]
+    try:
+        await query.edit_message_text(
+            "🎟 <b>کد دعوت ساخته شد</b>\n\n"
+            f"<code>{code[:4]}-{code[4:]}</code>\n\n"
+            "این کد رو برای عضو جدید بفرست؛ یک‌بارمصرفه و با ثبت، "
+            f"اشتراکش تا پایان اشتراک تو فعال می‌شه. (صندلی خالی: {res.get('seats_left', 0)})",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    except Exception:
+        pass
+
+
+async def _family_remove_member(query, context, uid: int, member: str):
+    try:
+        mid = int(member)
+    except (TypeError, ValueError):
+        await query.answer("❌ شناسه نامعتبر", show_alert=True)
+        return
+    res = await db.family_remove(uid, mid, uid)
+    await query.answer(("✅ عضو حذف شد" if res.get('ok')
+                        else f"❌ {res.get('error')}"), show_alert=True)
+    await _show_family(query, context, uid)
+
+
+async def family_code_text_handler(update, context):
+    """🎟 ثبت کد دعوت خانواده (sub_mode=awaiting_family_code)."""
+    context.user_data.pop('sub_mode', None)
+    code = (update.message.text or '').strip()
+    res = await db.family_redeem(code, update.effective_user.id)
+    if res.get('ok'):
+        from utils import fmt_jalali_dt
+        await update.message.reply_text(
+            "🎉 <b>به خانواده پیوستی!</b>\n\n"
+            f"📦 پلن: {res.get('plan_name', '')}\n"
+            f"📅 پایان: <b>{fmt_jalali_dt(res.get('end_date', ''), with_time=False)}</b>",
+            parse_mode='HTML')
+    else:
+        await update.message.reply_text(f"❌ {res.get('error')}")
 
 
 # ══════════════════════════════════════════════════

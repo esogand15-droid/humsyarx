@@ -20,6 +20,9 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
+import FamilySection from './FamilySection';
 
 import {
   Spinner,
@@ -32,7 +35,13 @@ import {
 import {
   haptic,
   hapticNotif,
+  openExternalLink,
 } from '../../lib/telegram';
+
+import {
+  useGatewayStatus,
+  useZarinpalPay,
+} from '../../hooks/useZarinpalPay';
 
 import {
   useUIStore,
@@ -71,6 +80,24 @@ const PAYMENT_STATUS = {
     'ردشده',
     'b-red',
     '❌',
+  ],
+
+  zarinpal_pending: [
+    'در انتظار پرداخت',
+    'b-yel',
+    '💳',
+  ],
+
+  cancelled: [
+    'لغوشده',
+    'b-gray',
+    '🚫',
+  ],
+
+  refunded: [
+    'بازگشت وجه',
+    'b-gray',
+    '↩️',
   ],
 };
 
@@ -181,6 +208,26 @@ export default function Subscription() {
     setGiftMessage,
   ] = useState('');
 
+  // 🌊 W6/MISS-03
+  const [
+    trialBusy,
+    setTrialBusy,
+  ] = useState(false);
+
+  // 🌊 W6/MISS-03 — دریافت trial (بک‌اند ضد دابل‌کلیک است؛ این فقط UX است)
+  const claimTrial = async () => {
+    if (trialBusy) return;
+    setTrialBusy(true);
+    try {
+      await api.post('/api/subscription/trial');
+      toast('🎉 اشتراک آزمایشی فعال شد');
+      refetch();
+    } catch (e) {
+      toast(e?.response?.data?.detail || 'خطا در فعال‌سازی trial', 'err');
+    }
+    setTrialBusy(false);
+  };
+
   // توکن یکتا برای هر تلاش خرید — double-submit یک رسید می‌سازد نه دو تا
   const idemRef = useRef(
     `mp-${Date.now()}-${Math.random()
@@ -194,6 +241,37 @@ export default function Subscription() {
 
   const queryClient =
     useQueryClient();
+
+
+  // 🌊 W2 — پرداخت آنلاین زرین‌پال
+  const gatewayQuery =
+    useGatewayStatus();
+
+  const gatewayOn =
+    gatewayQuery.data
+      ?.online_pay_enabled === true;
+
+  const zp = useZarinpalPay({
+    kind: 'plan',
+
+    onDone: () => {
+      setSelectedId(null);
+      setDiscountCode('');
+      setDiscount(null);
+      setReceipt(null);
+      setAccepted(false);
+      setGiftMode(false);
+      setGiftTo(null);
+      setGiftQuery('');
+      setGiftMessage('');
+
+      idemRef.current =
+        `mp-${Date.now()}-` +
+        `${Math.random()
+          .toString(36)
+          .slice(2, 10)}`;
+    },
+  });
 
   // 🎟 موج D1 — Deep Link از پیام کمپین:
   // ?discount=CODE → کد پیش‌پُر و پس از انتخاب پلن Auto-Validate
@@ -267,6 +345,35 @@ export default function Subscription() {
       data
         ?.has_pending_payment
     );
+
+
+  // 🌊 W2 — ادامه‌ی پرداخت نیمه‌تمام از دستگاه دیگر:
+  // اگر pending محلی نیست ولی در تاریخچه‌ی سرور پرداخت
+  // درگاهیِ باز هست، همان را برای «بررسی» برمی‌داریم.
+  // ⚠️ ترتیب مهم: این افکت باید بعد از تعریف payments باشد (deps هنگام رندر خوانده می‌شود)
+  useEffect(() => {
+    if (zp.pending) return;
+
+    const open =
+      (payments || []).find(
+        (item) =>
+          item.status ===
+            'zarinpal_pending' &&
+          item.authority
+      );
+
+    if (open) {
+      zp.setPending({
+        authority: open.authority,
+        url: null,
+        payment_id: open.id,
+        final_price: open.final_price,
+        kind: 'plan',
+        at: Date.now(),
+        resumed: true,
+      });
+    }
+  }, [payments, zp]);
 
 
   // 🌊 GIFT — تاریخچه‌ی هدیه‌ها (داده‌شده / دریافت‌شده)
@@ -528,6 +635,15 @@ export default function Subscription() {
     );
 
 
+  const canOnline =
+    Boolean(selectedPlan) &&
+    accepted &&
+    !pending &&
+    !free &&
+    gatewayOn &&
+    !zp.pending;
+
+
   if (isLoading) {
     return (
       <>
@@ -552,23 +668,10 @@ export default function Subscription() {
 
       <main className="page fade-up">
         {isError ? (
-          <div className="empty card">
-            دریافت اطلاعات اشتراک انجام
-            نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت اطلاعات اشتراک انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : (
           <div
             style={{
@@ -707,7 +810,23 @@ export default function Subscription() {
                   </span>
                 )}
               </div>
+
+              {/* 🌊 W6/MISS-03 — بنر trial فقط برای واجدین بدون اشتراک */}
+              {!data?.active && data?.trial?.eligible && (
+                <button
+                  type="button"
+                  className="btn btn-p btn-full"
+                  disabled={trialBusy}
+                  onClick={claimTrial}
+                  style={{ marginTop: 12 }}
+                >
+                  {trialBusy ? '⏳ …' : `🎁 شروع ${number(data.trial.days)} روز آزمایشی رایگان`}
+                </button>
+              )}
             </section>
+
+            {/* 🌊 W8/MISS-03 — خانواده */}
+            <FamilySection hasActive={!!data?.active} />
 
 
             {pending && (
@@ -950,9 +1069,9 @@ export default function Subscription() {
               >
                 {plans.length ===
                 0 ? (
-                  <div className="empty card">
+                  <EmptyState icon="💎">
                     پلن فعالی وجود ندارد.
-                  </div>
+                  </EmptyState>
                 ) : (
                   plans.map(
                     (plan) => {
@@ -1068,6 +1187,18 @@ export default function Subscription() {
                               )}{' '}
 
                               روز دسترسی
+                              {/* 🌊 W8/MISS-03 */}
+                              {Number(plan.max_members) > 1 && (
+                                <span style={{ display: 'block', marginTop: 2 }}>
+                                  👨‍👩‍👧 خانوادگی ({number(plan.max_members)} نفره)
+                                </span>
+                              )}
+                              {/* 🌊 W6/MISS-04 */}
+                              {Number(plan.ai_daily_limit) > 0 && (
+                                <span style={{ display: 'block', marginTop: 2 }}>
+                                  🤖 {number(plan.ai_daily_limit)} سوال هوشیار/روز
+                                </span>
+                              )}
                             </span>
                           </span>
 
@@ -1530,6 +1661,129 @@ export default function Subscription() {
                     '📤 ارسال رسید'
                   )}
                 </button>
+
+                {/* 🌊 W2 — پرداخت آنلاین (زرین‌پال) */}
+                {gatewayOn &&
+                  !free &&
+                  !zp.pending && (
+                    <button
+                      className={
+                        'btn btn-full'
+                      }
+                      style={{ marginTop: 8 }}
+                      disabled={
+                        !canOnline ||
+                        zp.busy
+                      }
+                      onClick={async () => {
+                        const go =
+                          await confirmAction(
+                            'به درگاه پرداخت منتقل می‌شوی؟'
+                          );
+
+                        if (go) {
+                          zp.request({
+                            plan_id:
+                              selectedId,
+
+                            discount_code:
+                              discountCode
+                                .trim()
+                                .toUpperCase(),
+
+                            gift_to:
+                              giftMode && giftTo
+                                ? giftTo.user_id
+                                : 0,
+
+                            gift_message:
+                              giftMode
+                                ? giftMessage
+                                : '',
+                          }).catch(() => {});
+                        }
+                      }}
+                    >
+                      {zp.busy ? (
+                        <Spinner size={16} />
+                      ) : (
+                        '⚡ پرداخت آنلاین (زرین‌پال)'
+                      )}
+                    </button>
+                  )}
+
+                {zp.pending && (
+                  <div
+                    className="card"
+                    style={{ marginTop: 10 }}
+                  >
+                    <b>
+                      💳 پرداخت در انتظار تأیید
+                    </b>
+
+                    <div
+                      className="muted"
+                      style={{ marginTop: 6 }}
+                    >
+                      مبلغ:{' '}
+                      {money(
+                        zp.pending.final_price
+                      )}{' '}
+                      • این پرداخت ۱ ساعت اعتبار دارد.
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: 8,
+                        marginTop: 10,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="btn btn-p"
+                        disabled={zp.busy}
+                        onClick={() =>
+                          zp
+                            .verify(
+                              zp.pending.authority
+                            )
+                            .catch(() => {})
+                        }
+                      >
+                        {zp.busy ? (
+                          <Spinner size={16} />
+                        ) : (
+                          '✅ پرداخت کردم، بررسی کن'
+                        )}
+                      </button>
+
+                      {zp.pending.url && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() =>
+                            openExternalLink(
+                              zp.pending.url
+                            )
+                          }
+                        >
+                          🔗 لینک پرداخت
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={zp.busy}
+                        onClick={zp.cancelLocal}
+                      >
+                        ✖️ انصراف
+                      </button>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
@@ -1729,9 +1983,9 @@ export default function Subscription() {
 
               {payments.length ===
                 0 ? (
-                <div className="empty card">
+                <EmptyState icon="🧾">
                   هنوز پرداختی ثبت نشده است.
-                </div>
+                </EmptyState>
               ) : (
                 <div
                   style={{
@@ -1901,7 +2155,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
   const qc = useQueryClient();
   const walletQuery = useQuery({
     queryKey: ['wallet'],
-    queryFn: () => api.get('/api/subscription/wallet'),
+    queryFn: () => api.get('/api/subscription/wallet').then((r) => r.data),
   });
   const [confirmBuy, setConfirmBuy] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -1938,6 +2192,17 @@ export function WalletSection({ plans = [], selectedId, onDone,
     ? (topupMutation.error?.response?.data?.detail ||
         topupMutation.error?.message || 'ثبت رسید شارژ ناموفق بود.')
     : '';
+  // 🌊 W2 — شارژ آنی کیف پول با درگاه
+  const gatewayQueryW = useGatewayStatus();
+  const gatewayOnW = gatewayQueryW.data?.online_pay_enabled === true;
+  const zpTopup = useZarinpalPay({
+    kind: 'topup',
+    onDone: () => {
+      setShowTopup(false);
+      setTopupAmount('');
+      setTopupFile(null);
+    },
+  });
 
   const w = walletQuery.data;
   const balance = number(w?.balance ?? 0);
@@ -1949,7 +2214,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
     setLoadingMore(true);
     try {
       const r = await api.get(`/api/subscription/wallet/transactions?skip=${txs.length}&limit=10`);
-      const items = Array.isArray(r?.items) ? r.items : [];
+      const items = Array.isArray(r?.data?.items) ? r.data.items : [];
       setExtraTxs((prev) => [...prev, ...items]);
       setHasMore(items.length >= 10);
     } catch { /* خطا در UI نشان داده می‌شود؛ موجودی دست‌نخورده */ }
@@ -2070,6 +2335,60 @@ export function WalletSection({ plans = [], selectedId, onDone,
                 >
                   {topupMutation.isPending ? '…' : '📨 ثبت رسید شارژ'}
                 </button>
+                {/* 🌊 W2 — شارژ آنی با درگاه */}
+                {gatewayOnW && !zpTopup.pending && (
+                  <button
+                    type="button"
+                    className="btn btn-full"
+                    style={{ marginTop: 8 }}
+                    disabled={zpTopup.busy || !(Number(topupAmount) >= 10000)}
+                    onClick={async () => {
+                      const go = await confirmAction(
+                        `مبلغ ${number(Number(topupAmount))} تومان از طریق درگاه پرداخت شود؟`
+                      );
+                      if (go) {
+                        zpTopup.request({ amount: Number(topupAmount) }).catch(() => {});
+                      }
+                    }}
+                  >
+                    {zpTopup.busy ? '…' : '⚡ شارژ آنی با درگاه'}
+                  </button>
+                )}
+                {zpTopup.pending && (
+                  <div className="card" style={{ marginTop: 10 }}>
+                    <b>💳 شارژ در انتظار تأیید</b>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      مبلغ: {number(zpTopup.pending.final_price)} تومان • ۱ ساعت اعتبار دارد.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn btn-p"
+                        disabled={zpTopup.busy}
+                        onClick={() => zpTopup.verify(zpTopup.pending.authority).catch(() => {})}
+                      >
+                        {zpTopup.busy ? '…' : '✅ پرداخت کردم، بررسی کن'}
+                      </button>
+                      {zpTopup.pending.url && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => openExternalLink(zpTopup.pending.url)}
+                        >
+                          🔗 لینک پرداخت
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-xs"
+                        disabled={zpTopup.busy}
+                        onClick={zpTopup.cancelLocal}
+                      >
+                        ✖️ انصراف
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {topupErr && <div className="err" style={{ marginTop: 8 }}>{topupErr}</div>}
               </div>
             )}
@@ -2102,7 +2421,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
             {showHistory && (
               <div style={{ marginTop: 10 }}>
                 {txs.length === 0 ? (
-                  <div className="empty card">هنوز تراکنشی نداری.</div>
+                  <EmptyState icon="👛">هنوز تراکنشی نداری.</EmptyState>
                 ) : (
                   <>
                     {txs.map((t) => (

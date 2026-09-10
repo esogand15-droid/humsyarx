@@ -96,6 +96,39 @@ def normalize_plan(
                 or 0
             ),
         ),
+
+        # 🌊 W6/MISS-04 — ۰ = ارث از سقف سراسری
+        "ai_daily_limit": max(
+            0,
+            int(
+                item.get(
+                    "ai_daily_limit",
+                    0,
+                )
+                or 0
+            ),
+        ),
+
+        # 🌊 W7
+        "entitlements": dict(
+            item.get(
+                "entitlements",
+                {},
+            )
+            or {}
+        ),
+
+        # 🌊 W8/MISS-03 — ظرفیت خانواده (۱ = شخصی)
+        "max_members": max(
+            1,
+            int(
+                item.get(
+                    "max_members",
+                    1,
+                )
+                or 1
+            ),
+        ),
     }
 
 
@@ -116,6 +149,15 @@ def normalize_payment(
 
         "rejected":
             "ردشده",
+
+        "zarinpal_pending":
+            "در انتظار پرداخت",
+
+        "cancelled":
+            "لغوشده",
+
+        "refunded":
+            "بازگشت وجه",
     }
 
     price = max(
@@ -193,6 +235,21 @@ def normalize_payment(
                 "review_note",
                 "",
             ),
+
+        "method":
+            item.get(
+                "method",
+                "",
+            ),
+
+        "authority": (
+            item.get(
+                "zarinpal_authority",
+                "",
+            )
+            if status == "zarinpal_pending"
+            else ""
+        ),
     }
 
 
@@ -313,6 +370,12 @@ async def get_status(
             normalize_plan(item)
             for item in plans
         ],
+
+        # 🌊 W6/MISS-03 — فرانت فقط می‌خواند؛ تصمیم با claim است
+        "trial": await db.trial_status(user_id),
+
+        # 🌊 W7 — نقشه‌ی سبک فیچرها برای هماهنگی UI (مرجع نهایی: API)
+        "features": await _features_map(),
 
         "payments": [
             normalize_payment(item)
@@ -444,6 +507,182 @@ async def validate_discount(
         "final_price":
             final_price,
     }
+
+
+async def _features_map() -> dict:
+    """🌊 W7 — {feature: {label, enabled, access}} برای فرانت (best-effort)."""
+    try:
+        from core.features import FEATURE_CATALOG
+        docs = await db.feature_policies.find(
+            {"_id": {"$in": list(FEATURE_CATALOG)}}).to_list(50)
+        by_id = {d.get("_id"): d for d in docs}
+        out = {}
+        for key, spec in FEATURE_CATALOG.items():
+            d = by_id.get(key) or {}
+            out[key] = {"label": spec.get("label", key),
+                        "enabled": bool(d.get("enabled", True)),
+                        "access": d.get("access", "free")}
+        return out
+    except Exception:
+        return {}
+
+
+class FeatureEventBody(BaseModel):
+    feature: str = Field(max_length=40)
+    event: str = Field(max_length=40)  # paywall_viewed|subscription_cta_clicked|feature_opened
+    extra: dict = Field(default_factory=dict)
+
+
+@router.post("/feature-events")
+async def feature_event_ep(
+    body: FeatureEventBody,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W7 — ایونت فرانت (paywall/CTA)؛ کرانه‌دار و best-effort."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "feature_event", 30, 60)
+    from core.features import FEATURE_CATALOG
+    if body.feature not in FEATURE_CATALOG:
+        raise HTTPException(status_code=404, detail="فیچر ناشناخته")
+    if body.event not in ("paywall_viewed", "subscription_cta_clicked",
+                          "feature_opened"):
+        raise HTTPException(status_code=422, detail="ایونت نامعتبر")
+    extra = {str(k)[:40]: str(v)[:200]
+             for k, v in (body.extra or {}).items()} if isinstance(
+                 body.extra, dict) else {}
+    await db.log_feature_event(body.feature, body.event, user["id"], extra)
+    return {"ok": True}
+
+
+_TRIAL_FA = {
+    "trial_disabled": "دوره‌ی آزمایشی فعلاً فعال نیست.",
+    "already_subscribed": "اشتراک فعال داری؛ نیازی به trial نیست.",
+    "already_used": "قبلاً از دوره‌ی آزمایشی استفاده کرده‌ای.",
+    "no_plan": "فعلاً پلنی برای trial تعریف نشده است.",
+    "unknown_user": "کاربر شناخته نشد.",
+    "error": "خطای موقت؛ دوباره تلاش کن.",
+}
+
+
+@router.get("/trial/status")
+async def trial_status_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W6/MISS-03 — وضعیت trial کاربر جاری."""
+    return await db.trial_status(user["id"])
+
+
+@router.post("/trial")
+async def trial_claim_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W6/MISS-03 — دریافت trial (یک‌بار، ضد دابل‌کلیک)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "trial_claim", 3, 3600)
+    try:
+        res = await db.trial_claim(user["id"])
+    except ValueError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=_TRIAL_FA.get(str(e), _TRIAL_FA["error"]),
+        )
+    return {"ok": True, **res}
+
+
+class _FamilyRedeemBody(BaseModel):
+    code: str = Field(min_length=8, max_length=12)
+
+
+@router.get("/family")
+async def family_overview_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — نمای خانواده: مالک (اعضا+ظرفیت) یا عضو (مالک+پایان)."""
+    uid = int(user["id"])
+    sub = await db.sub_get(uid) or {}
+    if (sub.get("source") == "family") and sub.get("family_owner_id"):
+        owner_id = int(sub["family_owner_id"])
+        owner = await db.get_user(owner_id) or {}
+        return {
+            "role": "member",
+            "owner_id": owner_id,
+            "owner_name": owner.get("name", ""),
+            "end_date": sub.get("end_date"),
+            "plan_name": sub.get("plan_name", ""),
+        }
+    seats = await db.family_plan_seats(uid)
+    members = []
+    if seats["total"] > 1:
+        for m in await db.family_members(uid):
+            u = await db.get_user(int(m["_id"])) or {}
+            members.append({
+                "user_id": int(m["_id"]),
+                "name": u.get("name", ""),
+                "status": m.get("status", ""),
+                "end_date": m.get("end_date"),
+            })
+    return {
+        "role": "owner",
+        "seats_total": seats["total"],
+        "seats_used": seats["used"],
+        "seats_left": seats["left"],
+        "plan_id": seats["plan_id"],
+        "members": members,
+    }
+
+
+@router.post("/family/code")
+async def family_code_ep(
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — ساخت کد دعوت یک‌بارمصرف توسط مالک."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "family_code", 10, 3600)
+    res = await db.family_code_create(int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
+
+
+@router.post("/family/redeem")
+async def family_redeem_ep(
+    body: _FamilyRedeemBody,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — ثبت کد دعوت و لینک‌شدن به خانواده."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "family_redeem", 10, 3600)
+    res = await db.family_redeem(body.code, int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
+
+
+@router.delete("/family/members/{member_id}")
+async def family_remove_ep(
+    member_id: int,
+    user=Depends(
+        get_current_user
+    ),
+):
+    """🌊 W8/MISS-03 — حذف عضو توسط مالک."""
+    res = await db.family_remove(int(user["id"]), int(member_id),
+                                 int(user["id"]))
+    if not res.get("ok"):
+        raise HTTPException(status_code=409, detail=res.get("error"))
+    return res
 
 
 @router.post("/buy")
@@ -668,6 +907,10 @@ async def buy(
 
                     source=
                         "discount",
+
+                    # 🌊 W6/MISS-04 — اتصال اشتراک به پلن (سهمیه پلنی)
+                    plan_id=
+                        plan_id,
 
                     granted_by=
                         0,
@@ -978,9 +1221,43 @@ async def buy(
 
 
 
+def _gateway_callback_default() -> str:
+    """🌊 W2 — کال‌بک پیش‌فرض درگاه (تک‌منبع برای request و topup)."""
+    base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
+    if base:
+        return f"{base}/payment/verify"
+    return "https://humsyar.ir/payment/verify"
+
+
+def _clamp_callback_url(provided: str, default: str) -> str:
+    """🌊 W2 — کال‌بک دلخواه کلاینت فقط اگر https و هم‌مبدأ با مبدأ پیکربندی‌شده باشد؛
+    در غیر این صورت نادیده گرفته و پیش‌فرض امن برگردانده می‌شود (جلوگیری از open-redirect)."""
+    p = (provided or "").strip()
+    if not p:
+        return default
+    try:
+        from urllib.parse import urlparse
+        pu, du = urlparse(p), urlparse(default)
+        if (pu.scheme == "https" and du.netloc
+                and (pu.netloc or "").lower() == (du.netloc or "").lower()):
+            return p
+    except Exception:
+        pass
+    return default
+
+
 # ══════════════════════════════════════════════════════════════════
 # 💳 W2 — زرین‌پال (درگاه خودکار + Sandbox mock)
 # ══════════════════════════════════════════════════════════════════
+@router.get("/gateway-status")
+async def gateway_status(user=Depends(get_current_user)):
+    """🌊 W2 — وضعیت عمومی درگاه برای کلاینت‌ها (فقط boolean؛ بدون secret)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "gw_status", 60, 60)
+    from payments.zarinpal import gateway_public_status
+    return await gateway_public_status()
+
+
 class ZarinpalRequestBody(BaseModel):
     plan_id: str = Field(..., min_length=6)
     discount_code: str = Field(default="", max_length=40)
@@ -1031,13 +1308,7 @@ async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_curren
             return {"ok": True, "authority": ex["zarinpal_authority"], "url": f"https://sandbox.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}" if ex["zarinpal_authority"].startswith("TEST-") else f"https://www.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}", "payment_id": str(ex["_id"]), "replay": True, "final_price": int(ex.get("final_price") or price)}
     # discount not consumed yet — will be consumed atomically at verify (after payment) to avoid stuck reservation
     # gateway request
-    cb = (body.callback_url or "").strip()
-    if not cb:
-        base = (os.getenv("ZARINPAL_CALLBACK_URL") or os.getenv("WEBAPP_URL") or "").strip().rstrip("/")
-        if base:
-            cb = f"{base}/payment/verify"
-        else:
-            cb = "https://humsyar.ir/payment/verify"
+    cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())
     desc = f"اشتراک {plan.get('name','')} هامشیار"
     try:
         zp = await _zp_req(price, desc, cb)
@@ -1054,6 +1325,58 @@ async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_curren
             await db.discount_release(code, user_id=user_id)
         raise HTTPException(status_code=500, detail=f"ثبت پرداخت ناموفق: {e}")
     return {"ok": True, "authority": authority, "url": zp["url"], "payment_id": pid, "final_price": price, "mock": zp.get("mock", False)}
+
+class ZarinpalTopupBody(BaseModel):
+    amount: int = Field(..., ge=1, le=100_000_000)
+    callback_url: str = Field(default="", max_length=500)
+    idem: str = Field(default="", max_length=64)
+
+@router.post("/zarinpal/topup")
+async def zarinpal_topup_ep(body: ZarinpalTopupBody, user=Depends(get_current_user)):
+    """🌊 W2 — شارژ کیف پول با درگاه آنلاین (مبلغ‌محور؛ بدون پلن)."""
+    if _HAS_RL:
+        await rate_limit_user(user["id"], "zarinpal_topup", 10, 60)
+    from payments.zarinpal import zarinpal_request as _zp_req, gateway_public_status
+    user_id = user["id"]
+    gw = await gateway_public_status()
+    if not gw.get("online_pay_enabled"):
+        raise HTTPException(status_code=503, detail="پرداخت آنلاین در حال حاضر فعال نیست")
+    try:
+        topup_min = int(await db.get_setting("topup_min", str(TOPUP_DEFAULT_MIN)))
+        topup_max = int(await db.get_setting("topup_max", str(TOPUP_DEFAULT_MAX)))
+    except Exception:
+        topup_min, topup_max = TOPUP_DEFAULT_MIN, TOPUP_DEFAULT_MAX
+    amount = int(body.amount or 0)
+    if not topup_min <= amount <= topup_max:
+        raise HTTPException(status_code=422,
+                            detail=f"مبلغ شارژ باید بین {topup_min:,} و {topup_max:,} تومان باشد")
+    if await db.sub_payment_has_pending(user_id):
+        raise HTTPException(status_code=409, detail="یک پرداخت در انتظار قبلی دارید")
+    idem = (body.idem or "").strip()[:64] or f"zpt-{user_id}-{amount}"
+    ex = await db.sub_payments.find_one({"idem_key": idem})
+    if ex is not None and int(ex.get("user_id") or 0) == user_id and ex.get("zarinpal_authority"):
+        auth = ex["zarinpal_authority"]
+        host = "sandbox.zarinpal.com" if auth.startswith("TEST-") else "www.zarinpal.com"
+        return {"ok": True, "authority": auth, "url": f"https://{host}/pg/StartPay/{auth}",
+                "payment_id": str(ex["_id"]), "replay": True,
+                "final_price": int(ex.get("final_price") or amount)}
+    cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())
+    try:
+        zp = await _zp_req(amount, f"شارژ کیف پول هامشیار — کاربر {user_id}", cb)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"درگاه زرین‌پال پاسخ نداد: {e}")
+    try:
+        pid = await db.sub_payment_create_zarinpal(
+            user_id, "wallet_topup", "شارژ کیف پول", amount, amount,
+            zp["authority"], idem_key=idem)
+        await _sub_audit(user, "درخواست شارژ کیف پول با درگاه", target_id=str(pid),
+                         target_label="شارژ کیف پول",
+                         after={"authority": zp["authority"], "amount": amount}, severity="INFO")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ثبت پرداخت ناموفق: {e}")
+    return {"ok": True, "authority": zp["authority"], "url": zp["url"],
+            "payment_id": str(pid), "final_price": amount, "mock": zp.get("mock", False)}
+
 
 class ZarinpalVerifyBody(BaseModel):
     authority: str = Field(..., min_length=6, max_length=64)
@@ -1082,12 +1405,14 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
         raise HTTPException(status_code=402, detail="پرداخت تایید نشد (لغو شده یا نامعتبر)")
     ref_id = str(zp.get("ref_id") or "")
     # consume discount atomically after payment success (if present)
+    # 🌊 W3 — پول در درگاه قطعی گرفته شده؛ fail کردن در این نقطه یعنی
+    # «پولِ گرفته‌شده‌ی بی‌حساب». پس approve می‌کنیم + پرچم overrun برای
+    # بازبینی مغایرت‌گیری (تخفیف خارج از ظرفیت به کاربر داده شد).
+    discount_overrun = False
     if code:
         consumed = await db.discount_consume(code, user_id=user["id"])
         if not consumed:
-            # discount exhausted after payment — refund via reversal? for gateway we treat as paid but discount lost; notify
-            # we still approve payment but with percent adjusted? For now fail and require manual refund
-            raise HTTPException(status_code=409, detail="پرداخت موفق بود اما ظرفیت کد تخفیف پر شده — مبلغ کامل لحاظ می‌شود، با پشتیبانی تماس بگیرید")
+            discount_overrun = True
     res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
     if not res.get("ok"):
         if code:
@@ -1096,16 +1421,21 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
             sub = await db.sub_get(user["id"])
             return {"ok": True, "already": True, "end_date": (sub or {}).get("end_date"), "ref_id": ref_id}
         raise HTTPException(status_code=409, detail=res.get("reason") or "تایید هم‌زمان — دوباره تلاش کنید")
-    await _sub_audit(user, "تایید پرداخت زرین‌پال", target_id=str(doc["_id"]), target_label=doc.get("plan_name",""), after={"ref_id": ref_id, "authority": authority}, severity="INFO")
+    if discount_overrun:
+        await db.sub_payment_mark_discount_overrun(authority)
+    await _sub_audit(user, "تایید پرداخت زرین‌پال", target_id=str(doc["_id"]), target_label=doc.get("plan_name",""), after={"ref_id": ref_id, "authority": authority, "discount_overrun": discount_overrun}, severity=("HIGH" if discount_overrun else "INFO"))
     act = res.get("activation") or {}
-    return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get("mock", False)}
+    return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get("mock", False), "discount_overrun": discount_overrun}
 
 @router.get("/zarinpal/callback")
 async def zarinpal_callback(Authority: str = Query(""), Status: str = Query("")):
     """Callback for Zarinpal redirect (when callback_url points to API). Verifies and redirects to miniapp."""
     from fastapi.responses import RedirectResponse
+    from urllib.parse import quote
     base = (os.getenv("WEBAPP_URL") or "https://humsyar.ir").strip().rstrip("/")
-    target = f"{base}/payment/verify?Authority={Authority}&Status={Status}"
+    # 🛡 W4/SEC-05 — بازتاب پارامترهای درگاه با encode (ضد query-injection)
+    target = (f"{base}/payment/verify?Authority={quote(Authority or '', safe='')}"
+              f"&Status={quote(Status or '', safe='')}")
     if Status != "OK":
         # user cancelled — optionally mark payment cancelled? keep pending for retry
         return RedirectResponse(url=target + "&verified=0", status_code=302)

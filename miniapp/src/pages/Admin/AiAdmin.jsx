@@ -14,6 +14,7 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import EmptyState from '../../components/shared/EmptyState';
 import Switch from '../../components/shared/Switch';
 
 import {
@@ -1262,9 +1263,9 @@ export default function AiAdmin() {
                 </article>
               ))
             ) : (
-              <div className="empty card">
+              <EmptyState icon="📭">
                 گزارشی ثبت نشده است.
-              </div>
+              </EmptyState>
             )}
           </section>
         )}

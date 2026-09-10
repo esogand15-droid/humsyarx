@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
-from api.auth import get_admin_user
+from api.auth import require_perm
+from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from question_bank.contracts import approved_query, status_query
 from request_context import current_request_id
@@ -107,7 +108,7 @@ def _rp_mini(u: dict) -> dict:
 
 
 @router.get("/stats")
-async def stats(admin=Depends(get_admin_user)):
+async def stats(admin=Depends(require_perm("stats.view"))):
     """نمای فشرده‌ی واقعی داشبورد مالک.
 
     کلیدهای flat برای Web Admin فعلی نگه داشته می‌شوند و آبجکت‌های nested
@@ -146,7 +147,7 @@ async def stats(admin=Depends(get_admin_user)):
     }
 
 @router.get("/bot-status")
-async def bot_status(admin=Depends(get_admin_user)):
+async def bot_status(admin=Depends(require_perm("stats.view"))):
     """سلامت واقعی DB/API و حضور process ربات در همان container.
 
     این endpoint heartbeat تلگرام را جعل نمی‌کند: ``bot_ok`` فقط می‌گوید
@@ -223,7 +224,7 @@ async def bot_status(admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/users")
-async def list_users(admin=Depends(get_admin_user), search: Optional[str]=Query(None),
+async def list_users(admin=Depends(require_perm("users.view")), search: Optional[str]=Query(None),
                       group: Optional[str]=Query(None), intake: Optional[str]=Query(None)):
     # 🔎 قرارداد مشترک جست‌وجو (db.build_user_search_query) — حالا آیدی
     # عددی تلگرام هم دقیق پیدا می‌شود؛ قبلاً فقط name/student_id/username
@@ -254,13 +255,13 @@ async def list_users(admin=Depends(get_admin_user), search: Optional[str]=Query(
         "prestige": _rp_mini(u)} for u in users]}
 
 @router.get("/users/pending")
-async def pending_users(admin=Depends(get_admin_user)):
+async def pending_users(admin=Depends(require_perm("users.view"))):
     users = await db.pending_users()
     return {"users":[{"id":u.get("user_id"),"name":u.get("name",""),"student_id":u.get("student_id",""),
         "group":u.get("group",""),"intake":u.get("intake",""),"registered_at":u.get("registered_at") or None} for u in users]}
 
 @router.get("/users/{uid}")
-async def user_detail(uid: int, admin=Depends(get_admin_user)):
+async def user_detail(uid: int, admin=Depends(require_perm("users.view"))):
     u = await db.get_user(uid)
     if not u: raise HTTPException(404, "کاربر پیدا نشد")
     return {"user":{"id":u.get("user_id"),"name":u.get("name",""),
@@ -273,7 +274,7 @@ async def user_detail(uid: int, admin=Depends(get_admin_user)):
         "correct_answers":u.get("correct_answers",0),"downloads":u.get("downloads",0)}}
 
 @router.post("/users/{uid}/approve")
-async def approve(uid: int, admin=Depends(get_admin_user)):
+async def approve(uid: int, admin=Depends(require_perm("users.manage"))):
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
     await db.update_user(uid,{"approved":True})
@@ -287,7 +288,7 @@ async def approve(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.post("/users/{uid}/reject")
-async def reject(uid: int, admin=Depends(get_admin_user)):
+async def reject(uid: int, admin=Depends(require_perm("users.manage"))):
     user = await db.get_user(uid)
     await db.users.delete_one({"user_id":uid})
     await _audit(admin, "رد درخواست عضویت", "Users", severity="WARNING",
@@ -297,7 +298,7 @@ async def reject(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.post("/users/{uid}/suspend")
-async def suspend(uid: int, admin=Depends(get_admin_user)):
+async def suspend(uid: int, admin=Depends(require_perm("users.manage"))):
     if uid == ADMIN_ID: raise HTTPException(403,"نمی‌توانید ادمین را تعلیق کنید")
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
@@ -320,7 +321,7 @@ class DmBody(BaseModel):
 
 
 @router.post("/users/{uid}/message")
-async def dm_user_ep(uid: int, body: DmBody, admin=Depends(get_admin_user)):
+async def dm_user_ep(uid: int, body: DmBody, admin=Depends(require_perm("users.message"))):
     # ✉️ موج ۴.۸۰ — پیام مستقیم از کارت کاربر مینی‌اپ.
     # ارسال واقعی از طریق صف bot_notifications (همان کانالی که خودِ ربات
     # برای اطلاع‌رسانی‌ها استفاده می‌کند) انجام می‌شود؛ جاب outbox هر ۲۰
@@ -354,7 +355,7 @@ async def dm_user_ep(uid: int, body: DmBody, admin=Depends(get_admin_user)):
     return {"ok": True, "queued": True}
 
 @router.post("/users/{uid}/delete")
-async def delete_user_ep(uid: int, admin=Depends(get_admin_user)):
+async def delete_user_ep(uid: int, admin=Depends(require_perm("users.delete"))):
     if uid == ADMIN_ID: raise HTTPException(403,"نمی‌توانید ادمین ارشد را حذف کنید")
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
@@ -366,7 +367,7 @@ async def delete_user_ep(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.post("/users/{uid}/block")
-async def block_user_ep(uid: int, admin=Depends(get_admin_user)):
+async def block_user_ep(uid: int, admin=Depends(require_perm("users.delete"))):
     if uid == ADMIN_ID: raise HTTPException(403,"نمی‌توانید ادمین ارشد را بلاک کنید")
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
@@ -380,7 +381,7 @@ async def block_user_ep(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.post("/users/{uid}/unblock")
-async def unblock_user_ep(uid: int, admin=Depends(get_admin_user)):
+async def unblock_user_ep(uid: int, admin=Depends(require_perm("users.delete"))):
     ok = await db.unblock_user(uid)
     if not ok: raise HTTPException(404,"این آیدی در بلک‌لیست نبود")
     await _audit(admin, "رفع مسدودیت کاربر", "Users", severity="HIGH",
@@ -388,7 +389,7 @@ async def unblock_user_ep(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.get("/blacklist")
-async def blacklist(admin=Depends(get_admin_user)):
+async def blacklist(admin=Depends(require_perm("users.view"))):
     items = await db.get_blacklist()
     return {"blacklist":[{"id":b.get("_id"),"name":b.get("name",""),
         "blocked_by_name":b.get("blocked_by_name",""),"blocked_at":b.get("blocked_at") or None} for b in items]}
@@ -398,12 +399,12 @@ async def blacklist(admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/content-admins")
-async def content_admins_list(admin=Depends(get_admin_user)):
+async def content_admins_list(admin=Depends(require_perm("roles.manage"))):
     admins = await db.get_content_admins()
     return {"admins":[{"id":a.get("user_id"),"name":a.get("name","")} for a in admins]}
 
 @router.post("/content-admins/{uid}")
-async def grant_content_admin(uid: int, admin=Depends(get_admin_user)):
+async def grant_content_admin(uid: int, admin=Depends(require_perm("roles.manage"))):
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
     await db.update_user(uid,{"role":"content_admin"})
@@ -414,7 +415,7 @@ async def grant_content_admin(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.delete("/content-admins/{uid}")
-async def revoke_content_admin(uid: int, admin=Depends(get_admin_user)):
+async def revoke_content_admin(uid: int, admin=Depends(require_perm("roles.manage"))):
     await db.update_user(uid,{"role":"student"})
     await _notify(uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", "content_admin_revoked")
     await _audit(admin, "لغو دسترسی ادمین ارشد محتوا", "Roles", severity="HIGH",
@@ -423,7 +424,7 @@ async def revoke_content_admin(uid: int, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.get("/students")
-async def students_list(admin=Depends(get_admin_user), q: Optional[str]=Query(None)):
+async def students_list(admin=Depends(require_perm("users.view")), q: Optional[str]=Query(None)):
     users = await db.all_users(approved_only=True)
     students = [u for u in users if u.get("role","student")=="student"]
     if q:
@@ -442,7 +443,7 @@ class UserPatch(BaseModel):
     nickname: Optional[str]=None   # 🏷 Identity v1
 
 @router.patch("/users/{uid}")
-async def edit_user(uid: int, body: UserPatch, admin=Depends(get_admin_user)):
+async def edit_user(uid: int, body: UserPatch, admin=Depends(require_perm("users.manage"))):
     updates={}
     if body.name       is not None: updates["name"]=body.name.strip()
     if body.group      is not None: updates["group"]=db.normalize_group(body.group)
@@ -475,7 +476,7 @@ async def edit_user(uid: int, body: UserPatch, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/intakes")
-async def intakes_list(admin=Depends(get_admin_user)):
+async def intakes_list(admin=Depends(require_perm("settings.manage"))):
     items = await db.get_all_intakes()
     result=[]
     for i in items:
@@ -488,7 +489,7 @@ class IntakeCreate(BaseModel):
     code: str; label: str
 
 @router.post("/intakes")
-async def add_intake_ep(body: IntakeCreate, admin=Depends(get_admin_user)):
+async def add_intake_ep(body: IntakeCreate, admin=Depends(require_perm("settings.manage"))):
     code=body.code.strip(); label=body.label.strip()
     if not code or not label: raise HTTPException(422,"کد و برچسب الزامی است")
     await db.add_intake(code, label)
@@ -498,7 +499,7 @@ async def add_intake_ep(body: IntakeCreate, admin=Depends(get_admin_user)):
     return {"ok":True}
 
 @router.post("/intakes/{code}/toggle")
-async def toggle_intake_ep(code: str, admin=Depends(get_admin_user)):
+async def toggle_intake_ep(code: str, admin=Depends(require_perm("settings.manage"))):
     new_state = await db.toggle_intake(code)
     await _audit(admin,
         "فعال‌سازی پذیرش ورودی" if new_state else "توقف پذیرش ورودی",
@@ -508,7 +509,7 @@ async def toggle_intake_ep(code: str, admin=Depends(get_admin_user)):
     return {"ok":True,"active":new_state}
 
 @router.delete("/intakes/{code}")
-async def delete_intake_ep(code: str, admin=Depends(get_admin_user)):
+async def delete_intake_ep(code: str, admin=Depends(require_perm("settings.manage"))):
     await db.delete_intake(code)
     await _audit(admin, "حذف ورودی", "Users", severity="HIGH",
         target_id=code, target_type="intake", tags=["ورودی","پنل_وب"])
@@ -520,7 +521,7 @@ async def delete_intake_ep(code: str, admin=Depends(get_admin_user)):
 
 @router.get("/tickets")
 async def all_tickets(
-    admin=Depends(get_admin_user), status: Optional[str] = Query(None),
+    admin=Depends(require_perm("tickets.manage")), status: Optional[str] = Query(None),
     q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
     priority: Optional[str] = Query(None), assignee_id: Optional[int] = Query(None),
     unanswered: Optional[bool] = Query(None), date_from: Optional[str] = Query(None),
@@ -543,12 +544,15 @@ async def all_tickets(
     page = page if isinstance(page, int) else 1
     limit = limit if isinstance(limit, int) else 30
     filt = {}
+    # 🌊 W9 — «باز» = غیربسته؛ وضعیت‌های جدید فیلتر exact دارند
     if status == "closed":
         filt["status"] = "closed"
     elif status == "answered":
         filt.update({"status": {"$ne": "closed"}, "replies.0": {"$exists": True}})
     elif status == "open":
-        filt["status"] = "open"
+        filt["status"] = {"$ne": "closed"}
+    elif status in ("in_progress", "waiting_user", "resolved"):
+        filt["status"] = status
     if q and q.strip():
         import re
         rx = {"$regex": re.escape(q.strip()), "$options": "i"}
@@ -594,11 +598,12 @@ async def all_tickets(
                 return {"tickets": [{
                     "id": t.get("ticket_id"), "user_id": t.get("user_id"),
                     "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
-                    "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+                    "status": db.ticket_norm_status(t.get("status")), "reply_count": len(t.get("replies", [])),
                     "created_at": t.get("created_at") or None,
                     "last_reply_at": t.get("last_reply_at") or None,
                     "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
                     "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+                    "sla": db.ticket_sla_info(t),
                 } for t in tickets], "total": None, "page": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more}
         except Exception:
             pass
@@ -608,16 +613,17 @@ async def all_tickets(
     return {"tickets": [{
         "id": t.get("ticket_id"), "user_id": t.get("user_id"),
         "user_name": t.get("user_name", ""), "subject": t.get("subject", ""),
-        "status": t.get("status", "open"), "reply_count": len(t.get("replies", [])),
+        "status": db.ticket_norm_status(t.get("status")), "reply_count": len(t.get("replies", [])),
         "created_at": t.get("created_at") or None,
         "last_reply_at": t.get("last_reply_at") or None,
         "priority": t.get("priority", "normal"), "tags": t.get("tags") or [],
         "assignee_id": t.get("assignee_id"), "assignee_name": t.get("assignee_name", ""),
+        "sla": db.ticket_sla_info(t),
     } for t in tickets], "total": total, "page": page, "limit": limit,
         "pages": (total + limit - 1) // limit, "next_cursor": None, "has_more": False}
 
 @router.get("/tickets/{tid}")
-async def ticket_detail(tid: int, admin=Depends(get_admin_user)):
+async def ticket_detail(tid: int, admin=Depends(require_perm("tickets.manage"))):
     t = await db.ticket_get(tid)
     if not t: raise HTTPException(404)
     uid=t.get("user_id"); u=await db.get_user(uid) if uid else None
@@ -625,13 +631,16 @@ async def ticket_detail(tid: int, admin=Depends(get_admin_user)):
         "sender":"user" if r.get("text","").startswith("[دانشجو]") else "support","at": r.get("at") or None} for r in t.get("replies",[])]
     return {"ticket":{"id":t.get("ticket_id"),"subject":t.get("subject",""),"message":t.get("message",""),
         "status":t.get("status","open"),"created_at": t.get("created_at") or None,"replies":replies,
+        "priority":t.get("priority","normal"),"assignee_id":t.get("assignee_id"),
+        "assignee_name":t.get("assignee_name",""),"sla":db.ticket_sla_info(t),
+        "assignee_active": await db.ticket_assignee_ok(t.get("assignee_id")) if t.get("assignee_id") else None,
         "user":{"id":uid,"name":t.get("user_name",""),"student_id":u.get("student_id","") if u else "","group":u.get("group","") if u else "","intake":u.get("intake","") if u else ""}}}
 
 class AdminReply(BaseModel):
     message: str
 
 @router.post("/tickets/{tid}/reply")
-async def admin_reply(tid: int, body: AdminReply, admin=Depends(get_admin_user)):
+async def admin_reply(tid: int, body: AdminReply, admin=Depends(require_perm("tickets.reply"))):
     t=await db.ticket_get(tid)
     if not t: raise HTTPException(404)
     if t.get("status")=="closed": raise HTTPException(400)
@@ -645,18 +654,77 @@ async def admin_reply(tid: int, body: AdminReply, admin=Depends(get_admin_user))
     return {"ok":True}
 
 @router.post("/tickets/{tid}/close")
-async def close_ticket(tid: int, admin=Depends(get_admin_user)):
-    await db.ticket_close(tid)
+async def close_ticket(tid: int, admin=Depends(require_perm("tickets.manage"))):
+    t = await db.ticket_get(tid)
+    if not t:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    res = await db.ticket_close(tid)
     await _audit(admin, "بستن تیکت", "Tickets", severity="INFO",
-        target_id=tid, target_type="ticket", tags=["تیکت","پنل_وب"])
+        target_id=tid, target_type="ticket",
+        before={"status": res.get("frm")}, after={"status": res.get("to")},
+        tags=["تیکت","پنل_وب"])
     return {"ok":True}
 
 @router.post("/tickets/{tid}/reopen")
-async def reopen_ticket(tid: int, admin=Depends(get_admin_user)):
-    await db.ticket_reopen(tid)
+async def reopen_ticket(tid: int, admin=Depends(require_perm("tickets.manage"))):
+    t = await db.ticket_get(tid)
+    if not t:
+        raise HTTPException(404, "تیکت پیدا نشد")
+    res = await db.ticket_reopen(tid)
     await _audit(admin, "بازگشایی تیکت", "Tickets", severity="INFO",
-        target_id=tid, target_type="ticket", tags=["تیکت","پنل_وب"])
+        target_id=tid, target_type="ticket",
+        before={"status": res.get("frm")}, after={"status": res.get("to")},
+        tags=["تیکت","پنل_وب"])
     return {"ok":True}
+
+
+class CannedBody(BaseModel):
+    title: str
+    text: str
+    active: bool = True
+    category: str = ""  # 🌊 W9 — دسته‌بندی پاسخ آماده
+
+
+@router.get("/tickets/canned")
+async def canned_list_ep(category: str = "",
+                         admin=Depends(require_perm("tickets.manage"))):
+    """🌊 W8/UX-04 — پاسخ‌های آماده. 🌊 W9 — فیلتر دسته."""
+    items = await db.canned_list(category=category)
+    return {"items": [{**c, "id": str(c.pop("_id", ""))} for c in items]}
+
+
+@router.post("/tickets/canned")
+async def canned_add_ep(body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
+    if not body.title.strip() or not body.text.strip():
+        raise HTTPException(422, "عنوان و متن لازم است")
+    cid = await db.canned_add(body.title, body.text, admin["id"],
+                                category=body.category)
+    await _audit(admin, "افزودن پاسخ آماده", "Tickets", severity="INFO",
+        target_id=cid, target_type="canned", target_label=body.title[:60],
+        tags=["تیکت","پنل_وب"])
+    return {"ok": True, "id": cid}
+
+
+@router.put("/tickets/canned/{cid}")
+async def canned_update_ep(cid: str, body: CannedBody, admin=Depends(require_perm("tickets.manage"))):
+    ok = await db.canned_update(cid, {"title": body.title, "text": body.text,
+                                      "active": body.active,
+                                      "category": body.category})
+    if not ok:
+        raise HTTPException(404, "پاسخ آماده پیدا نشد")
+    await _audit(admin, "ویرایش پاسخ آماده", "Tickets", severity="INFO",
+        target_id=cid, target_type="canned", target_label=body.title[:60],
+        tags=["تیکت","پنل_وب"])
+    return {"ok": True}
+
+
+@router.delete("/tickets/canned/{cid}")
+async def canned_delete_ep(cid: str, admin=Depends(require_perm("tickets.manage"))):
+    if not await db.canned_delete(cid):
+        raise HTTPException(404, "پاسخ آماده پیدا نشد")
+    await _audit(admin, "حذف پاسخ آماده", "Tickets", severity="WARNING",
+        target_id=cid, target_type="canned", tags=["تیکت","پنل_وب"])
+    return {"ok": True}
 
 # ══════════════════════════════════════════════
 # 📢 Broadcast پیشرفته — preview / تأیید / زمان‌دار / هدفمند
@@ -682,7 +750,7 @@ class BroadcastPreview(BaseModel):
     target: BroadcastTarget
 
 @router.post("/broadcast/preview")
-async def broadcast_preview(body: BroadcastPreview, admin=Depends(get_admin_user)):
+async def broadcast_preview(body: BroadcastPreview, admin=Depends(require_perm("broadcast.send"))):
     users = await _resolve_broadcast_users(body.target, admin["id"])
     return {"recipient_count": len(users), "audience": body.target.model_dump()}
 
@@ -702,7 +770,8 @@ class BroadcastSend(BaseModel):
 
 
 @router.post("/broadcast")
-async def broadcast(body: BroadcastSend, admin=Depends(get_admin_user)):
+async def broadcast(body: BroadcastSend, admin=Depends(require_perm("broadcast.send"))):
+    await rate_limit_user(admin["id"], "broadcast_send", 5, 60)  # 🛡 W10
     try:
         result = await broadcast_service.create_campaign(
             payload=body.payload(), target=body.target.model_dump(),
@@ -724,7 +793,7 @@ async def broadcast(body: BroadcastSend, admin=Depends(get_admin_user)):
             "scheduled": bool(body.send_at), **result}
 
 @router.get("/broadcast/history")
-async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20, ge=1, le=100)):
+async def broadcast_history(admin=Depends(require_perm("broadcast.send")), limit: int=Query(20, ge=1, le=100)):
     docs = await db.broadcast_campaigns.find({}).sort("created_at", -1).limit(limit).to_list(limit)
     return {"history": [broadcast_service.campaign_row(doc) for doc in docs]}
 
@@ -733,7 +802,7 @@ async def broadcast_history(admin=Depends(get_admin_user), limit: int=Query(20, 
 # دسته (کلید یکتای دسته = text + created_at). همه‌ی مسیرها سطح مالک می‌مانند.
 
 @router.get("/broadcast/scheduled")
-async def broadcast_scheduled(admin=Depends(get_admin_user), limit: int=Query(10, ge=1, le=50)):
+async def broadcast_scheduled(admin=Depends(require_perm("broadcast.send")), limit: int=Query(10, ge=1, le=50)):
     docs = await db.broadcast_campaigns.find(
         {"status": "scheduled", "send_at": {"$gt": utc_now_iso()}}
     ).sort("send_at", 1).limit(limit).to_list(limit)
@@ -748,7 +817,7 @@ class BroadcastCancel(BaseModel):
 
 
 @router.post("/broadcast/cancel")
-async def broadcast_cancel(body: BroadcastCancel, admin=Depends(get_admin_user)):
+async def broadcast_cancel(body: BroadcastCancel, admin=Depends(require_perm("broadcast.send"))):
     if not body.campaign_id:
         raise HTTPException(422, "شناسه کمپین الزامی است")
     try:
@@ -771,7 +840,7 @@ async def broadcast_cancel(body: BroadcastCancel, admin=Depends(get_admin_user))
 # ══════════════════════════════════════════════
 
 @router.get("/poll/status")
-async def poll_status(admin=Depends(get_admin_user)):
+async def poll_status(admin=Depends(require_perm("settings.manage"))):
     channel_id = await db.get_setting("poll_channel_id", None)
     return {"channel_id": channel_id, "configured": bool(channel_id)}
 
@@ -779,7 +848,7 @@ class PollChannelSet(BaseModel):
     channel_id: str
 
 @router.post("/poll/channel")
-async def poll_channel_set(body: PollChannelSet, admin=Depends(get_admin_user)):
+async def poll_channel_set(body: PollChannelSet, admin=Depends(require_perm("settings.manage"))):
     old = await db.get_setting("poll_channel_id", None)
     await db.set_setting("poll_channel_id", body.channel_id.strip())
     await _audit(admin, "تغییر کانال نظرسنجی", "Notifications", severity="WARNING", target_type="setting", target_label="poll_channel_id", before={"poll_channel_id": old}, after={"poll_channel_id": body.channel_id.strip()}, tags=["نظرسنجی", "تنظیمات"])
@@ -789,7 +858,7 @@ class PollCreate(BaseModel):
     question: str; options: List[str]; anonymous: bool = False
 
 @router.post("/poll")
-async def poll_create(body: PollCreate, admin=Depends(get_admin_user)):
+async def poll_create(body: PollCreate, admin=Depends(require_perm("settings.manage"))):
     if len(body.options) < 2: raise HTTPException(422, "حداقل ۲ گزینه لازم است")
     channel_id = await db.get_setting("poll_channel_id", None)
     if not channel_id: raise HTTPException(400, "کانال نظرسنجی تنظیم نشده — اول از بخش تنظیمات کانال رو وارد کن")
@@ -815,7 +884,7 @@ async def poll_create(body: PollCreate, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/channel-lock")
-async def channel_lock_list(admin=Depends(get_admin_user)):
+async def channel_lock_list(admin=Depends(require_perm("settings.manage"))):
     channels = await db.get_required_channels()
     return {"channels": [
         {"id": c.get("id", ""), "title": c.get("title", ""),
@@ -827,7 +896,7 @@ class ChannelLockAdd(BaseModel):
     invite_link: str = ""
 
 @router.post("/channel-lock")
-async def channel_lock_add(body: ChannelLockAdd, admin=Depends(get_admin_user)):
+async def channel_lock_add(body: ChannelLockAdd, admin=Depends(require_perm("settings.manage"))):
     cid = body.id.strip(); title = body.title.strip()
     if not cid or not title:
         raise HTTPException(422, "آیدی و نام کانال الزامی است")
@@ -840,7 +909,7 @@ async def channel_lock_add(body: ChannelLockAdd, admin=Depends(get_admin_user)):
     return {"ok": True}
 
 @router.delete("/channel-lock/{channel_id}")
-async def channel_lock_remove(channel_id: str, admin=Depends(get_admin_user)):
+async def channel_lock_remove(channel_id: str, admin=Depends(require_perm("settings.manage"))):
     current = await db.get_required_channels()
     if not any(c.get("id") == channel_id for c in current):
         raise HTTPException(404, "کانال در لیست نیست")
@@ -855,7 +924,7 @@ async def channel_lock_remove(channel_id: str, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.get("/notifications/settings")
-async def notif_settings(admin=Depends(get_admin_user)):
+async def notif_settings(admin=Depends(require_perm("notifications.manage"))):
     interval = await db.get_setting("resource_notif_interval_hours", 24)
     last_sent = await db.get_setting("resource_notif_last_sent", None)
     last_error = await db.get_setting("resource_notif_last_error", None)
@@ -865,7 +934,7 @@ class NotifSettingsUpdate(BaseModel):
     interval_hours: int
 
 @router.post("/notifications/settings")
-async def notif_settings_update(body: NotifSettingsUpdate, admin=Depends(get_admin_user)):
+async def notif_settings_update(body: NotifSettingsUpdate, admin=Depends(require_perm("notifications.manage"))):
     if body.interval_hours not in (24, 48, 72): raise HTTPException(422, "مقدار مجاز: ۲۴، ۴۸ یا ۷۲")
     old = await db.get_setting("resource_notif_interval_hours", 24)
     await db.set_setting("resource_notif_interval_hours", body.interval_hours)
@@ -876,14 +945,14 @@ async def notif_settings_update(body: NotifSettingsUpdate, admin=Depends(get_adm
     return {"ok":True}
 
 @router.get("/notifications/history")
-async def notif_history(admin=Depends(get_admin_user), job_name: Optional[str]=Query(None), limit: int=Query(15)):
+async def notif_history(admin=Depends(require_perm("notifications.manage")), job_name: Optional[str]=Query(None), limit: int=Query(15)):
     runs = await db.get_recent_notif_runs(job_name=job_name, limit=limit)
     return {"runs":[{"id":str(r["_id"]),"job_name":r.get("job_name",""),"status":r.get("status",""),
         "sent":r.get("sent",0),"failed":r.get("failed",0),"total":r.get("total",0),
         "started_at":r.get("started_at",""),"finished_at":r.get("finished_at")} for r in runs]}
 
 @router.post("/notifications/history/{run_id}/retry")
-async def notif_retry(run_id: str, admin=Depends(get_admin_user)):
+async def notif_retry(run_id: str, admin=Depends(require_perm("notifications.manage"))):
     targets = await db.get_failed_notif_details(run_id)
     if not targets: raise HTTPException(404, "موردی برای تلاش مجدد پیدا نشد")
     notif = db.client["medicalbot"]["bot_notifications"]
@@ -893,7 +962,8 @@ async def notif_retry(run_id: str, admin=Depends(get_admin_user)):
     return {"ok":True, "requeued": len(docs)}
 
 @router.post("/export/excel")
-async def export_excel(admin=Depends(get_admin_user)):
+async def export_excel(admin=Depends(require_perm("users.manage"))):
+    await rate_limit_user(admin["id"], "export_excel", 10, 60)  # 🛡 W10
     await _notify(ADMIN_ID, "__EXCEL_EXPORT__", "excel_export_request")
     return {"ok":True,"message":"📊 فایل اکسل از طریق ربات ارسال می‌شود."}
 
@@ -914,7 +984,7 @@ class BackupRequestBody(BaseModel):
     section: str = "all"
 
 @router.post("/backup")
-async def request_backup(body: BackupRequestBody, admin=Depends(get_admin_user)):
+async def request_backup(body: BackupRequestBody, admin=Depends(require_perm("backup.manage"))):
     """درخواست فایل پشتیبان JSON از پنل وب — با همان الگوی خروجی اکسل:
     سیگنال __BACKUP_REQUEST__ در صف bot_notifications می‌نشیند و
     mini_app_outbox_job در ربات فایل را می‌سازد و به چت ادمین می‌فرستد
@@ -936,7 +1006,7 @@ async def request_backup(body: BackupRequestBody, admin=Depends(get_admin_user))
 # ══════════════════════════════════════════════
 
 @router.get("/settings")
-async def bot_settings_get(admin=Depends(get_admin_user)):
+async def bot_settings_get(admin=Depends(require_perm("settings.manage"))):
     """خواندن تنظیمات مشترک ربات/مینی‌اپ."""
     return {
         "maintenance_mode": bool(await db.get_setting("maintenance_mode", False)),
@@ -970,7 +1040,7 @@ class BotSettingsPatch(BaseModel):
     auto_backup_hour: Optional[int] = None
 
 @router.patch("/settings")
-async def bot_settings_patch(body: BotSettingsPatch, admin=Depends(get_admin_user)):
+async def bot_settings_patch(body: BotSettingsPatch, admin=Depends(require_perm("settings.manage"))):
     """تغییر تنظیمات — دقیقاً با همان سطح حساسیت لاگ پنل ربات:
     حالت تعمیر → CRITICAL، الزام شماره دانشجویی → HIGH."""
     changed = []
@@ -1095,7 +1165,7 @@ class LogGroupTestBody(BaseModel):
     kind: str  # 'admin' | 'content'
 
 @router.post("/settings/test-log-group")
-async def test_log_group(body: LogGroupTestBody, admin=Depends(get_admin_user)):
+async def test_log_group(body: LogGroupTestBody, admin=Depends(require_perm("settings.manage"))):
     """ارسال پیام تست به گروه لاگ از مسیر واقعی ربات (صف bot_notifications)
     تا سلامت کل زنجیره‌ی وب→دیتابیس→ربات→گروه با یک دکمه قابل بررسی باشد."""
     if body.kind not in ("admin", "content"):
@@ -1122,7 +1192,7 @@ async def test_log_group(body: LogGroupTestBody, admin=Depends(get_admin_user)):
 # ══════════════════════════════════════════════
 
 @router.post("/prestige/backfill")
-async def prestige_backfill(admin=Depends(get_admin_user)):
+async def prestige_backfill(admin=Depends(require_perm("prestige.manage"))):
     raw = await db.prestige_backfill()
     firsts = raw.get("firsts") or []
     report = {
@@ -1141,7 +1211,7 @@ async def prestige_backfill(admin=Depends(get_admin_user)):
 
 
 @router.post("/notifications/force-send")
-async def notifications_force_send(admin=Depends(get_admin_user)):
+async def notifications_force_send(admin=Depends(require_perm("notifications.manage"))):
     """ثبت سیگنال؛ اجرای واقعی با bot instance در outbox job انجام می‌شود."""
     await _notify(admin["id"], "__FORCE_RES_NOTIF__", "force_resources_notification")
     await _audit(admin, "درخواست ارسال فوری اعلان منابع", "Notifications",
@@ -1153,7 +1223,7 @@ async def notifications_force_send(admin=Depends(get_admin_user)):
 
 
 @router.post("/log-groups/test")
-async def log_groups_test(admin=Depends(get_admin_user)):
+async def log_groups_test(admin=Depends(require_perm("settings.manage"))):
     """تست واقعی هر دو گروه از مسیر Bot API، بدون افشای token به مرورگر."""
     import time
     import httpx
@@ -1264,7 +1334,7 @@ def build_audit_query(
 
 @router.get("/audit-logs")
 async def audit_logs_admin(
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("audit.view")),
     category: Optional[str] = Query(None),
     min_severity: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
@@ -1330,7 +1400,7 @@ async def audit_logs_admin(
 
 
 @router.get("/audit-health")
-async def audit_health(admin=Depends(get_admin_user)):
+async def audit_health(admin=Depends(require_perm("audit.view"))):
     """🆕 Audit Refactor §52 — سلامت سیستم حسابرسی (Delivery + DB)."""
     try:
         db_health = await db.get_audit_health_metrics()
@@ -1359,7 +1429,7 @@ async def audit_health(admin=Depends(get_admin_user)):
 
 @router.get("/analytics")
 async def analytics_admin(
-    admin=Depends(get_admin_user),
+    admin=Depends(require_perm("stats.deep")),
     days: int = Query(14, ge=1, le=90),
 ):
     """آمار روزانه بازه اخیر + کاربران فعال + توزیع عملیات و ساعات اوج.
@@ -1426,7 +1496,7 @@ def _prestige_cfg_defaults() -> dict:
 
 
 @router.get("/prestige-config")
-async def prestige_config_get(admin=Depends(get_admin_user)):
+async def prestige_config_get(admin=Depends(require_perm("prestige.manage"))):
     """خواندن تنظیمات زنده‌ی پرستیژ: پیش‌فرض + اورراید + مؤثر + آمار چالش"""
     try:
         doc = await db.settings.find_one({"_id": "prestige_config"}) or {}
@@ -1459,7 +1529,7 @@ class PrestigeConfigPut(BaseModel):
 
 
 @router.put("/prestige-config")
-async def prestige_config_put(body: PrestigeConfigPut, admin=Depends(get_admin_user)):
+async def prestige_config_put(body: PrestigeConfigPut, admin=Depends(require_perm("prestige.manage"))):
     """ذخیره‌ی اوررایدها — بدون ری‌دیپلوی (کش ۶۰ثانیه‌ای فوراً باطل می‌شود).
     مقادیر نامعتبر/کلید ناشناخته ⇒ rejected، بدون ذخیره‌ی آن کلید."""
     if not isinstance(body.values, dict):

@@ -11,6 +11,7 @@ import logging
 import os
 from datetime import datetime
 from time_utils import utc_now_iso
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -116,6 +117,7 @@ class RegisterBody(BaseModel):
     group: str
     intake: Optional[str] = ""
     student_id: Optional[str] = ""
+    ref: Optional[str] = ""  # 🌱 W13 — کد دعوت (اختیاری)
 
 
 @router.post("/register")
@@ -125,6 +127,8 @@ async def register_via_miniapp(
 ):
     tg_user = _verified_tg_user(x_init_data)
     uid = tg_user["id"]
+    # 🛡 W3/SEC-03 — ضد اسپم ثبت‌نام (init-data امضاشده است؛ کلید = کاربر)
+    await rate_limit_user(uid, "register", 5, 600)
     username = tg_user.get("username")
 
     # ── لایه دفاعی بلک‌لیست (مثل بات) ──
@@ -178,6 +182,14 @@ async def register_via_miniapp(
         if "duplicate key" in str(e).lower():
             raise HTTPException(409, "already_registered")
         raise
+
+    # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
+    try:
+        if (body.ref or "").strip():
+            from referral import attribute as _ref_attribute
+            await _ref_attribute(uid, body.ref, 'miniapp')
+    except Exception:
+        pass
 
     if uid == ADMIN_ID:
         await db.update_user(uid, {"approved": True})

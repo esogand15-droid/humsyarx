@@ -551,6 +551,15 @@ class DBPrestige:
             inc['reports_resolved'] = 1
             bdown.append(('گزارش مفید 🕵️', n('xp_report_useful', self.XP_REPORT_USEFUL)))
             gain += n('xp_report_useful', self.XP_REPORT_USEFUL)
+        elif kind == 'referral':
+            # 🌱 W13 — جایزه‌ی دعوت دوستان (مبلغ از کانفیگ ریفرال می‌آید، نه ثابت کلاس)
+            try:
+                _rxp = max(0, int(meta.get('xp') or 0))
+            except (TypeError, ValueError):
+                _rxp = 0
+            if _rxp:
+                bdown.append(('دعوت دوستان 🎁', _rxp))
+                gain += _rxp
         elif kind == 'challenge_win':
             # 👑 P1 — برد چالش ارتقا (Spec §۳.۱: نتیجه سرورمحور)
             target_idx = int(meta.get('target_idx') or 0)

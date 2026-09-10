@@ -77,6 +77,28 @@ def decrypt_value(stored) -> str:
             return ""
     return str(stored)
 
+def encrypt_bytes(raw: bytes) -> bytes | None:
+    """🌊 W5/REL-04 — رمزنگاری بایت‌ها (بکاپ)؛ None اگر خاموش/ناموفق."""
+    if _fernet is None or not raw:
+        return None
+    try:
+        return _fernet.encrypt(bytes(raw))
+    except Exception as e:
+        logger.warning(f"encrypt_bytes failed: {e}")
+        return None
+
+
+def decrypt_bytes(token: bytes) -> bytes | None:
+    """🌊 W5/REL-04 — رمزگشایی بایت‌ها؛ None اگر خاموش/ناموفق (fail-closed)."""
+    if _fernet is None or not token:
+        return None
+    try:
+        return _fernet.decrypt(bytes(token))
+    except Exception as e:
+        logger.warning(f"decrypt_bytes failed: {e}")
+        return None
+
+
 def mask_secret(val: str, keep: int = 4) -> str:
     if not val: return "—"
     if len(val) <= keep*2: return "•"*8

@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import difflib
+import secrets
 from datetime import timedelta
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
@@ -21,6 +22,32 @@ from time_utils import (
 logger = logging.getLogger('database')
 
 
+def _referral_first_buy_trigger(fn):
+    """🌱 W13 — هوک «اولین خرید واقعی» روی تنها نقطه‌ی فعال‌سازی پولی.
+
+    همه‌ی پرداخت‌های واقعی (رسید دستی، زرین‌پال، کیف پول، شارژ، هدیه‌دهنده)
+    از finalize_approved_payment می‌گذرند؛ trial و اعطای دستی/رایگان نه.
+    lazy-import برای جلوگیری از چرخه (referral → database).
+    هرگز مسیر پول را نمی‌شکند.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    async def _w(self, payment, admin_id):
+        res = await fn(self, payment, admin_id)
+        try:
+            if isinstance(res, dict) and not res.get('already'):
+                payer = int((payment or {}).get('user_id') or 0)
+                if payer:
+                    from referral import on_first_payment
+                    await on_first_payment(payer)
+        except Exception:
+            logger.exception('referral first-buy hook failed')
+        return res
+
+    return _w
+
+
 
 class DBFinance:
 
@@ -31,10 +58,19 @@ class DBFinance:
     # ══════════════════════════════════════════════════════════════
 
     # ── پلن‌ها ──
-    async def sub_plan_add(self, name: str, days: int, price: int) -> str:
+    async def sub_plan_add(self, name: str, days: int, price: int,
+                         ai_daily_limit: int = 0,
+                         entitlements: dict | None = None,
+                         max_members: int = 1) -> str:
         count = await self.sub_plans.count_documents({})
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
+            # 🌊 W6/MISS-04 — سهمیه روزانه هوشیار این پلن؛ ۰ = ارث از سراسری
+            'ai_daily_limit': max(0, int(ai_daily_limit or 0)),
+            # 🌊 W7 — نقشه‌ی فیچرها؛ خالی/ناقص = سازگار عقب‌رو (دسترسی کامل)
+            'entitlements': dict(entitlements or {}),
+            # 🌊 W8/MISS-03 — ظرفیت خانواده/گروه (۱ = شخصی)؛ مالک یک صندلی می‌گیرد
+            'max_members': max(1, min(50, int(max_members or 1))),
             'active': True, 'order': count,
             'created_at': utc_now_iso(),
         })
@@ -71,11 +107,15 @@ class DBFinance:
         return True
 
 
-    async def sub_plan_delete(self, plan_id: str):
+    async def sub_plan_delete(self, plan_id: str) -> bool:
+        """🛡 W5/CODE-02 — حذف دیگر بی‌صدا fail نمی‌شود؛ caller باید
+        False را هندل کند (قبلاً audit «حذف شد» دروغ می‌گفت)."""
         try:
-            await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
-        except Exception:
-            pass
+            r = await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
+            return r.deleted_count == 1
+        except Exception as e:
+            logger.warning(f"sub_plan_delete failed {plan_id}: {e}")
+            return False
 
 
     # ── کدهای تخفیف ──
@@ -93,17 +133,21 @@ class DBFinance:
                     expires_at = parse_machine_datetime(expires_at).astimezone(UTC).isoformat()
             except ValueError:
                 raise ValueError('invalid_discount_expiry')
-        await self.discount_codes.insert_one({
-            'code': code, 'percent': max(1, min(100, percent)),
-            'max_uses': max_uses, 'used_count': 0,
-            'expires_at': expires_at, 'active': True,
-            # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
-            # غیرخالی یعنی فقط همان plan_idها
-            'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
-            # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
-            'per_user_limit': max(0, int(per_user_limit or 0)),
-            'created_by': created_by, 'created_at': utc_now_iso(),
-        })
+        try:
+            await self.discount_codes.insert_one({
+                'code': code, 'percent': max(1, min(100, percent)),
+                'max_uses': max_uses, 'used_count': 0,
+                'expires_at': expires_at, 'active': True,
+                # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
+                # غیرخالی یعنی فقط همان plan_idها
+                'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
+                # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
+                'per_user_limit': max(0, int(per_user_limit or 0)),
+                'created_by': created_by, 'created_at': utc_now_iso(),
+            })
+        except DuplicateKeyError:
+            # 🛡 W1 — race دو ساخت هم‌زمان: ایندکس یکتا داور نهایی است
+            return False
         return True
 
 
@@ -387,6 +431,17 @@ class DBFinance:
         s = await self.sub_get(user_id)
         if not s or s.get('status') != 'active':
             return False
+        # 🌊 W8/MISS-03 — عضو خانواده فقط وقتی فعال است که مالک هم فعال باشد
+        # (revoke مالک را بدون job پوشش می‌دهد؛ بدون بازگشت برای جلوگیری از حلقه)
+        if (s.get('source') == 'family') and s.get('family_owner_id'):
+            try:
+                o = await self.sub_get(int(s['family_owner_id']))
+                if not o or o.get('status') != 'active':
+                    return False
+                if parse_machine_datetime(o.get('end_date')) < now_utc():
+                    return False
+            except ValueError:
+                return False
         try:
             return parse_machine_datetime(s.get('end_date')) >= now_utc()
         except ValueError:
@@ -405,7 +460,7 @@ class DBFinance:
 
     async def sub_activate(self, user_id: int, days: int, plan_name: str,
                             source: str = 'payment', granted_by: int = 0,
-                            extend: bool = False):
+                            extend: bool = False, plan_id: str = ''):
         """
         فعال‌سازی/تمدید اشتراک. اگر extend=True و اشتراک فعلی هنوز فعاله،
         روزها از تاریخ پایان فعلی جمع می‌شوند نه از الان (تا تمدید،
@@ -430,6 +485,8 @@ class DBFinance:
             {'_id': user_id},
             {'$set': {
                 'status': 'active', 'plan_name': plan_name,
+                # 🌊 W6/MISS-04 — اتصال اشتراک به پلن (سهمیه پلنی؛ خالی=قدیمی/دستی)
+                'plan_id': plan_id or '',
                 'start_date': now.isoformat(), 'end_date': end_date,
                 'source': source, 'granted_by': granted_by,
                 'last_plan_days': days,
@@ -439,7 +496,86 @@ class DBFinance:
             }},
             upsert=True
         )
+        # 🌊 W8/MISS-03 — تمدید/فعال‌سازی مالک، end_date اعضای فعال را هم‌ردیف می‌کند
+        try:
+            await self.subscriptions.update_many(
+                {'source': 'family', 'family_owner_id': int(user_id),
+                 'status': 'active'},
+                {'$set': {'end_date': end_date,
+                          'updated_at': now.isoformat()}})
+        except Exception:
+            pass
         return end_date
+
+
+    async def trial_status(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — وضعیت trial (نمایشی؛ claim دوباره چک می‌کند).
+
+        خروجی: {eligible, reason, days} ـ days از تنظیمات (۱..۳۰، پیش‌فرض ۷).
+        """
+        try:
+            enabled = await self.get_setting('trial_enabled', 1)
+            days = int(await self.get_setting('trial_days', 7) or 7)
+        except (TypeError, ValueError):
+            enabled, days = 1, 7
+        days = min(max(days, 1), 30)
+        if str(enabled).lower() in ('0', 'false', '', 'none'):
+            return {"eligible": False, "reason": "trial_disabled", "days": days}
+        try:
+            if await self.sub_is_active(int(uid)):
+                return {"eligible": False, "reason": "already_subscribed",
+                        "days": days}
+            u = await self.users.find_one({'user_id': int(uid)},
+                                          {'trial_used': 1})
+            if u is None:
+                return {"eligible": False, "reason": "unknown_user",
+                        "days": days}
+            if u.get('trial_used'):
+                return {"eligible": False, "reason": "already_used",
+                        "days": days}
+            plans = await self.sub_plan_list(only_active=True)
+            if not plans:
+                return {"eligible": False, "reason": "no_plan", "days": days}
+        except Exception:
+            return {"eligible": False, "reason": "error", "days": days}
+        return {"eligible": True, "reason": "", "days": days}
+
+    async def trial_claim(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — دریافت trial: یک‌بار برای هر کاربر، معادل
+        ارزان‌ترین پلن فعال (plan_id همان پلن ⇒ سهمیه پلنی هم اعمال می‌شود).
+
+        توکن اتمیک روی users.trial_used جلوی دابل‌کلیک/مسابقه را می‌گیرد؛
+        اگر فعال‌سازی شکست خورد، توکن آزاد می‌شود. خطا: ValueError(reason).
+        """
+        uid = int(uid)
+        st = await self.trial_status(uid)
+        if not st["eligible"]:
+            raise ValueError(st["reason"])
+        plans = await self.sub_plan_list(only_active=True)
+        if not plans:
+            raise ValueError("no_plan")
+        cheapest = min(plans, key=lambda q: (int(q.get('price', 0) or 0),
+                                             int(q.get('days', 0) or 0)))
+        tok = await self.users.update_one(
+            {'user_id': uid, 'trial_used': {'$ne': True}},
+            {'$set': {'trial_used': True,
+                      'trial_claimed_at': utc_now_iso()}})
+        if not tok.matched_count:
+            raise ValueError('already_used')
+        try:
+            end_date = await self.sub_activate(
+                uid, st["days"],
+                f"آزمایشی {st['days']}روزه ({cheapest.get('name', '')})",
+                source='trial', plan_id=str(cheapest.get('_id', '') or ''))
+        except Exception:
+            try:
+                await self.users.update_one(
+                    {'user_id': uid}, {'$set': {'trial_used': False}})
+            except Exception:
+                pass
+            raise
+        return {"end_date": end_date, "days": st["days"],
+                "plan_name": str(cheapest.get('name', ''))}
 
 
     async def sub_revoke(self, user_id: int, reason: str, revoked_by: int) -> bool:
@@ -451,6 +587,116 @@ class DBFinance:
             }}
         )
         return result.matched_count > 0
+
+    # ── 🌊 W8/MISS-03 — پلن خانواده/گروهی ──
+    _FAMILY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+
+    async def family_plan_seats(self, owner_id: int) -> dict:
+        """ظرفیت خانواده‌ی مالک: {total, used, left, plan_id}."""
+        sub = await self.sub_get(int(owner_id)) or {}
+        plan_id = str(sub.get('plan_id') or '')
+        total = 1
+        if plan_id:
+            try:
+                plan = await self.sub_plan_get(plan_id)
+                total = max(1, int((plan or {}).get('max_members') or 1))
+            except Exception:
+                total = 1
+        used = await self.subscriptions.count_documents(
+            {'source': 'family', 'family_owner_id': int(owner_id),
+             'status': 'active'})
+        return {'total': total, 'used': int(used),
+                'left': max(0, total - 1 - int(used)), 'plan_id': plan_id}
+
+    async def family_members(self, owner_id: int) -> list:
+        cur = await self.subscriptions.find(
+            {'source': 'family', 'family_owner_id': int(owner_id)}
+        ).sort('start_date', -1).to_list(60)
+        return cur or []
+
+    async def family_code_create(self, owner_id: int) -> dict:
+        """ساخت کد دعوت یک‌بارمصرف. {ok, code?/error?}."""
+        owner_id = int(owner_id)
+        if not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک فعالی نداری'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['total'] <= 1:
+            return {'ok': False, 'error': 'پلن تو خانوادگی نیست'}
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        for _ in range(5):
+            code = ''.join(secrets.choice(self._FAMILY_CODE_ALPHABET)
+                           for _ in range(8))
+            try:
+                await self.family_invites.insert_one({
+                    '_id': code, 'owner_id': owner_id,
+                    'created_at': utc_now_iso(),
+                    'used_by': 0, 'used_at': None, 'active': True})
+                return {'ok': True, 'code': code, 'seats_left': seats['left']}
+            except DuplicateKeyError:
+                continue
+        return {'ok': False, 'error': 'ساخت کد ناموفق بود؛ دوباره تلاش کن'}
+
+    async def family_redeem(self, code: str, user_id: int) -> dict:
+        """ثبت کد دعوت: ساخت اشتراک عضو با end_date مالک. {ok, end_date?/error?}."""
+        code = (code or '').strip().upper().replace('-', '').replace(' ', '')
+        user_id = int(user_id)
+        if len(code) != 8:
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        if await self.sub_is_active(user_id):
+            return {'ok': False, 'error': 'تو الان اشتراک فعال داری'}
+        inv = await self.family_invites.find_one({'_id': code})
+        if not inv or not inv.get('active') or inv.get('used_by'):
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        owner_id = int(inv['owner_id'])
+        if owner_id == user_id:
+            return {'ok': False, 'error': 'نمی‌توانی کد خودت را ثبت کنی'}
+        owner_sub = await self.sub_get(owner_id)
+        if not owner_sub or not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک مالک خانواده فعال نیست'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        # قفل اتمیک کد (جلوگیری از دابل‌ردیم) — سپس ساخت اشتراک عضو
+        locked = await self.family_invites.find_one_and_update(
+            {'_id': code, 'active': True, 'used_by': 0},
+            {'$set': {'used_by': user_id, 'used_at': utc_now_iso()}})
+        if not locked:
+            return {'ok': False, 'error': 'این کد قبلاً استفاده شده'}
+        end_date = owner_sub.get('end_date')
+        now = utc_now_iso()
+        await self.subscriptions.update_one(
+            {'_id': user_id},
+            {'$set': {'status': 'active',
+                      'plan_name': str(owner_sub.get('plan_name') or 'خانواده'),
+                      'plan_id': str(owner_sub.get('plan_id') or ''),
+                      'start_date': now, 'end_date': end_date,
+                      'source': 'family', 'granted_by': owner_id,
+                      'family_owner_id': owner_id,
+                      'family_code': code,
+                      'last_plan_days': int(owner_sub.get('last_plan_days') or 0),
+                      'reminder_3d_sent': False, 'reminder_1d_sent': False,
+                      'updated_at': now}},
+            upsert=True)
+        return {'ok': True, 'end_date': end_date,
+                'plan_name': str(owner_sub.get('plan_name') or '')}
+
+    async def family_remove(self, owner_id: int, member_id: int,
+                            actor_id: int = 0) -> dict:
+        """حذف عضو (توسط مالک یا ادمین): revoke اشتراک عضو."""
+        owner_id, member_id = int(owner_id), int(member_id)
+        if member_id == owner_id:
+            return {'ok': False, 'error': 'مالک را نمی‌شود حذف کرد'}
+        m = await self.sub_get(member_id)
+        if not m or m.get('source') != 'family' or \
+                int(m.get('family_owner_id') or 0) != owner_id:
+            return {'ok': False, 'error': 'این کاربر عضو خانواده‌ی تو نیست'}
+        await self.subscriptions.update_one(
+            {'_id': member_id},
+            {'$set': {'status': 'revoked', 'revoke_reason': 'family_remove',
+                      'revoked_by': int(actor_id or owner_id),
+                      'revoked_at': utc_now_iso()}})
+        return {'ok': True}
 
 
     async def sub_expire_due(self) -> list:
@@ -598,6 +844,7 @@ class DBFinance:
         r = await self.sub_payments.insert_one(doc)
         return str(r.inserted_id)
 
+    @_referral_first_buy_trigger
     async def finalize_approved_payment(self, payment: dict, admin_id: int) -> dict:
         """🌊 GIFT — تنها نقطه‌ی فعال‌سازی پس از تأیید رسید (بات و وب مشترک).
 
@@ -642,7 +889,8 @@ class DBFinance:
         end_date = await self.sub_activate(
             target, days, payment.get('plan_name', 'اشتراک'),
             source='gift' if gift else 'payment',
-            granted_by=admin_id, extend=True)
+            granted_by=admin_id, extend=True,
+            plan_id=str(payment.get('plan_id', '') or ''))
         if gift:
             await self.sub_payments.update_one(
                 {'_id': payment['_id'], 'gift.activated_at': None},
@@ -828,6 +1076,29 @@ class DBFinance:
         except Exception as e:
             logger.warning(f"sub_payment_refund failed for {pid}: {e}")
             return False
+
+    async def sub_payment_mark_discount_overrun(self, authority: str) -> bool:
+        """🌊 W3 — پرچم overrun تخفیف روی پرداخت تأییدشده (بازبینی مغایرت‌گیری)."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"zarinpal_authority": authority},
+                {"$set": {"discount_overrun": True}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark discount_overrun failed {authority}: {e}")
+            return False
+
+    async def sub_payment_mark_gateway_reversal(self, pid: str) -> bool:
+        """🌊 W3/MISS-02 — علامت «بازوی درگاهی دستی» روی رسید refundشده."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"_id": ObjectId(pid)},
+                {"$set": {"gateway_reversal": "manual_required"}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark gateway_reversal failed {pid}: {e}")
+            return False
+
 
     async def sub_payment_list_pending(self) -> list:
         return await self.sub_payments.find({'status': 'pending'}).sort('submitted_at', 1).to_list(100)

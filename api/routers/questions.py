@@ -33,6 +33,7 @@ from pydantic import (
 from api.auth import (
     ADMIN_ID,
     get_question_access_user,
+    require_feature,  # 🌊 W7
 )
 
 from api.user_metrics import (
@@ -40,6 +41,7 @@ from api.user_metrics import (
 )
 
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from time_utils import utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
@@ -473,6 +475,8 @@ class AnswerInput(BaseModel):
 
 @router.post("/answer")
 async def answer(body: AnswerInput, user=Depends(get_question_access_user)):
+    # 🛡 W3/SEC-03 — سقف گشاد برای آزمون سرعتی، ولی ضد بات
+    await rate_limit_user(user["id"], "q_answer", 100, 60)
     question = await db.get_question_by_id(body.question_id)
     if not question:
         raise HTTPException(404, "سؤال پیدا نشد")
@@ -508,7 +512,9 @@ class AIGenerateInput(BaseModel):
 
 
 @router.post("/practice/ai/generate")
-async def generate_ai_practice(body: AIGenerateInput, user=Depends(get_question_access_user)):
+async def generate_ai_practice(body: AIGenerateInput, user=Depends(require_feature("ai_practice"))):
+    # 🛡 W3/SEC-03 — تولید AI هزینه دارد؛ سقف سخت‌گیرانه
+    await rate_limit_user(user["id"], "ai_generate", 10, 60)
     taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id)
     try:
         return await ai_practice.generate(user=user, taxonomy=taxonomy,
@@ -524,13 +530,13 @@ class AIAnswerInput(BaseModel):
 
 @router.post("/practice/ai/{ai_question_id}/answer")
 async def answer_ai_practice(ai_question_id: str, body: AIAnswerInput,
-                             user=Depends(get_question_access_user)):
+                             user=Depends(require_feature("ai_practice"))):
     try: return await ai_practice.answer(user=user, ai_question_id=ai_question_id, selected=body.selected)
     except QuestionDomainError as exc: _domain_error(exc)
 
 
 @router.post("/practice/ai/{ai_question_id}/propose")
-async def propose_ai_practice(ai_question_id: str, user=Depends(get_question_access_user)):
+async def propose_ai_practice(ai_question_id: str, user=Depends(require_feature("ai_practice"))):
     try: return await ai_practice.propose(user=user, ai_question_id=ai_question_id)
     except QuestionDomainError as exc: _domain_error(exc)
 
@@ -749,19 +755,19 @@ class ExamStartInput(BaseModel):
 
 @router.get("/custom-exam/history")
 async def exam_history(
-    user=Depends(get_question_access_user),
+    user=Depends(require_feature("mock_exam")),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
 ):
     return await exam_domain.history(user=user, skip=skip, limit=limit)
 
 
 @router.get("/custom-exam/active")
-async def active_exam(user=Depends(get_question_access_user)):
+async def active_exam(user=Depends(require_feature("mock_exam"))):
     return {"exam": await exam_domain.active(user=user)}
 
 
 @router.post("/custom-exam/preview")
-async def preview_exam(body: ExamStartInput, user=Depends(get_question_access_user)):
+async def preview_exam(body: ExamStartInput, user=Depends(require_feature("mock_exam"))):
     if body.promotion:
         raise HTTPException(422, "چالش ارتقا preview عمومی ندارد")
     taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id, body.lesson, body.topic)
@@ -1394,7 +1400,26 @@ async def abandon_exam(
 
 @router.get("/custom-exam/{session_id}/pdf")
 async def exam_pdf(session_id: str, mode: str = Query("exam", pattern="^(practice|exam)$"),
-                   user=Depends(get_question_access_user)):
+                   user=Depends(require_feature("pdf_generation"))):
+    # 🌊 W7 — مصرف سهمیه‌ی ژنریک (پیش‌فرض نامحدود؛ با ۴۲۹ صادقانه)
+    try:
+        _pol = await db.get_feature_policy("pdf_generation") or {}
+        _q = _pol.get("quota") or {}
+        if _q.get("kind") in ("daily", "monthly") and int(_q.get("limit") or 0) > 0:
+            _ok, _used = await db.feature_consume(
+                user["id"], "pdf_generation", _q["kind"], int(_q["limit"]))
+            if not _ok:
+                from core.errors import Code, DEFAULT_MESSAGE
+                await db.log_feature_event("pdf_generation", "quota_exhausted",
+                                           user["id"], {})
+                raise HTTPException(status_code=429, detail={
+                    "code": Code.QUOTA_EXHAUSTED,
+                    "message": DEFAULT_MESSAGE[Code.QUOTA_EXHAUSTED],
+                    "feature": "pdf_generation"})
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # خطای زیرساخت سهمیه: UX را خراب نکن (لاگ در لایه‌ی db)
     try:
         content, meta = await exam_domain.generate_pdf(session_id=session_id, user=user, mode=mode)
     except QuestionDomainError as exc:

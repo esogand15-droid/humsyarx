@@ -14,6 +14,12 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
+import SubscriptionLock, {
+  isSubscriptionLock,
+  lockKind,
+} from '../../components/shared/SubscriptionLock';
 import QuestionCard from '../../components/shared/QuestionCard';
 import CelebrationOverlay from '../../components/shared/CelebrationOverlay';
 
@@ -176,6 +182,8 @@ export default function ExamCenter() {
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
+    isError: lessonsError,
+    refetch: refetchLessons,
   } = useQuery({
     queryKey: [
       'question-lessons',
@@ -232,6 +240,7 @@ export default function ExamCenter() {
     data: history = [],
     isLoading: historyLoading,
     isError: historyError,
+    error: historyErr,
     refetch: refetchHistory,
   } = useQuery({
     queryKey: [
@@ -1544,26 +1553,22 @@ export default function ExamCenter() {
           {historyLoading ? (
             <ExamHistorySkeleton />
           ) : historyError ? (
-            <div className="empty card">
-              دریافت تاریخچه انجام نشد.
-
-              <button
-                className="btn btn-p"
-                style={{
-                  marginTop:
-                    12,
-                }}
-                onClick={() =>
-                  refetchHistory()
-                }
-              >
-                تلاش دوباره
-              </button>
-            </div>
+            isSubscriptionLock(historyErr) ? (
+              <SubscriptionLock
+                feature="آزمون‌ها"
+                featureKey="mock_exam"
+                mode={lockKind(historyErr).kind}
+              />
+            ) : (
+              <PageError
+                text="دریافت تاریخچه انجام نشد."
+                onRetry={() => refetchHistory()}
+              />
+            )
           ) : rows.length === 0 ? (
-            <div className="empty card">
+            <EmptyState icon="📝">
               هنوز آزمونی ثبت نشده است.
-            </div>
+            </EmptyState>
           ) : (
             <section
               style={{
@@ -1900,6 +1905,12 @@ export default function ExamCenter() {
                 انتخاب درس
               </option>
 
+              {lessonsError && lessons.length === 0 && (
+                <option value="" disabled>
+                  🌐 دریافت درس‌ها ناموفق بود
+                </option>
+              )}
+
               {lessons.map(
                 (item) => (
                   <option
@@ -1912,6 +1923,18 @@ export default function ExamCenter() {
                 )
               )}
             </select>
+          )}
+
+          {/* 🌊 W8/UX-02 */}
+          {lessonsError && lessons.length === 0 && (
+            <button
+              type="button"
+              className="btn sm"
+              style={{ marginTop: 6 }}
+              onClick={() => refetchLessons()}
+            >
+              تلاش دوباره برای درس‌ها
+            </button>
           )}
 
           <label className="fld-label">

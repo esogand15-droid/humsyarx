@@ -68,13 +68,13 @@ def _profile_text(user: dict, stats: dict, open_tickets: int, sub_line: str = ''
     )
 
 
-def _profile_keyboard(user: dict = None) -> InlineKeyboardMarkup:
+async def _profile_keyboard(user: dict = None) -> InlineKeyboardMarkup:
     # 🏷 Identity v1 — برچسب سوییچ حریم از سند کاربر (سینک با مینی‌اپ)
     show_real = (user or {}).get('show_real_name') is not False
     priv_btn  = InlineKeyboardButton(
         "🔒 پنهان‌سازی نام واقعی" if show_real else "👁 نمایش نام واقعی",
         callback_data='profile:toggle_privacy')
-    return InlineKeyboardMarkup([
+    rows = [
         [
             InlineKeyboardButton("✏️ ویرایش نام",          callback_data='profile:edit_name'),
             InlineKeyboardButton("🎓 ویرایش شماره دانشجویی", callback_data='profile:edit_sid'),
@@ -100,7 +100,16 @@ def _profile_keyboard(user: dict = None) -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("🔄 بروزرسانی",     callback_data='profile:refresh')],
         [InlineKeyboardButton("🔙 داشبورد",        callback_data='dashboard:refresh')],
-    ])
+    ]
+    # 🌱 W13 — دعوت دوستان (فقط وقتی کلید ریفرال روشن است)
+    try:
+        from referral import is_enabled as _ref_on
+        if await _ref_on():
+            rows.insert(-2, [InlineKeyboardButton('🎁 دعوت دوستان',
+                                                  callback_data='ref:menu')])
+    except Exception:
+        pass
+    return InlineKeyboardMarkup(rows)
 
 
 async def _get_profile_data(uid: int) -> tuple:
@@ -132,7 +141,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t, sub_line),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user)
+            reply_markup=await _profile_keyboard(user)
         )
 
     # ── 👑 Prestige: ۶ نشان اخیر (Spec v3 — منوی پروفایل) ──
@@ -280,7 +289,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user))
+            reply_markup=await _profile_keyboard(user))
 
     # ── 🏷 Identity v1: سوییچ نمایش اسم واقعی (همان فیلد مینی‌اپ) ──
     elif action == 'toggle_privacy':
@@ -302,7 +311,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user))
+            reply_markup=await _profile_keyboard(user))
 
     elif action == 'cancel_edit':
         context.user_data.pop('profile_edit', None)
@@ -311,7 +320,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user)
+            reply_markup=await _profile_keyboard(user)
         )
 
     elif action == 'edit_group':
@@ -353,7 +362,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user)
+            reply_markup=await _profile_keyboard(user)
         )
 
     elif action == 'edit_intake':
@@ -396,7 +405,7 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
-            reply_markup=_profile_keyboard(user)
+            reply_markup=await _profile_keyboard(user)
         )
 
 
@@ -512,5 +521,5 @@ async def show_profile_msg(update: Update):
     await update.message.reply_text(
         _profile_text(user, stats, open_t, sub_line),
         parse_mode='HTML',
-        reply_markup=_profile_keyboard(user)
+        reply_markup=await _profile_keyboard(user)
     )

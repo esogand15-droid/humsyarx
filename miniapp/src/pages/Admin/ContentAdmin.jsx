@@ -1,3 +1,4 @@
+import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
 import { errorText } from '../../lib/format';
@@ -685,21 +686,10 @@ export function ContentQuestions() {
         {isLoading ? (
           <LibraryTilesSkeleton />
         ) : isError ? (
-          <EmptyState icon="🌐">
-            دریافت سؤال‌ها انجام نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop: 12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </EmptyState>
+          <PageError
+            text="دریافت سؤال‌ها انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : rows.length === 0 ? (
           <EmptyState icon="✅">
             سؤالی در انتظار بررسی نیست.

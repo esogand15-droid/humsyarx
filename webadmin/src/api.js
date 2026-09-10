@@ -557,6 +557,14 @@ export const api = {
     req(`/api/web-admin/tickets/${tid}/close`, { method: "POST" }),
   ticketReopen: (tid) =>
     req(`/api/web-admin/tickets/${tid}/reopen`, { method: "POST" }),
+  // 🌊 W8/UX-04 — پاسخ‌های آماده
+  cannedList: () => req("/api/web-admin/tickets/canned"),
+  cannedAdd: (body) =>
+    req("/api/web-admin/tickets/canned", { method: "POST", body }),
+  cannedUpdate: (cid, body) =>
+    req(`/api/web-admin/tickets/canned/${cid}`, { method: "PUT", body }),
+  cannedDelete: (cid) =>
+    req(`/api/web-admin/tickets/canned/${cid}`, { method: "DELETE" }),
   broadcast: (body) =>
     req("/api/web-admin/broadcast", { method: "POST", body }),
   broadcastPreview: (body) =>
@@ -636,6 +644,28 @@ export const api = {
   systemTimeStandard: () => req("/api/web-admin/system/time-standard"),
   systemObservability: (hours = 24) =>
     req(`/api/web-admin/system/observability?hours=${hours}`),
+  // 🌊 W5/REL-03
+  systemClientErrors: (hours = 24, limit = 20) =>
+    req(`/api/web-admin/system/client-errors?hours=${hours}&limit=${limit}`),
+  // 🌊 W7 — دسترسی فیچرها
+  featuresList: () => req('/api/web-admin/features'),
+  featureUpdate: (key, body) =>
+    req(`/api/web-admin/features/${encodeURIComponent(key)}`, { method: 'PUT', body }),
+  featureRollback: (key) =>
+    req(`/api/web-admin/features/${encodeURIComponent(key)}/rollback`, { method: 'POST', body: {} }),
+  // 🌱 W13 / 💳 W14 — رشد
+  growthConfig: () => req('/api/web-admin/growth/config'),
+  growthUpdateConfig: (body) =>
+    req('/api/web-admin/growth/config', { method: 'PUT', body }),
+  growthReferrals: (p = {}) => {
+    const q = new URLSearchParams(
+      Object.entries(p).filter(([, v]) => v !== '' && v !== null && v !== undefined),
+    ).toString();
+    return req(`/api/web-admin/growth/referrals${q ? `?${q}` : ''}`);
+  },
+  growthReview: (id, approve) =>
+    req(`/api/web-admin/growth/referrals/${encodeURIComponent(id)}/review`, { method: 'POST', body: { approve } }),
+  growthStats: () => req('/api/web-admin/growth/stats'),
   securitySessions: (page = 1, limit = 30) =>
     req(`/api/web-admin/system/security/sessions?page=${page}&limit=${limit}`),
   revokeSecuritySession: (id, reason) =>
@@ -736,6 +766,11 @@ export const api = {
       `/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/activate`,
       { method: "POST", body: { confirm: true } },
     ),
+  subReconFinalizeTopup: (pid) =>
+    req(
+      `/api/web-admin/subscription/reconcile/${encodeURIComponent(pid)}/finalize-topup`,
+      { method: "POST", body: { confirm: true } },
+    ),
   subFinance: () => req("/api/web-admin/subscription/finance"),
   // 🌊 W5 — ردیابی کامل رسید + خروجی CSV کرانه‌دار
   subPaymentTrace: (pid) =>
@@ -751,6 +786,16 @@ export const api = {
           ),
         ),
       `humsyar-payments-${fileDateStamp()}.csv`,
+    ),
+  exportWalletCsv: (p = {}) =>
+    downloadFile(
+      "/api/web-admin/exports/wallet.csv?" +
+        new URLSearchParams(
+          Object.entries(p).filter(
+            ([, v]) => v !== "" && v !== null && v !== undefined,
+          ),
+        ),
+      `humsyar-wallet-${fileDateStamp()}.csv`,
     ),
   // 💰 W6 — کیف پول داخلی
   subWallets: (p = {}) =>
@@ -809,6 +854,18 @@ export const api = {
     req(`/api/web-admin/subscription/subscribers/${uid}/revoke`, {
       method: "POST",
       body: { reason },
+    }),
+  // 🌊 W8/MISS-03 — خانواده
+  subFamily: (ownerId) =>
+    req(`/api/web-admin/subscription/family?owner_id=${ownerId}`),
+  subFamilyAdd: (ownerId, userId) =>
+    req("/api/web-admin/subscription/family/members", {
+      method: "POST",
+      body: { owner_id: ownerId, user_id: userId },
+    }),
+  subFamilyRemove: (ownerId, userId) =>
+    req(`/api/web-admin/subscription/family/members/${userId}?owner_id=${ownerId}`, {
+      method: "DELETE",
     }),
   discountAdd: (body) =>
     req("/api/web-admin/subscription/discounts", { method: "POST", body }),

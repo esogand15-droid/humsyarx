@@ -231,6 +231,9 @@ IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
 IMAGE_PROMPT_MIN = 3
 IMAGE_PROMPT_MAX = 1000
 
+# 🛡 W1 — پیام واحد بن هوشیار (قبلاً تعریف‌نشده صدا زده می‌شد → NameError)
+AI_BANNED_MSG = "⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده."
+
 
 class AiImageError(Exception):
     """خطای نگاشت‌شده‌ی تولید تصویر — code ماشین‌خوان + پیام امن کاربر.
@@ -1994,7 +1997,8 @@ async def check_and_consume_quota(uid: int) -> tuple:
     می‌شه (خودِ record_token_usage بعد از جواب گرفتن رویش $inc می‌زند).
     """
     cfg = await get_ai_config()
-    limit = cfg['daily_limit']
+    # 🌊 W6/MISS-04 — سقف پلنی (پیش‌فرض: سراسری)؛ همه‌ی صداکننده‌ها خودکار پلنی شدند
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     today = today_tehran().isoformat()
     # The DB conditional update is the source of truth; this remains correct
     # when Bot and Mini App requests land on different processes.
@@ -2017,6 +2021,11 @@ async def record_token_usage(uid: int, tokens: int) -> None:
 
 async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     cfg = await get_ai_config()
 
     if not cfg['enabled']:
@@ -2027,7 +2036,7 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['mode'] = 'ai_query'
 
-    limit = cfg['daily_limit']
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     if uid == ADMIN_ID or limit <= 0:
         quota_line = "🔓 امروز محدودیتی نداری — هر چقدر دلت خواست بپرس"
     else:
@@ -2385,6 +2394,12 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
     می‌شود تا شکستِ provider سهمیه‌ی کاربر را نسوزاند.
     """
     uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_image"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_image")
+        return
     text = (update.message.text or '').strip()
     if not text:
         return
@@ -2473,6 +2488,12 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     text = (update.message.text or '').strip()
     if not text:
         return
@@ -2484,7 +2505,7 @@ async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     if len(text) > MAX_INPUT_CHARS:
@@ -2579,6 +2600,12 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     مدلِ هزینه (این‌ها هم جزوِ همون Free Tier هستن).
     """
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
 
     cfg = await get_ai_config()
     if not cfg['enabled']:
@@ -2587,7 +2614,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     kind = None
@@ -2788,7 +2815,7 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG, show_alert=True)
             return
         if await db.ai_is_banned(uid):
-            await query.answer("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.", show_alert=True)
+            await query.answer(AI_BANNED_MSG, show_alert=True)
             return
         if not await ai_claim_inflight(uid):
             await query.answer("⏳ صبر کن جوابِ قبلی آماده بشه.", show_alert=True)

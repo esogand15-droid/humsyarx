@@ -40,7 +40,7 @@ from ai_solver import (
     get_ai_config,
     record_token_usage,
 )
-from api.auth import get_current_user
+from api.auth import get_current_user, require_feature  # 🌊 W7
 from api.rate_limit import rate_limit_dependency, rate_limit_user
 from database import db
 from time_utils import now_utc, parse_machine_datetime, today_tehran, utc_now_iso
@@ -844,10 +844,13 @@ async def status(
         user["id"]
     )
 
+    # 🌊 W6/MISS-04 — نمایش سقف پلنی (نه سراسری)
     limit = max(
         0,
         _safe_int(
-            config.get("daily_limit")
+            await db.ai_limit_for_user(
+                user["id"], config.get("daily_limit")
+            )
         ),
     )
 
@@ -917,7 +920,7 @@ async def status(
 
 @router.get("/history")
 async def history(
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     items = await _get_history(
         user["id"]
@@ -996,7 +999,7 @@ async def _load_conv(cid: str, user_id: int) -> dict:
 
 @router.get("/conversations")
 async def list_conversations(
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
     include_archived: bool = False,
 ):
     user_id = user["id"]
@@ -1037,7 +1040,7 @@ async def list_conversations(
 @router.post("/conversations")
 async def create_conversation(
     body: ConversationCreate,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     user_id = user["id"]
     # تمیزکاری: گفت‌وگوهای خالیِ رهاشده‌ی قبلی نمانند
@@ -1052,7 +1055,7 @@ async def create_conversation(
 @router.get("/conversations/{cid}/messages")
 async def conversation_messages(
     cid: str,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     if cid == "legacy":
         # رشته‌ی مشترک — نسخه‌ی خام ai_mem بدون محدودیت TTL
@@ -1081,7 +1084,7 @@ async def conversation_messages(
 async def update_conversation(
     cid: str,
     body: ConversationPatch,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     if cid == "legacy":
         raise HTTPException(
@@ -1104,7 +1107,7 @@ async def update_conversation(
 @router.delete("/conversations/{cid}")
 async def delete_conversation(
     cid: str,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     user_id = user["id"]
 
@@ -1131,7 +1134,7 @@ async def delete_conversation(
 @router.post("/conversations/{cid}/duplicate")
 async def duplicate_conversation(
     cid: str,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     """رونوشت کامل گفت‌وگو در یک رشته‌ی جدید.
     legacy هم پشتیبانی می‌شود: حافظه‌ی مشترک با ربات به یک رشته‌ی
@@ -1202,7 +1205,7 @@ async def duplicate_conversation(
 @router.post("/ask", dependencies=[Depends(rate_limit_dependency("ai_ask", 30, 60, by_user=True))])
 async def ask(
     body: AskRequest,
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     user_id = user["id"]
     await rate_limit_user(user_id, "ai_ask", 30, 60)
@@ -1293,7 +1296,7 @@ async def ask_media(
     message: str = Form(default=""),
     file: UploadFile = File(...),
     conversation_id: str | None = Form(default=None),
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     """Ask with image, PDF or audio."""
 
@@ -1517,7 +1520,7 @@ async def ask_media(
 @router.post("/reference", dependencies=[Depends(rate_limit_dependency("ai_ref", 15, 60, by_user=True))])
 async def upload_reference(
     file: UploadFile = File(...),
-    user=Depends(get_current_user),
+    user=Depends(require_feature("ai_chat")),
 ):
     """Attach PDF without quota use."""
 
@@ -1746,7 +1749,7 @@ class ImageGenBody(BaseModel):
 
 @router.post("/generate-image", dependencies=[Depends(rate_limit_dependency("ai_image", 20, 3600, by_user=True))])
 async def generate_image_ep(body: ImageGenBody,
-                            user=Depends(get_current_user)):
+                            user=Depends(require_feature("ai_image"))):
     import time as _time
     import uuid as _uuid
     uid = user["id"]

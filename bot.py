@@ -66,6 +66,8 @@ from subscription import subscription_callback, screenshot_handler as sub_screen
 from subscription_admin import subscription_admin_callback
 from grades import grades_callback
 from profile import profile_callback
+from referral import referral_callback          # 🌱 W13 — دعوت دوستان
+from dunning import dunning_job, dunning_click  # 💳 W14 — پیگیری پرداخت
 from message_router import route_message
 from basic_science import basic_science_callback
 
@@ -821,6 +823,46 @@ async def subscription_expiry_sweep_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"subscription_expiry_sweep error: {e}")
 
+async def ticket_stale_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W8/UX-04 — یادآوری تیکت‌های بازِ بدون پاسخ (هر ۶ ساعت).
+
+    برای هر تیکت: به مسئول تخصیص‌یافته (وگرنه مالک) پیام می‌دهد؛
+    اگر SLA هم رد شده باشد با پرچم 🔴. ضدتکرار با stale_nudged_at.
+    """
+    try:
+        try:
+            stale_h = max(1, int(await db.get_setting('ticket_stale_hours', 24) or 24))
+        except Exception:
+            stale_h = 24
+        tickets = await db.tickets_needing_nudge(stale_h)
+        if not tickets:
+            return
+        from time_utils import utc_now_iso
+        now = utc_now_iso()
+        for t in tickets:
+            tid = t.get('ticket_id')
+            sla = db.ticket_sla_info(t)
+            target = int(t.get('assignee_id') or 0) or ADMIN_ID
+            icon = '🔴' if sla.get('breached') else '⏳'
+            extra = ' — <b>مهلت SLA گذشته!</b>' if sla.get('breached') else ''
+            try:
+                await safe_send(
+                    context.bot, target,
+                    f"{icon} <b>تیکت #{tid} بی‌پاسخ مانده</b>{extra}\n"
+                    f"👤 {t.get('user_name', '')} — 📋 {t.get('subject', '')[:60]}",
+                    parse_mode='HTML')
+            except Exception:
+                pass
+            try:
+                await db.tickets.update_one(
+                    {'ticket_id': tid}, {'$set': {'stale_nudged_at': now}})
+            except Exception:
+                pass
+        logger.info(f"🎫 ticket stale nudge: {len(tickets)}")
+    except Exception as e:
+        logger.warning(f"ticket_stale_job error: {e}")
+
+
 async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     """🌊 W2 — مغایرت‌گیری کیف پول هر ۳۰ دقیقه + گزارش به لاگ/ادمین.
     🌊 W7 — ضداسپم + توضیح‌دار: dismiss respected + cooldown + hash + mute + جزئیات انسانی.
@@ -929,6 +971,38 @@ async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"wallet_reconcile_job error: {e}")
 
+async def audit_retention_job(context: ContextTypes.DEFAULT_TYPE):
+    """🗄 W4/DB-02 — retention روزانه‌ی audit_logs + هشدار حجم.
+
+    اگر audit_retention_days=0 باشد نگهداری نامحدود است (apply_retention
+    خودش ۰ برمی‌گرداند). آستانه‌ی هشدار حجم با audit_log_alert_count
+    قابل تنظیم است (پیش‌فرض ۵۰۰٬۰۰۰ سند)."""
+    try:
+        deleted = await db.audit_retention_cleanup()
+        try:
+            await db.set_setting("audit_retention_last_run",
+                                 __import__("time_utils").utc_now_iso())
+            await db.set_setting("audit_retention_last_deleted",
+                                 int(deleted or 0))
+        except Exception:
+            pass
+        try:
+            alert_at = int(
+                await db.get_setting("audit_log_alert_count", 500000)
+                or 500000)
+        except Exception:
+            alert_at = 500000
+        if alert_at > 0:
+            total = await db.audit_logs.count_documents({})
+            if total > alert_at:
+                logger.warning(
+                    "audit_logs volume %d exceeds alert threshold %d",
+                    total, alert_at)
+        logger.info("audit retention cleanup deleted=%d", deleted)
+    except Exception as e:
+        logger.warning(f"audit_retention error: {e}")
+
+
 async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
     """🌊 W2 — پرداخت‌های zarinpal_pending که بیش‌از ۱ ساعت رها شده → لغو + آزادسازی کد تخفیف."""
     try:
@@ -937,10 +1011,22 @@ async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
         pending = await db.sub_payments.find({'status': 'zarinpal_pending', 'submitted_at': {'$lt': cutoff}}).to_list(50)
         for doc in pending:
             try:
-                await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
+                flipped = await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
                 code = (doc.get('discount_code') or '').strip()
                 if code:
                     await db.discount_release(code, user_id=doc.get('user_id'))
+                # 🌊 W3/MISS-02 — آزادسازی فوری hold درگاه اگر کاربر پول داده
+                # ولی verify نکرده بود؛ best-effort و ثبت نتیجه روی سند.
+                if flipped.modified_count == 1 and doc.get('zarinpal_authority'):
+                    try:
+                        from payments.zarinpal import zarinpal_reverse as _zp_rev
+                        rev = await _zp_rev(doc['zarinpal_authority'])
+                        await db.sub_payments.update_one({'_id': doc['_id']}, {'$set': {
+                            'zarinpal_reversed': bool(rev.get('ok')),
+                            'zarinpal_reverse_code': rev.get('code'),
+                            'zarinpal_reversed_at': __import__('time_utils').utc_now_iso()}})
+                    except Exception as e2:
+                        logger.warning(f"zarinpal reverse failed {doc.get('_id')}: {e2}")
                 logger.info(f"zarinpal cleanup cancelled {doc['_id']} authority={doc.get('zarinpal_authority')}")
             except Exception as e:
                 logger.warning(f"zarinpal cleanup failed {doc.get('_id')}: {e}")
@@ -976,13 +1062,44 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
         from utils import send_audit_log
         import os as _os
         temp_path = await build_full_backup_file()
+        # 🌊 W5/REL-04 — گیت حجم: ارسالِ محکوم‌به‌شکستِ بالای ۵۰MB تلگرام
+        # انجام نمی‌شود؛ خطا به مسیر consec_fail/alert موجود می‌رود.
+        try:
+            import os as _sz
+            _size = _sz.path.getsize(temp_path)
+        except Exception:
+            _size = 0
+        if _size >= 48 * 1024 * 1024:
+            raise RuntimeError(
+                f"backup file too large for Telegram ({_size // (1024 * 1024)}MB ≥ 48MB) — "
+                f"offsite لازم است (docs/runbook.md §۸)")
+        if _size >= 40 * 1024 * 1024:
+            logger.warning("backup size %dMB approaching Telegram 50MB limit",
+                           _size // (1024 * 1024))
+        # 🌊 W5/REL-04 — رمزنگاری بکاپ خودکار اگر کلید تنظیم شده باشد
+        _enc_suffix = ""
+        try:
+            from utils_crypto import is_encryption_enabled, encrypt_bytes
+            if is_encryption_enabled():
+                with open(temp_path, 'rb') as _rf:
+                    _enc = encrypt_bytes(_rf.read())
+                if _enc is not None:
+                    with open(temp_path, 'wb') as _wf:
+                        _wf.write(_enc)
+                    _enc_suffix = ".enc"
+                    logger.info("auto backup encrypted (Fernet)")
+        except Exception as _ee:
+            logger.warning(f"backup encryption skipped: {_ee}")
         try:
             # send file without holding json string in RAM
             with open(temp_path, 'rb') as f:
                 now_str = now_tehran().strftime('%Y%m%d_%H%M')
-                fname = f"backup_auto_{now_str}.json"
+                fname = f"backup_auto_{now_str}.json{_enc_suffix}"
+                _cap = f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}"
+                if _enc_suffix:
+                    _cap += " 🔐"
                 # use bot.send_document with file handle
-                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}", filename=fname)
+                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=_cap, filename=fname)
                 msg_id = getattr(sent, 'message_id', None)
         finally:
             try: _os.unlink(temp_path)
@@ -1967,6 +2084,8 @@ def build_application() -> Application:
         (grades_callback,             r'^grades:'),
         (ai_admin_callback,           r'^ai:'),   # 🤖 هوشیار — پنل ادمین
         (ai_user_callback,            r'^aiu:'),  # 🤖 هوشیار — دکمه‌های زیر جواب (گفتگوی جدید/گزارش)
+        (referral_callback,           r'^ref:'),   # 🌱 W13 — دعوت دوستان
+        (dunning_click,               r'^dun:'),   # 💳 W14 — ادامه‌ی پرداخت نیمه‌تمام
     ]
     for handler, pattern in cbs:
         app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
@@ -2167,6 +2286,14 @@ async def post_init(application: Application):
             name='new_resources_notif'
         )
 
+        # 🌊 W8/UX-04 — یادآوری تیکت‌های مانده (هر ۶ ساعت)
+        application.job_queue.run_repeating(
+            ticket_stale_job,
+            interval=21600,
+            first=600,
+            name='ticket_stale'
+        )
+
         # FIX جدید: بکاپ خودکار — هر ساعت چک می‌شود، فقط در ساعت
         # تنظیم‌شده (از پنل ادمین) واقعاً بکاپ می‌گیرد
         application.job_queue.run_repeating(
@@ -2182,6 +2309,13 @@ async def post_init(application: Application):
             time=dtime(hour=9, minute=15, tzinfo=TEHRAN),
             name='subscription_expiry'
         )
+        # 🗄 W4/DB-02 — retention روزانه‌ی audit_logs (۰۳:۳۰ تهران؛
+        # خارج از ساعت بکاپ و رینگ)
+        application.job_queue.run_daily(
+            audit_retention_job,
+            time=dtime(hour=3, minute=30, tzinfo=TEHRAN),
+            name='audit_retention'
+        )
         # 🌊 W2 — sweep ساعتی (بدون نوتیف تکراری) + reconcile کیف پول + cleanup زرین‌پال
         application.job_queue.run_repeating(
             subscription_expiry_sweep_job,
@@ -2194,6 +2328,11 @@ async def post_init(application: Application):
         application.job_queue.run_repeating(
             zarinpal_cleanup_job,
             interval=3600, first=1200, name='zarinpal_cleanup'
+        )
+        # 💳 W14 — پیگیری پرداخت نیمه‌تمام درگاه (با کلید خاموش بی‌کار است)
+        application.job_queue.run_repeating(
+            dunning_job,
+            interval=600, first=120, name='dunning_tick'
         )
 
         # بستن هفته‌ی Prestige — شنبه ۰۰:۰۵ تهران (PTB: شنبه=۶)
@@ -2280,6 +2419,14 @@ def _run_polling_with_retry(build_app):
     wh_url = (os.getenv('WEBHOOK_URL') or os.getenv('BOT_WEBHOOK_URL') or '').strip()
     wh_secret = (os.getenv('WEBHOOK_SECRET') or os.getenv('BOT_WEBHOOK_SECRET') or '').strip() or None
     if wh_mode and wh_url:
+        # 🛡 W3/BUG-06 — حالت webhook روی Railway تک‌پورت پشتیبانی
+        # نمی‌شود (تک‌پورت با uvicorn تداخل می‌کند)؛ مسیر سالم polling
+        # است. این شاخه فقط برای سازگاری/دیباگ نگه داشته شده — جزئیات در
+        # docs/runbook.md (بخش «حالت webhook»).
+        logger.warning(
+            "BOT_WEBHOOK_MODE is set but webhook is NOT supported on "
+            "single-port Railway — use polling (unset BOT_WEBHOOK_MODE). "
+            "See docs/runbook.md.")
         # در حالت webhook، polling اجرا نمی‌شود — webhook server
         attempt = 0
         while True:

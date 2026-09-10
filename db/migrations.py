@@ -3,10 +3,11 @@
 🗄️ W3 — Migration runner (versioned, idempotent)
 
 Each migration is a small async function; runner tracks `db_version` in settings (`_id: 'global'`).
-Current version: 3
+Current version: 4
 - v1: initial (legacy)
 - v2: W1 security (init_nonces TTL) — already handled via ensure_indexes
 - v3: W3 exam_sessions expires_at backfill + wallet/broadcast guards
+- v4: W7 feature_policies seed (all FREE) + subscription_enforced migration
 
 Run via `await run_migrations(db)` in lifespan / ensure_indexes.
 Idempotent: re-running does nothing.
@@ -15,7 +16,7 @@ import logging
 from time_utils import utc_now_iso, parse_machine_datetime, now_utc
 
 logger = logging.getLogger("database")
-CURRENT_DB_VERSION = 3
+CURRENT_DB_VERSION = 4
 
 async def _migrate_v3_exam_sessions(db):
     """Backfill expires_at for existing exam_sessions without it.
@@ -77,6 +78,43 @@ async def _migrate_v3_exam_sessions(db):
         logger.warning(f"migration v3 failed: {e}")
         return 0
 
+async def _migrate_v4_feature_policies(db):
+    """🌊 W7 — بذر پالیسی همه‌ی فیچرها (FREE/enabled) + مهاجرت سوییچ قدیمی.
+
+    اگر subscription_enforced روشن بود، question_bank و resources و
+    references به subscription می‌روند تا رفتار عیناً حفظ شود. idempotent.
+    """
+    try:
+        from core.features import FEATURE_CATALOG, default_policy
+    except ImportError as e:
+        logger.warning(f"migration v4: catalog import failed: {e}")
+        return 0
+    try:
+        enforced = await db.get_setting("subscription_enforced", False)
+    except Exception:
+        enforced = False
+    n = 0
+    for key in FEATURE_CATALOG:
+        try:
+            cur = await db.feature_policies.find_one({"_id": key})
+            if cur:
+                continue
+            pol = default_policy(key)
+            if enforced and key in ("question_bank", "resources",
+                                    "references"):
+                pol["access"] = "subscription"
+                pol["note"] = "مهاجرت خودکار از subscription_enforced (v4)"
+            pol["updated_at"] = utc_now_iso()
+            await db.feature_policies.insert_one(pol)
+            n += 1
+        except Exception as e:
+            logger.warning(f"migration v4 seed {key} failed: {e}")
+    if n:
+        logger.info(f"migration v4: seeded {n} feature policies "
+                    f"(enforced_was={bool(enforced)})")
+    return n
+
+
 async def run_migrations(db):
     try:
         raw = await db.settings.find_one({"_id": "global"})
@@ -86,6 +124,8 @@ async def run_migrations(db):
         logger.info(f"migrations: {cur} -> {CURRENT_DB_VERSION}")
         if cur < 3:
             await _migrate_v3_exam_sessions(db)
+        if cur < 4:
+            await _migrate_v4_feature_policies(db)
         await db.settings.update_one({"_id": "global"}, {"$set": {"db_version": CURRENT_DB_VERSION, "db_version_updated_at": utc_now_iso()}}, upsert=True)
         return {"migrated": True, "from": cur, "to": CURRENT_DB_VERSION}
     except Exception as e:

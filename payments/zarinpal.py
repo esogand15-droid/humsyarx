@@ -103,6 +103,19 @@ def _pay_url(authority: str) -> str:
         return f"https://sandbox.zarinpal.com/pg/StartPay/{authority}"
     return f"https://www.zarinpal.com/pg/StartPay/{authority}"
 
+async def gateway_public_status() -> dict:
+    """🌊 W2 — وضعیت عمومی درگاه برای کلاینت‌ها (فقط boolean؛ بدون هیچ secret)."""
+    cfg = await _get_cfg()
+    mid = (cfg.get("merchant_id") or "").strip()
+    mock = (not mid) or (mid.lower() in ("test", "mock", "sandbox"))
+    return {
+        "online_pay_enabled": bool(cfg.get("enabled")),
+        "mock": mock,
+        "sandbox": bool(cfg.get("sandbox")),
+        "bot_username": (os.environ.get("BOT_USERNAME") or "").strip(),
+    }
+
+
 async def zarinpal_request(amount_toman: int, description: str, callback_url: str = None,
                             mobile: str = None, email: str = None) -> dict:
     """
@@ -203,4 +216,36 @@ async def zarinpal_verify(authority: str, amount_toman: int) -> dict:
                 "card_pan": d.get("card_pan", ""), "card_hash": d.get("card_hash", ""),
                 "fee": d.get("fee", 0), "mock": False}
     logger.warning(f"zarinpal verify failed authority={authority} code={code} resp={data}")
+    return {"ok": False, "code": code, "errors": data.get("errors"), "mock": False}
+
+
+async def zarinpal_reverse(authority: str) -> dict:
+    """🌊 W3/MISS-02 — Reverse پرداختِ verifyنشده (آزادسازی فوری hold).
+
+    فقط برای authorityهایی که پول داده شده ولی verify نشده‌اند؛ روی
+    تراکنشِ verifyشده درگاه خطا برمی‌گرداند (بازگشت آن‌ها دستی است).
+    Returns {ok, code, mock}
+    """
+    cfg = await _get_cfg()
+    merchant_id = cfg.get("merchant_id") or MERCHANT_ID
+    sandbox = cfg.get("sandbox") if cfg.get("sandbox") is not None else SANDBOX
+    if not authority:
+        raise ValueError("authority required")
+    is_mock = (authority.startswith("TEST-") or not merchant_id
+               or merchant_id.lower() in ("test", "mock", "sandbox"))
+    if is_mock:
+        logger.info(f"[ZARINPAL MOCK] reverse authority={authority}")
+        return {"ok": True, "code": 100, "mock": True}
+    url = (f"{'https://sandbox.zarinpal.com/pg/v4/payment' if sandbox else 'https://api.zarinpal.com/pg/v4/payment'}"
+           f"/reverse.json")
+    payload = {"merchant_id": merchant_id, "authority": authority}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    d = data.get("data") or {}
+    code = int(d.get("code", -1))
+    if code == 100:
+        return {"ok": True, "code": code, "mock": False}
+    logger.warning(f"zarinpal reverse failed authority={authority} code={code} resp={data}")
     return {"ok": False, "code": code, "errors": data.get("errors"), "mock": False}

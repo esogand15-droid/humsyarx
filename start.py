@@ -42,6 +42,16 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         context.user_data.clear()
+        # 🌱 W13 — لینک دعوت (?start=ref_XXXX)؛ تا پایان ثبت‌نام نگه داشته می‌شود
+        try:
+            _sargs = getattr(context, 'args', None) or []
+            if _sargs:
+                import growth_rules as _gr
+                _rcode = _gr.parse_ref_start_arg(_sargs[0])
+                if _rcode:
+                    context.user_data['pending_ref'] = _rcode
+        except Exception:
+            pass
         await update.message.reply_text(
             f"🩺 <b>به ربات آموزشی پزشکی خوش آمدید!</b>\n\n"
             f"سلام <b>{first_name}</b> عزیز 👋\n\n"
@@ -236,6 +246,14 @@ async def _after_intake_step(update, context, uid, name, group, intake, username
         return ConversationHandler.END
 
     await db.create_user(uid, name, '', group, username, intake=intake)
+    # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
+    try:
+        _pr = context.user_data.pop('pending_ref', None)
+        if _pr:
+            from referral import attribute as _ref_attribute
+            await _ref_attribute(uid, _pr, 'bot')
+    except Exception:
+        pass
     return await _finish_registration(update, context, uid, name, group, intake, username)
 
 
@@ -279,6 +297,14 @@ async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     await db.create_user(uid, name, sid, group, username, intake=intake)
+    # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
+    try:
+        _pr = context.user_data.pop('pending_ref', None)
+        if _pr:
+            from referral import attribute as _ref_attribute
+            await _ref_attribute(uid, _pr, 'bot')
+    except Exception:
+        pass
     return await _finish_registration(update, context, uid, name, group, intake, username)
 
 
@@ -358,7 +384,7 @@ async def _finish_registration(update, context, uid, name, group, intake, userna
             parse_mode='HTML'
         )
 
-    for k in ('reg_name', 'reg_step', 'reg_group'):
+    for k in ('reg_name', 'reg_step', 'reg_group', 'pending_ref'):
         context.user_data.pop(k, None)
     return ConversationHandler.END
 

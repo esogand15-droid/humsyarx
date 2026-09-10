@@ -49,6 +49,7 @@ TX_ADMIN_DEBIT = 'admin_debit'
 TX_REVERSAL = 'reversal'
 # 🌊 W6.2 — شارژ کیف پول با رسید بانکی (تأیید ادمین → اعتبار)
 TX_TOPUP = 'topup_credit'
+TX_REFERRAL_CREDIT = 'referral_credit'  # 🌱 W13 — جایزه دعوت
 
 _TX_LABELS = {
     TX_REFUND_CREDIT: 'بازگشت وجه',
@@ -57,6 +58,7 @@ _TX_LABELS = {
     TX_ADMIN_DEBIT: 'کسر موجودی توسط ادمین',
     TX_REVERSAL: 'اصلاح مالی (جبران تراکنش قبلی)',
     TX_TOPUP: 'شارژ کیف پول',
+    TX_REFERRAL_CREDIT: 'جایزه دعوت دوستان',
 }
 
 def _wallet_need_owner_approval(amount: int, tx_type: str, actor_id: int) -> bool:
@@ -205,8 +207,19 @@ class DBWallet:
                     raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
             except WalletError:
                 raise
-            except Exception:
-                pass
+            except Exception as e:
+                # 🛡 W3/SEC-02 — fail-closed: اگر جمع روزانه قابل
+                # محاسبه نباشد (خطای DB)، سقف نادیده گرفته نمی‌شود؛
+                # تراکنش متوقف می‌شود تا دور زدن سقف مالی در شرایط
+                # خطا ممکن نباشد.
+                logger.critical(
+                    'wallet daily-cap unavailable; blocking %s of %s '
+                    'for user %s: %s',
+                    tx_type, amount, user_id, e)
+                raise WalletError(
+                    'daily_limit_unavailable',
+                    'سامانه سقف روزانه موقتاً در دسترس نیست؛ '
+                    'لطفاً دقایقی دیگر تلاش کنید')
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:
@@ -230,8 +243,19 @@ class DBWallet:
                     raise WalletError('daily_limit_exceeded', f'سقف روزانه کیف پول ({WALLET_DAILY_LIMIT:,} تومان) — فردا دوباره')
             except WalletError:
                 raise
-            except Exception:
-                pass
+            except Exception as e:
+                # 🛡 W3/SEC-02 — fail-closed: اگر جمع روزانه قابل
+                # محاسبه نباشد (خطای DB)، سقف نادیده گرفته نمی‌شود؛
+                # تراکنش متوقف می‌شود تا دور زدن سقف مالی در شرایط
+                # خطا ممکن نباشد.
+                logger.critical(
+                    'wallet daily-cap unavailable; blocking %s of %s '
+                    'for user %s: %s',
+                    tx_type, amount, user_id, e)
+                raise WalletError(
+                    'daily_limit_unavailable',
+                    'سامانه سقف روزانه موقتاً در دسترس نیست؛ '
+                    'لطفاً دقایقی دیگر تلاش کنید')
         tx, is_new = await self._wallet_tx_insert_pending(
             user_id, amount, tx_type, ref_type, ref_id, actor_id, label)
         if not is_new:

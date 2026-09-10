@@ -54,7 +54,10 @@ class BotStartupResilienceStaticTests(unittest.TestCase):
     def setUp(self):
         self.src = (ROOT / "bot.py").read_text(encoding="utf-8")
         idx = self.src.index("def _run_polling_with_retry(")
-        self.body = self.src[idx:idx + 2600]
+        # 🛡 W3 — پنجره‌ی ثابت ۲۶۰۰ نویسه با هر کامنت می‌شکست؛ کل تابع
+        # (تا ابتدای تابع بعدی) مبنای assertionهاست.
+        end = self.src.index("\ndef ", idx + 10)
+        self.body = self.src[idx:end]
 
     def test_retry_loop_retries_network_errors(self):
         self.assertIn("while True:", self.body,
@@ -67,8 +70,17 @@ class BotStartupResilienceStaticTests(unittest.TestCase):
         self.assertIn("app = build_app()", self.body)
 
     def test_invalid_token_not_retried(self):
-        self.assertNotIn("InvalidToken", self.body.split("except (TimedOut")[1],
-                         "خطای پیکربندی نباید در دامنه‌ی retry باشد")
+        import re
+        # تاپل‌های retry نباید InvalidToken داشته باشند (در هر دو شاخه)
+        tuples = re.findall(r"except \((TimedOut[^)]*)\)", self.body)
+        self.assertTrue(tuples, "تاپل retry پیدا نشد")
+        for tup in tuples:
+            self.assertNotIn("InvalidToken", tup,
+                             "خطای پیکربندی نباید در دامنه‌ی retry باشد")
+        # و گارد صریح «عدم retry + raise» برایش موجود باشد
+        self.assertIn("if 'InvalidToken' in type(e).__name__", self.body)
+        guard = self.body.split("if 'InvalidToken' in type(e).__name__")[1][:200]
+        self.assertIn("raise", guard)
 
     def test_time_imported(self):
         self.assertIn("\nimport time\n", self.src)

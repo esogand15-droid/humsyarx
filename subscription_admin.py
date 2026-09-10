@@ -1,5 +1,5 @@
 """
-💳 پنل مدیریت اشتراک — فقط ادمین ارشد (ADMIN_ID)
+💳 پنل مدیریت اشتراک — پرمیشن subscription.manage (🌊 W10؛ قبلاً فقط ADMIN_ID)
   ✅ کلید اجباری‌سازی سراسری (پیش‌فرض خاموش)
   ✅ چند پلن هم‌زمان — قیمت/روز هرکدام مستقل
   ✅ شماره کارت
@@ -145,7 +145,8 @@ async def _show_plans(query):
     for p in plans:
         mark = "✅" if p.get('active') else "⛔️"
         sold = await db.sub_payments.count_documents({'plan_id': str(p['_id']), 'status': 'approved'})
-        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش")
+        _aiq = int(p.get('ai_daily_limit') or 0)
+        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش" + (f" — 🤖 {_aiq}/روز" if _aiq > 0 else ""))
         keyboard.append([
             InlineKeyboardButton("✏️ ویرایش", callback_data=f"suba:plan_edit:{p['_id']}"),
             InlineKeyboardButton(f"{'⛔️ غیرفعال' if p.get('active') else '✅ فعال'}",
@@ -1158,8 +1159,13 @@ async def handle_gateway_callback_text(update, context):
 async def subscription_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid   = update.effective_user.id
-    if uid != ADMIN_ID:
-        await query.answer("❌ این بخش فقط در اختیار مدیر ارشد است.", show_alert=True)
+    # 🌊 W10 — پنل اشتراک با پرمیشن (ADMIN_ID همیشه پاس می‌شود)
+    try:
+        _ok = await db.has_permission(uid, 'subscription.manage')
+    except Exception:
+        _ok = (uid == ADMIN_ID)
+    if not _ok:
+        await query.answer("❌ مجوز مدیریت اشتراک ندارید.", show_alert=True)
         return
     await query.answer()
     parts  = query.data.split(':')
@@ -1202,6 +1208,15 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'toggle_enforce':
         cur = await db.get_setting('subscription_enforced', False)
         await db.set_setting('subscription_enforced', not cur)
+        # 🌊 W7 — ماکرو روی پالیسی‌ها (تک‌منبع حقیقت)
+        try:
+            from core.access import invalidate_policy_cache
+            _mode = "subscription" if not cur else "free"
+            for _f in ("question_bank", "resources", "references"):
+                await db.set_feature_policy(_f, {"access": _mode}, uid, "")
+                invalidate_policy_cache(_f)
+        except Exception:
+            pass
         await send_audit_log(
             context.bot, 'admin', 'ادمین ارشد', uid,
             f"{'فعال‌سازی' if not cur else 'خاموش‌کردن'} اجباری اشتراک",
@@ -1243,7 +1258,10 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
         await _show_plans(query)
     elif action == 'plan_del':
         _pd_old = await db.sub_plan_get(parts[2]) or {}
-        await db.sub_plan_delete(parts[2])
+        if not await db.sub_plan_delete(parts[2]):
+            await query.answer("❌ حذف پلن ناموفق بود؛ دوباره تلاش کن.",
+                               show_alert=True)
+            return
         try:
             _au = await db.get_user(uid) or {}
             _an = _au.get('name', 'مدیر ارشد')

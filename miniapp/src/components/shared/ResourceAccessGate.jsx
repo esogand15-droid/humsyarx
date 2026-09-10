@@ -83,6 +83,7 @@ export function useResourceAccess() {
 
 export default function ResourceAccessGate({
   feature,
+  featureKey = '',
   children,
 }) {
   const navigate =
@@ -124,10 +125,28 @@ export default function ResourceAccessGate({
     );
   }
 
-  const hasAccess = isError
+  /* 🌊 W7 — تصمیم فیچرمحور از نقشه‌ی features (در همان sub-status)؛
+     بدون featureKey همان رفتار legacy. fail-open: بک‌اند مرجع نهایی است. */
+  let hasAccess = isError
     ? true
     : data?.resource_access !==
       false;
+
+  let lockMode = 'sub';
+
+  if (featureKey && !isError) {
+    const fmap = data?.features?.[featureKey];
+
+    if (!fmap) {
+      hasAccess = true;
+    } else if (!fmap.enabled) {
+      hasAccess = false; lockMode = 'disabled';
+    } else if (fmap.access === 'subscription' && !data?.active) {
+      hasAccess = false; lockMode = 'sub';
+    } else {
+      hasAccess = true;
+    }
+  }
 
   if (!hasAccess) {
     return (
@@ -143,6 +162,8 @@ export default function ResourceAccessGate({
         >
           <SubscriptionLock
             feature={feature}
+            featureKey={featureKey}
+            mode={lockMode}
           />
         </main>
       </>
