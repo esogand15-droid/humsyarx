@@ -58,6 +58,17 @@ def _h(value) -> str:
 #  تابع ورودی از ReplyKeyboard (message_router)
 # ══════════════════════════════════════════════════════════
 
+
+def _q_meta_line(q: dict) -> str:
+    """🌊 QBANK-W1 — خط «سال · منبع»؛ وقتی هر دو خالی‌اند هیچ خطی اضافه نمی‌شود."""
+    bits = []
+    if q.get('exam_year'):
+        bits.append(f"📅 {_h(q['exam_year'])}")
+    label = q.get('content_source_label_fa') or ''
+    if label:
+        bits.append(f"🏷 {_h(label)}")
+    return ('\n' + ' · '.join(bits)) if bits else ''
+
 async def _main_menu_msg(message):
     """نمایش منوی اصلی از طریق message (نه callback)"""
     keyboard = [
@@ -752,7 +763,7 @@ async def _next_q(query, context, uid):
     keyboard.append([InlineKeyboardButton("⚠️ گزارش ایراد سؤال", callback_data=f'report:question:{qid}')])
     keyboard.append([InlineKeyboardButton("🏠 منو", callback_data='questions:main')])
     await query.edit_message_text(
-        f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
+        f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}{_q_meta_line(q)}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
         f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -787,7 +798,7 @@ async def _next_exam_q(query, context, uid):
         m, sec = divmod(remain, 60)
         remain_text = f"\n⏱ {m:02d}:{sec:02d} باقی‌مانده"
     await query.edit_message_text(
-        f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}\n"
+        f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}{_q_meta_line(q)}\n"
         f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
