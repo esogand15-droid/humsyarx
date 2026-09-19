@@ -1,4 +1,5 @@
 import { confirmAction } from '../../lib/confirm';
+import { faDate, faTime } from '../../lib/format';
 import { useState } from 'react';
 import {
   useMutation,
@@ -435,7 +436,7 @@ export default function AcademicScheduleAdmin() {
             </div>
             {form.time && form.end_time && (
               <div className="muted" style={{ fontSize: 'var(--fs-cap)' }}>
-                ⏰ {form.time} تا {form.end_time}
+                ⏰ {faTime(form.time)} تا {faTime(form.end_time)}
               </div>
             )}
 
@@ -633,10 +634,10 @@ export default function AcademicScheduleAdmin() {
                       marginTop: 3,
                     }}
                   >
-                    {item.date || '—'}
+                    {item.date ? faDate(item.date) : '—'}
 
                     {item.time
-                      ? ` • ${item.time}${(item.end_time||item.time_end)?` تا ${item.end_time||item.time_end}`:''}`
+                      ? ` • ${faTime(item.time)}${(item.end_time||item.time_end)?` تا ${faTime(item.end_time||item.time_end)}`:''}`
                       : ''}
 
                     {' • '}

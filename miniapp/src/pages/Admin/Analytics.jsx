@@ -1,4 +1,4 @@
-import { number } from '../../lib/format';
+import { number, faDayMonth } from '../../lib/format';
 
 import {
   useMemo,
@@ -343,8 +343,14 @@ export default function Analytics() {
   );
 
   const dayLabel = (iso) => {
+    const jalali = faDayMonth(iso, '');
+
+    if (jalali) {
+      return jalali;
+    }
+
     const [, month, day] =
-      iso.split('-');
+      String(iso || '').split('-');
 
     return `${Number(day)}/${Number(month)}`;
   };

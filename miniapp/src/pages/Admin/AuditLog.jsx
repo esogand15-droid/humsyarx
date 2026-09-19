@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-query';
 
 import api from '../../lib/api';
+import { faDate } from '../../lib/format';
 import Header from '../../components/layout/Header';
 import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
@@ -134,7 +135,7 @@ function timeAgo(iso) {
   if (diff < 7 * day)
     return `${Math.floor(diff / day)} روز پیش`;
 
-  return iso.slice(0, 10);
+  return faDate(iso, iso.slice(0, 10));
 }
 
 

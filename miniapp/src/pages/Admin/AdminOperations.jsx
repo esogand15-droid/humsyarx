@@ -1,7 +1,7 @@
 import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
-import { number, errorText } from '../../lib/format';
+import { number, errorText, faDateTime } from '../../lib/format';
 
 import { confirmAction } from '../../lib/confirm';
 import {
@@ -442,7 +442,7 @@ export function AdminTickets() {
 
                           {' • '}
 
-                          {item.at}
+                          {faDateTime(item.at)}
                         </div>
                       </div>
                     </div>

@@ -1,4 +1,5 @@
 import { confirmAction } from '../../lib/confirm';
+import { faDate } from '../../lib/format';
 import {
   useEffect,
   useRef,
@@ -807,7 +808,7 @@ export default function MyQuestions() {
                           6,
                       }}
                     >
-                      📆 {item.created_at}
+                      📆 {faDate(item.created_at)}
                     </div>
                   )}
 

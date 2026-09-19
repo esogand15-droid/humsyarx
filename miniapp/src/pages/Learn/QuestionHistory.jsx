@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import api from '../../lib/api';
+import { faDate } from '../../lib/format';
 import Header from '../../components/layout/Header';
 import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
@@ -403,9 +404,7 @@ export default function QuestionHistory() {
                     >
                       📆{' '}
 
-                      {String(
-                        item.answered_at
-                      ).slice(0, 10)}
+                      {faDate(item.answered_at)}
                     </div>
                   )}
                 </article>

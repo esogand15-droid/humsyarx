@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-query';
 
 import api from '../../lib/api';
+import { faDateTime } from '../../lib/format';
 import Header from '../../components/layout/Header';
 import PageError from '../../components/shared/PageError';
 import Switch from '../../components/shared/Switch';
@@ -888,14 +889,9 @@ export default function SystemSettings() {
   );
 
 
-  const autoBackupLastRun =
-    data?.auto_backup_last_run
-      ? String(
-          data.auto_backup_last_run
-        )
-          .slice(0, 16)
-          .replace('T', ' ')
-      : null;
+  const autoBackupLastRun = data?.auto_backup_last_run
+    ? faDateTime(data.auto_backup_last_run)
+    : null;
 
 
   return (

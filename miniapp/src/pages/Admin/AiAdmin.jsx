@@ -1,4 +1,4 @@
-import { number, errorText } from '../../lib/format';
+import { number, errorText, faDateTime } from '../../lib/format';
 
 import { confirmAction } from '../../lib/confirm';
 import {
@@ -1216,7 +1216,7 @@ export default function AiAdmin() {
                         2,
                     }}
                   >
-                    {report.created_at}
+                    {faDateTime(report.created_at)}
                   </div>
 
                   <div
