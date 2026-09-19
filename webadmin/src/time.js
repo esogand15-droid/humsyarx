@@ -49,6 +49,11 @@ export function formatFaTime(value, fallback = '—') {
   if (/^\d{2}:\d{2}$/.test(raw)) return faDigits(raw);
   const date = machineDate(value); return date ? TIME.format(date) : fallback;
 }
+/* روز+ماه شمسی کوتاه — برای لیبل نمودارها و تولتیپ‌های فشرده */
+const DAY_MONTH = formatter({ day: 'numeric', month: 'long' });
+export function formatFaDayMonth(value, fallback = '—') {
+  const date = machineDate(value); return date ? clean(DAY_MONTH.format(date)) : fallback;
+}
 export function formatFaTooltip(value, fallback = '—') {
   const raw = enDigits(value).trim();
   if (/^\d{2}:\d{2}$/.test(raw)) return formatFaTime(raw, fallback);

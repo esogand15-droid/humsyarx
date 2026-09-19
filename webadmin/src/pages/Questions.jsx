@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Modal, Empty, NoPerm } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { formatFaDateTime } from '../time.js';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
@@ -156,7 +157,7 @@ export default function Questions({ route = '', go }) {
       const info = reportMap[row.id];
       if (!info?.open) return <span className="muted">—</span>;
       const [label, kind] = SEVERITY[info.severity] || ['', 'warn'];
-      return <B kind={kind || 'warn'} title={`آخرین گزارش: ${info.last_report_at || '—'}`}>
+      return <B kind={kind || 'warn'} title={`آخرین گزارش: ${info.last_report_at ? formatFaDateTime(info.last_report_at) : '—'}`}>
         ⚠️ {fa(info.open)}{label ? ` · ${label}` : ''}
       </B>;
     } },

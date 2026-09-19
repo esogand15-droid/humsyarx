@@ -6,6 +6,7 @@ import {
   Modal, Switch,
 } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { formatFaDate, formatFaDayMonth } from '../time.js';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 
@@ -632,8 +633,8 @@ function FinancialPanel() {
       {!data.daily.length ? <Empty icon="📈" text="در این بازه رسید تأییدشده‌ای ثبت نشده" /> :
         <div className="fin-bars" role="img" aria-label="نمودار درآمد روزانه">
           {data.daily.map(d => <div key={d.day} className="fin-bar-col">
-            <div className="fin-bar" style={{ height: `${Math.max(4, Math.round(100 * d.total / maxDay))}%` }} title={`${d.day}: ${money(d.total)}`} />
-            <span className="fin-bar-day">{d.day.slice(5)}</span>
+            <div className="fin-bar" style={{ height: `${Math.max(4, Math.round(100 * d.total / maxDay))}%` }} title={`${formatFaDate(d.day)}: ${money(d.total)}`} />
+            <span className="fin-bar-day">{formatFaDayMonth(d.day)}</span>
           </div>)}
         </div>}
     </div>

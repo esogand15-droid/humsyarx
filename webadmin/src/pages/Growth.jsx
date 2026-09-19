@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
-import { B, DataTable, Confirm, Switch, PageHeader, toast, Empty, Loading } from '../ui.jsx';
+import { B, DataTable, Confirm, Switch, PageHeader, toast, Empty, Loading, FaDateTime } from '../ui.jsx';
 
 // 🌱 W13 / 💳 W14 — مدیریت رشد: دعوت‌ها + پیگیری پرداخت نیمه‌تمام.
 // همه‌چیز config-driven است؛ پیش‌فرض هر دو کلید خاموش.
@@ -147,7 +147,7 @@ function ReferralTab() {
           { k: 'invitee', label: 'دعوت‌شده', render: (r) => <div><b>{r.invitee_name || r.invitee_id}</b><div className="muted">{r.invitee_id}</div></div> },
           { k: 'status', label: 'وضعیت', render: (r) => <B kind={(ST_FA[r.status] || [])[1] || ''}>{(ST_FA[r.status] || [r.status])[0]}{r.flag_reason ? ` (${r.flag_reason})` : ''}</B> },
           { k: 'grant', label: 'جایزه', render: (r) => <span>{r.reward_register ? '✓ثبت' : '·'} {r.reward_buy ? '✓خرید' : '·'}</span> },
-          { k: 'at', label: 'زمان', render: (r) => <span className="muted">{String(r.created_at || '').slice(0, 16).replace('T', ' ')}</span> },
+          { k: 'at', label: 'زمان', render: (r) => <span className="muted"><FaDateTime value={r.created_at} /></span> },
           {
             k: 'act', label: '', render: (r) => (r.status === 'flagged' || r.status === 'capped') ? (
               <div className="row" style={{ gap: 5 }}>

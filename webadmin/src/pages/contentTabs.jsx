@@ -1029,7 +1029,7 @@ function HushyarScanPanel({ onGenerated }) {
         try {
           if (toMin(s.end_time.trim()) <= toMin(s.time.trim()))
             return toast(
-              `بازه‌ی «${s.lesson}» نامعتبر است — پایان باید بعد از شروع باشد (${s.time} تا ${s.end_time})`,
+              `بازه‌ی «${s.lesson}» نامعتبر است — پایان باید بعد از شروع باشد (${formatFaTime(s.time)} تا ${formatFaTime(s.end_time)})`,
               "err",
             );
         } catch {}
@@ -1391,7 +1391,7 @@ function HushyarScanPanel({ onGenerated }) {
                               style={{ whiteSpace: "nowrap" }}
                             >
                               {s.time && s.end_time
-                                ? `${s.time} تا ${s.end_time}`
+                                ? `${formatFaTime(s.time)} تا ${formatFaTime(s.end_time)}`
                                 : "—"}
                             </td>
                             <td>
@@ -1623,8 +1623,8 @@ function HushyarScanPanel({ onGenerated }) {
                                   color: "var(--c-txt2)",
                                 }}
                               >
-                                {r.time}
-                                {r.end_time ? ` تا ${r.end_time}` : ""}{" "}
+                                {formatFaTime(r.time)}
+                                {r.end_time ? ` تا ${formatFaTime(r.end_time)}` : ""}{" "}
                                 {r.lesson}{" "}
                                 <span style={{ color: "var(--c-txt3)" }}>
                                   ({r.group})
@@ -2965,7 +2965,7 @@ function ScheduleModal({ row, preset, onClose }) {
         </div>
         {f.time && f.end_time && (
           <div className="muted small">
-            ⏰ بازه: {f.time} تا {f.end_time}{" "}
+            ⏰ بازه: {formatFaTime(f.time)} تا {formatFaTime(f.end_time)}{" "}
             {(() => {
               try {
                 const [ah, am] = f.time.split(":").map(Number);
@@ -3071,7 +3071,7 @@ function FlexModal({ row, onClose }) {
         </div>
         {f.time && f.end_time && (
           <div className="muted small">
-            ⏰ {f.time} تا {f.end_time}
+            ⏰ {formatFaTime(f.time)} تا {formatFaTime(f.end_time)}
           </div>
         )}
         <input

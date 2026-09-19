@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api, errText, exportCSV } from '../api.js';
 import { B, Empty, ErrorState, FaDateTime, Loading, NoPerm, PageHeader } from '../ui.jsx';
-import { fileDateStamp } from '../time.js';
+import { fileDateStamp, formatFaDate, formatFaDayMonth } from '../time.js';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 import {
@@ -97,10 +97,10 @@ function DailyChart({ title, purpose, rows = [], unit = 'رویداد', note }) 
   return <div className="an-chart panel panel-pad">
     <h3>{title}</h3><p className="an-purpose">❔ {purpose}</p>
     <div className="an-daily" dir="ltr" role="img" aria-label={`${title}؛ ${fa(total)} ${unit}`}>
-      {clean.map(row => <div className="an-day" key={row.date} title={`${row.date} — ${fa(row.count)} ${unit}`}><div className="an-day-bar" style={{ height: `${Math.max(3, Math.round(Number(row.count) * 100 / max))}%` }} /><span>{row.date.slice(5)}</span></div>)}
+      {clean.map(row => <div className="an-day" key={row.date} title={`${formatFaDayMonth(row.date)} — ${fa(row.count)} ${unit}`}><div className="an-day-bar" style={{ height: `${Math.max(3, Math.round(Number(row.count) * 100 / max))}%` }} /><span>{formatFaDayMonth(row.date)}</span></div>)}
     </div>
-    <p className="an-chart-summary">جمع بازه: <b>{fa(total)}</b> {unit} · اوج ثبت‌شده: <b>{peak.date}</b> با {fa(peak.count)} {unit}{note ? ` · ${note}` : ''}</p>
-    <table className="an-data-table"><caption>داده روزانه {title}</caption><thead><tr><th>تاریخ</th><th>{unit}</th></tr></thead><tbody>{clean.map(row => <tr key={`${row.date}-table`}><td dir="ltr">{row.date}</td><td>{fa(row.count)}</td></tr>)}</tbody></table>
+    <p className="an-chart-summary">جمع بازه: <b>{fa(total)}</b> {unit} · اوج ثبت‌شده: <b>{formatFaDate(peak.date)}</b> با {fa(peak.count)} {unit}{note ? ` · ${note}` : ''}</p>
+    <table className="an-data-table"><caption>داده روزانه {title}</caption><thead><tr><th>تاریخ</th><th>{unit}</th></tr></thead><tbody>{clean.map(row => <tr key={`${row.date}-table`}><td>{formatFaDate(row.date)}</td><td>{fa(row.count)}</td></tr>)}</tbody></table>
   </div>;
 }
 

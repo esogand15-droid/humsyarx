@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api, errText } from '../api.js';
 import { B, DataTable, Modal, Confirm, Switch, PageHeader, toast, Empty, Loading } from '../ui.jsx';
+import { formatFaDate } from '../time.js';
 
 // 🌊 W7 — کنترل مرکزی دسترسی فیچرها (FREE NOW, PAY LATER).
 // هر سطر = یک سوییچ monetization: تغییر access از FREE به SUBSCRIPTION
@@ -45,7 +46,7 @@ export default function Features({ me }) {
         { k: 'access', label: 'دسترسی', render: r => <B kind={ACCESS_KIND[r.policy.access] || ''}>{ACCESS_FA[r.policy.access] || r.policy.access}</B> },
         { k: 'trial', label: 'تریال', render: r => <span>{r.policy.trial_allowed ? '✓' : '✗'}</span> },
         { k: 'quota', label: 'سهمیه', render: r => quotaText(r.policy.quota) },
-        { k: 'sched', label: 'زمان‌بندی', render: r => r.policy.pending_access ? <B kind="acc">{ACCESS_FA[r.policy.pending_access]} از {String(r.policy.effective_from || '').slice(0, 10)}</B> : <span className="muted">—</span> },
+        { k: 'sched', label: 'زمان‌بندی', render: r => r.policy.pending_access ? <B kind="acc">{ACCESS_FA[r.policy.pending_access]} از {formatFaDate(r.policy.effective_from)}</B> : <span className="muted">—</span> },
         { k: 'enforced', label: 'اعمال', render: r => r.enforced ? <span>🛡</span> : <span className="muted" title="سوییچ فعال؛ نقطه‌ی اعمال بعدی">policy</span> },
         { k: 'act', label: '', render: r => <div className="row" style={{ gap: 5 }}>
           <button className="btn sm" disabled={busy} onClick={() => setEdit(r)}>✏️ ویرایش</button>

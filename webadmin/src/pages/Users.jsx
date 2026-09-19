@@ -4,7 +4,7 @@ import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FaDate, FaDateTi
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 import SavedViews from '../SavedViews.jsx';
 import SmartQueryBuilder from '../SmartQueryBuilder.jsx';
-import { fileDateStamp } from '../time.js';
+import { fileDateStamp, formatFaDate, formatFaDateTime } from '../time.js';
 
 const STATUS = { '': 'همه', pending: 'در انتظار تأیید', suspended: 'تعلیق‌شده', active: 'فعال' };
 const faNum = (n) => Number(n ?? 0).toLocaleString('fa-IR');
@@ -115,7 +115,7 @@ function computeRecommendations(d){
   const openTickets=(d.recent_tickets||[]).filter(t=>t.status==='open').length;
   const dl = sub?.status==='active' ? Number(sub.days_left) : null;
   if(dl!=null && dl<=3 && dl>=0){
-    recs.push({ id:'extend_sub', icon:'💎', title:'تمدید اشتراک', reason:`اشتراک تا ${dl} روز دیگر منقضی می‌شود`, sev: dl<=1?'critical': dl<=2?'high':'medium', evidence:`subscriptions.end_date = ${sub.end_date}`, action:'تمدید', go:'/subscriptions' });
+    recs.push({ id:'extend_sub', icon:'💎', title:'تمدید اشتراک', reason:`اشتراک تا ${dl} روز دیگر منقضی می‌شود`, sev: dl<=1?'critical': dl<=2?'high':'medium', evidence:`subscriptions.end_date = ${formatFaDateTime(sub.end_date)}`, action:'تمدید', go:'/subscriptions' });
   } else if(!sub || sub.status!=='active'){
     recs.push({ id:'grant_sub', icon:'💳', title:'بررسی اشتراک', reason:'بدون اشتراک فعال', sev:'medium', evidence:'subscriptions.status != active', action:'اعطا', go:'/subscriptions' });
   }
@@ -128,7 +128,7 @@ function computeRecommendations(d){
     recs.push({ id:'ai_unblock', icon:'🤖', title:'بررسی مسدودیت هوشیار', reason:'کاربر از هوشیار مسدود است', sev:'high', evidence:'ai.banned=true', action:'مدیریت هوشیار', go:'/ai-admin' });
   }
   if(ds!==null && ds>30){
-    recs.push({ id:'inactive_msg', icon:'🕓', title:'ارسال پیام به کاربر غیرفعال', reason:`غیرفعال بیش از ${ds} روز`, sev:'medium', evidence:`users.last_active=${u.last_active}`, action:'ارسال پیام', go:null });
+    recs.push({ id:'inactive_msg', icon:'🕓', title:'ارسال پیام به کاربر غیرفعال', reason:`غیرفعال بیش از ${ds} روز`, sev:'medium', evidence:`users.last_active=${formatFaDateTime(u.last_active)}`, action:'ارسال پیام', go:null });
   }
   if(Number(u.total_answers||0)>0 && Number(u.accuracy||0)<40){
     recs.push({ id:'low_acc', icon:'📉', title:'بررسی افت تحصیلی', reason:`دقت پایین ${u.accuracy}٪`, sev:'medium', evidence:`users.accuracy=${u.accuracy}`, action:'نمرات', go:null });
@@ -398,10 +398,10 @@ export default function Users({ go, me, route = '' }) {
       { label: 'intake', v: 'intake' }, { label: 'group', v: 'group' },
       { label: 'roles', v: r => (r.roles || []).join('|') },
       { label: 'subscription', v: r => r.subscription?.status || '' },
-      { label: 'subscription_end', v: r => r.subscription?.end_date || '' },
+      { label: 'subscription_end', v: r => r.subscription?.end_date ? formatFaDate(r.subscription.end_date) : '' },
       { label: 'accuracy', v: 'accuracy' }, { label: 'answers', v: 'total_answers' },
       { label: 'exams', v: 'exam_count' }, { label: 'ai_usage', v: 'ai_usage' },
-      { label: 'last_active', v: 'last_active' }, { label: 'registered_at', v: 'registered_at' },
+      { label: 'last_active', v: r => r.last_active ? formatFaDateTime(r.last_active) : '' }, { label: 'registered_at', v: r => r.registered_at ? formatFaDateTime(r.registered_at) : '' },
       { label: 'status', v: r => r.suspended ? 'suspended' : r.approved ? 'active' : 'pending' },
     ], rows);
     toast(`خروجی ${rows.length} کاربر دانلود شد 📥`);

@@ -62,7 +62,7 @@ function ExamsTab({ autoCreate = false, initialStatus = '' }) {
     { k: 'lesson', label: 'درس / عنوان', render: r => (
       <div><b style={{ color: 'var(--txt)' }}>{r.lesson}</b>
         <div className="muted">{r.teacher || ''}</div></div>) },
-    { k: 'date', label: 'تاریخ', render: r => <span className="code">{r.date}</span> },
+    { k: 'date', label: 'تاریخ', render: r => <FaDate value={r.date} /> },
     { k: 'time', label: 'ساعت', render: r => r.time || '—' },
     { k: 'group', label: 'گروه' },
     { k: 'location', label: 'مکان', render: r => r.location || '—' },
