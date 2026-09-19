@@ -297,9 +297,10 @@ export const api = {
         (intake ? `?intake=${encodeURIComponent(intake)}` : ""),
     ),
   questionImportPrompt: () => req("/api/web-admin/questions/import/prompt"),
-  questionImportUpload: (file) => {
+  questionImportUpload: (file, jobContentSource) => {
     const form = new FormData();
     form.append("file", file);
+    if (jobContentSource) form.append("job_content_source", jobContentSource);
     return req("/api/web-admin/questions/import/upload", {
       method: "POST",
       form,

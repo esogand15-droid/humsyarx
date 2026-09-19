@@ -20,6 +20,8 @@ const CLASS_LABEL = {
   ready: 'آماده', error: 'خطای ساختار', unmatched: 'taxonomy نامشخص', ambiguous: 'taxonomy مبهم',
   exact_duplicate: 'تکراری قطعی', probable_duplicate: 'احتمالاً تکراری', conflict: 'تعارض پاسخ',
 };
+// 🌊 QBANK-W1 — برچسب فارسی ۵ منبع محتوا (هم‌راستا با contracts.CONTENT_SOURCES)
+const CONTENT_SRC = { hamsyar: 'بانک اختصاصی همشیار', konkoor_sarasari: 'کنکور سراسری علوم پایه', sib_sabz: 'سیب سبز', prognoz: 'پروگنوز', other: 'سایر' };
 
 // §W9 — نگاشتِ سطحِ شدتِ گزارش به نشانِ بصری. آستانه‌ها سمتِ سرور
 // تعیین می‌شوند (قابلِ تنظیم)؛ اینجا فقط نمایش است.
@@ -152,6 +154,7 @@ export default function Questions({ route = '', go }) {
     { k: 'difficulty', label: 'سختی', sortable: true, render: row => { const [label, kind] = DIFF[row.difficulty] || ['—', '']; return <B kind={kind}>{label}</B>; } },
     { k: 'creator', label: 'طراح', stop: true, render: row => <button className="btn sm" disabled={!row.creator_id} onClick={() => go?.(`/users?q=${row.creator_id}`)}>{row.creator_name || '—'}<small className="muted" style={{ display: 'block' }}>{SRC[row.source] || row.source}</small></button> },
     { k: 'intake', label: 'ورودی', render: row => row.intake || <B>سراسری</B> },
+    { k: 'yearsrc', label: 'سال/منبع', render: row => <div>{row.exam_year ? <B kind="purple">📅 {row.exam_year}</B> : <span className="muted">—</span>}<small className="muted" style={{ display: 'block' }}>{CONTENT_SRC[row.content_source] || row.content_source_label_fa || '—'}</small></div> },
     { k: 'status', label: 'چرخه عمر', render: row => { const [label, kind] = STATUS[row.status] || [row.status, '']; return <div><B kind={kind}>{label}</B>{row.review_reason && <small className="muted" style={{ display: 'block', maxWidth: 180 }}>{row.review_reason}</small>}</div>; } },
     { k: 'reports', label: 'گزارش', render: row => {
       const info = reportMap[row.id];
@@ -383,6 +386,7 @@ function ImportWizard({ onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [mapItem, setMapItem] = useState(null);
+  const [jobSource, setJobSource] = useState('');
   useEffect(() => { api.questionImportPrompt().then(setPrompt).catch(e => { const message = e.status === 403 ? 'درون‌ریزی JSON فقط برای مالک فعال است.' : errText(e); setPromptError(message); toast(message, 'err'); }); }, []);
   const loadItems = async (jobId = preview?.job_id, cls = classification) => {
     if (!jobId) return;
@@ -391,7 +395,7 @@ function ImportWizard({ onClose, onDone }) {
   };
   const upload = async () => {
     if (!file) return; setBusy(true);
-    try { const data = await api.questionImportUpload(file); setPreview(data); await loadItems(data.job_id, ''); }
+    try { const data = await api.questionImportUpload(file, jobSource || undefined); setPreview(data); await loadItems(data.job_id, ''); }
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -407,11 +411,12 @@ function ImportWizard({ onClose, onDone }) {
     {!preview && !promptError && <>
       <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><b>۱. استخراج خارج از سامانه</b><p className="muted">prompt نسخه {prompt?.schema_version || '۱.۰'} را کپی کنید، PDF را با آن به مدل بدهید و فقط JSON خروجی را بارگذاری کنید. ورود مستقیم یا فایل با تعداد گزینه غیر از چهار رد می‌شود.</p>
         <button className="btn" disabled={!prompt} onClick={() => navigator.clipboard?.writeText(prompt?.prompt || '').then(() => toast('prompt کپی شد'))}>📋 کپی prompt و schema</button></div>
-      <div className="panel panel-pad" style={{ marginTop: 10 }}><b>۲. بارگذاری برای validation و preview</b><input className="inp" type="file" accept="application/json,.json" onChange={e => setFile(e.target.files?.[0] || null)} style={{ marginTop: 10 }} /><button className="btn primary" disabled={!file || busy || !prompt} onClick={upload} style={{ marginTop: 10 }}>{busy ? 'در حال تحلیل…' : 'ساخت پیش‌نمایش'}</button></div>
+      <div className="panel panel-pad" style={{ marginTop: 10 }}><b>۲. بارگذاری برای validation و preview</b><input className="inp" type="file" accept="application/json,.json" onChange={e => setFile(e.target.files?.[0] || null)} style={{ marginTop: 10 }} /><select className="inp" value={jobSource} onChange={e => setJobSource(e.target.value)} style={{ marginTop: 10 }} title="منبع کل این بچ (اختیاری؛ مقدار سطح ردیف اولویت دارد)"><option value="">منبع بچ: پیش‌فرض (همشیار)</option>{Object.entries(CONTENT_SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select><button className="btn primary" disabled={!file || busy || !prompt} onClick={upload} style={{ marginTop: 10 }}>{busy ? 'در حال تحلیل…' : 'ساخت پیش‌نمایش'}</button></div>
     </>}
     {preview && !result && <>
       <div className="row" style={{ flexWrap: 'wrap' }}><B>کل {fa(counts.total)}</B><B kind="ok">آماده {fa(counts.ready)}</B><B kind="bad">خطا {fa(counts.errors)}</B><B kind="warn">نامشخص/مبهم {fa(Number(counts.unmatched || 0) + Number(counts.ambiguous || 0))}</B><B>تکراری قطعی {fa(counts.exact_duplicates)}</B><B kind="purple">احتمالی/تعارض {fa(Number(counts.probable_duplicates || 0) + Number(counts.conflicts || 0))}</B></div>
       <div className="muted" style={{ marginTop: 8 }}>job: <span className="code">{preview.job_id}</span> · فایل: {preview.file_name} · تأیید نهایی idempotent است.</div>
+      {(preview.inferred_exam_year || preview.inferred_exam_track || (preview.years || []).length > 0 || (preview.sources || []).length > 0) && <div className="panel panel-pad" style={{ marginTop: 8, background: 'var(--bg)' }}><b>🌊 سال/منبع/TRACK</b><div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>{preview.inferred_exam_year && <B kind="purple">📅 سال فایل: {preview.inferred_exam_year}</B>}{preview.inferred_exam_track && <B>{preview.inferred_exam_track === 'dentistry' ? '🦷 دندان‌پزشکی' : '🩺 پزشکی'}</B>}{preview.job_content_source && <B kind="ok">🏷 {CONTENT_SRC[preview.job_content_source] || preview.job_content_source}</B>}{(preview.years || []).map(y => <B key={y.year || '؟'}>سال {y.year || 'نامشخص'}: {fa(y.count)}</B>)}{(preview.sources || []).map(g => <B key={g.source || '؟'}>{CONTENT_SRC[g.source] || g.source || '—'}: {fa(g.count)}</B>)}</div></div>}
       <div className="grid g2" style={{ marginTop: 10 }}>{(preview.classification || []).map(group => <div className="panel panel-pad" key={group.lesson}><b>{group.lesson} · {fa(group.count)}</b><div className="muted">{group.topics.map(t => `${t.topic} (${fa(t.count)})`).join('، ')}</div></div>)}</div>
       <div className="row" style={{ marginTop: 12 }}><select className="inp" value={classification} onChange={async e => { setClassification(e.target.value); await loadItems(preview.job_id, e.target.value); }}><option value="">همه ردیف‌ها</option>{Object.entries(CLASS_LABEL).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><button className="btn" onClick={refresh}>↻ تازه‌سازی</button></div>
       <DataTable columns={[
