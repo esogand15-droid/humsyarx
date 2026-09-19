@@ -14,7 +14,7 @@ from urllib.parse import quote
 from bson import ObjectId
 from pymongo import ReturnDocument
 import motor.motor_asyncio
-from time_utils import today_tehran, utc_now_iso, now_utc
+from time_utils import today_tehran, utc_now_iso, now_utc, format_date_fa, format_time_fa
 from question_bank.contracts import (
     DIFFICULTY_LABELS, and_query, approved_query, canonical_difficulty,
     canonical_status, status_query,
@@ -1504,9 +1504,14 @@ class DBContent:
         if teacher:
             html_lines.append(f'👨‍🏫 {escape(teacher)}')
             plain_lines.append(f'👨‍🏫 {teacher}')
-        when = f'📅 {escape(date)}' + (f'  ⏰ {escape(time)}' if time else '')
+        # 🛡 AUDIT-FIX (جلالی): تاریخ میلادیِ ذخیره‌سازی هرگز خام به کاربر
+        # نشان داده نمی‌شود — هم‌سبک مسیر ربات (schedule.py/bot.py).
+        date_fa = format_date_fa(date, long=True, weekday=True, date_only=True,
+                                 fallback=date) if date else ''
+        time_fa = format_time_fa(time, fallback=time) if time else ''
+        when = f'📅 {escape(date_fa)}' + (f'  ⏰ {escape(time_fa)}' if time_fa else '')
         html_lines.append(when)
-        plain_lines.append(f'📅 {date}' + (f'  ⏰ {time}' if time else ''))
+        plain_lines.append(f'📅 {date_fa}' + (f'  ⏰ {time_fa}' if time_fa else ''))
         if location:
             html_lines.append(f'📍 {escape(location)}')
             plain_lines.append(f'📍 {location}')
