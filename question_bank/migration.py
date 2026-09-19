@@ -1,8 +1,13 @@
 """Read-first, idempotent migration helpers. Never runs automatically."""
 from __future__ import annotations
 
-from .contracts import canonical_difficulty, canonical_source, question_content_hash
+from .contracts import (
+    CONTENT_SOURCES, canonical_difficulty, canonical_source, clean_text,
+    question_content_hash,
+)
 from time_utils import utc_now_iso
+
+QBANK_W1_MIGRATION = "qbank_w1_fields_1"
 
 
 async def inspect_questions(database, sample_limit: int = 20) -> dict:
@@ -203,3 +208,93 @@ async def backfill_progress(database, *, apply: bool = False, limit: int = 10000
         {"migration": "question_bank_v2_progress_1"})) if apply else 0
     report["rollback_command"] = "python qbank_migrate.py rollback-progress --apply --confirmed-backup-count <count>"
     return report
+
+
+async def inspect_qbank_w1(database) -> dict:
+    """🌊 QBANK-W1 — read-only census for the year/source/track backfill."""
+    total = await database.questions.count_documents({})
+    missing_source = await database.questions.count_documents(
+        {"content_source": {"$exists": False}})
+    missing_year = await database.questions.count_documents(
+        {"exam_year": {"$exists": False}})
+    missing_track = await database.questions.count_documents(
+        {"provenance.exam_track": {"$exists": False}})
+    legacy_image = await database.questions.count_documents(
+        {"$or": [{"image.required": True},
+                 {"image.description": {"$exists": True, "$ne": None, "$ne": ""}}]})
+    return {"migration": QBANK_W1_MIGRATION, "total": total,
+            "missing_content_source": missing_source, "missing_exam_year": missing_year,
+            "missing_exam_track": missing_track, "legacy_image_docs": legacy_image,
+            "safe_to_auto_migrate": True,
+            "reason": "defaults-only backfill; originals snapshotted for rollback"}
+
+
+async def migrate_qbank_w1(database, *, apply: bool = False,
+                           expected_total: int | None = None,
+                           limit: int = 100000) -> dict:
+    """🌊 QBANK-W1 — backfill content_source/exam_year/exam_track/image shape.
+
+    Idempotent: docs that already have every field are skipped, so a rerun
+    migrates zero rows. Originals are snapshotted per-doc for rollback.
+    """
+    live_total = await database.questions.count_documents({})
+    if apply and (expected_total is None or int(expected_total) != live_total):
+        raise RuntimeError(f"inspection total mismatch: live={live_total}, confirmed={expected_total}")
+    if apply and live_total > limit:
+        raise RuntimeError(f"live total {live_total} exceeds migration safety limit {limit}")
+    report = {"migration": QBANK_W1_MIGRATION, "live_total": live_total,
+              "scanned": 0, "migrated": 0, "skipped": 0}
+    cursor = database.questions.find({}).sort("_id", 1).limit(limit)
+    async for doc in cursor:
+        report["scanned"] += 1
+        updates: dict = {}
+        if doc.get("content_source") not in CONTENT_SOURCES:
+            updates["content_source"] = "hamsyar"
+            updates["content_source_label_fa"] = CONTENT_SOURCES["hamsyar"]
+        if "exam_year" not in doc:
+            updates["exam_year"] = None
+            updates["exam_year_confidence"] = "unknown"
+        provenance = doc.get("provenance")
+        if not isinstance(provenance, dict) or provenance.get("exam_track") not in {"medicine", "dentistry"}:
+            updates["provenance.exam_track"] = "medicine"
+        image = doc.get("image")
+        if isinstance(image, dict) and (image.get("required") or clean_text(image.get("description"))):
+            updates["image"] = {"has_image": True, "url": None, "storage_ref": None,
+                                "alt_text": clean_text(image.get("description")) or None,
+                                "pending_upload": True}
+        elif "image" not in doc:
+            updates["image"] = {"has_image": False, "url": None, "storage_ref": None,
+                                "alt_text": None, "pending_upload": False}
+        if not updates:
+            report["skipped"] += 1
+            continue
+        if apply:
+            updates["updated_at"] = doc.get("updated_at") or utc_now_iso()
+            await database.question_migration_backups.update_one(
+                {"_id": f"{QBANK_W1_MIGRATION}:{doc['_id']}"},
+                {"$setOnInsert": {"migration": QBANK_W1_MIGRATION,
+                                  "question_id": str(doc["_id"]),
+                                  "captured_at": utc_now_iso(), "original": doc}}, upsert=True)
+            await database.questions.update_one({"_id": doc["_id"]}, {"$set": updates})
+        report["migrated"] += 1
+    report["applied"] = bool(apply)
+    report["backup_rows"] = (await database.question_migration_backups.count_documents(
+        {"migration": QBANK_W1_MIGRATION})) if apply else 0
+    report["rollback_command"] = (
+        f"python qbank_migrate.py rollback --apply --migration {QBANK_W1_MIGRATION} "
+        "--confirmed-backup-count <count>")
+    return report
+
+
+async def ensure_qbank_w1_indexes(database) -> dict:
+    """🌊 QBANK-W1 — new indexes; named explicitly to stay idempotent."""
+    names = []
+    names.append(await database.questions.create_index(
+        [("term", 1), ("lesson_id", 1), ("topic_id", 1), ("status", 1)],
+        name="qbank_w1_taxonomy_status"))
+    names.append(await database.questions.create_index(
+        [("content_source", 1), ("exam_year", 1), ("status", 1)],
+        name="qbank_w1_source_year_status"))
+    names.append(await database.questions.create_index(
+        [("image.pending_upload", 1)], name="qbank_w1_pending_upload"))
+    return {"indexes": names}

@@ -31,37 +31,58 @@ class ExamService:
         self.qbank = QuestionBankService(database)
         self.sessions = database.exam_sessions
 
+    @staticmethod
+    def _filters(exam_year_from=None, exam_year_to=None, content_source=None) -> dict:
+        sources = None
+        if content_source is not None:
+            sources = [content_source] if isinstance(content_source, str) else list(content_source)
+        return {"exam_year_from": exam_year_from, "exam_year_to": exam_year_to,
+                "content_source": sources}
+
     async def preview(self, *, user: Mapping, taxonomy: Mapping,
                       requested_count: int, minutes: int, output_mode: str,
-                      difficulty: str | None = None) -> dict:
+                      difficulty: str | None = None,
+                      exam_year_from: str | None = None,
+                      exam_year_to: str | None = None,
+                      content_source=None) -> dict:
         if output_mode not in OUTPUT_MODES:
             raise QuestionDomainError("invalid_output_mode", "نوع اجرای آزمون معتبر نیست")
         if not 5 <= int(requested_count) <= 100:
             raise QuestionDomainError("invalid_question_count", "تعداد سؤال باید بین ۵ تا ۱۰۰ باشد")
         if not 0 <= int(minutes) <= 180:
             raise QuestionDomainError("invalid_exam_duration", "زمان آزمون معتبر نیست")
-        available = await self.qbank.capacity(user=user, taxonomy=taxonomy, difficulty=difficulty)
+        available = await self.qbank.capacity(user=user, taxonomy=taxonomy, difficulty=difficulty,
+                                              exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                              content_source=content_source)
         return {"requested_count": int(requested_count), "available_count": available,
                 "can_start": available >= int(requested_count),
                 "max_count": available, "minutes": int(minutes), "output_mode": output_mode,
-                "taxonomy": dict(taxonomy)}
+                "taxonomy": dict(taxonomy),
+                "filters": self._filters(exam_year_from, exam_year_to, content_source)}
 
     async def create(self, *, user: Mapping, taxonomy: Mapping,
                      requested_count: int, minutes: int, output_mode: str,
                      difficulty: str | None = None,
+                     exam_year_from: str | None = None,
+                     exam_year_to: str | None = None,
+                     content_source=None,
                      allow_smaller: bool = False) -> dict:
         existing = await self.active(user=user)
         if existing and existing.get("status") == "active":
             raise QuestionDomainError("active_exam_exists", "ابتدا آزمون فعال را ادامه دهید یا رها کنید", 409,
                                       {"exam": existing})
         preview = await self.preview(user=user, taxonomy=taxonomy, requested_count=requested_count,
-                                     minutes=minutes, output_mode=output_mode, difficulty=difficulty)
+                                     minutes=minutes, output_mode=output_mode, difficulty=difficulty,
+                                     exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                     content_source=content_source)
         if not preview["available_count"]:
             raise QuestionDomainError("no_questions", "برای این فیلتر سؤالی وجود ندارد", 404, preview)
         if not preview["can_start"] and not allow_smaller:
             raise QuestionDomainError("insufficient_questions", "تعداد سؤال‌های موجود کمتر از انتخاب شماست", 409, preview)
         actual = min(int(requested_count), preview["available_count"])
-        query = self.qbank.eligible_query(taxonomy, intakes=self.qbank.student_intakes(user), difficulty=difficulty)
+        query = self.qbank.eligible_query(taxonomy, intakes=self.qbank.student_intakes(user), difficulty=difficulty,
+                                          exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                          content_source=content_source)
         rows = await self.db.questions.aggregate([
             {"$match": query}, {"$sample": {"size": actual}}, {"$project": {"_id": 1}},
         ]).to_list(actual)
@@ -81,6 +102,7 @@ class ExamService:
             "difficulty": difficulty or "", "question_ids": [str(x["_id"]) for x in rows],
             "requested_count": int(requested_count), "actual_count": actual,
             "minutes": int(minutes), "duration_seconds": int(minutes) * 60,
+            "filters": self._filters(exam_year_from, exam_year_to, content_source),
             "deadline": deadline.isoformat() if deadline else None,
             "deadline_ts": int(deadline.timestamp()) if deadline else None,
             "expires_at": expires_at,
@@ -292,5 +314,6 @@ class ExamService:
                 "percentage": round(correct * 100 / answered, 1) if answered else 0,
                 "current_index": int(session.get("current_index", session.get("index", 0)) or 0),
                 "minutes": int(session.get("minutes") or 0), "deadline": session.get("deadline"),
+                "filters": session.get("filters") or {},
                 "started_at": session.get("started_at"), "finished_at": session.get("finished_at"),
                 "exam_code": session.get("exam_code"), "generation": session.get("generation")}
