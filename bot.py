@@ -1061,7 +1061,7 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
         from backup import build_full_backup_file
         from utils import send_audit_log
         import os as _os
-        temp_path = await build_full_backup_file()
+        temp_path, _auto_summary = await build_full_backup_file()
         # 🌊 W5/REL-04 — گیت حجم: ارسالِ محکوم‌به‌شکستِ بالای ۵۰MB تلگرام
         # انجام نمی‌شود؛ خطا به مسیر consec_fail/alert موجود می‌رود.
         try:
@@ -1092,22 +1092,27 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"backup encryption skipped: {_ee}")
         try:
             # send file without holding json string in RAM
+            from backup import build_backup_caption
+            try:
+                _send_size = _os.path.getsize(temp_path)
+            except Exception:
+                _send_size = _size
             with open(temp_path, 'rb') as f:
                 now_str = now_tehran().strftime('%Y%m%d_%H%M')
-                fname = f"backup_auto_{now_str}.json{_enc_suffix}"
-                _cap = f"💾 بکاپ خودکار {now_tehran().strftime('%Y-%m-%d %H:%M')}"
-                if _enc_suffix:
-                    _cap += " 🔐"
+                fname = f"backup_auto_{now_str}.json.gz{_enc_suffix}"
+                _cap = build_backup_caption(
+                    {'summary': _auto_summary or {}}, _send_size,
+                    encrypted=bool(_enc_suffix))
                 # use bot.send_document with file handle
-                sent = await context.bot.send_document(chat_id=ADMIN_ID, document=f, caption=_cap, filename=fname)
+                sent = await context.bot.send_document(
+                    chat_id=ADMIN_ID, document=f, caption=_cap,
+                    filename=fname, parse_mode='HTML')
                 msg_id = getattr(sent, 'message_id', None)
         finally:
             try: _os.unlink(temp_path)
             except: pass
-        # fallback data for audit log (light)
-        try:
-            data = {"summary": {"note": "streamed"}}
-        except: data = {}
+        # summary واقعی برای audit log و history (دیگر حدس صفر نیست)
+        data = {"summary": _auto_summary or {}}
         await db.set_setting('auto_backup_last_run', utc_now_iso())
         logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
         # 🛡 AUDIT-V2 — نگهداریِ کرانه‌دار: سابقه‌ی بکاپ‌های خودکار در یک
@@ -1123,7 +1128,7 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             if not isinstance(hist, list):
                 hist = []
             hist.append({'at': utc_now_iso(), 'msg_id': msg_id,
-                         'size_kb': (len(data.get('__bytes__', '') or '') // 1024) or None,
+                         'size_kb': (int(_send_size) // 1024) if '_send_size' in dir() and _send_size else None,
                          'users': (data.get('summary') or {}).get('users', 0)})
             hist = hist[-(keep * 3):]                       # کرانه‌ی خودِ سابقه
             stale = hist[:-keep] if len(hist) > keep else []

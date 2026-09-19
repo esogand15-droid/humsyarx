@@ -384,6 +384,7 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
     context.user_data.pop("sub_gift_message", None)
     context.user_data.pop("sub_discount_code", None)
     context.user_data.pop("sub_final_price", None)
+    from utils import fmt_jalali_dt as _fmt_jalali_dt
     act = res.get("activation") or {}
     is_topup = str(doc.get("plan_id") or "") == "wallet_topup"
     if is_topup:
@@ -409,7 +410,7 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
             text = (
                 f"🎉 <b>اشتراکت فعال شد!</b>\n\n"
                 f"📦 {doc.get('plan_name', '')}\n"
-                f"📅 تا: {act.get('end_date', '')}\n"
+                f"📅 تا: {_fmt_jalali_dt(act.get('end_date', ''), with_time=False)}\n"
                 f"🧾 شماره پیگیری: <code>{ref_id}</code>"
             )
         back = "sub:my_status"

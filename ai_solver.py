@@ -1024,7 +1024,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 f"نام: {user.get('name','—')}\n"
                 f"گروه: {user.get('group','—')} | ورودی: {user.get('intake','—')}\n"
                 f"وضعیتِ تایید: {'تاییدشده ✅' if user.get('approved') else 'در انتظارِ تایید ⏳'}\n"
-                f"تاریخِ عضویت: {user.get('registered_at','—')}"
+                f"تاریخِ عضویت: {format_datetime_fa(user.get('registered_at',''), fallback='—')}"
             )
 
         if name == 'remember_about_me':
@@ -1056,7 +1056,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                         f"- {u.get('name','—')} (آیدی: {u.get('user_id')}) | "
                         f"یوزرنیم: @{u.get('username') or '—'} | گروه: {u.get('group','—')} | "
                         f"ورودی: {u.get('intake','—')} | تایید‌شده: {'بله' if u.get('approved') else 'خیر'} | "
-                        f"ثبت‌نام: {u.get('registered_at','—')} | آخرین فعالیت: {u.get('last_active','—')} | "
+                        f"ثبت‌نام: {format_datetime_fa(u.get('registered_at',''), fallback='—')} | آخرین فعالیت: {format_datetime_fa(u.get('last_active',''), fallback='—')} | "
                         f"مسدودِ هوشیار: {'بله' if u.get('ai_banned') else 'خیر'}"
                     )
                 return "\n".join(lines)
@@ -1113,7 +1113,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                     f"👤 {u.get('name','—')} (آیدی: {u.get('user_id')})\n"
                     f"یوزرنیم: @{u.get('username') or '—'} | گروه: {u.get('group','—')} | ورودی: {u.get('intake','—')}\n"
                     f"تایید‌شده: {'بله' if u.get('approved') else 'خیر'} | مسدودِ هوشیار: {'بله' if u.get('ai_banned') else 'خیر'}\n"
-                    f"ثبت‌نام: {u.get('registered_at','—')} | آخرین فعالیت: {u.get('last_active','—')}\n"
+                    f"ثبت‌نام: {format_datetime_fa(u.get('registered_at',''), fallback='—')} | آخرین فعالیت: {format_datetime_fa(u.get('last_active',''), fallback='—')}\n"
                     f"📊 تعدادِ نمراتِ ثبت‌شده: {len(grades)}\n"
                     f"🎫 تیکتِ بازِ این کاربر: {len(open_tickets)}"
                 )

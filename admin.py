@@ -28,7 +28,7 @@ from utils import (
     esc as _esc,                                  # 🛡 AUDIT-A6 — escape مرکزی پروژه
     send_audit_log, get_keyboard_for_user, fmt_jalali_dt, now_tehran, now_tehran_str,
 )
-from time_utils import format_time_fa, now_utc, parse_machine_datetime
+from time_utils import fa_digits, format_time_fa, now_utc, parse_machine_datetime
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -422,7 +422,7 @@ async def _show_attention(query, uid: int):
                 until = d.get('dismissed_until') or 'دائم'
                 text_lines.append(f"🔕 {it['key']}: {d.get('reason','—')} (تا {until})")
             text_lines.append("")
-        text_lines.append(f"👛 هشدار کیف پول: {'فعال' if wallet_enabled else 'غیرفعال'} | ضداسپم {wallet_cooldown}ساعت" + (f" | بی‌صدا تا {wallet_muted}" if wallet_muted else ""))
+        text_lines.append(f"👛 هشدار کیف پول: {'فعال' if wallet_enabled else 'غیرفعال'} | ضداسپم {fa_digits(wallet_cooldown)}ساعت" + (f" | بی‌صدا تا {fmt_jalali_dt(wallet_muted)}" if wallet_muted else ""))
         text = "\n".join(text_lines)
         kb = []
         for it in active:
@@ -458,7 +458,7 @@ async def _attention_dismiss_bot(query, uid, key, hours, context):
         u = await db.get_user(uid)
         await db.log_action(uid, (u or {}).get("name", str(uid)), await db.get_actor_role_label(uid), f"بستن هشدار نیازمند اقدام: {key}", "BotAdmin", category="admin", severity="WARNING", target_id=key, target_type="attention", target_label=reason[:80])
     except: pass
-    await query.answer(f"🔕 {key} بسته شد ({'دائم' if not until else f'{hours} ساعت'})", show_alert=True)
+    await query.answer(f"🔕 {key} بسته شد ({'دائم' if not until else f'{fa_digits(hours)} ساعت'})", show_alert=True)
     await _show_attention(query, uid)
 
 async def _attention_restore_bot(query, uid, key, context):
@@ -517,7 +517,7 @@ async def _h_notif_set_interval(query, context, parts, uid):
         _ar = await db.get_actor_role_label(uid)
         await send_audit_log(context.bot,'admin',_an,uid,"تغییر فاصله اعلان منابع",module='Settings',severity='WARNING',actor_role=_ar,before={'hours': _old_h},after={'hours': hours},tags=['اعلان'])
     except Exception as _e: import logging; logging.getLogger(__name__).warning(f"notif interval audit failed: {_e}")
-    await query.answer(f"✅ فاصله اعلان منابع جدید: هر {hours} ساعت", show_alert=True)
+    await query.answer(f"✅ فاصله اعلان منابع جدید: هر {fa_digits(hours)} ساعت", show_alert=True)
     await _show_notif_manage(query)
 
 async def _h_notif_history(query, context, parts, uid):
@@ -1691,7 +1691,7 @@ async def _broadcast_show_preview(query_or_msg, context, scheduled: bool = False
     if delay_min and delay_min > 0:
         h = delay_min // 60
         m = delay_min % 60
-        t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
+        t_str = f"{fa_digits(h)} ساعت {fa_digits(m)} دقیقه" if h else f"{fa_digits(m)} دقیقه"
         send_time = format_time_fa(now_utc() + timedelta(minutes=delay_min))
         schedule_line = f"\n⏰ ارسال در: <b>{t_str} دیگر</b> (حدوداً ساعت {send_time})"
 
@@ -1791,7 +1791,7 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
     if delay_min > 0:
         h = delay_min // 60
         m = delay_min % 60
-        t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
+        t_str = f"{fa_digits(h)} ساعت {fa_digits(m)} دقیقه" if h else f"{fa_digits(m)} دقیقه"
         due = now_utc() + timedelta(minutes=delay_min)
         send_time = format_time_fa(due)
         campaign = await create_broadcast_campaign(
@@ -2269,7 +2269,7 @@ async def _show_stats(query):
     peak_txt = "—"
     if pulse.get('peak_hour') is not None:
         h = int(pulse['peak_hour'])
-        peak_txt = f"ساعت {h:02d}:۰۰–{(h+1)%24:02d}:۰۰  ({pulse['peak_hour_count']} کنش)"
+        peak_txt = f"ساعت {fa_digits(f'{h:02d}:00–{(h+1)%24:02d}:00')} ({fa_digits(pulse['peak_hour_count'])} کنش)"
 
     text = (
         "📊 <b>آمار سیستم — نمای کلی</b>\n━━━━━━━━━━━━━━━━\n\n"
