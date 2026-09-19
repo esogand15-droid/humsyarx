@@ -110,6 +110,19 @@ export default function QuestionCard({
           </span>
         )}
 
+        {/* 🌊 QBANK-W1 — سال و منبع سؤال */}
+        {question.exam_year && (
+          <span className="badge b-gray">
+            📅 {question.exam_year}
+          </span>
+        )}
+
+        {question.content_source_label_fa && (
+          <span className="badge b-gray">
+            🏷 {question.content_source_label_fa}
+          </span>
+        )}
+
         <span
           className={`badge ${
             question.difficulty

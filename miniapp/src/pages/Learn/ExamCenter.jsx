@@ -115,6 +115,21 @@ export default function ExamCenter() {
     minutes: 20,
   });
 
+  /* 🌊 QBANK-W1 — فیلترهای سال و منبع آزمون */
+  const [yearFrom, setYearFrom] = useState('');
+  const [yearTo, setYearTo] = useState('');
+  const [srcPicked, setSrcPicked] = useState([]);
+  const { data: filterOptions = {} } = useQuery({
+    queryKey: ['question-filters'],
+    queryFn: () =>
+      api.get('/api/questions/filters').then((r) => r.data || {}),
+    staleTime: 10 * 60 * 1000,
+  });
+  const toggleSrc = (code) =>
+    setSrcPicked((cur) =>
+      cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code]
+    );
+
   const [outputMode, setOutputMode] =
     useState('app');
 
@@ -380,6 +395,9 @@ export default function ExamCenter() {
               ),
 
             output_mode: outputMode,
+            exam_year_from: yearFrom || null,
+            exam_year_to: yearTo || null,
+            content_source: srcPicked.length ? srcPicked : null,
           }
         ),
 
@@ -2064,6 +2082,40 @@ export default function ExamCenter() {
               </select>
             </div>
           </div>
+
+          <label className="fld-label">بازه سال آزمون (اختیاری)</label>
+          <div className="grid2">
+            <div>
+              <select className="inp" value={yearFrom} onChange={(e) => setYearFrom(e.target.value)}>
+                <option value="">از همه سال‌ها</option>
+                {(filterOptions.years || []).map((y) => (
+                  <option key={y} value={y}>از {y}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <select className="inp" value={yearTo} onChange={(e) => setYearTo(e.target.value)}>
+                <option value="">تا همه سال‌ها</option>
+                {(filterOptions.years || []).map((y) => (
+                  <option key={y} value={y}>تا {y}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {(filterOptions.sources || []).length > 0 && (
+            <>
+              <label className="fld-label">منبع سؤال (اختیاری)</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                {(filterOptions.sources || []).map((src) => (
+                  <label key={src.code} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-cap)' }}>
+                    <input type="checkbox" checked={srcPicked.includes(src.code)} onChange={() => toggleSrc(src.code)} />
+                    {src.label} ({src.count})
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
 
           <label className="fld-label">نوع خروجی</label>
 
