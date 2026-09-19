@@ -3205,7 +3205,7 @@ async def questions_export_pdf(
 # ── Question Bank JSON ingestion (owner-only, preview-first) ──────
 @router.get("/questions/import/prompt")
 async def question_import_prompt(user=Depends(_perm("questions.import"))):
-    return question_imports.prompt()
+    return await question_imports.prompt()
 
 
 @router.post("/questions/import/upload")

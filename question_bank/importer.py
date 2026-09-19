@@ -46,9 +46,35 @@ class QuestionImportService:
         self.db = database
         self.qbank = QuestionBankService(database)
 
-    @staticmethod
-    def prompt() -> dict:
-        return {"schema_version": IMPORT_SCHEMA_VERSION, "prompt": PROMPT_PATH.read_text(encoding="utf-8")}
+    async def taxonomy_reference(self) -> str:
+        """🌊 QBANK-W2/§۶.۳ — مرجع نام‌های دقیق درس/مبحث، خودکار از دیتابیس.
+
+        جایگزین «چسباندن دستی جدول موج ۰» به پرامپت: همیشه با bs_lessons/
+        bs_sessions هم‌راستاست و نرخ unmatched را کم می‌کند. دیتابیس خالی
+        → رشته خالی (پرامپت بدون ضمیمه سرو می‌شود).
+        """
+        lessons = await self.db.bs_lessons.find({}).sort([("term", 1), ("order", 1)]).to_list(1000)
+        if not lessons:
+            return ""
+        lesson_ids = [str(x.get("_id")) for x in lessons]
+        sessions = await self.db.bs_sessions.find(
+            {"lesson_id": {"$in": lesson_ids}}).sort("number", 1).to_list(5000)
+        topics: dict[str, list[str]] = {}
+        for session in sessions:
+            topics.setdefault(str(session.get("lesson_id") or ""), []).append(
+                clean_text(session.get("topic")))
+        lines = ["", "",
+                 "── مرجع نام‌های دقیق درس/مبحث (خودکار از دیتابیس؛ نام‌ها را عیناً کپی کنید) ──"]
+        for lesson in lessons:
+            lines.append(f"[{clean_text(lesson.get('term')) or 'بی‌ترم'}] درس: {clean_text(lesson.get('name'))}")
+            for topic in topics.get(str(lesson.get("_id")), []):
+                lines.append(f"  - مبحث: {topic}")
+        return "\n".join(lines)
+
+    async def prompt(self) -> dict:
+        base = PROMPT_PATH.read_text(encoding="utf-8")
+        return {"schema_version": IMPORT_SCHEMA_VERSION,
+                "prompt": base + await self.taxonomy_reference()}
 
     @staticmethod
     def parse(raw: bytes, file_name: str) -> tuple[dict, str]:
@@ -256,6 +282,14 @@ class QuestionImportService:
             year_confidence = "unknown"
         row_source = item.get("content_source")
         content_source = row_source if row_source not in (None, "") else job_content_source
+        # 🌊 QBANK-W2/§۶.۱ — خوداظهاری مدل درباره سال؛ فقط ممیزی، tolerant.
+        row_year_source = item.get("exam_year_source")
+        exam_year_source = row_year_source if row_year_source in ("explicit_in_text", "not_found") else None
+        # 🌊 QBANK-W2/§۶.۴ — نشانی تصویر برای اتصال دستی در موج ۳.
+        image_ref = None
+        if image.get("required"):
+            image_ref = {"page": image.get("page") or item.get("page"),
+                         "position": clean_text(image.get("position")) or None}
         normalized = None
         try:
             normalized = validate_question_payload({
@@ -327,7 +361,8 @@ class QuestionImportService:
         exam_track = file_track or EXAM_TRACK_DEFAULT
         return {"job_id": job_id, "row": index + 1, "external_id": external_id,
                 "source_page": item.get("page"), "raw": item, "normalized": normalized,
-                "exam_track": exam_track,
+                "exam_track": exam_track, "exam_year_source": exam_year_source,
+                "image_ref": image_ref,
                 "taxonomy": taxonomy, "taxonomy_state": taxonomy_state,
                 "taxonomy_candidates": taxonomy_candidates, "classification": classification,
                 "errors": errors, "duplicate": duplicate, "decision": None,
@@ -353,17 +388,20 @@ class QuestionImportService:
                           {"$sort": {"_id": 1}}],
                 "sources": [{"$group": {"_id": "$normalized.content_source", "count": {"$sum": 1}}},
                             {"$sort": {"count": -1}}],
+                "confidence": [{"$group": {"_id": "$normalized.exam_year_confidence", "count": {"$sum": 1}}},
+                               {"$sort": {"count": -1}}],
             }},
         ]).to_list(1)
         facet = (facets[0] if facets else {}) or {}
         years = [{"year": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("years", [])]
         sources = [{"source": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("sources", [])]
+        confidence = [{"level": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("confidence", [])]
         return {"job_id": job_id, "status": job.get("status"), "file_name": job.get("file_name"),
                 "schema_version": job.get("schema_version"), "counts": job.get("counts") or {},
                 "job_content_source": job.get("job_content_source"),
                 "inferred_exam_year": job.get("inferred_exam_year"),
                 "inferred_exam_track": job.get("inferred_exam_track"),
-                "years": years, "sources": sources,
+                "years": years, "sources": sources, "year_confidence": confidence,
                 "source": job.get("source") or {}, "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
                 "classification": [{"lesson": lesson, "count": value["count"],
