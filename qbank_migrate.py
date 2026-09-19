@@ -12,6 +12,7 @@ async def main(args):
         migrate_qbank_w1, migrate_questions, backfill_progress, rollback_questions,
         rollback_progress,
     )
+    from question_bank.images import ensure_qbank_w3_indexes
     if args.action == "inspect":
         result = await inspect_questions(db)
         if args.output:
@@ -48,6 +49,8 @@ async def main(args):
                                         limit=args.limit or 100000)
     elif args.action == "index-w1":
         result = await ensure_qbank_w1_indexes(db)
+    elif args.action == "index-w3":
+        result = await ensure_qbank_w3_indexes(db)
     elif args.action == "progress":
         result = await backfill_progress(db, apply=args.apply, limit=args.limit or 1000000)
     elif args.action == "rollback":
@@ -64,7 +67,7 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="HUMSYAR Question Bank migration (dry-run by default)")
     parser.add_argument("action", choices=["inspect", "schema", "progress", "rollback", "rollback-progress",
-                                     "inspect-w1", "migrate-w1", "index-w1"])
+                                     "inspect-w1", "migrate-w1", "index-w1", "index-w3"])
     parser.add_argument("--apply", action="store_true", help="Apply guarded writes; default is read-only")
     parser.add_argument("--output", help="Write inspection JSON")
     parser.add_argument("--inspection-file", help="Previously reviewed inspect JSON; required for schema --apply")

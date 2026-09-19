@@ -45,6 +45,7 @@ from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from time_utils import utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
+from question_bank.images import QuestionImageService
 from question_bank.contracts import (
     CONTENT_SOURCE_DEFAULT, CONTENT_SOURCES, and_query, approved_query,
 )
@@ -55,6 +56,7 @@ router = APIRouter()
 exam_sessions = db.exam_sessions
 question_bank = QuestionBankService(db)
 exam_domain = ExamService(db)
+question_images = QuestionImageService(db)
 ai_practice = AIPersonalPracticeService(db)
 
 
@@ -445,6 +447,27 @@ async def question_filters(user=Depends(get_question_access_user)):
     return {"sources": sources, "years": years,
             "year_min": years[0] if years else None,
             "year_max": years[-1] if years else None}
+
+
+@router.get("/image/{qid}")
+async def question_image(qid: str, user=Depends(get_question_access_user)):
+    """🌊 QBANK-W3 — پروکسی تصویر سؤال برای مینی‌اپ (با کنترل دسترسی دانشجو)."""
+    from api.telegram_send import download_telegram_file
+    question = await db.get_question_by_id(qid)
+    if not question:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    try:
+        await question_bank.verify_access(question, user)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    resolved = await question_images.resolve_file(qid)
+    if not resolved:
+        raise HTTPException(404, "این سؤال تصویر آماده ندارد")
+    raw = await download_telegram_file(resolved["file_id"])
+    if not raw:
+        raise HTTPException(502, "دریافت تصویر از تلگرام ناموفق بود")
+    return Response(content=raw, media_type=resolved["mime_type"],
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 async def _request_taxonomy(user, lesson_id=None, topic_id=None, lesson=None, topic=None):

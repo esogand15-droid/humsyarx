@@ -12,12 +12,13 @@
 import os, io, asyncio, logging, time
 from datetime import datetime
 from utils import esc as escape   # 🛡 AUDIT-A6 —escape مرکزی
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
 from utils import send_audit_log, fmt_jalali_dt
 from time_utils import now_tehran, utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
+from question_bank.images import QuestionImageService, split_photo_caption
 from question_bank.ai_practice import AIPersonalPracticeService
 from question_bank.contracts import (
     DIFFICULTY_LABELS, canonical_difficulty, canonical_status,
@@ -30,6 +31,7 @@ CREATING_Q = 6
 question_bank = QuestionBankService(db)
 exam_domain = ExamService(db)
 ai_practice = AIPersonalPracticeService(db)
+question_images = QuestionImageService(db)
 
 DIFF_EMOJI = {'آسان 🟢': '🟢', 'متوسط 🟡': '🟡', 'سخت 🔴': '🔴'}
 LETTERS    = ['🅐', '🅑', '🅒', '🅓']
@@ -68,6 +70,39 @@ def _q_meta_line(q: dict) -> str:
     if label:
         bits.append(f"🏷 {_h(label)}")
     return ('\n' + ' · '.join(bits)) if bits else ''
+
+
+async def _question_image_file_id(qid: str):
+    """file_id تصویر آماده سؤال؛ pending/بدون تصویر → None (§۷.۳)."""
+    try:
+        resolved = await question_images.resolve_file(qid)
+        return resolved["file_id"] if resolved else None
+    except Exception:
+        return None
+
+
+async def _send_question_card(query, context, *, text: str, keyboard, image_file_id=None):
+    """کارت سؤال با/بدون تصویر؛ کپشن بلند → عکس + پیام دوم (§۷.۳)."""
+    if not image_file_id:
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+        return
+    caption, followup = split_photo_caption(text)
+    photo_markup = None if followup else keyboard
+    try:
+        await query.edit_message_media(
+            InputMediaPhoto(media=image_file_id, caption=caption, parse_mode='HTML'),
+            reply_markup=photo_markup)
+    except Exception:
+        try:
+            await context.bot.send_photo(query.message.chat_id, photo=image_file_id,
+                                         caption=caption, parse_mode='HTML',
+                                         reply_markup=photo_markup)
+        except Exception:
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+            return
+    if followup:
+        await context.bot.send_message(query.message.chat_id, text,
+                                       parse_mode='HTML', reply_markup=keyboard)
 
 async def _main_menu_msg(message):
     """نمایش منوی اصلی از طریق message (نه callback)"""
@@ -762,10 +797,12 @@ async def _next_q(query, context, uid):
                 for i, opt in enumerate(q['options'][:4])]
     keyboard.append([InlineKeyboardButton("⚠️ گزارش ایراد سؤال", callback_data=f'report:question:{qid}')])
     keyboard.append([InlineKeyboardButton("🏠 منو", callback_data='questions:main')])
-    await query.edit_message_text(
+    _card_text = (
         f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}{_q_meta_line(q)}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
-        f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+        f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}")
+    await _send_question_card(query, context, text=_card_text,
+                              keyboard=InlineKeyboardMarkup(keyboard),
+                              image_file_id=await _question_image_file_id(qid))
 
 
 async def _next_exam_q(query, context, uid):
@@ -797,10 +834,12 @@ async def _next_exam_q(query, context, uid):
     if remain is not None:
         m, sec = divmod(remain, 60)
         remain_text = f"\n⏱ {m:02d}:{sec:02d} باقی‌مانده"
-    await query.edit_message_text(
+    _card_text = (
         f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}{_q_meta_line(q)}\n"
-        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}")
+    await _send_question_card(query, context, text=_card_text,
+                              keyboard=InlineKeyboardMarkup(keyboard),
+                              image_file_id=await _question_image_file_id(q.get('id')))
 
 
 async def _handle_exam_answer(query, context, uid, session_id, selected):
@@ -1581,9 +1620,8 @@ async def _ca_question_view(query, uid: int, qid: str):
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='questions:ca_q_list')])
 
     try:
-        await query.edit_message_text(
-            text, parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await _send_question_card(query, context, text=text,
+                                  keyboard=InlineKeyboardMarkup(keyboard),
+                                  image_file_id=await _question_image_file_id(qid))
     except Exception:
         pass

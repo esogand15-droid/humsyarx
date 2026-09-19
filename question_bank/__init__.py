@@ -8,6 +8,8 @@ from .contracts import (
 )
 from .service import QuestionBankService
 from .exam import ExamService
+from .images import QuestionImageService, image_state
+
 from .importer import (
     IMPORT_SCHEMA_VERSION, QuestionImportService,
     infer_exam_track_from_filename, infer_exam_year_from_filename,
@@ -21,5 +23,6 @@ __all__ = [
     "canonical_exam_track", "canonical_exam_year", "canonical_status",
     "QuestionBankService", "ExamService", "QuestionImportService",
     "infer_exam_track_from_filename", "infer_exam_year_from_filename",
+    "QuestionImageService", "image_state",
     "IMPORT_SCHEMA_VERSION",
 ]

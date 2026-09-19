@@ -178,7 +178,9 @@ class QuestionBankService:
                        exam_year_from: str | None = None,
                        exam_year_to: str | None = None,
                        content_source=None) -> dict:
-        parts = [approved_query(), self.taxonomy_scope_query(taxonomy, intakes=intakes)]
+        # 🌊 QBANK-W3 — سؤالِ منتظرِ تصویر در هیچ تمرین/آزمونی نیست (§۱۰).
+        parts = [approved_query(), self.taxonomy_scope_query(taxonomy, intakes=intakes),
+                 {"image.pending_upload": {"$ne": True}}]
         if difficulty:
             canonical = canonical_difficulty(difficulty)
             legacy = DIFFICULTY_LABELS[canonical]

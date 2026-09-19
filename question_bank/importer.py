@@ -242,7 +242,8 @@ class QuestionImportService:
                 raise QuestionDomainError("import_preview_failed",
                                           "ذخیره پیش‌نمایش انجام نشد و هیچ سؤالی وارد بانک نشد", 503) from exc
         counts = Counter(x["classification"] for x in items)
-        totals = {"total": len(items), "ready": counts["ready"], "errors": counts["error"],
+        totals = {"total": len(items), "ready": counts["ready"],
+                  "pending_images": counts["ready_pending_image"], "errors": counts["error"],
                   "unmatched": counts["unmatched"], "ambiguous": counts["ambiguous"],
                   "exact_duplicates": counts["exact_duplicate"],
                   "probable_duplicates": counts["probable_duplicate"],
@@ -259,8 +260,9 @@ class QuestionImportService:
         external_id = clean_text(item.get("external_id")) or f"ROW-{index + 1:04d}"
         errors = [clean_text(x, 500) for x in (item.get("errors") or []) if clean_text(x)]
         image = item.get("image") if isinstance(item.get("image"), Mapping) else {}
-        if image.get("required"):
-            errors.append("سؤال وابسته به تصویر است و تا اتصال تصویر قابل import نیست")
+        # 🌊 QBANK-W3/§۷.۲ — ردیف تصویری دیگر «رد» نمی‌شود؛ با وضعیت
+        # ready_pending_image وارد می‌شود و تا اتصال تصویر پنهان می‌ماند.
+        needs_image = bool(image.get("required"))
         confidence = item.get("confidence") if isinstance(item.get("confidence"), Mapping) else {}
         thresholds = {"question": 0.75, "options": 0.75, "answer": 0.70, "classification": 0.60}
         for key, threshold in thresholds.items():
@@ -357,12 +359,13 @@ class QuestionImportService:
                     classification = "probable_duplicate" if same_answer else "conflict"
                     duplicate = best
                 elif taxonomy_state == "matched":
-                    classification = "ready"
+                    classification = "ready_pending_image" if needs_image else "ready"
         exam_track = file_track or EXAM_TRACK_DEFAULT
         return {"job_id": job_id, "row": index + 1, "external_id": external_id,
                 "source_page": item.get("page"), "raw": item, "normalized": normalized,
                 "exam_track": exam_track, "exam_year_source": exam_year_source,
                 "image_ref": image_ref,
+                "needs_image": needs_image,
                 "taxonomy": taxonomy, "taxonomy_state": taxonomy_state,
                 "taxonomy_candidates": taxonomy_candidates, "classification": classification,
                 "errors": errors, "duplicate": duplicate, "decision": None,
@@ -445,7 +448,8 @@ class QuestionImportService:
             elif duplicate_result["probable"]:
                 classification = "probable_duplicate"; duplicate = duplicate_result["probable"][0]
             else:
-                classification = "ready"; duplicate = None
+                classification = ("ready_pending_image" if item.get("needs_image") else "ready")
+                duplicate = None
         await self.db.question_import_items.update_one({"_id": item["_id"]},
             {"$set": {"taxonomy": taxonomy, "taxonomy_state": "matched", "classification": classification,
                       "duplicate": duplicate, "decision": None, "mapped_at": utc_now_iso()}})
@@ -470,7 +474,8 @@ class QuestionImportService:
             {"$match": {"job_id": job_id}}, {"$group": {"_id": "$classification", "count": {"$sum": 1}}}
         ]).to_list(20)
         c = {x["_id"]: int(x["count"]) for x in rows}; total = sum(c.values())
-        counts = {"total": total, "ready": c.get("ready", 0), "errors": c.get("error", 0),
+        counts = {"total": total, "ready": c.get("ready", 0),
+                  "pending_images": c.get("ready_pending_image", 0), "errors": c.get("error", 0),
                   "unmatched": c.get("unmatched", 0), "ambiguous": c.get("ambiguous", 0),
                   "exact_duplicates": c.get("exact_duplicate", 0),
                   "probable_duplicates": c.get("probable_duplicate", 0), "conflicts": c.get("conflict", 0)}
@@ -491,7 +496,7 @@ class QuestionImportService:
         if claimed.modified_count != 1:
             raise QuestionDomainError("import_in_progress", "درون‌ریزی هم‌زمان در حال اجراست", 409)
         candidate_query = {"job_id": job_id, "$or": [
-            {"classification": "ready"},
+            {"classification": {"$in": ["ready", "ready_pending_image"]}},
             {"classification": {"$in": ["probable_duplicate", "conflict"]}, "decision": "import"},
         ]}
         candidates = await self.db.question_import_items.find(candidate_query).sort("row", 1).to_list(5000)
@@ -521,6 +526,13 @@ class QuestionImportService:
                         "version": 1, "review_history": [{"from": None, "to": "approved",
                             "by": int(admin.get("id") or 0), "at": now, "reason": "درون‌ریزی JSON تأییدشده"}],
                         "attempt_count": 0, "correct_count": 0}
+            if item.get("classification") == "ready_pending_image" or item.get("needs_image"):
+                raw_image = ((item.get("raw") or {}).get("image") or {}
+                             if isinstance((item.get("raw") or {}).get("image"), Mapping) else {})
+                document["image"] = {"has_image": True, "pending_upload": True,
+                                     "storage_ref": None,
+                                     "alt_text": clean_text(raw_image.get("description")) or None}
+                document["image_ref"] = item.get("image_ref")
             prepared.append((item, identity, document))
 
         # Bounded bulk upserts replace the old per-row find+insert+update N+1 path.

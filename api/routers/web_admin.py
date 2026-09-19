@@ -55,6 +55,8 @@ import broadcast_service
 from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
+from question_bank.images import (MAX_IMAGE_BYTES, QuestionImageService,
+                                     parse_bulk_filename, validate_image_upload)
 from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, clean_text, status_query
 from time_utils import (
     TimeContractError, canonical_utc, day_bounds_utc, diagnostics as time_diagnostics,
@@ -67,6 +69,7 @@ logger = logging.getLogger("api.web_admin")
 router = APIRouter()
 question_bank = QuestionBankService(db)
 question_imports = QuestionImportService(db)
+question_images = QuestionImageService(db)
 
 OTP_TTL_MIN = 5
 OTP_MAX_ATTEMPTS = 5
@@ -2624,6 +2627,7 @@ async def wa_questions_list(
             "exam_year": d.get("exam_year"),
             "content_source": d.get("content_source", ""),
             "content_source_label_fa": d.get("content_source_label_fa", ""),
+            "image_pending": bool((d.get("image") or {}).get("pending_upload")),
             "status": canonical_status(d), "approved": canonical_status(d) == "approved",
             "review_reason": d.get("review_reason", ""), "reviewed_by": d.get("reviewed_by"),
             "reviewed_at": d.get("reviewed_at"), "version": int(d.get("version") or 1),
@@ -3239,6 +3243,99 @@ async def question_import_preview(job_id: str, user=Depends(_perm("questions.imp
     job = await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]})
     if not job: raise HTTPException(404, "job پیدا نشد")
     return preview
+
+
+# ── 🌊 QBANK-W3 — صف تصاویر منتظر (§۷.۲) ─────────────────────────────
+@router.get("/questions/pending-images")
+async def wa_pending_images(job_id: str | None = Query(None),
+                            skip: int = Query(0, ge=0),
+                            limit: int = Query(50, ge=1, le=100),
+                            user=Depends(_perm("questions.import"))):
+    return await question_images.pending_queue(job_id=job_id, skip=skip, limit=limit)
+
+
+@router.post("/questions/{qid}/image")
+async def wa_attach_image(qid: str, file: UploadFile = File(...),
+                          user=Depends(_perm("questions.import"))):
+    from api.telegram_send import upload_and_get_file_id
+    raw = await file.read(MAX_IMAGE_BYTES + 1)
+    try:
+        mime = validate_image_upload(mime_type=file.content_type or "", size=len(raw))
+        file_id = await upload_and_get_file_id(
+            user["id"], file.filename or "question.png", raw, mime)
+        if not file_id:
+            raise QuestionDomainError("image_storage_failed",
+                                      "آپلود تصویر به تلگرام ناموفق بود", 502)
+        result = await question_images.attach(
+            question_id=qid, file_id=file_id, admin_id=user["id"],
+            mime_type=mime, size=len(raw), original_name=file.filename or "")
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "اتصال تصویر به سؤال", severity="HIGH",
+                 target_type="question", target_id=qid,
+                 target_label=file.filename or "question.png",
+                 after={"storage_ref": result["storage_ref"]},
+                 tags=["بانک_سؤال", "تصویر"])
+    return result
+
+
+@router.delete("/questions/{qid}/image")
+async def wa_detach_image(qid: str, user=Depends(_perm("questions.import"))):
+    try:
+        result = await question_images.detach(question_id=qid, admin_id=user["id"])
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "برگرداندن سؤال به صف تصویر", severity="HIGH",
+                 target_type="question", target_id=qid, tags=["بانک_سؤال", "تصویر"])
+    return result
+
+
+@router.post("/questions/images/bulk-match")
+async def wa_bulk_match_images(job_id: str = Form(...),
+                               files: list[UploadFile] = File(...),
+                               user=Depends(_perm("questions.import"))):
+    """تطبیق انبوه `{fingerprint}_{page}.png` به سؤالات منتظر همان job (§۷.۲)."""
+    from api.telegram_send import upload_and_get_file_id
+    job = await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]})
+    if not job:
+        raise HTTPException(404, "job پیدا نشد")
+    fingerprint = job.get("fingerprint") or ""
+    results = []
+    attached = 0
+    for upload in files[:50]:
+        name = upload.filename or ""
+        parsed = parse_bulk_filename(name)
+        if not parsed or not fingerprint.startswith(parsed[0]):
+            results.append({"file": name, "status": "invalid_name"})
+            continue
+        page = parsed[1]
+        matches = await db.questions.find(
+            {"import_job_id": job_id, "image.pending_upload": True,
+             "source_page": page}).to_list(3)
+        if len(matches) != 1:
+            results.append({"file": name, "status": "ambiguous" if matches else "no_match",
+                            "page": page})
+            continue
+        try:
+            raw = await upload.read(MAX_IMAGE_BYTES + 1)
+            mime = validate_image_upload(mime_type=upload.content_type or "", size=len(raw))
+            file_id = await upload_and_get_file_id(user["id"], name, raw, mime)
+            if not file_id:
+                raise QuestionDomainError("image_storage_failed", "آپلود ناموفق بود", 502)
+            await question_images.attach(
+                question_id=str(matches[0]["_id"]), file_id=file_id, admin_id=user["id"],
+                mime_type=mime, size=len(raw), original_name=name)
+            attached += 1
+            results.append({"file": name, "status": "attached", "page": page,
+                            "question_id": str(matches[0]["_id"])})
+        except QuestionDomainError as exc:
+            results.append({"file": name, "status": "failed", "page": page,
+                            "error": exc.message})
+    await _audit(user["id"], f"تطبیق انبوه تصاویر ({attached} موفق)", severity="HIGH",
+                 target_type="question_import", target_id=job_id,
+                 after={"attached": attached, "total": len(results)},
+                 tags=["بانک_سؤال", "تصویر"])
+    return {"job_id": job_id, "attached": attached, "results": results}
 
 
 @router.get("/questions/import/{job_id}/items")

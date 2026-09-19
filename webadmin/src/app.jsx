@@ -15,6 +15,7 @@ const Rbac = lazy(() => import('./pages/Rbac.jsx'));
 const Audit = lazy(() => import('./pages/Audit.jsx'));
 const Content = lazy(() => import('./pages/Content.jsx'));
 const Questions = lazy(() => import('./pages/Questions.jsx'));
+const PendingImages = lazy(() => import('./pages/PendingImages.jsx'));
 const Exams = lazy(() => import('./pages/Exams.jsx'));
 const Notify = lazy(() => import('./pages/Notify.jsx'));
 const AiAdmin = lazy(() => import('./pages/AiAdmin.jsx'));
@@ -42,6 +43,7 @@ const NAV_GROUPS = [
   { sec: 'آموزش', items: [
     { path: '/content', icon: '📚', label: 'محتوا', any: ['content.manage', 'content.scoped', 'reports.review'], content: true },
     { path: '/questions', icon: '🧪', label: 'سؤال‌ها', any: ['questions.review', 'questions.review_scoped'] },
+    { path: '/pending-images', icon: '🖼', label: 'صف تصاویر', any: ['questions.import'] },
     { path: '/exams', icon: '📝', label: 'آزمون‌ها', any: ['schedules.manage'] },
     { path: '/exams?tab=grades', icon: '📊', label: 'نمرات', any: ['grades.manage', 'grades.scoped'] },
     { path: '/content?tab=schedule', icon: '🗓', label: 'برنامه', any: ['schedules.manage'] },
@@ -76,7 +78,7 @@ const PAGES = {
   '/dashboard': Dashboard, '/users': Users, '/tickets': Tickets,
   '/actions': Actions,
   '/subscriptions': Subscriptions, '/features': Features, '/rbac': Rbac, '/audit': Audit,
-  '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
+  '/content': Content, '/questions': Questions, '/pending-images': PendingImages, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   '/transfer': TransferCenter, '/operations': Operations,
   '/ring': RingStreet, '/growth': Growth,

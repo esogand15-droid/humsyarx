@@ -199,6 +199,9 @@ def validate_question_payload(payload: Mapping[str, Any]) -> dict:
 
 
 def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dict:
+    from .images import image_state as _image_state
+    _img = _image_state(document)
+    _qid = str(document.get("_id") or document.get("id") or "")
     _cs = clean_text(document.get("content_source"))
     if _cs not in CONTENT_SOURCES:
         _cs = CONTENT_SOURCE_DEFAULT
@@ -220,6 +223,10 @@ def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dic
         "content_source": _cs,
         "content_source_label_fa": CONTENT_SOURCES[_cs],
         "exam_track": canonical_exam_track((document.get("provenance") or {}).get("exam_track")),
+        "image": {"has_image": _img["has_image"], "pending_upload": _img["pending_upload"],
+                  "alt_text": _img["alt_text"]},
+        "image_url": (f"/api/questions/image/{_qid}"
+                      if (_img["has_image"] and not _img["pending_upload"] and _qid) else None),
     }
     if reveal:
         result.update({

@@ -308,6 +308,37 @@ export const api = {
   },
   questionImportPreview: (jobId) =>
     req(`/api/web-admin/questions/import/${encodeURIComponent(jobId)}`),
+  // 🌊 QBANK-W3 — صف تصاویر منتظر
+  pendingImages: (p = {}) =>
+    req(
+      `/api/web-admin/questions/pending-images?` +
+        new URLSearchParams(
+          Object.entries(p).filter(
+            ([, v]) => v !== "" && v !== null && v !== undefined,
+          ),
+        ),
+    ),
+  attachQuestionImage: (qid, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return req(
+      `/api/web-admin/questions/${encodeURIComponent(qid)}/image`,
+      { method: "POST", form },
+    );
+  },
+  detachQuestionImage: (qid) =>
+    req(`/api/web-admin/questions/${encodeURIComponent(qid)}/image`, {
+      method: "DELETE",
+    }),
+  bulkMatchImages: (jobId, files) => {
+    const form = new FormData();
+    form.append("job_id", jobId);
+    [...files].forEach((f) => form.append("files", f));
+    return req(`/api/web-admin/questions/images/bulk-match`, {
+      method: "POST",
+      form,
+    });
+  },
   questionImportItems: (jobId, p = {}) =>
     req(
       `/api/web-admin/questions/import/${encodeURIComponent(jobId)}/items?` +

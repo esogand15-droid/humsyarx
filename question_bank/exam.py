@@ -229,6 +229,30 @@ class ExamService:
                                             "promotion": {"$ne": True}}, sort=[("started_at", -1)])
         return self.summary(await self.expire(doc)) if doc else None
 
+    @staticmethod
+    async def _pdf_question_images(image_service, questions: list) -> dict:
+        try:
+            from api.telegram_send import download_telegram_file
+        except ImportError:
+            return {}
+        from io import BytesIO
+        from reportlab.lib.utils import ImageReader
+        out = {}
+        for question in questions:
+            qid = str(question.get("_id") or "")
+            if not qid:
+                continue
+            try:
+                resolved = await image_service.resolve_file(qid)
+                if not resolved:
+                    continue
+                raw = await download_telegram_file(resolved["file_id"])
+                if raw:
+                    out[qid] = ImageReader(BytesIO(raw))
+            except Exception:
+                continue
+        return out
+
     async def generate_pdf(self, *, session_id: str, user: Mapping, mode: str) -> tuple[bytes, dict]:
         if mode not in {"practice", "exam"}:
             raise QuestionDomainError("invalid_pdf_mode", "نوع PDF معتبر نیست")
@@ -268,8 +292,17 @@ class ExamService:
         _pdf_hit = _PDF_CACHE.get(_pdf_key)
         if _pdf_hit and _pdf_hit[0] > time.monotonic():
             return _pdf_hit[1], _pdf_hit[2]
+        # 🌊 QBANK-W3/§۷.۵ — تصاویر سؤالات به builder داده می‌شود؛ دانلود
+        # ناموفق = چاپ بدون تصویر (سؤال حذف نمی‌شود). کلید کش بالای این
+        # تابع updated_at را دارد و attach آن را می‌شکند، پس کش خودبه‌خود
+        # بعد از اتصال تصویر باطل می‌شود.
+        from question_bank.images import QuestionImageService
+        from reportlab.lib.utils import ImageReader
+        question_images = await self._pdf_question_images(
+            QuestionImageService(self.db), questions)
         content = await asyncio.to_thread(
-            generate_exam_pdf, questions, meta, mode=mode)
+            generate_exam_pdf, questions, meta, mode=mode,
+            question_images=question_images)
         generated_at = utc_now_iso(); generation_id = uuid.uuid4().hex
         checksum = hashlib.sha256(content).hexdigest()
         generation = {"generation_id": generation_id, "session_id": session_id,

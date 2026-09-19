@@ -61,7 +61,8 @@ class W6StaticTests(unittest.TestCase):
 
     def test_rbac_web_admin_groups(self):
         wa = read("api", "routers", "web_admin.py")
-        self.assertEqual(wa.count('_perm("questions.import")'), 8)
+        # 🌊 QBANK-W3: ‏۸ قبلی + ۴ صف تصویر (queue/attach/detach/bulk-match)
+        self.assertEqual(wa.count('_perm("questions.import")'), 12)
         # ۱۰ مورد از قبل بود (کاتالوگ وب‌ادمین) + ۸ مهاجرتی این موج
         self.assertEqual(wa.count('_perm("ai.manage")'), 18)
 
@@ -438,7 +439,7 @@ class W6LogicTests(unittest.TestCase):
             from bson import ObjectId
             calls = []
 
-            def _fake_build(questions, meta, mode="practice"):
+            def _fake_build(questions, meta, mode="practice", **kwargs):
                 calls.append(mode)
                 return b"%PDF-fake-" + mode.encode()
 
