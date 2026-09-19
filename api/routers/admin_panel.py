@@ -12,7 +12,7 @@ from database import db
 from question_bank.contracts import approved_query, status_query
 from request_context import current_request_id
 import broadcast_service
-from time_utils import day_bounds_utc, now_utc, parse_gregorian_date, utc_now_iso
+from time_utils import day_bounds_utc, fa_digits, now_utc, parse_gregorian_date, utc_now_iso
 
 router = APIRouter()
 ADMIN_ID = int(os.getenv("ADMIN_ID","0"))
@@ -195,14 +195,23 @@ async def bot_status(admin=Depends(require_perm("stats.view"))):
         vm = psutil.virtual_memory()
         cpu = psutil.cpu_percent(interval=None)
         up = time.time() - proc.create_time()
-        h, r = divmod(int(up), 3600)
+        d, r = divmod(int(up), 86400)
+        h, r = divmod(r, 3600)
         m, s = divmod(r, 60)
+        if d:
+            uptime_fa = f"{fa_digits(d)} روز و {fa_digits(h)} ساعت"
+        elif h:
+            uptime_fa = f"{fa_digits(h)} ساعت و {fa_digits(m)} دقیقه"
+        elif m:
+            uptime_fa = f"{fa_digits(m)} دقیقه و {fa_digits(s)} ثانیه"
+        else:
+            uptime_fa = f"{fa_digits(s)} ثانیه"
         sys_info = {
             "api_ram_mb": round(mem, 1),
             "total_ram_mb": round(vm.total / 1024 / 1024),
             "used_ram_pct": vm.percent,
             "cpu_pct": cpu,
-            "uptime": f"{h}h {m}m" if h else f"{m}m {s}s",
+            "uptime": uptime_fa,
         }
     except Exception as e:
         bot_error = str(e)[:160]
