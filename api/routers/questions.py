@@ -45,6 +45,9 @@ from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from time_utils import utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
+from question_bank.contracts import (
+    CONTENT_SOURCE_DEFAULT, CONTENT_SOURCES, and_query, approved_query,
+)
 
 
 router = APIRouter()
@@ -416,6 +419,34 @@ async def get_topics(lesson: str, user=Depends(get_question_access_user)):
         for topic in selected["topics"]]}
 
 
+@router.get("/filters")
+async def question_filters(user=Depends(get_question_access_user)):
+    """🌊 QBANK-W1 — منبع‌ها و بازه‌ی سال‌های موجود در بانک (پویا، نه هاردکد)."""
+    intakes = question_bank.student_intakes(user)
+    match = and_query(approved_query(), {"intake": {"$in": intakes}})
+    src_rows = await db.questions.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$content_source", "count": {"$sum": 1}}},
+    ]).to_list(20)
+    merged: dict = {}
+    for row in src_rows:
+        code = row.get("_id")
+        if code not in CONTENT_SOURCES:
+            code = CONTENT_SOURCE_DEFAULT
+        merged[code] = merged.get(code, 0) + int(row.get("count") or 0)
+    sources = [{"code": code, "label": CONTENT_SOURCES[code], "count": merged[code]}
+               for code in sorted(merged)]
+    year_rows = await db.questions.aggregate([
+        {"$match": and_query(match, {"exam_year": {"$ne": None}})},
+        {"$group": {"_id": "$exam_year"}},
+        {"$sort": {"_id": 1}},
+    ]).to_list(100)
+    years = sorted({str(r.get("_id")) for r in year_rows if r.get("_id")})
+    return {"sources": sources, "years": years,
+            "year_min": years[0] if years else None,
+            "year_max": years[-1] if years else None}
+
+
 async def _request_taxonomy(user, lesson_id=None, topic_id=None, lesson=None, topic=None):
     if not any((lesson_id, topic_id, lesson, topic)):
         return {}
@@ -435,16 +466,25 @@ async def practice(
     lesson: str | None = Query(None, max_length=100),
     topic: str | None = Query(None, max_length=100),
     exclude: str | None = Query(None, deprecated=True),
+    exam_year_from: str | None = Query(None, max_length=4),
+    exam_year_to: str | None = Query(None, max_length=4),
+    content_source: List[str] | None = Query(None),
 ):
     taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
     try:
-        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="free")
+        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="free",
+                                                 exam_year_from=exam_year_from,
+                                                 exam_year_to=exam_year_to,
+                                                 content_source=content_source)
     except QuestionDomainError as exc:
         _domain_error(exc)
 
 
 @router.get("/weak")
-async def weak(user=Depends(get_question_access_user)):
+async def weak(user=Depends(get_question_access_user),
+             exam_year_from: str | None = Query(None, max_length=4),
+             exam_year_to: str | None = Query(None, max_length=4),
+             content_source: List[str] | None = Query(None)):
     stats = await question_bank.stats(user=user)
     weak_topics = sorted(stats["weak_topics"], key=lambda x: (x["accuracy"], -x["attempts"]))
     if not weak_topics:
@@ -452,7 +492,13 @@ async def weak(user=Depends(get_question_access_user)):
     selected = weak_topics[0]
     taxonomy = {"lesson_id": selected["lesson_id"], "topic_id": selected["topic_id"],
                 "lesson": selected["lesson"], "topic": selected["topic"]}
-    result = await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="weak")
+    try:
+        result = await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="weak",
+                                                   exam_year_from=exam_year_from,
+                                                   exam_year_to=exam_year_to,
+                                                   content_source=content_source)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
     result["weak_topic"] = selected
     return result
 
@@ -463,9 +509,18 @@ async def hard(
     lesson_id: str | None = Query(None), topic_id: str | None = Query(None),
     lesson: str | None = Query(None), topic: str | None = Query(None),
     exclude: str | None = Query(None, deprecated=True),
+    exam_year_from: str | None = Query(None, max_length=4),
+    exam_year_to: str | None = Query(None, max_length=4),
+    content_source: List[str] | None = Query(None),
 ):
     taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
-    return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="hard")
+    try:
+        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="hard",
+                                                 exam_year_from=exam_year_from,
+                                                 exam_year_to=exam_year_to,
+                                                 content_source=content_source)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
 
 class AnswerInput(BaseModel):
@@ -748,6 +803,9 @@ class ExamStartInput(BaseModel):
     count: int = Field(ge=5, le=100)
     minutes: int = Field(ge=0, le=180)
     output_mode: str = Field(default="app", pattern="^(bot|app|pdf_practice|pdf_exam)$")
+    exam_year_from: Optional[str] = Field(default=None, max_length=4)
+    exam_year_to: Optional[str] = Field(default=None, max_length=4)
+    content_source: Optional[List[str]] = None
     allow_smaller: bool = False
     # ⚔️ True ⇒ شروع چالش ارتقا؛ قواعد سرورمحور قبلی حفظ می‌شود.
     promotion: bool = False
@@ -774,7 +832,8 @@ async def preview_exam(body: ExamStartInput, user=Depends(require_feature("mock_
     try:
         return await exam_domain.preview(user=user, taxonomy=taxonomy,
             requested_count=body.count, minutes=body.minutes,
-            output_mode=body.output_mode)
+            output_mode=body.output_mode, exam_year_from=body.exam_year_from,
+            exam_year_to=body.exam_year_to, content_source=body.content_source)
     except QuestionDomainError as exc:
         _domain_error(exc)
 
@@ -868,6 +927,8 @@ async def start_exam(
         return await exam_domain.create(
             user=user, taxonomy=taxonomy, requested_count=body.count,
             minutes=body.minutes, output_mode=body.output_mode,
+            exam_year_from=body.exam_year_from, exam_year_to=body.exam_year_to,
+            content_source=body.content_source,
             allow_smaller=body.allow_smaller)
     except QuestionDomainError as exc:
         _domain_error(exc)

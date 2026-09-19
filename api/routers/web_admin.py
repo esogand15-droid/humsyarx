@@ -2621,6 +2621,9 @@ async def wa_questions_list(
             "created_at": d.get("created_at") or None, "updated_at": d.get("updated_at") or None,
             "intake": d.get("intake", ""), "source": d.get("source", "system"),
             "creator_type": d.get("creator_type", "student"),
+            "exam_year": d.get("exam_year"),
+            "content_source": d.get("content_source", ""),
+            "content_source_label_fa": d.get("content_source_label_fa", ""),
             "status": canonical_status(d), "approved": canonical_status(d) == "approved",
             "review_reason": d.get("review_reason", ""), "reviewed_by": d.get("reviewed_by"),
             "reviewed_at": d.get("reviewed_at"), "version": int(d.get("version") or 1),
@@ -3206,7 +3209,8 @@ async def question_import_prompt(user=Depends(_perm("questions.import"))):
 
 
 @router.post("/questions/import/upload")
-async def question_import_upload(file: UploadFile = File(...), user=Depends(_perm("questions.import"))):
+async def question_import_upload(file: UploadFile = File(...), user=Depends(_perm("questions.import")),
+                                 job_content_source: str | None = Form(None)):
     raw = await file.read(10 * 1024 * 1024 + 1)
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(413, "حجم فایل JSON بیشتر از ۱۰MB است")
@@ -3214,7 +3218,8 @@ async def question_import_upload(file: UploadFile = File(...), user=Depends(_per
         raise HTTPException(422, "فایل خالی است")
     try:
         preview = await question_imports.create_preview(
-            admin=user, raw=raw, file_name=file.filename or "questions.json")
+            admin=user, raw=raw, file_name=file.filename or "questions.json",
+            job_content_source=job_content_source or None)
     except QuestionDomainError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
     await _audit(user["id"], "بارگذاری JSON بانک سؤال برای پیش‌نمایش", severity="HIGH",
