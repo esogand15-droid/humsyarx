@@ -80,9 +80,10 @@ async def create_job(body: ImportCreateBody,
     payload = body.dict()
     kind = body.kind
     if kind == "qbank":
-        payload["intake"] = resolve_content_intake(admin, body.intake)
-        if not await db.can_access_intake(admin["id"], payload["intake"]):
-            raise HTTPException(403, "intake_out_of_scope")
+        raise HTTPException(
+            status_code=410,
+            detail="بانک فایل سؤال بازنشسته است. سؤال تازه را در بانک ساخت‌یافته ثبت کنید.",
+        )
     elif kind in ("bs", "ref"):
         # §37 — هدف باید موجود باشد؛ bs/ref فقط دسترسی سراسری
         if (admin.get("_scope") or {}).get("kind") == "scoped":

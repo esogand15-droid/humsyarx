@@ -105,11 +105,12 @@ async def resolve_recipients(target: str | dict, actor_id: int | None = None,
         status = str(target.get("subscription_status") or "")
         now = now_utc()
         if status == "active":
-            ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}})
+            ids = await store.subscription_ids_by_end(earliest=now)
         elif status == "expiring_7":
-            ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat(), "$lte": (now + timedelta(days=7)).isoformat()}})
+            ids = await store.subscription_ids_by_end(
+                earliest=now, latest=now + timedelta(days=7))
         elif status == "inactive":
-            active = set(await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}}))
+            active = set(await store.subscription_ids_by_end(earliest=now))
             ids = [u.get("user_id") for u in users if u.get("user_id") not in active]
         else: raise ValueError("subscription_status_required")
         allowed = set(ids); users = [u for u in users if u.get("user_id") in allowed]

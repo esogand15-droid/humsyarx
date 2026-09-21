@@ -1699,47 +1699,12 @@ async def qbank_file_detail(file_id: str, admin=Depends(get_content_admin_user))
 
 
 @router.post("/qbank/files")
-async def qbank_file_upload(
-    lesson: str = Form(..., min_length=2, max_length=100),
-    topic: str = Form(..., min_length=2, max_length=100),
-    description: str = Form("", max_length=500),
-    intake: Optional[str] = Form(None, max_length=50),
-    file: UploadFile = File(...),
-    admin=Depends(get_content_admin_user),
-):
-    target = resolve_content_intake(admin, intake)
-    if target and target not in await _intakes_active_codes():
-        raise HTTPException(422, "کد ورودی نامعتبر است")
-    if not await db.can_access_intake(admin["id"], target):
-        raise HTTPException(403, "intake_out_of_scope")
-    raw = await _read_capped(file, 50 * 1024 * 1024)
-    _validate_magic(raw, file.content_type or "", file.filename or "")
-    if not raw:
-        raise HTTPException(413, "حجم فایل باید بین ۱ بایت و ۵۰ مگابایت باشد")
-    telegram_file_id = await upload_and_get_file_id(
-        admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not telegram_file_id:
-        raise HTTPException(503, "آپلود فایل به تلگرام انجام نشد")
-    item = await db.qbank_file_add(
-        intake=target, lesson=lesson, topic=topic, description=description,
-        filename=file.filename or "file", mime_type=file.content_type or "application/octet-stream",
-        size=len(raw), telegram_file_id=telegram_file_id, uploaded_by=admin["id"],
+async def qbank_file_upload(admin=Depends(get_content_admin_user)):
+    """بانک فایل بازنشسته است. فهرست و حذف قبلی می‌ماند؛ نوشتن تازه بسته است."""
+    raise HTTPException(
+        status_code=410,
+        detail="بانک فایل سؤال بازنشسته است. سؤال تازه را در بانک ساخت‌یافته ثبت کنید.",
     )
-    try:
-        await _audit(
-            admin, "آپلود فایل بانک سؤال", "QuestionBank", severity="INFO",
-            target_id=str(item["_id"]), target_type="qbank_file",
-            target_label=f"{lesson} — {topic}",
-            after={"intake": target, "filename": item["filename"], "size": len(raw)},
-            tags=["بانک_سؤال", "آپلود", "پنل_وب"],
-        )
-    except Exception:
-        # The Telegram upload already succeeded, so compensate the metadata
-        # write when the mandatory durable audit is unavailable.
-        await db.qbank_file_delete(str(item["_id"]))
-        raise
-    return {"ok": True, "file": _qbank_file_response(item)}
 
 
 @router.delete("/qbank/files/{file_id}")

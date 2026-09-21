@@ -147,6 +147,10 @@ async def create_import_job(admin: dict, payload: dict, idem_key: str) -> dict:
         if existing:
             return existing
     kind = payload.get("kind", "qbank")
+    if kind == "qbank":
+        raise UrlImportError(
+            "LEGACY_QBANK_FROZEN",
+            "بانک فایل سؤال بازنشسته است؛ سؤال را در بانک ساخت‌یافته ثبت کنید")
     if kind not in ("qbank", "bs", "ref"):
         raise UrlImportError("INVALID_KIND", "نوع محتوای مقصد نامعتبر است")
     doc = {
@@ -290,13 +294,9 @@ async def _register_content(job: dict, file_id: str, filename: str,
                             mime: str, size: int) -> str:
     meta = job.get("meta") or {}
     if job["kind"] == "qbank":
-        item = await db.qbank_file_add(
-            intake=job.get("intake") or "", lesson=meta.get("lesson") or "درون‌ریزی URL",
-            topic=meta.get("topic") or "درون‌ریزی URL",
-            description=meta.get("description") or "",
-            filename=filename, mime_type=mime, size=size,
-            telegram_file_id=file_id, uploaded_by=job["admin_id"])
-        return str(item["_id"])
+        raise UrlImportError(
+            "LEGACY_QBANK_FROZEN",
+            "بانک فایل سؤال بازنشسته است؛ سؤال را در بانک ساخت‌یافته ثبت کنید")
     if job["kind"] == "bs":
         cid = await db.bs_add_content(job["target_id"], meta.get("ctype") or "pdf",
                                       file_id, meta.get("description") or "",
@@ -347,6 +347,10 @@ async def _run_pipeline(job_id: str) -> None:
 
 
 async def _execute(job_id: str, job: dict, tmp_dir: str) -> None:
+    if job.get("kind") == "qbank":
+        raise UrlImportError(
+            "LEGACY_QBANK_FROZEN",
+            "بانک فایل سؤال بازنشسته است؛ سؤال را در بانک ساخت‌یافته ثبت کنید")
     max_mb = int(await db.get_setting("url_import_max_mb", DEFAULT_MAX_MB) or
                  DEFAULT_MAX_MB)
     max_bytes = max_mb * 1024 * 1024

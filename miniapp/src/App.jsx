@@ -59,7 +59,6 @@ import Me from './pages/Me';
    می‌دهد، نه صفحه‌ی خالی (Perceived
    Performance) */
 import {
-  SkPlanCard,
   SkRowList,
   MeSkeleton,
   NotificationsSkeleton,
@@ -72,19 +71,12 @@ import {
   SearchResultsSkeleton,
   TicketsSkeleton,
   FaqListSkeleton,
-  AdminHomeSkeleton,
-  AnalyticsSkeleton,
-  AuditLogSkeleton,
-  SettingsSkeleton,
-  GradesAdminSkeleton,
-  ScheduleAdminSkeleton,
   LibraryTilesSkeleton,
   LibraryRowsSkeleton,
   UsersListSkeleton,
-  UsersActionsSkeleton,
-  AdminOpsSkeleton,
-  ContentHomeSkeleton,
 } from './components/shared/skeletons';
+
+import AdminDesk from './pages/Admin/AdminDesk';
 
 
 /* هوشیار و جست‌وجو */
@@ -250,187 +242,6 @@ const ReportsScreen = lazyScreen(
   FaqListSkeleton,
   'Reports'
 );
-
-
-/* خانه‌های مدیریت */
-
-const AdminHomeScreen = lazyScreen(
-  () => import('./pages/Admin/AdminHome'),
-  AdminHomeSkeleton
-);
-
-const ContentHomeScreen = lazyScreen(
-  () => import('./pages/Admin/ContentHome'),
-  ContentHomeSkeleton
-);
-
-const SubscriptionAdminScreen = lazyScreen(
-  () =>
-    import('./pages/Admin/SubscriptionAdmin'),
-  () => (
-    <>
-      <SkPlanCard />
-      <SkPlanCard />
-      <SkPlanCard />
-    </>
-  )
-);
-
-const AiAdminScreen = lazyScreen(
-  () => import('./pages/Admin/AiAdmin'),
-  SettingsSkeleton
-);
-
-const AnalyticsScreen = lazyScreen(
-  () => import('./pages/Admin/Analytics'),
-  AnalyticsSkeleton
-);
-
-const AuditLogScreen = lazyScreen(
-  () => import('./pages/Admin/AuditLog'),
-  AuditLogSkeleton
-);
-
-const SystemSettingsScreen = lazyScreen(
-  () => import('./pages/Admin/SystemSettings'),
-  SettingsSkeleton
-);
-
-/* 🛡 مدیریت نقش‌ها — موج RBAC-W2 */
-const RolesScreen = lazyScreen(
-  () => import('./pages/Admin/Roles'),
-  UsersListSkeleton,
-  'AdminRoles'
-);
-
-
-/* مدیریت کاربران */
-
-const AdminUsersScreen = lazyScreen(
-  () => import('./pages/Admin/UserManagement'),
-  UsersListSkeleton,
-  'AdminUsers'
-);
-
-const AdminUserDetailScreen = lazyScreen(
-  () => import('./pages/Admin/UserManagement'),
-  UsersListSkeleton,
-  'AdminUserDetail'
-);
-
-const AdminIntakesScreen = lazyScreen(
-  () => import('./pages/Admin/UserManagement'),
-  UsersActionsSkeleton,
-  'AdminIntakes'
-);
-
-const AdminContentAdminsScreen = lazyScreen(
-  () => import('./pages/Admin/UserManagement'),
-  UsersActionsSkeleton,
-  'AdminContentAdmins'
-);
-
-const AdminBlacklistScreen = lazyScreen(
-  () => import('./pages/Admin/UserManagement'),
-  UsersListSkeleton,
-  'AdminBlacklist'
-);
-
-
-/* عملیات مدیریتی */
-
-const AdminTicketsScreen = lazyScreen(
-  () => import('./pages/Admin/AdminOperations'),
-  AdminOpsSkeleton,
-  'AdminTickets'
-);
-
-const BroadcastAdminScreen = lazyScreen(
-  () => import('./pages/Admin/AdminOperations'),
-  AdminOpsSkeleton,
-  'BroadcastAdmin'
-);
-
-const PollAdminScreen = lazyScreen(
-  () => import('./pages/Admin/AdminOperations'),
-  AdminOpsSkeleton,
-  'PollAdmin'
-);
-
-const NotificationsAdminScreen = lazyScreen(
-  () => import('./pages/Admin/AdminOperations'),
-  AdminOpsSkeleton,
-  'NotificationsAdmin'
-);
-
-
-/* مدیریت سؤال و FAQ */
-
-const ContentQuestionsScreen = lazyScreen(
-  () => import('./pages/Admin/ContentAdmin'),
-  QuestionsListSkeleton,
-  'ContentQuestions'
-);
-
-const ContentFaqScreen = lazyScreen(
-  () => import('./pages/Admin/ContentAdmin'),
-  FaqListSkeleton,
-  'ContentFaq'
-);
-
-
-/* مدیریت کتابخانه */
-
-const BasicScienceAdminScreen = lazyScreen(
-  () => import('./pages/Admin/ContentLibrary'),
-  LibraryRowsSkeleton,
-  'BasicScienceAdmin'
-);
-
-const ReferencesAdminScreen = lazyScreen(
-  () => import('./pages/Admin/ContentLibrary'),
-  LibraryRowsSkeleton,
-  'ReferencesAdmin'
-);
-
-// 📥 URL-Import — صفحه‌ی درون‌ریزی محتوای راه‌دور
-const UrlImportScreen = lazyScreen(
-  () => import('./pages/Admin/UrlImport'),
-  LibraryRowsSkeleton,
-  'UrlImport'
-);
-
-const QbankAdminScreen = lazyScreen(
-  () => import('./pages/Admin/ContentLibrary'),
-  LibraryRowsSkeleton,
-  'QbankAdmin'
-);
-
-const ContentReportsAdminScreen = lazyScreen(
-  () => import('./pages/Admin/ContentLibrary'),
-  AdminOpsSkeleton,
-  'ContentReportsAdmin'
-);
-
-
-/* مدیریت برنامه و نمرات */
-
-const AcademicScheduleAdminScreen = lazyScreen(
-  () =>
-    import(
-      './pages/Admin/AcademicScheduleAdmin'
-    ),
-  ScheduleAdminSkeleton
-);
-
-const AcademicGradesAdminScreen = lazyScreen(
-  () =>
-    import(
-      './pages/Admin/AcademicGradesAdmin'
-    ),
-  GradesAdminSkeleton
-);
-
 
 
 /* ─────────────────────────────────────────────
@@ -762,17 +573,9 @@ export default function App() {
     if (!user) return undefined;
 
     const warm = () => {
-      /* هوشیار — پرترددترین مقصد فرعی همه */
+      /* هوشیار — پرترددترین مقصد فرعی همه.
+         میز مدیریت دیگر چانک جدا ندارد. */
       import('./pages/Ai/AiHome');
-
-      if (
-        ['admin', 'content_admin'].includes(
-          user.role
-        )
-      ) {
-        import('./pages/Admin/AdminHome');
-        import('./pages/Admin/ContentHome');
-      }
     };
 
     if (
@@ -1093,269 +896,247 @@ export default function App() {
         />
 
 
-        {/* خانه مدیریت */}
+        {/* یک میز مدیریت: مسیر شناخته‌شده پل وب‌ادمین است؛ ناشناخته خانه */}
 
         <Route
           path="/admin"
-          element={
+          element={(
             <AdminRoute>
-              <AdminHomeScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* مدیریت اشتراک */}
 
         <Route
           path="/admin/subscription"
-          element={
+          element={(
             <AdminRoute>
-              <SubscriptionAdminScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* مدیریت هوشیار */}
 
         <Route
           path="/admin/ai"
-          element={
+          element={(
             <AdminRoute>
-              <AiAdminScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* آمار و لاگ فعالیت */}
 
         <Route
           path="/admin/analytics"
-          element={
+          element={(
             <AdminRoute>
-              <AnalyticsScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/audit"
-          element={
+          element={(
             <AdminRoute>
-              <AuditLogScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/settings"
-          element={
+          element={(
             <AdminRoute>
-              <SystemSettingsScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* مدیریت کاربران */}
 
         <Route
           path="/admin/users"
-          element={
+          element={(
             <AdminRoute>
-              <AdminUsersScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/users/:uid"
-          element={
+          element={(
             <AdminRoute>
-              <AdminUserDetailScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
-        {/* 🛡 RBAC-W2 — مدیریت نقش‌ها/مجوزها */}
         <Route
           path="/admin/roles"
-          element={
+          element={(
             <AdminRoute>
-              <RolesScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/intakes"
-          element={
+          element={(
             <AdminRoute>
-              <AdminIntakesScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content-admins"
-          element={
+          element={(
             <AdminRoute>
-              <AdminContentAdminsScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/blacklist"
-          element={
+          element={(
             <AdminRoute>
-              <AdminBlacklistScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* عملیات مدیریتی */}
 
         <Route
           path="/admin/tickets"
-          element={
+          element={(
             <AdminRoute>
-              <AdminTicketsScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/broadcast"
-          element={
+          element={(
             <AdminRoute>
-              <BroadcastAdminScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/poll"
-          element={
+          element={(
             <AdminRoute>
-              <PollAdminScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/notifications"
-          element={
+          element={(
             <AdminRoute>
-              <NotificationsAdminScreen />
+              <AdminDesk />
             </AdminRoute>
-          }
+          )}
         />
-
-
-        {/* خانه محتوا */}
 
         <Route
           path="/admin/content"
-          element={
+          element={(
             <ContentAdminRoute>
-              <ContentHomeScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
         />
-
-
-        {/* سؤال و FAQ */}
 
         <Route
           path="/admin/content/questions"
-          element={
+          element={(
             <ContentAdminRoute>
-              <ContentQuestionsScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content/faq"
-          element={
+          element={(
             <ContentAdminRoute>
-              <ContentFaqScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
         />
-
-
-        {/* برنامه و نمرات */}
 
         <Route
           path="/admin/content/schedule"
-          element={
+          element={(
             <PermissionRoute any={['schedules.manage', 'content.manage']}>
-              <AcademicScheduleAdminScreen />
+              <AdminDesk />
             </PermissionRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content/grades"
-          element={
+          element={(
             <PermissionRoute any={['grades.manage', 'grades.scoped', 'content.manage', 'content.scoped']}>
-              <AcademicGradesAdminScreen />
+              <AdminDesk />
             </PermissionRoute>
-          }
+          )}
         />
-
-
-        {/* کتابخانه محتوا */}
 
         <Route
           path="/admin/content/basic-science"
-          element={
+          element={(
             <ContentAdminRoute>
-              <BasicScienceAdminScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content/references"
-          element={
+          element={(
             <ContentAdminRoute>
-              <ReferencesAdminScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content/qbank"
-          element={
+          element={(
             <PermissionRoute any={['content.manage', 'content.scoped']}>
-              <QbankAdminScreen />
+              <AdminDesk />
             </PermissionRoute>
-          }
+          )}
         />
 
-        {/* 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند */}
         <Route
           path="/admin/content/url-import"
-          element={
+          element={(
             <PermissionRoute any={['content.manage', 'content.scoped']}>
-              <UrlImportScreen />
+              <AdminDesk />
             </PermissionRoute>
-          }
+          )}
         />
 
         <Route
           path="/admin/content/reports"
-          element={
+          element={(
             <ContentAdminRoute>
-              <ContentReportsAdminScreen />
+              <AdminDesk />
             </ContentAdminRoute>
-          }
+          )}
+        />
+
+        <Route
+          path="/admin/*"
+          element={(
+            <Navigate to="/" replace />
+          )}
         />
 
 

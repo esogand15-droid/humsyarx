@@ -618,12 +618,14 @@ async def _compile_user_smart_query(raw: str | None) -> dict:
         if field == "subscription_days_left":
             try: days = max(0, min(3650, int(value)))
             except (TypeError, ValueError): raise HTTPException(422, "روز باقی‌مانده اشتراک نامعتبر است")
-            end_filter = {"$gte": now.isoformat()}
-            cutoff = (now + timedelta(days=days)).isoformat()
-            if op in ("lte", "lt", "eq"): end_filter["$lte"] = cutoff
-            elif op in ("gt", "gte"): end_filter["$gt"] = cutoff
-            else: raise HTTPException(422, "عملگر اشتراک نامعتبر است")
-            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": end_filter})
+            cutoff = now + timedelta(days=days)
+            if op in ("lte", "lt", "eq"):
+                ids = await db.subscription_ids_by_end(earliest=now, latest=cutoff)
+            elif op in ("gt", "gte"):
+                ids = await db.subscription_ids_by_end(
+                    earliest=cutoff, earliest_inclusive=False)
+            else:
+                raise HTTPException(422, "عملگر اشتراک نامعتبر است")
             return {"user_id": {"$in": ids}}
         if field == "open_tickets":
             ids = await db.tickets.distinct("user_id", {"status": "open"})
@@ -719,12 +721,10 @@ async def users_table(
             accuracy_max,
         ]}
     if sub_expiring_days is not None:
-        sub_ids = await db.subscriptions.distinct("_id", {
-            "status": "active", "end_date": {
-                "$gte": now.isoformat(),
-                "$lte": (now + timedelta(days=sub_expiring_days)).isoformat(),
-            },
-        })
+        sub_ids = await db.subscription_ids_by_end(
+            earliest=now,
+            latest=now + timedelta(days=sub_expiring_days),
+        )
         existing_ids = (filt.get("user_id") or {}).get("$in")
         filt["user_id"] = {"$in": ([i for i in sub_ids if i in set(existing_ids)]
                                       if existing_ids is not None else sub_ids)}
@@ -5933,15 +5933,23 @@ async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
                         "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}}]):
         totals[row["_id"] or "unknown"] = {"count": int(row["count"]),
                                            "total": int(row["total"])}
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+    pad_since = (now_utc() - timedelta(days=16)).isoformat()
+    start_day = (today_tehran() - timedelta(days=13)).isoformat()
     daily = []
     async for row in db.sub_payments.aggregate([
             {"$match": {"status": "approved",
-                        "reviewed_at": {"$gte": cutoff}}},
-            {"$group": {"_id": {"$substrCP": ["$reviewed_at", 0, 10]},
-                        "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}},
+                        "reviewed_at": {"$gte": pad_since}}},
+            {"$addFields": {"_event_dt": {"$convert": {
+                "input": "$reviewed_at", "to": "date",
+                "onError": None, "onNull": None}}}},
+            {"$match": {"_event_dt": {"$ne": None}}},
+            {"$group": {"_id": {"$dateToString": {
+                "format": "%Y-%m-%d", "date": "$_event_dt",
+                "timezone": "Asia/Tehran"}},
+                "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}},
             {"$sort": {"_id": 1}}]):
-        daily.append({"day": row["_id"], "total": int(row["total"])})
+        if row.get("_id") and row["_id"] >= start_day:
+            daily.append({"day": row["_id"], "total": int(row["total"])})
     refunds = []
     uids = set()
     rdocs = await db.sub_payments.find({"status": "refunded"}).sort(
@@ -5964,7 +5972,7 @@ async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
     rej = totals.get("rejected", {"count": 0, "total": 0})
     ref = totals.get("refunded", {"count": 0, "total": 0})
     decided = appr["count"] + rej["count"]
-    week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()[:10]
+    week = (today_tehran() - timedelta(days=6)).isoformat()
     revenue_week = sum(d["total"] for d in daily if d["day"] >= week)
     return {"totals": totals,
             "revenue_total": appr["total"],

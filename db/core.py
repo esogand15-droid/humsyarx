@@ -1830,13 +1830,17 @@ class DBCore:
         since = current_start.isoformat()
         previous_since = previous_start.isoformat()
         period_end = now.isoformat()
+        # پیش‌فیلتر رشته‌ای دو روز حاشیه دارد تا پسوند منطقه ردیف مرزی را حذف نکند.
+        # سطل روز و ساعت بعد از تبدیل لحظه، با تقویم تهران ساخته می‌شود.
+        chart_since = (current_start - timedelta(days=2)).isoformat()
+        chart_until = (now + timedelta(days=2)).isoformat()
 
         async def _daily(col, ts_field):
             rows = await col.aggregate([
-                {"$match": {ts_field: {"$gte": since, "$lt": period_end}}},
+                {"$match": {ts_field: {"$gte": chart_since, "$lt": chart_until}}},
                 {"$addFields": {"_event_dt": {"$convert": {
                     "input": f"${ts_field}", "to": "date", "onError": None, "onNull": None}}}},
-                {"$match": {"_event_dt": {"$ne": None}}},
+                {"$match": {"_event_dt": {"$gte": current_start, "$lt": now}}},
                 {"$group": {"_id": {"$dateToString": {
                     "format": "%Y-%m-%d", "date": "$_event_dt", "timezone": "Asia/Tehran"}},
                     "count": {"$sum": 1}}},
@@ -1877,9 +1881,13 @@ class DBCore:
                 {"$limit": 8},
             ]).to_list(8),
             self.stats_col.aggregate([
-                {"$match": {"timestamp": current_window}},
-                {"$group": {"_id": {"$substrBytes": ["$timestamp", 11, 2]},
-                            "count": {"$sum": 1}}},
+                {"$match": {"timestamp": {"$gte": chart_since, "$lt": chart_until}}},
+                {"$addFields": {"_event_dt": {"$convert": {
+                    "input": "$timestamp", "to": "date", "onError": None, "onNull": None}}}},
+                {"$match": {"_event_dt": {"$gte": current_start, "$lt": now}}},
+                {"$group": {"_id": {"$dateToString": {
+                    "format": "%H", "date": "$_event_dt", "timezone": "Asia/Tehran"}},
+                    "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}},
                 {"$limit": 6},
             ]).to_list(6),

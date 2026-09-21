@@ -2399,23 +2399,8 @@ class DBContent:
                              description: str, filename: str, mime_type: str,
                              size: int, telegram_file_id: str, uploaded_by: int,
                              file_type: str = 'document'):
-        document = {
-            'intake': str(intake or ''),
-            'lesson': str(lesson or '').strip()[:100],
-            'topic': str(topic or '').strip()[:100],
-            'description': str(description or '').strip()[:500],
-            'filename': str(filename or 'file')[:255],
-            'mime_type': str(mime_type or 'application/octet-stream')[:120],
-            'size': max(0, int(size or 0)),
-            'file_id': str(telegram_file_id),
-            'file_type': str(file_type or 'document')[:30],
-            'downloads': 0,
-            'uploaded_by': int(uploaded_by),
-            'created_at': utc_now_iso(),
-        }
-        result = await self.qbank_files.insert_one(document)
-        document['_id'] = result.inserted_id
-        return document
+        # کالکشن qbank_files تا تأیید مهاجرت واقعی حذف نمی‌شود؛ فقط نوشتن تازه بسته است.
+        raise RuntimeError('legacy_qbank_frozen')
 
 
     async def qbank_file_delete(self, file_id: str) -> bool:

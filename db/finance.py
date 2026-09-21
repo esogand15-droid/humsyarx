@@ -14,8 +14,9 @@ from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 import motor.motor_asyncio
 from time_utils import (
-    UTC, end_of_day_tehran, now_utc, parse_gregorian_date,
-    parse_machine_datetime, remaining_days, start_of_month_tehran, utc_now_iso,
+    UTC, TimeContractError, canonical_utc, end_of_day_tehran, now_utc,
+    parse_gregorian_date, parse_machine_datetime, remaining_days,
+    start_of_month_tehran, utc_now_iso,
 )
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
@@ -128,9 +129,9 @@ class DBFinance:
         if expires_at:
             try:
                 if len(str(expires_at).strip()) == 10:
-                    expires_at = end_of_day_tehran(parse_gregorian_date(expires_at)).astimezone(UTC).isoformat()
+                    expires_at = canonical_utc(end_of_day_tehran(parse_gregorian_date(expires_at)))
                 else:
-                    expires_at = parse_machine_datetime(expires_at).astimezone(UTC).isoformat()
+                    expires_at = canonical_utc(parse_machine_datetime(expires_at))
             except ValueError:
                 raise ValueError('invalid_discount_expiry')
         try:
@@ -230,7 +231,7 @@ class DBFinance:
         legacy_expiry = str((legacy or {}).get('expires_at') or '').strip()
         if len(legacy_expiry) == 10:
             try:
-                canonical_expiry = end_of_day_tehran(parse_gregorian_date(legacy_expiry)).astimezone(UTC).isoformat()
+                canonical_expiry = canonical_utc(end_of_day_tehran(parse_gregorian_date(legacy_expiry)))
                 await self.discount_codes.update_one({'code': code_u, 'expires_at': legacy_expiry},
                                                      {'$set': {'expires_at': canonical_expiry}})
             except ValueError:
@@ -325,20 +326,14 @@ class DBFinance:
     async def discount_segment_users(self, segment: str = 'all') -> list:
         """کاربران هدف کمپین. segment: all | subscribers | no_sub"""
         if segment == 'subscribers':
-            subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
-            ).to_list(length=None)
-            ids = list({int(s['_id']) for s in subs})
+            ids = await self.subscription_ids_by_end(earliest=now_utc())
             if not ids:
                 return []
             return await self.users.find(
                 {'approved': True, 'blocked_bot': {'$ne': True}, 'user_id': {'$in': ids}}
             ).to_list(length=None)
         if segment == 'no_sub':
-            subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
-            ).to_list(length=None)
-            ids = list({int(s['_id']) for s in subs})
+            ids = await self.subscription_ids_by_end(earliest=now_utc())
             return await self.users.find(
                 {'approved': True, 'blocked_bot': {'$ne': True}, 'user_id': {'$nin': ids}}
             ).to_list(length=None)
@@ -467,6 +462,7 @@ class DBFinance:
         روزهای باقی‌مانده را از بین نبرد).
         """
         now = now_utc()
+        now_iso = utc_now_iso()
         s = await self.sub_get(user_id)
         try:
             existing_end = parse_machine_datetime((s or {}).get('end_date'))
@@ -476,7 +472,7 @@ class DBFinance:
             base = existing_end
         else:
             base = now
-        end_date = (base + timedelta(days=days)).isoformat()
+        end_date = canonical_utc(base + timedelta(days=days))
         # 🛡 AUDIT-§۸۳ — «total_days» محاسبه می‌شد و دور ریخته می‌شد؛ نوارِ
         # پیشرفتِ واقعی (`subscription.py:550`) از `last_plan_days` می‌خواند و
         # همان هم پایین‌تر ذخیره می‌شود. خطِ مرده حذف شد تا خواننده فرض نکند
@@ -487,12 +483,12 @@ class DBFinance:
                 'status': 'active', 'plan_name': plan_name,
                 # 🌊 W6/MISS-04 — اتصال اشتراک به پلن (سهمیه پلنی؛ خالی=قدیمی/دستی)
                 'plan_id': plan_id or '',
-                'start_date': now.isoformat(), 'end_date': end_date,
+                'start_date': now_iso, 'end_date': end_date,
                 'source': source, 'granted_by': granted_by,
                 'last_plan_days': days,
                 # FIX جدید: دو فلگ جدا برای یادآوری ۳روزه و ۱روزه
                 'reminder_3d_sent': False, 'reminder_1d_sent': False,
-                'updated_at': now.isoformat(),
+                'updated_at': now_iso,
             }},
             upsert=True
         )
@@ -502,7 +498,7 @@ class DBFinance:
                 {'source': 'family', 'family_owner_id': int(user_id),
                  'status': 'active'},
                 {'$set': {'end_date': end_date,
-                          'updated_at': now.isoformat()}})
+                          'updated_at': now_iso}})
         except Exception:
             pass
         return end_date
@@ -663,7 +659,11 @@ class DBFinance:
             {'$set': {'used_by': user_id, 'used_at': utc_now_iso()}})
         if not locked:
             return {'ok': False, 'error': 'این کد قبلاً استفاده شده'}
-        end_date = owner_sub.get('end_date')
+        raw_end = owner_sub.get('end_date')
+        try:
+            end_date = canonical_utc(raw_end)
+        except (TimeContractError, ValueError, TypeError):
+            end_date = raw_end
         now = utc_now_iso()
         await self.subscriptions.update_one(
             {'_id': user_id},
@@ -699,12 +699,45 @@ class DBFinance:
         return {'ok': True}
 
 
+    async def _active_subs_in_window(self, *, earliest=None, latest=None,
+                                     earliest_inclusive=True, latest_inclusive=True,
+                                     extra=None, limit=50000) -> list:
+        """اشتراک‌های فعال که end_dateشان، پس از پارس لحظه، داخل پنجره است.
+
+        مقایسه‌ی رشته‌ای ISO بین حالت خام، Z، +00:00 و میکروثانیه
+        ترتیب زمانی واقعی نیست. روز مدنی پارس نمی‌شود و نادیده می‌ماند.
+        """
+        query = {'status': 'active'}
+        if extra:
+            query.update(extra)
+        found = []
+        cursor = self.subscriptions.find(query, {'end_date': 1})
+        async for doc in cursor:
+            try:
+                end = parse_machine_datetime(doc.get('end_date'))
+            except (TimeContractError, ValueError, TypeError):
+                continue
+            if earliest is not None:
+                if end < earliest or (not earliest_inclusive and end == earliest):
+                    continue
+            if latest is not None:
+                if end > latest or (not latest_inclusive and end == latest):
+                    continue
+            found.append(doc)
+            if len(found) >= limit:
+                break
+        return found
+
+
+    async def subscription_ids_by_end(self, **kwargs) -> list:
+        docs = await self._active_subs_in_window(**kwargs)
+        return [doc['_id'] for doc in docs]
+
+
     async def sub_expire_due(self) -> list:
-        """کاربرانی که تاریخ پایانشان گذشته ولی هنوز status=active مانده"""
-        now_iso = utc_now_iso()
-        due = await self.subscriptions.find(
-            {'status': 'active', 'end_date': {'$lt': now_iso}}
-        ).to_list(500)
+        """کاربرانی که لحظه‌ی پایانشان گذشته ولی هنوز status=active مانده."""
+        due = await self._active_subs_in_window(
+            latest=now_utc(), latest_inclusive=False, limit=500)
         if due:
             await self.subscriptions.update_many(
                 {'_id': {'$in': [d['_id'] for d in due]}},
@@ -717,16 +750,17 @@ class DBFinance:
         """
         اشتراک‌های فعالی که کمتر از N روز تا پایانشان مانده و هنوز
         یادآوری مخصوص همان فلگ (سه‌روزه یا یک‌روزه) را نگرفته‌اند.
-        FIX جدید: دو یادآوری جدا (۳ روز و ۱ روز قبل) — دقیقاً مثل
-        الگوی یادآوری‌های پلکانی امتحان که در ربات وجود دارد.
+        تصمیم با لحظه‌ی پارس‌شده است، نه ترتیب رشته‌ی ISO.
         """
+        if not isinstance(flag_field, str) or not flag_field.replace('_', '').isalnum():
+            return []
         now = now_utc()
-        cutoff = (now + timedelta(days=days_before)).isoformat()
-        return await self.subscriptions.find({
-            'status': 'active',
-            'end_date': {'$gte': now.isoformat(), '$lte': cutoff},
-            flag_field: {'$ne': True},
-        }).to_list(500)
+        return await self._active_subs_in_window(
+            earliest=now,
+            latest=now + timedelta(days=days_before),
+            extra={flag_field: {'$ne': True}},
+            limit=500,
+        )
 
 
     async def sub_mark_reminder_sent(self, user_id: int, flag_field: str):
@@ -742,14 +776,17 @@ class DBFinance:
         pending = await self.sub_payments.count_documents({'status': 'pending'})
         approved_total = await self.sub_payments.count_documents({'status': 'approved'})
         rejected_total = await self.sub_payments.count_documents({'status': 'rejected'})
-        month_start = start_of_month_tehran().astimezone(now_utc().tzinfo).isoformat()
+        month_start_dt = start_of_month_tehran().astimezone(now_utc().tzinfo)
         revenue_total = revenue_month = 0
         plan_counter: dict = {}
         async for p in self.sub_payments.find({'status': 'approved'}):
             amt = p.get('final_price', p.get('price', 0))
             revenue_total += amt
-            if p.get('reviewed_at', '') >= month_start:
-                revenue_month += amt
+            try:
+                if parse_machine_datetime(p.get('reviewed_at')) >= month_start_dt:
+                    revenue_month += amt
+            except (TimeContractError, ValueError, TypeError):
+                pass
             plan_counter[p.get('plan_name', '-')] = plan_counter.get(p.get('plan_name', '-'), 0) + 1
         top_plan = max(plan_counter, key=plan_counter.get) if plan_counter else '-'
         conv_rate = round(approved_total / (approved_total + rejected_total) * 100) if (approved_total + rejected_total) else 0
