@@ -179,7 +179,7 @@ export function RefsTab() {
     setBooksErr("");
     setFilesErr("");
     try {
-      const r = await api.refBooks(selectedSubject.id);
+      const r = await api.refBooks(selectedSubject.id, intake || undefined);
       setBooks(r.books || []);
       setBooksReadonly(!!r.readonly);
       setBooksCanCreate(!!r.can_create_own);

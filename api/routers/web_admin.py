@@ -3926,16 +3926,30 @@ async def content_tree(intake: Optional[str] = Query(None),
     lesson_refs.extend(oid for oid in (_oid(v) for v in lesson_ids) if oid is not None)
     sessions = await db.bs_sessions.find(
         {"lesson_id": {"$in": lesson_refs}}).to_list(2000) if lesson_refs else []
+    lesson_intake_of = {str(l.get("_id")): str(l.get("intake") or "") for l in lessons}
+
+    def _session_bucket(session) -> str:
+        # همان قاعده‌ی db.bs_get_sessions_effective: فیلد صریح، وگرنه ارث از درس.
+        if "intake" in session and session.get("intake") is not None:
+            return str(session.get("intake") or "")
+        return lesson_intake_of.get(str(session.get("lesson_id") or ""), "")
+
     if iv:
-        # 🌊 C3-fix — فیلتر سطل باید دقیق باشد: عبارت قبلی («یا هر non-fork»)
-        # جلسه‌های «exclusive» ورودی‌های دیگر را هم وارد درخت می‌کرد. تا پیش از
-        # موج C3 چنین سندی وجود نداشت (هر non-fork یا سراسری است یا ارث‌بر از
-        # درس خودش)؛ حالا که نماینده می‌تواند جلسه‌ی فقط-ورودی بسازد، این
-        # نشت واقعی می‌شد ⇒ فقط سراسری + ورودی خودِ actor.
-        sessions = [s for s in sessions if str(s.get("intake") or "") in ("", iv)]
+        # سراسری + همین ورودی. جلسه‌ای که برای این ورودی fork شده، پایه‌اش پنهان است.
+        allowed = {"", iv}
+        forked_bases = {
+            str(s.get("fork_of")) for s in sessions
+            if s.get("fork_of") and _session_bucket(s) in allowed and _session_bucket(s)
+        }
+        sessions = [
+            s for s in sessions
+            if _session_bucket(s) in allowed and str(s.get("_id")) not in forked_bases
+        ]
     else:
-        sessions = [s for s in sessions if str(s.get("intake") or "") == ""
-                    and not s.get("fork_of")]
+        sessions = [
+            s for s in sessions
+            if _session_bucket(s) == "" and not s.get("fork_of")
+        ]
     sess_ids = [str(s.get("_id")) for s in sessions]
     session_refs = list(sess_ids)
     session_refs.extend(oid for oid in (_oid(v) for v in sess_ids) if oid is not None)

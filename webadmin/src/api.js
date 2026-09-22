@@ -757,6 +757,8 @@ export const api = {
     req(`/api/admin/rbac/roles/${k}`, { method: "PATCH", body }),
   deleteRole: (k) => req(`/api/admin/rbac/roles/${k}`, { method: "DELETE" }),
   roleOf: (uid) => req(`/api/admin/rbac/users/${uid}`),
+  roleHolders: (key) =>
+    req(`/api/admin/rbac/roles/${encodeURIComponent(key)}/holders`),
   assignRoles: (uid, body) =>
     req(`/api/admin/rbac/users/${uid}/roles`, { method: "POST", body }),
   rbacIntakes: () => req("/api/web-admin/rbac/intakes"),
@@ -1105,7 +1107,11 @@ export const api = {
       method: "POST",
       body: { intake },
     }),
-  refBooks: (sid) => req(`/api/content/references/subjects/${sid}/books`),
+  refBooks: (sid, intake) =>
+    req(
+      `/api/content/references/subjects/${sid}/books` +
+        (intake ? `?intake=${encodeURIComponent(intake)}` : ""),
+    ),
   refBookAdd: (sid, name) =>
     req(`/api/content/references/subjects/${sid}/books`, {
       method: "POST",

@@ -144,6 +144,26 @@ async def _deny_create_in(bucket: str, admin: dict):
     raise HTTPException(403, "intake_out_of_scope")
 
 
+def _list_intake(iv: str):
+    """ورودی مشخص → همان سطل به‌علاوه‌ی سراسری. خالی → فقط سراسری."""
+    return [iv, ""] if iv else iv
+
+
+def _child_view(admin: dict, requested: Optional[str]):
+    """None = بدون فیلتر (ارشد روی سطل سراسری).
+    لیست = نمای مؤثر همان ورودی به‌علاوه‌ی سراسری.
+    ورودی‌خاص همیشه روی scope خودش قفل است.
+    """
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        own = scope.get("intake") or ""
+        return [own, ""] if own else [""]
+    if isinstance(requested, str) and requested:
+        iv = resolve_content_intake(admin, requested)
+        return [iv, ""] if iv else None
+    return None
+
+
 @router.get("/intakes")
 async def content_intakes(admin=Depends(get_content_admin_user)):
     """🌊 C1 — لیست ورودی‌های فعال برای picker مینی‌اپ + scope فعلی کاربر.
@@ -793,25 +813,29 @@ async def bs_lessons(term: str = Query(...), admin=Depends(get_content_admin_use
                      intake: Optional[str] = Query(None)):
     iv = resolve_content_intake(admin, intake)
     scope = admin.get("_scope") or {}
-    # 🌊 C1.5 — ادمین ورودی خاص: درس‌های سراسری هم با فلگ readonly
-    # دیده می‌شوند (§۲۲ spec: Global=هسته‌ی پایه، فقط‌خواندنی)
-    if scope.get("kind") == "scoped":
-        items = await db.bs_get_lessons(term, intake=[iv, ''])
-        # 🛡 C3.1 — «ورودی من» تنها وقتی معنای نوشتن دارد که scope تنظیم شده
-        # باشد؛ برای scopedِ بدون-scope همه‌چیز فقط‌خواندنی است (iv='' و
-        # own='' نباید با «سطل سراسری مال من است» اشتباه گرفته شود).
-        own = scope.get("intake") or ""
-        # 🌊 C3 — روی درس سراسری «فقط‌خواندنی» است، ولی می‌تواند جلسه‌ی
-        # فقط-ورودی‌خودش را زیرش بسازد ⇒ UI باید دکمه‌ی افزودن را باز بگذارد.
-        return {"intake": iv,
-            "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),
-                        "teacher":l.get("teacher",""),
-                        "readonly": not own or (l.get("intake") or '') != own,
-                        "can_create_sessions": bool(own) and (l.get("intake") or '') == ''} for l in items]}
-    items = await db.bs_get_lessons(term, intake=iv)
-    return {"intake": iv,
-        "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),"teacher":l.get("teacher",""),
-                    "readonly": False} for l in items]}
+    scoped = scope.get("kind") == "scoped"
+    own = scope.get("intake") or ""
+    # داخل ورودی انتخاب‌شده، سراسری هم می‌آید. readonly فقط برای ورودی‌خاص است؛
+    # ارشد می‌تواند سراسری را ویرایش کند و با fork مخصوص همین ورودی کند.
+    items = await db.bs_get_lessons(term, intake=_list_intake(iv))
+    lessons = []
+    for lesson in items:
+        li = lesson.get("intake") or ""
+        if scoped:
+            readonly = not own or li != own
+            can_create = bool(own) and li == ""
+        else:
+            readonly = False
+            can_create = False
+        lessons.append({
+            "id": str(lesson["_id"]),
+            "name": lesson.get("name", ""),
+            "teacher": lesson.get("teacher", ""),
+            "intake": li,
+            "readonly": readonly,
+            "can_create_sessions": can_create,
+        })
+    return {"intake": iv, "lessons": lessons}
 
 class BsLessonCreate(BaseModel):
     term: str; name: str = Field(min_length=1); teacher: str = ""; intake: str = ""
@@ -876,33 +900,36 @@ async def bs_del_lesson_ep(lid: str, admin=Depends(get_content_admin_user)):
     return {"ok":True}
 
 @router.get("/basic-science/lessons/{lid}/sessions")
-async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
-    # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ جلساتِ درسِ سراسری برای scoped
+async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user),
+                         intake: Optional[str] = Query(None)):
+    # مشاهده‌ی فقط‌خواندنیِ جلساتِ درسِ سراسری برای scoped؛
+    # اگر ورودی انتخاب شده باشد، ارشد هم نمای مؤثر (سراسری + همان ورودی) می‌گیرد.
     li = await db.lesson_intake(lid)
     ro = await _read_intake(li, admin)
     scope = admin.get("_scope") or {}
-    # 🍴 C2 — نمای مؤثر برای scoped روی درس سراسری: fork خودش جایگزین base
-    if ro and scope.get("kind") == "scoped":
-        items = await db.bs_get_sessions_effective(
-            lid, [scope.get("intake") or '', ''])
-    else:
+    view = _child_view(admin, intake)
+    if view is None:
         items = await db.bs_get_sessions(lid)
+    else:
+        items = await db.bs_get_sessions_effective(lid, view)
     # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
     child = await db.scoped_child_intake(admin["id"], li)
     own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
     next_number = await db.bs_next_session_number(lid, (child or None) if child else None)
+    sessions = []
+    for s in items:
+        resolved = (s.get("intake") if "intake" in s else li) or ""
+        sessions.append({
+            "id": str(s["_id"]), "number": s.get("number", 0),
+            "topic": s.get("topic", ""), "teacher": s.get("teacher", ""),
+            # intake مؤثر، نه فقط فیلد خام — تا ✂️ فقط روی پایه‌ی سراسری بیاید
+            "intake": resolved, "is_fork": bool(s.get("fork_of")),
+            "own": (not bool(s.get("fork_of"))) and bool(own_iv) and resolved == own_iv,
+        })
     return {"readonly": ro,
-        # can_create_own: درس برای این کاربر فقط‌خواندنی است ولی می‌تواند
-        # جلسه‌ای که فقط برای ورودی خودش است اضافه کند (§۱۱ گزارش)
         "can_create_own": bool(child not in (None, '')),
         "next_number": next_number,
-        "sessions":[{"id":str(s["_id"]),"number":s.get("number",0),"topic":s.get("topic",""),
-        "teacher":s.get("teacher",""),
-        # 🍴 C2 — متادیتای fork برای رندر دکمه‌های ✂️/↩️ و نشان ⭐ در مینی‌اپ
-        "intake":s.get("intake") or "", "is_fork":bool(s.get("fork_of")),
-        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
-        "own": (not bool(s.get("fork_of"))) and bool(own_iv)
-                and (s.get("intake") or '') == own_iv} for s in items]}
+        "sessions": sessions}
 
 class BsSessionCreate(BaseModel):
     number: int = Field(ge=1, le=10000)
@@ -1146,19 +1173,20 @@ async def ref_subjects_ep(admin=Depends(get_content_admin_user),
                           intake: Optional[str] = Query(None)):
     iv = resolve_content_intake(admin, intake)
     scope = admin.get("_scope") or {}
-    # 🌊 C1.5 — ادمین ورودی خاص: موضوعات سراسری هم با فلگ readonly (§۲۲)
-    if scope.get("kind") == "scoped":
-        items = await db.ref_get_subjects(intake=[iv, ''])
-        # 🛡 C3.1 — همان قاعده‌ی bs_lessons: بدون scope تنظیم‌شده همه‌چیز 🔒
-        own = scope.get("intake") or ""
-        return {"intake": iv,
-            "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
-                         "intake": s.get("intake") or "",
-                         "readonly": not own or (s.get("intake") or '') != own} for s in items]}
-    items = await db.ref_get_subjects(intake=iv)
-    return {"intake": iv,
-        "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
-                     "intake": s.get("intake") or "", "readonly": False} for s in items]}
+    scoped = scope.get("kind") == "scoped"
+    own = scope.get("intake") or ""
+    items = await db.ref_get_subjects(intake=_list_intake(iv))
+    subjects = []
+    for subject in items:
+        si = subject.get("intake") or ""
+        readonly = (not own or si != own) if scoped else False
+        subjects.append({
+            "id": str(subject["_id"]),
+            "name": subject.get("name", ""),
+            "intake": si,
+            "readonly": readonly,
+        })
+    return {"intake": iv, "subjects": subjects}
 
 class RefSubjectCreate(BaseModel):
     name: str = Field(min_length=1); intake: str = ""
@@ -1236,29 +1264,32 @@ async def ref_del_subject_ep(sid: str, admin=Depends(get_content_admin_user)):
     return {"ok":True}
 
 @router.get("/references/subjects/{sid}/books")
-async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user)):
-    # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ کتاب‌های موضوع سراسری برای scoped
+async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user),
+                       intake: Optional[str] = Query(None)):
+    # مشاهده‌ی فقط‌خواندنی برای scoped؛ ارشد با ورودی انتخاب‌شده نمای مؤثر می‌گیرد.
     _si = await db.ref_subject_intake(sid)
     ro = await _read_intake(_si, admin)
     scope = admin.get("_scope") or {}
-    # 🍴 C2 — نمای مؤثر برای scoped روی موضوع سراسری: fork جایگزین base
-    if ro and scope.get("kind") == "scoped":
-        items = await db.ref_get_books_effective(
-            sid, [scope.get("intake") or '', ''])
-    else:
+    view = _child_view(admin, intake)
+    if view is None:
         items = await db.ref_get_books(sid)
-    # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
+    else:
+        items = await db.ref_get_books_effective(sid, view)
     child = await db.scoped_child_intake(admin["id"], _si)
     own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
+    books = []
+    for book in items:
+        resolved = (book.get("intake") if "intake" in book else _si) or ""
+        books.append({
+            "id": str(book["_id"]),
+            "name": book.get("name", ""),
+            "intake": resolved,
+            "is_fork": bool(book.get("fork_of")),
+            "own": (not bool(book.get("fork_of"))) and bool(own_iv) and resolved == own_iv,
+        })
     return {"readonly": ro,
-        # can_create_own: موضوع فقط‌خواندنی است ولی کاربر می‌تواند کتابی که
-        # فقط برای ورودی خودش است اضافه کند (قرارداد هم‌نامِ bs_sessions_ep)
         "can_create_own": bool(child not in (None, '')),
-        "books":[{"id":str(b["_id"]),"name":b.get("name",""),
-        "intake":b.get("intake") or "", "is_fork":bool(b.get("fork_of")),
-        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
-        "own": (not bool(b.get("fork_of"))) and bool(own_iv)
-                and (b.get("intake") or '') == own_iv} for b in items]}
+        "books": books}
 
 class RefBookCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)

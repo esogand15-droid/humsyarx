@@ -111,6 +111,17 @@ async def list_roles(user=_roles_guard):
                       for r in roles]}
 
 
+@router.get("/roles/{key}/holders")
+async def role_holders(key: str, user=_roles_guard):
+    """دارندگان فعلی نقش. افزودن/حذف از همان POST تخصیص نقش است، نه مسیر جدا."""
+    role = await db.get_role(key)
+    if not role:
+        _err(404, "نقش پیدا نشد")
+    holders = await db.holders_of_role(key, limit=300)
+    return {"role": key, "label": role.get("label") or key,
+            "holders": holders, "count": len(holders)}
+
+
 class RoleCreate(BaseModel):
     key:      Optional[str] = None
     label:    str = Field(min_length=2, max_length=60)

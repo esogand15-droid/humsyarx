@@ -352,6 +352,14 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # 🔒 C1.5/C3 — دکمه‌ی جداکننده‌ی «فقط‌خواندنی» (بدون عملکرد نوشتاری)
     elif action == 'ro_info':
+        # ادمین ارشد داخل یک ورودی: سراسری باز، قابل ویرایش، و با ✂️ مخصوص همان ورودی است.
+        if not is_scoped:
+            await query.answer(
+                "🌐 این‌ها محتوای سراسری‌اند. می‌توانید همان‌جا ویرایش کنید، "
+                "یا با ✂️ یک نسخه‌ی اختصاصی برای ورودی انتخاب‌شده بسازید. "
+                "نسخه‌ی سراسری برای بقیه دست‌نخورده می‌ماند.",
+                show_alert=True)
+            return ConversationHandler.END
         # 🌊 C3 — به نماینده یادآوری می‌کنیم که ساختن «جلسه‌ی مخصوص ورودی خودش»
         # آزاد است؛ وگرنه پیام ثابت «فقط‌خواندنی» فکر می‌دهد کل پنل قفل است.
         can_child = await db.scoped_child_intake(uid, '') not in (None, '')
@@ -509,16 +517,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ ترتیب درس‌ها ─
     elif action == 'lesson_up':
         lid = parts[2]; idx = context.user_data.get('ca_term_idx', 0)
+        lesson = await db.bs_get_lesson(lid) or {}
         await db.reorder_up('bs_lessons', lid,
-            {'term': TERMS[idx], 'intake': context.user_data.get('ca_intake', '')})
+            {'term': lesson.get('term') or TERMS[idx], 'intake': lesson.get('intake') or ''})
         fa = context.user_data.get('ca_from_admin', False)
         await _show_lessons(query, context, TERMS[idx],
                             back='ca:terms_admin' if fa else 'ca:terms')
 
     elif action == 'lesson_down':
         lid = parts[2]; idx = context.user_data.get('ca_term_idx', 0)
+        lesson = await db.bs_get_lesson(lid) or {}
         await db.reorder_down('bs_lessons', lid,
-            {'term': TERMS[idx], 'intake': context.user_data.get('ca_intake', '')})
+            {'term': lesson.get('term') or TERMS[idx], 'intake': lesson.get('intake') or ''})
         fa = context.user_data.get('ca_from_admin', False)
         await _show_lessons(query, context, TERMS[idx],
                             back='ca:terms_admin' if fa else 'ca:terms')
@@ -551,8 +561,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         lid = parts[2]; lesson = await db.bs_get_lesson(lid)
         if not lesson: return
         idx = context.user_data.get('ca_term_idx', 0)
+        _hint = _global_delete_hint(lesson.get('intake') or '', context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف درس «{lesson['name']}»؟</b>\nتمام جلسات و محتوا حذف می‌شود!",
+            f"⚠️ <b>حذف درس «{lesson['name']}»؟</b>\nتمام جلسات و محتوا حذف می‌شود!{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 بله", callback_data=f'ca:confirm_del_lesson:{lid}')],
@@ -623,8 +634,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         sid = parts[2]; session = await db.bs_get_session(sid)
         if not session: return
         lid = context.user_data.get('ca_lesson_id','')
+        _hint = _global_delete_hint(await db.session_intake(sid), context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف جلسه {session.get('number','')} — {session.get('topic','')}؟</b>",
+            f"⚠️ <b>حذف جلسه {session.get('number','')} — {session.get('topic','')}؟</b>{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 بله", callback_data=f'ca:confirm_del_session:{sid}')],
@@ -732,16 +744,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ ترتیب درس‌های رفرنس ─
     elif action == 'ref_subject_up':
         sid = parts[2]
+        subj = await db.ref_get_subject(sid) or {}
         await db.reorder_up('ref_subjects', sid,
-            {'intake': context.user_data.get('ca_intake', '')})
+            {'intake': subj.get('intake') or ''})
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_subjects(query, back=back, context=context)
 
     elif action == 'ref_subject_down':
         sid = parts[2]
+        subj = await db.ref_get_subject(sid) or {}
         await db.reorder_down('ref_subjects', sid,
-            {'intake': context.user_data.get('ca_intake', '')})
+            {'intake': subj.get('intake') or ''})
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_subjects(query, back=back, context=context)
@@ -851,8 +865,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         bid = parts[2]; book = await db.ref_get_book(bid)
         if not book: return
         sid = context.user_data.get('ca_ref_subject_id','')
+        _hint = _global_delete_hint(await db.ref_book_intake(bid), context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف رفرنس «{book['name']}»؟</b>",
+            f"⚠️ <b>حذف رفرنس «{book['name']}»؟</b>{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 حذف", callback_data=f'ca:confirm_del_ref_book:{bid}')],
@@ -1256,6 +1271,50 @@ async def _show_terms(query, back='ca:main'):
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
+
+def _ca_bucket(item, parent_intake=''):
+    """intake مؤثر: فیلد صریح، وگرنه ارث از والد. رشته‌ی خالی یعنی سراسری."""
+    if not item:
+        return parent_intake or ''
+    if 'intake' in item:
+        return item.get('intake') or ''
+    return parent_intake or ''
+
+
+def _global_delete_hint(resolved_intake, context) -> str:
+    """حذف سراسری از داخل یک ورودی، برای همه اعمال می‌شود — قبلش یادآوری ✂️."""
+    ctx = (getattr(context, 'user_data', None) or {}).get('ca_intake') or ''
+    if not ctx or resolved_intake:
+        return ''
+    return ("\n\n🌐 این مورد سراسری است. حذف، آن را برای همه برمی‌دارد. "
+            "اگر فقط همین ورودی را می‌خواهید، حذف نکنید و ✂️ بزنید.")
+
+
+async def _specialize_row(context, item_id, kind):
+    """✂️/⭐ وقتی پنل روی یک ورودی است و آیتم سراسری است.
+    ادمین ارشد و ورودی‌خاص هر دو همین ورودی انتخاب‌شده را هدف می‌گیرند."""
+    ctx = (context.user_data or {}).get('ca_intake') or ''
+    if not ctx:
+        return None
+    if kind == 'session':
+        fk = await db.session_superseded_by_fork(item_id, ctx)
+        if fk:
+            return InlineKeyboardButton(
+                "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
+                callback_data=f'ca:session:{str(fk["_id"])}')
+        return InlineKeyboardButton(
+            "✂️ اختصاصی‌کردن این جلسه برای ورودی انتخاب‌شده",
+            callback_data=f'ca:fork_session:{item_id}')
+    fk = await db.book_superseded_by_fork(item_id, ctx)
+    if fk:
+        return InlineKeyboardButton(
+            "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
+            callback_data=f'ca:ref_book:{str(fk["_id"])}')
+    return InlineKeyboardButton(
+        "✂️ اختصاصی‌کردن این کتاب برای ورودی انتخاب‌شده",
+        callback_data=f'ca:fork_book:{item_id}')
+
+
 async def _show_lessons(query, context, term, back='ca:terms'):
     # 🌊 C1 — لیست درس‌ها فقط در scope انتخاب‌شده/قفل‌شده
     # 🌊 C1.5 — ادمین ورودی خاص: درس‌های سراسری هم «فقط‌خواندنی» دیده
@@ -1264,12 +1323,13 @@ async def _show_lessons(query, context, term, back='ca:terms'):
     _cscope = await db.get_content_scope(uid)
     is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx     = context.user_data.get('ca_intake', '')
+    # داخل یک ورودی (ارشد یا محدود) سراسری هم دیده می‌شود؛ سطل سراسری فقط سراسری است.
     lessons = await db.bs_get_lessons(
-        term, intake=[ctx, ''] if is_scoped else ctx)
+        term, intake=[ctx, ''] if ctx else ctx)
     idx     = context.user_data.get('ca_term_idx', 0)
     kb = []
 
-    if is_scoped and ctx:
+    if ctx:
         own_items  = [l for l in lessons if (l.get('intake') or '') == ctx]
         glob_items = [l for l in lessons if (l.get('intake') or '') != ctx]
     elif is_scoped:
@@ -1297,7 +1357,7 @@ async def _show_lessons(query, context, term, back='ca:terms'):
         if nav:
             kb.append(nav)
 
-    if glob_items:
+    if glob_items and is_scoped:
         kb.append([InlineKeyboardButton(
             "── 🌐 منابع سراسری (🔒 فقط‌خواندنی) ──",
             callback_data='ca:ro_info')])
@@ -1306,12 +1366,36 @@ async def _show_lessons(query, context, term, back='ca:terms'):
             t   = f" | {l['teacher']}" if l.get('teacher') else ''
             kb.append([InlineKeyboardButton(
                 f"🌐 {l['name']}{t}", callback_data=f'ca:lesson:{lid}')])
+    elif glob_items:
+        kb.append([InlineKeyboardButton(
+            "── 🌐 سراسری (ویرایش یا ✂️ روی جلسه) ──",
+            callback_data='ca:ro_info')])
+        for i, l in enumerate(glob_items):
+            lid = str(l['_id'])
+            t   = f" | {l['teacher']}" if l.get('teacher') else ''
+            kb.append([
+                InlineKeyboardButton(f"🌐 {l['name']}{t}", callback_data=f'ca:lesson:{lid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_lesson_menu:{lid}'),
+                InlineKeyboardButton("🗑", callback_data=f'ca:del_lesson:{lid}'),
+            ])
+            nav = []
+            if i > 0:
+                nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:lesson_up:{lid}'))
+            if i < len(glob_items) - 1:
+                nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:lesson_down:{lid}'))
+            if nav:
+                kb.append(nav)
 
     if not (is_scoped and not ctx):
         kb.append([InlineKeyboardButton("➕ درس جدید", callback_data=f'ca:add_lesson_prompt:{idx}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
-    ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
-               if glob_items else '')
+    if glob_items and is_scoped:
+        ro_line = "\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
+    elif glob_items:
+        ro_line = ("\n🌐 سراسری هم اینجاست. ✏️ همان نسخه‌ی مشترک را عوض می‌کند؛ "
+                   "برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و ✂️ بزنید.")
+    else:
+        ro_line = ''
     if is_scoped and not ctx:
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
@@ -1336,7 +1420,8 @@ async def _show_sessions(query, context, lid):
     # 🌊 C3 — نماینده روی درس 🌐: «جلسه‌ی فقط‌ورودی‌خودم» ساختنی است (والد قفل)
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, _li) not in (None, ''))
-    if not writable and is_scoped:
+    # داخل ورودی انتخاب‌شده: سراسری + همان ورودی، حتی اگر ادمین ارشد بتواند بنویسد.
+    if ctx or (not writable and is_scoped):
         sessions = await db.bs_get_sessions_effective(lid, [ctx, ''])
     kb = []
     for s in sessions:
@@ -1348,17 +1433,26 @@ async def _show_sessions(query, context, lid):
         own_fork  = is_scoped and is_fork and (s.get('intake') or '') == ctx
         if writable:
             badge = ''
+            resolved = _ca_bucket(s, _li)
             if is_fork:  # ادمین ارشد: forkهای هر ورودی با نشان دیده می‌شوند
                 badge = f" ⭐({await _intake_label(s.get('intake') or '')})"
-            elif s.get('intake'):  # 🌊 C3 — فرزند اختصاصی یک ورودی
-                badge = f" 📅({await _intake_label(s.get('intake'))})"
-            kb.append([
+            elif resolved:  # 🌊 C3 — فرزند اختصاصی یک ورودی
+                badge = f" 📅({await _intake_label(resolved)})"
+            elif ctx:
+                badge = " 🌐"
+            row = [
                 InlineKeyboardButton(
                     f"📌 {s['number']} — {s.get('topic','')[:20]}{badge}",
                     callback_data=f'ca:session:{sid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_session_menu:{sid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_session:{sid}'),
-            ])
+            ]
+            # ✂️ مخصوص همین ورودی است؛ ✏️ همان نسخه‌ی سراسری را عوض می‌کند.
+            if ctx and not is_fork and not resolved:
+                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_session:{sid}'))
+            elif ctx and is_fork and (s.get('intake') or '') == ctx:
+                row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_session:{sid}'))
+            kb.append(row)
         elif own_fork:
             kb.append([
                 InlineKeyboardButton(
@@ -1378,7 +1472,7 @@ async def _show_sessions(query, context, lid):
             row = [InlineKeyboardButton(
                 f"🌐 {s['number']} — {s.get('topic','')[:20]}",
                 callback_data=f'ca:session:{sid}')]
-            if is_scoped and ctx:
+            if ctx and not is_fork and not _ca_bucket(s, _li):
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_session:{sid}'))
             kb.append(row)
@@ -1392,7 +1486,9 @@ async def _show_sessions(query, context, lid):
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=f'ca:term:{idx}')])
     lname = lesson.get('name','') if lesson else ''
     if writable:
-        ro_line = "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>"
+        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
+                   if ctx else
+                   "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>")
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
                    "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
@@ -1412,8 +1508,9 @@ async def _show_session_content(query, context, sid):
     lid      = context.user_data.get('ca_lesson_id','')
     ICONS    = dict(CONTENT_TYPES)
     # 🌊 C1.5 — جلسه‌ی سراسری برای ادمین ورودی خاص: فقط‌خواندنی
+    session_iv = await db.session_intake(sid)
     writable = await db.can_access_intake(
-        query.from_user.id, await db.session_intake(sid))
+        query.from_user.id, session_iv)
     kb = []
     for i, c in enumerate(contents):
         cid  = str(c['_id'])
@@ -1444,20 +1541,11 @@ async def _show_session_content(query, context, sid):
         else:
             kb.append([InlineKeyboardButton("📤 ➕ افزودن فایل جدید", callback_data=f'ca:upload_content:{sid}')])
         kb.append([InlineKeyboardButton("✏️ ویرایش اطلاعات جلسه", callback_data=f'ca:edit_session_menu:{sid}')])
-    elif not (session or {}).get('fork_of'):
-        # 🍴 C2 — روی جلسه‌ی سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
-        _cs2 = await db.get_content_scope(query.from_user.id)
-        if _cs2 and _cs2.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
-            _ctx2 = context.user_data.get('ca_intake', '')
-            _fk2 = await db.session_superseded_by_fork(sid, _ctx2)
-            if _fk2:
-                kb.append([InlineKeyboardButton(
-                    "⭐ ویرایش نسخه‌ی اختصاصی من",
-                    callback_data=f'ca:session:{str(_fk2["_id"])}')])
-            else:
-                kb.append([InlineKeyboardButton(
-                    "✂️ سفارشی‌سازی این جلسه برای ورودی من",
-                    callback_data=f'ca:fork_session:{sid}')])
+    # ✂️ برای ارشد و ورودی‌خاص یکی است: پنل روی یک ورودی است و جلسه سراسری است.
+    if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
+        _spec = await _specialize_row(context, sid, 'session')
+        if _spec:
+            kb.append([_spec])
     kb.append([InlineKeyboardButton("🔙 بازگشت",              callback_data=f'ca:lesson:{lid}')])
 
     by_type = {}
@@ -1468,6 +1556,8 @@ async def _show_session_content(query, context, sid):
     if session:
         footer = "<i>⬆️⬇️=ترتیب  🗑=حذف</i>" if writable \
             else "🔒 🌐 سراسری — فقط‌خواندنی"
+        if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
+            footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
         header = (f"📌 <b>جلسه {session.get('number','')}</b>\n"
                   f"📚 {session.get('topic','')}\n"
                   f"👨‍🏫 {session.get('teacher','') or 'ثبت نشده'}\n"
@@ -1490,8 +1580,8 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
         _cscope = await db.get_content_scope(query.from_user.id)
         is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     subjects = await db.ref_get_subjects(
-        intake=[intake, ''] if is_scoped else intake)
-    if is_scoped and intake:
+        intake=[intake, ''] if intake else intake)
+    if intake:
         own_items  = [s for s in subjects if (s.get('intake') or '') == intake]
         glob_items = [s for s in subjects if (s.get('intake') or '') != intake]
     elif is_scoped:
@@ -1514,7 +1604,7 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
             nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:ref_subject_down:{sid}'))
         if nav:
             kb.append(nav)
-    if glob_items:
+    if glob_items and is_scoped:
         kb.append([InlineKeyboardButton(
             "── 🌐 منابع سراسری (🔒 فقط‌خواندنی) ──",
             callback_data='ca:ro_info')])
@@ -1522,11 +1612,34 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
             kb.append([InlineKeyboardButton(
                 f"🌐 {s['name']}",
                 callback_data=f'ca:ref_subject:{str(s["_id"])}')])
+    elif glob_items:
+        kb.append([InlineKeyboardButton(
+            "── 🌐 سراسری (ویرایش یا ✂️ روی کتاب) ──",
+            callback_data='ca:ro_info')])
+        for i, s in enumerate(glob_items):
+            sid = str(s['_id'])
+            kb.append([
+                InlineKeyboardButton(f"🌐 {s['name']}", callback_data=f'ca:ref_subject:{sid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_subject_prompt:{sid}'),
+                InlineKeyboardButton("🗑", callback_data=f'ca:del_ref_subject:{sid}'),
+            ])
+            nav = []
+            if i > 0:
+                nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:ref_subject_up:{sid}'))
+            if i < len(glob_items) - 1:
+                nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:ref_subject_down:{sid}'))
+            if nav:
+                kb.append(nav)
     if not (is_scoped and not intake):
         kb.append([InlineKeyboardButton("➕ درس جدید", callback_data='ca:add_ref_subject_prompt')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
-    ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
-               if glob_items else '')
+    if glob_items and is_scoped:
+        ro_line = "\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
+    elif glob_items:
+        ro_line = ("\n🌐 سراسری هم اینجاست. ✏️ نسخه‌ی مشترک را عوض می‌کند؛ "
+                   "برای مخصوص‌کردن همین ورودی، کتاب را باز کنید و ✂️ بزنید.")
+    else:
+        ro_line = ''
     if is_scoped and not intake:
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
@@ -1550,7 +1663,7 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, (subj or {}).get('intake') or '')
                   not in (None, ''))
-    if not writable and is_scoped:
+    if ctx or (not writable and is_scoped):
         books = await db.ref_get_books_effective(sid, [ctx, ''])
     kb = []
     for i, b in enumerate(books):
@@ -1562,15 +1675,23 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
                          and (b.get('intake') or '') == ctx)
         if writable:
             badge = ''
+            resolved = _ca_bucket(b, (subj or {}).get('intake') or '')
             if is_fork:
                 badge = f" ⭐({await _intake_label(b.get('intake') or '')})"
-            elif b.get('intake'):
-                badge = f" 📅({await _intake_label(b.get('intake'))})"
-            kb.append([
+            elif resolved:
+                badge = f" 📅({await _intake_label(resolved)})"
+            elif ctx:
+                badge = " 🌐"
+            row = [
                 InlineKeyboardButton(f"📘 {b['name']}{badge}", callback_data=f'ca:ref_book:{bid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_book_prompt:{bid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_ref_book:{bid}'),
-            ])
+            ]
+            if ctx and not is_fork and not resolved:
+                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_book:{bid}'))
+            elif ctx and is_fork and (b.get('intake') or '') == ctx:
+                row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_book:{bid}'))
+            kb.append(row)
             nav = []
             if i > 0:
                 nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:ref_book_up:{bid}'))
@@ -1595,7 +1716,7 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
         else:
             row = [InlineKeyboardButton(
                 f"🌐 {b['name']}", callback_data=f'ca:ref_book:{bid}')]
-            if is_scoped and ctx and not b.get('intake'):
+            if ctx and not is_fork and not _ca_bucket(b, (subj or {}).get('intake') or ''):
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_book:{bid}'))
             kb.append(row)
@@ -1609,7 +1730,9 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=back)])
     name = subj.get('name','') if subj else ''
     if writable:
-        ro_line = "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>"
+        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
+                   if ctx else
+                   "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>")
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
                    "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
@@ -1657,24 +1780,17 @@ async def _show_ref_book_files(query, context, bid):
 
     if writable:
         kb.append([InlineKeyboardButton("✏️ ویرایش نام کتاب", callback_data=f'ca:edit_ref_book_prompt:{bid}')])
-    elif not (book or {}).get('fork_of'):
-        # 🍴 C2 — روی کتاب سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
-        _cs3 = await db.get_content_scope(query.from_user.id)
-        if _cs3 and _cs3.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
-            _ctx3 = context.user_data.get('ca_intake', '')
-            _fk3 = await db.book_superseded_by_fork(bid, _ctx3)
-            if _fk3:
-                kb.append([InlineKeyboardButton(
-                    "⭐ ویرایش نسخه‌ی اختصاصی من",
-                    callback_data=f'ca:ref_book:{str(_fk3["_id"])}')])
-            else:
-                kb.append([InlineKeyboardButton(
-                    "✂️ سفارشی‌سازی این کتاب برای ورودی من",
-                    callback_data=f'ca:fork_book:{bid}')])
+    book_iv = await db.ref_book_intake(bid)
+    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
+        _spec = await _specialize_row(context, bid, 'book')
+        if _spec:
+            kb.append([_spec])
     kb.append([InlineKeyboardButton("🔙 بازگشت",           callback_data=f'ca:ref_subject:{sid}')])
     name = book.get('name','') if book else ''
     footer = "🔄=جایگزین  🗑=حذف  ➕=جلد جدید" if writable \
         else "🔒 🌐 سراسری — فقط‌خواندنی"
+    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
+        footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
     await query.edit_message_text(
         f"📘 <b>{name}</b>\n"
         f"📁 {len(files)} فایل\n\n"

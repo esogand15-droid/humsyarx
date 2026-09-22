@@ -117,13 +117,33 @@ class DBRbac:
 
     @staticmethod
     def _intake_q(intake):
-        """🌊 C1 — ساخت فیلتر intake: None=بدون فیلتر (رفتار قدیمی)،
-        str=دقیقاً همان scope، list=هرکدام (مسیر دانشجو: خودش+سراسری)."""
+        """فیلتر واحد intake.
+
+        None = بدون فیلتر. رشته = همان سطل. لیست = هر کدام از آن سطل‌ها.
+        سطل خالی یعنی سراسری، و سندهای قدیمیِ بدون فیلد intake هم سراسری‌اند.
+        """
         if intake is None:
             return {}
+
+        def _global_clause():
+            return {'$or': [
+                {'intake': ''},
+                {'intake': None},
+                {'intake': {'$exists': False}},
+            ]}
+
         if isinstance(intake, (list, tuple, set)):
-            return {'intake': {'$in': list(intake)}}
-        return {'intake': intake or ''}
+            values = list(dict.fromkeys(intake))
+            wants_global = any(not v for v in values)
+            concrete = [v for v in values if v]
+            if wants_global and concrete:
+                return {'$or': [{'intake': {'$in': concrete}}, *_global_clause()['$or']]}
+            if wants_global:
+                return _global_clause()
+            return {'intake': {'$in': concrete}}
+        if not intake:
+            return _global_clause()
+        return {'intake': intake}
 
 
     # ══════════════════════════════════════════════════
@@ -265,12 +285,14 @@ class DBRbac:
         u = await self.get_user(uid)
         if u and u.get('role') in ('admin', 'content_admin'):
             return {'kind': 'global', 'intake': None}
+        # نقش ارشد همیشه بر آینه‌ی قدیمیِ content_scoped غلبه دارد.
+        # وگرنه یک سند admin_roles باقی‌مانده، ارشد را روی یک ورودی قفل می‌کند
+        # و محتوای سراسری را از دید او پنهان می‌کند.
+        if await self.has_perm(uid, 'content.manage'):
+            return {'kind': 'global', 'intake': None}
         doc = await self.get_admin_role(uid)
         if doc and doc.get('role') == 'content_scoped' and doc.get('scope_intake'):
             return {'kind': 'scoped', 'intake': doc.get('scope_intake')}
-        # RBAC دیتابیس‌محور
-        if await self.has_perm(uid, 'content.manage'):
-            return {'kind': 'global', 'intake': None}
         if await self.has_perm(uid, 'content.scoped'):
             scope = await self.get_scoped_intake(uid)
             if scope:
@@ -861,6 +883,35 @@ class DBRbac:
         return list(dict.fromkeys(ids))[:limit]
 
 
+    async def holders_of_role(self, role: str, limit: int = 200) -> list:
+        """اعضای یک نقش برای فهرست پنل. منبع همان user_ids_by_role است."""
+        ids = await self.user_ids_by_role(role, limit=limit)
+        if not ids:
+            return []
+        users = await self.get_users_by_ids(ids)
+        scopes = {}
+        async for doc in self.user_roles.find(
+                {'_id': {'$in': ids}}, {'roles': 1, 'scope_intake': 1}):
+            try:
+                scopes[int(doc['_id'])] = doc
+            except (TypeError, ValueError):
+                continue
+        out = []
+        for uid in ids:
+            user = users.get(uid) or {}
+            row = scopes.get(uid) or {}
+            out.append({
+                'id': uid,
+                'name': self.display_name_of(user) if user else f'#{uid}',
+                'username': user.get('username') or '',
+                'student_id': user.get('student_id') or '',
+                'intake': user.get('intake') or '',
+                'scope_intake': row.get('scope_intake') or '',
+                'roles': list(row.get('roles') or []),
+            })
+        return out
+
+
     # ──────────────────────────────────────────────────
     #  تخصیص نقش به کاربر (چندنقشی — Union مجوزها)
     # ──────────────────────────────────────────────────
@@ -1172,7 +1223,10 @@ class DBRbac:
         legacy_keys = [k for k in keys if k in self.ROLE_LABELS]
         cur = await self.admin_roles.find_one({'_id': uid})
         cur_role = (cur or {}).get('role')
-        if cur_role and cur_role in legacy_keys:
+        # آینه‌ی تک‌نقشی نباید نقش ارشد را با نقش محدود عوض کند.
+        if 'content_admin' in legacy_keys:
+            primary = 'content_admin'
+        elif cur_role and cur_role in legacy_keys:
             primary = cur_role
         elif legacy_keys:
             primary = legacy_keys[0]

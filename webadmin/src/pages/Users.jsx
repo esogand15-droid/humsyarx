@@ -3,6 +3,7 @@ import { api, errText, exportCSV } from '../api.js';
 import { DataTable, Drawer, Loading, ErrorState, B, DiffViewer, FaDate, FaDateTime, RelativeTime, FilterBar, PageHeader, toast, Confirm, Modal, Empty, Switch } from '../ui.jsx';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 import SavedViews from '../SavedViews.jsx';
+import { AssignRoles } from './Rbac.jsx';
 import SmartQueryBuilder from '../SmartQueryBuilder.jsx';
 import { fileDateStamp, formatFaDate, formatFaDateTime } from '../time.js';
 
@@ -1065,6 +1066,8 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
   const [relation, setRelation] = useState(null);
   const [timelineFilter, setTimelineFilter] = useState('all');
   const [investigation, setInvestigation] = useState('');
+  const [roleEdit, setRoleEdit] = useState(false);
+  const [roleDrop, setRoleDrop] = useState(null);
   const requestSeq = useRef(0);
 
   const fetchSnapshot = useCallback(async ({ keepData = true } = {}) => {
@@ -1090,6 +1093,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
   useEffect(() => {
     requestSeq.current += 1;
     setTab('overview'); setRelation(null); setFailed(''); setTimelineFilter('all'); setInvestigation('');
+    setRoleEdit(false); setRoleDrop(null);
     if (initialData) { setD(initialData); setLoading(false); }
     else { setD(null); fetchSnapshot({ keepData: false }); }
     return () => { requestSeq.current += 1; };
@@ -1173,6 +1177,7 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
         <div className="row" style={{ gap:6, flexWrap:'wrap' }}>
           {has('users.message') && <button className="btn sm" onClick={()=>setTab('actions')}>📨 پیام</button>}
           {has('users.manage') && <button className="btn sm" onClick={()=>setTab('actions')}>✏️ ویرایش</button>}
+          {has('users.manage') && <button className="btn sm" onClick={()=>setTab('roles')}>🛡 نقش‌ها</button>}
           {has('subscription.manage') && <button className="btn sm" onClick={()=>setTab('sub')}>💎 اشتراک</button>}
           {has('users.suspend') && !row.suspended && <button className="btn sm warn" onClick={()=>setTab('actions')}>⏸ تعلیق</button>}
           {has('users.suspend') && row.suspended && <button className="btn sm ok" onClick={()=>setTab('actions')}>🔓 رفع تعلیق</button>}
@@ -1438,8 +1443,12 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
           {!(d.roles || []).length && <Empty icon="🛡" text="نقش مدیریتی ندارد" />}
           {(d.roles || []).map(r => <div key={r.key} className="panel panel-pad" style={{ marginBottom: 6 }}>
             <div className="row"><b>{r.label || r.key}</b><span className="code">{r.key}</span><span className="spacer" />
-              <B kind={r.active ? 'ok' : 'bad'}>{r.active ? 'فعال' : 'غیرفعال'}</B>{r.scope && <B kind="purple">{r.scope}</B>}</div>
+              <B kind={r.active ? 'ok' : 'bad'}>{r.active ? 'فعال' : 'غیرفعال'}</B>{r.scope && <B kind="purple">{r.scope}</B>}
+              {has('users.manage') && <button className="btn sm danger" onClick={() => setRoleDrop(r)}>حذف</button>}</div>
           </div>)}
+          {has('users.manage') && <div className="row" style={{ marginTop: 12 }}>
+            <button className="btn primary" onClick={() => setRoleEdit(true)}>✏️ افزودن یا ویرایش نقش‌ها</button>
+          </div>}
           {!!(d.perms || []).length && <div><div style={{ marginTop:10, marginBottom:6 }}><b>✨ دسترسی‌های مؤثر (Effective Permissions)</b><span className="muted" style={{fontSize:'var(--fs-caption)'}}> — از اجتماع نقش‌ها + scope</span></div><div className="row" style={{ gap:4, flexWrap:'wrap' }}>{d.perms.map(p => <B key={p} kind="acc">{p}</B>)}</div>
             {d.roles?.some(r=>r.scope) && <div className="muted" style={{ marginTop:6, fontSize:'var(--fs-caption)' }}>Scope نمونه: {d.roles.filter(r=>r.scope).map(r=>`${r.key}:${r.scope}`).join(' · ')}</div>}
           </div>}
@@ -1518,6 +1527,14 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
         </>
       )}
       {relation && <UserRelationModal uid={row.id} section={relation} onClose={() => setRelation(null)} />}
+      {roleEdit && <AssignRoles initialUser={{ id: row.id, name: row.display_name || row.name, display_name: row.display_name || row.name }}
+        onClose={() => setRoleEdit(false)} onSaved={() => refetch()} />}
+      {roleDrop && <Confirm danger text={`نقش «${roleDrop.label || roleDrop.key}» از این کاربر برداشته شود؟`}
+        onNo={() => setRoleDrop(null)} onYes={async () => {
+          const role = roleDrop; setRoleDrop(null);
+          try { await api.assignRoles(row.id, { add: [], remove: [role.key] }); toast('نقش برداشته شد'); refetch(); }
+          catch (e) { toast(errText(e), 'err'); }
+        }} />}
     </Drawer>
   );
 }
