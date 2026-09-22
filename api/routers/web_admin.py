@@ -5550,10 +5550,10 @@ async def wa_subscription_send_receipt(
 # فقط روی primitiveهای موجود: گذار اتمیکِ الگوی AUDIT-A1 (db/finance.py)،
 # sub_revoke، audit_logs و bot_notifications. نه کالکیشن جدید، نه RBAC
 # موازی — همان گیت `subscription.manage`.
-# تصمیم محصول (مستند، نه پنهان): بازگشت وجه، دوره‌ی اشتراکِ تمدیدشده را
-# جراحی نمی‌کند (extend=True روزها را ادغام کرده)؛ پس revoke اختیاریِ
-# صریح است و حالت «refunded ولی اشتراک فعال» در مغایرت‌گیری پرچم می‌ماند
-# تا اپراتور تصمیم بگیرد — نه حذف خودکارِ روزهای کاربر.
+# تصمیم محصول: بازگشت وجه نباید هم پول را به کیف پول برگرداند هم دسترسی
+# فعال را پیش‌فرض نگه دارد. اگر اشتراک ذی‌نفع فعال است، یا قطع دسترسی
+# یا keep_subscription صریح لازم است. هر دو با هم: قطع دسترسی برنده است.
+# شارژ کیف پول از این مسیر برنمی‌گردد. نبود اشتراک فعال همچنان ۲۰۰ است.
 # ══════════════════════════════════════════════════════════════════
 
 _RECON_META = {
@@ -5570,13 +5570,14 @@ class WaRefundBody(BaseModel):
     confirm: bool = False
     reason: str = ""
     revoke_subscription: bool = False
+    keep_subscription: bool = False
 
 
 @router.post("/subscription/payments/{payment_id}/refund")
 async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
                                  user=Depends(_perm("subscription.manage"))):
     """🌊 W5 — بازگشت وجه رسید تأییدشده: تأیید صریح + دلیل + گذار اتمیک +
-    Audit بحرانی + اطلاع به دانشجو. revoke اشتراک اختیاری و صریح است."""
+    Audit بحرانی + اطلاع به دانشجو. اشتراک فعال بدون انتخاب صریح، ۴۰۰ است."""
     if not body.confirm:
         raise HTTPException(400, "بازگشت وجه بدون تأیید صریح ممکن نیست")
     reason = (body.reason or "").strip()
@@ -5588,6 +5589,14 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
     if payment.get("status") != "approved":
         raise HTTPException(409, "فقط رسید تأییدشده قابل بازگشت وجه است")
     uid = int(payment.get("user_id") or 0)
+    if str(payment.get("plan_id") or "") == "wallet_topup":
+        raise HTTPException(409, "رسید شارژ کیف پول از این مسیر برنمی‌گردد")
+    beneficiary = int((payment.get("gift") or {}).get("to") or 0) or uid
+    sub = await db.sub_get(beneficiary) if beneficiary else None
+    live = bool(sub and sub.get("status") == "active")
+    if live and not body.revoke_subscription and not body.keep_subscription:
+        raise HTTPException(
+            400, "اشتراک فعال است؛ قطع دسترسی یا تأیید صریح نگه داشتن لازم است")
     if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
                                        reason=reason):
         raise HTTPException(409, "این رسید هم‌زمان بازگشت وجه شده است")
@@ -5601,7 +5610,7 @@ async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
         await db.sub_payment_mark_gateway_reversal(str(payment["_id"]))
     revoked = False
     if body.revoke_subscription:
-        revoked = await db.sub_revoke(uid, f"بازگشت وجه: {reason}",
+        revoked = await db.sub_revoke(beneficiary, f"بازگشت وجه: {reason}",
                                       int(user["id"]))
     # 💰 W6 — بازگشت وجه = اعتبار کیف پول داخلی (نه فقط status).
     # مبلغ از خودِ رسید (سرور-ساید)؛ idempotency با کلید یکتای

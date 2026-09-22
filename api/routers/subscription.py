@@ -1393,9 +1393,25 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
         raise HTTPException(status_code=404, detail="پرداخت پیدا نشد")
     if int(doc.get("user_id") or 0) != user["id"]:
         raise HTTPException(status_code=403, detail="این پرداخت متعلق به شما نیست")
-    if doc.get("status") == "approved":
+    if doc.get("status") == "approved" and not doc.get("activation_pending"):
         sub = await db.sub_get(user["id"])
         return {"ok": True, "already": True, "end_date": (sub or {}).get("end_date"), "ref_id": doc.get("zarinpal_ref_id")}
+    if doc.get("status") == "approved" and doc.get("activation_pending"):
+        amount = int(doc.get("final_price") or doc.get("price") or 0)
+        ref_id = str(doc.get("zarinpal_ref_id") or "")
+        res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
+        if not res.get("ok"):
+            raise HTTPException(
+                status_code=409,
+                detail="پرداخت ثبت شده ولی فعال‌سازی کامل نشد. دوباره تلاش کنید؛ مبلغ دوباره کم نمی‌شود.")
+        act = res.get("activation") or {}
+        end_date = act.get("end_date")
+        if not end_date:
+            beneficiary = int((doc.get("gift") or {}).get("to") or 0) or user["id"]
+            sub = await db.sub_get(beneficiary)
+            end_date = (sub or {}).get("end_date")
+        return {"ok": True, "already": bool(res.get("already")),
+                "end_date": end_date, "ref_id": ref_id, "days": act.get("days")}
     if doc.get("status") != "zarinpal_pending":
         raise HTTPException(status_code=409, detail=f"وضعیت پرداخت {doc.get('status')} قابل تایید نیست")
     amount = int(doc.get("final_price") or doc.get("price") or 0)
@@ -1415,7 +1431,7 @@ async def zarinpal_verify_ep(body: ZarinpalVerifyBody, user=Depends(get_current_
             discount_overrun = True
     res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
     if not res.get("ok"):
-        if code:
+        if code and not res.get("activation_pending"):
             await db.discount_release(code, user_id=user["id"])
         if res.get("already"):
             sub = await db.sub_get(user["id"])
@@ -1616,7 +1632,7 @@ async def buy_wallet(body: BuyWalletBody, user=Depends(get_current_user)):
             raise HTTPException(status_code=400, detail=str(e))
         if code in ("plan_days_invalid", "plan_price_invalid"):
             raise HTTPException(status_code=422, detail=str(e))
-        if code == "order_conflict":
+        if code in ("order_conflict", "activation_pending"):
             raise HTTPException(status_code=409, detail=str(e))
         raise
     if not res.get("replay"):

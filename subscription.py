@@ -329,23 +329,29 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
         await query.answer("این پرداخت متعلق به شما نیست.", show_alert=True)
         return
     status = doc.get("status")
-    if status == "approved":
+    # approvedِ تمام‌شده همان مسیر قبلی است. approvedِ ناتمام درگاه را
+    # دوباره نمی‌زند و تخفیف را دوباره مصرف نمی‌کند.
+    resume_only = status == "approved" and bool(doc.get("activation_pending"))
+    if status == "approved" and not resume_only:
         await query.answer("این پرداخت قبلاً تأیید و فعال شده است ✅", show_alert=True)
         await _show_my_status(query, uid)
         return
-    if status != "zarinpal_pending":
+    if not resume_only and status != "zarinpal_pending":
         await query.answer("این پرداخت منقضی یا بسته شده؛ یک پرداخت جدید بساز.", show_alert=True)
         return
     amount = int(doc.get("final_price") or doc.get("price") or 0)
-    try:
-        zp = await _zp_v(authority, amount)
-    except Exception as e:
-        await query.answer(f"خطا در استعلام درگاه؛ دوباره تلاش کن. ({e})", show_alert=True)
-        return
-    if not zp.get("ok"):
-        await query.answer("پرداخت هنوز تأیید نشده (لغو شده یا ناقص است).", show_alert=True)
-        return
-    code = (doc.get("discount_code") or "").strip().upper() or None
+    if resume_only:
+        zp = {"ok": True, "ref_id": doc.get("zarinpal_ref_id") or ""}
+    else:
+        try:
+            zp = await _zp_v(authority, amount)
+        except Exception as e:
+            await query.answer(f"خطا در استعلام درگاه؛ دوباره تلاش کن. ({e})", show_alert=True)
+            return
+        if not zp.get("ok"):
+            await query.answer("پرداخت هنوز تأیید نشده (لغو شده یا ناقص است).", show_alert=True)
+            return
+    code = None if resume_only else ((doc.get("discount_code") or "").strip().upper() or None)
     # 🌊 W3 — آینه‌ی API: پول گرفته شده پس approve + پرچم overrun.
     discount_overrun = False
     if code:
@@ -355,7 +361,7 @@ async def _zarinpal_check(query, context, uid: int, authority: str):
     ref_id = str(zp.get("ref_id") or "")
     res = await db.sub_payment_verify_zarinpal(authority, ref_id, amount)
     if not res.get("ok"):
-        if code:
+        if code and not res.get("activation_pending"):
             try:
                 await db.discount_release(code, user_id=uid)
             except Exception:
@@ -1576,8 +1582,8 @@ async def _wallet_confirm(query, context, plan_id: str, uid: int):
 
 
 async def _wallet_buy(query, context, plan_id: str, uid: int):
-    """اجرا روی سرویس واحد db.wallet_purchase — همان منطق API.
-    خطای مالی هرگز پنهان نمی‌شود؛ در شکست، موجودی دست‌نخورده می‌ماند."""
+    """اجرا روی سرویس واحد db.wallet_purchase — همان منطق API، بدون idem پایدار.
+    اگر فعال‌سازی بعد از کسر بشکند، ری‌تری همان رسید را تمام می‌کند و دوباره کم نمی‌کند."""
     from db.wallet import WalletError
     try:
         res = await db.wallet_purchase(

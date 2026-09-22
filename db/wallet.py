@@ -577,17 +577,73 @@ class DBWallet:
             raise
 
     async def wallet_purchase_finalize(self, pid: str) -> bool:
-        """CAS اتمیک wallet_processing→approved — فقط یک بار موفق می‌شود."""
+        """CAS اتمیک wallet_processing→approved — فقط یک بار موفق می‌شود.
+
+        پرچم activation_pending تا تمام شدن فعال‌سازی می‌ماند تا ری‌تری
+        این رسید را «تمام‌شده» گزارش نکند.
+        """
         try:
             res = await self.sub_payments.update_one(
                 {'_id': ObjectId(pid), 'status': 'wallet_processing'},
                 {'$set': {'status': 'approved', 'reviewed_by': 0,
                           'reviewed_at': utc_now_iso(),
-                          'review_note': 'پرداخت از کیف پول داخلی'}})
+                          'review_note': 'پرداخت از کیف پول داخلی',
+                          'activation_pending': True}})
             return res.modified_count == 1
         except Exception as e:
             logger.warning(f'wallet_purchase_finalize failed {pid}: {e}')
             return False
+
+    async def _wallet_find_stuck_activation(self, user_id: int, plan_id: str):
+        """رسید کیف‌پولیِ approved که فعال‌سازی‌اش نمانده — جدیدترین."""
+        cur = self.sub_payments.find(
+            {'user_id': int(user_id), 'method': 'wallet',
+             'status': 'approved', 'activation_pending': True,
+             'plan_id': str(plan_id)}
+        ).sort('_id', -1).limit(1)
+        docs = await cur.to_list(1)
+        return docs[0] if docs else None
+
+    async def _wallet_reverse_activation(self, user_id: int, amount: int,
+                                         pid: str) -> None:
+        await self.wallet_credit(
+            user_id, int(amount), TX_REVERSAL, 'sub_payment_wallet_reversal',
+            pid, 0, 'بازگشت مبلغ به دلیل خطای فعال‌سازی')
+        await self.sub_payments.update_one(
+            {'_id': ObjectId(pid)},
+            {'$set': {'status': 'rejected', 'activation_pending': False,
+                      'review_note': 'خطای فعال‌سازی — مبلغ به کیف پول برگشت'}})
+
+    async def _wallet_finish_activation(self, payment: dict, user_id: int,
+                                        plan_name: str, amount: int) -> dict:
+        """فعال‌سازی رسید approved. فقط خطای روز/مبلغ نامعتبر debit را برمی‌گرداند."""
+        pid = str(payment['_id'])
+        paid = int(payment.get('final_price') or amount or 0)
+        try:
+            act = await self.finalize_approved_payment(
+                payment, admin_id=user_id)
+        except ValueError as e:
+            # str(WalletError) فارسی است؛ فقط ValueError صریحِ finalize برمی‌گردد.
+            if str(e) in ('plan_days_invalid', 'topup_amount_invalid'):
+                await self._wallet_reverse_activation(user_id, paid, pid)
+                raise WalletError(
+                    str(e), 'پلن معتبر نیست؛ مبلغ به کیف پول شما برگشت')
+            raise WalletError(
+                'activation_pending',
+                'پرداخت ثبت شد ولی فعال‌سازی کامل نشد. همان خرید را '
+                'دوباره بزنید؛ پول دوباره کم نمی‌شود.') from e
+        except Exception as e:
+            raise WalletError(
+                'activation_pending',
+                'پرداخت ثبت شد ولی فعال‌سازی کامل نشد. همان خرید را '
+                'دوباره بزنید؛ پول دوباره کم نمی‌شود.') from e
+        await self._clear_activation_pending(payment['_id'])
+        replay = bool(act.get('already'))
+        return {'payment_id': pid,
+                'plan_name': plan_name or payment.get('plan_name'),
+                'amount': paid, 'end_date': act.get('end_date'),
+                'days': 0 if replay else act.get('days'),
+                'replay': replay}
 
     # ── سرویس واحد خرید با کیف پول (API و Bot مشترک) ───────────
     async def wallet_purchase(self, user_id: int, plan_id: str,
@@ -606,8 +662,30 @@ class DBWallet:
         خطاها WalletError با کد ماشین‌خوان هستند:
         plan_not_found / plan_price_invalid / discount_invalid /
         discount_full / discount_exhausted / insufficient_balance /
-        order_conflict / plan_days_invalid (با جبران reversal)."""
+        order_conflict / plan_days_invalid (با جبران reversal) /
+        activation_pending (debit مانده؛ ری‌تری همان رسید را تمام می‌کند)."""
         user_id = int(user_id)
+        idem = (idem_key or '').strip()[:64]
+        # ری‌تریِ فعال‌سازیِ ناتمام قبل از validate: کد تخفیف در تلاش اول
+        # مصرف شده و اعتبارسنجی دوباره، همان رسیدِ کسرشده را قفل می‌کرد.
+        existing_idem = None
+        if idem:
+            existing_idem = await self.sub_payments.find_one({'idem_key': idem})
+        if (existing_idem and existing_idem.get('method') == 'wallet'
+                and existing_idem.get('status') == 'approved'
+                and existing_idem.get('activation_pending')):
+            return await self._wallet_finish_activation(
+                existing_idem, user_id,
+                existing_idem.get('plan_name') or '',
+                int(existing_idem.get('final_price')
+                    or existing_idem.get('price') or 0))
+        if not existing_idem:
+            stuck = await self._wallet_find_stuck_activation(
+                user_id, str(plan_id))
+            if stuck:
+                return await self._wallet_finish_activation(
+                    stuck, user_id, stuck.get('plan_name') or '',
+                    int(stuck.get('final_price') or stuck.get('price') or 0))
         plan = await self.sub_plan_get(plan_id)
         if not plan or not plan.get('active'):
             raise WalletError('plan_not_found', 'پلن پیدا نشد')
@@ -629,15 +707,19 @@ class DBWallet:
             raise WalletError('discount_full',
                               'کد تخفیف ۱۰۰٪ نیازی به کیف پول ندارد — '
                               'از مسیر فعال‌سازی رایگان استفاده کنید')
-        idem = (idem_key or '').strip()[:64]
+        plan_key = str(plan['_id'])
         pid = await self.sub_payment_create_wallet(
-            user_id, str(plan['_id']), plan.get('name', 'اشتراک'), price,
+            user_id, plan_key, plan.get('name', 'اشتراک'), price,
             idem, final_price=final, discount_code=code or None,
             discount_percent=percent)
-        # ری‌تری با idem یکسان و سفارشِ کامل‌شده → همان نتیجه، بدون اثر دوم
+        # ری‌تری با idem یکسان: ناتمام را ادامه بده؛ تمام‌شده را replay کن
         existing = await self.sub_payment_get(pid)
         if existing and existing.get('status') == 'approved' \
                 and existing.get('method') == 'wallet':
+            if existing.get('activation_pending'):
+                return await self._wallet_finish_activation(
+                    existing, user_id, plan.get('name'),
+                    int(existing.get('final_price') or final))
             sub = await self.sub_get(user_id)
             return {'payment_id': pid, 'plan_name': plan.get('name'),
                     'amount': int(existing.get('final_price') or final),
@@ -676,19 +758,5 @@ class DBWallet:
                 raise WalletError('order_conflict',
                                   'سفارش در حال پردازش است یا بسته شده')
         payment = await self.sub_payment_get(pid)
-        try:
-            act = await self.finalize_approved_payment(payment, admin_id=user_id)
-        except ValueError:
-            # جبران مالی صریح: مبلغ با compensating transaction برمی‌گردد
-            await self.wallet_credit(
-                user_id, final, TX_REVERSAL, 'sub_payment_wallet_reversal',
-                pid, 0, 'بازگشت مبلغ به دلیل خطای فعال‌سازی')
-            await self.sub_payments.update_one(
-                {'_id': ObjectId(pid)},
-                {'$set': {'status': 'rejected',
-                          'review_note': 'خطای فعال‌سازی — مبلغ به کیف پول برگشت'}})
-            raise WalletError('plan_days_invalid',
-                              'پلن معتبر نیست؛ مبلغ به کیف پول شما برگشت')
-        return {'payment_id': pid, 'plan_name': plan.get('name'),
-                'amount': final, 'end_date': act.get('end_date'),
-                'days': act.get('days'), 'replay': False}
+        return await self._wallet_finish_activation(
+            payment, user_id, plan.get('name'), final)

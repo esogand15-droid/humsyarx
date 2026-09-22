@@ -302,7 +302,8 @@ function PaymentsPanel({ initial = {} }) {
 // 💰 W6 — مقصد بازگشت، کیف پول داخلی دانشجوست؛ پیش‌نمایش اثر قبل از تأیید
 function RefundModal({ pay, onClose, onDone }) {
   const [reason, setReason] = useState('');
-  const [revoke, setRevoke] = useState(false);
+  const [revoke, setRevoke] = useState(true);
+  const [keep, setKeep] = useState(false);
   const [busy, setBusy] = useState(false);
   const [balance, setBalance] = useState(null);
   useEffect(() => {
@@ -313,7 +314,9 @@ function RefundModal({ pay, onClose, onDone }) {
   const run = async () => {
     setBusy(true);
     try {
-      const r = await api.subRefund(pay.id, { confirm: true, reason: reason.trim(), revoke_subscription: revoke });
+      const body = { confirm: true, reason: reason.trim(), revoke_subscription: revoke };
+      if (!revoke && keep) body.keep_subscription = true;
+      const r = await api.subRefund(pay.id, body);
       toast(r.wallet_credited
         ? `بازگشت وجه ثبت شد 💸 — ${money(amount)} به کیف پول دانشجو منتقل شد`
         : 'بازگشت وجه ثبت شد 💸', r.wallet_credited ? 'ok' : 'warn');
@@ -327,9 +330,9 @@ function RefundModal({ pay, onClose, onDone }) {
   };
   return <Modal title={`💸 بازگشت وجه به کیف پول — ${pay.user_name || pay.user_id}`} onClose={onClose}>
     <p className="muted" style={{ marginTop: 0 }}>
-      مبلغ معتبرِ خودِ رسید (سرور-ساید) به <b>کیف پول داخلی دانشجو</b> منتقل می‌شود؛
-      گذار approved→refunded اتمیک و برگشت‌ناپذیر است و در حسابرسی با شدت بحرانی
-      ثبت می‌شود. اگر اشتراک revoke نشود، مغایرت‌گیری پرچم نگه می‌دارد.
+      مبلغ معتبرِ خودِ رسید به <b>کیف پول پرداخت‌کننده</b> برمی‌گردد.
+      پیش‌فرض این است که دسترسی فعال هم قطع شود؛ وگرنه دانشجو هم پول را دارد هم اشتراک را.
+      نگه داشتن دسترسی فقط با تأیید صریح ممکن است.
     </p>
     <div className="row q-missing" style={{ marginBottom: 10 }}>
       <B kind="acc">👤 {pay.user_name || `کاربر ${pay.user_id}`}</B>
@@ -339,11 +342,17 @@ function RefundModal({ pay, onClose, onDone }) {
     </div>
     <input className="inp" placeholder="دلیل بازگشت وجه (حداقل ۳ نویسه) *" value={reason} onChange={e => setReason(e.target.value)} />
     <label className="row" style={{ marginTop: 10 }}>
-      <input type="checkbox" checked={revoke} onChange={e => setRevoke(e.target.checked)} />
-      <span>هم‌زمان اشتراک کاربر نیز revoke شود</span>
+      <input type="checkbox" checked={revoke} onChange={e => { setRevoke(e.target.checked); if (e.target.checked) setKeep(false); }} />
+      <span>اشتراک فعال قطع شود (پیشنهادی)</span>
     </label>
+    {!revoke && (
+      <label className="row" style={{ marginTop: 8 }}>
+        <input type="checkbox" checked={keep} onChange={e => setKeep(e.target.checked)} />
+        <span>می‌دانم پول برمی‌گردد و دسترسی فعال می‌ماند؛ عمداً اشتراک را نگه دار</span>
+      </label>
+    )}
     <div className="row" style={{ marginTop: 12 }}>
-      <button className="btn danger" disabled={busy || reason.trim().length < 3} onClick={run}>
+      <button className="btn danger" disabled={busy || reason.trim().length < 3 || (!revoke && !keep)} onClick={run}>
         {`ثبت بازگشت ${money(amount)} به کیف پول`}
       </button>
       <button className="btn" onClick={onClose}>انصراف</button>
