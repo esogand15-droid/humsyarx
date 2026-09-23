@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -200,32 +201,11 @@ export default function Me() {
         {isLoading ? (
           <MeSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            <div className="empty__ic">
-              🌐
-            </div>
-
-            <div>
-              دریافت اطلاعات حساب انجام
-              نشد.
-            </div>
-
-            <button
-              className="btn btn-p"
-              onClick={() =>
-                refetch()
-              }
-              disabled={
-                isRefetching
-              }
-            >
-              {isRefetching ? (
-                <Spinner size={15} />
-              ) : (
-                'تلاش دوباره'
-              )}
-            </button>
-          </div>
+          <PageError
+            text="دریافت اطلاعات حساب انجام نشد."
+            onRetry={() => refetch()}
+            pending={isRefetching}
+          />
         ) : (
           <div
             style={{

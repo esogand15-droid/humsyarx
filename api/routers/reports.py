@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from typing import Optional
 from api.auth import get_current_user
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
+from request_context import current_request_id
 from time_utils import utc_now_iso
 
 router = APIRouter()
@@ -27,6 +29,8 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
     if body.target_type not in ("question","resource"): raise HTTPException(422)
     if body.reason not in {r["key"] for r in REASONS}: raise HTTPException(422)
     uid = user["id"]; db_user = user["_db"]
+    # 🛡 W3/SEC-03 — ضد اسپم گزارش تخلف
+    await rate_limit_user(uid, "report_create", 10, 60)
     designer_id = None; target_label = "فایل"
     if body.target_type == "question":
         q = await db.get_question_by_id(body.target_id)
@@ -34,6 +38,21 @@ async def create_report(body: ReportIn, user=Depends(get_current_user)):
         designer_id = q.get("creator_id"); target_label = f"{q.get('lesson','')} — {q.get('topic','')}"
     rid = await db.create_content_report(target_type=body.target_type,target_id=body.target_id,
         reporter_id=uid,reporter_name=db_user.get("name",""),reason=body.reason,note=body.note or "",designer_id=designer_id)
+    # AUDIT — user report creation (user-initiated, INFO, redacted note)
+    try:
+        _role = await db.get_actor_role_label(uid)
+    except Exception:
+        _role = "student"
+    try:
+        await db.log_action(
+            uid, db_user.get("name",""), _role,
+            "ثبت گزارش محتوا", "Reports", category="content", severity="INFO",
+            target_id=str(rid), target_type=body.target_type, target_label=target_label[:80],
+            after={"reason": body.reason, "target_id": body.target_id[:24]},
+            details=(body.note or "")[:120],
+        )
+    except Exception:
+        pass
     try:
         reason_lbl = next((r["label"] for r in REASONS if r["key"]==body.reason),body.reason)
         notif = db.client["medicalbot"]["bot_notifications"]

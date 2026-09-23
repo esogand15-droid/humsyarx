@@ -145,6 +145,12 @@ export default function Settings() {
                            value={valueOf(it) ?? ''}
                            onChange={e => setEdited(x => ({ ...x, [it.key]: e.target.value }))} />
                   )}
+                  {it.type === 'number' && (
+                    <input className="inp" type="number" min="0" dir="ltr" style={{ width: 180 }}
+                           placeholder="خالی = پیش‌فرض سیستم"
+                           value={valueOf(it) ?? ''}
+                           onChange={e => setEdited(x => ({ ...x, [it.key]: e.target.value }))} />
+                  )}
                   {it.type === 'readonly' && (
                     <B kind="acc">{it.value ? <FaDateTime value={it.value} /> : 'هنوز اجرا نشده'}</B>
                   )}

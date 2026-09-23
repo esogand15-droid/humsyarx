@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, Empty, B, PageHeader, Confirm, toast, Modal } from '../ui.jsx';
 
@@ -14,6 +14,7 @@ export default function Rbac({ me }) {
   const [cloneRole, setCloneRole] = useState(null);
   const [assignOpen, setAssignOpen] = useState(false);
   const [editRole, setEditRole] = useState(null);
+  const [holdersRole, setHoldersRole] = useState(null);
   const [deleteRole, setDeleteRole] = useState(null);
   const canAssign = !!me?.is_owner || (me?.perms || []).includes('users.manage');
 
@@ -62,6 +63,7 @@ export default function Rbac({ me }) {
               {r.system && <B kind="acc">سیستمی</B>}
               {r.users_count != null && <B>{Number(r.users_count).toLocaleString('fa')} کاربر</B>}
               <span className="spacer" />
+              <button className="btn sm" title="دارندگان این نقش" aria-label="دارندگان این نقش" onClick={() => setHoldersRole(r)}>👥</button>
               <button className="btn sm" title="ویرایش مشخصات نقش" aria-label="ویرایش مشخصات نقش" onClick={() => setEditRole(r)}>✏️</button>
               <button className="btn sm" aria-label={`کپی نقش ${r.label || r.key}`} onClick={() => setCloneRole(r)}>📄</button>
               {!r.system && (
@@ -81,7 +83,9 @@ export default function Rbac({ me }) {
       {cloneRole && <CreateRole seed={cloneRole} onClose={() => setCloneRole(null)} onDone={() => { setCloneRole(null); load(); }} />}
       {editRole && <EditRole role={editRole} onClose={() => setEditRole(null)}
                              onDone={() => { setEditRole(null); load(); }} />}
-      {assignOpen && <AssignRoles roles={roles} onClose={() => setAssignOpen(false)} />}
+      {assignOpen && <AssignRoles roles={roles} onClose={() => setAssignOpen(false)} onSaved={load} />}
+      {holdersRole && <RoleHolders role={holdersRole} roles={roles} canAssign={canAssign}
+        onClose={() => setHoldersRole(null)} onChanged={load} />}
       {deleteRole && <Confirm danger text={`حذف نقش «${deleteRole.label || deleteRole.key}»؟ این عملیات فقط برای نقش بدون کاربر مجاز است.`}
         onNo={() => setDeleteRole(null)} onYes={async () => { const role = deleteRole; setDeleteRole(null);
           try { await api.deleteRole(role.key); toast('نقش حذف شد'); load(); } catch (e) { toast(errText(e), 'err'); } }} />}
@@ -248,7 +252,19 @@ function EditRole({ role, onClose, onDone }) {
 }
 
 
-function AssignRoles({ roles, onClose }) {
+export function roleForcesScope(role) {
+  const perms = role?.perms || [];
+  const contentGlobal = perms.includes('content.manage') || role?.key === 'content_admin';
+  const contentScoped = !contentGlobal && (role?.key === 'content_scoped' || perms.includes('content.scoped'));
+  const gradesScoped = role?.key === 'grade_rep' || perms.includes('grades.scoped');
+  return contentScoped || gradesScoped;
+}
+
+
+export function AssignRoles({ roles: rolesProp, onClose, initialUser = null, onSaved }) {
+  const [roles, setRoles] = useState(rolesProp || []);
+  const [rolesReady, setRolesReady] = useState(Boolean(rolesProp));
+  const booted = useRef(false);
   const [q, setQ] = useState('');
   const [hits, setHits] = useState(null);
   const [picked, setPicked] = useState(null);
@@ -260,6 +276,13 @@ function AssignRoles({ roles, onClose }) {
   const [confirmAssign, setConfirmAssign] = useState(false);
 
   useEffect(() => { api.rbacIntakes().then(r => setIntakes(r.intakes || [])).catch(() => {}); }, []);
+  useEffect(() => {
+    if (rolesProp) { setRoles(rolesProp); setRolesReady(true); return; }
+    let live = true;
+    api.roles().then(r => { if (live) { setRoles(r.roles || []); setRolesReady(true); } })
+      .catch(e => toast(errText(e), 'err'));
+    return () => { live = false; };
+  }, [rolesProp]);
   const search = async () => {
     if (q.trim().length < 2) return toast('حداقل ۲ حرف یا آیدی وارد کنید', 'err');
     setBusy(true);
@@ -275,6 +298,11 @@ function AssignRoles({ roles, onClose }) {
     } catch (e) { toast(errText(e), 'err'); setPicked(null); }
     setBusy(false);
   };
+  useEffect(() => {
+    if (booted.current || !initialUser?.id || !rolesReady) return;
+    booted.current = true;
+    choose(initialUser);
+  }, [initialUser, rolesReady]);
   const toggle = (key) => setSelected(s => {
     const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n;
   });
@@ -284,8 +312,7 @@ function AssignRoles({ roles, onClose }) {
   const beforePerms = [...new Set(currentRoles.flatMap(r => r.perms || []))].sort();
   const addedPerms = effectivePerms.filter(permission => !beforePerms.includes(permission));
   const removedPerms = beforePerms.filter(permission => !effectivePerms.includes(permission));
-  const needsScope = selectedRoles.some(r =>
-    (r.key === 'content_scoped' || r.perms?.includes('content.scoped') || r.perms?.includes('grades.scoped')));
+  const needsScope = selectedRoles.some(roleForcesScope);
   const save = async () => {
     const before = new Set(current?.keys || []);
     const add = [...selected].filter(k => !before.has(k));
@@ -296,9 +323,14 @@ function AssignRoles({ roles, onClose }) {
       const r = await api.assignRoles(picked.id, { add, remove, scope_intake: needsScope ? scope : '' });
       setCurrent(r); setSelected(new Set(r.keys || [])); setScope(r.scope_intake || '');
       toast('نقش‌ها و scope کاربر ذخیره شد ✅');
+      if (onSaved) onSaved();
     } catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
+
+  if (!rolesReady) {
+    return <Modal title="👤 تخصیص نقش و محدوده به کاربر" onClose={onClose}><Loading rows={3} /></Modal>;
+  }
 
   return (
     <Modal title="👤 تخصیص نقش و محدوده به کاربر" onClose={onClose}>
@@ -350,6 +382,73 @@ function AssignRoles({ roles, onClose }) {
         </div>
         {confirmAssign && <Confirm danger={removedPerms.length > 0} text={`تخصیص نقش برای ${picked.display_name || picked.name} ذخیره شود؟ ${addedPerms.length} مجوز افزوده و ${removedPerms.length} مجوز حذف می‌شود.`} onNo={() => setConfirmAssign(false)} onYes={async () => { setConfirmAssign(false); await save(); }} />}
       </>)}
+    </Modal>
+  );
+}
+
+
+function RoleHolders({ role, roles, canAssign, onClose, onChanged }) {
+  const [holders, setHolders] = useState(null);
+  const [err, setErr] = useState('');
+  const [editUser, setEditUser] = useState(null);
+  const [dropUser, setDropUser] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setErr('');
+    try {
+      const r = await api.roleHolders(role.key);
+      setHolders(r.holders || []);
+    } catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, [role.key]);
+
+  const remove = async (holder) => {
+    setBusy(true);
+    try {
+      await api.assignRoles(holder.id, { add: [], remove: [role.key] });
+      toast('نقش از کاربر برداشته شد');
+      await load();
+      if (onChanged) onChanged();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  return (
+    <Modal title={`👥 دارندگان نقش — ${role.label || role.key}`} onClose={onClose}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        این‌ها کاربرانی هستند که الان این نقش را دارند. افزودن، ویرایش و حذف از همان تخصیص نقش است؛ سیستم جداگانه‌ای نیست.
+      </p>
+      {err && <ErrorState error={err} onRetry={load} />}
+      {!holders && !err && <Loading rows={3} />}
+      {holders && !holders.length && <Empty text="هنوز کسی این نقش را ندارد" />}
+      {holders && holders.map(h => (
+        <div key={h.id} className="panel panel-pad" style={{ marginBottom: 6 }}>
+          <div className="row">
+            <b>{h.name || `#${h.id}`}</b>
+            <span className="code">#{h.id}</span>
+            {h.student_id && <span className="muted">{h.student_id}</span>}
+            {h.scope_intake && <B kind="purple">{h.scope_intake}</B>}
+            <span className="spacer" />
+            {canAssign && <button className="btn sm" onClick={() => setEditUser(h)}>✏️</button>}
+            {canAssign && <button className="btn sm danger" disabled={busy} onClick={() => setDropUser(h)}>حذف</button>}
+          </div>
+        </div>
+      ))}
+      <div className="row" style={{ marginTop: 12 }}>
+        {canAssign && <button className="btn primary" onClick={() => setEditUser({ id: null })}>➕ افزودن دارنده</button>}
+        <button className="btn" onClick={onClose}>بستن</button>
+      </div>
+      {editUser && editUser.id && (
+        <AssignRoles roles={roles} initialUser={editUser} onClose={() => setEditUser(null)}
+          onSaved={() => { setEditUser(null); load(); if (onChanged) onChanged(); }} />
+      )}
+      {editUser && !editUser.id && (
+        <AssignRoles roles={roles} onClose={() => setEditUser(null)}
+          onSaved={() => { load(); if (onChanged) onChanged(); }} />
+      )}
+      {dropUser && <Confirm danger text={`نقش «${role.label || role.key}» از ${dropUser.name || dropUser.id} برداشته شود؟`}
+        onNo={() => setDropUser(null)} onYes={async () => { const holder = dropUser; setDropUser(null); await remove(holder); }} />}
     </Modal>
   );
 }

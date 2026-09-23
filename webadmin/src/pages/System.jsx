@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, Stat, B, DiffViewer, FaDateTime, PageHeader, StatusBadge, toast, Confirm, Switch } from '../ui.jsx';
 import HealthCenter from '../HealthCenter.jsx';
@@ -24,11 +24,12 @@ const SECTIONS = [
   ['access',       '🔐', 'دسترسی‌ها و تنظیمات', 'نقش‌ها، بلک‌لیست، ورودی‌ها'],
 ];
 
-export default function System({ me }) {
+export default function System({ me, route = '' }) {
   const [bs, setBs] = useState(null);
   const [st, setSt] = useState(null);          // تنظیمات ربات (وضعیت بکاپ خودکار)
   const [jobs, setJobs] = useState([]);
   const [observability, setObservability] = useState(null);
+  const [clientErrs, setClientErrs] = useState(null); // 🌊 W5/REL-03
   const [timeStandard, setTimeStandard] = useState(null);
   const [sessions, setSessions] = useState(null);
   const [err, setErr] = useState('');
@@ -38,6 +39,12 @@ export default function System({ me }) {
   const [excelBusy, setExcelBusy] = useState(false);
   const [restoreFile, setRestoreFile] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null);
+  // 🌊 WA21 — مقصد deep-link مرکز اقدام (`/system?focus=dlq` / `?focus=outbox`).
+  // بدون این، کارت‌های DLQ و صف خروجی کاربر را به صفحه می‌آوردند ولی نه به
+  // همان بخش؛ یعنی عملاً deep-link بی‌اثر بود.
+  const dlqRef = useRef(null);
+  const outboxRef = useRef(null);
+  const focusKey = new URLSearchParams(route.split('?')[1] || '').get('focus');
   const [restorePhrase, setRestorePhrase] = useState('');
   const [restoreBusy, setRestoreBusy] = useState(false);
 
@@ -51,17 +58,30 @@ export default function System({ me }) {
   const load = async () => {
     setErr('');
     try {
-      const [b, s, j, o, ts, sec] = await Promise.all([
+      const [b, s, j, o, ts, sec, ce] = await Promise.all([
         api.botStatus(), canBackup ? api.settings() : Promise.resolve(null),
         api.systemJobs().catch(() => ({ jobs: [] })),
         canObserve ? api.systemObservability().catch(() => null) : Promise.resolve(null),
         canObserve ? api.systemTimeStandard().catch(() => null) : Promise.resolve(null),
         canObserve ? api.securitySessions().catch(() => null) : Promise.resolve(null),
+        canObserve ? api.systemClientErrors(24, 20).catch(() => null) : Promise.resolve(null),
       ]);
-      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setTimeStandard(ts); setSessions(sec);
+      setBs(b); setSt(s); setJobs(j.jobs || []); setObservability(o); setTimeStandard(ts); setSessions(sec); setClientErrs(ce);
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  // 🌊 WA21 — اسکرول به بخش مقصد + highlight کوتاه. data هنوز نرسیده باشد
+  // هم ref وجود دارد (DlqCenter همیشه رندر می‌شود)، پس ریسک race ندارد.
+  useEffect(() => {
+    if (!focusKey) return;
+    const el = focusKey === 'dlq' ? dlqRef.current : focusKey === 'outbox' ? outboxRef.current : null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.classList.add('panel--attention');
+    const t = setTimeout(() => el.classList.remove('panel--attention'), 2600);
+    return () => clearTimeout(t);
+  }, [focusKey]);
 
   const doBackup = async (section) => {
     setBusySec(section);
@@ -172,7 +192,7 @@ export default function System({ me }) {
         <div className="callout" style={{ marginTop: 10 }}>Storage: <span className="code ltr">{timeStandard.storage_contract}</span> · Display: {timeStandard.display_contract} · شروع هفته: {timeStandard.week_start}</div>
       </section>}
 
-      {!!jobs.length && <div className="panel panel-pad" style={{ marginTop: 14 }}>
+      {!!jobs.length && <div ref={outboxRef} className="panel panel-pad" style={{ marginTop: 14 }}>
         <div className="row"><div><b>⚙️ Job Center</b><div className="muted">آخرین اجرای جاب‌های اعلان، صف خروجی و بکاپ واقعی</div></div>
           <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی</button></div>
         <div className="grid g3" style={{ marginTop: 10 }}>
@@ -200,12 +220,23 @@ export default function System({ me }) {
           { k: 'max_ms', label: 'بیشینه ms', render: r => fa(r.max_ms) },
         ]} rows={observability.routes || []} rowKey="route" colToggle /></div>
         {!!observability.recent_errors?.length && <details style={{ marginTop: 10 }}><summary>خطاهای اخیر و Request ID</summary><div className="grid">{observability.recent_errors.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
+        {/* 🌊 W5/REL-03 — شمارنده‌ی موقت همه‌ی /api (با ری‌استارت صفر می‌شود) */}
+        {!!observability.api && <div style={{ marginTop: 10 }} className="row"><B kind="acc">{fa(observability.api.total)} درخواست /api</B><B kind={observability.api.recent_5xx?.length ? 'bad' : 'ok'}>{fa(observability.api.recent_5xx?.length || 0)} خطای 5xx</B><span className="muted">موقت (ری‌استارت: صفر)</span></div>}
+        {!!observability.api?.routes?.length && <details style={{ marginTop: 10 }}><summary>پرترافیک‌ترین روت‌های /api</summary><div className="grid">{observability.api.routes.slice(0, 12).map((r) => <div className="row" key={r.route}><span className="code">{r.route}</span><span className="spacer" /><B kind="acc">{fa(r.requests)}</B></div>)}</div></details>}
+        {!!observability.api?.recent_5xx?.length && <details style={{ marginTop: 10 }}><summary>خطاهای 5xx اخیر همه‌ی API</summary><div className="grid">{observability.api.recent_5xx.map((e, i) => <div className="row" key={`${e.request_id}-${i}`}><B kind="bad">{e.status}</B><span className="code">{e.method} {e.route}</span><span className="spacer" /><span className="code">{e.request_id}</span></div>)}</div></details>}
+        {/* 🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی فرانت */}
+        {!!clientErrs?.items?.length && <details style={{ marginTop: 10 }} open><summary>خطاهای کلاینت ۲۴ساعت اخیر ({fa(clientErrs.items.length)})</summary><div className="grid">{clientErrs.items.map((e, i) => <div className="row" key={i}><B kind={e.app === 'webadmin' ? 'acc' : 'bad'}>{e.app}</B><span className="code">{e.message}</span><span className="spacer" /><span className="muted">{e.path}</span></div>)}</div></details>}
       </div>}
 
       {/* 💀 DLQ — پیام‌های مرده‌ی صف. خواندن با notifications.manage هم مجاز است
           (همان قرارداد بک‌اند)، ولی اکشن بازپخش/کنارگذاشتن فقط system.manage. */}
-      {(canObserve || has('notifications.manage')) && <DlqCenter canManage={canObserve} />}
+      {(canObserve || has('notifications.manage')) && (
+        <div ref={dlqRef} className="panel" style={{ borderRadius: 'var(--r-lg)' }}>
+          <DlqCenter canManage={canObserve} />
+        </div>
+      )}
 
+      {canObserve && <WalletAlertPanel />}
       {canObserve && <SecuritySessionsPanel data={sessions} onReload={load} />}
 
       {/* ── ⏰ بکاپ خودکار روزانه (داده واقعی settings؛ PATCH دارای audit) ── */}
@@ -333,6 +364,35 @@ function SecuritySessionsPanel({ data, onReload }) {
       <label className="fld" style={{ marginTop: 10 }}><span>دلیل لغو</span>
         <input className="inp" maxLength={300} value={reason} onChange={e => setReason(e.target.value)} placeholder="مثلاً دستگاه ناشناس یا پایان همکاری" disabled={busy} /></label>
     </Confirm>}
+  </section>;
+}
+
+function WalletAlertPanel() {
+  const [cfg,setCfg]=React.useState(null);
+  const [err,setErr]=React.useState('');
+  const [busy,setBusy]=React.useState(false);
+  const load=async()=>{ setErr(''); try{ const r=await api.walletAlerts(); setCfg(r); }catch(e){ setErr(errText(e)); } };
+  React.useEffect(()=>{ load(); },[]);
+  const toggleEnabled=async(v)=>{ setBusy(true); try{ await api.walletAlertsPatch({enabled:v}); await load(); toast(v?'هشدار کیف پول فعال شد':'هشدار کیف پول غیرفعال شد'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const setCooldown=async(h)=>{ setBusy(true); try{ await api.walletAlertsPatch({cooldown_hours:Number(h)}); await load(); toast('بازه ضداسپم ذخیره شد ✅'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const mute24=async()=>{ const until=new Date(Date.now()+24*3600*1000).toISOString(); setBusy(true); try{ await api.walletAlertsPatch({muted_until:until}); await load(); toast('تا ۲۴ ساعت بی‌صدا شد 🔕'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const unmute=async()=>{ setBusy(true); try{ await api.walletAlertsPatch({muted_until:''}); await load(); toast('بی‌صدا لغو شد'); }catch(e){ toast(errText(e),'err'); } setBusy(false); };
+  const dismissWallet=async()=>{ const reason=prompt('دلیل بستن هشدار کیف پول؟ (حداقل ۳ حرف)'); if(!reason||reason.trim().length<3) return; const h=prompt('بازه بستن به ساعت (24/72/168 یا 0 برای دائم)','24'); const hours=Number(h||24); try{ await api.attentionDismiss('wallet_issues', reason.trim(), hours); toast('هشدار کیف پول در «نیازمند اقدام» بسته شد ✅'); await load(); }catch(e){ toast(errText(e),'err'); } };
+  const restoreWallet=async()=>{ try{ await api.attentionRestore('wallet_issues'); toast('بازگردانی شد ✅'); await load(); }catch(e){ toast(errText(e),'err'); } };
+  if(err) return <div className="panel panel-pad" style={{marginTop:14}}><ErrorState error={err} onRetry={load} /></div>;
+  if(!cfg) return <div className="panel panel-pad" style={{marginTop:14}}><Loading rows={2} /></div>;
+  const isMuted = cfg.muted_until && new Date(cfg.muted_until) > new Date();
+  const isDismissed = cfg.dismiss?.active;
+  return <section className="panel panel-pad" style={{marginTop:14}}>
+    <div className="row"><div><b>👛 هشدار مغایرت کیف پول — ضداسپم</b><div className="muted">هشدار تکراری «1 مورد بحرانی» حالا با جزئیات، cooldown و قابلیت بستن. بستن در داشبورد = بی‌صداشدن ربات.</div></div><span className="spacer"/><B kind={cfg.enabled?'ok':'bad'}>{cfg.enabled?'فعال':'غیرفعال'}</B>{isMuted && <B kind="warn">بی‌صدا تا <FaDateTime value={cfg.muted_until}/></B>}{isDismissed && <B kind="acc">بسته‌شده {cfg.dismiss.until ? <>تا <FaDateTime value={cfg.dismiss.until}/></> : 'دائم'}</B>}</div>
+    <div className="row" style={{marginTop:10,flexWrap:'wrap',gap:8}}>
+      <label className="row" style={{gap:6}}><Switch on={!!cfg.enabled} disabled={busy} onChange={toggleEnabled}/> هشدار فعال</label>
+      <span className="muted">بازه ضداسپم (تکرار یکسان):</span>
+      <select className="inp" style={{maxWidth:110}} disabled={busy} value={cfg.cooldown_hours} onChange={e=>setCooldown(e.target.value)}>{[1,2,3,6,12,24].map(h=><option key={h} value={h}>{h} ساعت</option>)}</select>
+      {!isMuted ? <button className="btn sm" disabled={busy} onClick={mute24}>🔕 ۲۴ساعت بی‌صدا</button> : <button className="btn sm" disabled={busy} onClick={unmute}>🔔 لغو بی‌صدا</button>}
+      {!isDismissed ? <button className="btn sm" disabled={busy} onClick={dismissWallet}>🔕 بستن هشدار «نیازمند اقدام»</button> : <button className="btn sm" disabled={busy} onClick={restoreWallet}>↩️ بازکردن</button>}
+    </div>
+    <div className="muted" style={{marginTop:8}}>متن جدید ربات شامل جزئیات (نام کاربر، نوع مغایرت، مبلغ) + لینک /subscriptions?tab=reconcile است و فقط وقتی هشدار جدید/متفاوت باشد و cooldown گذشته باشد ارسال می‌شود. بستن از داشبورد (🔕 بستن) همان dismissal را می‌بندد و ربات تا پایان بازه دیگر پیام نمی‌دهد.</div>
   </section>;
 }
 

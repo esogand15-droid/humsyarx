@@ -42,13 +42,16 @@ WORKDIR /build
 # /app/ تولید می‌شوند و react-router هم همان را basename می‌گیرد.
 ENV VITE_BASE=/app/
 COPY miniapp/package.json miniapp/package-lock.json ./miniapp/
-RUN npm --prefix ./miniapp ci --no-audit --no-fund
+# 🛡 RAILWAY-FIX — فلاک‌های گذرای رجیستری npm نباید بیلد را قرمز کنند؛
+# ۵ تلاش دانلود (پیش‌فرض npm فقط ۲ است). رفتار موفق بدون تغییر.
+RUN npm --prefix ./miniapp ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000
 COPY miniapp/ ./miniapp/
 RUN npm --prefix ./miniapp run build
 
 # ── Web Admin ── (base آن از قبل در webadmin/vite.config.js روی /admin/ است)
 COPY webadmin/package.json webadmin/package-lock.json ./webadmin/
-RUN npm --prefix ./webadmin ci --no-audit --no-fund
+# 🛡 RAILWAY-FIX — مشابه مینی‌اپ: retry دانلود در برابر فلاک رجیستری.
+RUN npm --prefix ./webadmin ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000
 COPY webadmin/ ./webadmin/
 RUN npm --prefix ./webadmin run build
 
@@ -68,7 +71,12 @@ ENV PYTHONUNBUFFERED=1 \
 # reportlab/Pillow به libjpeg و zlib برای PDF/تصویر نیاز دارند؛
 # curl فقط برای HEALTHCHECK. (supervisor را با pip می‌گذاریم تا
 # image قابل بازتولید باشد و به نسخه‌ی apt وابسته نماند.)
-RUN apt-get update \
+# 🛡 RAILWAY-FIX — فلاک گذرای mirror دبیان شایع‌ترین علت قرمزی بی‌دلیل
+# بیلد است: اول تا ۳ بار update را retry می‌کنیم و بعد یک update نهایی
+# (بدون guard) اجرا می‌شود تا اگر واقعاً شبکه خراب است، بیلد با همان
+# خطای روشن apt بایستد — نه با خطای گمراه‌کننده‌ی install.
+RUN for i in 1 2 3; do apt-get update && break || sleep 8; done \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       curl \
       libjpeg62-turbo \
@@ -76,6 +84,8 @@ RUN apt-get update \
       libfreetype6 \
  && rm -rf /var/lib/apt/lists/*
 
+# ── MTProto برای فایل‌های بزرگ — بدون نیاز به باینری Local Bot API ──
+# رینیم بزرگ (>20MB) از طریق pyrogram (همون منابع Railway) انجام می‌شود
 WORKDIR /srv/humsyar
 
 # ── وابستگی پایتون ──
@@ -108,6 +118,7 @@ ENV PORT=8000 \
 
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/start_botapi.sh /usr/local/bin/start_botapi.sh
 
 # bit اجرایی را خودمان قطعی می‌کنیم: git معمولاً آن را نگه می‌دارد،
 # ولی اگر فایل از ZIP/ویرایشگر ویندوزی رد شود ممکن است ۰۶۴۴ بیاید و
@@ -118,6 +129,8 @@ COPY docker/entrypoint.sh /entrypoint.sh
 # می‌ایستد — نه اینکه سرویس بالا بیاید و /app/ سفید بدهد.
 RUN set -eu; \
     chmod 0755 /entrypoint.sh; \
+    chmod 0755 /usr/local/bin/start_botapi.sh; \
+    chmod 0755 /usr/local/bin/telegram-bot-api || true; \
     test -x /entrypoint.sh                || { echo "Dockerfile selfcheck: /entrypoint.sh executable نیست"; exit 1; }; \
     test -f /etc/supervisor/conf.d/supervisord.conf \
                                           || { echo "Dockerfile selfcheck: supervisord.conf کپی نشده"; exit 1; }; \

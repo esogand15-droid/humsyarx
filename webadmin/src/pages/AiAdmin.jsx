@@ -232,6 +232,9 @@ function AiConfig({ cfg, me, onSaved }) {
   const [f, setF] = useState(null);
   const [busy, setBusy] = useState(false);
   const [confirmSave, setConfirmSave] = useState(false);
+  /* 🌊 W9 — کاتالوگ مرکزی مدل‌ها (بدون تایپ دستی) */
+  const [cat, setCat] = useState(null);
+  useEffect(() => { api.aiModels().then(setCat).catch(() => {}); }, []);
   const [keyOpen, setKeyOpen] = useState(false); const [apiKey, setApiKey] = useState('');
   const [testResult, setTestResult] = useState(null);
   useEffect(() => { if (cfg) setF({ ...cfg }); }, [cfg]);
@@ -263,12 +266,34 @@ function AiConfig({ cfg, me, onSaved }) {
         </div>
         <div className="grid" style={{ gap: 10, marginTop: 14 }}>
           <label className="fld"><span>ارائه‌دهنده</span>
-            <select className="inp" value={f.provider} onChange={e => set('provider', e.target.value)}>
-              <option value="gemini">Gemini</option>
-              <option value="openrouter">OpenRouter</option>
+            <select className="inp" value={f.provider} onChange={e => {
+              const pid = e.target.value;
+              const prov = (cat?.providers || []).find(p => p.id === pid);
+              /* با تغییر provider، مدلِ فعلی احتمالاً نامعتبر است ⇒ پیش‌فرض همان provider */
+              setF(x => ({ ...x, provider: pid, model: prov?.default_model || x.model }));
+            }}>
+              {(cat?.providers || [{ id: 'gemini', label: 'Gemini' }, { id: 'openrouter', label: 'OpenRouter' }])
+                .map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select></label>
-          <label className="fld"><span>مدل</span>
-            <input className="inp" style={{ direction: 'ltr' }} value={f.model} onChange={e => set('model', e.target.value)} /></label>
+          <label className="fld"><span>مدل {(() => {
+            const prov = (cat?.providers || []).find(p => p.id === f.provider);
+            const ids = (prov?.models || []).map(m => m.id);
+            const isCustom = f.model && !ids.includes(f.model);
+            return (
+              <>
+                <select className="inp" style={{ direction: 'ltr' }}
+                        value={isCustom ? '__custom' : f.model}
+                        onChange={e => set('model', e.target.value === '__custom' ? '' : e.target.value)}>
+                  {(prov?.models || []).map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>))}
+                  <option value="__custom">✏️ سفارشی (تایپ دستی)</option>
+                </select>
+                {isCustom && (
+                  <input className="inp" style={{ direction: 'ltr', marginTop: 6 }}
+                         placeholder="شناسه‌ی دقیق مدل" value={f.model}
+                         onChange={e => set('model', e.target.value)} />)}
+              </>);
+          })()}</span></label>
           <label className="fld"><span>سهمیه‌ی روزانه‌ی هر کاربر</span>
             <input className="inp" type="number" min="0" max="1000" value={f.daily_limit}
                    onChange={e => set('daily_limit', e.target.value)} /></label>

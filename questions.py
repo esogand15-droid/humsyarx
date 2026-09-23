@@ -12,15 +12,16 @@
 import os, io, asyncio, logging, time
 from datetime import datetime
 from utils import esc as escape   # 🛡 AUDIT-A6 —escape مرکزی
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
 from utils import send_audit_log, fmt_jalali_dt
 from time_utils import now_tehran, utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
+from question_bank.images import QuestionImageService, split_photo_caption
 from question_bank.ai_practice import AIPersonalPracticeService
 from question_bank.contracts import (
-    DIFFICULTY_LABELS, canonical_difficulty, canonical_status,
+    CONTENT_SOURCES, DIFFICULTY_LABELS, canonical_difficulty, canonical_status,
 )
 
 logger     = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ CREATING_Q = 6
 question_bank = QuestionBankService(db)
 exam_domain = ExamService(db)
 ai_practice = AIPersonalPracticeService(db)
+question_images = QuestionImageService(db)
 
 DIFF_EMOJI = {'آسان 🟢': '🟢', 'متوسط 🟡': '🟡', 'سخت 🔴': '🔴'}
 LETTERS    = ['🅐', '🅑', '🅒', '🅓']
@@ -57,6 +59,121 @@ def _h(value) -> str:
 # ══════════════════════════════════════════════════════════
 #  تابع ورودی از ReplyKeyboard (message_router)
 # ══════════════════════════════════════════════════════════
+
+
+def _q_meta_line(q: dict) -> str:
+    """🌊 QBANK-W1 — خط «سال · منبع»؛ وقتی هر دو خالی‌اند هیچ خطی اضافه نمی‌شود."""
+    bits = []
+    if q.get('exam_year'):
+        bits.append(f"📅 {_h(q['exam_year'])}")
+    label = q.get('content_source_label_fa') or ''
+    if label:
+        bits.append(f"🏷 {_h(label)}")
+    return ('\n' + ' · '.join(bits)) if bits else ''
+
+
+async def _question_image_file_id(qid: str):
+    """file_id تصویر آماده سؤال؛ pending/بدون تصویر → None (§۷.۳)."""
+    try:
+        resolved = await question_images.resolve_file(qid)
+        return resolved["file_id"] if resolved else None
+    except Exception:
+        return None
+
+
+async def _send_question_card(query, context, *, text: str, keyboard, image_file_id=None):
+    """کارت سؤال با/بدون تصویر؛ کپشن بلند → عکس + پیام دوم (§۷.۳)."""
+    if not image_file_id:
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+        return
+    caption, followup = split_photo_caption(text)
+    photo_markup = None if followup else keyboard
+    try:
+        await query.edit_message_media(
+            InputMediaPhoto(media=image_file_id, caption=caption, parse_mode='HTML'),
+            reply_markup=photo_markup)
+    except Exception:
+        try:
+            await context.bot.send_photo(query.message.chat_id, photo=image_file_id,
+                                         caption=caption, parse_mode='HTML',
+                                         reply_markup=photo_markup)
+        except Exception:
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+            return
+    if followup:
+        await context.bot.send_message(query.message.chat_id, text,
+                                       parse_mode='HTML', reply_markup=keyboard)
+
+
+async def _distinct_exam_years() -> list:
+    """سال‌های موجود در بانک برای دکمه‌های فیلتر (§۵.۴)؛ خطا → لیست خالی."""
+    try:
+        years = await db.questions.distinct("exam_year", {"status": "approved"})
+    except Exception:
+        return []
+    return sorted({str(y) for y in years if str(y or "").strip()}, reverse=True)
+
+
+def _filter_summary(data: dict) -> str:
+    year = data.get("exam_year") or "همه"
+    srcs = data.get("content_source") or []
+    src_txt = "همه" if not srcs else "، ".join(CONTENT_SOURCES.get(c, c) for c in srcs)
+    return f"📅 سال: {year} · 🏷 منبع: {src_txt}"
+
+
+async def _filter_menu(query, context, flow: str):
+    """مرحله‌ی اختیاری فیلتر سال/منبع (§۵.۴)؛ flow: quiz یا cx."""
+    data = context.user_data.get(flow, {})
+    years = await _distinct_exam_years()
+    context.user_data["_filter_years"] = years
+    prefix = "qf" if flow == "quiz" else "cxf"
+    srcs = data.get("content_source") or []
+    title = ("📝 <b>تمرین آزاد</b>" if flow == "quiz" else "🎯 <b>آزمون سفارشی</b>")
+    scope = f"📚 {_h(data.get('lesson',''))} — {_h(data.get('topic','همه'))}\n" if data.get("lesson") else ""
+    keyboard = [
+        [InlineKeyboardButton(f"📅 سال آزمون: {data.get('exam_year') or 'همه'}",
+                              callback_data=f"questions:{prefix}_year")],
+        [InlineKeyboardButton(f"🏷 منبع: {'همه' if not srcs else f'{len(srcs)} انتخاب'}",
+                              callback_data=f"questions:{prefix}_src")],
+        [InlineKeyboardButton("▶️ شروع بدون فیلتر" if flow == "quiz" else "⏭ ادامه بدون فیلتر",
+                              callback_data=f"questions:{prefix}_start")],
+        _back("🔙 بازگشت", f"questions:{prefix}_back"),
+    ]
+    await query.edit_message_text(
+        f"{title}\n{scope}\n🔍 <b>فیلتر اختیاری</b> — اگر چیزی انتخاب نکنی، از همه‌ی بانک سؤال می‌آید:\n"
+        f"<i>{_filter_summary(data)}</i>",
+        parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _filter_year_menu(query, context, flow: str):
+    years = context.user_data.get("_filter_years", [])
+    prefix = "qf" if flow == "quiz" else "cxf"
+    data = context.user_data.get(flow, {})
+    current = data.get("exam_year")
+    keyboard = []
+    for i in range(0, len(years), 2):
+        row = [InlineKeyboardButton(f"{'✅ ' if years[i] == current else ''}{years[i]}",
+                                    callback_data=f"questions:{prefix}_year_set:{years[i]}")]
+        if i + 1 < len(years):
+            row.append(InlineKeyboardButton(f"{'✅ ' if years[i+1] == current else ''}{years[i+1]}",
+                                            callback_data=f"questions:{prefix}_year_set:{years[i+1]}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(f"{'✅ ' if not current else ''}همه سال‌ها",
+                                          callback_data=f"questions:{prefix}_year_set:all")])
+    keyboard.append(_back("🔙 بازگشت", f"questions:{prefix}_menu"))
+    await query.edit_message_text("📅 <b>سال آزمون</b>\n\nیک سال انتخاب کن (تک‌سال؛ بازه‌ی چندساله در مینی‌اپ):",
+                                  parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _filter_src_menu(query, context, flow: str):
+    prefix = "qf" if flow == "quiz" else "cxf"
+    picked = context.user_data.get(flow, {}).get("content_source") or []
+    keyboard = [[InlineKeyboardButton(f"{'✅ ' if code in picked else ''}{label}",
+                                      callback_data=f"questions:{prefix}_src_tgl:{code}")]
+                for code, label in CONTENT_SOURCES.items()]
+    keyboard.append([InlineKeyboardButton("✔️ تأیید", callback_data=f"questions:{prefix}_menu")])
+    await query.edit_message_text("🏷 <b>منبع سؤال</b> — چندتایی، دوباره بزن تا حذف شود:",
+                                  parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def _main_menu_msg(message):
     """نمایش منوی اصلی از طریق message (نه callback)"""
@@ -90,8 +207,8 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # FIX جدید: دفاع لایه‌دوم اشتراک — اکشن‌های ca_* (بررسی سوال توسط
     # ادمین محتوا) از این گیت مستثنی‌اند، چون کار مدیریتی است نه مصرف محتوا
     if not action.startswith('ca_'):
-        from subscription import has_access
-        if not await has_access(uid):
+        from subscription import feature_allowed
+        if not await feature_allowed(uid, "question_bank"):
             await query.answer("🔒 اول باید اشتراک فعال کنی — از «🧪 بانک سوال» شروع کن.", show_alert=True)
             return
     await query.answer()
@@ -120,7 +237,7 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.setdefault('cx', {}).update({
             'topic_id': selected['id'] if selected else '',
             'topic': selected['name'] if selected else 'همه'})
-        await _cx_count_select(query, context)
+        await _filter_menu(query, context, 'cx')
 
     elif action == 'cx_count':
         count = int(parts[2])
@@ -144,6 +261,50 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif action == 'cx_confirm_smaller':
         await _cx_start(query, context, uid, allow_smaller=True)
+
+    # ── 🌊 QBANK-W4/§۵.۴ — فیلتر اختیاری سال/منبع ──
+    elif action in ('qf_menu', 'cxf_menu'):
+        await _filter_menu(query, context, 'quiz' if action == 'qf_menu' else 'cx')
+
+    elif action in ('qf_year', 'cxf_year'):
+        await _filter_year_menu(query, context, 'quiz' if action == 'qf_year' else 'cx')
+
+    elif action in ('qf_year_set', 'cxf_year_set'):
+        flow = 'quiz' if action == 'qf_year_set' else 'cx'
+        context.user_data.setdefault(flow, {})['exam_year'] = (
+            None if parts[2] == 'all' else parts[2])
+        await _filter_menu(query, context, flow)
+
+    elif action in ('qf_src', 'cxf_src'):
+        await _filter_src_menu(query, context, 'quiz' if action == 'qf_src' else 'cx')
+
+    elif action in ('qf_src_tgl', 'cxf_src_tgl'):
+        flow = 'quiz' if action == 'qf_src_tgl' else 'cx'
+        picked = context.user_data.setdefault(flow, {}).get('content_source') or []
+        code = parts[2]
+        if code in CONTENT_SOURCES:
+            picked = [c for c in picked if c != code] if code in picked else picked + [code]
+            context.user_data[flow]['content_source'] = picked
+        await _filter_src_menu(query, context, flow)
+
+    elif action == 'qf_start':
+        await _next_q(query, context, uid)
+
+    elif action == 'cxf_start':
+        await _cx_count_select(query, context)
+
+    elif action == 'qf_back':
+        lesson = context.user_data.get('sel_lesson', '')
+        mode = (context.user_data.get('quiz') or {}).get('mode', 'free')
+        await _topic_select(query, context, lesson, mode)
+
+    elif action == 'cxf_back':
+        lessons = context.user_data.get('_cx_lessons', [])
+        idx = context.user_data.get('cx_lesson_idx', 0)
+        if idx < len(lessons):
+            await _cx_topic_select(query, context, lessons[idx])
+        else:
+            await _custom_exam_menu(query, context)
 
     elif action == 'cx_resume':
         context.user_data['exam_session_id'] = parts[2]
@@ -219,7 +380,7 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 'lesson': lesson, 'topic': topic, 'mode': mode,
                 'answered': [], 'correct': 0, 'total': 999
             })
-            await _next_q(query, context, uid)
+            await _filter_menu(query, context, 'quiz')
 
     elif action == 'next':
         await _next_q(query, context, uid)
@@ -601,14 +762,17 @@ async def _cx_preview(query, context, uid):
     try:
         preview = await exam_domain.preview(user={'id': uid, '_db': user}, taxonomy=taxonomy,
             requested_count=int(cx.get('count',10)), minutes=int(cx.get('time',0)),
-            output_mode=cx.get('output_mode','bot'))
+            output_mode=cx.get('output_mode','bot'),
+            exam_year_from=cx.get('exam_year'), exam_year_to=cx.get('exam_year'),
+            content_source=cx.get('content_source'))
     except QuestionDomainError as exc:
         await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:custom_exam")]))
         return
     available, requested = preview['available_count'], preview['requested_count']
     lines = (f"🎯 <b>پیش‌نمایش آزمون</b>\n\n📚 {_h(cx.get('lesson',''))} — {_h(cx.get('topic','همه'))}\n"
              f"📦 سؤال معتبر موجود: <b>{available}</b>\n🔢 تعداد انتخابی: <b>{requested}</b>\n"
-             f"⏱ زمان: <b>{cx.get('time',0) or 'بدون محدودیت'}</b>\n")
+             f"⏱ زمان: <b>{cx.get('time',0) or 'بدون محدودیت'}</b>\n"
+             f"🔍 فیلتر: <i>{_filter_summary(cx)}</i>\n")
     keyboard = []
     if available >= requested:
         keyboard.append([InlineKeyboardButton("✅ تأیید و ساخت آزمون", callback_data='questions:cx_confirm')])
@@ -629,7 +793,9 @@ async def _cx_start(query, context, uid, allow_smaller=False):
     try:
         exam = await exam_domain.create(user={'id': uid, '_db': user}, taxonomy=taxonomy,
             requested_count=int(cx.get('count',10)), minutes=int(cx.get('time',0)),
-            output_mode=cx.get('output_mode','bot'), allow_smaller=allow_smaller)
+            output_mode=cx.get('output_mode','bot'), allow_smaller=allow_smaller,
+            exam_year_from=cx.get('exam_year'), exam_year_to=cx.get('exam_year'),
+            content_source=cx.get('content_source'))
     except QuestionDomainError as exc:
         await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 بازگشت", "questions:custom_exam")]))
         return
@@ -720,8 +886,11 @@ async def _next_q(query, context, uid):
                 visible_intakes=db.student_intake_filter(user_doc.get('intake','')),
                 require_topic=bool(quiz.get('topic') and quiz.get('topic') != 'همه'))
             quiz.update({'lesson_id': taxonomy.get('lesson_id'), 'topic_id': taxonomy.get('topic_id')})
+        picked_year = quiz.get('exam_year')
         result = await question_bank.practice_next(user=user, taxonomy=taxonomy,
-                                                   mode='hard' if mode == 'hard' else mode)
+                                                   mode='hard' if mode == 'hard' else mode,
+                                                   exam_year_from=picked_year, exam_year_to=picked_year,
+                                                   content_source=quiz.get('content_source'))
     except QuestionDomainError as exc:
         await query.edit_message_text(f"❌ {exc.message}", reply_markup=InlineKeyboardMarkup([_back("🔙 تمرین سریع", "questions:practice")]))
         return
@@ -751,10 +920,12 @@ async def _next_q(query, context, uid):
                 for i, opt in enumerate(q['options'][:4])]
     keyboard.append([InlineKeyboardButton("⚠️ گزارش ایراد سؤال", callback_data=f'report:question:{qid}')])
     keyboard.append([InlineKeyboardButton("🏠 منو", callback_data='questions:main')])
-    await query.edit_message_text(
-        f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
-        f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+    _card_text = (
+        f"📝 <b>تمرین سریع</b> · {_h(q['difficulty_label'])}{_q_meta_line(q)}\n📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
+        f"📊 یکتا: {progress.get('solved_unique',0)}/{progress.get('total',0)}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}{creator_line}")
+    await _send_question_card(query, context, text=_card_text,
+                              keyboard=InlineKeyboardMarkup(keyboard),
+                              image_file_id=await _question_image_file_id(qid))
 
 
 async def _next_exam_q(query, context, uid):
@@ -786,10 +957,12 @@ async def _next_exam_q(query, context, uid):
     if remain is not None:
         m, sec = divmod(remain, 60)
         remain_text = f"\n⏱ {m:02d}:{sec:02d} باقی‌مانده"
-    await query.edit_message_text(
-        f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}\n"
-        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}",
-        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+    _card_text = (
+        f"🎯 <b>آزمون سفارشی · سؤال {result['progress']}/{result['total']}</b>{remain_text}{_q_meta_line(q)}\n"
+        f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n━━━━━━━━━━━━━━━━\n\n{_h(q['question'])}")
+    await _send_question_card(query, context, text=_card_text,
+                              keyboard=InlineKeyboardMarkup(keyboard),
+                              image_file_id=await _question_image_file_id(q.get('id')))
 
 
 async def _handle_exam_answer(query, context, uid, session_id, selected):
@@ -1509,6 +1682,7 @@ async def _ca_question_view(query, uid: int, qid: str):
         f"🧪 <b>مشاهده سوال</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"📚 {_h(q.get('lesson',''))} — {_h(q.get('topic',''))}\n"
+        f"📅 {_h(q.get('exam_year') or '—')} · 🏷 {_h(q.get('content_source_label_fa') or CONTENT_SOURCES.get(q.get('content_source'), ''))}\n"
         f"📊 {diff_txt}  |  {status}\n"
         f"{creator_line}\n"
         f"📅 {fmt_jalali_dt(q.get('created_at',''), with_time=False)}\n\n"
@@ -1570,9 +1744,8 @@ async def _ca_question_view(query, uid: int, qid: str):
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='questions:ca_q_list')])
 
     try:
-        await query.edit_message_text(
-            text, parse_mode='HTML',
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await _send_question_card(query, context, text=text,
+                                  keyboard=InlineKeyboardMarkup(keyboard),
+                                  image_file_id=await _question_image_file_id(qid))
     except Exception:
         pass

@@ -7,7 +7,7 @@
   ✅ لغو با /cancel در هر مرحله
   ✅ ویرایش و حذف همه موارد
 """
-import os, logging
+import asyncio, hashlib, os, logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
@@ -34,7 +34,8 @@ GLOBAL_INTAKE_LABEL = '🌐 سراسری'
 
 
 def _clear(context):
-    for k in ['ca_mode','ca_pending_file','ca_content_type',
+    for k in ['ca_mode','ca_pending_file','ca_pending_file_info','ca_pending_display',
+              'ca_pending_original','ca_content_type',
               'ca_edit_target','ca_edit_field','ca_ref_lang','ca_ref_volume']:
         context.user_data.pop(k, None)
 
@@ -124,8 +125,8 @@ async def _resolve_item_intake(kind: str, item_id: str) -> str:
             return await db.ref_book_intake(item_id)
         if kind == 'ref_file':
             return await db.ref_file_intake(item_id)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"_resolve_item_intake {kind}:{item_id} failed: {_e}")
     return ''
 
 
@@ -159,9 +160,14 @@ def _back_btn(label, cb):
 # ══════════════════════════════════════════════════════════
 
 async def _audit(context, uid, action, *, severity='INFO', details='',
-                 target_id='', target_type='', target_label='', tags=None):
+                 target_id='', target_type='', target_label='',
+                 before=None, after=None, tags=None):
     """🧹 موج Q2/W6 — helper مشترک audit پنل محتوا (حذف ۱۲ بلوک تکراری).
-    فرمت/رفتار لاگ عیناً حفظ شده؛ خطای audit هرگز اقدام اصلی را نمی‌شکند."""
+    🆕 Audit Refactor (§16,§34,§35): هرگز Silent نیست —
+       • Delivery failure → warning + outbox retry (send_audit_log مرکزی)
+       • Audit exception → logger.warning (قبلاً bare except:pass بود و شکست بی‌صدا می‌ماند)
+       • اقدام اصلی هرگز به خاطر audit نمی‌شکند (fail-open) اما ناظر می‌بیند.
+    """
     try:
         from utils import send_audit_log
         actor = await db.get_user(uid)
@@ -171,9 +177,11 @@ async def _audit(context, uid, action, *, severity='INFO', details='',
             module='Content', severity=severity,
             actor_role=await db.get_actor_role_label(uid),
             target_id=target_id, target_type=target_type, target_label=target_label,
+            before=before, after=after,
             details=details, tags=tags)
-    except Exception:
-        pass
+    except Exception as _e:
+        # §16: هرگز silently swallow نشود — حداقل warning + تشخیص نوع شکست
+        logger.warning(f"content _audit failed action={action!r} uid={uid}: {type(_e).__name__}: {_e}")
 
 
 # ══════════════════════════════════════════════════════════
@@ -202,8 +210,8 @@ async def _h_fork_session(query, context, uid: int, _cscope, is_scoped: bool, pa
             details=(f"🍴 Fork Session: {_base.get('topic', '')}\n"
                      f"🏷 ورودی: {await _intake_label(_target)}"),
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"fork_session audit failed: {_e}")
     await query.answer("⭐ نسخه‌ی اختصاصی ساخته شد — حالا قابل ویرایش است")
     _ls = await db.bs_get_session(base_id)
     await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
@@ -227,8 +235,8 @@ async def _h_unfork_session(query, context, uid: int, _cscope, is_scoped: bool, 
             severity='INFO',
             details=f"↩️ Unfork Session\n🏷 ورودی: {await _intake_label(_fi)}",
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"unfork_session audit failed: {_e}")
     await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
     _ls = await db.bs_get_session(base_id)
     await _show_sessions(query, context, (_ls or {}).get('lesson_id', ''))
@@ -257,8 +265,8 @@ async def _h_fork_book(query, context, uid: int, _cscope, is_scoped: bool, parts
             details=(f"🍴 Fork Book: {_bb.get('name', '')}\n"
                      f"🏷 ورودی: {await _intake_label(_target)}"),
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"fork_book audit failed: {_e}")
     await query.answer("⭐ نسخه‌ی اختصاصی کتاب ساخته شد")
     _bk = await db.ref_get_book(base_bid)
     await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
@@ -282,8 +290,8 @@ async def _h_unfork_book(query, context, uid: int, _cscope, is_scoped: bool, par
             severity='INFO',
             details=f"↩️ Unfork Book\n🏷 ورودی: {await _intake_label(_fi)}",
             tags=['فورک_محتوا'])
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.warning(f"unfork_book audit failed: {_e}")
     await query.answer("↩️ به نسخه‌ی سراسری بازگشت")
     _bk = await db.ref_get_book(base_bid)
     await _show_ref_books(query, context, (_bk or {}).get('subject_id', ''))
@@ -344,6 +352,14 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # 🔒 C1.5/C3 — دکمه‌ی جداکننده‌ی «فقط‌خواندنی» (بدون عملکرد نوشتاری)
     elif action == 'ro_info':
+        # ادمین ارشد داخل یک ورودی: سراسری باز، قابل ویرایش، و با ✂️ مخصوص همان ورودی است.
+        if not is_scoped:
+            await query.answer(
+                "🌐 این‌ها محتوای سراسری‌اند. می‌توانید همان‌جا ویرایش کنید، "
+                "یا با ✂️ یک نسخه‌ی اختصاصی برای ورودی انتخاب‌شده بسازید. "
+                "نسخه‌ی سراسری برای بقیه دست‌نخورده می‌ماند.",
+                show_alert=True)
+            return ConversationHandler.END
         # 🌊 C3 — به نماینده یادآوری می‌کنیم که ساختن «جلسه‌ی مخصوص ورودی خودش»
         # آزاد است؛ وگرنه پیام ثابت «فقط‌خواندنی» فکر می‌دهد کل پنل قفل است.
         can_child = await db.scoped_child_intake(uid, '') not in (None, '')
@@ -368,11 +384,95 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     KEEP_MODE = ('sel_ctype','upload_ref','add_lesson_prompt','add_session_prompt',
                  'add_ref_subject_prompt','add_ref_book_prompt','add_faq_prompt',
+                 'edit_faq_prompt','edit_faq',
                  'upload_ref_volume_prompt','upload_content',
                  'edit_lesson_prompt','edit_session_prompt',
-                 'edit_ref_subject_prompt','edit_ref_book_prompt')
+                 'edit_ref_subject_prompt','edit_ref_book_prompt',
+                 'urlimport',
+                 'confirm_filename','skip_filename','edit_filename','cancel_filename')  # 📄 rename flow
     if action not in KEEP_MODE:
         _clear(context)
+
+    # ── 📄 File naming callbacks (must preserve pending file) ──
+    if action in ('confirm_filename','skip_filename','edit_filename','cancel_filename'):
+        # ensure pending exists
+        pending_info = context.user_data.get('ca_pending_file_info')
+        if not pending_info:
+            await query.answer("❌ فایل منقضی شده، دوباره فایل بفرستید", show_alert=True)
+            _clear(context)
+            return ConversationHandler.END
+        if action == 'cancel_filename':
+            _clear(context)
+            await query.edit_message_text("❌ عملیات لغو شد.")
+            return ConversationHandler.END
+        if action == 'edit_filename':
+            # back to waiting_filename
+            context.user_data['ca_mode'] = 'waiting_filename'
+            await query.edit_message_text(
+                "✏️ <b>نام جدید را بفرستید:</b>\n"
+                f"نام فعلی: <code>{context.user_data.get('ca_pending_original','')}</code>\n"
+                "پسوند حفظ می‌شود. ⌨️ /cancel",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+                    [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+                ]))
+            return ConversationHandler.END
+        if action == 'skip_filename':
+            # use original as display
+            orig = context.user_data.get('ca_pending_original', '') or pending_info.get('original_name','')
+            context.user_data['ca_pending_display'] = orig
+            # move to description step
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                context.user_data['ca_mode'] = 'waiting_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "(مثلاً: ویدیو قسمت اول)\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return ConversationHandler.END
+        if action == 'confirm_filename':
+            # pending_display already set via text handler
+            display = context.user_data.get('ca_pending_display', '') or context.user_data.get('ca_pending_original','')
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{display}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                context.user_data['ca_mode'] = 'waiting_description'
+                await query.edit_message_text(
+                    f"✅ نام نهایی: <code>{display}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML',
+                    reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return ConversationHandler.END
 
     from_admin = action.endswith('_admin')
     back_main  = 'admin:cat_content' if from_admin else 'ca:main'
@@ -417,16 +517,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ ترتیب درس‌ها ─
     elif action == 'lesson_up':
         lid = parts[2]; idx = context.user_data.get('ca_term_idx', 0)
+        lesson = await db.bs_get_lesson(lid) or {}
         await db.reorder_up('bs_lessons', lid,
-            {'term': TERMS[idx], 'intake': context.user_data.get('ca_intake', '')})
+            {'term': lesson.get('term') or TERMS[idx], 'intake': lesson.get('intake') or ''})
         fa = context.user_data.get('ca_from_admin', False)
         await _show_lessons(query, context, TERMS[idx],
                             back='ca:terms_admin' if fa else 'ca:terms')
 
     elif action == 'lesson_down':
         lid = parts[2]; idx = context.user_data.get('ca_term_idx', 0)
+        lesson = await db.bs_get_lesson(lid) or {}
         await db.reorder_down('bs_lessons', lid,
-            {'term': TERMS[idx], 'intake': context.user_data.get('ca_intake', '')})
+            {'term': lesson.get('term') or TERMS[idx], 'intake': lesson.get('intake') or ''})
         fa = context.user_data.get('ca_from_admin', False)
         await _show_lessons(query, context, TERMS[idx],
                             back='ca:terms_admin' if fa else 'ca:terms')
@@ -459,8 +561,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         lid = parts[2]; lesson = await db.bs_get_lesson(lid)
         if not lesson: return
         idx = context.user_data.get('ca_term_idx', 0)
+        _hint = _global_delete_hint(lesson.get('intake') or '', context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف درس «{lesson['name']}»؟</b>\nتمام جلسات و محتوا حذف می‌شود!",
+            f"⚠️ <b>حذف درس «{lesson['name']}»؟</b>\nتمام جلسات و محتوا حذف می‌شود!{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 بله", callback_data=f'ca:confirm_del_lesson:{lid}')],
@@ -531,8 +634,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         sid = parts[2]; session = await db.bs_get_session(sid)
         if not session: return
         lid = context.user_data.get('ca_lesson_id','')
+        _hint = _global_delete_hint(await db.session_intake(sid), context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف جلسه {session.get('number','')} — {session.get('topic','')}؟</b>",
+            f"⚠️ <b>حذف جلسه {session.get('number','')} — {session.get('topic','')}؟</b>{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 بله", callback_data=f'ca:confirm_del_session:{sid}')],
@@ -640,16 +744,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     # ─ ترتیب درس‌های رفرنس ─
     elif action == 'ref_subject_up':
         sid = parts[2]
+        subj = await db.ref_get_subject(sid) or {}
         await db.reorder_up('ref_subjects', sid,
-            {'intake': context.user_data.get('ca_intake', '')})
+            {'intake': subj.get('intake') or ''})
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_subjects(query, back=back, context=context)
 
     elif action == 'ref_subject_down':
         sid = parts[2]
+        subj = await db.ref_get_subject(sid) or {}
         await db.reorder_down('ref_subjects', sid,
-            {'intake': context.user_data.get('ca_intake', '')})
+            {'intake': subj.get('intake') or ''})
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await _show_ref_subjects(query, back=back, context=context)
@@ -690,7 +796,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             ]))
 
     elif action == 'confirm_del_ref_subject':
-        sid = parts[2]; await db.ref_delete_subject(sid)
+        sid = parts[2]
+        _subj_for_audit = await db.ref_get_subject(sid) or {}
+        _subj_name = _subj_for_audit.get('name','')
+        await db.ref_delete_subject(sid)
+        try:
+            await _audit(context, uid, "حذف موضوع رفرنس",
+                severity='HIGH',
+                target_id=sid,
+                target_type='ref_subject',
+                target_label=_subj_name,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_subject audit failed: {_e}")
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
         await query.edit_message_text("✅ درس حذف شد.", reply_markup=_back_btn("🔙 بازگشت", back))
@@ -747,8 +865,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         bid = parts[2]; book = await db.ref_get_book(bid)
         if not book: return
         sid = context.user_data.get('ca_ref_subject_id','')
+        _hint = _global_delete_hint(await db.ref_book_intake(bid), context)
         await query.edit_message_text(
-            f"⚠️ <b>حذف رفرنس «{book['name']}»؟</b>",
+            f"⚠️ <b>حذف رفرنس «{book['name']}»؟</b>{_hint}",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🗑 حذف", callback_data=f'ca:confirm_del_ref_book:{bid}')],
@@ -764,7 +883,18 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
                 "ابتدا نسخه‌های اختصاصی را ↩️ حذف کنید.",
                 show_alert=True)
             return ConversationHandler.END
+        _book_for_audit = await db.ref_get_book(bid) or {}
+        _book_name = _book_for_audit.get('name','')
         await db.ref_delete_book(bid)
+        try:
+            await _audit(context, uid, "حذف کتاب رفرنس",
+                severity='HIGH',
+                target_id=bid,
+                target_type='reference_book',
+                target_label=_book_name,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_book audit failed: {_e}")
         sid = context.user_data.get('ca_ref_subject_id','')
         await query.edit_message_text("✅ رفرنس حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_subject:{sid}'))
@@ -812,7 +942,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
 
     elif action == 'del_ref_file':
-        fid = parts[2]; await db.ref_delete_file(fid)
+        fid = parts[2]
+        _reffile = await db.ref_get_file(fid) if hasattr(db, 'ref_get_file') else None
+        _ref_label = f"جلد {_reffile.get('volume','')}" if _reffile else fid
+        await db.ref_delete_file(fid)
+        try:
+            await _audit(context, uid, "حذف فایل رفرنس",
+                severity='HIGH',
+                target_id=fid,
+                target_type='ref_file',
+                target_label=_ref_label,
+                tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_file audit failed: {_e}")
         bid = context.user_data.get('ca_ref_book_id','')
         await query.edit_message_text("✅ فایل حذف شد.",
             reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_book:{bid}'))
@@ -843,8 +985,59 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             "فرمت: <code>سوال | جواب | دسته</code>\n⌨️ /cancel",
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", 'ca:faq'))
 
+    elif action == 'edit_faq_menu':
+        fid = parts[2] if len(parts) > 2 else ''
+        faq = await db.faq_get(fid)
+        if not faq:
+            await query.answer("❌ سوال پیدا نشد", show_alert=True); return
+        kb = [
+            [InlineKeyboardButton("✏️ ویرایش سؤال", callback_data=f'ca:edit_faq_prompt:{fid}:question')],
+            [InlineKeyboardButton("✏️ ویرایش پاسخ", callback_data=f'ca:edit_faq_prompt:{fid}:answer')],
+            [InlineKeyboardButton("✏️ ویرایش دسته", callback_data=f'ca:edit_faq_prompt:{fid}:category')],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data='ca:faq')],
+        ]
+        await query.edit_message_text(
+            f"✏️ <b>ویرایش FAQ</b>\n\n❓ <b>{faq.get('question','')[:120]}</b>\n\n"
+            f"📝 {faq.get('answer','')[:300]}...\n\n🗂 دسته: {faq.get('category','عمومی')}",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif action == 'edit_faq_prompt':
+        fid = parts[2] if len(parts) > 2 else ''
+        field = parts[3] if len(parts) > 3 else 'question'
+        faq = await db.faq_get(fid)
+        if not faq:
+            await query.answer("❌ سوال پیدا نشد", show_alert=True); return
+        labels = {'question':'سؤال','answer':'پاسخ','category':'دسته'}
+        context.user_data.update({'ca_mode':'edit_faq','ca_edit_target':fid,'ca_edit_field':field})
+        await query.edit_message_text(
+            f"✏️ <b>ویرایش {labels.get(field,'سؤال')}</b>\n\nفعلی: <b>{faq.get(field,'')[:500]}</b>\n\nجدید بنویسید:\n⌨️ /cancel",
+            parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:edit_faq_menu:{fid}'))
+
     elif action == 'del_faq':
-        await db.faq_delete(parts[2]); await _show_faq(query)
+        _faq_del_id = parts[2]
+        _faq_before = await db.faq_get(_faq_del_id) if hasattr(db, 'faq_get') else None
+        await db.faq_delete(_faq_del_id)
+        try:
+            await _audit(context, uid, "حذف سوال متداول",
+                severity='HIGH',
+                target_id=_faq_del_id,
+                target_type='faq',
+                target_label=(_faq_before.get('question','')[:60] if _faq_before else _faq_del_id),
+                tags=['حذف_FAQ'])
+        except Exception as _e:
+            logger.warning(f"del_faq audit failed: {_e}")
+        await _show_faq(query)
+
+    elif action == 'urlimport':
+        # 📥 URL-Import — §46: ورودی متن → job → پیشرفت با edit
+        context.user_data['ca_mode'] = 'ui_url'
+        await query.edit_message_text(
+            "📥 <b>درون‌ریزی محتوا از URL</b>\n\n"
+            "لینک مستقیم فایل (http/https) رو بفرست.\n"
+            "فایل روی سرور دانلود و مستقیم به تلگرام منتقل می‌شه —\n"
+            "نیازی به دانلود/آپلود از دستگاه تو نیست.\n\n"
+            "لغو: /cancel",
+            parse_mode='HTML')
 
     # FIX باگ بسیار مهم — منشأ «ربات متن دریافت نمی‌کند»:
     # این تابع به‌عنوان entry_point با pattern='^ca:' ثبت شده است،
@@ -903,6 +1096,8 @@ def _main_keyboard(is_scoped: bool):
         [InlineKeyboardButton("✏️ طراحی سوال",           callback_data='ca:create_q')],
         [InlineKeyboardButton("🧪 مدیریت سوالات",        callback_data='questions:ca_q_list')],
         [InlineKeyboardButton("❓ سوالات متداول",          callback_data='ca:faq')],
+        # 📥 URL-Import — همان پایپ‌لاین canonical سرویس
+        [InlineKeyboardButton("📥 درون‌ریزی از URL",       callback_data='ca:urlimport')],
     ]
     if not is_scoped:
         kb.append([InlineKeyboardButton("🔄 تغییر ورودی", callback_data='ca:change_intake')])
@@ -1076,6 +1271,50 @@ async def _show_terms(query, back='ca:main'):
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
+
+def _ca_bucket(item, parent_intake=''):
+    """intake مؤثر: فیلد صریح، وگرنه ارث از والد. رشته‌ی خالی یعنی سراسری."""
+    if not item:
+        return parent_intake or ''
+    if 'intake' in item:
+        return item.get('intake') or ''
+    return parent_intake or ''
+
+
+def _global_delete_hint(resolved_intake, context) -> str:
+    """حذف سراسری از داخل یک ورودی، برای همه اعمال می‌شود — قبلش یادآوری ✂️."""
+    ctx = (getattr(context, 'user_data', None) or {}).get('ca_intake') or ''
+    if not ctx or resolved_intake:
+        return ''
+    return ("\n\n🌐 این مورد سراسری است. حذف، آن را برای همه برمی‌دارد. "
+            "اگر فقط همین ورودی را می‌خواهید، حذف نکنید و ✂️ بزنید.")
+
+
+async def _specialize_row(context, item_id, kind):
+    """✂️/⭐ وقتی پنل روی یک ورودی است و آیتم سراسری است.
+    ادمین ارشد و ورودی‌خاص هر دو همین ورودی انتخاب‌شده را هدف می‌گیرند."""
+    ctx = (context.user_data or {}).get('ca_intake') or ''
+    if not ctx:
+        return None
+    if kind == 'session':
+        fk = await db.session_superseded_by_fork(item_id, ctx)
+        if fk:
+            return InlineKeyboardButton(
+                "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
+                callback_data=f'ca:session:{str(fk["_id"])}')
+        return InlineKeyboardButton(
+            "✂️ اختصاصی‌کردن این جلسه برای ورودی انتخاب‌شده",
+            callback_data=f'ca:fork_session:{item_id}')
+    fk = await db.book_superseded_by_fork(item_id, ctx)
+    if fk:
+        return InlineKeyboardButton(
+            "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
+            callback_data=f'ca:ref_book:{str(fk["_id"])}')
+    return InlineKeyboardButton(
+        "✂️ اختصاصی‌کردن این کتاب برای ورودی انتخاب‌شده",
+        callback_data=f'ca:fork_book:{item_id}')
+
+
 async def _show_lessons(query, context, term, back='ca:terms'):
     # 🌊 C1 — لیست درس‌ها فقط در scope انتخاب‌شده/قفل‌شده
     # 🌊 C1.5 — ادمین ورودی خاص: درس‌های سراسری هم «فقط‌خواندنی» دیده
@@ -1084,12 +1323,13 @@ async def _show_lessons(query, context, term, back='ca:terms'):
     _cscope = await db.get_content_scope(uid)
     is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx     = context.user_data.get('ca_intake', '')
+    # داخل یک ورودی (ارشد یا محدود) سراسری هم دیده می‌شود؛ سطل سراسری فقط سراسری است.
     lessons = await db.bs_get_lessons(
-        term, intake=[ctx, ''] if is_scoped else ctx)
+        term, intake=[ctx, ''] if ctx else ctx)
     idx     = context.user_data.get('ca_term_idx', 0)
     kb = []
 
-    if is_scoped and ctx:
+    if ctx:
         own_items  = [l for l in lessons if (l.get('intake') or '') == ctx]
         glob_items = [l for l in lessons if (l.get('intake') or '') != ctx]
     elif is_scoped:
@@ -1117,7 +1357,7 @@ async def _show_lessons(query, context, term, back='ca:terms'):
         if nav:
             kb.append(nav)
 
-    if glob_items:
+    if glob_items and is_scoped:
         kb.append([InlineKeyboardButton(
             "── 🌐 منابع سراسری (🔒 فقط‌خواندنی) ──",
             callback_data='ca:ro_info')])
@@ -1126,12 +1366,36 @@ async def _show_lessons(query, context, term, back='ca:terms'):
             t   = f" | {l['teacher']}" if l.get('teacher') else ''
             kb.append([InlineKeyboardButton(
                 f"🌐 {l['name']}{t}", callback_data=f'ca:lesson:{lid}')])
+    elif glob_items:
+        kb.append([InlineKeyboardButton(
+            "── 🌐 سراسری (ویرایش یا ✂️ روی جلسه) ──",
+            callback_data='ca:ro_info')])
+        for i, l in enumerate(glob_items):
+            lid = str(l['_id'])
+            t   = f" | {l['teacher']}" if l.get('teacher') else ''
+            kb.append([
+                InlineKeyboardButton(f"🌐 {l['name']}{t}", callback_data=f'ca:lesson:{lid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_lesson_menu:{lid}'),
+                InlineKeyboardButton("🗑", callback_data=f'ca:del_lesson:{lid}'),
+            ])
+            nav = []
+            if i > 0:
+                nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:lesson_up:{lid}'))
+            if i < len(glob_items) - 1:
+                nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:lesson_down:{lid}'))
+            if nav:
+                kb.append(nav)
 
     if not (is_scoped and not ctx):
         kb.append([InlineKeyboardButton("➕ درس جدید", callback_data=f'ca:add_lesson_prompt:{idx}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
-    ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
-               if glob_items else '')
+    if glob_items and is_scoped:
+        ro_line = "\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
+    elif glob_items:
+        ro_line = ("\n🌐 سراسری هم اینجاست. ✏️ همان نسخه‌ی مشترک را عوض می‌کند؛ "
+                   "برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و ✂️ بزنید.")
+    else:
+        ro_line = ''
     if is_scoped and not ctx:
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
@@ -1156,7 +1420,8 @@ async def _show_sessions(query, context, lid):
     # 🌊 C3 — نماینده روی درس 🌐: «جلسه‌ی فقط‌ورودی‌خودم» ساختنی است (والد قفل)
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, _li) not in (None, ''))
-    if not writable and is_scoped:
+    # داخل ورودی انتخاب‌شده: سراسری + همان ورودی، حتی اگر ادمین ارشد بتواند بنویسد.
+    if ctx or (not writable and is_scoped):
         sessions = await db.bs_get_sessions_effective(lid, [ctx, ''])
     kb = []
     for s in sessions:
@@ -1168,17 +1433,26 @@ async def _show_sessions(query, context, lid):
         own_fork  = is_scoped and is_fork and (s.get('intake') or '') == ctx
         if writable:
             badge = ''
+            resolved = _ca_bucket(s, _li)
             if is_fork:  # ادمین ارشد: forkهای هر ورودی با نشان دیده می‌شوند
                 badge = f" ⭐({await _intake_label(s.get('intake') or '')})"
-            elif s.get('intake'):  # 🌊 C3 — فرزند اختصاصی یک ورودی
-                badge = f" 📅({await _intake_label(s.get('intake'))})"
-            kb.append([
+            elif resolved:  # 🌊 C3 — فرزند اختصاصی یک ورودی
+                badge = f" 📅({await _intake_label(resolved)})"
+            elif ctx:
+                badge = " 🌐"
+            row = [
                 InlineKeyboardButton(
                     f"📌 {s['number']} — {s.get('topic','')[:20]}{badge}",
                     callback_data=f'ca:session:{sid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_session_menu:{sid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_session:{sid}'),
-            ])
+            ]
+            # ✂️ مخصوص همین ورودی است؛ ✏️ همان نسخه‌ی سراسری را عوض می‌کند.
+            if ctx and not is_fork and not resolved:
+                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_session:{sid}'))
+            elif ctx and is_fork and (s.get('intake') or '') == ctx:
+                row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_session:{sid}'))
+            kb.append(row)
         elif own_fork:
             kb.append([
                 InlineKeyboardButton(
@@ -1198,7 +1472,7 @@ async def _show_sessions(query, context, lid):
             row = [InlineKeyboardButton(
                 f"🌐 {s['number']} — {s.get('topic','')[:20]}",
                 callback_data=f'ca:session:{sid}')]
-            if is_scoped and ctx:
+            if ctx and not is_fork and not _ca_bucket(s, _li):
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_session:{sid}'))
             kb.append(row)
@@ -1212,7 +1486,9 @@ async def _show_sessions(query, context, lid):
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=f'ca:term:{idx}')])
     lname = lesson.get('name','') if lesson else ''
     if writable:
-        ro_line = "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>"
+        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
+                   if ctx else
+                   "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>")
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
                    "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
@@ -1232,8 +1508,9 @@ async def _show_session_content(query, context, sid):
     lid      = context.user_data.get('ca_lesson_id','')
     ICONS    = dict(CONTENT_TYPES)
     # 🌊 C1.5 — جلسه‌ی سراسری برای ادمین ورودی خاص: فقط‌خواندنی
+    session_iv = await db.session_intake(sid)
     writable = await db.can_access_intake(
-        query.from_user.id, await db.session_intake(sid))
+        query.from_user.id, session_iv)
     kb = []
     for i, c in enumerate(contents):
         cid  = str(c['_id'])
@@ -1264,20 +1541,11 @@ async def _show_session_content(query, context, sid):
         else:
             kb.append([InlineKeyboardButton("📤 ➕ افزودن فایل جدید", callback_data=f'ca:upload_content:{sid}')])
         kb.append([InlineKeyboardButton("✏️ ویرایش اطلاعات جلسه", callback_data=f'ca:edit_session_menu:{sid}')])
-    elif not (session or {}).get('fork_of'):
-        # 🍴 C2 — روی جلسه‌ی سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
-        _cs2 = await db.get_content_scope(query.from_user.id)
-        if _cs2 and _cs2.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
-            _ctx2 = context.user_data.get('ca_intake', '')
-            _fk2 = await db.session_superseded_by_fork(sid, _ctx2)
-            if _fk2:
-                kb.append([InlineKeyboardButton(
-                    "⭐ ویرایش نسخه‌ی اختصاصی من",
-                    callback_data=f'ca:session:{str(_fk2["_id"])}')])
-            else:
-                kb.append([InlineKeyboardButton(
-                    "✂️ سفارشی‌سازی این جلسه برای ورودی من",
-                    callback_data=f'ca:fork_session:{sid}')])
+    # ✂️ برای ارشد و ورودی‌خاص یکی است: پنل روی یک ورودی است و جلسه سراسری است.
+    if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
+        _spec = await _specialize_row(context, sid, 'session')
+        if _spec:
+            kb.append([_spec])
     kb.append([InlineKeyboardButton("🔙 بازگشت",              callback_data=f'ca:lesson:{lid}')])
 
     by_type = {}
@@ -1288,6 +1556,8 @@ async def _show_session_content(query, context, sid):
     if session:
         footer = "<i>⬆️⬇️=ترتیب  🗑=حذف</i>" if writable \
             else "🔒 🌐 سراسری — فقط‌خواندنی"
+        if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
+            footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
         header = (f"📌 <b>جلسه {session.get('number','')}</b>\n"
                   f"📚 {session.get('topic','')}\n"
                   f"👨‍🏫 {session.get('teacher','') or 'ثبت نشده'}\n"
@@ -1310,8 +1580,8 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
         _cscope = await db.get_content_scope(query.from_user.id)
         is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     subjects = await db.ref_get_subjects(
-        intake=[intake, ''] if is_scoped else intake)
-    if is_scoped and intake:
+        intake=[intake, ''] if intake else intake)
+    if intake:
         own_items  = [s for s in subjects if (s.get('intake') or '') == intake]
         glob_items = [s for s in subjects if (s.get('intake') or '') != intake]
     elif is_scoped:
@@ -1334,7 +1604,7 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
             nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:ref_subject_down:{sid}'))
         if nav:
             kb.append(nav)
-    if glob_items:
+    if glob_items and is_scoped:
         kb.append([InlineKeyboardButton(
             "── 🌐 منابع سراسری (🔒 فقط‌خواندنی) ──",
             callback_data='ca:ro_info')])
@@ -1342,11 +1612,34 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
             kb.append([InlineKeyboardButton(
                 f"🌐 {s['name']}",
                 callback_data=f'ca:ref_subject:{str(s["_id"])}')])
+    elif glob_items:
+        kb.append([InlineKeyboardButton(
+            "── 🌐 سراسری (ویرایش یا ✂️ روی کتاب) ──",
+            callback_data='ca:ro_info')])
+        for i, s in enumerate(glob_items):
+            sid = str(s['_id'])
+            kb.append([
+                InlineKeyboardButton(f"🌐 {s['name']}", callback_data=f'ca:ref_subject:{sid}'),
+                InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_subject_prompt:{sid}'),
+                InlineKeyboardButton("🗑", callback_data=f'ca:del_ref_subject:{sid}'),
+            ])
+            nav = []
+            if i > 0:
+                nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:ref_subject_up:{sid}'))
+            if i < len(glob_items) - 1:
+                nav.append(InlineKeyboardButton("⬇️", callback_data=f'ca:ref_subject_down:{sid}'))
+            if nav:
+                kb.append(nav)
     if not (is_scoped and not intake):
         kb.append([InlineKeyboardButton("➕ درس جدید", callback_data='ca:add_ref_subject_prompt')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
-    ro_line = ("\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
-               if glob_items else '')
+    if glob_items and is_scoped:
+        ro_line = "\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
+    elif glob_items:
+        ro_line = ("\n🌐 سراسری هم اینجاست. ✏️ نسخه‌ی مشترک را عوض می‌کند؛ "
+                   "برای مخصوص‌کردن همین ورودی، کتاب را باز کنید و ✂️ بزنید.")
+    else:
+        ro_line = ''
     if is_scoped and not intake:
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
@@ -1370,7 +1663,7 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, (subj or {}).get('intake') or '')
                   not in (None, ''))
-    if not writable and is_scoped:
+    if ctx or (not writable and is_scoped):
         books = await db.ref_get_books_effective(sid, [ctx, ''])
     kb = []
     for i, b in enumerate(books):
@@ -1382,15 +1675,23 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
                          and (b.get('intake') or '') == ctx)
         if writable:
             badge = ''
+            resolved = _ca_bucket(b, (subj or {}).get('intake') or '')
             if is_fork:
                 badge = f" ⭐({await _intake_label(b.get('intake') or '')})"
-            elif b.get('intake'):
-                badge = f" 📅({await _intake_label(b.get('intake'))})"
-            kb.append([
+            elif resolved:
+                badge = f" 📅({await _intake_label(resolved)})"
+            elif ctx:
+                badge = " 🌐"
+            row = [
                 InlineKeyboardButton(f"📘 {b['name']}{badge}", callback_data=f'ca:ref_book:{bid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_book_prompt:{bid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_ref_book:{bid}'),
-            ])
+            ]
+            if ctx and not is_fork and not resolved:
+                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_book:{bid}'))
+            elif ctx and is_fork and (b.get('intake') or '') == ctx:
+                row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_book:{bid}'))
+            kb.append(row)
             nav = []
             if i > 0:
                 nav.append(InlineKeyboardButton("⬆️", callback_data=f'ca:ref_book_up:{bid}'))
@@ -1415,7 +1716,7 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
         else:
             row = [InlineKeyboardButton(
                 f"🌐 {b['name']}", callback_data=f'ca:ref_book:{bid}')]
-            if is_scoped and ctx and not b.get('intake'):
+            if ctx and not is_fork and not _ca_bucket(b, (subj or {}).get('intake') or ''):
                 row.append(InlineKeyboardButton(
                     "✂️", callback_data=f'ca:fork_book:{bid}'))
             kb.append(row)
@@ -1429,7 +1730,9 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=back)])
     name = subj.get('name','') if subj else ''
     if writable:
-        ro_line = "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>"
+        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
+                   if ctx else
+                   "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>")
     elif is_scoped:
         ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
                    "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
@@ -1477,24 +1780,17 @@ async def _show_ref_book_files(query, context, bid):
 
     if writable:
         kb.append([InlineKeyboardButton("✏️ ویرایش نام کتاب", callback_data=f'ca:edit_ref_book_prompt:{bid}')])
-    elif not (book or {}).get('fork_of'):
-        # 🍴 C2 — روی کتاب سراسری: ادمین ورودی خاص می‌تواند سفارشی کند
-        _cs3 = await db.get_content_scope(query.from_user.id)
-        if _cs3 and _cs3.get('kind') == 'scoped' and context.user_data.get('ca_intake', ''):
-            _ctx3 = context.user_data.get('ca_intake', '')
-            _fk3 = await db.book_superseded_by_fork(bid, _ctx3)
-            if _fk3:
-                kb.append([InlineKeyboardButton(
-                    "⭐ ویرایش نسخه‌ی اختصاصی من",
-                    callback_data=f'ca:ref_book:{str(_fk3["_id"])}')])
-            else:
-                kb.append([InlineKeyboardButton(
-                    "✂️ سفارشی‌سازی این کتاب برای ورودی من",
-                    callback_data=f'ca:fork_book:{bid}')])
+    book_iv = await db.ref_book_intake(bid)
+    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
+        _spec = await _specialize_row(context, bid, 'book')
+        if _spec:
+            kb.append([_spec])
     kb.append([InlineKeyboardButton("🔙 بازگشت",           callback_data=f'ca:ref_subject:{sid}')])
     name = book.get('name','') if book else ''
     footer = "🔄=جایگزین  🗑=حذف  ➕=جلد جدید" if writable \
         else "🔒 🌐 سراسری — فقط‌خواندنی"
+    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
+        footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
     await query.edit_message_text(
         f"📘 <b>{name}</b>\n"
         f"📁 {len(files)} فایل\n\n"
@@ -1508,13 +1804,14 @@ async def _show_faq(query, back='ca:main'):
     for f in faqs[:15]:
         fid = str(f['_id'])
         kb.append([
-            InlineKeyboardButton(f"❓ {f.get('question','')[:30]}", callback_data='ca:faq'),
+            InlineKeyboardButton(f"❓ {f.get('question','')[:28]}", callback_data='ca:faq'),
+            InlineKeyboardButton("✏️", callback_data=f'ca:edit_faq_menu:{fid}'),
             InlineKeyboardButton("🗑", callback_data=f'ca:del_faq:{fid}'),
         ])
     kb.append([InlineKeyboardButton("➕ سوال جدید", callback_data='ca:add_faq_prompt')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",   callback_data=back)])
     await query.edit_message_text(
-        f"❓ <b>سوالات متداول</b> — {len(faqs)} سوال",
+        f"❓ <b>سوالات متداول</b> — {len(faqs)} سوال\n<i>✏️=ویرایش  🗑=حذف</i>",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1542,45 +1839,162 @@ async def ca_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ca_mode = context.user_data.get('ca_mode','')
     if ca_mode not in ('waiting_file','waiting_ref_file'): return
 
-    file_obj = (update.message.document or update.message.video or
-                update.message.audio    or update.message.voice)
-    if not file_obj:
-        await update.message.reply_text("❌ فایل معتبر ارسال کنید.\n⌨️ /cancel")
+    # ── Extract file info (support all types incl. Photo) ──
+    msg = update.message
+    file_obj = None
+    original_name = None
+    mime_type = "application/octet-stream"
+    file_size = 0
+    media_type = "document"
+    is_photo = False
+
+    # Photo (no filename)
+    if msg.photo:
+        photo = msg.photo[-1] if isinstance(msg.photo, (list, tuple)) else msg.photo
+        file_obj = photo
+        original_name = f"photo_{photo.file_id[:8]}.jpg"
+        mime_type = "image/jpeg"
+        file_size = getattr(photo, 'file_size', 0) or 0
+        media_type = "photo"
+        is_photo = True
+    elif msg.document:
+        file_obj = msg.document
+        original_name = getattr(file_obj, 'file_name', None) or "file"
+        mime_type = getattr(file_obj, 'mime_type', None) or "application/octet-stream"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "document"
+    elif msg.video:
+        file_obj = msg.video
+        original_name = getattr(file_obj, 'file_name', None) or f"video_{file_obj.file_id[:8]}.mp4"
+        mime_type = getattr(file_obj, 'mime_type', None) or "video/mp4"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "video"
+    elif msg.audio:
+        file_obj = msg.audio
+        original_name = getattr(file_obj, 'file_name', None) or f"audio_{file_obj.file_id[:8]}.mp3"
+        mime_type = getattr(file_obj, 'mime_type', None) or "audio/mpeg"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "audio"
+    elif msg.voice:
+        file_obj = msg.voice
+        original_name = f"voice_{file_obj.file_id[:8]}.ogg"
+        mime_type = getattr(file_obj, 'mime_type', None) or "audio/ogg"
+        file_size = getattr(file_obj, 'file_size', 0) or 0
+        media_type = "voice"
+    else:
+        await update.message.reply_text("❌ فایل معتبر ارسال کنید (Document/Video/Audio/Photo/Voice).\n⌨️ /cancel")
         return CA_WAITING_FILE
 
     fid = file_obj.file_id
+    # Also capture forward info (spec § forward support) — no extra logic needed, file_obj same
+    info = {
+        'file_id': fid,
+        'original_name': original_name,
+        'mime_type': mime_type,
+        'file_size': file_size,
+        'media_type': media_type,
+        'is_photo': is_photo,
+    }
 
     if ca_mode == 'waiting_ref_file':
         bid  = context.user_data.get('ca_ref_book_id','')
         lang = context.user_data.get('ca_ref_lang','fa')
         vol  = context.user_data.get('ca_ref_volume', 1)
-        ll   = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
-        # بپرس توضیح اضافه بخواد بده
-        context.user_data.update({'ca_pending_file': fid, 'ca_mode': 'waiting_ref_description'})
+        # Store pending and ask for filename
+        context.user_data.update({
+            'ca_pending_file': fid,
+            'ca_pending_file_info': info,
+            'ca_pending_original': original_name,
+            'ca_mode': 'waiting_filename',
+            'ca_pending_target': 'ref',
+        })
+        # Show filename prompt with current name and skip option
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data=f"ca:ref_book:{bid}")],
+        ])
         await update.message.reply_text(
-            f"✅ فایل {ll} جلد {vol} دریافت شد!\n\n"
-            "📝 توضیح اختیاری (مثلاً: ویرایش سوم):\n"
-            "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
-            parse_mode='HTML',
-            reply_markup=_back_btn("❌ لغو (بدون توضیح)", f'ca:ref_book:{bid}'))
+            f"✅ فایل دریافت شد: <code>{original_name}</code>\n\n"
+            f"✏️ <b>نام نهایی فایل را بفرستید</b>\n"
+            f"(پسوند <code>{original_name.split('.')[-1] if '.' in original_name else ''}</code> حفظ می‌شود، کاراکترهای <code>/\\:*?\"<>|</code> حذف می‌شوند)\n"
+            f"یا روی «استفاده از نام فعلی» بزنید:\n⌨️ /cancel برای لغو",
+            parse_mode='HTML', reply_markup=kb)
         return CA_WAITING_TEXT
 
-    # فایل محتوای جلسه
-    context.user_data.update({'ca_pending_file': fid, 'ca_mode': 'waiting_description'})
+    # فایل محتوای جلسه — go to filename step
     sid = context.user_data.get('ca_session_id','')
+    context.user_data.update({
+        'ca_pending_file': fid,
+        'ca_pending_file_info': info,
+        'ca_pending_original': original_name,
+        'ca_mode': 'waiting_filename',
+        'ca_pending_target': 'session',
+    })
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+        [InlineKeyboardButton("❌ لغو", callback_data=f"ca:session:{sid}")],
+    ])
     await update.message.reply_text(
-        "✅ فایل دریافت شد!\n\n"
-        "📝 توضیح اختیاری برای این فایل:\n"
-        "(مثلاً: ویدیو قسمت اول — فیزیولوژی کلیه)\n"
-        "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
-        parse_mode='HTML',
-        reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+        f"✅ فایل دریافت شد: <code>{original_name}</code>\n\n"
+        f"✏️ <b>نام نهایی فایل را بفرستید</b>\n"
+        f"(مثلاً: <code>جزوه فیزیو - جلسه ۳</code> — پسوند خودکار اضافه می‌شود)\n"
+        f"یا روی «استفاده از نام فعلی» بزنید:\n⌨️ /cancel برای لغو",
+        parse_mode='HTML', reply_markup=kb)
     return CA_WAITING_TEXT
 
 
 # ══════════════════════════════════════════════════════════
 #  هندلر متن
 # ══════════════════════════════════════════════════════════
+
+_UI_FA = {
+    'created': '🕘 در صف…', 'validating': '🔍 بررسی لینک…',
+    'downloading': '⬇️ دریافت فایل از سرور مبدأ…',
+    'validating_file': '🔬 بررسی فایل…',
+    'uploading': '☁️ انتقال به تلگرام…',
+    'registering': ' ثبت محتوا…',
+    'completed': '✅ کامل شد — محتوا آماده‌ی دانشجوهاست.',
+    'failed': '❌ ناموفق.', 'cancelled': ' لغو شد.',
+    'duplicate': '⚠️ این فایل قبلاً درون‌ریزی شده.',
+}
+
+
+async def _ui_run_bot(message, uid: int, url: str, lesson: str, topic: str):
+    """📥 URL-Import در بات — همان سرویس canonical (§106)، نه منطق موازی.
+    پیشرفت با edit همان پیام (§47) — نه spam صدها پیام."""
+    import url_import_service as uis
+    user = await db.get_user(uid) or {}
+    admin = {"id": uid, "name": user.get("name", "")}
+    scope = await db.get_content_scope(uid) or {}
+    try:
+        doc = await uis.create_import_job(admin, {
+            "url": url, "kind": "qbank", "lesson": lesson, "topic": topic,
+            "intake": scope.get("intake") or "",
+        }, idem_key=f"bot:{uid}:{hashlib.sha256(url.encode()).hexdigest()[:16]}")
+    except uis.UrlImportError as e:
+        await message.edit_text(f"❌ {e.message}")
+        return
+    job_id = str(doc["_id"])
+    await uis.start_import_job(job_id)
+    for _ in range(40):  # تا ~۲ دقیقه؛ بعدش ادمین از وب/مینی‌اپ پیگیری می‌کند
+        await asyncio.sleep(3)
+        doc = await uis.get_import_job(job_id)
+        if not doc:
+            break
+        st = doc.get("status")
+        pct = (doc.get("progress") or {}).get("percent")
+        txt = f"📥 {doc.get('url_safe', '')}\n{_UI_FA.get(st, st)}"
+        if isinstance(pct, int) and pct:
+            txt += f" — {pct}٪"
+        if doc.get("error"):
+            txt += f"\n{doc['error'].get('code')}: {doc['error'].get('message')}"
+        try:
+            await message.edit_text(txt)
+        except Exception as _e:
+            logger.debug(f"_ui_run_bot edit failed: {_e}")
+        if st in uis.TERMINAL:
+            break
+
 
 async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid     = update.effective_user.id
@@ -1604,13 +2018,160 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # نه این‌که متن را بی‌صدا نادیده بگیریم.
     VALID_CA_MODES = {
         'add_lesson', 'add_session', 'edit_lesson', 'edit_session',
+        'waiting_filename', 'confirming_filename',
         'waiting_description', 'waiting_ref_description',
-        'add_faq', 'add_ref_subject', 'add_ref_book',
+        'add_faq', 'edit_faq', 'add_ref_subject', 'add_ref_book',
         'edit_ref_subject', 'edit_ref_book',
+        'ui_url', 'ui_lesson', 'ui_topic',  # 📥 URL-Import
     }
     if ca_mode not in VALID_CA_MODES:
         from message_router import route_message
         return await route_message(update, context)
+
+    # ── 📥 URL-Import — سه گام متنی: URL → درس → مبحث (§46) ──
+    if ca_mode == 'ui_url':
+        if not text.startswith(('http://', 'https://')):
+            await update.message.reply_text(
+                "⚠️ لینک باید با http:// یا https:// شروع بشه.")
+            return ConversationHandler.END
+        context.user_data['ui_url'] = text[:2048]
+        context.user_data['ca_mode'] = 'ui_lesson'
+        await update.message.reply_text("📚 نام درس رو بفرست:")
+        return ConversationHandler.END
+
+    if ca_mode == 'ui_lesson':
+        context.user_data['ui_lesson'] = text[:100]
+        context.user_data['ca_mode'] = 'ui_topic'
+        await update.message.reply_text("🧭 نام مبحث رو بفرست:")
+        return ConversationHandler.END
+
+    if ca_mode == 'ui_topic':
+        url = context.user_data.pop('ui_url', '')
+        lesson = context.user_data.pop('ui_lesson', '')
+        _clear(context)
+        msg = await update.message.reply_text("⏳ ساخت job درون‌ریزی…")
+        await _ui_run_bot(msg, uid, url, lesson, text[:100])
+        return ConversationHandler.END
+
+    # ── 📄 File naming: waiting for custom filename ──
+    if ca_mode == 'waiting_filename':
+        # handle skip via text as well
+        if text in ('⏭ استفاده از نام فعلی', '⏭', 'skip', '-'):
+            orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file')
+            context.user_data['ca_pending_display'] = orig
+            target = context.user_data.get('ca_pending_target', 'session')
+            if target == 'ref':
+                context.user_data['ca_mode'] = 'waiting_ref_description'
+                bid = context.user_data.get('ca_ref_book_id','')
+                lang = context.user_data.get('ca_ref_lang','fa')
+                vol = context.user_data.get('ca_ref_volume', 1)
+                ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+                await update.message.reply_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    f"📝 توضیح اختیاری برای {ll} جلد {vol}:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
+            else:
+                context.user_data['ca_mode'] = 'waiting_description'
+                sid = context.user_data.get('ca_session_id','')
+                await update.message.reply_text(
+                    f"✅ نام نهایی: <code>{orig}</code>\n\n"
+                    "📝 توضیح اختیاری برای این فایل:\n"
+                    "اگر توضیحی ندارید <code>-</code> بزنید:\n⌨️ /cancel",
+                    parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:session:{sid}'))
+            return CA_WAITING_TEXT
+        # normal filename input
+        try:
+            from utils_file_naming import prepare_rename, get_extension
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import prepare_rename, get_extension  # fallback
+            except ImportError:
+                # minimal fallback sanitize
+                def prepare_rename(a,b,*args,**kwargs): return {'display_name': a.strip() or b}
+                def get_extension(x): return x.split('.')[-1] if '.' in x else ''
+        orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file.pdf')
+        target = context.user_data.get('ca_pending_target', 'session')
+        # collect existing for dedup
+        existing = set()
+        try:
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+        except Exception:
+            pass
+        prep = prepare_rename(text, orig, existing_names=existing, fallback='فایل')
+        display = prep['display_name']
+        context.user_data['ca_pending_display'] = display
+        context.user_data['ca_mode'] = 'confirming_filename'
+        # show confirmation with buttons
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تایید", callback_data="ca:confirm_filename"),
+             InlineKeyboardButton("✏️ ویرایش", callback_data="ca:edit_filename")],
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+        ])
+        note_dup = " (تکراری — به (1) تغییر یافت)" if prep.get('deduplicated') else ""
+        note_trunc = " (کوتاه شد)" if prep.get('truncated') else ""
+        await update.message.reply_text(
+            f"📄 نام نهایی: <code>{display}</code>{note_dup}{note_trunc}\n"
+            f"اصلی: <code>{orig}</code>\n\n"
+            "آیا تایید می‌کنید؟",
+            parse_mode='HTML', reply_markup=kb)
+        return CA_WAITING_TEXT
+
+    if ca_mode == 'confirming_filename':
+        # If user sends text while confirming, treat as new filename
+        context.user_data['ca_mode'] = 'waiting_filename'
+        # re-invoke same logic (avoid recursion, just handle as new input)
+        # Store text as new candidate and show again? reuse above block logic
+        # To avoid duplication, just set pending and call same prepare
+        try:
+            from utils_file_naming import prepare_rename, get_extension
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import prepare_rename, get_extension
+            except ImportError:
+                def prepare_rename(a,b,*args,**kwargs): return {'display_name': a.strip() or b}
+                def get_extension(x): return x.split('.')[-1] if '.' in x else ''
+        orig = context.user_data.get('ca_pending_original', '') or context.user_data.get('ca_pending_file_info', {}).get('original_name','file.pdf')
+        target = context.user_data.get('ca_pending_target', 'session')
+        existing = set()
+        try:
+            if target == 'ref':
+                bid = context.user_data.get('ca_ref_book_id','')
+                async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+            else:
+                sid = context.user_data.get('ca_session_id','')
+                async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+                    n = d.get('display_file_name') or d.get('display_name') or ''
+                    if n: existing.add(n)
+        except Exception:
+            pass
+        prep = prepare_rename(text, orig, existing_names=existing, fallback='فایل')
+        display = prep['display_name']
+        context.user_data['ca_pending_display'] = display
+        context.user_data['ca_mode'] = 'confirming_filename'
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تایید", callback_data="ca:confirm_filename"),
+             InlineKeyboardButton("✏️ ویرایش", callback_data="ca:edit_filename")],
+            [InlineKeyboardButton("⏭ استفاده از نام فعلی", callback_data="ca:skip_filename")],
+            [InlineKeyboardButton("❌ لغو", callback_data="ca:cancel_filename")]
+        ])
+        await update.message.reply_text(
+            f"📄 نام نهایی: <code>{display}</code>\n"
+            f"اصلی: <code>{orig}</code>\n\nآیا تایید می‌کنید؟",
+            parse_mode='HTML', reply_markup=kb)
+        return CA_WAITING_TEXT
 
     if ca_mode == 'add_lesson':
         ps = [p.strip() for p in text.split(',')]
@@ -1732,11 +2293,73 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست.")
             return ConversationHandler.END
-        await db.bs_add_content(sid, ct, fid, description=desc)
+        # ── 📄 Resolve final filename with re-upload if needed ──
+        pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
+        orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
+        disp_name = context.user_data.get('ca_pending_display') or orig_name
+        mime = pending_info.get('mime_type', 'application/octet-stream')
+        fsize = pending_info.get('file_size', 0)
+        is_photo = pending_info.get('is_photo', False)
+        # Determine if re-upload needed (rename or photo->document)
+        need_reupload = False
+        try:
+            from utils_file_naming import get_extension as _get_ext
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import get_extension as _get_ext
+            except ImportError:
+                def _get_ext(x): return x.split('.')[-1] if '.' in x else ''
+        # Compare normalized? If display differs from original, need
+        if disp_name.strip() != orig_name.strip():
+            need_reupload = True
+        if is_photo:
+            need_reupload = True
+        final_fid = fid
+        if need_reupload and fid:
+            try:
+                # Dedicated Rename Pipeline — فقط همین سرویس از Local Bot API استفاده می‌کند
+                try:
+                    from telegram_file_rename_service import rename_telegram_file
+                except ImportError:
+                    from humsyarx.telegram_file_rename_service import rename_telegram_file
+                new_id, new_name = await rename_telegram_file(uid, fid, disp_name, mime)
+                if new_id:
+                    final_fid = new_id
+                    # Verify filename از Telegram برگشتی
+                    if new_name and new_name != disp_name:
+                        logger.warning(f"RENAME_VERIFY_MISMATCH expected={disp_name} got={new_name}")
+                    logger.info(f"DEDICATED_RENAME_OK old={fid[:10]} new={new_id[:10]} name={new_name or disp_name} via={'local' if (__import__('os').getenv('TELEGRAM_LOCAL_API_URL') or '').strip() else 'cloud'}")
+                else:
+                    logger.warning(f"DEDICATED_RENAME_FAIL keep original file_id for {disp_name} — display_name همچنان در لیست/کپشن دیده می‌شود")
+            except Exception as e:
+                logger.warning(f"dedicated rename error: {e}")
+                final_fid = fid
+        # Prepare extension from display
+        ext = _get_ext(disp_name)
+        # Insert with naming fields
+        cid_new = await db.bs_add_content(sid, ct, final_fid, description=desc,
+                                          original_name=orig_name, display_name=disp_name,
+                                          file_extension=ext, mime_type=mime, file_size=fsize)
         tl = dict(CONTENT_TYPES).get(ct, ct)
+        try:
+            _sess_for_audit = await db.bs_get_session(sid) or {}
+            await _audit(context, uid, f"افزودن {tl}",
+                severity='INFO',
+                target_id=str(cid_new or ''),
+                target_type='content',
+                target_label=desc[:60] if desc else tl,
+                details=f"جلسه: {_sess_for_audit.get('topic','')[:50]}\nنوع: {tl}" + (f"\n📝 {desc[:120]}" if desc else ""),
+                tags=['افزودن_محتوا', ct])
+        except Exception as _e:
+            logger.warning(f"add_content audit failed: {_e}")
         _clear(context)
-        await update.message.reply_text(f"✅ {tl} اضافه شد!",
-            reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
+        # اطلاع به ادمین: نام نمایشی حتی اگر reupload ناموفق بود در لیست دانشجو دیده می‌شود
+        msg_extra = f"\n📄 نام فایل: <code>{disp_name}</code>"
+        # سایلنت: حتی اگر نام تلگرامی به دلیل محدودیت موقت عوض نشد، نمایش لیست و کپشن همین نام است
+        if final_fid != fid:
+            msg_extra += " — ✅"
+        await update.message.reply_text(f"✅ {tl} اضافه شد!{msg_extra}",
+            parse_mode='HTML', reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
     elif ca_mode == 'waiting_ref_description':
         desc  = '' if text == '-' else text
@@ -1748,11 +2371,60 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
             return ConversationHandler.END
-        await db.ref_add_file(bid, lang, fid, volume=vol, description=desc)
+        pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
+        orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
+        disp_name = context.user_data.get('ca_pending_display') or orig_name
+        mime = pending_info.get('mime_type', 'application/octet-stream')
+        fsize = pending_info.get('file_size', 0)
+        is_photo = pending_info.get('is_photo', False)
+        need_reupload = (disp_name.strip() != orig_name.strip()) or is_photo
+        final_fid = fid
+        if need_reupload and fid:
+            try:
+                try:
+                    from telegram_file_rename_service import rename_telegram_file
+                except ImportError:
+                    from humsyarx.telegram_file_rename_service import rename_telegram_file
+                new_id, new_name = await rename_telegram_file(uid, fid, disp_name, mime)
+                if new_id:
+                    final_fid = new_id
+                    if new_name and new_name != disp_name:
+                        logger.warning(f"REF_RENAME_VERIFY_MISMATCH expected={disp_name} got={new_name}")
+                    logger.info(f"DEDICATED_REF_RENAME_OK old={fid[:10]} new={new_id[:10]} name={new_name or disp_name} via={'local' if (__import__('os').getenv('TELEGRAM_LOCAL_API_URL') or '').strip() else 'cloud'}")
+                else:
+                    logger.warning(f"DEDICATED_REF_RENAME_FAIL keep original for {disp_name}")
+            except Exception as e:
+                logger.warning(f"dedicated ref rename error: {e}")
+        try:
+            from utils_file_naming import get_extension as _get_ext2
+        except ImportError:
+            try:
+                from humsyarx.utils_file_naming import get_extension as _get_ext2
+            except ImportError:
+                def _get_ext2(x): return x.split('.')[-1] if '.' in x else ''
+        ext = _get_ext2(disp_name)
+        fid_new = await db.ref_add_file(bid, lang, final_fid, volume=vol, description=desc,
+                                        original_name=orig_name, display_name=disp_name,
+                                        file_extension=ext, mime_type=mime, file_size=fsize)
         ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+        try:
+            _book_for_audit = await db.ref_get_book(bid) or {}
+            await _audit(context, uid, f"آپلود رفرنس {ll} جلد {vol}",
+                severity='INFO',
+                target_id=str(fid_new or ''),
+                target_type='ref_file',
+                target_label=f"{_book_for_audit.get('name','')} — {ll} جلد {vol}",
+                details=(f"کتاب: {_book_for_audit.get('name','')}" + (f"\n📝 {desc[:120]}" if desc else "")),
+                tags=['آپلود_رفرنس', lang])
+        except Exception as _e:
+            logger.warning(f"ref_add_file audit failed: {_e}")
         _clear(context)
+        msg_extra_ref = f"\n📄 نام فایل: <code>{disp_name}</code>"
+        if final_fid != fid:
+            msg_extra_ref += " — ✅"
         await update.message.reply_text(
-            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else ''),
+            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else '') + msg_extra_ref,
+            parse_mode='HTML',
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
 
     elif ca_mode == 'add_ref_subject':
@@ -1769,6 +2441,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = await db.ref_add_subject(text, intake=_ctx_intake)
         fa = context.user_data.get('ca_ref_from_admin', False)
         back = 'ca:refs_admin' if fa else 'ca:refs'
+        if result:
+            try:
+                await _audit(context, uid, "ایجاد موضوع رفرنس",
+                    severity='INFO',
+                    target_id=str(result or ''),
+                    target_type='ref_subject',
+                    target_label=text,
+                    details=f"🏷 ورودی: {await _intake_label(_ctx_intake)}",
+                    tags=['ایجاد_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"ref_add_subject audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(
             f"✅ درس «{text}» اضافه شد!" if result else "⚠️ قبلاً وجود دارد.",
@@ -1780,7 +2463,21 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این موضوع در scope شما نیست.")
             return ConversationHandler.END
+        _old_subj = await db.ref_get_subject(sid) or {}
+        _old_name = _old_subj.get('name','')
         ok  = await db.ref_update_subject(sid, {'name': text})
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش موضوع رفرنس",
+                    severity='WARNING',
+                    target_id=sid,
+                    target_type='ref_subject',
+                    target_label=_old_name,
+                    before={'name': _old_name},
+                    after={'name': text},
+                    tags=['ویرایش_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"edit_ref_subject audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ نام به «{text}» تغییر یافت." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_subject:{sid}'))
@@ -1815,7 +2512,21 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _clear(context)
             await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
             return ConversationHandler.END
+        _old_book = await db.ref_get_book(bid) or {}
+        _old_bname = _old_book.get('name','')
         ok  = await db.ref_update_book(bid, {'name': text})
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش کتاب رفرنس",
+                    severity='WARNING',
+                    target_id=bid,
+                    target_type='reference_book',
+                    target_label=_old_bname,
+                    before={'name': _old_bname},
+                    after={'name': text},
+                    tags=['ویرایش_رفرنس'])
+            except Exception as _e:
+                logger.warning(f"edit_ref_book audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ نام کتاب به «{text}» تغییر یافت." if ok else "❌ خطا.",
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
@@ -1827,10 +2538,55 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ فرمت اشتباه!\nمثال: <code>سوال | جواب | دسته</code>\n⌨️ /cancel",
                 parse_mode='HTML'); return CA_WAITING_TEXT
         question = ps[0]; answer = ps[1]; category = ps[2] if len(ps) > 2 else 'عمومی'
-        await db.faq_add(question, answer, category)
+        faq_id = await db.faq_add(question, answer, category)
+        try:
+            await _audit(context, uid, "ایجاد سوال متداول",
+                severity='INFO',
+                target_id=str(faq_id or ''),
+                target_type='faq',
+                target_label=question[:60],
+                details=f"دسته: {category}",
+                tags=['ایجاد_FAQ'])
+        except Exception as _e:
+            logger.warning(f"add_faq audit failed: {_e}")
         _clear(context)
         await update.message.reply_text(f"✅ سوال اضافه شد!",
             reply_markup=_back_btn("🔙 برگشت", 'ca:faq'))
+
+    elif ca_mode == 'edit_faq':
+        fid = context.user_data.get('ca_edit_target',''); field = context.user_data.get('ca_edit_field','')
+        if not fid or field not in ('question','answer','category'):
+            _clear(context)
+            await update.message.reply_text("❌ خطا — دوباره از منو اقدام کنید.")
+            return ConversationHandler.END
+        old = await db.faq_get(fid)
+        if not old:
+            _clear(context)
+            await update.message.reply_text("❌ سوال پیدا نشد.")
+            return ConversationHandler.END
+        val = text.strip()
+        if not val:
+            await update.message.reply_text("❌ مقدار خالی مجاز نیست — دوباره بفرست یا /cancel")
+            return CA_WAITING_TEXT
+        ok = await db.faq_update(fid, {field: val})
+        _clear(context)
+        if ok:
+            try:
+                await _audit(context, uid, "ویرایش سوال متداول",
+                    severity='WARNING',
+                    target_id=fid,
+                    target_type='faq',
+                    target_label=old.get('question','')[:60],
+                    before={field: old.get(field,'')},
+                    after={field: val},
+                    tags=['ویرایش_FAQ'])
+            except Exception as _e:
+                logger.warning(f"edit_faq audit failed: {_e}")
+            await update.message.reply_text("✅ ویرایش ذخیره شد.",
+                reply_markup=_back_btn("🔙 بازگشت", 'ca:faq'))
+        else:
+            await update.message.reply_text("❌ ویرایش انجام نشد.",
+                reply_markup=_back_btn("🔙 بازگشت", 'ca:faq'))
 
     else:
         _clear(context)

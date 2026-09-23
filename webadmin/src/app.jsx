@@ -6,13 +6,16 @@ import ErrorBoundary from './ErrorBoundary.jsx';
 import { formatFaDate, formatFaDateTime } from './time.js';
 
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
+const Actions = lazy(() => import('./pages/Actions.jsx'));
 const Users = lazy(() => import('./pages/Users.jsx'));
 const Tickets = lazy(() => import('./pages/Tickets.jsx'));
 const Subscriptions = lazy(() => import('./pages/Subscriptions.jsx'));
+const Features = lazy(() => import('./pages/Features.jsx'));
 const Rbac = lazy(() => import('./pages/Rbac.jsx'));
 const Audit = lazy(() => import('./pages/Audit.jsx'));
 const Content = lazy(() => import('./pages/Content.jsx'));
 const Questions = lazy(() => import('./pages/Questions.jsx'));
+const PendingImages = lazy(() => import('./pages/PendingImages.jsx'));
 const Exams = lazy(() => import('./pages/Exams.jsx'));
 const Notify = lazy(() => import('./pages/Notify.jsx'));
 const AiAdmin = lazy(() => import('./pages/AiAdmin.jsx'));
@@ -22,10 +25,15 @@ const Analytics = lazy(() => import('./pages/Analytics.jsx'));
 const TransferCenter = lazy(() => import('./pages/TransferCenter.jsx'));
 const Operations = lazy(() => import('./pages/Operations.jsx'));
 const RingStreet = lazy(() => import('./pages/RingStreet.jsx'));
+const Growth = lazy(() => import('./pages/Growth.jsx'));
 
 const NAV_GROUPS = [
   { sec: 'نمای کلی', items: [
     { path: '/dashboard', icon: '📊', label: 'داشبورد' },
+    // 🌊 WA21 — موتور /attention از قبل بود ولی فقط به badge تبدیل می‌شد؛
+    // حالا صفحه‌ی خودش را دارد. `any` عمداً خالی است: خود endpoint
+    // permission-aware است و شمارش خارج از دسترسی را برنمی‌گرداند.
+    { path: '/actions', icon: '🎯', label: 'مرکز اقدام' },
     { path: '/operations', icon: '🎛', label: 'مرکز عملیات', any: ['system.manage'] },
   ] },
   { sec: 'افراد', items: [
@@ -35,6 +43,7 @@ const NAV_GROUPS = [
   { sec: 'آموزش', items: [
     { path: '/content', icon: '📚', label: 'محتوا', any: ['content.manage', 'content.scoped', 'reports.review'], content: true },
     { path: '/questions', icon: '🧪', label: 'سؤال‌ها', any: ['questions.review', 'questions.review_scoped'] },
+    { path: '/pending-images', icon: '🖼', label: 'صف تصاویر', any: ['questions.import'] },
     { path: '/exams', icon: '📝', label: 'آزمون‌ها', any: ['schedules.manage'] },
     { path: '/exams?tab=grades', icon: '📊', label: 'نمرات', any: ['grades.manage', 'grades.scoped'] },
     { path: '/content?tab=schedule', icon: '🗓', label: 'برنامه', any: ['schedules.manage'] },
@@ -51,6 +60,10 @@ const NAV_GROUPS = [
     { path: '/subscriptions', icon: '💎', label: 'اشتراک‌ها', any: ['subscription.manage'] },
     { path: '/subscriptions?tab=payments', icon: '🧾', label: 'رسیدها', any: ['subscription.manage'] },
     { path: '/subscriptions?tab=discounts', icon: '🎁', label: 'تخفیف‌ها', any: ['subscription.manage'] },
+    { path: '/features', icon: '🎚', label: 'دسترسی فیچرها', any: ['subscription.manage'] },
+  ] },
+  { sec: 'رشد', items: [
+    { path: '/growth', icon: '🌱', label: 'رشد', any: ['subscription.manage'] },
   ] },
   { sec: 'سیستم', items: [
     { path: '/analytics', icon: '📈', label: 'تحلیل‌ها', any: ['stats.view'] },
@@ -63,11 +76,12 @@ const NAV_GROUPS = [
 
 const PAGES = {
   '/dashboard': Dashboard, '/users': Users, '/tickets': Tickets,
-  '/subscriptions': Subscriptions, '/rbac': Rbac, '/audit': Audit,
-  '/content': Content, '/questions': Questions, '/exams': Exams, '/notify': Notify,
+  '/actions': Actions,
+  '/subscriptions': Subscriptions, '/features': Features, '/rbac': Rbac, '/audit': Audit,
+  '/content': Content, '/questions': Questions, '/pending-images': PendingImages, '/exams': Exams, '/notify': Notify,
   '/ai': AiAdmin, '/system': System, '/settings': Settings, '/analytics': Analytics,
   '/transfer': TransferCenter, '/operations': Operations,
-  '/ring': RingStreet,
+  '/ring': RingStreet, '/growth': Growth,
 };
 
 // میانبرهای «g سپس کلید» — یک منبعِ واحد که هم handler و هم راهنما از آن
@@ -252,6 +266,7 @@ export default function App() {
     (r.broadcasts || []).forEach(b => out.push({ id: `b-${b.id}`, group: 'Broadcast', icon: '📢', label: b.text, hint: formatFaDateTime(b.created_at), go: b.correlation_id ? `/audit?correlation_id=${encodeURIComponent(b.correlation_id)}` : '/notify' }));
     (r.payments || []).forEach(p => out.push({ id: `p-${p.id}`, group: 'پرداخت‌ها', icon: '🧾', label: `${p.plan} · #${p.user_id}`, hint: p.status, go: `/subscriptions?tab=payments&q=${p.id}` }));
     (r.subscriptions || []).forEach(s => out.push({ id: `s-${s.user_id}`, group: 'اشتراک‌ها', icon: '💎', label: `${s.plan} · #${s.user_id}`, hint: s.status, go: '/subscriptions?tab=subscribers' }));
+    (r.wallets || []).forEach(w => out.push({ id: `w-${w.user_id}`, group: 'کیف پول', icon: '👛', label: `${w.name || `کاربر #${w.user_id}`} · ${Number(w.balance).toLocaleString('fa')} تومان`, hint: 'موجودی کیف پول', go: `/subscriptions?tab=wallets&q=${w.user_id}` }));
     (r.notifications || []).forEach(n => out.push({ id: `n-${n.id}`, group: 'اعلان‌ها', icon: '🔔', label: n.text, hint: n.type, go: '/notify' }));
     (r.audit || []).forEach(a => out.push({ id: `a-${a.id}`, group: 'حسابرسی', icon: '🧭', label: `${a.actor} — ${a.action}`, hint: a.at, go: '/audit' }));
     return out;

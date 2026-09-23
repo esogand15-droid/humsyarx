@@ -31,6 +31,38 @@ except (TypeError, ValueError):
     INIT_DATA_MAX_AGE = 3600
 
 
+# ── W1 Nonce (Replay) — best-effort, fails open if DB unavailable ──
+# Stores hash(init_data) with TTL = INIT_DATA_MAX_AGE to reject replay.
+# Nonce check is AFTER HMAC verification (never store unverified data).
+_INIT_NONCE_TTL = INIT_DATA_MAX_AGE
+try:
+    _NONCE_ENABLED = os.getenv("INIT_NONCE_ENABLED", "0").strip().lower() not in ("0","false","no","off")
+except: _NONCE_ENABLED = False
+# If enabled, every init_data hash is stored once (TTL=INIT_DATA_MAX_AGE) and replay → 401.
+# Disabled by default to allow Telegram's own re-sends (same initData on page reload).
+# Enable with INIT_NONCE_ENABLED=1 when you need strict replay protection.
+
+async def _check_init_nonce_once(init_data: str) -> None:
+    """Strict once-only nonce using insert+DuplicateKeyError. Raises 401 on replay if DB available."""
+    if not _NONCE_ENABLED or not init_data:
+        return
+    h = hashlib.sha256(init_data.encode("utf-8")).hexdigest()
+    try:
+        await db.init_nonces.insert_one({"_id": h, "at": utc_now(), "hash": h})
+    except Exception as e:
+        try:
+            from pymongo.errors import DuplicateKeyError as DKE
+            if isinstance(e, DKE):
+                raise HTTPException(status_code=401, detail="init_data_reused")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        try:
+            import logging as _lg
+            _lg.getLogger("api.auth").debug(f"nonce check fail-open: {e}")
+        except: pass
+
 def _auth_error(detail: str = "invalid_init_data") -> HTTPException:
     return HTTPException(status_code=401, detail=detail)
 
@@ -148,6 +180,8 @@ async def get_current_user(
         sess = await resolve_web_session(request.cookies.get(WA_SESSION_COOKIE, ""))
         if sess:
             uid = int(sess["uid"])
+            try: request.state.user_id = uid
+            except: pass
             db_user = await db.get_user(uid)
             if not db_user:
                 raise HTTPException(status_code=403, detail="not_registered")
@@ -159,10 +193,19 @@ async def get_current_user(
                     "_db": db_user, "_wa_session": sess}
         raise _auth_error("missing_init_data")
     tg_user = verify_telegram_init_data(x_init_data)
+    # W1 — after HMAC verified, enforce once-only nonce (if enabled)
+    try:
+        await _check_init_nonce_once(x_init_data)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     try:
         uid = int(tg_user["id"])
     except (KeyError, TypeError, ValueError):
         raise _auth_error("invalid_user_data")
+    try: request.state.user_id = uid
+    except: pass
 
     db_user = await db.get_user(uid)
     if not db_user:
@@ -181,16 +224,21 @@ async def get_admin_user(user=Depends(get_current_user)) -> dict:
 
 
 def require_perm(permission: str):
-    """🛡 گیت مجوز RBAC — موج W1 (قرارداد §۸: تصمیم فقط با Permission).
+    """🛡 گیت مجوز RBAC — موج W8: thin-wrapper روی core.rbac.
 
     هر روتر جدید باید به‌جای چسبیدن به role/ADMIN_ID، از این کارخانه
     استفاده کند: Depends(require_perm('roles.manage'))
-    بای‌پسها (قفل سازگاری، داخل db.has_perm): مالک + role=='admin' میراثی.
-    رفتار روی عدم دسترسی دقیقاً مثل گیت‌های فعلی: 403و detail فارسی."""
+    تفویض به core/rbac — قرارداد واحد در هر ۳ لایه."""
     async def _guard(user=Depends(get_current_user)) -> dict:
-        if await db.has_perm(user["id"], permission):
-            return user
-        raise HTTPException(status_code=403, detail="forbidden")
+        # W8 core path — واحد با Bot
+        try:
+            from core.rbac import has_permission
+            if await has_permission(user["id"], permission):
+                return user
+        except Exception:
+            if await db.has_perm(user["id"], permission):
+                return user
+        raise HTTPException(status_code=403, detail={"code": "PERMISSION_DENIED", "message": "forbidden"})
 
     _guard.__name__ = f"require_perm_{permission.replace('.', '_')}"
     return _guard
@@ -235,27 +283,62 @@ def resolve_content_intake(user: dict, requested=None) -> str:
     return own
 
 
+def require_feature(feature: str):
+    """🌊 W7 — کارخانه‌ی گیت فیچر: تنها نقطه‌ی اعمال سمت API.
+
+    402 دسترسی / 429 سهمیه / 503 موقت — همیشه با {code, message, feature}.
+    """
+    async def _gate(user=Depends(get_current_user)) -> dict:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], feature)
+        return user
+    _gate.__name__ = f"require_feature_{feature}"
+    return _gate
+
+
 async def get_question_access_user(user=Depends(get_current_user)) -> dict:
-    """Single server-side subscription gate for every student Question Bank API."""
-    from subscription import has_access
-    if not await has_access(user["id"]):
-        raise HTTPException(status_code=403, detail="subscription_required")
+    """Single server-side subscription gate for every student Question Bank API — W8 core."""
+    try:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "question_bank")
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
     return user
 
 
 async def get_resource_access_user(user=Depends(get_current_user)) -> dict:
-    """گیت اشتراک برای «منابع علوم پایه» و «رفرنس‌ها».
+    """گیت اشتراک برای «منابع علوم پایه» و «رفرنس‌ها» — W8 core.
 
-    دقیقاً همان قانونِ واحد ربات (subscription.has_access) اجرا می‌شود:
-    کلید سراسری subscription_enforced → بای‌پس مدیر اصلی → db.sub_is_active.
-    بدون این گیت، مینی‌اپ محتوای قفلِ ربات را آزاد سرو می‌کرد؛ بک‌اند
-    مرجع نهایی است و فرانت فقط UI قفل را نشان می‌دهد.
+    دقیقاً همان قانونِ واحد ربات از هسته (core.access) اجرا می‌شود.
+    کد خطا ساختاریافته: {code: SUB_REQUIRED, message} تا MiniApp با کد
+    تصمیم بگیرد نه با تطبیق رشته فارسی.
     """
-    # import تنبل — گرفتن has_access از ماژول ربات بدون کشیدن وابستگی‌های
-    # تلگرام به گرافِ بوت FastAPI و بدون دوباره‌نویسی منطق
-    from subscription import has_access
+    try:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "resources")
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
+    return user
 
-    if not await has_access(user["id"]):
-        raise HTTPException(status_code=403, detail="subscription_required")
+
+async def get_references_access_user(user=Depends(get_current_user)) -> dict:
+    """🌊 W7 — گیت اشتراک رفرنس‌ها (جدا از منابع؛ سوییچ مستقل)."""
+    try:
+        from core.access import require_feature_access
+        await require_feature_access(user["id"], "references")
+    except HTTPException:
+        raise
+    except Exception:
+        from subscription import has_access
+        if not await has_access(user["id"]):
+            raise HTTPException(status_code=402, detail={"code": "SUB_REQUIRED", "message": "subscription_required"})
     return user
 

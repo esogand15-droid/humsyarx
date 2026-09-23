@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -13,7 +14,8 @@ from pymongo import UpdateOne
 
 from time_utils import utc_now_iso
 from .contracts import (
-    QuestionDomainError, canonical_difficulty, clean_text,
+    EXAM_TRACK_DEFAULT, EXAM_YEAR_MAX, EXAM_YEAR_MIN,
+    QuestionDomainError, canonical_content_source, canonical_difficulty, clean_text,
     normalized_question_text, question_content_hash, validate_question_payload,
 )
 from .service import QuestionBankService
@@ -21,15 +23,58 @@ from .service import QuestionBankService
 IMPORT_SCHEMA_VERSION = "1.0"
 PROMPT_PATH = Path(__file__).with_name("prompts") / "qbank_import_v1.txt"
 
+_YEAR_RE = re.compile(r"(1[3-4]\d{2})")
+_FA_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+_DENTISTRY_KEYWORDS = ("دندان", "dentistry", "dental")
+
+
+def infer_exam_year_from_filename(file_name: str) -> str | None:
+    """🌊 QBANK-W1 — سال از نام فایل؛ آخرین ۴رقمیِ دربازه می‌برد (سال معمولاً پسوند است)."""
+    text = clean_text(file_name).translate(_FA_DIGITS)
+    candidates = [m for m in _YEAR_RE.findall(text) if EXAM_YEAR_MIN <= m <= EXAM_YEAR_MAX]
+    return candidates[-1] if candidates else None
+
+
+def infer_exam_track_from_filename(file_name: str) -> str:
+    """🌊 QBANK-W1/§۱۵.۲ — رشته از نام فایل؛ پیش‌فرض پزشکی."""
+    lowered = clean_text(file_name).lower()
+    return "dentistry" if any(k in lowered for k in _DENTISTRY_KEYWORDS) else EXAM_TRACK_DEFAULT
+
 
 class QuestionImportService:
     def __init__(self, database):
         self.db = database
         self.qbank = QuestionBankService(database)
 
-    @staticmethod
-    def prompt() -> dict:
-        return {"schema_version": IMPORT_SCHEMA_VERSION, "prompt": PROMPT_PATH.read_text(encoding="utf-8")}
+    async def taxonomy_reference(self) -> str:
+        """🌊 QBANK-W2/§۶.۳ — مرجع نام‌های دقیق درس/مبحث، خودکار از دیتابیس.
+
+        جایگزین «چسباندن دستی جدول موج ۰» به پرامپت: همیشه با bs_lessons/
+        bs_sessions هم‌راستاست و نرخ unmatched را کم می‌کند. دیتابیس خالی
+        → رشته خالی (پرامپت بدون ضمیمه سرو می‌شود).
+        """
+        lessons = await self.db.bs_lessons.find({}).sort([("term", 1), ("order", 1)]).to_list(1000)
+        if not lessons:
+            return ""
+        lesson_ids = [str(x.get("_id")) for x in lessons]
+        sessions = await self.db.bs_sessions.find(
+            {"lesson_id": {"$in": lesson_ids}}).sort("number", 1).to_list(5000)
+        topics: dict[str, list[str]] = {}
+        for session in sessions:
+            topics.setdefault(str(session.get("lesson_id") or ""), []).append(
+                clean_text(session.get("topic")))
+        lines = ["", "",
+                 "── مرجع نام‌های دقیق درس/مبحث (خودکار از دیتابیس؛ نام‌ها را عیناً کپی کنید) ──"]
+        for lesson in lessons:
+            lines.append(f"[{clean_text(lesson.get('term')) or 'بی‌ترم'}] درس: {clean_text(lesson.get('name'))}")
+            for topic in topics.get(str(lesson.get("_id")), []):
+                lines.append(f"  - مبحث: {topic}")
+        return "\n".join(lines)
+
+    async def prompt(self) -> dict:
+        base = PROMPT_PATH.read_text(encoding="utf-8")
+        return {"schema_version": IMPORT_SCHEMA_VERSION,
+                "prompt": base + await self.taxonomy_reference()}
 
     @staticmethod
     def parse(raw: bytes, file_name: str) -> tuple[dict, str]:
@@ -126,9 +171,13 @@ class QuestionImportService:
                 candidates_by_topic[str(document.get("topic_id") or "")].append(document)
         return {"taxonomies": taxonomies, "exact": exact_by_hash, "candidates": candidates_by_topic}
 
-    async def create_preview(self, *, admin: Mapping, raw: bytes, file_name: str) -> dict:
+    async def create_preview(self, *, admin: Mapping, raw: bytes, file_name: str,
+                             job_content_source: str | None = None) -> dict:
         await self.qbank.permissions.authorize_import(admin)
         data, fingerprint = self.parse(raw, file_name)
+        job_source = canonical_content_source(job_content_source) if job_content_source not in (None, "") else None
+        file_year = infer_exam_year_from_filename(file_name)
+        file_track = infer_exam_track_from_filename(file_name)
         admin_id = int(admin.get("id") or 0)
         previous = await self.db.question_import_jobs.find_one(
             {"admin_id": admin_id, "fingerprint": fingerprint})
@@ -138,6 +187,8 @@ class QuestionImportService:
         job = {"_id": job_id, "job_id": job_id, "admin_id": admin_id,
                "file_name": clean_text(file_name, 240), "schema_version": IMPORT_SCHEMA_VERSION,
                "fingerprint": fingerprint, "source": data.get("source") or {},
+               "job_content_source": job_source,
+               "inferred_exam_year": file_year, "inferred_exam_track": file_track,
                "status": "validating", "started_at": now, "created_at": (previous or {}).get("created_at", now),
                "finished_at": None, "counts": {}, "mapping": {}, "error": None}
         if previous:
@@ -150,7 +201,8 @@ class QuestionImportService:
             items = []
             for index, raw_item in enumerate(data["questions"]):
                 items.append(await self._classify(job_id, index, raw_item, data.get("source") or {}, admin_id,
-                                                  context=context))
+                                                  context=context, job_content_source=job_source,
+                                                  file_year=file_year, file_track=file_track))
         except Exception as exc:
             await self.db.question_import_jobs.update_one(
                 {"_id": job_id}, {"$set": {"status": "failed", "finished_at": utc_now_iso(),
@@ -190,7 +242,8 @@ class QuestionImportService:
                 raise QuestionDomainError("import_preview_failed",
                                           "ذخیره پیش‌نمایش انجام نشد و هیچ سؤالی وارد بانک نشد", 503) from exc
         counts = Counter(x["classification"] for x in items)
-        totals = {"total": len(items), "ready": counts["ready"], "errors": counts["error"],
+        totals = {"total": len(items), "ready": counts["ready"],
+                  "pending_images": counts["ready_pending_image"], "errors": counts["error"],
                   "unmatched": counts["unmatched"], "ambiguous": counts["ambiguous"],
                   "exact_duplicates": counts["exact_duplicate"],
                   "probable_duplicates": counts["probable_duplicate"],
@@ -200,13 +253,16 @@ class QuestionImportService:
         return await self.preview(job_id)
 
     async def _classify(self, job_id: str, index: int, raw: Any, source: Mapping, admin_id: int,
-                        context: Mapping | None = None) -> dict:
+                        context: Mapping | None = None,
+                        job_content_source: str | None = None,
+                        file_year: str | None = None, file_track: str | None = None) -> dict:
         item = raw if isinstance(raw, dict) else {}
         external_id = clean_text(item.get("external_id")) or f"ROW-{index + 1:04d}"
         errors = [clean_text(x, 500) for x in (item.get("errors") or []) if clean_text(x)]
         image = item.get("image") if isinstance(item.get("image"), Mapping) else {}
-        if image.get("required"):
-            errors.append("سؤال وابسته به تصویر است و تا اتصال تصویر قابل import نیست")
+        # 🌊 QBANK-W3/§۷.۲ — ردیف تصویری دیگر «رد» نمی‌شود؛ با وضعیت
+        # ready_pending_image وارد می‌شود و تا اتصال تصویر پنهان می‌ماند.
+        needs_image = bool(image.get("required"))
         confidence = item.get("confidence") if isinstance(item.get("confidence"), Mapping) else {}
         thresholds = {"question": 0.75, "options": 0.75, "answer": 0.70, "classification": 0.60}
         for key, threshold in thresholds.items():
@@ -217,6 +273,25 @@ class QuestionImportService:
                         errors.append(f"اطمینان {key} کمتر از حد مجاز است")
                 except (TypeError, ValueError):
                     errors.append(f"confidence.{key} معتبر نیست")
+        # 🌊 QBANK-W1 — اولویت سال: ردیف > نام فایل > نامشخص؛ اولویت منبع: ردیف > سطح job.
+        row_year = item.get("exam_year")
+        exam_year = row_year if row_year not in (None, "") else file_year
+        if row_year not in (None, ""):
+            year_confidence = "extracted"
+        elif file_year:
+            year_confidence = "inferred_from_filename"
+        else:
+            year_confidence = "unknown"
+        row_source = item.get("content_source")
+        content_source = row_source if row_source not in (None, "") else job_content_source
+        # 🌊 QBANK-W2/§۶.۱ — خوداظهاری مدل درباره سال؛ فقط ممیزی، tolerant.
+        row_year_source = item.get("exam_year_source")
+        exam_year_source = row_year_source if row_year_source in ("explicit_in_text", "not_found") else None
+        # 🌊 QBANK-W2/§۶.۴ — نشانی تصویر برای اتصال دستی در موج ۳.
+        image_ref = None
+        if image.get("required"):
+            image_ref = {"page": image.get("page") or item.get("page"),
+                         "position": clean_text(image.get("position")) or None}
         normalized = None
         try:
             normalized = validate_question_payload({
@@ -224,6 +299,9 @@ class QuestionImportService:
                 "correct_answer": item.get("correct_option"),
                 "explanation": item.get("explanation"),
                 "difficulty": item.get("difficulty") or "medium",
+                "exam_year": exam_year,
+                "exam_year_confidence": year_confidence,
+                "content_source": content_source,
             })
         except QuestionDomainError as exc:
             errors.append(exc.message)
@@ -245,9 +323,17 @@ class QuestionImportService:
         classification = "error" if errors or normalized is None else taxonomy_state
         duplicate = None
         if normalized and taxonomy and not errors:
-            exact = ((context.get("exact") or {}).get(normalized["content_hash"])
-                     if context is not None else
-                     await self.db.questions.find_one({"content_hash": normalized["content_hash"]}))
+            year_scope = {"exam_year": normalized["exam_year"]} if normalized.get("exam_year") else {}
+            if context is not None:
+                exact = (context.get("exact") or {}).get(normalized["content_hash"])
+                if exact and year_scope and exact.get("exam_year") != normalized["exam_year"]:
+                    exact = await self.db.questions.find_one(
+                        {"content_hash": normalized["content_hash"], **year_scope},
+                        {"content_hash": 1, "question": 1, "correct_answer": 1})
+            else:
+                exact = await self.db.questions.find_one(
+                    {"content_hash": normalized["content_hash"], **year_scope},
+                    {"content_hash": 1, "question": 1, "correct_answer": 1})
             if exact:
                 same_answer = int(exact.get("correct_answer", -1)) == normalized["correct_answer"]
                 classification = "exact_duplicate" if same_answer else "conflict"
@@ -273,9 +359,13 @@ class QuestionImportService:
                     classification = "probable_duplicate" if same_answer else "conflict"
                     duplicate = best
                 elif taxonomy_state == "matched":
-                    classification = "ready"
+                    classification = "ready_pending_image" if needs_image else "ready"
+        exam_track = file_track or EXAM_TRACK_DEFAULT
         return {"job_id": job_id, "row": index + 1, "external_id": external_id,
                 "source_page": item.get("page"), "raw": item, "normalized": normalized,
+                "exam_track": exam_track, "exam_year_source": exam_year_source,
+                "image_ref": image_ref,
+                "needs_image": needs_image,
                 "taxonomy": taxonomy, "taxonomy_state": taxonomy_state,
                 "taxonomy_candidates": taxonomy_candidates, "classification": classification,
                 "errors": errors, "duplicate": duplicate, "decision": None,
@@ -294,8 +384,27 @@ class QuestionImportService:
         for row in breakdown:
             key = row.get("_id") or {}; lesson = key.get("lesson") or "نامشخص"; topic = key.get("topic") or "نامشخص"
             count = int(row.get("count") or 0); lessons[lesson]["count"] += count; lessons[lesson]["topics"][topic] += count
+        facets = await self.db.question_import_items.aggregate([
+            {"$match": {"job_id": job_id}},
+            {"$facet": {
+                "years": [{"$group": {"_id": "$normalized.exam_year", "count": {"$sum": 1}}},
+                          {"$sort": {"_id": 1}}],
+                "sources": [{"$group": {"_id": "$normalized.content_source", "count": {"$sum": 1}}},
+                            {"$sort": {"count": -1}}],
+                "confidence": [{"$group": {"_id": "$normalized.exam_year_confidence", "count": {"$sum": 1}}},
+                               {"$sort": {"count": -1}}],
+            }},
+        ]).to_list(1)
+        facet = (facets[0] if facets else {}) or {}
+        years = [{"year": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("years", [])]
+        sources = [{"source": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("sources", [])]
+        confidence = [{"level": r.get("_id"), "count": int(r.get("count") or 0)} for r in facet.get("confidence", [])]
         return {"job_id": job_id, "status": job.get("status"), "file_name": job.get("file_name"),
                 "schema_version": job.get("schema_version"), "counts": job.get("counts") or {},
+                "job_content_source": job.get("job_content_source"),
+                "inferred_exam_year": job.get("inferred_exam_year"),
+                "inferred_exam_track": job.get("inferred_exam_track"),
+                "years": years, "sources": sources, "year_confidence": confidence,
                 "source": job.get("source") or {}, "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
                 "classification": [{"lesson": lesson, "count": value["count"],
@@ -330,7 +439,8 @@ class QuestionImportService:
                 taxonomy=taxonomy, question=item["normalized"]["question"],
                 content_hash=item["normalized"]["content_hash"],
                 correct_answer=item["normalized"]["correct_answer"],
-                intakes=[taxonomy.get("intake", ""), ""])
+                intakes=[taxonomy.get("intake", ""), ""],
+                exam_year=item["normalized"].get("exam_year"))
             if duplicate_result["conflict"]:
                 classification = "conflict"; duplicate = duplicate_result["conflict"][0]
             elif duplicate_result["exact"]:
@@ -338,7 +448,8 @@ class QuestionImportService:
             elif duplicate_result["probable"]:
                 classification = "probable_duplicate"; duplicate = duplicate_result["probable"][0]
             else:
-                classification = "ready"; duplicate = None
+                classification = ("ready_pending_image" if item.get("needs_image") else "ready")
+                duplicate = None
         await self.db.question_import_items.update_one({"_id": item["_id"]},
             {"$set": {"taxonomy": taxonomy, "taxonomy_state": "matched", "classification": classification,
                       "duplicate": duplicate, "decision": None, "mapped_at": utc_now_iso()}})
@@ -363,7 +474,8 @@ class QuestionImportService:
             {"$match": {"job_id": job_id}}, {"$group": {"_id": "$classification", "count": {"$sum": 1}}}
         ]).to_list(20)
         c = {x["_id"]: int(x["count"]) for x in rows}; total = sum(c.values())
-        counts = {"total": total, "ready": c.get("ready", 0), "errors": c.get("error", 0),
+        counts = {"total": total, "ready": c.get("ready", 0),
+                  "pending_images": c.get("ready_pending_image", 0), "errors": c.get("error", 0),
                   "unmatched": c.get("unmatched", 0), "ambiguous": c.get("ambiguous", 0),
                   "exact_duplicates": c.get("exact_duplicate", 0),
                   "probable_duplicates": c.get("probable_duplicate", 0), "conflicts": c.get("conflict", 0)}
@@ -384,7 +496,7 @@ class QuestionImportService:
         if claimed.modified_count != 1:
             raise QuestionDomainError("import_in_progress", "درون‌ریزی هم‌زمان در حال اجراست", 409)
         candidate_query = {"job_id": job_id, "$or": [
-            {"classification": "ready"},
+            {"classification": {"$in": ["ready", "ready_pending_image"]}},
             {"classification": {"$in": ["probable_duplicate", "conflict"]}, "decision": "import"},
         ]}
         candidates = await self.db.question_import_items.find(candidate_query).sort("row", 1).to_list(5000)
@@ -399,6 +511,7 @@ class QuestionImportService:
                         "source": "ai_admin_import", "creator_type": "admin",
                         "provenance": {"source": "ai_admin_import", "creator_type": "admin",
                                        "created_by": int(admin.get("id") or 0),
+                                       "exam_track": item.get("exam_track") or EXAM_TRACK_DEFAULT,
                                        "import": {"job_id": job_id, "schema_version": IMPORT_SCHEMA_VERSION,
                                                   "file_name": job.get("file_name"),
                                                   "source_page": item.get("source_page"),
@@ -413,6 +526,13 @@ class QuestionImportService:
                         "version": 1, "review_history": [{"from": None, "to": "approved",
                             "by": int(admin.get("id") or 0), "at": now, "reason": "درون‌ریزی JSON تأییدشده"}],
                         "attempt_count": 0, "correct_count": 0}
+            if item.get("classification") == "ready_pending_image" or item.get("needs_image"):
+                raw_image = ((item.get("raw") or {}).get("image") or {}
+                             if isinstance((item.get("raw") or {}).get("image"), Mapping) else {})
+                document["image"] = {"has_image": True, "pending_upload": True,
+                                     "storage_ref": None,
+                                     "alt_text": clean_text(raw_image.get("description")) or None}
+                document["image_ref"] = item.get("image_ref")
             prepared.append((item, identity, document))
 
         # Bounded bulk upserts replace the old per-row find+insert+update N+1 path.

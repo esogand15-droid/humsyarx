@@ -38,7 +38,7 @@ async def _audit_rbac(actor: dict, action: str, target_label: str,
         if hasattr(db, "get_actor_role_label") else "مدیر"
     await db.log_action(
         uid, name, role_label, action,
-        module="Roles", severity=severity,
+        module="Roles", category="security", severity=severity,
         target_id=target_id, target_type="role",
         target_label=target_label, before=before, after=after,
         tags=["rbac"],
@@ -109,6 +109,17 @@ async def list_roles(user=_roles_guard):
     counts = await db.users_count_by_role()
     return {"roles": [_role_view(r, counts.get(r["_id"], 0))
                       for r in roles]}
+
+
+@router.get("/roles/{key}/holders")
+async def role_holders(key: str, user=_roles_guard):
+    """دارندگان فعلی نقش. افزودن/حذف از همان POST تخصیص نقش است، نه مسیر جدا."""
+    role = await db.get_role(key)
+    if not role:
+        _err(404, "نقش پیدا نشد")
+    holders = await db.holders_of_role(key, limit=300)
+    return {"role": key, "label": role.get("label") or key,
+            "holders": holders, "count": len(holders)}
 
 
 class RoleCreate(BaseModel):

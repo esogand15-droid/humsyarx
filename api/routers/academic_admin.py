@@ -8,8 +8,10 @@ from typing import Literal
 from fastapi import (
     APIRouter,
     Depends,
+    File,
     HTTPException,
     Query,
+    UploadFile,
 )
 from pydantic import BaseModel, Field
 
@@ -141,8 +143,25 @@ def _valid_time(
     if not value:
         return ""
 
+    # support Persian digits and range remnants like "08:00 تا 10:00" -> take first part
+    # but canonical store is single HH:MM; range handled separately via end_time
+    # if value contains range separator, extract start
+    import re as _re
+    from time_utils import en_digits as _en
+    v = _en(str(value)).strip()
+    # if range present, keep first HH:MM
+    m = _re.search(r'(\d{1,2}:\d{2})', v)
+    if m:
+        v = m.group(1)
+        # normalize to HH:MM
+        if _re.match(r'^\d{1,2}:\d{2}$', v):
+            hh, mm = v.split(':')
+            v = f"{int(hh):02d}:{mm}"
+    else:
+        v = value
+
     try:
-        parse_clock_time(value)
+        parse_clock_time(v)
 
     except (TimeContractError, ValueError):
         raise HTTPException(
@@ -153,12 +172,86 @@ def _valid_time(
             ),
         )
 
-    return value
+    return v
+
+
+def _valid_time_range(start: str, end: str) -> tuple[str, str]:
+    s = _valid_time(start)
+    e = _valid_time(end)
+    if s and e:
+        try:
+            from time_utils import en_digits as _en2
+            # need to compare times
+            st = parse_clock_time(s)
+            et = parse_clock_time(e)
+            # convert to minutes
+            sm = st.hour * 60 + st.minute
+            em = et.hour * 60 + et.minute
+            if em <= sm:
+                raise HTTPException(status_code=422, detail="زمان پایان باید بعد از زمان شروع باشد")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=422, detail="بازه زمانی نامعتبر است")
+    return s, e
+
+
+def _normalize_range_input(value: str) -> tuple[str, str]:
+    """Parse strings like '08:00-10:00', '08:00 تا 10:00', '8-10' into (HH:MM, HH:MM)."""
+    if not value:
+        return "", ""
+    import re as _re2
+    from time_utils import en_digits as _en3
+    raw = _en3(str(value)).strip().replace('—', '-').replace('–', '-').replace('تا', '-')
+    # handle interval like 8-10 or 13-15 without colon
+    m_range = _re2.findall(r'(\d{1,2})(?::(\d{2}))?', raw)
+    # fallback: try HH:MM pattern
+    times = _re2.findall(r'(\d{1,2}:\d{2})', raw)
+    if len(times) >= 2:
+        return f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}", f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+    if len(times) == 1:
+        # maybe interval like 8-10 with single colon?
+        # check original contains dash and second hour without colon
+        if '-' in raw:
+            parts = raw.split('-')
+            if len(parts) == 2:
+                a = times[0]
+                b = _re2.search(r'(\d{1,2})', parts[1])
+                if b:
+                    bh = int(b.group(1))
+                    return a, f"{bh:02d}:00"
+        return times[0], ""
+    # handle 8-10 without colon at all
+    if '-' in raw and not times:
+        parts = [p.strip() for p in raw.split('-')]
+        if len(parts) == 2:
+            try:
+                ah = int(_re2.search(r'\d+', parts[0]).group(0))
+                bh = int(_re2.search(r'\d+', parts[1]).group(0))
+                return f"{ah:02d}:00", f"{bh:02d}:00"
+            except Exception:
+                pass
+    return raw.strip()[:5], ""
 
 
 def _schedule_document(
     item: dict,
 ) -> dict:
+    # support both old 'time' single and new 'end_time' range
+    # also handle legacy 'time' containing range string "08:00-10:00"
+    end = item.get("end_time", "") or item.get("time_end", "") or ""
+    start = item.get("time", "") or ""
+    # if start contains range, split
+    if start and ("-" in start or "تا" in start) and not end:
+        try:
+            s, e = _normalize_range_input(start)
+            if s:
+                start = s
+            if e:
+                end = e
+        except Exception:
+            pass
+    # if time stored as range but end empty, try to synthesize end = start+2h for display legacy?
     return {
         "id": str(
             item.get("_id", "")
@@ -184,10 +277,8 @@ def _schedule_document(
             "",
         ),
 
-        "time": item.get(
-            "time",
-            "",
-        ),
+        "time": start,
+        "end_time": end,
 
         "location": item.get(
             "location",
@@ -236,6 +327,11 @@ class ScheduleCreate(BaseModel):
 
     time: str = Field(
         default="",
+        max_length=11,
+    )
+
+    end_time: str = Field(
+        default="",
         max_length=5,
     )
 
@@ -272,6 +368,11 @@ class ScheduleUpdate(BaseModel):
 
     time: str = Field(
         default="",
+        max_length=11,
+    )
+
+    end_time: str = Field(
+        default="",
         max_length=5,
     )
 
@@ -298,6 +399,11 @@ class FlexChange(BaseModel):
 
     time: str = Field(
         min_length=5,
+        max_length=5,
+    )
+
+    end_time: str = Field(
+        default="",
         max_length=5,
     )
 
@@ -340,30 +446,40 @@ async def schedule_create(
     admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
-    time = _valid_time(body.time)
+    # support range in time field like "08:00-10:00" or "08:00 تا 10:00"
+    raw_time = body.time or ""
+    raw_end = body.end_time or ""
+    if raw_time and ("-" in raw_time or "تا" in raw_time) and not raw_end:
+        s, e = _normalize_range_input(raw_time)
+        raw_time, raw_end = s, e
+    time, end_time = _valid_time_range(raw_time, raw_end)
     lesson = _clean(body.lesson, 100)
     teacher = _clean(body.teacher, 100)
     location = _clean(body.location, 100)
     note = str(body.note or "").strip()[:500]
     group = db.normalize_group(body.group) or "هر دو"
     schedule_id = await db.add_schedule(
-        stype=body.type, lesson=lesson, teacher=teacher, date=date, time=time,
+        stype=body.type, lesson=lesson, teacher=teacher, date=date, time=time, end_time=end_time,
         location=location, notes=note, group=group, flex_type=body.flex_type)
     item = await db.get_schedule_by_id(str(schedule_id)) or {
         "_id": schedule_id, "type": body.type, "lesson": lesson,
-        "teacher": teacher, "date": date, "time": time,
+        "teacher": teacher, "date": date, "time": time, "end_time": end_time,
         "location": location, "notes": note, "group": group,
     }
     notice = await db.schedule_notify_event(item, "created")
     await _audit(
         admin, "ایجاد برنامه آموزشی", "Schedules", severity="INFO",
         target_id=str(schedule_id), target_type="schedule", target_label=lesson,
-        after={"type": body.type, "date": date, "group": group,
+        after={"type": body.type, "date": date, "time": time, "end_time": end_time, "group": group,
                "notified": notice.get("notified", 0)},
         tags=["برنامه", body.type, "پنل_وب"],
     )
+    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
+    conflicts = await db.schedule_find_conflicts(
+        group, date, time, end_time, exclude_id=str(schedule_id))
     return {"ok": True, "id": str(schedule_id),
-            "notified": notice.get("notified", 0)}
+            "notified": notice.get("notified", 0),
+            "warnings": {"schedule_conflicts": conflicts}}
 
 
 @router.patch("/schedule/{schedule_id}")
@@ -372,7 +488,12 @@ async def schedule_update(
     admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
-    time = _valid_time(body.time)
+    raw_time = body.time or ""
+    raw_end = body.end_time or ""
+    if raw_time and ("-" in raw_time or "تا" in raw_time) and not raw_end:
+        s, e = _normalize_range_input(raw_time)
+        raw_time, raw_end = s, e
+    time, end_time = _valid_time_range(raw_time, raw_end)
     old = await db.get_schedule_by_id(schedule_id)
     if not old:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
@@ -380,12 +501,12 @@ async def schedule_update(
     ok = await db.update_schedule_full(
         schedule_id, _clean(body.lesson, 100), _clean(body.teacher, 100),
         date, time, _clean(body.location, 100),
-        str(body.note or "").strip()[:500], group, body.flex_type)
+        str(body.note or "").strip()[:500], group, body.flex_type, end_time=end_time)
     if not ok:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
     item = await db.get_schedule_by_id(schedule_id) or {
         **old, "lesson": _clean(body.lesson, 100),
-        "teacher": _clean(body.teacher, 100), "date": date, "time": time,
+        "teacher": _clean(body.teacher, 100), "date": date, "time": time, "end_time": end_time,
         "location": _clean(body.location, 100), "notes": str(body.note or "").strip()[:500],
         "group": group, "flex_type": body.flex_type,
     }
@@ -394,8 +515,8 @@ async def schedule_update(
         admin, "ویرایش برنامه آموزشی", "Schedules", severity="WARNING",
         target_id=schedule_id, target_type="schedule", target_label=item.get("lesson", ""),
         before={"lesson": old.get("lesson"), "date": old.get("date"),
-                "time": old.get("time"), "group": old.get("group")},
-        after={"lesson": item.get("lesson"), "date": date, "time": time,
+                "time": old.get("time"), "end_time": old.get("end_time"), "group": old.get("group")},
+        after={"lesson": item.get("lesson"), "date": date, "time": time, "end_time": end_time,
                "group": group, "notified": notice.get("notified", 0)},
         tags=["برنامه", old.get("type", ""), "پنل_وب"],
     )
@@ -458,28 +579,296 @@ async def flexible_schedule_change(
     admin=Depends(get_schedule_admin_user),
 ):
     date = _valid_date(body.date)
-    time = _valid_time(body.time)
+    raw_time = body.time or ""
+    raw_end = body.end_time or ""
+    if raw_time and ("-" in raw_time or "تا" in raw_time) and not raw_end:
+        s, e = _normalize_range_input(raw_time)
+        raw_time, raw_end = s, e
+    time, end_time = _valid_time_range(raw_time, raw_end)
     schedule = await db.get_schedule_by_id(schedule_id)
     if not schedule:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
     if schedule.get("flex_type") != "flexible":
         raise HTTPException(status_code=422, detail="این برنامه منعطف نیست")
     ok = await db.update_schedule_time(schedule_id, date, time,
-                                       str(body.note or "").strip()[:500])
+                                       str(body.note or "").strip()[:500], end_time=end_time)
     if not ok:
         raise HTTPException(status_code=500, detail="تغییر زمان ذخیره نشد")
-    item = {**schedule, "date": date, "time": time,
+    item = {**schedule, "date": date, "time": time, "end_time": end_time,
             "flex_note": str(body.note or "").strip()[:500]}
     notice = await db.schedule_notify_event(item, "time_changed")
     await _audit(
         admin, "اعلام تغییر زمان برنامه", "Schedules", severity="WARNING",
         target_id=schedule_id, target_type="schedule", target_label=schedule.get("lesson", ""),
-        before={"date": schedule.get("date"), "time": schedule.get("time")},
-        after={"date": date, "time": time,
+        before={"date": schedule.get("date"), "time": schedule.get("time"), "end_time": schedule.get("end_time")},
+        after={"date": date, "time": time, "end_time": end_time,
                "notified": notice.get("notified", 0)},
         tags=["برنامه", "تغییر_زمان", schedule.get("type", ""), "پنل_وب"],
     )
     return {"ok": True, "notified": notice.get("notified", 0)}
+
+
+# ══════════════════════════════════════════════════
+#  📅 الگوهای هفتگی (شنبه-جمعه) + اسکن هوشیار
+# ══════════════════════════════════════════════════
+
+class TemplateSlot(BaseModel):
+    weekday: int = Field(ge=0, le=6, description="0=شنبه ... 6=جمعه")
+    time: str = Field(min_length=4, max_length=11, description="شروع HH:MM یا بازه HH:MM-HH:MM")
+    end_time: str = Field(default="", max_length=5, description="پایان HH:MM اختیاری")
+    lesson: str = Field(min_length=1, max_length=120)
+    teacher: str = Field(default="", max_length=80)
+    location: str = Field(default="", max_length=80)
+    group: ScheduleGroup = "هر دو"
+    flex_type: FlexType = "fixed"
+    notes: str = Field(default="", max_length=300)
+    type: ScheduleType = "class"
+
+class TemplateBulk(BaseModel):
+    slots: list[TemplateSlot] = Field(min_length=1, max_length=200)
+    clear_existing: bool = False
+    group: ScheduleGroup | None = None
+
+class TemplateGenerate(BaseModel):
+    start_date: str = Field(min_length=8, max_length=12, description="YYYY/MM/DD jalali or YYYY-MM-DD gregorian")
+    end_date: str = Field(min_length=8, max_length=12)
+    group: ScheduleGroup | None = None
+    dry_run: bool = False
+
+def _tpl_doc(item: dict) -> dict:
+    # legacy support: if time contains range, split; if end_time stored separately, return both
+    start = item.get("time", "") or ""
+    end = item.get("end_time", "") or item.get("time_end", "") or ""
+    if start and ("-" in start or "تا" in start) and not end:
+        try:
+            s, e = _normalize_range_input(start)
+            if s:
+                start = s
+            if e:
+                end = e
+        except Exception:
+            pass
+    return {
+        "weekday": item.get("weekday"),
+        "time": start,
+        "end_time": end,
+        # for compatibility, also expose time_end alias
+        "time_end": end,
+        "lesson": item.get("lesson", ""),
+        "teacher": item.get("teacher", ""),
+        "location": item.get("location", ""),
+        "group": item.get("group") or "هر دو",
+        "flex_type": item.get("flex_type") or "fixed",
+        "notes": item.get("notes") or "",
+        "type": item.get("type") or "class",
+    }
+
+@router.get("/schedule/templates")
+async def schedule_templates_list(
+    group: ScheduleGroup | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    items = await db.get_schedule_templates(group=group)
+    return {"templates": [_tpl_doc(i) for i in (items or [])], "total": len(items or [])}
+
+@router.post("/schedule/templates/bulk")
+async def schedule_templates_bulk(
+    body: TemplateBulk,
+    admin=Depends(get_schedule_admin_user),
+):
+    if body.clear_existing:
+        await db.clear_schedule_templates(group=body.group)
+    # validate times: support range in time field and separate end_time
+    normalized_slots = []
+    for s in body.slots:
+        d = s.model_dump()
+        rt = str(d.get("time") or "")
+        re_ = str(d.get("end_time") or "")
+        # if time contains range like "08:00-10:00" or "08:00 تا 10:00" and end empty, split
+        if rt and ("-" in rt or "تا" in rt) and not re_:
+            try:
+                rs, re2 = _normalize_range_input(rt)
+                d["time"] = rs
+                d["end_time"] = re2
+                rt, re_ = rs, re2
+            except Exception:
+                pass
+        _valid_time_range(rt, re_)
+        # normalize empty end_time synthesis: if no end but valid start, keep empty (DB will synthesize +2h if needed for display)
+        normalized_slots.append(d)
+    result = await db.bulk_upsert_schedule_templates(normalized_slots)
+    await _audit(admin, "ثبت الگوی هفتگی", "Schedules", severity="INFO",
+                 target_type="schedule_template", target_label=f"{result['total']} ردیف",
+                 after=result, tags=["الگوی_هفتگی", "پنل_وب"])
+    return {"ok": True, **result}
+
+@router.delete("/schedule/templates")
+async def schedule_templates_clear(
+    group: ScheduleGroup | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    n = await db.clear_schedule_templates(group=group)
+    await _audit(admin, "پاک‌سازی الگوی هفتگی", "Schedules", severity="WARNING",
+                 target_type="schedule_template", target_label=str(group or "همه"),
+                 after={"deleted": n}, tags=["الگوی_هفتگی", "پاکسازی", "پنل_وب"])
+    return {"ok": True, "deleted": n}
+
+@router.post("/schedule/templates/generate")
+async def schedule_templates_generate(
+    body: TemplateGenerate,
+    admin=Depends(get_schedule_admin_user),
+):
+    result = await db.generate_schedules_from_templates(
+        body.start_date, body.end_date, group=(body.group or None), dry_run=body.dry_run
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("error") or "خطا در تولید برنامه")
+    if not body.dry_run:
+        await _audit(admin, "تولید برنامه از الگوی هفتگی", "Schedules", severity="INFO",
+                     target_type="schedule", target_label=f"{body.start_date} تا {body.end_date}",
+                     after={"created": result.get("created"), "skipped": result.get("skipped"), "group": body.group},
+                     tags=["الگوی_هفتگی", "تولید", "پنل_وب"])
+    return result
+
+MAX_SCAN_BYTES = 12 * 1024 * 1024
+
+async def _read_scan_upload(file: UploadFile) -> tuple[bytes, str]:
+    if not file or not getattr(file, "filename", None):
+        raise HTTPException(status_code=400, detail="فایل عکس ارسال نشده")
+    ctype = (file.content_type or "").lower()
+    if ctype not in ("image/jpeg", "image/png", "image/webp", "image/jpg", "image/heic", "image/heif"):
+        # allow common image types; fallback check filename ext
+        name = (file.filename or "").lower()
+        if not any(name.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")):
+            raise HTTPException(status_code=415, detail="فرمت عکس باید JPG/PNG/WEBP باشد")
+    data = await file.read()
+    if not data or len(data) < 200:
+        raise HTTPException(status_code=400, detail="فایل خالی یا خراب است")
+    if len(data) > MAX_SCAN_BYTES:
+        raise HTTPException(status_code=413, detail="حجم عکس بیش از حد زیاد است (حداکثر 12MB)")
+    mime = ctype or "image/jpeg"
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    return data, mime
+
+@router.post("/schedule/templates/scan")
+async def schedule_templates_scan(
+    file: UploadFile = File(...),
+    group: ScheduleGroup | None = Query(default=None, description="اگر جدول یک گروه خاص است"),
+    admin=Depends(get_schedule_admin_user),
+):
+    image_bytes, mime = await _read_scan_upload(file)
+    try:
+        from ai_solver import scan_weekly_schedule_image
+        parsed = await scan_weekly_schedule_image(image_bytes, mime, group_hint=(group or None))
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, (AIConfigError, AIError)):
+            raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"اسکن ناموفق: {e}")
+    slots = parsed.get("slots") or []
+    # preview: no DB write yet
+    return {"ok": True, "slots": slots, "count": len(slots)}
+
+@router.post("/schedule/templates/scan/confirm")
+async def schedule_templates_scan_confirm(
+    body: TemplateBulk,
+    admin=Depends(get_schedule_admin_user),
+):
+    # same as bulk but from scan preview — with range support
+    if body.clear_existing:
+        await db.clear_schedule_templates(group=body.group)
+    normalized_slots = []
+    for s in body.slots:
+        d = s.model_dump()
+        rt = str(d.get("time") or "")
+        re_ = str(d.get("end_time") or "")
+        if rt and ("-" in rt or "تا" in rt) and not re_:
+            try:
+                rs, re2 = _normalize_range_input(rt)
+                d["time"] = rs
+                d["end_time"] = re2
+                rt, re_ = rs, re2
+            except Exception:
+                pass
+        _valid_time_range(rt, re_)
+        normalized_slots.append(d)
+    result = await db.bulk_upsert_schedule_templates(normalized_slots)
+    await _audit(admin, "تایید اسکن الگوی هفتگی", "Schedules", severity="INFO",
+                 target_type="schedule_template", target_label=f"{result['total']} ردیف از اسکن",
+                 after=result, tags=["الگوی_هفتگی", "اسکن_هوشیار", "پنل_وب"])
+    return {"ok": True, **result}
+
+@router.post("/schedule/exams/scan")
+async def schedule_exams_scan(
+    file: UploadFile = File(...),
+    admin=Depends(get_schedule_admin_user),
+):
+    image_bytes, mime = await _read_scan_upload(file)
+    try:
+        from ai_solver import scan_exam_schedule_image
+        parsed = await scan_exam_schedule_image(image_bytes, mime)
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, (AIConfigError, AIError)):
+            raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"اسکن ناموفق: {e}")
+    exams = parsed.get("exams") or []
+    return {"ok": True, "exams": exams, "count": len(exams)}
+
+class ExamBulkConfirm(BaseModel):
+    exams: list[dict] = Field(min_length=1, max_length=100)
+
+@router.post("/schedule/exams/scan/confirm")
+async def schedule_exams_scan_confirm(
+    body: ExamBulkConfirm,
+    admin=Depends(get_schedule_admin_user),
+):
+    from time_utils import parse_gregorian_date, parse_jalali_date, TimeContractError, en_digits
+    created = 0
+    skipped = 0
+    for raw in body.exams:
+        try:
+            lesson = str(raw.get("lesson") or "").strip()
+            if not lesson:
+                skipped += 1
+                continue
+            raw_date = str(raw.get("date") or "").strip()
+            if not raw_date:
+                skipped += 1
+                continue
+            # normalize jalali date to gregorian machine date
+            normalized = en_digits(raw_date).replace("/", "-")
+            try:
+                y = int(normalized.split("-", 1)[0])
+                if 1200 <= y <= 1600:
+                    gdate = parse_jalali_date(raw_date).isoformat()
+                else:
+                    gdate = parse_gregorian_date(normalized).isoformat()
+            except Exception:
+                skipped += 1
+                continue
+            time_v = str(raw.get("time") or "08:00").strip()
+            try:
+                parse_clock_time(time_v)
+            except Exception:
+                time_v = "08:00"
+            group = db.normalize_group(raw.get("group") or "هر دو") or "هر دو"
+            location = str(raw.get("location") or "").strip()[:80]
+            # idempotent by date+time+lesson
+            exists = await db.schedules.find_one({"date": gdate, "type": "exam", "lesson": lesson, "time": time_v})
+            if exists:
+                skipped += 1
+                continue
+            await db.add_schedule("exam", lesson, "", gdate, time_v, location, "", group)
+            created += 1
+        except Exception:
+            skipped += 1
+            continue
+    await _audit(admin, "تایید اسکن امتحانات", "Schedules", severity="INFO",
+                 target_type="schedule", target_label=f"{created} امتحان از اسکن",
+                 after={"created": created, "skipped": skipped}, tags=["امتحان", "اسکن_هوشیار", "پنل_وب"])
+    return {"ok": True, "created": created, "skipped": skipped}
 
 
 class GradeEntry(BaseModel):
@@ -514,14 +903,14 @@ class GradeBulkCreate(BaseModel):
         max_length=10,
     )
 
-    # 🛡 §۸۲-ب — ترمِ صریح.
-    # اختیاری است: خالی/None یعنی «از روی نامِ درس در bs_lessons حدس بزن»
-    # (رفتار قبلی، پس کلاینت‌های قدیمی نمی‌شکنند). اگر داده شود، برنده است —
-    # چون درس‌هایی مثل «فیزیولوژی» ممکن است در bs_lessons نباشند و بدون
-    # override نمره برای همیشه «بدون ترم» می‌ماند.
+    # 🛡 §۸۲-ج — ترمِ صریح و طبقه‌بندی‌شده.
+    # ترم الزامی است: اگر خالی/None باشد سرور از روی bs_lessons حدس می‌زند؛
+    # اما اگر درس در فهرست نباشد ثبت «بدون ترم» ممنوع است و باید ۴۲۲ برگردد
+    # تا ادمین ترم را صریحاً انتخاب کند (هر ترم بلوک جدا با میانگین جدا).
     term: str | None = Field(
         default=None,
         max_length=40,
+        description="ترم الزامی — مثل «ترم ۱»؛ خالی فقط اگر درس در bs_lessons ترم داشته باشد",
     )
 
 
@@ -558,6 +947,21 @@ async def grades_bulk_create(
         body.term or "",
         40,
     ) or None
+    # 🛡 §۸۲-ج — ترم الزامی + حدس خودکارِ هوشمند
+    # اگر ترم صریح نیامده، از روی درس حدس زده می‌شود؛ ولی اگر حتی حدس هم
+    # خالی ماند، ثبت «بدون ترم» ممنوع است و باید کاربر را مجبور به انتخاب کنیم.
+    if not term:
+        try:
+            inferred = await db.lesson_term(lesson)
+            if inferred and str(inferred).strip():
+                term = str(inferred).strip()[:40]
+        except Exception:
+            pass
+    if not term:
+        raise HTTPException(
+            status_code=422,
+            detail="ترم الزامی است — لطفاً ترم مربوط به درس را انتخاب کنید (مثلاً «ترم ۱»). اگر درس در فهرست نیست، ترم را به‌صورت دستی مشخص کنید.",
+        )
 
     user_ids = [
         entry.user_id
@@ -624,9 +1028,8 @@ async def grades_bulk_create(
 
         entered_by=admin["id"],
 
-        # None را عمداً دست‌نخورده رد می‌کنیم تا لایه‌ی db حدسِ خودکار را
-        # انجام دهد؛ رشته‌ی خالی هم به None تبدیل می‌شود تا «انتخاب نکردم»
-        # با «ترمِ خالی» یکی رفتار کند.
+        # 🛡 §۸۲-ج — ترم در این نقطه حتماً پر است (یا صریح یا حدس‌زده‌شده)؛
+        # db-grade_bulk_upsert دیگر حدسِ دوباره نمی‌زند و «بدون ترم» تولید نمی‌شود.
         term=term,
     )
 
@@ -727,7 +1130,7 @@ async def grades_term_options(
     می‌شوند و با همان `_term_rank` مرتب می‌شوند تا «ترم ۱۰» بعد از «ترم ۲»
     بیاید، نه بینِ ۱ و ۲.
     """
-    from grade_utils import _term_rank
+    from grade_utils import _term_rank, TERM_ORDER
 
     known: list[str] = []
     try:
@@ -735,6 +1138,15 @@ async def grades_term_options(
         known = [str(t).strip() for t in (_TERMS or []) if str(t).strip()]
     except Exception:
         known = []
+    # 🛡 §۸۲-ج — برنامه‌ی درسی ۸ ترمه است؛ منوی ثبت باید همه‌ی ۸ ترم را نشان دهد،
+    # حتی اگر هنوز نمره‌ای برای ترم ۶-۸ ثبت نشده (وگرنه طبقه‌بندی ناقص می‌ماند).
+    try:
+        for t in TERM_ORDER:
+            tt = str(t).strip()
+            if tt and tt not in known:
+                known.append(tt)
+    except Exception:
+        pass
 
     used: list[str] = []
     try:
@@ -744,6 +1156,25 @@ async def grades_term_options(
 
     merged = sorted(set(known) | set(used), key=_term_rank)
     return {"terms": merged, "defined": known, "used": used}
+
+
+@router.get("/grades/lesson-term")
+async def grades_lesson_term(
+    lesson: str = Query(..., min_length=1, max_length=120),
+    admin=Depends(get_grade_admin_user),
+):
+    """🛡 §۸۲-ج — حدسِ ترم از روی نامِ درس (برای پرکردن خودکار منوی ترم).
+
+    پنل وب/مینی‌اپ هنگام تایپِ درس این را صدا می‌زند تا ترمِ پیشنهادی
+    پررنگ نشان داده شود؛ ولی ثبت نهایی همچنان ترمِ صریحِ انتخاب‌شده را
+    می‌خواهد (بدون ترم ممنوع).
+    """
+    term = ""
+    try:
+        term = await db.lesson_term(lesson.strip())
+    except Exception:
+        term = ""
+    return {"lesson": lesson.strip()[:120], "term": (term or "").strip()[:40]}
 
 
 @router.get("/grades/recent")

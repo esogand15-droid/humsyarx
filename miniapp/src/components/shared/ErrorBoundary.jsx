@@ -87,6 +87,20 @@ export default class ErrorBoundary
           info?.componentStack || ''
         ).slice(0, 220),
     });
+
+    /* 🌊 W5/REL-03 — گزارش best-effort به سرور تا خطای فرانت فقط در
+       localStorage نماند؛ dynamic-import = صفر ریسک چرخه‌ی وارداتی،
+       هیچ‌وقت رندر fallback را خراب نمی‌کند */
+    try {
+      import('../../lib/api').then(({ default: api }) => {
+        api.post('/api/client-errors', {
+          app: 'miniapp',
+          path: window.location?.pathname || '?',
+          message: String(error?.message || error).slice(0, 500),
+          stack: String(info?.componentStack || '').slice(0, 2000),
+        }).catch(() => {});
+      }).catch(() => {});
+    } catch (_) { /* سکوت — گزارش اختیاری است */ }
   }
 
 
@@ -102,11 +116,33 @@ export default class ErrorBoundary
     window.location.replace(APP_BASE);
 
 
+  isChunkError(err) {
+    const msg = String(err?.message || err || '').toLowerCase();
+    return msg.includes('chunkloaderror') || msg.includes('failed to fetch dynamically imported module') || msg.includes('loading chunk') || msg.includes('cannot find module');
+  }
+
   render() {
     const { error } = this.state;
 
     if (!error) {
       return this.props.children;
+    }
+
+    // 🌊 W4 — chunk load failed after deploy → suggest hard reload
+    if (this.isChunkError(error)) {
+      return (
+        <main dir="rtl" style={{display:'flex',alignItems:'center',justifyContent:'center',width:'100%',minHeight:'100dvh',padding:'24px 16px',color:'var(--tx)',background:'transparent'}}>
+          <section className={'card card-glow fade-up'} style={{width:'100%',maxWidth:390,padding:22,textAlign:'center'}}>
+            <div style={{display:'grid',width:68,height:68,placeItems:'center',margin:'0 auto',background:'var(--soft-err)',border:'1px solid var(--bd-err)',borderRadius:'var(--r-xl)',fontSize:32}}>🔄</div>
+            <h1 style={{marginTop:'var(--sp-4)',fontSize:'var(--fs-xl)',fontWeight:900}}>نسخه جدید در دسترس است</h1>
+            <p style={{marginTop:'var(--sp-2)',color:'var(--tx2)',fontSize:'var(--fs-cap)',lineHeight:1.9}}>برنامه به‌روزرسانی شده است. برای ادامه، صفحه را بازگذاری کنید.</p>
+            <div style={{display:'grid',gap:8,marginTop:16}}>
+              <button type="button" className={'btn btn-p btn-full'} onClick={this.reload}>↻ بارگذاری مجدد</button>
+              <button type="button" className={'btn btn-dark btn-full'} onClick={this.goHome}>بازگشت به داشبورد</button>
+            </div>
+          </section>
+        </main>
+      );
     }
 
     /* fallback سفارشی برای کرومِ اپ (مثل BottomNav):

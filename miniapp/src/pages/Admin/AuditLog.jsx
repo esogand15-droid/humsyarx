@@ -8,7 +8,10 @@ import {
 } from '@tanstack/react-query';
 
 import api from '../../lib/api';
+import { faDate } from '../../lib/format';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 
 import {
   Spinner,
@@ -132,7 +135,7 @@ function timeAgo(iso) {
   if (diff < 7 * day)
     return `${Math.floor(diff / day)} روز پیش`;
 
-  return iso.slice(0, 10);
+  return faDate(iso, iso.slice(0, 10));
 }
 
 
@@ -541,31 +544,14 @@ export default function AuditLog() {
         {isLoading ? (
           <AuditLogSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            دریافت لاگ انجام نشد.
-
-            <button
-              className="btn btn-p"
-              onClick={() => refetch()}
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت لاگ انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : logs.length === 0 ? (
-          <div className="empty card">
-            <div
-              style={{ fontSize: 38 }}
-            >
-              📭
-            </div>
-
-            <div
-              style={{ marginTop: 8 }}
-            >
-              موردی با این فیلترها
-              پیدا نشد.
-            </div>
-          </div>
+          <EmptyState icon="📭">
+            موردی با این فیلترها پیدا نشد.
+          </EmptyState>
         ) : (
           <>
             <div

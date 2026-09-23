@@ -10,7 +10,9 @@ import {
 } from '@tanstack/react-query';
 
 import api from '../../lib/api';
+import { faDateTime } from '../../lib/format';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 import Switch from '../../components/shared/Switch';
 
 import {
@@ -25,6 +27,7 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { confirmAction } from '../../lib/confirm';
 
 import {
   useUIStore,
@@ -886,14 +889,9 @@ export default function SystemSettings() {
   );
 
 
-  const autoBackupLastRun =
-    data?.auto_backup_last_run
-      ? String(
-          data.auto_backup_last_run
-        )
-          .slice(0, 16)
-          .replace('T', ' ')
-      : null;
+  const autoBackupLastRun = data?.auto_backup_last_run
+    ? faDateTime(data.auto_backup_last_run)
+    : null;
 
 
   return (
@@ -909,16 +907,10 @@ export default function SystemSettings() {
         {isLoading ? (
           <SettingsSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            دریافت تنظیمات انجام نشد.
-
-            <button
-              className="btn btn-p"
-              onClick={() => refetch()}
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت تنظیمات انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : (
           <>
             {maintenanceOn && (
@@ -1799,14 +1791,11 @@ function PrestigeConfigSection() {
             disabled={
               saveMutation.isPending
             }
-            onClick={() => {
-              if (
-                window.confirm(
-                  'همه‌ی اوررایدها پاک و مقادیر پیش‌فرض برگردد؟'
-                )
-              ) {
-                saveMutation.mutate({});
-              }
+            onClick={async () => {
+              const ok = await confirmAction(
+                'همه‌ی اوررایدها پاک و مقادیر پیش‌فرض برگردد؟',
+              );
+              if (ok) saveMutation.mutate({});
             }}
           >
             ↺ پیش‌فرض

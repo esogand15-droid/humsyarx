@@ -8,6 +8,26 @@ from pydantic import BaseModel, Field
 from api.auth import ADMIN_ID, get_current_user
 from api.user_metrics import non_negative_int, normalize_stats, normalize_weekly
 from database import db
+from request_context import current_request_id
+
+async def _profile_audit(actor: dict, action: str, *, before=None, after=None, details: str = "", target_label: str = ""):
+    try:
+        db_user = actor.get("_db") if isinstance(actor.get("_db"), dict) else {}
+        name = (db_user.get("name") or actor.get("name") or str(actor.get("id") or ""))
+        from database import db as _db
+        # actor role: try resolve
+        try:
+            role_label = await _db.get_actor_role_label(actor["id"])
+        except Exception:
+            role_label = "student"
+        await _db.log_action(
+            actor["id"], name, role_label,
+            action, "Profile", category="user", severity="INFO",
+            target_id=str(actor["id"]), target_type="user", target_label=target_label or name,
+            before=before, after=after, details=details,
+        )
+    except Exception:
+        pass
 
 router = APIRouter()
 _VALID_ROLES = {"student", "content_admin", "support", "admin"}
@@ -98,6 +118,7 @@ async def update_name(body: NameUpdate, user=Depends(get_current_user)):
     if len(name) < 3 or len(name) > 50 or "<" in name or ">" in name:
         raise HTTPException(status_code=422, detail="نام نامعتبر")
     await db.update_user(user["id"], {"name": name})
+    await _profile_audit(user, "ویرایش نام نمایشی", before={"name": (user.get("_db") or {}).get("name")}, after={"name": name})
     return {"ok": True, "name": name}
 
 
@@ -124,6 +145,7 @@ async def update_nickname(
             status_code=422,
             detail=db.nick_error_text(err, info),
         )
+    await _profile_audit(user, "ویرایش لقب", after={"nickname": info.get("nickname"), "display_name": info.get("display_name")})
     return {
         "ok": True,
         "nickname": info.get("nickname"),
@@ -142,6 +164,7 @@ async def update_privacy(
 ):
     """🏷 §Privacy — سوییچ نمایش نام واقعی در سطوح اجتماعی."""
     await db.set_show_real_name(user["id"], body.show_real_name)
+    await _profile_audit(user, "تغییر حریم خصوصی نام", before={"show_real_name": not bool(body.show_real_name)}, after={"show_real_name": bool(body.show_real_name)})
     return {"ok": True, "show_real_name": body.show_real_name}
 
 
@@ -152,6 +175,7 @@ class GroupUpdate(BaseModel):
 @router.patch("/group")
 async def update_group(body: GroupUpdate, user=Depends(get_current_user)):
     await db.update_user(user["id"], {"group": body.group})
+    await _profile_audit(user, "ویرایش گروه", before={"group": (user.get("_db") or {}).get("group")}, after={"group": body.group})
     return {"ok": True, "group": body.group}
 
 
@@ -171,6 +195,7 @@ async def update_intake(body: IntakeUpdate, user=Depends(get_current_user)):
     if not intake or intake not in active_codes:
         raise HTTPException(status_code=422, detail="ورودی نامعتبر")
     await db.update_user(user["id"], {"intake": intake})
+    await _profile_audit(user, "ویرایش ورودی", before={"intake": (user.get("_db") or {}).get("intake")}, after={"intake": intake})
     return {"ok": True, "intake": intake}
 
 
@@ -186,6 +211,7 @@ async def update_student_id(
     if not student_id.isdigit():
         raise HTTPException(status_code=422, detail="شماره دانشجویی باید عدد باشد")
     await db.update_user(user["id"], {"student_id": student_id})
+    await _profile_audit(user, "ویرایش شماره دانشجویی", before={"student_id": (user.get("_db") or {}).get("student_id")}, after={"student_id": student_id})
     return {"ok": True, "student_id": student_id}
 
 
@@ -249,7 +275,9 @@ async def put_prestige_showcase(
 ):
     """👑 P1 — پین حداکثر ۳ نشان بازشده (اعتبارسنجی سروری)"""
     keys = [str(k)[:60] for k in (body.keys or [])][:10]
-    return await db.prestige_showcase_set(user["id"], keys)
+    res = await db.prestige_showcase_set(user["id"], keys)
+    await _profile_audit(user, "ویرایش ویترین افتخار", after={"keys": keys[:3]})
+    return res
 
 
 class PrivacyInput(BaseModel):
@@ -266,6 +294,7 @@ async def patch_prestige_privacy(
         {"user_id": user["id"]},
         {"$set": {"privacy_public": bool(body.public)}},
     )
+    await _profile_audit(user, "تغییر حریم عمومی پرستیژ", after={"privacy_public": bool(body.public)})
     return {"ok": True, "privacy_public": bool(body.public)}
 
 

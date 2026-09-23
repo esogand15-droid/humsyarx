@@ -8,17 +8,45 @@ import os
 import logging
 import asyncio
 import difflib
+import secrets
 from datetime import timedelta
 from pymongo.errors import DuplicateKeyError
 from bson import ObjectId
 import motor.motor_asyncio
 from time_utils import (
-    UTC, end_of_day_tehran, now_utc, parse_gregorian_date,
-    parse_machine_datetime, remaining_days, start_of_month_tehran, utc_now_iso,
+    UTC, TimeContractError, canonical_utc, end_of_day_tehran, now_utc,
+    parse_gregorian_date, parse_machine_datetime, remaining_days,
+    start_of_month_tehran, utc_now_iso,
 )
 
 # نام logger عمداً «database» نگه داشته شد تا کانال لاگ تغییر نکند
 logger = logging.getLogger('database')
+
+
+def _referral_first_buy_trigger(fn):
+    """🌱 W13 — هوک «اولین خرید واقعی» روی تنها نقطه‌ی فعال‌سازی پولی.
+
+    همه‌ی پرداخت‌های واقعی (رسید دستی، زرین‌پال، کیف پول، شارژ، هدیه‌دهنده)
+    از finalize_approved_payment می‌گذرند؛ trial و اعطای دستی/رایگان نه.
+    lazy-import برای جلوگیری از چرخه (referral → database).
+    هرگز مسیر پول را نمی‌شکند.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    async def _w(self, payment, admin_id):
+        res = await fn(self, payment, admin_id)
+        try:
+            if isinstance(res, dict) and not res.get('already'):
+                payer = int((payment or {}).get('user_id') or 0)
+                if payer:
+                    from referral import on_first_payment
+                    await on_first_payment(payer)
+        except Exception:
+            logger.exception('referral first-buy hook failed')
+        return res
+
+    return _w
 
 
 
@@ -31,10 +59,19 @@ class DBFinance:
     # ══════════════════════════════════════════════════════════════
 
     # ── پلن‌ها ──
-    async def sub_plan_add(self, name: str, days: int, price: int) -> str:
+    async def sub_plan_add(self, name: str, days: int, price: int,
+                         ai_daily_limit: int = 0,
+                         entitlements: dict | None = None,
+                         max_members: int = 1) -> str:
         count = await self.sub_plans.count_documents({})
         r = await self.sub_plans.insert_one({
             'name': name, 'days': days, 'price': price,
+            # 🌊 W6/MISS-04 — سهمیه روزانه هوشیار این پلن؛ ۰ = ارث از سراسری
+            'ai_daily_limit': max(0, int(ai_daily_limit or 0)),
+            # 🌊 W7 — نقشه‌ی فیچرها؛ خالی/ناقص = سازگار عقب‌رو (دسترسی کامل)
+            'entitlements': dict(entitlements or {}),
+            # 🌊 W8/MISS-03 — ظرفیت خانواده/گروه (۱ = شخصی)؛ مالک یک صندلی می‌گیرد
+            'max_members': max(1, min(50, int(max_members or 1))),
             'active': True, 'order': count,
             'created_at': utc_now_iso(),
         })
@@ -71,11 +108,15 @@ class DBFinance:
         return True
 
 
-    async def sub_plan_delete(self, plan_id: str):
+    async def sub_plan_delete(self, plan_id: str) -> bool:
+        """🛡 W5/CODE-02 — حذف دیگر بی‌صدا fail نمی‌شود؛ caller باید
+        False را هندل کند (قبلاً audit «حذف شد» دروغ می‌گفت)."""
         try:
-            await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
-        except Exception:
-            pass
+            r = await self.sub_plans.delete_one({'_id': ObjectId(plan_id)})
+            return r.deleted_count == 1
+        except Exception as e:
+            logger.warning(f"sub_plan_delete failed {plan_id}: {e}")
+            return False
 
 
     # ── کدهای تخفیف ──
@@ -88,22 +129,26 @@ class DBFinance:
         if expires_at:
             try:
                 if len(str(expires_at).strip()) == 10:
-                    expires_at = end_of_day_tehran(parse_gregorian_date(expires_at)).astimezone(UTC).isoformat()
+                    expires_at = canonical_utc(end_of_day_tehran(parse_gregorian_date(expires_at)))
                 else:
-                    expires_at = parse_machine_datetime(expires_at).astimezone(UTC).isoformat()
+                    expires_at = canonical_utc(parse_machine_datetime(expires_at))
             except ValueError:
                 raise ValueError('invalid_discount_expiry')
-        await self.discount_codes.insert_one({
-            'code': code, 'percent': max(1, min(100, percent)),
-            'max_uses': max_uses, 'used_count': 0,
-            'expires_at': expires_at, 'active': True,
-            # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
-            # غیرخالی یعنی فقط همان plan_idها
-            'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
-            # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
-            'per_user_limit': max(0, int(per_user_limit or 0)),
-            'created_by': created_by, 'created_at': utc_now_iso(),
-        })
+        try:
+            await self.discount_codes.insert_one({
+                'code': code, 'percent': max(1, min(100, percent)),
+                'max_uses': max_uses, 'used_count': 0,
+                'expires_at': expires_at, 'active': True,
+                # 🎟 موج D1 — [] یا None یعنی همه‌ی پلن‌های فعال؛
+                # غیرخالی یعنی فقط همان plan_idها
+                'target_plan_ids': [str(p) for p in (target_plan_ids or [])],
+                # 0 = نامحدود؛ N = هر کاربر حداکثر N بار (پنیر discount_uses اتمیک)
+                'per_user_limit': max(0, int(per_user_limit or 0)),
+                'created_by': created_by, 'created_at': utc_now_iso(),
+            })
+        except DuplicateKeyError:
+            # 🛡 W1 — race دو ساخت هم‌زمان: ایندکس یکتا داور نهایی است
+            return False
         return True
 
 
@@ -186,7 +231,7 @@ class DBFinance:
         legacy_expiry = str((legacy or {}).get('expires_at') or '').strip()
         if len(legacy_expiry) == 10:
             try:
-                canonical_expiry = end_of_day_tehran(parse_gregorian_date(legacy_expiry)).astimezone(UTC).isoformat()
+                canonical_expiry = canonical_utc(end_of_day_tehran(parse_gregorian_date(legacy_expiry)))
                 await self.discount_codes.update_one({'code': code_u, 'expires_at': legacy_expiry},
                                                      {'$set': {'expires_at': canonical_expiry}})
             except ValueError:
@@ -281,20 +326,14 @@ class DBFinance:
     async def discount_segment_users(self, segment: str = 'all') -> list:
         """کاربران هدف کمپین. segment: all | subscribers | no_sub"""
         if segment == 'subscribers':
-            subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
-            ).to_list(length=None)
-            ids = list({int(s['_id']) for s in subs})
+            ids = await self.subscription_ids_by_end(earliest=now_utc())
             if not ids:
                 return []
             return await self.users.find(
                 {'approved': True, 'blocked_bot': {'$ne': True}, 'user_id': {'$in': ids}}
             ).to_list(length=None)
         if segment == 'no_sub':
-            subs = await self.subscriptions.find(
-                {'status': 'active', 'end_date': {'$gte': utc_now_iso()}}
-            ).to_list(length=None)
-            ids = list({int(s['_id']) for s in subs})
+            ids = await self.subscription_ids_by_end(earliest=now_utc())
             return await self.users.find(
                 {'approved': True, 'blocked_bot': {'$ne': True}, 'user_id': {'$nin': ids}}
             ).to_list(length=None)
@@ -387,6 +426,17 @@ class DBFinance:
         s = await self.sub_get(user_id)
         if not s or s.get('status') != 'active':
             return False
+        # 🌊 W8/MISS-03 — عضو خانواده فقط وقتی فعال است که مالک هم فعال باشد
+        # (revoke مالک را بدون job پوشش می‌دهد؛ بدون بازگشت برای جلوگیری از حلقه)
+        if (s.get('source') == 'family') and s.get('family_owner_id'):
+            try:
+                o = await self.sub_get(int(s['family_owner_id']))
+                if not o or o.get('status') != 'active':
+                    return False
+                if parse_machine_datetime(o.get('end_date')) < now_utc():
+                    return False
+            except ValueError:
+                return False
         try:
             return parse_machine_datetime(s.get('end_date')) >= now_utc()
         except ValueError:
@@ -405,41 +455,169 @@ class DBFinance:
 
     async def sub_activate(self, user_id: int, days: int, plan_name: str,
                             source: str = 'payment', granted_by: int = 0,
-                            extend: bool = False):
+                            extend: bool = False, plan_id: str = '',
+                            effect_key: str = '',
+                            applied_marker: dict | None = None) -> str:
+        """فعال‌سازی/تمدید اشتراک. خروجی همیشه رشته‌ی end_date است.
+
+        extend=True روزها را به پایان فعلی اضافه می‌کند، نه از الان.
+        effect_key یک اثر را یک‌بار می‌کند: اگر کلید قبلاً در
+        applied_effect_keys باشد روزی اضافه نمی‌شود. نوشتن پایان و کلید
+        در یک CAS روی sub_version است تا دو رسید هم‌زمان روزهای هم را
+        پاک نکنند. سند قدیمی بدون sub_version فقط با $exists:false
+        مهاجرت می‌کند. applied_marker['new'] می‌گوید این فراخوانی
+        واقعاً روز اضافه کرد یا نه.
         """
-        فعال‌سازی/تمدید اشتراک. اگر extend=True و اشتراک فعلی هنوز فعاله،
-        روزها از تاریخ پایان فعلی جمع می‌شوند نه از الان (تا تمدید،
-        روزهای باقی‌مانده را از بین نبرد).
-        """
-        now = now_utc()
-        s = await self.sub_get(user_id)
-        try:
-            existing_end = parse_machine_datetime((s or {}).get('end_date'))
-        except ValueError:
-            existing_end = None
-        if extend and s and s.get('status') == 'active' and existing_end and existing_end > now:
-            base = existing_end
-        else:
-            base = now
-        end_date = (base + timedelta(days=days)).isoformat()
-        # 🛡 AUDIT-§۸۳ — «total_days» محاسبه می‌شد و دور ریخته می‌شد؛ نوارِ
-        # پیشرفتِ واقعی (`subscription.py:550`) از `last_plan_days` می‌خواند و
-        # همان هم پایین‌تر ذخیره می‌شود. خطِ مرده حذف شد تا خواننده فرض نکند
-        # عددِ دوم هم جایی ذخیره می‌شود.
-        await self.subscriptions.update_one(
-            {'_id': user_id},
-            {'$set': {
+        user_id = int(user_id)
+        effect_key = str(effect_key or '').strip()
+        for _attempt in range(8):
+            now = now_utc()
+            now_iso = utc_now_iso()
+            s = await self.sub_get(user_id)
+            applied = [str(k) for k in ((s or {}).get('applied_effect_keys') or [])]
+            if effect_key and effect_key in applied:
+                if applied_marker is not None:
+                    applied_marker['new'] = False
+                return str((s or {}).get('end_date') or '')
+            try:
+                existing_end = parse_machine_datetime((s or {}).get('end_date'))
+            except ValueError:
+                existing_end = None
+            if (extend and s and s.get('status') == 'active'
+                    and existing_end and existing_end > now):
+                base = existing_end
+            else:
+                base = now
+            end_date = canonical_utc(base + timedelta(days=days))
+            new_keys = applied + ([effect_key] if effect_key else [])
+            payload = {
                 'status': 'active', 'plan_name': plan_name,
-                'start_date': now.isoformat(), 'end_date': end_date,
+                'plan_id': plan_id or '',
+                'start_date': now_iso, 'end_date': end_date,
                 'source': source, 'granted_by': granted_by,
                 'last_plan_days': days,
-                # FIX جدید: دو فلگ جدا برای یادآوری ۳روزه و ۱روزه
                 'reminder_3d_sent': False, 'reminder_1d_sent': False,
-                'updated_at': now.isoformat(),
-            }},
-            upsert=True
-        )
-        return end_date
+                'updated_at': now_iso,
+                'applied_effect_keys': new_keys,
+            }
+            won = False
+            if s is None:
+                payload['sub_version'] = 1
+                try:
+                    await self.subscriptions.insert_one({'_id': user_id, **payload})
+                    won = True
+                except DuplicateKeyError:
+                    continue
+            else:
+                version = s.get('sub_version', None)
+                if version is None:
+                    filt = {'_id': user_id, '$or': [
+                        {'sub_version': {'$exists': False}},
+                        {'sub_version': None},
+                    ]}
+                    next_version = 1
+                else:
+                    filt = {'_id': user_id, 'sub_version': version}
+                    try:
+                        next_version = int(version) + 1
+                    except (TypeError, ValueError):
+                        next_version = 1
+                if effect_key:
+                    # $nin نه $ne: روی آرایه، $ne سندِ دارای کلید را هم مچ می‌کند.
+                    filt['applied_effect_keys'] = {'$nin': [effect_key]}
+                payload['sub_version'] = next_version
+                res = await self.subscriptions.update_one(filt, {'$set': payload})
+                won = res.modified_count == 1
+                if not won:
+                    continue
+            if won:
+                try:
+                    await self.subscriptions.update_many(
+                        {'source': 'family', 'family_owner_id': user_id,
+                         'status': 'active',
+                         '$or': [
+                             {'end_date': {'$exists': False}},
+                             {'end_date': None},
+                             {'end_date': ''},
+                             {'end_date': {'$lt': end_date}},
+                         ]},
+                        {'$set': {'end_date': end_date, 'updated_at': now_iso}})
+                except Exception:
+                    pass
+                if applied_marker is not None:
+                    applied_marker['new'] = True
+                return end_date
+        raise RuntimeError('sub_activate_conflict')
+
+
+    async def trial_status(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — وضعیت trial (نمایشی؛ claim دوباره چک می‌کند).
+
+        خروجی: {eligible, reason, days} ـ days از تنظیمات (۱..۳۰، پیش‌فرض ۷).
+        """
+        try:
+            enabled = await self.get_setting('trial_enabled', 1)
+            days = int(await self.get_setting('trial_days', 7) or 7)
+        except (TypeError, ValueError):
+            enabled, days = 1, 7
+        days = min(max(days, 1), 30)
+        if str(enabled).lower() in ('0', 'false', '', 'none'):
+            return {"eligible": False, "reason": "trial_disabled", "days": days}
+        try:
+            if await self.sub_is_active(int(uid)):
+                return {"eligible": False, "reason": "already_subscribed",
+                        "days": days}
+            u = await self.users.find_one({'user_id': int(uid)},
+                                          {'trial_used': 1})
+            if u is None:
+                return {"eligible": False, "reason": "unknown_user",
+                        "days": days}
+            if u.get('trial_used'):
+                return {"eligible": False, "reason": "already_used",
+                        "days": days}
+            plans = await self.sub_plan_list(only_active=True)
+            if not plans:
+                return {"eligible": False, "reason": "no_plan", "days": days}
+        except Exception:
+            return {"eligible": False, "reason": "error", "days": days}
+        return {"eligible": True, "reason": "", "days": days}
+
+    async def trial_claim(self, uid: int) -> dict:
+        """🌊 W6/MISS-03 — دریافت trial: یک‌بار برای هر کاربر، معادل
+        ارزان‌ترین پلن فعال (plan_id همان پلن ⇒ سهمیه پلنی هم اعمال می‌شود).
+
+        توکن اتمیک روی users.trial_used جلوی دابل‌کلیک/مسابقه را می‌گیرد؛
+        اگر فعال‌سازی شکست خورد، توکن آزاد می‌شود. خطا: ValueError(reason).
+        """
+        uid = int(uid)
+        st = await self.trial_status(uid)
+        if not st["eligible"]:
+            raise ValueError(st["reason"])
+        plans = await self.sub_plan_list(only_active=True)
+        if not plans:
+            raise ValueError("no_plan")
+        cheapest = min(plans, key=lambda q: (int(q.get('price', 0) or 0),
+                                             int(q.get('days', 0) or 0)))
+        tok = await self.users.update_one(
+            {'user_id': uid, 'trial_used': {'$ne': True}},
+            {'$set': {'trial_used': True,
+                      'trial_claimed_at': utc_now_iso()}})
+        if not tok.matched_count:
+            raise ValueError('already_used')
+        try:
+            end_date = await self.sub_activate(
+                uid, st["days"],
+                f"آزمایشی {st['days']}روزه ({cheapest.get('name', '')})",
+                source='trial', plan_id=str(cheapest.get('_id', '') or ''))
+        except Exception:
+            try:
+                await self.users.update_one(
+                    {'user_id': uid}, {'$set': {'trial_used': False}})
+            except Exception:
+                pass
+            raise
+        return {"end_date": end_date, "days": st["days"],
+                "plan_name": str(cheapest.get('name', ''))}
 
 
     async def sub_revoke(self, user_id: int, reason: str, revoked_by: int) -> bool:
@@ -452,13 +630,160 @@ class DBFinance:
         )
         return result.matched_count > 0
 
+    # ── 🌊 W8/MISS-03 — پلن خانواده/گروهی ──
+    _FAMILY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+
+    async def family_plan_seats(self, owner_id: int) -> dict:
+        """ظرفیت خانواده‌ی مالک: {total, used, left, plan_id}."""
+        sub = await self.sub_get(int(owner_id)) or {}
+        plan_id = str(sub.get('plan_id') or '')
+        total = 1
+        if plan_id:
+            try:
+                plan = await self.sub_plan_get(plan_id)
+                total = max(1, int((plan or {}).get('max_members') or 1))
+            except Exception:
+                total = 1
+        used = await self.subscriptions.count_documents(
+            {'source': 'family', 'family_owner_id': int(owner_id),
+             'status': 'active'})
+        return {'total': total, 'used': int(used),
+                'left': max(0, total - 1 - int(used)), 'plan_id': plan_id}
+
+    async def family_members(self, owner_id: int) -> list:
+        cur = await self.subscriptions.find(
+            {'source': 'family', 'family_owner_id': int(owner_id)}
+        ).sort('start_date', -1).to_list(60)
+        return cur or []
+
+    async def family_code_create(self, owner_id: int) -> dict:
+        """ساخت کد دعوت یک‌بارمصرف. {ok, code?/error?}."""
+        owner_id = int(owner_id)
+        if not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک فعالی نداری'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['total'] <= 1:
+            return {'ok': False, 'error': 'پلن تو خانوادگی نیست'}
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        for _ in range(5):
+            code = ''.join(secrets.choice(self._FAMILY_CODE_ALPHABET)
+                           for _ in range(8))
+            try:
+                await self.family_invites.insert_one({
+                    '_id': code, 'owner_id': owner_id,
+                    'created_at': utc_now_iso(),
+                    'used_by': 0, 'used_at': None, 'active': True})
+                return {'ok': True, 'code': code, 'seats_left': seats['left']}
+            except DuplicateKeyError:
+                continue
+        return {'ok': False, 'error': 'ساخت کد ناموفق بود؛ دوباره تلاش کن'}
+
+    async def family_redeem(self, code: str, user_id: int) -> dict:
+        """ثبت کد دعوت: ساخت اشتراک عضو با end_date مالک. {ok, end_date?/error?}."""
+        code = (code or '').strip().upper().replace('-', '').replace(' ', '')
+        user_id = int(user_id)
+        if len(code) != 8:
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        if await self.sub_is_active(user_id):
+            return {'ok': False, 'error': 'تو الان اشتراک فعال داری'}
+        inv = await self.family_invites.find_one({'_id': code})
+        if not inv or not inv.get('active') or inv.get('used_by'):
+            return {'ok': False, 'error': 'کد دعوت معتبر نیست'}
+        owner_id = int(inv['owner_id'])
+        if owner_id == user_id:
+            return {'ok': False, 'error': 'نمی‌توانی کد خودت را ثبت کنی'}
+        owner_sub = await self.sub_get(owner_id)
+        if not owner_sub or not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک مالک خانواده فعال نیست'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        # قفل اتمیک کد (جلوگیری از دابل‌ردیم) — سپس ساخت اشتراک عضو
+        locked = await self.family_invites.find_one_and_update(
+            {'_id': code, 'active': True, 'used_by': 0},
+            {'$set': {'used_by': user_id, 'used_at': utc_now_iso()}})
+        if not locked:
+            return {'ok': False, 'error': 'این کد قبلاً استفاده شده'}
+        raw_end = owner_sub.get('end_date')
+        try:
+            end_date = canonical_utc(raw_end)
+        except (TimeContractError, ValueError, TypeError):
+            end_date = raw_end
+        now = utc_now_iso()
+        await self.subscriptions.update_one(
+            {'_id': user_id},
+            {'$set': {'status': 'active',
+                      'plan_name': str(owner_sub.get('plan_name') or 'خانواده'),
+                      'plan_id': str(owner_sub.get('plan_id') or ''),
+                      'start_date': now, 'end_date': end_date,
+                      'source': 'family', 'granted_by': owner_id,
+                      'family_owner_id': owner_id,
+                      'family_code': code,
+                      'last_plan_days': int(owner_sub.get('last_plan_days') or 0),
+                      'reminder_3d_sent': False, 'reminder_1d_sent': False,
+                      'updated_at': now}},
+            upsert=True)
+        return {'ok': True, 'end_date': end_date,
+                'plan_name': str(owner_sub.get('plan_name') or '')}
+
+    async def family_remove(self, owner_id: int, member_id: int,
+                            actor_id: int = 0) -> dict:
+        """حذف عضو (توسط مالک یا ادمین): revoke اشتراک عضو."""
+        owner_id, member_id = int(owner_id), int(member_id)
+        if member_id == owner_id:
+            return {'ok': False, 'error': 'مالک را نمی‌شود حذف کرد'}
+        m = await self.sub_get(member_id)
+        if not m or m.get('source') != 'family' or \
+                int(m.get('family_owner_id') or 0) != owner_id:
+            return {'ok': False, 'error': 'این کاربر عضو خانواده‌ی تو نیست'}
+        await self.subscriptions.update_one(
+            {'_id': member_id},
+            {'$set': {'status': 'revoked', 'revoke_reason': 'family_remove',
+                      'revoked_by': int(actor_id or owner_id),
+                      'revoked_at': utc_now_iso()}})
+        return {'ok': True}
+
+
+    async def _active_subs_in_window(self, *, earliest=None, latest=None,
+                                     earliest_inclusive=True, latest_inclusive=True,
+                                     extra=None, limit=50000) -> list:
+        """اشتراک‌های فعال که end_dateشان، پس از پارس لحظه، داخل پنجره است.
+
+        مقایسه‌ی رشته‌ای ISO بین حالت خام، Z، +00:00 و میکروثانیه
+        ترتیب زمانی واقعی نیست. روز مدنی پارس نمی‌شود و نادیده می‌ماند.
+        """
+        query = {'status': 'active'}
+        if extra:
+            query.update(extra)
+        found = []
+        cursor = self.subscriptions.find(query, {'end_date': 1})
+        async for doc in cursor:
+            try:
+                end = parse_machine_datetime(doc.get('end_date'))
+            except (TimeContractError, ValueError, TypeError):
+                continue
+            if earliest is not None:
+                if end < earliest or (not earliest_inclusive and end == earliest):
+                    continue
+            if latest is not None:
+                if end > latest or (not latest_inclusive and end == latest):
+                    continue
+            found.append(doc)
+            if len(found) >= limit:
+                break
+        return found
+
+
+    async def subscription_ids_by_end(self, **kwargs) -> list:
+        docs = await self._active_subs_in_window(**kwargs)
+        return [doc['_id'] for doc in docs]
+
 
     async def sub_expire_due(self) -> list:
-        """کاربرانی که تاریخ پایانشان گذشته ولی هنوز status=active مانده"""
-        now_iso = utc_now_iso()
-        due = await self.subscriptions.find(
-            {'status': 'active', 'end_date': {'$lt': now_iso}}
-        ).to_list(500)
+        """کاربرانی که لحظه‌ی پایانشان گذشته ولی هنوز status=active مانده."""
+        due = await self._active_subs_in_window(
+            latest=now_utc(), latest_inclusive=False, limit=500)
         if due:
             await self.subscriptions.update_many(
                 {'_id': {'$in': [d['_id'] for d in due]}},
@@ -471,16 +796,17 @@ class DBFinance:
         """
         اشتراک‌های فعالی که کمتر از N روز تا پایانشان مانده و هنوز
         یادآوری مخصوص همان فلگ (سه‌روزه یا یک‌روزه) را نگرفته‌اند.
-        FIX جدید: دو یادآوری جدا (۳ روز و ۱ روز قبل) — دقیقاً مثل
-        الگوی یادآوری‌های پلکانی امتحان که در ربات وجود دارد.
+        تصمیم با لحظه‌ی پارس‌شده است، نه ترتیب رشته‌ی ISO.
         """
+        if not isinstance(flag_field, str) or not flag_field.replace('_', '').isalnum():
+            return []
         now = now_utc()
-        cutoff = (now + timedelta(days=days_before)).isoformat()
-        return await self.subscriptions.find({
-            'status': 'active',
-            'end_date': {'$gte': now.isoformat(), '$lte': cutoff},
-            flag_field: {'$ne': True},
-        }).to_list(500)
+        return await self._active_subs_in_window(
+            earliest=now,
+            latest=now + timedelta(days=days_before),
+            extra={flag_field: {'$ne': True}},
+            limit=500,
+        )
 
 
     async def sub_mark_reminder_sent(self, user_id: int, flag_field: str):
@@ -496,14 +822,17 @@ class DBFinance:
         pending = await self.sub_payments.count_documents({'status': 'pending'})
         approved_total = await self.sub_payments.count_documents({'status': 'approved'})
         rejected_total = await self.sub_payments.count_documents({'status': 'rejected'})
-        month_start = start_of_month_tehran().astimezone(now_utc().tzinfo).isoformat()
+        month_start_dt = start_of_month_tehran().astimezone(now_utc().tzinfo)
         revenue_total = revenue_month = 0
         plan_counter: dict = {}
         async for p in self.sub_payments.find({'status': 'approved'}):
             amt = p.get('final_price', p.get('price', 0))
             revenue_total += amt
-            if p.get('reviewed_at', '') >= month_start:
-                revenue_month += amt
+            try:
+                if parse_machine_datetime(p.get('reviewed_at')) >= month_start_dt:
+                    revenue_month += amt
+            except (TimeContractError, ValueError, TypeError):
+                pass
             plan_counter[p.get('plan_name', '-')] = plan_counter.get(p.get('plan_name', '-'), 0) + 1
         top_plan = max(plan_counter, key=plan_counter.get) if plan_counter else '-'
         conv_rate = round(approved_total / (approved_total + rejected_total) * 100) if (approved_total + rejected_total) else 0
@@ -566,8 +895,17 @@ class DBFinance:
     async def sub_payment_create(self, user_id: int, plan_id: str, plan_name: str,
                                   price: int, final_price: int, screenshot_file_id: str,
                                   discount_code: str = None,
-                                  discount_percent: int = None) -> str:
-        r = await self.sub_payments.insert_one({
+                                  discount_percent: int = None,
+                                  gift_to: int = 0, gift_message: str = "",
+                                  idem_key: str = "") -> str:
+        # 🌊 GIFT — idempotency: کلاینت (بات/مینی‌اپ) توکن یکتا می‌فرستد؛
+        # double-click یا retry همان سند را برمی‌گرداند، نه سند دوم.
+        if idem_key:
+            existing = await self.sub_payments.find_one(
+                {'idem_key': idem_key}, {'_id': 1})
+            if existing:
+                return str(existing['_id'])
+        doc = {
             'user_id': user_id, 'plan_id': plan_id, 'plan_name': plan_name,
             'price': price, 'final_price': final_price,
             'discount_code': discount_code,
@@ -577,9 +915,217 @@ class DBFinance:
             'screenshot_file_id': screenshot_file_id,
             'status': 'pending', 'submitted_at': utc_now_iso(),
             'admin_msg_id': None,
-        })
+        }
+        # 🌊 GIFT — هدیه یعنی همان خرید عادی + گیرنده؛ نه کالکیشن جدید.
+        # gift.activated_at نگهبان فعال‌سازی تکراری است (الگوی AUDIT-A1).
+        if gift_to:
+            doc['gift'] = {'to': int(gift_to),
+                           'message': (gift_message or '').strip()[:300],
+                           'activated_at': None}
+        if idem_key:
+            doc['idem_key'] = idem_key
+        r = await self.sub_payments.insert_one(doc)
         return str(r.inserted_id)
 
+    @_referral_first_buy_trigger
+    async def finalize_approved_payment(self, payment: dict, admin_id: int) -> dict:
+        """🌊 GIFT — تنها نقطه‌ی فعال‌سازی پس از تأیید رسید (بات و وب مشترک).
+
+        رسید عادی → اشتراکِ payer؛ رسید هدیه → اشتراکِ گیرنده.
+        extend=True رفتار واقعیِ معماری فعلی برای اشتراک فعال است
+        (تصمیم ثبت‌شده D1: هدیه روی اشتراک فعال، تمدید می‌کند نه صف/رد).
+        فعال‌سازی هدیه یک‌بار است: لایه‌ی اول، CAS تصمیم (pending→approved)
+        است که فقط یک بار موفق می‌شود؛ لایه‌ی دوم (اینجا)، اگر
+        gift.activated_at پر شده باشد روزی اضافه نمی‌کند."""
+        gift = payment.get('gift') or {}
+        target = int(gift.get('to') or 0) or int(payment['user_id'])
+        # 🌊 W6.2 — رسید شارژ کیف پول: تأیید ادمین = اعتبار به کیف پول.
+        # همان الگوی هدیه برای یکباربودن: wallet_credit با مرجع یکتا
+        # ('sub_payment_topup', pid) — ری‌تری هرگز اعتبار دوم نمی‌سازد.
+        if str(payment.get('plan_id') or '') == 'wallet_topup':
+            amount = int(payment.get('final_price') or payment.get('price') or 0)
+            if amount <= 0:
+                raise ValueError('topup_amount_invalid')
+            if payment.get('topup_credited_at'):
+                return {'target_uid': target, 'is_topup': True,
+                        'amount': amount, 'already': True}
+            tx = await self.wallet_credit(
+                int(payment['user_id']), amount, 'topup_credit',
+                'sub_payment_topup', str(payment['_id']), int(admin_id),
+                'شارژ کیف پول — رسید تأییدشده')
+            await self.sub_payments.update_one(
+                {'_id': payment['_id'], 'topup_credited_at': None},
+                {'$set': {'topup_credited_at': utc_now_iso()}})
+            return {'target_uid': int(payment['user_id']), 'is_topup': True,
+                    'amount': amount,
+                    'balance_after': tx.get('balance_after'),
+                    'tx_id': str(tx.get('_id'))}
+        if gift and gift.get('activated_at'):
+            sub = await self.subscriptions.find_one({'_id': target})
+            return {'target_uid': target,
+                    'end_date': (sub or {}).get('end_date'),
+                    'is_gift': True, 'days': 0, 'already': True}
+        plan = await self.sub_plan_get(str(payment.get('plan_id', '')))
+        days = int(plan.get('days', 0) or 0) if plan else 0
+        if days <= 0:
+            raise ValueError('plan_days_invalid')
+        # یک رسید = یک اثر. کلید داخل همان CAS پایان ذخیره می‌شود تا
+        # ری‌تری، حتی بدون gift.activated_at، روز دوم نسازد.
+        applied_marker = {}
+        end_date = await self.sub_activate(
+            target, days, payment.get('plan_name', 'اشتراک'),
+            source='gift' if gift else 'payment',
+            granted_by=admin_id, extend=True,
+            plan_id=str(payment.get('plan_id', '') or ''),
+            effect_key=f"pay:{payment['_id']}",
+            applied_marker=applied_marker)
+        if gift:
+            await self.sub_payments.update_one(
+                {'_id': payment['_id'], 'gift.activated_at': None},
+                {'$set': {'gift.activated_at': utc_now_iso()}})
+        if applied_marker.get('new') is False:
+            return {'target_uid': target, 'end_date': end_date,
+                    'is_gift': bool(gift), 'days': 0, 'already': True}
+        return {'target_uid': target, 'end_date': end_date,
+                'is_gift': bool(gift), 'days': days}
+
+
+    # ── 🌊 W2 — زرین‌پال (auto gateway) ──
+    async def sub_payment_create_zarinpal(self, user_id: int, plan_id: str, plan_name: str,
+                                           price: int, final_price: int,
+                                           authority: str, discount_code: str = None,
+                                           discount_percent: int = None,
+                                           idem_key: str = "") -> str:
+        """رسید زرین‌پال — status='zarinpal_pending' تا verify. authority یکتاست."""
+        if idem_key:
+            ex = await self.sub_payments.find_one({'idem_key': idem_key}, {'_id': 1})
+            if ex:
+                return str(ex['_id'])
+        # authority duplication guard (unique index if exists, else manual)
+        if authority and await self.sub_payments.find_one({'zarinpal_authority': authority}):
+            raise ValueError('authority_duplicate')
+        doc = {
+            'user_id': int(user_id), 'plan_id': str(plan_id), 'plan_name': plan_name,
+            'price': int(price), 'final_price': int(final_price),
+            'discount_code': discount_code, 'discount_percent': discount_percent,
+            'method': 'zarinpal', 'status': 'zarinpal_pending',
+            'zarinpal_authority': authority,
+            'zarinpal_ref_id': None,
+            'submitted_at': __import__('time_utils').utc_now_iso(),
+            'idem_key': idem_key or None,
+        }
+        r = await self.sub_payments.insert_one(doc)
+        return str(r.inserted_id)
+
+    async def sub_payment_find_by_authority(self, authority: str):
+        return await self.sub_payments.find_one({'zarinpal_authority': authority})
+
+    async def sub_payment_mark_zarinpal_pending(self, pid: str, authority: str) -> bool:
+        try:
+            from bson import ObjectId
+            res = await self.sub_payments.update_one(
+                {'_id': ObjectId(pid), 'status': {'$in': ['pending', 'zarinpal_pending', 'wallet_processing']}},
+                {'$set': {'zarinpal_authority': authority, 'method': 'zarinpal', 'status': 'zarinpal_pending'}})
+            return res.modified_count == 1 or await self.sub_payments.find_one({'_id': ObjectId(pid), 'zarinpal_authority': authority}) is not None
+        except Exception:
+            return False
+
+    async def _clear_activation_pending(self, payment_id) -> None:
+        """پرچم را فقط بعد از فعال‌سازی موفق برمی‌دارد."""
+        try:
+            oid = payment_id if isinstance(payment_id, ObjectId) else ObjectId(str(payment_id))
+        except Exception:
+            return
+        try:
+            await self.sub_payments.update_one(
+                {'_id': oid, 'activation_pending': True},
+                {'$set': {'activation_pending': False,
+                          'activation_applied_at': utc_now_iso()}})
+        except Exception as e:
+            logger.warning(f'clear activation_pending failed {payment_id}: {e}')
+
+    async def _resume_approved_activation(self, doc: dict) -> dict:
+        """رسید approved با فعال‌سازی ناتمام را تمام می‌کند؛ درگاه را دوباره نمی‌زند."""
+        try:
+            act = await self.finalize_approved_payment(doc, admin_id=0)
+        except Exception as e:
+            logger.warning(f'activation still pending {doc.get("_id")}: {e}')
+            return {'ok': False, 'reason': str(e),
+                    'activation_pending': True, 'doc': doc}
+        await self._clear_activation_pending(doc.get('_id'))
+        # اگر اثر قبلاً نشسته، already تا روز دوباره اضافه نشود.
+        return {'ok': True, 'already': bool(act.get('already')),
+                'doc': doc, 'activation': act}
+
+    async def sub_payment_verify_zarinpal(self, authority: str, ref_id: str, amount: int = None) -> dict:
+        """CAS اتمیک zarinpal_pending → approved، بعد فعال‌سازی.
+
+        اگر فعال‌سازی بعد از approved بشکند، پرچم می‌ماند و ری‌تری
+        به‌جای alreadyِ دروغین، همان فعال‌سازی را ادامه می‌دهد.
+        """
+        try:
+            doc = await self.sub_payments.find_one_and_update(
+                {'zarinpal_authority': authority, 'status': 'zarinpal_pending'},
+                {'$set': {'status': 'approved', 'zarinpal_ref_id': str(ref_id),
+                          'reviewed_by': 0, 'reviewed_at': utc_now_iso(),
+                          'review_note': f'زرین‌پال تایید شد ref:{ref_id}',
+                          'activation_pending': True}},
+                return_document=True)
+        except Exception as e:
+            logger.warning(f"zarinpal verify CAS failed {authority}: {e}")
+            return {'ok': False, 'reason': str(e)}
+        if not doc:
+            existing = await self.sub_payments.find_one(
+                {'zarinpal_authority': authority})
+            if existing and existing.get('status') == 'approved':
+                if existing.get('activation_pending'):
+                    return await self._resume_approved_activation(existing)
+                return {'ok': True, 'already': True, 'doc': existing}
+            return {'ok': False, 'reason': 'not_pending'}
+        resumed = await self._resume_approved_activation(doc)
+        if resumed.get('ok') and not resumed.get('already'):
+            resumed['already'] = False
+        return resumed
+
+    async def sub_payment_list_cursor(self, status: str = None, after_id: str = None, limit: int = 20, extra: dict = None) -> list:
+        """Cursor pagination (stable, indexed). after_id = last _id from previous page (exclusive)."""
+        q = {}
+        if status:
+            q['status'] = status
+        if extra:
+            q.update(extra)
+        if after_id:
+            try:
+                from bson import ObjectId
+                q['_id'] = {'$lt': ObjectId(str(after_id))}
+            except Exception:
+                pass
+        limit = max(1, min(int(limit), 50))
+        return await self.sub_payments.find(q).sort('_id', -1).limit(limit).to_list(limit)
+
+    async def sub_payment_cancel(self, pid: str, admin_id: int) -> bool:
+        """🌊 GIFT — لغو رسید pending توسط ادمین (CAS؛ فقط pending→cancelled).
+
+        «لغو» با «رد» فرق دارد: رد یعنی رسید بررسی و نامعتبر شد؛ لغو یعنی
+        درخواست از صف خارج شد (مثلاً هدیه‌ی اشتباه). کد تخفیف مصرف‌شده
+        آزاد می‌شود تا ظرفیت نشت نکند (الگوی موج D1)."""
+        try:
+            oid = ObjectId(pid)
+        except Exception:
+            return False
+        r = await self.sub_payments.update_one(
+            {'_id': oid, 'status': 'pending'},
+            {'$set': {'status': 'cancelled',
+                      'decided_at': utc_now_iso(),
+                      'decided_by': admin_id,
+                      'note': 'لغو توسط مدیریت'}})
+        if not r.modified_count:
+            return False
+        doc = await self.sub_payments.find_one({'_id': oid})
+        if doc and doc.get('discount_code'):
+            await self.discount_release(
+                doc['discount_code'], user_id=doc.get('user_id', 0))
+        return True
 
     async def sub_payment_get(self, pid: str):
         try:
@@ -635,6 +1181,46 @@ class DBFinance:
             return res.modified_count == 1
         except Exception as e:
             logger.warning(f"sub_payment_decide failed for {pid}: {e}")
+            return False
+
+
+    async def sub_payment_refund(self, pid: str, admin_id: int, reason: str) -> bool:
+        """🌊 W5 — گذار **اتمیک** approved→refunded، همان الگوی AUDIT-A1.
+
+        شرط `status: 'approved'` داخل خود update است؛ تنها یک فراخوان True
+        می‌گیرد و بقیه 409 می‌خورند — دابل‌کلیک یعنی یک بازگشت وجه، نه دو تا.
+        رسید pending/rejected هرگز قابل refund نیست (چرخه‌ی مالی بسته می‌ماند)."""
+        try:
+            res = await self.sub_payments.update_one(
+                {'_id': ObjectId(pid), 'status': 'approved'},
+                {'$set': {'status': 'refunded', 'refunded_by': admin_id,
+                          'refunded_at': utc_now_iso(),
+                          'refund_reason': reason}})
+            return res.modified_count == 1
+        except Exception as e:
+            logger.warning(f"sub_payment_refund failed for {pid}: {e}")
+            return False
+
+    async def sub_payment_mark_discount_overrun(self, authority: str) -> bool:
+        """🌊 W3 — پرچم overrun تخفیف روی پرداخت تأییدشده (بازبینی مغایرت‌گیری)."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"zarinpal_authority": authority},
+                {"$set": {"discount_overrun": True}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark discount_overrun failed {authority}: {e}")
+            return False
+
+    async def sub_payment_mark_gateway_reversal(self, pid: str) -> bool:
+        """🌊 W3/MISS-02 — علامت «بازوی درگاهی دستی» روی رسید refundشده."""
+        try:
+            r = await self.sub_payments.update_one(
+                {"_id": ObjectId(pid)},
+                {"$set": {"gateway_reversal": "manual_required"}})
+            return r.modified_count == 1
+        except Exception as e:
+            logger.warning(f"mark gateway_reversal failed {pid}: {e}")
             return False
 
 

@@ -6,6 +6,7 @@ import {
   Modal, Switch,
 } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { formatFaDate, formatFaDayMonth } from '../time.js';
 import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 
@@ -13,9 +14,14 @@ const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;
 const TABS = [
   ['control', '⚙️ مرکز کنترل'],
+  ['gateway', '💳 درگاه زرین‌پال'],
   ['payments', '🧾 رسیدها'],
   ['subscribers', '👥 مشترکین'],
   ['discounts', '🎁 تخفیف و کمپین'],
+  ['finance', '💰 مالی'],
+  ['reconcile', '⚖️ مغایرت‌گیری'],
+  ['wallets', '👛 کیف پول‌ها'],
+  ['gifts', '🎀 هدایا'],
 ];
 
 export default function Subscriptions({ route = '' }) {
@@ -23,7 +29,15 @@ export default function Subscriptions({ route = '' }) {
   const requested = params.get('tab');
   const [tab, setTab] = useState(TABS.some(([k]) => k === requested) ? requested : 'control');
   useEffect(() => { if (TABS.some(([k]) => k === requested)) setTab(requested); }, [requested]);
-  const changeTab = value => { setTab(value); writeHashQuery('/subscriptions', { tab: value !== 'control' ? value : '' }); };
+  const changeTab = value => { setDeep(null); setTab(value); writeHashQuery('/subscriptions', { tab: value !== 'control' ? value : '' }); };
+  // 🌊 W5 — دیپ‌لینک داخلی از مغایرت‌گیری به رسیدها/مشترکین با همان q
+  const [deep, setDeep] = useState(null);
+  const internalGo = path => {
+    const u = new URLSearchParams((path || '').split('?')[1] || '');
+    const t = TABS.some(([k]) => k === u.get('tab')) ? u.get('tab') : 'payments';
+    setDeep({ tab: t, q: u.get('q') || '', status: u.get('status') || '' });
+    setTab(t);
+  };
   const [ov, setOv] = useState(null);
   const [err, setErr] = useState('');
   const [denied, setDenied] = useState(false);
@@ -63,9 +77,14 @@ export default function Subscriptions({ route = '' }) {
       <Tabs items={TABS} value={tab} onChange={changeTab} label="بخش‌های اشتراک" />
 
       {tab === 'control' && <ControlPanel ov={ov} refresh={loadOverview} />}
+      {tab === 'gateway' && <GatewayPanel />}
       {tab === 'payments' && <PaymentsPanel initial={{ status: params.get('status') ?? 'pending', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'subscribers' && <SubscribersPanel ov={ov} refreshOverview={loadOverview} initial={{ status: params.get('status') || 'active', q: params.get('q') || '', page: Number(params.get('page')) || 1 }} />}
       {tab === 'discounts' && <DiscountsPanel plans={ov.plans || []} refreshOverview={loadOverview} />}
+      {tab === 'finance' && <FinancialPanel />}
+      {tab === 'reconcile' && <ReconcilePanel onGo={internalGo} />}
+      {tab === 'wallets' && <WalletsPanel initial={{ q: params.get('q') || '' }} />}
+      {tab === 'gifts' && <GiftsPanel />}
     </>
   );
 }
@@ -121,7 +140,7 @@ function ControlPanel({ ov, refresh }) {
           {(ov.plans || []).map(p => <div key={p.id} className="panel panel-pad" style={{ background: 'var(--bg)' }}>
             <div className="row"><b>{p.name}</b><span className="spacer" />
               <B kind={p.active ? 'ok' : 'bad'}>{p.active ? 'فعال' : 'غیرفعال'}</B></div>
-            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B></div>
+            <div className="row" style={{ marginTop: 10 }}><B>{fa(p.days)} روز</B><B kind="acc">{money(p.price)}</B>{Number(p.ai_daily_limit) > 0 && <B>🤖 {fa(p.ai_daily_limit)}/روز</B>}{Number(p.max_members) > 1 && <B kind="ok">👨‍👩‍👧 {fa(p.max_members)} نفره</B>}</div>
             <div className="row" style={{ marginTop: 10, gap: 5 }}>
               <button className="btn sm" onClick={() => setPlanEdit(p)}>✏️ ویرایش</button>
               <button className="btn sm" onClick={() => setPlanEdit({ ...p, _clone: true })}>📄 کپی</button>
@@ -167,12 +186,16 @@ function CardPanel({ card, refresh }) {
 
 function PlanModal({ plan, onClose, onDone }) {
   const clone = !!plan?._clone; const edit = !!plan && !clone;
-  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0 });
+  const [f, setF] = useState({ name: clone ? `${plan.name} — کپی` : plan?.name || '', days: plan?.days || 30, price: plan?.price || 0, ai_daily_limit: plan?.ai_daily_limit || 0, max_members: plan?.max_members || 1 });
+  const [ent, setEnt] = useState({ ...(plan?.entitlements || {}) });
+  const [featList, setFeatList] = useState([]);
+  // 🌊 W7 — کاتالوگ فیچرها از همان API پنل دسترسی (تک‌منبع)
+  useEffect(() => { api.featuresList().then(r => setFeatList(r.items || [])).catch(() => {}); }, []);
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     try {
-      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price) };
+      const body = { name: f.name.trim(), days: Number(f.days), price: Number(f.price), ai_daily_limit: Number(f.ai_daily_limit) || 0, entitlements: ent, max_members: Math.max(1, Math.min(50, Number(f.max_members) || 1)) };
       if (edit) await api.subPlanUpdate(plan.id, body); else await api.subPlanAdd(body);
       toast(edit ? 'پلن ویرایش شد ✅' : 'پلن ساخته شد ✅'); onDone();
     } catch (e) { toast(errText(e), 'err'); }
@@ -184,7 +207,19 @@ function PlanModal({ plan, onClose, onDone }) {
       <div className="row"><label className="fld" style={{ flex: 1 }}><span>تعداد روز</span>
         <input className="inp" type="number" min="1" max="3650" value={f.days} onChange={e => setF({ ...f, days: e.target.value })} /></label>
         <label className="fld" style={{ flex: 1 }}><span>قیمت (تومان)</span>
-        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label></div>
+        <input className="inp" type="number" min="0" value={f.price} onChange={e => setF({ ...f, price: e.target.value })} /></label>
+        <label className="fld" style={{ flex: 1 }}><span>سهمیه هوشیار/روز (۰=سراسری)</span>
+        <input className="inp" type="number" min="0" max="100000" value={f.ai_daily_limit} onChange={e => setF({ ...f, ai_daily_limit: e.target.value })} /></label>
+        <label className="fld" style={{ flex: 1 }}><span>ظرفیت خانواده (۱=شخصی)</span>
+        <input className="inp" type="number" min="1" max="50" value={f.max_members} onChange={e => setF({ ...f, max_members: e.target.value })} /></label></div>
+      {!!featList.length && <div><span className="muted">فیچرهای این پلن (پیش‌فرض: همه باز)</span>
+        <div className="grid g3" style={{ marginTop: 6 }}>
+          {featList.map(it => <label key={it.key} className="row" style={{ gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={ent[it.key] !== false}
+              onChange={e => setEnt({ ...ent, [it.key]: e.target.checked })} />
+            <span>{it.label}</span>
+          </label>)}
+        </div></div>}
       <div className="row"><button className="btn primary" disabled={busy || f.name.trim().length < 2 || Number(f.days) < 1}
         onClick={save}>{busy ? '⏳ …' : 'ذخیره'}</button><button className="btn" onClick={onClose}>انصراف</button></div>
     </div>
@@ -193,6 +228,7 @@ function PlanModal({ plan, onClose, onDone }) {
 
 function PaymentsPanel({ initial = {} }) {
   const [status, setStatus] = useState(initial.status ?? 'pending');
+  const [kind, setKind] = useState(''); // 🌊 W7 — نوع رسید: ''|normal|topup|gift
   const [q, setQ] = useState(initial.q || '');
   const [search, setSearch] = useState(initial.q || '');
   const [page, setPage] = useState(initial.page || 1);
@@ -200,15 +236,16 @@ function PaymentsPanel({ initial = {} }) {
   const [err, setErr] = useState('');
   const [rcpt, setRcpt] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [refund, setRefund] = useState(null); // 🌊 W5
   const [visibleColumns, setVisibleColumns] = useState([]);
   const LIMIT = 25;
 
   const load = async () => {
     setErr(''); setData(null);
-    try { setData(await api.subPayments({ status, search, skip: (page - 1) * LIMIT, limit: LIMIT })); }
+    try { setData(await api.subPayments({ status, kind, search, skip: (page - 1) * LIMIT, limit: LIMIT })); }
     catch (e) { setErr(errText(e)); }
   };
-  useEffect(() => { load(); }, [status, search, page]);
+  useEffect(() => { load(); }, [status, kind, search, page]);
   useEffect(() => { writeHashQuery('/subscriptions', { tab: 'payments', status: status !== 'pending' ? status : '', q: search, page: page > 1 ? page : '' }); }, [status, search, page]);
   const decide = (pay, approved, note = '') => setConfirm({ pay, approved, note });
   const doDecision = async () => {
@@ -224,9 +261,12 @@ function PaymentsPanel({ initial = {} }) {
     { k: 'has_receipt', label: 'رسید', render: r => r.has_receipt ? <B kind="acc">🖼 دارد</B> : '—' },
     { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
     { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{r.status}</B> },
-    { k: 'ops', label: '', stop: true, render: r => r.status === 'pending' && <div className="row" style={{ gap: 4 }}>
-      <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
-      <button className="btn sm danger" onClick={() => decide(r, false)} aria-label="رد رسید پرداخت">❌</button></div> },
+    { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
+      {r.status === 'pending' && <>
+        <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
+        <button className="btn sm danger" onClick={() => decide(r, false)} aria-label="رد رسید پرداخت">❌</button></>}
+      {r.status === 'approved' && <button className="btn sm danger" onClick={() => setRefund(r)} aria-label="بازگشت وجه" title="بازگشت وجه رسید تأییدشده (W5)">💸</button>}
+    </div> },
   ];
   if (err) return <ErrorState error={err} onRetry={load} />;
   const total = data?.total || 0;
@@ -235,6 +275,11 @@ function PaymentsPanel({ initial = {} }) {
       <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="وضعیت پرداخت‌ها">
         {[['pending', 'در انتظار'], ['approved', 'تأیید'], ['rejected', 'رد'], ['', 'همه']].map(([k, l]) =>
           <button key={k} type="button" role="tab" aria-selected={status === k} className={`tab ${status === k ? 'on' : ''}`} onClick={() => { setStatus(k); setPage(1); }}>{l}</button>)}
+      </div>
+      {/* 🌊 W7 — تفکیک نوع رسید (اشتراک/شارژ/هدیه) — همان داده، بدون ستون جدید */}
+      <div className="tabs" style={{ border: 0, margin: 0 }} role="tablist" aria-label="نوع رسید">
+        {[['', 'همه انواع'], ['normal', '🧾 اشتراک'], ['topup', '💰 شارژ'], ['gift', '🎁 هدیه']].map(([k, l]) =>
+          <button key={k || 'all'} type="button" role="tab" aria-selected={kind === k} className={`tab ${kind === k ? 'on' : ''}`} onClick={() => { setKind(k); setPage(1); }}>{l}</button>)}
       </div>
       <span className="spacer" />
       <input className="inp" style={{ minWidth: 250 }} value={q} onChange={e => setQ(e.target.value)}
@@ -249,12 +294,378 @@ function PaymentsPanel({ initial = {} }) {
     {confirm && <Confirm danger={!confirm.approved}
       text={confirm.approved ? `تأیید رسید ${confirm.pay.user_name} و فعال‌سازی اشتراک؟` : `رد رسید ${confirm.pay.user_name}؟`}
       onYes={doDecision} onNo={() => setConfirm(null)} />}
+    {refund && <RefundModal pay={refund} onClose={() => setRefund(null)} onDone={() => { setRefund(null); load(); }} />}
+  </>;
+}
+
+// 🌊 W5 — بازگشت وجه: تأیید صریح + دلیل اجباری + revoke اختیاری اشتراک
+// 💰 W6 — مقصد بازگشت، کیف پول داخلی دانشجوست؛ پیش‌نمایش اثر قبل از تأیید
+function RefundModal({ pay, onClose, onDone }) {
+  const [reason, setReason] = useState('');
+  const [revoke, setRevoke] = useState(true);
+  const [keep, setKeep] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [balance, setBalance] = useState(null);
+  useEffect(() => {
+    api.subWalletDetail(pay.user_id, { limit: 1 })
+      .then(d => setBalance(d.summary.balance)).catch(() => {});
+  }, [pay.user_id]);
+  const amount = pay.final_price ?? pay.price ?? 0;
+  const run = async () => {
+    setBusy(true);
+    try {
+      const body = { confirm: true, reason: reason.trim(), revoke_subscription: revoke };
+      if (!revoke && keep) body.keep_subscription = true;
+      const r = await api.subRefund(pay.id, body);
+      toast(r.wallet_credited
+        ? `بازگشت وجه ثبت شد 💸 — ${money(amount)} به کیف پول دانشجو منتقل شد`
+        : 'بازگشت وجه ثبت شد 💸', r.wallet_credited ? 'ok' : 'warn');
+      // 🌊 W3/MISS-02 — بازوی درگاهی دستی
+      if (r.gateway_reversal === 'manual_required') {
+        toast('⚠️ پول واقعی در درگاه گرفته شده — در پنل زرین‌پال هم برگشت وجه را ثبت کن', 'warn');
+      }
+      onDone();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <Modal title={`💸 بازگشت وجه به کیف پول — ${pay.user_name || pay.user_id}`} onClose={onClose}>
+    <p className="muted" style={{ marginTop: 0 }}>
+      مبلغ معتبرِ خودِ رسید به <b>کیف پول پرداخت‌کننده</b> برمی‌گردد.
+      پیش‌فرض این است که دسترسی فعال هم قطع شود؛ وگرنه دانشجو هم پول را دارد هم اشتراک را.
+      نگه داشتن دسترسی فقط با تأیید صریح ممکن است.
+    </p>
+    <div className="row q-missing" style={{ marginBottom: 10 }}>
+      <B kind="acc">👤 {pay.user_name || `کاربر ${pay.user_id}`}</B>
+      {pay.plan_name && <B kind="acc">📦 {pay.plan_name}</B>}
+      <B kind="ok">مبلغ قابل بازگشت: {money(amount)}</B>
+      {balance != null && <B kind="ok">کیف پول: {money(balance)} ← {money(balance + amount)}</B>}
+    </div>
+    <input className="inp" placeholder="دلیل بازگشت وجه (حداقل ۳ نویسه) *" value={reason} onChange={e => setReason(e.target.value)} />
+    <label className="row" style={{ marginTop: 10 }}>
+      <input type="checkbox" checked={revoke} onChange={e => { setRevoke(e.target.checked); if (e.target.checked) setKeep(false); }} />
+      <span>اشتراک فعال قطع شود (پیشنهادی)</span>
+    </label>
+    {!revoke && (
+      <label className="row" style={{ marginTop: 8 }}>
+        <input type="checkbox" checked={keep} onChange={e => setKeep(e.target.checked)} />
+        <span>می‌دانم پول برمی‌گردد و دسترسی فعال می‌ماند؛ عمداً اشتراک را نگه دار</span>
+      </label>
+    )}
+    <div className="row" style={{ marginTop: 12 }}>
+      <button className="btn danger" disabled={busy || reason.trim().length < 3 || (!revoke && !keep)} onClick={run}>
+        {`ثبت بازگشت ${money(amount)} به کیف پول`}
+      </button>
+      <button className="btn" onClick={onClose}>انصراف</button>
+    </div>
+  </Modal>;
+}
+
+// 🌊 W5 — مغایرت‌گیری مالی: ناهم‌خوانی‌های پول/دسترسی بین sub_payments و subscriptions
+// 🌊 GIFT — پنل مدیریت هدیه‌ها: فهرست/فیلتر/صفحه‌بندی + لغو pending
+// و ارسال دوباره‌ی اعلان. تأیید هدیه همان تصمیم رسید است (تب رسیدها) —
+// هیچ «فعال‌سازی دستی کور» وجود ندارد.
+const GIFT_STATUS_FA = {
+  pending: ['در انتظار', 'warn'],
+  approved: ['فعال‌شده', 'ok'],
+  rejected: ['رد شده', 'bad'],
+  refunded: ['بازگشت وجه', 'bad'],
+  cancelled: ['لغو شده', ''],
+};
+
+function GiftsPanel() {
+  const [status, setStatus] = useState('all');
+  const [payer, setPayer] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState('');
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const PER = 20;
+  const load = () => {
+    setErr(''); setData(null);
+    api.subGifts({ status, payer: payer || 0, recipient: recipient || 0, page, per_page: PER })
+      .then(setData).catch(e => setErr(errText(e)));
+  };
+  useEffect(() => { load(); }, [status, payer, recipient, page]);
+  useEffect(() => { writeHashQuery('/subscriptions', { tab: 'gifts', status: status !== 'all' ? status : '', page: page > 1 ? page : '' }); }, [status, page]);
+
+  const doCancel = async () => {
+    const r = cancelTarget; setCancelTarget(null);
+    if (!r) return;
+    setBusy(r.id);
+    try { await api.subGiftCancel(r.id); toast('هدیه لغو شد'); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+
+  const retryNotify = async (r) => {
+    setBusy(r.id);
+    try { await api.subGiftRetryNotify(r.id); toast('اعلان گیرنده دوباره در صف ارسال قرار گرفت'); }
+    catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+
+  const pages = data ? Math.max(1, Math.ceil(data.total / PER)) : 1;
+
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <b>🎀 هدیه‌های اشتراک</b>
+      <select className="inp" style={{ width: 'auto' }} value={status} onChange={e => { setStatus(e.target.value); setPage(1); }}>
+        <option value="all">همه</option>
+        <option value="pending">در انتظار</option>
+        <option value="approved">فعال‌شده</option>
+        <option value="rejected">رد شده</option>
+        <option value="refunded">بازگشت وجه</option>
+        <option value="cancelled">لغو شده</option>
+      </select>
+      <input className="inp" style={{ width: 150 }} placeholder="آیدی پرداخت‌کننده…" value={payer}
+        onChange={e => setPayer(e.target.value.replace(/\D/g, ''))} />
+      <input className="inp" style={{ width: 150 }} placeholder="آیدی گیرنده…" value={recipient}
+        onChange={e => setRecipient(e.target.value.replace(/\D/g, ''))} />
+      <span className="spacer" />
+      <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+    </div>
+    <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+      <span className="muted small">تأیید/رد هدیه از تب «رسیدها» انجام می‌شود — همان رسید، همان تصمیم. اینجا فقط لغو pending و retry اعلان.</span>
+    </div>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && <>
+      <DataTable rowKey="id" rows={data.items}
+        empty={<Empty icon="🎀" text="هدیه‌ای ثبت نشده است" />} columns={[
+          { k: 'payer', label: 'پرداخت‌کننده', render: r => <span>{r.payer_name} <span className="muted">#{fa(r.payer_id)}</span></span> },
+          { k: 'recipient', label: 'گیرنده', render: r => <span>{r.recipient_name} <span className="muted">#{fa(r.recipient_id)}</span></span> },
+          { k: 'plan_name', label: 'پلن' },
+          { k: 'final_price', label: 'مبلغ', render: r => money(r.final_price) },
+          { k: 'status', label: 'وضعیت', render: r => { const [l, kind] = GIFT_STATUS_FA[r.status] || [r.status, '']; return <B kind={kind}>{l}</B>; } },
+          { k: 'message', label: 'پیام', render: r => r.message ? <span title={r.message}>{r.message.length > 40 ? r.message.slice(0, 40) + '…' : r.message}</span> : '—' },
+          { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
+          { k: 'activated_at', label: 'فعال‌سازی', render: r => r.activated_at ? <FaDateTime value={r.activated_at} /> : '—' },
+          { k: 'ops', label: 'عملیات', render: r => <div className="row" style={{ gap: 6 }}>
+            {r.status === 'pending' && <button className="btn sm danger" disabled={busy === r.id} onClick={() => setCancelTarget(r)}>لغو</button>}
+            {r.status === 'approved' && <button className="btn sm" disabled={busy === r.id} onClick={() => retryNotify(r)}>📨 اعلان دوباره</button>}
+          </div> },
+        ]} />
+      <div className="row" style={{ justifyContent: 'center', gap: 8, marginTop: 10 }}>
+        <button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹ قبلی</button>
+        <span className="muted">صفحه {fa(page)} از {fa(pages)} — {fa(data.total)} هدیه</span>
+        <button className="btn sm" disabled={page >= pages} onClick={() => setPage(p => p + 1)}>بعدی ›</button>
+      </div>
+    </>}
+    {cancelTarget && <Confirm danger
+      text={`هدیه‌ی «${cancelTarget.plan_name}» از ${cancelTarget.payer_name} به ${cancelTarget.recipient_name} لغو شود؟ ظرفیت کد تخفیف (اگر داشت) آزاد می‌شود.`}
+      onYes={doCancel} onNo={() => setCancelTarget(null)} />}
+  </div>;
+}
+
+// 🌊 W5 — مغایرت‌گیری مالی انسانی: هر ناهم‌خوانی یک جمله‌ی قابل‌فهم است
+// (چه چیزی، چرا، چه اثری) + اقدام مستقیم یا دیپ‌لینک. ID فقط در جزئیات فنی.
+function ReconcilePanel({ onGo }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [confirmAct, setConfirmAct] = useState(null);
+  const [confirmRecredit, setConfirmRecredit] = useState(null);
+  const [confirmResync, setConfirmResync] = useState(null);
+  const [confirmResolve, setConfirmResolve] = useState(null);
+  const [confirmFinalize, setConfirmFinalize] = useState(null);
+  const [busy, setBusy] = useState('');
+  const load = () => { setErr(''); setData(null); api.subReconcile().then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  const activate = async item => {
+    setBusy(item.payment_id);
+    try {
+      await api.subReconcileActivate(item.payment_id);
+      toast('اشتراک با فعال‌سازی امن فعال شد ✅ — مورد از مغایرت خارج شد', 'ok');
+      setConfirmAct(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 💰 W6 — اقدام امن «اعتبار مجدد کیف پول»: idempotent در بک‌اند
+  const recredit = async item => {
+    setBusy(item.payment_id);
+    try {
+      const r = await api.subWalletRecredit(item.payment_id);
+      toast(`مبلغ ${money(item.amount)} به کیف پول اعتبار شد ✅`, 'ok');
+      setConfirmRecredit(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 🌊 W6.2 — اعمال اعتبار رسید شارژ (اجرای دوباره‌ی finalize — idempotent)
+  const finalizeTopup = async item => {
+    setBusy(item.payment_id);
+    try {
+      const r = await api.subReconFinalizeTopup(item.payment_id);
+      toast(r.already_credited
+        ? 'اعتبار قبلاً ثبت شده بود — اثر دوم ساخته نشد ✅'
+        : `اعتبار شارژ ${money(r.amount)} اعمال شد ✅`, 'ok');
+      setConfirmFinalize(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 💰 W6 — هم‌ترازسازی موجودی کش با ledger (ledger منبع حقیقت است)
+  const resync = async item => {
+    setBusy(`resync-${item.user_id}`);
+    try {
+      const r = await api.subWalletResync(item.user_id);
+      toast(`موجودی با ledger هم‌تراز شد: ${money(r.balance)} ✅`, 'ok');
+      setConfirmResync(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  // 🌊 W6.1 — تعیین تکلیف تراکنش معلق (کرش): تشخیص اعمالِ اثر در بک‌اند
+  // evidence-based است؛ اینجا فقط انتخاب ادمین + تأیید است.
+  const resolveTx = async (txId, action) => {
+    setBusy(`tx-${txId}`);
+    try {
+      const r = await api.subWalletTxResolve(txId, action);
+      toast(action === 'complete'
+        ? (r.resolution === 'applied_now'
+          ? 'اثر تراکنش همین حالا اتمیک اعمال شد ✅'
+          : 'اثر مالی قبلاً اعمال شده بود — فقط نشان‌گذاری شد (بدون اثر دوم) ✅')
+        : 'تراکنش لغو شد — در صورت لزوم جبران مالی ثبت شد ✅', 'ok');
+      setConfirmResolve(null); load();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(''); }
+  };
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <b>⚖️ مغایرت‌گیری مالی</b>
+      {data && <B kind={data.summary.total ? 'bad' : 'ok'}>{data.summary.total ? `${fa(data.summary.total)} ناهم‌خوانی باز` : 'بدون ناهم‌خوانی ✅'}</B>}
+      {data && data.summary.resolved_today > 0 && <B kind="ok">✅ رفع‌شده امروز: {fa(data.summary.resolved_today)}</B>}
+      <span className="spacer" />
+      <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+    </div>
+    <div className="panel panel-pad data-quality-note" style={{ marginBottom: 10 }}>
+      <B kind="acc">مغایرت یعنی چه؟</B>
+      <span>مقایسه‌ی «رسید ↔ اشتراک ↔ وضعیت مالی»: مثلاً پول تأیید شده ولی دسترسی فعال نشده، یا برعکس. هر مورد زیر دقیقاً می‌گوید چه چیزی ناهم‌خوان است و چه اقدامی ممکن است.</span>
+    </div>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && !data.items.length && <Empty icon="✅" text="مغایرت مالی فعالی وجود ندارد — رسیدها و اشتراک‌ها هم‌خوان‌اند." />}
+    {data && !!data.items.length && <div className="q-list">
+      {data.items.map((r, i) => <div key={`${r.type}-${r.payment_id || r.user_id}-${i}`} className={`q-issue q-issue--${r.severity === 'warning' ? 'warning' : 'critical'}`}>
+        <div className="q-issue-head">
+          <span className="q-issue-icon">⚖️</span>
+          <div style={{ flex: 1 }}>
+            <b>{r.user_name || `کاربر #${fa(r.user_id)}`}</b>
+            <div className="muted" style={{ marginTop: 2 }}>{r.summary}</div>
+          </div>
+          <B kind={r.severity === 'warning' ? 'warn' : 'bad'}>{r.label}</B>
+        </div>
+        <div className="row q-missing">
+          {r.user_name && <B kind="acc">👤 {r.user_name}</B>}
+          {r.student_id && <B kind="acc">🎓 {r.student_id}</B>}
+          {r.amount != null && <B kind="ok">💰 {money(r.amount)}</B>}
+          {r.plan_name && <B kind="acc">📦 {r.plan_name}</B>}
+          {r.at && <B kind="warn">🕓 <FaDateTime value={r.at} /></B>}
+        </div>
+        <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+          {(r.actions || []).map(a => a.key === 'activate'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmAct(r)}>✅ {a.label}</button>
+            : a.key === 'recredit'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmRecredit(r)}>💰 {a.label}</button>
+            : a.key === 'finalize_topup'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmFinalize(r)}>💳 {a.label}</button>
+            : a.key === 'resync'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResync(r)}>⚖️ {a.label}</button>
+            : a.key === 'resolve_tx'
+            ? <button key={a.key} className="btn sm ok" disabled={!!busy} onClick={() => setConfirmResolve({ item: r, tx_id: a.tx_id })}>⏳ {a.label}</button>
+            : <button key={a.key} className="btn sm" onClick={() => onGo?.(a.go)}>{a.label} ‹</button>)}
+          {(busy === r.payment_id || busy === `resync-${r.user_id}`) && <span className="muted">…</span>}
+        </div>
+        {r.technical && <details className="q-tech"><summary>جزئیات فنی</summary><div className="code muted">{r.technical}</div></details>}
+      </div>)}
+    </div>}
+    {confirmAct && <Confirm onNo={() => setConfirmAct(null)} onYes={() => activate(confirmAct)}
+      text={`فعال‌سازی امن اشتراک برای ${confirmAct.user_name || `کاربر #${fa(confirmAct.user_id)}`}؟ دوره از پلن واقعی رسید (${confirmAct.plan_name || 'نامشخص'}) محاسبه می‌شود و اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmRecredit && <Confirm onNo={() => setConfirmRecredit(null)} onYes={() => recredit(confirmRecredit)}
+      text={`اعتبار مجدد ${money(confirmRecredit.amount)} به کیف پول ${confirmRecredit.user_name || `کاربر #${fa(confirmRecredit.user_id)}`}؟ این اقدام idempotent است (اجرای دوباره = یک اثر) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmFinalize && <Confirm onNo={() => setConfirmFinalize(null)} onYes={() => finalizeTopup(confirmFinalize)}
+      text={`اعمال اعتبار شارژ ${money(confirmFinalize.amount)} به کیف پول ${confirmFinalize.user_name || `کاربر #${fa(confirmFinalize.user_id)}`}؟ همان primitive مشترک تأیید رسید اجرا می‌شود (idempotent — اجرای دوباره اثر دوم نمی‌سازد) و با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+    {confirmResolve && <Modal title="⏳ تعیین تکلیف تراکنش معلق" onClose={() => setConfirmResolve(null)}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        تراکنش معلق یعنی فرآیند بین «ثبت در ledger» و «اعمال اثر» قطع شده (کرش).
+        بک‌اند با مقایسه‌ی موجودی و جمع ledger تشخیص می‌دهد اثر مالی قبلاً اعمال
+        شده یا نه — هیچ‌وقت اثر دوم ساخته نمی‌شود. هر دو اقدام با شدت بحرانی
+        در حسابرسی ثبت می‌شوند.
+      </p>
+      <div className="row q-missing" style={{ marginBottom: 10 }}>
+        <B kind="warn">💰 {money(confirmResolve.item.amount)}</B>
+        <B kind="acc">👤 {confirmResolve.item.user_name || `کاربر #${fa(confirmResolve.item.user_id)}`}</B>
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ok" disabled={!!busy} onClick={() => resolveTx(confirmResolve.tx_id, 'complete')}>
+          ✅ تکمیل — اگر اثر اعمال نشده، اتمیک اعمال شود</button>
+        <button className="btn danger" disabled={!!busy} onClick={() => resolveTx(confirmResolve.tx_id, 'cancel')}>
+          🚫 لغو — اگر اثر اعمال شده، جبران شود</button>
+      </div>
+    </Modal>}
+    {confirmResync && <Confirm onNo={() => setConfirmResync(null)} onYes={() => resync(confirmResync)}
+      text={`موجودی کیف پول ${confirmResync.user_name || `کاربر #${fa(confirmResync.user_id)}`} با جمع ledger هم‌تراز شود؟ ledger منبع حقیقت است و اختلاف ${money(confirmResync.amount)} تومانی حذف می‌شود. اگر جمع ledger منفی باشد، بک‌اند اصلاح خودکار را رد می‌کند. اقدام با شدت بحرانی در حسابرسی ثبت می‌شود.`} />}
+  </div>;
+}
+
+// 🌊 W5 — مرکز مالی: KPIها و روند درآمد از aggregate واقعی بک‌اند،
+// نه شمارش فرانت. بازگشت وجه و نرخ‌ها جدا دیده می‌شوند + خروجی CSV.
+function FinancialPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.subFinance().then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  if (err) return <ErrorState error={err} onRetry={load} />;
+  if (!data) return <Loading rows={5} />;
+  const maxDay = Math.max(1, ...data.daily.map(d => d.total));
+  const pct = v => v == null ? '—' : `${Number(v).toLocaleString('fa-IR')}٪`;
+  return <>
+    <KpiGrid className="dw-sub-kpis">
+      <KpiCard tone="ok" icon="💰" label="درآمد کل (تأییدشده)" value={money(data.revenue_total)} />
+      <KpiCard tone="acc" icon="📅" label="درآمد ۷ روز" value={money(data.revenue_week)} />
+      <KpiCard tone="warn" icon="💸" label="بازگشت وجه" value={`${fa(data.refunded_count)} مورد · ${money(data.revenue_refunded)}`} />
+      <KpiCard tone="warn" icon="🧾" label="در انتظار بررسی" value={fa(data.pending_count)} />
+      <KpiCard tone="acc" icon="📈" label="نرخ تأیید / نرخ بازگشت" value={`${pct(data.success_rate)} / ${pct(data.refund_rate)}`} />
+      {data.wallet && <KpiCard tone="ok" icon="👛" label="موجودی کل کیف پول‌ها" value={`${money(data.wallet.balance)} · ${fa(data.wallet.wallets)} کیف پول`} />}
+    </KpiGrid>
+    {data.wallet && !!Object.keys(data.wallet.by_type || {}).length && <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row"><b>👛 جریان کیف پول</b>
+        <span className="muted">اعتبار/کسر از ledger — تفکیک نوع تراکنش</span></div>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+        {Object.entries(data.wallet.by_type).map(([k, v]) => {
+          const [label, kind] = TX_KIND[k] || [k, 'acc'];
+          return <B key={k} kind={kind}>{label}: {fa(v.count)} تراکنش · {money(v.total)}</B>;
+        })}
+      </div>
+    </div>}
+    <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row"><b>📈 درآمد ۱۴ روز اخیر</b><span className="spacer" />
+        <button className="btn sm" onClick={() => api.exportPaymentsCsv({})}>⬇️ خروجی CSV رسیدها</button></div>
+      {!data.daily.length ? <Empty icon="📈" text="در این بازه رسید تأییدشده‌ای ثبت نشده" /> :
+        <div className="fin-bars" role="img" aria-label="نمودار درآمد روزانه">
+          {data.daily.map(d => <div key={d.day} className="fin-bar-col">
+            <div className="fin-bar" style={{ height: `${Math.max(4, Math.round(100 * d.total / maxDay))}%` }} title={`${formatFaDate(d.day)}: ${money(d.total)}`} />
+            <span className="fin-bar-day">{formatFaDayMonth(d.day)}</span>
+          </div>)}
+        </div>}
+    </div>
+    <div className="panel panel-pad" style={{ marginTop: 12 }}>
+      <div className="row"><b>💸 آخرین بازگشت وجه‌ها</b></div>
+      {!data.refunds.length ? <Empty icon="💸" text="بازگشت وجهی ثبت نشده است" /> :
+        <DataTable rowKey="payment_id" rows={data.refunds} columns={[
+          { k: 'user_name', label: 'کاربر', render: r => <div><b>{r.user_name || `#${fa(r.user_id)}`}</b></div> },
+          { k: 'amount', label: 'مبلغ', render: r => money(r.amount) },
+          { k: 'reason', label: 'دلیل' },
+          { k: 'at', label: 'تاریخ', render: r => <FaDateTime value={r.at} /> },
+        ]} />}
+    </div>
   </>;
 }
 
 function ReceiptDrawer({ pay: r, decide, onClose }) {
   const [note, setNote] = useState('');
   const [imgErr, setImgErr] = useState(false);
+  // 🌊 W5 — ردیابی کامل: User → Payment → Subscription → Refund → Audit
+  const [trace, setTrace] = useState(null); const [traceOpen, setTraceOpen] = useState(false);
+  const loadTrace = () => { setTrace(null); api.subPaymentTrace(r.id).then(setTrace).catch(e => toast(errText(e), 'err')); };
   const sendToMe = async () => {
     try { await api.subSendReceipt(r.id); toast('تصویر رسید در تلگرام برای شما ارسال شد'); }
     catch (e) { toast(errText(e), 'err'); }
@@ -269,6 +680,35 @@ function ReceiptDrawer({ pay: r, decide, onClose }) {
           'ثبت': r.submitted_at, 'یادداشت بررسی': r.review_note,
         }).filter(([, v]) => v).map(([k, v]) => <React.Fragment key={k}><dt>{k}</dt><dd>{k === 'ثبت' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>)}</dl>
         <button className="btn sm" onClick={sendToMe}>📨 ارسال تصویر به تلگرام من</button>
+        <button className="btn sm" style={{ marginInlineStart: 6 }} onClick={() => { setTraceOpen(o => !o); if (!trace) loadTrace(); }}>🔗 ردیابی کامل (کاربر→پرداخت→اشتراک→حسابرسی)</button>
+        {traceOpen && <div className="q-form" style={{ marginTop: 10 }}>
+          {!trace ? <Loading rows={3} /> : <>
+            <div className="row q-missing">
+              <B kind="acc">👤 {trace.user?.name || `#${fa(trace.user?.user_id)}`}</B>
+              {trace.user?.student_id && <B kind="acc">🎓 {trace.user.student_id}</B>}
+              <B kind={trace.payment?.status === 'approved' ? 'ok' : trace.payment?.status === 'pending' ? 'warn' : 'bad'}>وضعیت رسید: {trace.payment?.status}</B>
+              {trace.subscription
+                ? <B kind={trace.subscription.status === 'active' ? 'ok' : 'warn'}>اشتراک: {trace.subscription.status} · پایان <FaDateTime value={trace.subscription.end_date} /></B>
+                : <B kind="warn">اشتراک: فعال نشده</B>}
+              {trace.refund && <B kind="bad">💸 بازگشت وجه: {trace.refund.reason}</B>}
+              {trace.gift && <B kind="acc">🎀 هدیه به #{fa(trace.gift.to)}</B>}
+            </div>
+            {!!(trace.wallet_txs || []).length && <>
+              <div className="muted" style={{ marginTop: 8, fontSize: 'var(--fs-label)' }}>زنجیره‌ی کیف پول:</div>
+              {trace.wallet_txs.map(t => <div key={t.id} className="row" style={{ gap: 6, marginTop: 4 }}>
+                <B kind={t.direction === 'credit' ? 'ok' : 'bad'}>
+                  {t.direction === 'credit' ? '➕' : '➖'} {money(t.amount)}
+                </B>
+                <span className="muted">{t.label} · موجودی پس از آن: {money(t.balance_after)} · <FaDateTime value={t.at} /></span>
+              </div>)}
+            </>}
+            <div className="muted" style={{ marginTop: 8, fontSize: 'var(--fs-label)' }}>خط زمانی حسابرسی:</div>
+            {!trace.audit.length ? <div className="muted">رویداد حسابرسی برای این رسید ثبت نشده.</div> :
+              <ul className="trace-timeline">
+                {trace.audit.map(a => <li key={a.id}><FaDateTime value={a.at} /> — <b>{a.actor_name}</b>: {a.action}</li>)}
+              </ul>}
+          </>}
+        </div>}
         {r.status === 'pending' && <div className="panel panel-pad" style={{ background: 'var(--bg)', marginTop: 10 }}>
           <input className="inp" style={{ width: '100%' }} placeholder="یادداشت بررسی…" value={note} onChange={e => setNote(e.target.value)} />
           <div className="row" style={{ marginTop: 8 }}><button className="btn ok" onClick={() => decide(true, note)}>✅ تأیید</button>
@@ -410,6 +850,34 @@ function BulkGrantModal({ roles, onClose, onDone }) {
   </Modal>;
 }
 
+// 🌊 W8/MISS-03 — مدیریت خانواده‌ی این کاربر (به‌عنوان مالک)
+function FamilyBlock({ uid }) {
+  const [fam, setFam] = useState(null);
+  const [newUid, setNewUid] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = async () => { try { setFam(await api.subFamily(uid)); } catch (e) { /* پلن شخصی/بدون اشتراک */ } };
+  useEffect(() => { load(); }, [uid]);
+  if (!fam || Number(fam.total) <= 1) return null;
+  const act = async (fn, okMsg) => {
+    setBusy(true);
+    try { await fn(); toast(okMsg); setNewUid(''); load(); }
+    catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}><b>👨‍👩‍👧 خانواده</b>
+    <span className="muted"> ({fa(fam.used)} از {fa(Number(fam.total) - 1)} صندلی)</span>
+    <div className="grid" style={{ gap: 6, marginTop: 8 }}>
+      {(fam.members || []).filter(m => m.status === 'active').map(m => <div key={m.user_id} className="row">
+        <span style={{ flex: 1 }}>👤 {m.name || `#${m.user_id}`}</span>
+        <button className="btn sm" disabled={busy} onClick={() => act(() => api.subFamilyRemove(uid, m.user_id), 'عضو حذف شد')}>حذف</button>
+      </div>)}
+    </div>
+    <div className="row" style={{ marginTop: 8 }}><input className="inp" style={{ flex: 1 }} placeholder="user_id عضو جدید…"
+      value={newUid} onChange={e => setNewUid(e.target.value)} />
+      <button className="btn primary sm" disabled={busy || !newUid.trim()} onClick={() => act(() => api.subFamilyAdd(uid, Number(newUid)), 'عضو اضافه شد ✅')}>➕ افزودن</button></div>
+  </div>;
+}
+
 function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
   const [data, setData] = useState(null);
   const [days, setDays] = useState(30);
@@ -445,6 +913,7 @@ function SubscriberDrawer({ uid, plans, onClose, onChanged }) {
         {data.subscription?.status === 'active' && <div className="row" style={{ marginTop: 10 }}><input className="inp" style={{ flex: 1 }} value={reason}
           onChange={e => setReason(e.target.value)} placeholder="دلیل لغو…" /><button className="btn danger" disabled={reason.trim().length < 2} onClick={() => setConfirm(true)}>لغو اشتراک</button></div>}
       </div>
+      <FamilyBlock uid={uid} />
       <div className="sec" style={{ marginTop: 'var(--sp4)' }}>
         <div className="sec-main"><div className="sec-title">📜 تاریخچه پرداخت</div></div>
       </div>
@@ -565,4 +1034,347 @@ function DiscountDrawer({ item, onClose }) {
       </div>)}</div>}
     </>}
   </Drawer>;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 💰 W6 — کیف پول‌ها: لیست + جزئیات ledger + تنظیم دستی (audit‌شده)
+// موجودی همیشه از بک‌اند می‌آید؛ فرانت هیچ عددی را تعیین نمی‌کند.
+// ════════════════════════════════════════════════════════════════
+const TX_KIND = {
+  refund_credit: ['بازگشت وجه', 'ok'],
+  subscription_purchase: ['خرید اشتراک با کیف پول', 'acc'],
+  admin_credit: ['افزایش دستی', 'warn'],
+  admin_debit: ['کسر دستی', 'bad'],
+  reversal: ['اصلاح مالی (جبرانی)', 'warn'],
+  topup_credit: ['شارژ کیف پول (رسید بانکی)', 'ok'],
+};
+
+function WalletsPanel({ initial = {} }) {
+  const [q, setQ] = useState(initial.q || '');
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [selected, setSelected] = useState(null);
+  const limit = 30;
+  const load = () => {
+    setErr('');
+    api.subWallets({ q, skip: (page - 1) * limit, limit }).then(setData).catch(e => setErr(errText(e)));
+  };
+  useEffect(load, [page]);
+  useEffect(() => { const t = setTimeout(() => { setPage(1); load(); }, q ? 250 : 0); return () => clearTimeout(t); }, [q]);
+  return <div className="panel panel-pad" style={{ marginTop: 12 }}>
+    <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+      <b>👛 کیف پول‌ها</b>
+      {data && <B kind="acc">{fa(data.total)} کیف پول</B>}
+      <span className="spacer" />
+      <input className="inp" style={{ width: 220 }} placeholder="جست‌وجو: نام / شماره دانشجویی / آیدی"
+        value={q} onChange={e => setQ(e.target.value)} />
+      <button className="btn sm" onClick={load}>↻</button>
+      <button className="btn sm" onClick={() => api.exportWalletCsv(q && /^\d+$/.test(q) ? { user_id: q } : {})} title="خروجی ledger کامل (۲۰۰۰ ردیف آخر)">⬇️ خروجی CSV ledger</button>
+    </div>
+    <div className="panel panel-pad data-quality-note" style={{ marginBottom: 10 }}>
+      <B kind="acc">کیف پول یعنی چه؟</B>
+      <span>موجودی داخلی دانشجو (تومان). بازگشت وجه به‌جای درگاه به کیف پول می‌نشیند و دانشجو می‌تواند با آن اشتراک بخرد. هر تغییر موجودی یک تراکنش ledger با مرجع مالی دارد.</span>
+    </div>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && !data.items.length && <Empty icon="👛" text="کیف پولی با این جست‌وجو پیدا نشد" />}
+    {data && !!data.items.length && <div className="q-list">
+      {data.items.map(w => <button key={w.user_id} className="panel panel-pad operation-card" style={{ textAlign: 'right' }} onClick={() => setSelected(w)}>
+        <span className="operation-icon">👛</span>
+        <span className="operation-body">
+          <b>{w.user_name || `کاربر #${fa(w.user_id)}`}</b>
+          <span className="muted">{w.student_id ? `🎓 ${w.student_id} · ` : ''}آخرین تغییر: {w.updated_at ? <FaDateTime value={w.updated_at} /> : '—'}</span>
+        </span>
+        <B kind={w.balance > 0 ? 'ok' : ''}>{money(w.balance)}</B><span>‹</span>
+      </button>)}
+    </div>}
+    {data && data.total > limit && <div className="row" style={{ marginTop: 10 }}>
+      <button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹ قبلی</button>
+      <span className="muted">صفحه {fa(page)} از {fa(Math.ceil(data.total / limit))}</span>
+      <span className="spacer" />
+      <button className="btn sm" disabled={page * limit >= data.total} onClick={() => setPage(p => p + 1)}>بعدی ›</button>
+    </div>}
+    {selected && <WalletDrawer uid={selected.user_id} onClose={() => setSelected(null)} onChanged={load} />}
+  </div>;
+}
+
+function WalletDrawer({ uid, onClose, onChanged }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [askAdjust, setAskAdjust] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [txConfirm, setTxConfirm] = useState(null);
+  const load = () => { setErr(''); api.subWalletDetail(uid, { limit: 30 }).then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, [uid]);
+  const adjust = async () => {
+    const amt = parseInt(String(amount).replace(/[^\d-]/g, ''), 10);
+    if (!amt || Math.abs(amt) > 50000000) { toast('مبلغ نامعتبر است', 'err'); return; }
+    setBusy(true);
+    try {
+      const r = await api.subWalletAdjust(uid, { amount: amt, reason: reason.trim(), confirm: true });
+      toast(`موجودی پس از تنظیم: ${money(r.balance_after)}`, 'ok');
+      setAskAdjust(false); setAmount(''); setReason(''); load(); onChanged?.();
+    } catch (e) { toast(errText(e), 'err'); }
+    finally { setBusy(false); }
+  };
+  const s = data?.summary;
+  return <Drawer wide title={`👛 کیف پول — ${s?.user_name || `کاربر #${fa(uid)}`}`} onClose={onClose}>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading rows={4} />}
+    {data && <>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <B kind={s.balance > 0 ? 'ok' : ''}>موجودی: {money(s.balance)}</B>
+        <B kind="ok">جمع اعتبارها: {money(s.credits_total)}</B>
+        <B kind="bad">جمع کسرها: {money(s.debits_total)}</B>
+        <span className="spacer" />
+        <button className="btn sm" disabled={busy} onClick={() => setAskAdjust(v => !v)}>⚖️ تنظیم دستی موجودی</button>
+      </div>
+      {askAdjust && <div className="q-form">
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <input className="inp" style={{ width: 160 }} placeholder="مبلغ (منفی = کسر)" value={amount} onChange={e => setAmount(e.target.value)} />
+          <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="دلیل (اجباری — در حسابرسی ثبت می‌شود)" value={reason} onChange={e => setReason(e.target.value)} />
+        </div>
+        <div className="row" style={{ marginTop: 8, gap: 8 }}>
+          <button className="btn sm ok" disabled={busy || reason.trim().length < 3} onClick={() => adjust()}>💾 ثبت تنظیم</button>
+          <span className="muted">⚠️ این یک اقدام مالی حساس است: دلیل + تأیید + حسابرسی بحرانی الزامی است.</span>
+        </div>
+      </div>}
+      <div className="muted" style={{ margin: '12px 0 6px', fontSize: 'var(--fs-label)' }}>تراکنش‌ها ({fa(data.tx_total)}):</div>
+      {!data.transactions.length ? <Empty icon="✅" text="تراکنشی ثبت نشده" /> :
+        <div className="q-list">
+          {data.transactions.map(t => {
+            const [label, kind] = TX_KIND[t.type] || [t.label || t.type, 'acc'];
+            const pending = t.status === 'pending';
+            return <div key={t.id} className={`q-issue ${pending ? 'q-issue--warning' : 'q-issue--info'}`}>
+              <div className="q-issue-head">
+                <span className="q-issue-icon">{pending ? '⏳' : t.direction === 'credit' ? '➕' : '➖'}</span>
+                <div style={{ flex: 1 }}>
+                  <b>{t.label || label}</b>
+                  <div className="muted" style={{ marginTop: 2 }}>
+                    {pending
+                      ? <>معلق — احتمال کرش بین مراحل؛ اثر مالی هنوز قطعی نیست · <FaDateTime value={t.at} /></>
+                      : <>موجودی پس از تراکنش: {money(t.balance_after)} · <FaDateTime value={t.at} /></>}
+                  </div>
+                </div>
+                {pending
+                  ? <button className="btn sm" disabled={busy === `tx-${t.id}`} onClick={() => setTxConfirm(t)}>⏳ تعیین تکلیف</button>
+                  : <B kind={t.direction === 'credit' ? 'ok' : 'bad'}>
+                      {t.direction === 'credit' ? '+' : '−'}{money(t.amount)}
+                    </B>}
+              </div>
+              <details className="q-tech"><summary>جزئیات فنی</summary>
+                <div className="code muted">{t.id} · {t.reference_type || ''}:{t.reference_id || ''} · actor {t.actor_id}</div>
+              </details>
+            </div>;
+          })}
+        </div>}
+    </>}
+    {txConfirm && <Modal title="⏳ تعیین تکلیف تراکنش معلق" onClose={() => setTxConfirm(null)}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        تراکنش <b>{txConfirm.label || txConfirm.type}</b> در حالت معلق است (احتمال کرش بین مراحل).
+        بک‌اند با بررسی ledger تشخیص می‌دهد اثر مالی قبلاً اعمال شده یا نه — هیچ‌وقت اثر دوم ساخته نمی‌شود.
+      </p>
+      <div className="row q-missing" style={{ marginBottom: 10 }}>
+        <B kind="acc">👤 {txConfirm.label || txConfirm.type}</B>
+        <B kind={txConfirm.direction === 'credit' ? 'ok' : 'bad'}>{txConfirm.direction === 'credit' ? '+' : '−'}{money(txConfirm.amount)}</B>
+      </div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn ok" disabled={!!busy} onClick={async () => {
+          const tx = txConfirm; setBusy(`tx-${tx.id}`);
+          try {
+            const r = await api.subWalletTxResolve(tx.id, 'complete');
+            toast(r.resolution === 'applied_now' ? 'اثر تراکنش همین حالا اتمیک اعمال شد ✅' : 'اثر مالی قبلاً اعمال شده بود — فقط نشان‌گذاری شد ✅', 'ok');
+            setTxConfirm(null); load(); onChanged?.();
+          } catch (e) { toast(errText(e), 'err'); }
+          finally { setBusy(''); }
+        }}>✅ تکمیل — اعمال اثر اگر نشده</button>
+        <button className="btn danger" disabled={!!busy} onClick={async () => {
+          const tx = txConfirm; setBusy(`tx-${tx.id}`);
+          try {
+            const r = await api.subWalletTxResolve(tx.id, 'cancel');
+            toast('تراکنش لغو شد — در صورت لزوم جبران مالی ثبت شد ✅', 'ok');
+            setTxConfirm(null); load(); onChanged?.();
+          } catch (e) { toast(errText(e), 'err'); }
+          finally { setBusy(''); }
+        }}>🚫 لغو — جبران اگر لازم است</button>
+        <button className="btn" onClick={() => setTxConfirm(null)}>انصراف</button>
+      </div>
+    </Modal>}
+  </Drawer>;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 💳 W6 — درگاه زرین‌پال: وضعیت + تنظیم مرچنت/سندباکس/کالبک + تست اتصال
+// تنظیمات DB-backed است؛ ذخیره بدون ری‌استارت اعمال می‌شود (کش ۳۰ ثانیه‌ای).
+// مرچنت هرگز کامل برنمی‌گردد (masked)؛ فقط با تایپ مقدار جدید جایگزین می‌شود.
+// ════════════════════════════════════════════════════════════════
+function GatewayPanel() {
+  const [cfg, setCfg] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testRes, setTestRes] = useState(null);
+  const [mid, setMid] = useState('');
+  const [showMid, setShowMid] = useState(false);
+  const [sandbox, setSandbox] = useState(true);
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const load = async () => {
+    setErr(''); setTestRes(null);
+    try {
+      const c = await api.gatewayZarinpal();
+      setCfg(c);
+      setMid('');
+      setSandbox(!!c.sandbox);
+      setCallbackUrl(c.callback_url || '');
+      setEnabled(c.enabled !== false);
+    } catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { load(); }, []);
+
+  if (err) return <ErrorState error={err} onRetry={load} />;
+  if (!cfg) return <Loading rows={5} />;
+
+  const dirty = mid.trim() !== '' || sandbox !== !!cfg.sandbox
+    || (callbackUrl.trim() || '') !== (cfg.callback_url || '')
+    || enabled !== !!cfg.enabled;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = { sandbox, callback_url: callbackUrl.trim(), enabled };
+      // مرچنت فقط وقتی ارسال می‌شود که ادمین مقدار جدید تایپ کرده باشد
+      if (mid.trim()) body.merchant_id = mid.trim();
+      await api.gatewayZarinpalUpdate(body);
+      toast('تنظیمات درگاه ذخیره شد ✅');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const runTest = async () => {
+    setTesting(true); setTestRes(null);
+    try {
+      const r = await api.gatewayZarinpalTest();
+      setTestRes(r);
+      toast(r.message || 'تست موفق بود ✅', 'ok');
+    } catch (e) { toast(errText(e), 'err'); }
+    setTesting(false);
+  };
+
+  const clearMerchant = async () => {
+    setConfirmClear(false); setBusy(true);
+    try {
+      await api.gatewayZarinpalUpdate({ merchant_id: '' });
+      toast('مرچنت حذف شد — درگاه به حالت آزمایشی (mock) برگشت');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  return <>
+    {/* وضعیت فعلی درگاه */}
+    <div className="panel panel-pad">
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+        <b>💳 وضعیت درگاه زرین‌پال</b>
+        <span className="spacer" />
+        <button className="btn sm" onClick={load}>↻ تازه‌سازی</button>
+      </div>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+        <B kind={cfg.enabled ? 'ok' : 'bad'}>{cfg.enabled ? '✅ درگاه فعال' : '⏸ درگاه غیرفعال'}</B>
+        <B kind={cfg.sandbox ? 'warn' : 'acc'}>{cfg.sandbox ? '🧪 حالت سندباکس (تست)' : '🌐 حالت اصلی (واقعی)'}</B>
+        {cfg.merchant_id_set
+          ? <B kind="ok">🔑 مرچنت ثبت شده: <span dir="ltr">{cfg.merchant_id_masked}</span></B>
+          : <B kind="warn">🔑 مرچنت ثبت نشده</B>}
+        {cfg.is_mock
+          ? <B kind="warn">⚠️ حالت آزمایشی (mock) — پرداخت واقعی انجام نمی‌شود</B>
+          : <B kind="ok">🔗 متصل به زرین‌پال واقعی</B>}
+      </div>
+      {cfg.is_mock && <div className="panel panel-pad data-quality-note" style={{ marginTop: 10 }}>
+        <B kind="warn">حالت آزمایشی یعنی چه؟</B>
+        <span>چون مرچنت واقعی ثبت نشده، پرداخت‌ها شبیه‌سازی می‌شوند (authority با پیشوند TEST). برای دریافت پول واقعی، مرچنت ۳۶ کاراکتری پنل زرین‌پال را ثبت و سندباکس را خاموش کنید.</span>
+      </div>}
+    </div>
+
+    <div className="grid g2" style={{ marginTop: 14 }}>
+      {/* فرم تنظیمات */}
+      <div className="panel panel-pad">
+        <b>⚙️ تنظیمات درگاه</b>
+        <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+          <label className="fld"><span>مرچنت‌کد (Merchant ID)</span>
+            <div className="row" style={{ gap: 6 }}>
+              <input className="inp" dir="ltr" style={{ flex: 1 }}
+                type={showMid ? 'text' : 'password'}
+                value={mid} onChange={e => setMid(e.target.value)}
+                placeholder={cfg.merchant_id_masked || 'مثل 8a7f3b2c-… (۳۶ کاراکتر)'} />
+              <button className="btn sm" onClick={() => setShowMid(v => !v)}
+                aria-label={showMid ? 'پنهان‌کردن مرچنت' : 'نمایش مرچنت'}>{showMid ? '🙈' : '👁'}</button>
+            </div>
+            <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>
+              {cfg.merchant_id_set
+                ? 'مرچنت فعلی ذخیره است — خالی بماند یعنی بدون تغییر.'
+                : 'هنوز مرچنتی ثبت نشده — بدون آن درگاه در حالت آزمایشی کار می‌کند.'}
+            </span>
+          </label>
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <Switch on={enabled} disabled={busy} onChange={setEnabled} />
+            <div><b>فعال‌بودن درگاه</b>
+              <div className="muted">خاموش: دکمه پرداخت آنلاین در مینی‌اپ نمایش داده نمی‌شود.</div></div>
+          </div>
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <Switch on={sandbox} disabled={busy} onChange={setSandbox} />
+            <div><b>حالت سندباکس (تست زرین‌پال)</b>
+              <div className="muted">روشن: پرداخت در محیط تست زرین‌پال؛ خاموش: درگاه واقعی و کسر پول واقعی.</div></div>
+          </div>
+          <label className="fld"><span>آدرس بازگشت (Callback URL)</span>
+            <input className="inp" dir="ltr" value={callbackUrl}
+              onChange={e => setCallbackUrl(e.target.value)}
+              placeholder="مثل https://yourdomain.ir/payment/verify" />
+            <span className="muted" style={{ fontSize: 'var(--fs-label)' }}>
+              خالی بماند یعنی پیش‌فرض خودکار (همان دامنه مینی‌اپ + ‎/payment/verify‎). باید با https شروع شود.
+            </span>
+          </label>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button className="btn primary" disabled={busy || !dirty} onClick={save}>
+              {busy ? '⏳ …' : '💾 ذخیره تنظیمات'}</button>
+            <button className="btn" disabled={testing || busy} onClick={runTest}>
+              {testing ? '⏳ …' : '🔌 تست اتصال'}</button>
+            {cfg.merchant_id_set && <button className="btn sm danger" disabled={busy}
+              onClick={() => setConfirmClear(true)}>🗑 حذف مرچنت</button>}
+          </div>
+          {testRes && <div className="panel panel-pad" style={{ background: 'var(--bg)' }}>
+            <B kind={testRes.mock ? 'warn' : 'ok'}>{testRes.mock ? '🧪 نتیجه تست (mock)' : '✅ نتیجه تست'}</B>
+            <div style={{ marginTop: 6 }}>{testRes.message}</div>
+          </div>}
+        </div>
+      </div>
+
+      {/* راهنما */}
+      <div className="panel panel-pad">
+        <b>📖 راهنمای اتصال زرین‌پال</b>
+        <ol className="muted" style={{ paddingInlineStart: 18, lineHeight: 2 }}>
+          <li>در <b>پنل زرین‌پال</b> یک درگاه پرداخت بسازید و <b>مرچنت‌کد ۳۶ کاراکتری</b> را کپی کنید.</li>
+          <li>مرچنت را در فرم روبه‌رو وارد و ذخیره کنید.</li>
+          <li>برای تست، <b>سندباکس را روشن</b> نگه دارید؛ بعد از اطمینان، آن را <b>خاموش</b> کنید تا پول واقعی جابه‌جا شود.</li>
+          <li>با دکمه <b>«تست اتصال»</b> از آماده‌بودن درگاه مطمئن شوید.</li>
+        </ol>
+        <div className="panel panel-pad data-quality-note">
+          <B kind="acc">نکته‌های فنی</B>
+          <span>مبلغ پلن‌ها به تومان است و خودکار ×۱۰ به ریال تبدیل می‌شود. ذخیره تنظیمات بدون ری‌استارت اعمال می‌شود (حداکثر ۳۰ ثانیه تأخیر کش). هر تغییر با شدت بالا در حسابرسی ثبت می‌شود.</span>
+        </div>
+        {cfg.docs_url && <div style={{ marginTop: 10 }}>
+          <a className="btn sm" href={cfg.docs_url} target="_blank" rel="noreferrer">📚 مستندات زرین‌پال ↗</a>
+        </div>}
+      </div>
+    </div>
+
+    {confirmClear && <Confirm danger
+      text="مرچنت حذف شود و درگاه به حالت آزمایشی (mock) برگردد؟ پرداخت‌های واقعی تا ثبت مرچنت جدید ممکن نخواهد بود."
+      onYes={clearMerchant} onNo={() => setConfirmClear(null)} />}
+  </>;
 }

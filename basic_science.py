@@ -5,10 +5,12 @@
   ✅ نمایش سریع با asyncio
 """
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 from utils import TERMS, CONTENT_ICONS
+BRAND_NAME = os.getenv("BRAND_NAME", "HumsyarX")
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +23,8 @@ async def basic_science_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # FIX جدید: دفاع لایه‌دوم — حتی اگه از دکمه‌ی قدیمیِ توی چت وارد بشه
     if action != 'main_admin':
-        from subscription import has_access
-        if not await has_access(update.effective_user.id):
+        from subscription import feature_allowed
+        if not await feature_allowed(update.effective_user.id, "resources"):
             await query.answer("🔒 اول باید اشتراک فعال کنی — از «📚 منابع» شروع کن.", show_alert=True)
             return
     await query.answer()
@@ -196,8 +198,18 @@ async def _show_content(query, session_id: str, back_cb: str):
             icon_label = CONTENT_ICONS.get(ctype, '📎 فایل')
             for item in items:
                 cid   = str(item['_id'])
-                desc  = item.get('description', '')[:20]
-                label = icon_label + (f" — {desc}" if desc else '')
+                # 📄 priority: display name > description > type
+                disp = (item.get('display_file_name') or item.get('display_name') or '').strip()
+                if disp:
+                    # truncate label for button (Telegram 64 chars limit)
+                    label = f"{icon_label} — {disp[:40]}"
+                    # if also has description different from display, append short desc
+                    desc = item.get('description','').strip()
+                    if desc and desc[:20] not in disp:
+                        label = f"{label[:50]}"
+                else:
+                    desc  = item.get('description', '')[:20]
+                    label = icon_label + (f" — {desc}" if desc else '')
                 keyboard.append([InlineKeyboardButton(
                     label, callback_data=f'bs_dl:{cid}'
                 )])
@@ -247,11 +259,18 @@ async def _download_content(query, content_id: str, uid: int):
 
     ctype  = item.get('type', 'pdf')
     parts  = [CONTENT_ICONS.get(ctype, '📎')]
+    # 📄 display name (new) — show sanitized final name
+    disp = (item.get('display_file_name') or item.get('display_name') or "").strip()
+    if disp:
+        parts.append(f"📄 {disp}")
     if item.get('description'):
         parts.append(f"📝 {item['description']}")
     if item.get('extra_info'):
         parts.append(item['extra_info'])
     parts.append(f"📥 {item.get('downloads', 0)} دانلود")
+    # branding tag separate from filename
+    if item.get('branding_enabled') and BRAND_NAME:
+        parts.append(f"🏷 {BRAND_NAME}")
     caption = '\n'.join(parts)
 
     # FIX طبق سند: متن دکمه باید عمومی باشد چون فایل می‌تواند

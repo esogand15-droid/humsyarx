@@ -23,6 +23,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import re
 import secrets
 import time
@@ -33,13 +34,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
+from typing import List, Optional
 
 from api.auth import (
-    ADMIN_ID, _hash_token, get_current_user, get_admin_user, get_content_admin_user,
+    ADMIN_ID, _hash_token, get_current_user, get_content_admin_user,
     expiry_is_past, get_content_global_user, new_session_token, resolve_content_intake,
     resolve_web_session, utc_now, WA_SESSION_COOKIE, WA_SESSION_TTL_H,
 )
+from api.rate_limit import rate_limit_user  # 🛡 W10/RATE-01
 from database import db
 from api.routers import admin_panel as owner_api
 from api.routers import subscription_management as subscription_api
@@ -53,16 +55,21 @@ import broadcast_service
 from ai_solver import save_persona, delete_persona, generate_broadcast_ai
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
-from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, status_query
+from question_bank.images import (MAX_IMAGE_BYTES, QuestionImageService,
+                                     parse_bulk_filename, validate_image_upload)
+from question_bank.contracts import approved_query, canonical_difficulty, canonical_status, clean_text, status_query
 from time_utils import (
     TimeContractError, canonical_utc, day_bounds_utc, diagnostics as time_diagnostics,
     format_datetime_fa, now_utc, parse_clock_time, parse_gregorian_date,
     parse_machine_datetime, remaining_days, today_tehran, utc_now_iso,
 )
 
+logger = logging.getLogger("api.web_admin")
+
 router = APIRouter()
 question_bank = QuestionBankService(db)
 question_imports = QuestionImportService(db)
+question_images = QuestionImageService(db)
 
 OTP_TTL_MIN = 5
 OTP_MAX_ATTEMPTS = 5
@@ -611,12 +618,14 @@ async def _compile_user_smart_query(raw: str | None) -> dict:
         if field == "subscription_days_left":
             try: days = max(0, min(3650, int(value)))
             except (TypeError, ValueError): raise HTTPException(422, "روز باقی‌مانده اشتراک نامعتبر است")
-            end_filter = {"$gte": now.isoformat()}
-            cutoff = (now + timedelta(days=days)).isoformat()
-            if op in ("lte", "lt", "eq"): end_filter["$lte"] = cutoff
-            elif op in ("gt", "gte"): end_filter["$gt"] = cutoff
-            else: raise HTTPException(422, "عملگر اشتراک نامعتبر است")
-            ids = await db.subscriptions.distinct("_id", {"status": "active", "end_date": end_filter})
+            cutoff = now + timedelta(days=days)
+            if op in ("lte", "lt", "eq"):
+                ids = await db.subscription_ids_by_end(earliest=now, latest=cutoff)
+            elif op in ("gt", "gte"):
+                ids = await db.subscription_ids_by_end(
+                    earliest=cutoff, earliest_inclusive=False)
+            else:
+                raise HTTPException(422, "عملگر اشتراک نامعتبر است")
             return {"user_id": {"$in": ids}}
         if field == "open_tickets":
             ids = await db.tickets.distinct("user_id", {"status": "open"})
@@ -712,12 +721,10 @@ async def users_table(
             accuracy_max,
         ]}
     if sub_expiring_days is not None:
-        sub_ids = await db.subscriptions.distinct("_id", {
-            "status": "active", "end_date": {
-                "$gte": now.isoformat(),
-                "$lte": (now + timedelta(days=sub_expiring_days)).isoformat(),
-            },
-        })
+        sub_ids = await db.subscription_ids_by_end(
+            earliest=now,
+            latest=now + timedelta(days=sub_expiring_days),
+        )
         existing_ids = (filt.get("user_id") or {}).get("$in")
         filt["user_id"] = {"$in": ([i for i in sub_ids if i in set(existing_ids)]
                                       if existing_ids is not None else sub_ids)}
@@ -819,6 +826,7 @@ async def export_users_csv(
     user=Depends(_perm_any("users.view", "users.manage")),
 ):
     """CSV streaming برای dataset بزرگ؛ مرورگر هرگز همه کاربران را در RAM نمی‌گیرد."""
+    await rate_limit_user(user["id"], "export_users_csv", 10, 60)  # 🛡 W10
     smart = smart if isinstance(smart, str) else None
     allowed_sort = {"registered_at", "last_active", "name", "total_answers", "correct_answers", "streak_current", "ai_total_usage"}
     if sort_by not in allowed_sort or sort_dir not in ("asc", "desc"):
@@ -885,6 +893,7 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
     خروجی سه سطل است: `will_apply` / `will_skip` / `not_found` تا ادمین
     پیش از زدنِ دکمه بداند دقیقاً روی چند نفر اثر می‌گذارد.
     """
+    await rate_limit_user(user["id"], "bulk_preview", 10, 60)  # 🛡 W10
     action_perm = _BULK_ACTION_PERM
     need = action_perm.get(body.action)
     if not need:
@@ -906,10 +915,14 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
         raise HTTPException(422, "نقش ناشناخته است")
 
     will_apply, will_skip, not_found = [], [], []
+    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (رفتار skipها عیناً حفظ می‌شود)
+    _users = await db.get_users_by_ids(ids)
+    _need_roles = body.action in ("add_role", "remove_role")
+    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     for uid in ids:
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             will_skip.append({"id": uid, "reason": "owner_protected"}); continue
-        target = await db.get_user(uid)
+        target = _users.get(uid)
         if not target:
             not_found.append({"id": uid, "reason": "user_not_found"}); continue
         label = target.get("name") or str(uid)
@@ -922,11 +935,9 @@ async def users_bulk_preview(body: BulkBody, user=Depends(_guard_any_admin)):
             reason = "not_suspended"
         elif body.action == "set_intake" and (target.get("intake") or "") == value:
             reason = "already_set"
-        elif body.action == "add_role" and value in (
-                (await db.get_user_roles(uid)).get("keys") or []):
+        elif body.action == "add_role" and value in (_roles.get(uid) or []):
             reason = "already_has_role"
-        elif body.action == "remove_role" and value not in (
-                (await db.get_user_roles(uid)).get("keys") or []):
+        elif body.action == "remove_role" and value not in (_roles.get(uid) or []):
             reason = "role_not_assigned"
         if reason:
             will_skip.append({"id": uid, "name": label, "reason": reason})
@@ -971,6 +982,11 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
     succeeded, skipped, failed = [], [], []
     granted: list[dict] = []
     value = (body.value or "").strip()
+    # 🗄 W4/PERF-01 — دو کوئری بچ به‌جای N+1 (نوشتن‌ها تکی می‌ماند تا
+    # گزارش success/failed/skipped دقیق بماند)
+    _users = await db.get_users_by_ids(ids)
+    _need_roles = body.action in ("add_role", "remove_role")
+    _roles = await db.get_users_roles_keys(ids) if _need_roles else {}
     # 🛡 AUDIT-§۷۹ — اشتراک گروهی: فقط orchestration؛ نوشتنِ واقعی با همان
     # endpoint تک‌موردیِ مالی است (op_claim + sub_activate + نوتیف + audit).
     sub_extend = None
@@ -994,7 +1010,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
         if uid == ADMIN_ID and body.action in ("suspend", "remove_role", "block"):
             skipped.append({"id": uid, "reason": "owner_protected"})
             continue
-        target = await db.get_user(uid)
+        target = _users.get(uid)
         if not target:
             skipped.append({"id": uid, "reason": "user_not_found"})
             continue
@@ -1023,8 +1039,7 @@ async def users_bulk(body: BulkBody, user=Depends(_guard_any_admin)):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 await db.update_user(uid, {"group": normalized})
             elif body.action in ("add_role", "remove_role"):
-                info = await db.get_user_roles(uid)
-                has_role = value in info.get("keys", [])
+                has_role = value in (_roles.get(uid) or [])
                 if (body.action == "add_role" and has_role) or (body.action == "remove_role" and not has_role):
                     skipped.append({"id": uid, "reason": "unchanged"}); continue
                 payload = rbac_api.AssignBody(
@@ -1114,11 +1129,53 @@ async def attention(user=Depends(_guard_any_admin)):
         time_jobs["reports"] = latest_at(db.content_reports, query, "created_at")
     if allow("notifications.manage", "system.manage"):
         async def failed_jobs_metric(kind):
+            # 🌊 W5 — «اجرای دارای خطا» باید actionable بماند: خطای تاریخِ
+            # خیلی قدیمی نباید کارت را برای همیشه قرمز نگه دارد (شمارش
+            # قبلی ۲۰ اجرای اخیر را بی‌بازه می‌شمرد). پنجره‌ی ۲۴ ساعته +
+            # کارت‌های outbox/DLQ برای backlog واقعی.
             runs = await db.get_recent_notif_runs(limit=20)
-            failed = [run for run in runs if int(run.get("failed") or 0) > 0]
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            failed = []
+            for run in runs:
+                if int(run.get("failed") or 0) <= 0:
+                    continue
+                at_raw = run.get("started_at") or run.get("created_at")
+                try:
+                    fresh = parse_machine_datetime(at_raw) >= cutoff
+                except (TypeError, ValueError):
+                    fresh = True
+                if fresh:
+                    failed.append(run)
             return len(failed) if kind == "count" else ((failed[0].get("started_at") or failed[0].get("created_at")) if failed else None)
         jobs["failed_jobs"] = failed_jobs_metric("count")
         time_jobs["failed_jobs"] = failed_jobs_metric("time")
+
+        # 🌊 WA21 — سه صفِ پیام ربات که تا اینجا هیچ‌کس آن‌ها را نمی‌دید.
+        # مصرف‌کننده‌ی outbox در bot.py است؛ اگر ربات پایین باشد یا تلگرام
+        # reject کند، پیام‌ها در `bot_notifications` می‌مانند و تنها نشانه‌شان
+        # همین شمارش‌هاست. منبع داده موجود است ⇒ کالکشن جدید ساخته نمی‌شود.
+        backlog_q = {"sent": False,
+                     "$or": [{"send_at": {"$exists": False}}, {"send_at": None}]}
+        jobs["outbox_backlog"] = db.bot_notifs.count_documents(backlog_q)
+        time_jobs["outbox_backlog"] = latest_at(db.bot_notifs, backlog_q, "created_at")
+
+        scheduled_q = {"sent": False, "send_at": {"$exists": True, "$ne": None}}
+        jobs["outbox_scheduled"] = db.bot_notifs.count_documents(scheduled_q)
+        time_jobs["outbox_scheduled"] = latest_at(db.bot_notifs, scheduled_q, "send_at")
+
+        # DLQ: اسنادی که پس از سقف تلاش `status="dead"` شده‌اند. `sent=True`
+        # دارند، پس از شمارش backlog بیرون می‌افتند و بی‌صدا گم می‌شوند.
+        dead_q = {"status": "dead"}
+        jobs["dlq"] = db.bot_notifs.count_documents(dead_q)
+        time_jobs["dlq"] = latest_at(db.bot_notifs, dead_q, "sent_at", "created_at")
+
+    if allow("questions.import"):
+        # 🌊 WA21 — درون‌ریزی نیمه‌تمام: jobهایی که preview آماده شده ولی
+        # ادمین confirm/cancel نکرده است. بدون این کارت، job تا ابد معلق می‌ماند.
+        import_q = {"status": {"$in": ["preview_ready", "validated", "importing"]}}
+        jobs["imports"] = db.question_import_jobs.count_documents(import_q)
+        time_jobs["imports"] = latest_at(db.question_import_jobs, import_q,
+                                         "created_at", "validated_at")
     keys = list(jobs)
     values, time_values = await asyncio.gather(
         asyncio.gather(*(jobs[k] for k in keys), return_exceptions=True),
@@ -1132,12 +1189,50 @@ async def attention(user=Depends(_guard_any_admin)):
         "users": ("🧑‍🎓", "کاربر در انتظار تأیید", "/users?status=pending", "warning"),
         "reports": ("🚩", "گزارش محتوا/سؤال در انتظار", "/content?tab=reports", "warning"),
         "failed_jobs": ("⚙️", "اجرای اعلان دارای خطا", "/system", "critical"),
+        # 🌊 WA21 — مقصد هر کارت جایی است که واقعاً همان صف را نشان می‌دهد؛
+        # `?focus=` در System.jsx و `?tab=` در Operations.jsx مصرف می‌شود.
+        "outbox_backlog": ("📤", "پیام در صف خروجی ربات", "/system?focus=outbox", "warning"),
+        "outbox_scheduled": ("⏰", "پیام زمان‌بندی‌شده‌ی ارسال‌نشده", "/system?focus=outbox", "info"),
+        "dlq": ("💀", "پیام مرده — هرگز تحویل نشده", "/system?focus=dlq", "critical"),
+        "imports": ("📥", "درون‌ریزی منتظر تأیید", "/questions?tab=import", "warning"),
     }
     checked_at = _now()
     items = [{"key": k, "icon": meta[k][0], "label": meta[k][1],
               "count": counts.get(k, 0), "go": meta[k][2], "severity": meta[k][3],
               "timestamp": timestamps.get(k), "urgent": counts.get(k, 0) > 0}
              for k in meta if k in counts]
+
+    # 🌊 WA21 — کارت کیفیت داده. عمداً خارج از gather بالا: این ۱۲ بررسی
+    # $lookup دارند و نباید هر بار که داشبورد باز می‌شود موازی با بقیه صف‌ها
+    # اجرا شوند. نتیجه یک dict خلاصه است، نه یک عدد، تا UI بتواند تفکیک
+    # critical/warning را نشان دهد. خطای هر بررسی بقیه را نمی‌کُشد.
+    if allow("system.manage"):
+        quality = await _quality_summary()
+        items.append({
+            "key": "data_quality", "icon": "🧬",
+            "label": "ناهنجاری کیفیت داده",
+            "count": quality["count"], "go": "/operations?tab=quality",
+            "severity": "critical" if quality["critical"] else (
+                "warning" if quality["count"] else "info"),
+            "timestamp": checked_at, "urgent": quality["count"] > 0,
+            "detail": quality,
+        })
+    # 💰 W6 — مغایرت مالی کیف پول (§۶۴): ledger حساب را لو نمی‌دهد؛
+    # موارد بحرانی یعنی پول ناهم‌خوان است. دیپ‌لینک به مغایرت‌گیری که همان
+    # موارد human-readable + اقدام امن دارند. خارج از gather بالا:
+    # aggregate دارد و نباید با صف‌های سبک موازی شود.
+    if allow("subscription.manage"):
+        witems = await db.wallet_reconcile_items()
+        wcrit = [i for i in witems if i.get("severity") == "critical"]
+        wats = [i.get("at") for i in wcrit if i.get("at")]
+        items.append({
+            "key": "wallet_issues", "icon": "👛",
+            "label": "مغایرت مالی کیف پول",
+            "count": len(wcrit), "go": "/subscriptions?tab=reconcile",
+            "severity": "critical" if wcrit else "info",
+            "timestamp": max(wats) if wats else checked_at,
+            "urgent": bool(wcrit),
+        })
     backup = None
     if allow("backup.manage", "settings.manage", "system.manage"):
         last_run = await db.get_setting("auto_backup_last_run", None)
@@ -1152,7 +1247,131 @@ async def attention(user=Depends(_guard_any_admin)):
                           "label": "پشتیبان‌گیری نیازمند بررسی است", "count": 1,
                           "go": "/system", "severity": "critical",
                           "timestamp": last_run or checked_at, "urgent": True})
+    # 🌊 W7 — dismissed items: هشدار نادرست / اسپم را ادمین با دلیل می‌بندد
+    try:
+        dcol = db.client["medicalbot"]["attention_dismissals"]
+        ddocs = await dcol.find({}).to_list(100)
+        now = now_utc()
+        dmap = {}
+        for d in ddocs:
+            until = d.get("dismissed_until")
+            if until:
+                try:
+                    if parse_machine_datetime(until) < now:
+                        continue
+                except Exception:
+                    pass
+            kk = d.get("key") or ""
+            if kk:
+                dmap[kk] = d
+        for it in items:
+            dd = dmap.get(it["key"])
+            if dd:
+                it["dismissed"] = True
+                it["dismiss_reason"] = dd.get("reason", "")
+                it["dismissed_at"] = dd.get("dismissed_at")
+                it["dismissed_until"] = dd.get("dismissed_until")
+                it["dismissed_by"] = dd.get("dismissed_by")
+                it["urgent"] = False
+                # خاکستری‌کردن: severity فقط برای رنگ؛ dismissed باید info باشد
+                if it.get("severity") in ("critical", "warning"):
+                    it["_orig_severity"] = it["severity"]
+                    it["severity"] = "info"
+            else:
+                it["dismissed"] = False
+    except Exception as e:
+        logger.warning(f"attention dismiss enrich failed: {e}")
+        for it in items:
+            it.setdefault("dismissed", False)
     return {"items": items, "backup": backup, "checked_at": checked_at}
+
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 W7 — «نیازمند اقدام» قابل‌بستن + مدیریت اسپم کیف پول
+# هر کارت می‌تواند با دلیل و بازه (۲۴/۷۲/۱۶۸h یا دائم) بسته شود؛
+# تا پایان بازه urgent=False و grey-out می‌شود و در bot اسپم نمی‌کند.
+# ══════════════════════════════════════════════════════════════════
+
+class AttentionDismissBody(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., min_length=3, max_length=300)
+    dismiss_hours: int = Field(24, ge=0, le=720, description="0=دائم")
+
+class AttentionRestoreBody(BaseModel):
+    key: str = Field(..., min_length=1, max_length=64)
+
+@router.get("/attention/dismissals")
+async def attention_dismissals(user=Depends(_guard_any_admin)):
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    docs = await dcol.find({}).to_list(100)
+    return {"items": [{"key": d.get("key"), "reason": d.get("reason"), "dismissed_at": d.get("dismissed_at"), "dismissed_until": d.get("dismissed_until"), "dismissed_by": d.get("dismissed_by")} for d in docs]}
+
+@router.post("/attention/dismiss")
+async def attention_dismiss(body: AttentionDismissBody, user=Depends(_guard_any_admin)):
+    key = body.key.strip()
+    reason = body.reason.strip()
+    # اعتبارسنجی کلید: باید جزو کلیدهای attention باشد (جلوگیری از کلید فیک)
+    allowed_keys = {"users","payments","questions","tickets","reports","failed_jobs","outbox_backlog","outbox_scheduled","dlq","imports","data_quality","wallet_issues","backup_issue"}
+    if key not in allowed_keys:
+        raise HTTPException(422, "کلید نیازمند اقدام نامعتبر است")
+    until = None
+    if body.dismiss_hours and body.dismiss_hours > 0:
+        until = (now_utc() + timedelta(hours=body.dismiss_hours)).isoformat()
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    await dcol.update_one({"key": key}, {"$set": {"key": key, "reason": reason, "dismissed_at": _now(), "dismissed_until": until, "dismissed_by": user["id"], "dismissed_by_name": (user.get("_db") or {}).get("name","")}}, upsert=True)
+    await _audit(user["id"], f"بستن هشدار نیازمند اقدام: {key}", severity="WARNING", target_type="attention", target_id=key, target_label=reason[:80], after={"key": key, "reason": reason, "until": until}, tags=["نیازمند_اقدام","بستن_هشدار","پنل_وب"])
+    return {"ok": True, "key": key, "dismissed_until": until}
+
+@router.post("/attention/restore")
+async def attention_restore(body: AttentionRestoreBody, user=Depends(_guard_any_admin)):
+    key = body.key.strip()
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    res = await dcol.delete_one({"key": key})
+    if not res.deleted_count:
+        raise HTTPException(404, "این هشدار بسته نشده است")
+    await _audit(user["id"], f"بازکردن هشدار نیازمند اقدام: {key}", severity="INFO", target_type="attention", target_id=key, tags=["نیازمند_اقدام","بازکردن_هشدار","پنل_وب"])
+    return {"ok": True, "key": key}
+
+class WalletAlertSettingsBody(BaseModel):
+    enabled: Optional[bool] = None
+    cooldown_hours: Optional[int] = Field(None, ge=1, le=168)
+    muted_until: Optional[str] = None
+
+@router.get("/system/wallet-alerts")
+async def wallet_alert_settings_get(user=Depends(_guard_any_admin)):
+    enabled = await db.get_setting("wallet_alert_enabled", None)
+    if enabled is None:
+        enabled = True
+    cooldown = await db.get_setting("wallet_alert_cooldown_hours", None)
+    if cooldown is None:
+        cooldown = 6
+    muted = await db.get_setting("wallet_alert_muted_until", None)
+    # همچنین وضعیت dismiss فعلی wallet_issues برای نمایش یکپارچه
+    ddoc = await db.client["medicalbot"]["attention_dismissals"].find_one({"key": "wallet_issues"})
+    return {"enabled": bool(enabled), "cooldown_hours": int(cooldown), "muted_until": muted, "dismiss": {"active": bool(ddoc and (not ddoc.get("dismissed_until") or ddoc.get("dismissed_until") > _now())), "reason": (ddoc or {}).get("reason"), "until": (ddoc or {}).get("dismissed_until")}}
+
+@router.patch("/system/wallet-alerts")
+async def wallet_alert_settings_patch(body: WalletAlertSettingsBody, user=Depends(_perm("system.manage"))):
+    before = {}
+    if body.enabled is not None:
+        before["enabled"] = await db.get_setting("wallet_alert_enabled", True)
+        await db.set_setting("wallet_alert_enabled", bool(body.enabled))
+    if body.cooldown_hours is not None:
+        before["cooldown_hours"] = await db.get_setting("wallet_alert_cooldown_hours", 6)
+        await db.set_setting("wallet_alert_cooldown_hours", int(body.cooldown_hours))
+    if body.muted_until is not None:
+        before["muted_until"] = await db.get_setting("wallet_alert_muted_until", None)
+        val = body.muted_until.strip() or None
+        # اعتبارسنجی ISO اگر داده شد
+        if val:
+            try:
+                parse_machine_datetime(val)
+            except Exception:
+                raise HTTPException(422, "زمان mute معتبر نیست")
+        await db.set_setting("wallet_alert_muted_until", val)
+    await _audit(user["id"], "تنظیم هشدار مغایرت کیف پول", severity="WARNING", target_type="wallet_alert", after=body.model_dump(exclude_none=True), before=before, tags=["کیف_پول","هشدار","پنل_وب"])
+    return await wallet_alert_settings_get(user=user)
 
 
 @router.get("/activity")
@@ -1397,6 +1616,121 @@ async def _quality_count(kind: str):
     return int(rows[0].get("count") or 0) if rows else 0
 
 
+async def _quality_summary() -> dict:
+    """🌊 WA21 — خلاصه‌ی سبکِ همه‌ی بررسی‌های کیفیت داده برای کارت Action Center.
+
+    همان `_quality_count` موجود است (منطق جدیدی نوشته نشده)؛ فقط به‌جای
+    برگرداندن فهرست کامل، جمع و تفکیک severity را می‌دهد. خطای یک بررسی
+    بقیه را نمی‌کُشد و در `checked`/`total` قابل تشخیص است.
+    """
+    kinds = list(_QUALITY_META)
+    values = await asyncio.gather(*(_quality_count(k) for k in kinds),
+                                  return_exceptions=True)
+    total = critical = warning = info = 0
+    top = []
+    for kind, value in zip(kinds, values):
+        if isinstance(value, Exception):
+            continue
+        n = int(value or 0)
+        if not n:
+            continue
+        total += n
+        sev = _QUALITY_META[kind][0]
+        if sev == "critical":
+            critical += n
+        elif sev == "warning":
+            warning += n
+        else:
+            info += n
+        top.append({"kind": kind, "severity": sev,
+                    "label": _QUALITY_META[kind][1], "count": n})
+    top.sort(key=lambda x: (x["severity"] != "critical", -x["count"]))
+    return {"count": total, "critical": critical, "warning": warning, "info": info,
+            "checked": len(kinds), "top": top[:4]}
+
+
+# 🌊 WA21 — گونه‌هایی که اصلاحشان «امن» است: رکوردی که والدِ معتبر ندارد
+# هیچ‌وقت نمی‌تواند نمایش داده شود، پس حذفش داده‌ی قابل‌دسترس را از بین نمی‌برد.
+# گونه‌های هویتی/مالی (duplicate_student_ids، orphan_subscriptions،
+# orphan_payments، users_invalid_intake) عمداً اینجا نیستند: اصلاحشان تصمیم
+# انسانی می‌خواهد و auto-fix روی هویت/پرداخت ممنوع است.
+_QUALITY_SAFE_FIXES = {
+    "orphan_files":     "حذف فایل آموزشی بدون جلسه‌ی والد",
+    "orphan_ref_files": "حذف فایل رفرنس بدون کتاب والد",
+    "orphan_ref_books": "حذف کتاب رفرنس بدون موضوع والد",
+    "orphan_sessions":  "حذف جلسه‌ی بدون درس والد",
+    "invalid_role_refs": "حذف ارجاع به نقش‌های ناموجود (نقش‌های معتبر حفظ می‌شوند)",
+}
+
+
+def _quality_safe_fix_criteria(kind: str):
+    """معیار حذف برای گونه‌های امن — دقیقاً همان معیار شمارش، نه یک کپی سلیقه‌ای."""
+    if kind == "orphan_files":
+        coll, field, parent = db.bs_content, "session_id", db.bs_sessions
+    elif kind == "orphan_ref_files":
+        coll, field, parent = db.ref_files, "book_id", db.ref_books
+    elif kind == "orphan_ref_books":
+        coll, field, parent = db.ref_books, "subject_id", db.ref_subjects
+    elif kind == "orphan_sessions":
+        coll, field, parent = db.bs_sessions, "lesson_id", db.bs_lessons
+    else:
+        return None, None
+    return coll, [
+        {"$addFields": {"_parent_oid": {"$convert": {
+            "input": f"${field}", "to": "objectId", "onError": None, "onNull": None}}}},
+        {"$lookup": {"from": parent.name, "localField": "_parent_oid",
+                     "foreignField": "_id", "as": "_parent"}},
+        {"$match": {"_parent.0": {"$exists": False}}},
+        {"$project": {"_id": 1}},
+    ]
+
+
+class WaQualityFix(BaseModel):
+    kind: str
+    confirm: bool = False
+
+
+@router.post("/operations/data-quality/{kind}/fix")
+async def wa_data_quality_fix(kind: str, body: WaQualityFix,
+                              user=Depends(_perm("system.manage"))):
+    """🌊 WA21 — اصلاح یک ناهنجاری کیفیت داده، با تأیید صریح + Audit.
+
+    چرا فقط این گونه‌ها: حذف رکورد یتیم هیچ داده‌ی قابل‌دسترس را از بین نمی‌برد
+    (والدش وجود ندارد، پس هرگز نمایش داده نمی‌شد). هر گونه‌ی هویتی/مالی عمداً
+    بیرون از این فهرست است و 400 می‌گیرد.
+    """
+    if kind not in _QUALITY_SAFE_FIXES:
+        raise HTTPException(
+            400, "این گونه اصلاح خودکار ندارد؛ باید دستی بررسی شود.")
+    if not body.confirm:
+        raise HTTPException(400, "برای اجرای اصلاح، تأیید صریح لازم است.")
+
+    before = await _quality_count(kind)
+    if kind == "invalid_role_refs":
+        # نقش‌های معتبر حفظ می‌شوند؛ فقط کلیدهایی که در roles وجود ندارند
+        # از آرایه‌ی roles بیرون کشیده می‌شوند. هیچ سندی کامل حذف نمی‌شود.
+        valid = [r.get("_id") for r in await db.list_roles() if r.get("_id")]
+        result = await db.user_roles.update_many(
+            {}, {"$pull": {"roles": {"$nin": valid}}})
+        removed = int(result.modified_count or 0)
+    else:
+        coll, pipeline = _quality_safe_fix_criteria(kind)
+        ids = [row["_id"] for row in await coll.aggregate(pipeline).to_list(100000)]
+        removed = 0
+        if ids:
+            removed = int((await coll.delete_many({"_id": {"$in": ids}})).deleted_count or 0)
+    after = await _quality_count(kind)
+
+    log_id = await _audit(
+        user["id"], f"اصلاح خودکار کیفیت داده: {kind}", severity="WARNING",
+        target_id=kind, target_type="data_quality",
+        target_label=_QUALITY_META[kind][1],
+        before={"count": before}, after={"count": after, "removed": removed},
+        details=_QUALITY_SAFE_FIXES[kind], tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "kind": kind, "removed": removed,
+            "before": before, "after": after, "audit_id": log_id}
+
+
 @router.get("/operations/data-quality")
 async def wa_data_quality(user=Depends(_perm("system.manage"))):
     kinds = list(_QUALITY_META)
@@ -1408,7 +1742,10 @@ async def wa_data_quality(user=Depends(_perm("system.manage"))):
                       "suggestion": suggestion,
                       "count": None if isinstance(value, Exception) else int(value or 0),
                       "available": not isinstance(value, Exception)})
-    return {"items": items, "checked_at": _now(), "read_only": True}
+    # 🌊 WA21 — دیگر کاملاً فقط‌خواندنی نیست: گونه‌های `_QUALITY_SAFE_FIXES`
+    # اکشن Fix دارند. بقیه همچنان inspect-only هستند و UI باید همین را بگوید.
+    return {"items": items, "checked_at": _now(),
+            "read_only": False, "fixable": sorted(_QUALITY_SAFE_FIXES)}
 
 
 @router.get("/operations/data-quality/{kind}")
@@ -1442,16 +1779,230 @@ async def wa_data_quality_items(
     else:
         docs = await _quality_value_orphans(db.sub_payments, db.users, "user_id", "user_id", skip, limit)
     severity, label, suggestion = _QUALITY_META[kind]
-    def shape(doc):
-        return {"id": str(doc.get("_id", "")),
-                "label": doc.get("name") or doc.get("question") or doc.get("topic") or doc.get("description") or str(doc.get("_id", "")),
+    items = await _quality_enrich_items(kind, docs, severity, label, suggestion)
+    return {"items": items, "total": total, "skip": skip, "limit": limit,
+            "read_only": False, "repair": _QUALITY_REPAIR.get(kind, {})}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 W5 — مرکز اقدام قابل‌فهم و قابل‌اصلاح
+# آیتم‌ها باید human-readable باشند (عنوان انسانی + context واقعی +
+# فهرست کمبودها) و هر گونه که semantics اصلاحش روشن است، اکشن مستقیم
+# دارد. ID فنی فقط در `technical`. گونه‌های هویتی/مالی عمداً دستی می‌مانند.
+# ══════════════════════════════════════════════════════════════════
+
+_QUALITY_REPAIR = {
+    "files_missing_metadata": {"edit": True, "delete": False, "attach": None},
+    "orphan_files":     {"edit": False, "delete": True, "attach": "sessions"},
+    "orphan_sessions":  {"edit": False, "delete": True, "attach": "lessons"},
+    "orphan_ref_books": {"edit": False, "delete": True, "attach": "subjects"},
+    "orphan_ref_files": {"edit": False, "delete": True, "attach": "books"},
+}
+
+# kind → (کالکشن فرزند، فیلد ارجاع، کالکشن والد) برای «اتصال به والد معتبر»
+_QUALITY_ATTACH = {
+    "orphan_files":     ("bs_content",  "session_id", "bs_sessions"),
+    "orphan_sessions":  ("bs_sessions", "lesson_id",  "bs_lessons"),
+    "orphan_ref_books": ("ref_books",   "subject_id", "ref_subjects"),
+    "orphan_ref_files": ("ref_files",   "book_id",    "ref_books"),
+}
+
+
+async def _quality_enrich_items(kind, docs, severity, label, suggestion):
+    """🌊 W5 — بزرگ‌نمایی انسانی آیتم‌های کیفیت داده.
+
+    به‌جای headline کردن ObjectId، عنوان انسانی + context واقعی
+    (درس/جلسه/نام‌ها) + فهرست فیلدهای ناقص برگردانده می‌شود."""
+    sessions, lessons = {}, {}
+    if kind == "files_missing_metadata":
+        sids = [ObjectId(s) for s in {str(d.get("session_id") or "") for d in docs}
+                if s and ObjectId.is_valid(s)]
+        if sids:
+            sdocs = await db.bs_sessions.find({"_id": {"$in": sids}}).to_list(500)
+            sessions = {str(s["_id"]): s for s in sdocs}
+            lids = [ObjectId(x) for x in {str(s.get("lesson_id") or "") for s in sdocs}
+                    if x and ObjectId.is_valid(x)]
+            if lids:
+                ldocs = await db.bs_lessons.find({"_id": {"$in": lids}}).to_list(500)
+                lessons = {str(l["_id"]): l for l in ldocs}
+    out = []
+    for doc in docs:
+        item = {"id": str(doc.get("_id", "")),
                 "reason": label, "severity": severity, "suggestion": suggestion,
                 "metadata": {key: doc.get(key) for key in
                              ("user_id", "user_ids", "names", "count", "intake", "lesson_id", "session_id",
                               "subject_id", "book_id", "student_id", "roles", "invalid", "type", "source")
                              if doc.get(key) is not None}}
-    return {"items": [shape(doc) for doc in docs], "total": total, "skip": skip, "limit": limit,
-            "read_only": True}
+        title = (doc.get("name") or doc.get("question") or doc.get("topic") or
+                 doc.get("description") or "")
+        context, missing = "", []
+        if kind == "files_missing_metadata":
+            sess = sessions.get(str(doc.get("session_id") or "")) or {}
+            les = lessons.get(str(sess.get("lesson_id") or "")) or {}
+            ctype = (doc.get("type") or "").strip()
+            title = title or f"فایل آموزشی{' (' + ctype + ')' if ctype else ''}"
+            parts = []
+            if les.get("name"):
+                parts.append(f"درس: {les['name']}")
+            if sess.get("name") or sess.get("topic"):
+                parts.append(f"جلسه: {sess.get('name') or sess.get('topic')}")
+            context = " · ".join(parts) or "متصل به جلسه‌ی معتبر نیست"
+            missing = [f for f in ("type", "description")
+                       if not (doc.get(f) or "").strip()]
+            if not (doc.get("name") or doc.get("description") or "").strip():
+                missing.append("name")
+        elif kind in _QUALITY_ATTACH:
+            field = _QUALITY_ATTACH[kind][1]
+            context = f"ارجاع شکسته: {field}={doc.get(field) or '—'}"
+            title = title or label
+        elif kind == "duplicate_student_ids":
+            title = f"شماره دانشجویی {doc.get('_id')} مشترک بین {doc.get('count')} کاربر"
+            context = " · ".join((doc.get("names") or [])[:4])
+        elif kind in ("users_missing_intake", "users_invalid_intake"):
+            title = doc.get("name") or f"کاربر #{doc.get('user_id')}"
+            context = (f"شماره دانشجویی: {doc.get('student_id') or '—'} · "
+                       f"ورودی: {doc.get('intake') or '—'}")
+        elif kind == "malformed_questions":
+            title = (doc.get("question") or "سؤال بدون متن")[:80]
+            context = f"درس: {doc.get('lesson') or '—'} · موضوع: {doc.get('topic') or '—'}"
+        elif kind in ("orphan_subscriptions", "orphan_payments"):
+            title = f"{label} #{doc.get('user_id')}"
+            context = "بررسی زنجیره پرداخت و هویت پیش از هر اصلاح"
+        else:
+            title = title or label
+        item.update({"title": title, "context": context, "missing": missing,
+                     "technical": str(doc.get("_id", "")),
+                     "repair": _QUALITY_REPAIR.get(kind, {})})
+        out.append(item)
+    return out
+
+
+class WaQualityRepairBody(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.post("/operations/data-quality/files_missing_metadata/{item_id}/repair")
+async def wa_data_quality_repair(item_id: str, body: WaQualityRepairBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — اصلاح مستقیم متادیتای ناقص: فقط فیلدهای داده‌شده set می‌شوند،
+    سپس همان rule دوباره اجرا می‌شود؛ `resolved` فقط وقتی true است که رکورد
+    واقعاً از شمارش خارج شده باشد. بدون حدس، بدون overwrite خودکار."""
+    from api.routers.content_admin import CONTENT_TYPES
+    if not ObjectId.is_valid(item_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    doc = await db.bs_content.find_one({"_id": ObjectId(item_id)})
+    if not doc:
+        raise HTTPException(404, "فایل آموزشی پیدا نشد")
+    updates = {}
+    if body.name is not None:
+        name = body.name.strip()
+        if len(name) < 3:
+            raise HTTPException(422, "نام باید حداقل ۳ نویسه باشد")
+        updates["name"] = name[:200]
+    if body.type is not None:
+        ctype = body.type.strip().lower()
+        if ctype not in CONTENT_TYPES:
+            raise HTTPException(422, "نوع معتبر نیست؛ مجاز: " + "، ".join(CONTENT_TYPES))
+        updates["type"] = ctype
+    if body.description is not None:
+        desc = body.description.strip()
+        if len(desc) < 3:
+            raise HTTPException(422, "توضیح باید حداقل ۳ نویسه باشد")
+        updates["description"] = desc[:2000]
+    if not updates:
+        raise HTTPException(400, "هیچ فیلدی برای اصلاح داده نشد")
+    await db.bs_content.update_one({"_id": doc["_id"]}, {"$set": updates})
+    after = await db.bs_content.find_one({"_id": doc["_id"]})
+    resolved = bool((after.get("type") or "").strip()) and \
+        bool((after.get("description") or "").strip())
+    log_id = await _audit(
+        user["id"], "اصلاح کیفیت داده: تکمیل متادیتای فایل آموزشی",
+        severity="INFO", target_type="content", target_id=item_id,
+        target_label=(after.get("name") or after.get("description") or item_id)[:80],
+        before={k: doc.get(k) for k in updates},
+        after={**updates, "resolved": resolved},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "resolved": resolved, "audit_id": log_id}
+
+
+class WaQualityAttachBody(BaseModel):
+    parent_id: str
+
+
+@router.post("/operations/data-quality/{kind}/{item_id}/attach")
+async def wa_data_quality_attach(kind: str, item_id: str, body: WaQualityAttachBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — اتصال رکورد یتیم به والد معتبرِ انتخاب‌شده توسط ادمین.
+    والد باید واقعاً وجود داشته باشد؛ پس از اتصال، rule دوباره چک می‌شود."""
+    if kind not in _QUALITY_ATTACH:
+        raise HTTPException(400, "این گونه اقدام «اتصال به والد» ندارد")
+    child_name, field, parent_name = _QUALITY_ATTACH[kind]
+    if not ObjectId.is_valid(item_id) or not ObjectId.is_valid(body.parent_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    target = await getattr(db, parent_name).find_one({"_id": ObjectId(body.parent_id)})
+    if not target:
+        raise HTTPException(404, "والد معتبر پیدا نشد")
+    res = await getattr(db, child_name).update_one(
+        {"_id": ObjectId(item_id)}, {"$set": {field: str(target["_id"])}})
+    if not res.matched_count:
+        raise HTTPException(404, "رکورد پیدا نشد")
+    log_id = await _audit(
+        user["id"], f"اصلاح کیفیت داده: اتصال {kind} به والد معتبر",
+        severity="WARNING", target_type=child_name, target_id=item_id,
+        target_label=target.get("name") or str(target["_id"]),
+        before={field: None}, after={field: str(target["_id"]), "resolved": True},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "resolved": True, "audit_id": log_id}
+
+
+class WaQualityRemoveBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/operations/data-quality/{kind}/{item_id}/remove")
+async def wa_data_quality_remove(kind: str, item_id: str, body: WaQualityRemoveBody,
+                                 user=Depends(_perm("system.manage"))):
+    """🌊 W5 — حذف تکی رکورد یتیم با تأیید صریح. پیش از حذف دوباره چک می‌شود
+    که رکورد هنوز یتیم است (اگر والدش سر راه سبز شده، 409)."""
+    if kind not in _QUALITY_ATTACH:
+        raise HTTPException(400, "این گونه حذف تکی ندارد")
+    if not body.confirm:
+        raise HTTPException(400, "برای حذف، تأیید صریح لازم است")
+    child_name, field, parent_name = _QUALITY_ATTACH[kind]
+    if not ObjectId.is_valid(item_id):
+        raise HTTPException(404, "رکورد پیدا نشد")
+    doc = await getattr(db, child_name).find_one({"_id": ObjectId(item_id)})
+    if not doc:
+        raise HTTPException(404, "رکورد پیدا نشد")
+    ref = str(doc.get(field) or "")
+    if ref and ObjectId.is_valid(ref) and \
+            await getattr(db, parent_name).find_one({"_id": ObjectId(ref)}):
+        raise HTTPException(409, "این رکورد دیگر یتیم نیست؛ حذف لازم نیست")
+    await getattr(db, child_name).delete_one({"_id": doc["_id"]})
+    log_id = await _audit(
+        user["id"], f"اصلاح کیفیت داده: حذف تکی {kind}",
+        severity="WARNING", target_type=child_name, target_id=item_id,
+        target_label=doc.get("name") or doc.get("description") or item_id,
+        before={"present": True}, after={"present": False},
+        tags=["کیفیت_داده", "پنل_وب"])
+    return {"ok": True, "removed": 1, "audit_id": log_id}
+
+
+@router.get("/operations/quality-parents/{parent_kind}")
+async def wa_data_quality_parents(parent_kind: str,
+                                  q: str = Query("", max_length=60),
+                                  user=Depends(_perm("system.manage"))):
+    """🌊 W5 — انتخاب والد معتبر برای attach (کرانه‌دار و جست‌وجوپذیر)."""
+    coll = {"sessions": db.bs_sessions, "lessons": db.bs_lessons,
+            "books": db.ref_books, "subjects": db.ref_subjects}.get(parent_kind)
+    if coll is None:
+        raise HTTPException(404, "نوع والد معتبر نیست")
+    flt = {"name": {"$regex": re.escape(q.strip()), "$options": "i"}} if q.strip() else {}
+    docs = await coll.find(flt).sort("name", 1).limit(20).to_list(20)
+    return {"items": [{"id": str(d["_id"]), "label": d.get("name") or str(d["_id"])}
+                      for d in docs]}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1469,7 +2020,8 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
     allow = lambda *keys: uid == ADMIN_ID or any(k in perms for k in keys)
     res = {"users": [], "tickets": [], "questions": [], "content": [],
            "exams": [], "grades": [], "roles": [], "broadcasts": [],
-           "payments": [], "subscriptions": [], "notifications": [], "audit": []}
+           "payments": [], "subscriptions": [], "notifications": [],
+           "audit": [], "wallets": []}
 
     if allow("users.view", "users.manage"):
         try:
@@ -1556,6 +2108,23 @@ async def global_quick_search(q: str = Query(..., min_length=2, max_length=80),
             subs = await db.subscriptions.find({"plan_name": rx}).sort("end_date", -1).limit(5).to_list(5)
             res["subscriptions"] = [{"user_id": x.get("_id"), "plan": x.get("plan_name", ""),
                 "status": x.get("status", ""), "end_date": x.get("end_date", "")} for x in subs]
+            # 💰 W6 — کیف پول (§۱۰۷): آیدی عددی مستقیم، وگرنه از راه نام کاربر
+            if query.isdigit():
+                wq = {"user_id": int(query)}
+            else:
+                wuids = [int(u["user_id"]) for u in await db.users.find(
+                    {"name": rx}, {"user_id": 1}).limit(20)]
+                wq = {"user_id": {"$in": wuids}} if wuids else {"user_id": -1}
+            ws = await db.wallets.find(wq).sort("balance", -1).limit(5).to_list(5)
+            if ws:
+                wnames = {}
+                for u in await db.users.find(
+                        {"user_id": {"$in": [w["user_id"] for w in ws]}}).to_list(50):
+                    wnames[int(u["user_id"])] = u.get("name") or ""
+                res["wallets"] = [{"user_id": w["user_id"],
+                                   "name": wnames.get(int(w["user_id"]), ""),
+                                   "balance": int(w.get("balance", 0))}
+                                  for w in ws]
         except Exception:
             pass
     if allow("notifications.manage", "broadcast.send"):
@@ -1674,6 +2243,7 @@ async def saved_filters_add(body: SavedFilterIn, user=Depends(_guard_any_admin))
            "shared": bool(body.shared), "updated_by": uid,
            "created_at": now, "updated_at": now}
     r = await db.wa_saved_filters.insert_one(doc)
+    await _audit(user["id"], "ذخیره نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=str(getattr(r, "inserted_id", "") or ""), target_label=name, after={"scope": body.scope}, tags=["saved_filter", "پنل_وب"])
     return {"ok": True, "id": str(getattr(r, "inserted_id", "") or "")}
 
 
@@ -1703,6 +2273,7 @@ async def saved_filters_update(fid: str, body: SavedFilterPatch,
     if not changes: raise HTTPException(422, "تغییری ارسال نشده است")
     changes["updated_at"] = _now(); changes["updated_by"] = user["id"]
     await db.wa_saved_filters.update_one(query, {"$set": changes})
+    await _audit(user["id"], "ویرایش نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=fid, target_label=old.get("name",""), before={"scope": old.get("scope")}, after={"changed": list(changes)}, tags=["saved_filter", "پنل_وب"])
     return {"ok": True, "changed": list(changes)}
 
 
@@ -1729,6 +2300,11 @@ async def saved_filters_del(fid: str, user=Depends(_guard_any_admin)):
     else:
         q["_id"] = fid
     r = await db.wa_saved_filters.delete_many(q)
+    if getattr(r, "deleted_count", 0):
+        try:
+            await _audit(user["id"], "حذف نمای ذخیره‌شده", severity="INFO", target_type="saved_filter", target_id=fid, tags=["saved_filter", "پنل_وب"])
+        except Exception:
+            pass
     if not getattr(r, "deleted_count", 0):
         raise HTTPException(404, "فیلتر یافت نشد")
     return {"ok": True}
@@ -1900,6 +2476,7 @@ class TicketsBulk(BaseModel):
 @router.post("/tickets/bulk")
 async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage"))):
     """⚡ اکشن گروهی تیکت (سقف ۱۰۰) — با همان متدهای موجود db."""
+    await rate_limit_user(user["id"], "tickets_bulk", 10, 60)  # 🛡 W10
     ids = [int(i) for i in (body.ids or []) if isinstance(i, (int, str)) and str(i).isdigit()][:100]
     if not ids:
         raise HTTPException(400, "لیست تیکت‌ها خالی است")
@@ -1916,7 +2493,8 @@ async def tickets_bulk(body: TicketsBulk, user=Depends(_perm("tickets.manage")))
                     skipped.append({"id": tid, "reason": "already_closed"}); continue
                 await db.ticket_close(tid)
             else:
-                if t.get("status") != "closed":
+                # 🌊 W9 — بازگشایی از بسته یا حل‌شده
+                if db.ticket_norm_status(t.get("status")) not in ("closed", "resolved"):
                     skipped.append({"id": tid, "reason": "already_open"}); continue
                 await db.ticket_reopen(tid)
             succeeded.append(tid)
@@ -2046,6 +2624,10 @@ async def wa_questions_list(
             "created_at": d.get("created_at") or None, "updated_at": d.get("updated_at") or None,
             "intake": d.get("intake", ""), "source": d.get("source", "system"),
             "creator_type": d.get("creator_type", "student"),
+            "exam_year": d.get("exam_year"),
+            "content_source": d.get("content_source", ""),
+            "content_source_label_fa": d.get("content_source_label_fa", ""),
+            "image_pending": bool((d.get("image") or {}).get("pending_upload")),
             "status": canonical_status(d), "approved": canonical_status(d) == "approved",
             "review_reason": d.get("review_reason", ""), "reviewed_by": d.get("reviewed_by"),
             "reviewed_at": d.get("reviewed_at"), "version": int(d.get("version") or 1),
@@ -2239,6 +2821,220 @@ async def wa_question_reports(
     return await content_api.question_reports(qid=qid, admin=user, limit=limit)
 
 
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA22 — Question Health + Question 360
+#
+# «سلامت سؤال» ویژگیِ اختراعی نیست؛ ترکیب سیگنال‌هایی است که همین حالا
+# در داده وجود دارد و فقط نمایشِ مدیریتی نداشتند:
+#   • شمارنده‌های attempt_count/correct_count روی خود سند سؤال
+#     (در هر پاسخِ آزمون db/content.py افزایش می‌دهد)
+#   • گزارش‌های باز در content_reports (status new/reviewing)
+#   • نبود توضیح پاسخ برای سؤالی که در آزمون استفاده شده
+# Question 360 هم همان الگوی User 360 (§WA2.8) است: پرونده‌ی کامل یک
+# سؤال بدون ترک صفحه؛ هر بخش جدا ضدخطا (Empty و Unavailable دو حالت‌اند).
+# ══════════════════════════════════════════════════════════════════
+
+_HEALTH_MIN_ATTEMPTS = 5     # کمتر از این تعداد تلاش، نرخ غلط معنادار نیست
+_HEALTH_WRONG_RATE = 0.60    # آستانه‌ی «نرخ غلط بحرانی»
+_HEALTH_BORDER_RATE = 0.40   # آستانه‌ی مرزی
+
+
+def _qid_filter(qid: str) -> dict:
+    """‏_id سؤال در این repo دو شکل دارد: ObjectId (production) و str
+    (dev/تست). هر دو شکل جست‌وجو می‌شود — فرض روی یکی ممنوع."""
+    variants = [{"_id": qid}]
+    if ObjectId.is_valid(qid):
+        variants.append({"_id": ObjectId(qid)})
+    return variants[0] if len(variants) == 1 else {"$or": variants}
+
+
+def _question_health(q, open_reports: int) -> dict:
+    """امتیاز بیماری ۰..۱۰۰ (بیشتر = بدتر) + ریز اجزا برای نمایش و تست."""
+    attempts = int(q.get("attempt_count") or 0)
+    correct = int(q.get("correct_count") or 0)
+    wrong_rate = round((attempts - correct) / attempts, 3) if attempts > 0 else 0.0
+    signals, points = [], 0
+    if open_reports > 0:
+        points += 45
+        signals.append({"key": "open_reports", "points": 45,
+                        "label": f"{open_reports} گزارش باز"})
+    if attempts >= _HEALTH_MIN_ATTEMPTS:
+        if wrong_rate >= _HEALTH_WRONG_RATE:
+            points += 45
+            signals.append({"key": "wrong_rate", "points": 45,
+                            "label": f"نرخ پاسخ غلط {int(round(wrong_rate * 100))}٪"})
+        elif wrong_rate >= _HEALTH_BORDER_RATE:
+            points += 20
+            signals.append({"key": "wrong_rate", "points": 20,
+                            "label": f"نرخ پاسخ غلط مرزی {int(round(wrong_rate * 100))}٪"})
+    if attempts > 0 and not clean_text(q.get("explanation")):
+        points += 10
+        signals.append({"key": "no_explanation", "points": 10,
+                        "label": "بدون توضیح پاسخ"})
+    return {
+        "score": min(100, points),
+        "needs_review": bool(open_reports > 0 or (
+            attempts >= _HEALTH_MIN_ATTEMPTS and wrong_rate >= _HEALTH_WRONG_RATE)),
+        "components": {
+            "open_reports": open_reports, "attempts": attempts,
+            "correct": correct, "wrong_rate": wrong_rate,
+            "has_explanation": bool(clean_text(q.get("explanation"))),
+        },
+        "signals": signals,
+    }
+
+
+@router.get("/questions/health")
+async def wa_questions_health(
+    limit: int = Query(50, ge=1, le=200),
+    include_healthy: bool = Query(False),
+    user=Depends(_perm_any("questions.review", "questions.review_scoped")),
+):
+    """🌊 WA22 — صف سلامت سؤال‌ها: بدترین‌ها اول.
+
+    مجموعه‌ی نامزد کرانه‌دار است (اسکن کل کالکشن ممنوع): سؤال‌های دارای
+    گزارش باز + ۵۰۰ پرسوالِ پرتلاش. Scope همان قوانین لیست سؤال است
+    (questions.review_scoped فقط ورودی خودش را می‌بیند)."""
+    scope = await _question_scope_context(user)
+    base = {"intake": scope.get("intake") or ""} if scope.get("kind") == "scoped" else {}
+    rep_docs = await db.content_reports.aggregate([
+        {"$match": {"target_type": "question",
+                    "status": {"$in": ["new", "reviewing"]}}},
+        {"$group": {"_id": "$target_id", "n": {"$sum": 1}}},
+    ]).to_list(length=5000)
+    rep = {str(r["_id"]): int(r["n"]) for r in rep_docs if r.get("_id")}
+    cand = []
+    for t in rep:
+        cand.append(t)
+        if ObjectId.is_valid(t):
+            cand.append(ObjectId(t))
+    by_id = {}
+    if cand:
+        async for q in db.questions.find({**base, "_id": {"$in": cand}}):
+            by_id[str(q["_id"])] = q
+    async for q in db.questions.find(
+            base, sort=[("attempt_count", -1)], limit=500):
+        by_id.setdefault(str(q["_id"]), q)
+    rows = []
+    for q in by_id.values():
+        health = _question_health(q, rep.get(str(q["_id"]), 0))
+        if not include_healthy and health["score"] <= 0:
+            continue
+        rows.append({
+            "id": str(q["_id"]),
+            "question": clean_text(q.get("question"), 120),
+            "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+            "difficulty": q.get("difficulty", ""),
+            "status": canonical_status(q), "intake": q.get("intake", ""),
+            "attempt_count": int(q.get("attempt_count") or 0),
+            "correct_count": int(q.get("correct_count") or 0),
+            "wrong_rate": health["components"]["wrong_rate"],
+            "score": health["score"], "needs_review": health["needs_review"],
+            "signals": health["signals"],
+        })
+    rows.sort(key=lambda r: (-r["score"], -r["attempt_count"]))
+    return {"items": rows[:limit],
+            "summary": {"considered": len(rows),
+                        "needs_review": sum(1 for r in rows if r["needs_review"]),
+                        "min_attempts": _HEALTH_MIN_ATTEMPTS,
+                        "wrong_rate_threshold": _HEALTH_WRONG_RATE,
+                        "checked_at": _now()}}
+
+
+@router.get("/questions/{qid}/360")
+async def wa_question_360(
+        qid: str,
+        user=Depends(_perm_any("questions.review", "questions.review_scoped"))):
+    """🌊 WA22 — نمای ۳۶۰ درجه‌ی سؤال: پرونده + سلامت + گزارش‌ها + آزمون واقعی.
+
+    همان قرارداد User 360: هر بخش جدا ضدخطا؛ خطای بخش در section_errors
+    می‌نشیند و بقیه‌ی پاسخ سالم می‌ماند."""
+    q = await db.questions.find_one(_qid_filter(qid))
+    if not q:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    qid_s = str(q["_id"])
+    out = {"question": {
+        "id": qid_s, "question": q.get("question", ""),
+        "options": q.get("options") or [],
+        "correct_answer": q.get("correct_answer"),
+        "explanation": q.get("explanation") or "",
+        "lesson": q.get("lesson", ""), "topic": q.get("topic", ""),
+        "difficulty": q.get("difficulty", ""),
+        "status": canonical_status(q), "intake": q.get("intake", ""),
+        "source": q.get("source", ""), "creator_id": q.get("creator_id"),
+        "creator_name": q.get("creator_name", ""),
+        "created_at": q.get("created_at") or None,
+        "attempt_count": int(q.get("attempt_count") or 0),
+        "correct_count": int(q.get("correct_count") or 0),
+        "twins": 0,
+    }, "health": None, "reports": None, "exams": None, "section_errors": {}}
+    try:
+        if q.get("content_hash"):
+            out["question"]["twins"] = await db.questions.count_documents(
+                {"content_hash": q["content_hash"], "_id": {"$ne": q["_id"]}})
+    except Exception:
+        out["section_errors"]["twins"] = "unavailable"
+    try:
+        open_reports = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s,
+             "status": {"$in": ["new", "reviewing"]}})
+        out["health"] = _question_health(q, open_reports)
+    except Exception:
+        out["section_errors"]["health"] = "unavailable"
+    try:
+        total = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s})
+        open_n = await db.content_reports.count_documents(
+            {"target_type": "question", "target_id": qid_s,
+             "status": {"$in": ["new", "reviewing"]}})
+        recent = await db.content_reports.find(
+            {"target_type": "question", "target_id": qid_s}
+        ).sort("created_at", -1).limit(20).to_list(length=20)
+        out["reports"] = {
+            "total": total, "open": open_n,
+            "recent": [{
+                "report_id": r.get("report_id"), "reason": r.get("reason", ""),
+                "note": r.get("note", ""), "status": r.get("status", ""),
+                "user_name": r.get("user_name", ""),
+                "reporter_id": r.get("user_id"),
+                "created_at": r.get("created_at") or None,
+            } for r in recent],
+        }
+    except Exception:
+        out["section_errors"]["reports"] = "unavailable"
+    try:
+        agg = await db.exam_sessions.aggregate([
+            {"$match": {"answers.question_id": qid_s}},
+            {"$unwind": "$answers"},
+            {"$match": {"answers.question_id": qid_s}},
+            {"$group": {"_id": None, "attempts": {"$sum": 1},
+                        "correct": {"$sum": {
+                            "$cond": ["$answers.is_correct", 1, 0]}}}},
+        ]).to_list(length=1)
+        sessions = await db.exam_sessions.find(
+            {"answers.question_id": qid_s}
+        ).sort("started_at", -1).limit(10).to_list(length=10)
+        recent_answers = []
+        for s in sessions:
+            for a in (s.get("answers") or []):
+                if str(a.get("question_id")) == qid_s:
+                    recent_answers.append({
+                        "session_id": s.get("session_id") or str(s["_id"]),
+                        "user_id": s.get("user_id"),
+                        "is_correct": bool(a.get("is_correct")),
+                        "selected": a.get("selected"),
+                        "at": a.get("answered_at") or s.get("started_at") or None,
+                    })
+        out["exams"] = {
+            "attempts": int(agg[0]["attempts"]) if agg else 0,
+            "correct": int(agg[0]["correct"]) if agg else 0,
+            "recent": recent_answers[:10],
+        }
+    except Exception:
+        out["section_errors"]["exams"] = "unavailable"
+    return out
+
+
 @router.delete("/questions/{qid}")
 async def wa_question_delete(
     qid: str, reason: str = Query(default="", max_length=1000),
@@ -2339,18 +3135,95 @@ async def questions_bulk(
             "skipped": skipped, "failed": failed}
 
 
+class QuestionsExportPdfInput(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=100)
+    mode: str = Field(default="practice", pattern="^(practice|exam)$")
+
+
+@router.post("/questions/export/pdf")
+async def questions_export_pdf(
+    body: QuestionsExportPdfInput,
+    user=Depends(_perm_any("questions.review", "questions.review_scoped", "questions.edit")),
+):
+    """📄 خروجی PDF از سؤال‌های منتخب — پرمیوم Hamsyar (practice/exam).
+
+    حد ۱۰۰ سؤال، با موتور مشترک qbank.generate_exam_pdf تا طراحی و فونت
+    دقیقاً یکدست با ربات/مینی‌اپ باشد. دسترسی: questions.review یا scoped.
+    """
+    ids = [str(x).strip() for x in (body.ids or []) if str(x).strip()][:100]
+    if not ids:
+        raise HTTPException(400, "لیست سؤال‌ها خالی است")
+    if body.mode not in ("practice", "exam"):
+        raise HTTPException(400, "mode نامعتبر است")
+    from bson import ObjectId
+    # scope-aware fetch (scoped admin فقط intake خودش را ببیند)
+    scope = await _question_scope_context(user)
+    oids = [ObjectId(x) for x in ids if ObjectId.is_valid(x)]
+    if len(oids) != len(ids):
+        raise HTTPException(422, "شناسه‌ی برخی سؤال‌ها معتبر نیست")
+    docs = await db.questions.find({"_id": {"$in": oids}}).to_list(len(oids))
+    by_id = {str(d["_id"]): d for d in docs}
+    # preserve order of input, skip missing/out-of-scope
+    ordered = []
+    for qid in ids:
+        doc = by_id.get(qid)
+        if not doc:
+            continue
+        if scope.get("kind") == "scoped" and (doc.get("intake") or "") != (scope.get("intake") or ""):
+            continue
+        ordered.append(doc)
+    if not ordered:
+        raise HTTPException(404, "هیچ سؤال در دسترس/هم‌راستا با intake شما پیدا نشد")
+    # meta
+    from qbank.query import ExamMeta
+    from qbank import generate_exam_pdf
+    # lesson/topic از اکثریت
+    from collections import Counter
+    lesson = Counter([d.get("lesson","") for d in ordered]).most_common(1)[0][0] or "بانک سوال — منتخب"
+    topic = Counter([d.get("topic","") for d in ordered if d.get("topic")]).most_common(1)
+    topic_val = topic[0][0] if topic else ""
+    meta = ExamMeta(
+        lesson=lesson,
+        topic=topic_val,
+        difficulty=None,
+        student_name=user.get("name") or user.get("username") or "",
+        exam_code=f"SEL-{len(ordered):02d}-" + "".join(ids[0][-4:]) if ids else "SEL",
+        chapter=None,
+    )
+    try:
+        pdf_bytes = generate_exam_pdf(ordered, meta, mode=body.mode)
+    except Exception as exc:
+        raise HTTPException(500, f"ساخت PDF ناموفق بود: {exc}")
+    filename = f"humsyar-questions-" + ("practice" if body.mode=="practice" else "exam") + f"-{len(ordered)}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Question-Count": str(len(ordered)),
+            "X-PDF-Mode": body.mode,
+        },
+    )
+
+
 # ── Question Bank JSON ingestion (owner-only, preview-first) ──────
 @router.get("/questions/import/prompt")
-async def question_import_prompt(user=Depends(get_admin_user)):
-    return question_imports.prompt()
+async def question_import_prompt(user=Depends(_perm("questions.import"))):
+    return await question_imports.prompt()
 
 
 @router.post("/questions/import/upload")
-async def question_import_upload(file: UploadFile = File(...), user=Depends(get_admin_user)):
-    raw = await file.read()
+async def question_import_upload(file: UploadFile = File(...), user=Depends(_perm("questions.import")),
+                                 job_content_source: str | None = Form(None)):
+    raw = await file.read(10 * 1024 * 1024 + 1)
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل JSON بیشتر از ۱۰MB است")
+    if not raw:
+        raise HTTPException(422, "فایل خالی است")
     try:
         preview = await question_imports.create_preview(
-            admin=user, raw=raw, file_name=file.filename or "questions.json")
+            admin=user, raw=raw, file_name=file.filename or "questions.json",
+            job_content_source=job_content_source or None)
     except QuestionDomainError as exc:
         raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
     await _audit(user["id"], "بارگذاری JSON بانک سؤال برای پیش‌نمایش", severity="HIGH",
@@ -2362,7 +3235,7 @@ async def question_import_upload(file: UploadFile = File(...), user=Depends(get_
 
 
 @router.get("/questions/import/{job_id}")
-async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
+async def question_import_preview(job_id: str, user=Depends(_perm("questions.import"))):
     try:
         preview = await question_imports.preview(job_id)
     except QuestionDomainError as exc:
@@ -2372,10 +3245,103 @@ async def question_import_preview(job_id: str, user=Depends(get_admin_user)):
     return preview
 
 
+# ── 🌊 QBANK-W3 — صف تصاویر منتظر (§۷.۲) ─────────────────────────────
+@router.get("/questions/pending-images")
+async def wa_pending_images(job_id: str | None = Query(None),
+                            skip: int = Query(0, ge=0),
+                            limit: int = Query(50, ge=1, le=100),
+                            user=Depends(_perm("questions.import"))):
+    return await question_images.pending_queue(job_id=job_id, skip=skip, limit=limit)
+
+
+@router.post("/questions/{qid}/image")
+async def wa_attach_image(qid: str, file: UploadFile = File(...),
+                          user=Depends(_perm("questions.import"))):
+    from api.telegram_send import upload_and_get_file_id
+    raw = await file.read(MAX_IMAGE_BYTES + 1)
+    try:
+        mime = validate_image_upload(mime_type=file.content_type or "", size=len(raw))
+        file_id = await upload_and_get_file_id(
+            user["id"], file.filename or "question.png", raw, mime)
+        if not file_id:
+            raise QuestionDomainError("image_storage_failed",
+                                      "آپلود تصویر به تلگرام ناموفق بود", 502)
+        result = await question_images.attach(
+            question_id=qid, file_id=file_id, admin_id=user["id"],
+            mime_type=mime, size=len(raw), original_name=file.filename or "")
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "اتصال تصویر به سؤال", severity="HIGH",
+                 target_type="question", target_id=qid,
+                 target_label=file.filename or "question.png",
+                 after={"storage_ref": result["storage_ref"]},
+                 tags=["بانک_سؤال", "تصویر"])
+    return result
+
+
+@router.delete("/questions/{qid}/image")
+async def wa_detach_image(qid: str, user=Depends(_perm("questions.import"))):
+    try:
+        result = await question_images.detach(question_id=qid, admin_id=user["id"])
+    except QuestionDomainError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
+    await _audit(user["id"], "برگرداندن سؤال به صف تصویر", severity="HIGH",
+                 target_type="question", target_id=qid, tags=["بانک_سؤال", "تصویر"])
+    return result
+
+
+@router.post("/questions/images/bulk-match")
+async def wa_bulk_match_images(job_id: str = Form(...),
+                               files: list[UploadFile] = File(...),
+                               user=Depends(_perm("questions.import"))):
+    """تطبیق انبوه `{fingerprint}_{page}.png` به سؤالات منتظر همان job (§۷.۲)."""
+    from api.telegram_send import upload_and_get_file_id
+    job = await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]})
+    if not job:
+        raise HTTPException(404, "job پیدا نشد")
+    fingerprint = job.get("fingerprint") or ""
+    results = []
+    attached = 0
+    for upload in files[:50]:
+        name = upload.filename or ""
+        parsed = parse_bulk_filename(name)
+        if not parsed or not fingerprint.startswith(parsed[0]):
+            results.append({"file": name, "status": "invalid_name"})
+            continue
+        page = parsed[1]
+        matches = await db.questions.find(
+            {"import_job_id": job_id, "image.pending_upload": True,
+             "source_page": page}).to_list(3)
+        if len(matches) != 1:
+            results.append({"file": name, "status": "ambiguous" if matches else "no_match",
+                            "page": page})
+            continue
+        try:
+            raw = await upload.read(MAX_IMAGE_BYTES + 1)
+            mime = validate_image_upload(mime_type=upload.content_type or "", size=len(raw))
+            file_id = await upload_and_get_file_id(user["id"], name, raw, mime)
+            if not file_id:
+                raise QuestionDomainError("image_storage_failed", "آپلود ناموفق بود", 502)
+            await question_images.attach(
+                question_id=str(matches[0]["_id"]), file_id=file_id, admin_id=user["id"],
+                mime_type=mime, size=len(raw), original_name=name)
+            attached += 1
+            results.append({"file": name, "status": "attached", "page": page,
+                            "question_id": str(matches[0]["_id"])})
+        except QuestionDomainError as exc:
+            results.append({"file": name, "status": "failed", "page": page,
+                            "error": exc.message})
+    await _audit(user["id"], f"تطبیق انبوه تصاویر ({attached} موفق)", severity="HIGH",
+                 target_type="question_import", target_id=job_id,
+                 after={"attached": attached, "total": len(results)},
+                 tags=["بانک_سؤال", "تصویر"])
+    return {"job_id": job_id, "attached": attached, "results": results}
+
+
 @router.get("/questions/import/{job_id}/items")
 async def question_import_items(job_id: str, classification: Optional[str] = Query(None),
                                 skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
-                                user=Depends(get_admin_user)):
+                                user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     return await question_imports.list_items(job_id, classification=classification, skip=skip, limit=limit)
@@ -2388,7 +3354,7 @@ class ImportMapInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/mapping")
 async def question_import_mapping(job_id: str, item_id: str, body: ImportMapInput,
-                                  user=Depends(get_admin_user)):
+                                  user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -2410,7 +3376,7 @@ class ImportDecisionInput(BaseModel):
 
 @router.patch("/questions/import/{job_id}/items/{item_id}/decision")
 async def question_import_decision(job_id: str, item_id: str, body: ImportDecisionInput,
-                                   user=Depends(get_admin_user)):
+                                   user=Depends(_perm("questions.import"))):
     if not await db.question_import_jobs.find_one({"_id": job_id, "admin_id": user["id"]}, {"_id": 1}):
         raise HTTPException(404, "job پیدا نشد")
     try:
@@ -2426,7 +3392,7 @@ async def question_import_decision(job_id: str, item_id: str, body: ImportDecisi
 
 
 @router.post("/questions/import/{job_id}/confirm")
-async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
+async def question_import_confirm(job_id: str, user=Depends(_perm("questions.import"))):
     try:
         result = await question_imports.confirm(job_id=job_id, admin=user)
     except QuestionDomainError as exc:
@@ -2440,7 +3406,7 @@ async def question_import_confirm(job_id: str, user=Depends(get_admin_user)):
 
 
 @router.post("/questions/import/{job_id}/cancel")
-async def question_import_cancel(job_id: str, user=Depends(get_admin_user)):
+async def question_import_cancel(job_id: str, user=Depends(_perm("questions.import"))):
     try: result = await question_imports.cancel(job_id=job_id, admin_id=user["id"])
     except QuestionDomainError as exc: raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message})
     await _audit(user["id"], "لغو درون‌ریزی بانک سؤال", severity="INFO",
@@ -2480,6 +3446,33 @@ _SETTINGS_CATALOG = [
         ("donation_link", "لینک حمایت مالی",
          "آدرس صفحه‌ی حمایت (با http/https؛ خالی=حذف)",
          "link", "settings.manage", "HIGH"),
+    ]),
+    # 🌊 W6/MISS-03 — trial اشتراک
+    ("subscription", [
+        ("trial_enabled", "دوره‌ی آزمایشی",
+         "نمایش و امکان دریافت trial برای کاربران بدون اشتراک",
+         "bool", "subscription.manage", "HIGH"),
+        ("trial_days", "مدت trial (روز)",
+         "طول دوره‌ی آزمایشی؛ بین ۱ تا ۳۰ (پیش‌فرض ۷)",
+         "number", "subscription.manage", "HIGH"),
+    ]),
+    # 🌊 W8/UX-04 — SLA تیکت (ساعت مهلت اولین پاسخ به‌تفکیک اولویت)
+    ("support", [
+        ("ticket_sla_urgent", "مهلت پاسخ فوری (ساعت)",
+         "تیکت‌های فوری؛ ۰ = بدون SLA (پیش‌فرض ۸)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_high", "مهلت پاسخ مهم (ساعت)",
+         "تیکت‌های مهم؛ ۰ = بدون SLA (پیش‌فرض ۲۴)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_normal", "مهلت پاسخ عادی (ساعت)",
+         "تیکت‌های عادی؛ ۰ = بدون SLA (پیش‌فرض ۴۸)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_sla_low", "مهلت پاسخ کم‌اهمیت (ساعت)",
+         "تیکت‌های کم‌اهمیت؛ ۰ = بدون SLA (پیش‌فرض ۷۲)",
+         "number", "tickets.manage", "HIGH"),
+        ("ticket_stale_hours", "آستانه‌ی یادآوری تیکت مانده (ساعت)",
+         "تیکت باز بدون پاسخ پس از این ساعت به مسئول یادآوری می‌شود (پیش‌فرض ۲۴)",
+         "number", "tickets.manage", "HIGH"),
     ]),
     ("backup", [
         ("auto_backup_enabled", "بکاپ خودکار روزانه",
@@ -2642,6 +3635,13 @@ async def settings_center_patch(key: str, body: SettingPatch,
                 raise HTTPException(422, "ساعت باید عدد باشد")
             if not 0 <= val <= 23:
                 raise HTTPException(422, "ساعت بکاپ باید بین ۰ تا ۲۳ باشد")
+        elif typ == "number":
+            # 🌊 W6/MISS-03 — فرانت از قبل number را رندر می‌کرد ولی بک‌اند
+            # اعتبارسنجی نداشت (مقدار خام ذخیره می‌شد)
+            try:
+                val = int(val)
+            except (TypeError, ValueError):
+                raise HTTPException(422, "مقدار باید عدد صحیح باشد")
         await db.set_setting(key, val)
         before, after = old, val
 
@@ -2809,8 +3809,12 @@ async def exams_create(body: ExamIn, user=Depends(_perm("schedules.manage"))):
                  after={"تاریخ": d, "گروه": grp,
                         "اطلاع‌رسانی": notice.get("notified", 0)},
                  tags=["امتحان", "پنل_وب"])
+    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
+    conflicts = await db.schedule_find_conflicts(
+        grp, d, t, '', exclude_id=str(sid))
     return {"ok": True, "id": str(sid),
-            "notified": notice.get("notified", 0)}
+            "notified": notice.get("notified", 0),
+            "warnings": {"schedule_conflicts": conflicts}}
 
 
 @router.patch("/exams/{sid}")
@@ -2922,16 +3926,30 @@ async def content_tree(intake: Optional[str] = Query(None),
     lesson_refs.extend(oid for oid in (_oid(v) for v in lesson_ids) if oid is not None)
     sessions = await db.bs_sessions.find(
         {"lesson_id": {"$in": lesson_refs}}).to_list(2000) if lesson_refs else []
+    lesson_intake_of = {str(l.get("_id")): str(l.get("intake") or "") for l in lessons}
+
+    def _session_bucket(session) -> str:
+        # همان قاعده‌ی db.bs_get_sessions_effective: فیلد صریح، وگرنه ارث از درس.
+        if "intake" in session and session.get("intake") is not None:
+            return str(session.get("intake") or "")
+        return lesson_intake_of.get(str(session.get("lesson_id") or ""), "")
+
     if iv:
-        # 🌊 C3-fix — فیلتر سطل باید دقیق باشد: عبارت قبلی («یا هر non-fork»)
-        # جلسه‌های «exclusive» ورودی‌های دیگر را هم وارد درخت می‌کرد. تا پیش از
-        # موج C3 چنین سندی وجود نداشت (هر non-fork یا سراسری است یا ارث‌بر از
-        # درس خودش)؛ حالا که نماینده می‌تواند جلسه‌ی فقط-ورودی بسازد، این
-        # نشت واقعی می‌شد ⇒ فقط سراسری + ورودی خودِ actor.
-        sessions = [s for s in sessions if str(s.get("intake") or "") in ("", iv)]
+        # سراسری + همین ورودی. جلسه‌ای که برای این ورودی fork شده، پایه‌اش پنهان است.
+        allowed = {"", iv}
+        forked_bases = {
+            str(s.get("fork_of")) for s in sessions
+            if s.get("fork_of") and _session_bucket(s) in allowed and _session_bucket(s)
+        }
+        sessions = [
+            s for s in sessions
+            if _session_bucket(s) in allowed and str(s.get("_id")) not in forked_bases
+        ]
     else:
-        sessions = [s for s in sessions if str(s.get("intake") or "") == ""
-                    and not s.get("fork_of")]
+        sessions = [
+            s for s in sessions
+            if _session_bucket(s) == "" and not s.get("fork_of")
+        ]
     sess_ids = [str(s.get("_id")) for s in sessions]
     session_refs = list(sess_ids)
     session_refs.extend(oid for oid in (_oid(v) for v in sess_ids) if oid is not None)
@@ -3709,7 +4727,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "prestige_div": target.get("prestige_div", ""),
             "streak_current": target.get("streak_current", 0) or 0,
         },
-        "subscription": None, "admin_role": None, "roles": [], "perms": [],
+        "subscription": None, "wallet": None, "admin_role": None, "roles": [], "perms": [],
         "counts": {"tickets": 0, "grades": 0, "answers": 0, "questions": 0,
                    "exams": 0, "notifications": 0},
         "recent_tickets": [], "recent_audit": [], "recent_questions": [],
@@ -3727,6 +4745,16 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             }
     except Exception:
         out["section_errors"]["subscription"] = "unavailable"
+    try:
+        # 💰 W6 — کیف پول در نمای ۳۶۰: موجودی + آخرین تراکنش (server-derived)
+        w = await db.wallet_summary(uid)
+        out["wallet"] = {
+            "balance": w["balance"], "currency": w["currency"],
+            "credits_total": w["credits_total"],
+            "debits_total": w["debits_total"], "last_tx": w["last_tx"],
+        }
+    except Exception:
+        out["section_errors"]["wallet"] = "unavailable"
     try:
         ar = await db.get_admin_role(uid)
         if ar:
@@ -3979,7 +5007,7 @@ async def wa_rbac_roles_picker(user=Depends(_perm("users.manage"))):
 
 @router.get("/tickets")
 async def wa_tickets_list(
-    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
     q: Optional[str] = Query(None, max_length=120),
     intake: Optional[str] = Query(None, max_length=80),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
@@ -4012,7 +5040,7 @@ async def wa_tickets_list(
 
 @router.get("/exports/tickets.csv")
 async def export_tickets_csv(
-    status: Optional[str] = Query(None, pattern="^(open|answered|closed)$"),
+    status: Optional[str] = Query(None, pattern="^(open|in_progress|waiting_user|resolved|answered|closed)$"),
     q: Optional[str] = Query(None), intake: Optional[str] = Query(None),
     priority: Optional[str] = Query(None, pattern="^(low|normal|high|urgent)$"),
     assignee_id: Optional[int] = Query(None), unanswered: Optional[bool] = Query(None),
@@ -4021,6 +5049,7 @@ async def export_tickets_csv(
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"), human: bool = False,
     user=Depends(_perm_any("tickets.reply", "tickets.manage")),
 ):
+    await rate_limit_user(user["id"], "export_tickets_csv", 10, 60)  # 🛡 W10
     await _audit(user["id"], "خروجی CSV تیکت‌ها", severity="HIGH",
                  target_type="export", target_label="tickets.csv",
                  tags=["خروجی", "تیکت", "پنل_وب"])
@@ -4096,6 +5125,7 @@ class TicketMetaPatch(BaseModel):
     priority: Optional[str] = None
     tags: Optional[list[str]] = None
     assignee_id: Optional[int] = None
+    status: Optional[str] = None  # 🌊 W9 — تغییر وضعیت گاردشده
 
 
 @router.patch("/tickets/{tid}/meta")
@@ -4111,6 +5141,8 @@ async def wa_ticket_meta(
         if body.priority not in ("low", "normal", "high", "urgent"):
             raise HTTPException(422, "اولویت نامعتبر است")
         updates["priority"] = body.priority
+        # 🌊 W8/UX-04 — ارتقا/تنزل اولویت، مهلت SLA را بازمحاسبه می‌کند
+        updates["sla_hours"] = await db.ticket_sla_hours(body.priority)
     if body.tags is not None:
         updates["tags"] = list(dict.fromkeys(
             str(tag).strip()[:30] for tag in body.tags if str(tag).strip()
@@ -4126,8 +5158,20 @@ async def wa_ticket_meta(
                             "assignee_name": assignee.get("name", str(body.assignee_id))})
     if not updates:
         raise HTTPException(422, "تغییری ارسال نشده است")
-    before = {key: ticket.get(key) for key in updates}
-    await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
+    # 🌊 W9 — وضعیت از مسیر گارد می‌گذرد (transition نامعتبر ⇒ 409)
+    if body.status is not None:
+        res = await db.ticket_set_status(tid, body.status)
+        if not res.get("ok"):
+            raise HTTPException(
+                409 if res.get("error") in ("invalid_transition", "race")
+                else 404, "تغییر وضعیت مجاز نیست")
+        updates["status"] = res["to"]
+    before = {key: ticket.get(key) for key in updates
+              if key != "status"}
+    if "status" in updates:
+        before["status"] = res.get("frm")
+    if updates:
+        await db.tickets.update_one({"ticket_id": tid}, {"$set": updates})
     await _audit(user["id"], "ویرایش صف/متادیتای تیکت", severity="WARNING",
                  target_id=tid, target_type="ticket", target_label=ticket.get("subject", ""),
                  before=before, after=updates, tags=["تیکت", "متادیتا", "پنل_وب"])
@@ -4204,6 +5248,29 @@ async def wa_ticket_close(tid: int, user=Depends(_perm("tickets.manage"))):
     return await owner_api.close_ticket(tid=tid, admin=user)
 
 
+@router.get("/tickets/canned")
+async def wa_canned_list(user=Depends(_perm("tickets.manage"))):
+    """🌊 W8/UX-04 — پاسخ‌های آماده."""
+    return await owner_api.canned_list_ep(admin=user)
+
+
+@router.post("/tickets/canned")
+async def wa_canned_add(body: owner_api.CannedBody,
+                        user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_add_ep(body=body, admin=user)
+
+
+@router.put("/tickets/canned/{cid}")
+async def wa_canned_update(cid: str, body: owner_api.CannedBody,
+                           user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_update_ep(cid=cid, body=body, admin=user)
+
+
+@router.delete("/tickets/canned/{cid}")
+async def wa_canned_delete(cid: str, user=Depends(_perm("tickets.manage"))):
+    return await owner_api.canned_delete_ep(cid=cid, admin=user)
+
+
 @router.post("/tickets/{tid}/reopen")
 async def wa_ticket_reopen(tid: int, user=Depends(_perm("tickets.manage"))):
     return await owner_api.reopen_ticket(tid=tid, admin=user)
@@ -4244,7 +5311,9 @@ async def wa_broadcast_media_upload(
 ):
     if media_type not in {"photo", "video", "document", "voice", "audio"}:
         raise HTTPException(422, "نوع رسانه پشتیبانی نمی‌شود")
-    raw = await file.read()
+    raw = await file.read(50 * 1024 * 1024 + 1)
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(413, "حجم فایل بیشتر از ۵۰MB است")
     limits = {"photo": 10, "voice": 25, "audio": 45, "video": 45, "document": 45}
     if not raw or len(raw) > limits[media_type] * 1024 * 1024:
         raise HTTPException(413, f"حجم فایل برای {media_type} نامعتبر یا بیش از حد مجاز است")
@@ -4393,13 +5462,14 @@ async def wa_subscription_overview(user=Depends(_perm("subscription.manage"))):
 @router.get("/subscription/payments")
 async def wa_subscription_payments(
     status: Optional[str] = Query(None),
+    kind: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100),
     search: Optional[str] = Query(None),
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.payments(
-        status=status, skip=skip, limit=limit, search=search, admin=user)
+        status=status, kind=kind, skip=skip, limit=limit, search=search, admin=user)
 
 
 @router.post("/subscription/payments/{payment_id}/decision")
@@ -4472,6 +5542,845 @@ async def wa_subscription_send_receipt(
     user=Depends(_perm("subscription.manage")),
 ):
     return await subscription_api.send_receipt(payment_id=payment_id, admin=user)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WA23 / W5 — Finance Completeness: بازگشت وجه + مغایرت‌گیری
+#
+# فقط روی primitiveهای موجود: گذار اتمیکِ الگوی AUDIT-A1 (db/finance.py)،
+# sub_revoke، audit_logs و bot_notifications. نه کالکیشن جدید، نه RBAC
+# موازی — همان گیت `subscription.manage`.
+# تصمیم محصول: بازگشت وجه نباید هم پول را به کیف پول برگرداند هم دسترسی
+# فعال را پیش‌فرض نگه دارد. اگر اشتراک ذی‌نفع فعال است، یا قطع دسترسی
+# یا keep_subscription صریح لازم است. هر دو با هم: قطع دسترسی برنده است.
+# شارژ کیف پول از این مسیر برنمی‌گردد. نبود اشتراک فعال همچنان ۲۰۰ است.
+# ══════════════════════════════════════════════════════════════════
+
+_RECON_META = {
+    "approved_no_active_sub": ("high", "تأییدشده بدون اشتراک فعال"),
+    "active_sub_no_approved_payment": ("high", "اشتراک فعال بدون پرداخت تأییدشده"),
+    "refunded_but_active_sub": ("critical", "بازگشت وجه شده ولی اشتراک هنوز فعال"),
+    "pending_stale": ("warning", "رسید قدیمی در انتظار بررسی"),
+    "approved_topup_not_credited": ("high", "شارژ تأییدشده بدون اعتبار کیف پول"),
+    "approved_discount_overrun": ("high", "تخفیف خارج از ظرفیت در پرداخت تأییدشده"),
+}
+
+
+class WaRefundBody(BaseModel):
+    confirm: bool = False
+    reason: str = ""
+    revoke_subscription: bool = False
+    keep_subscription: bool = False
+
+
+@router.post("/subscription/payments/{payment_id}/refund")
+async def wa_subscription_refund(payment_id: str, body: WaRefundBody,
+                                 user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — بازگشت وجه رسید تأییدشده: تأیید صریح + دلیل + گذار اتمیک +
+    Audit بحرانی + اطلاع به دانشجو. اشتراک فعال بدون انتخاب صریح، ۴۰۰ است."""
+    if not body.confirm:
+        raise HTTPException(400, "بازگشت وجه بدون تأیید صریح ممکن نیست")
+    reason = (body.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "دلیل بازگشت وجه باید حداقل ۳ نویسه باشد")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل بازگشت وجه است")
+    uid = int(payment.get("user_id") or 0)
+    if str(payment.get("plan_id") or "") == "wallet_topup":
+        raise HTTPException(409, "رسید شارژ کیف پول از این مسیر برنمی‌گردد")
+    beneficiary = int((payment.get("gift") or {}).get("to") or 0) or uid
+    sub = await db.sub_get(beneficiary) if beneficiary else None
+    live = bool(sub and sub.get("status") == "active")
+    if live and not body.revoke_subscription and not body.keep_subscription:
+        raise HTTPException(
+            400, "اشتراک فعال است؛ قطع دسترسی یا تأیید صریح نگه داشتن لازم است")
+    if not await db.sub_payment_refund(payment_id, admin_id=int(user["id"]),
+                                       reason=reason):
+        raise HTTPException(409, "این رسید هم‌زمان بازگشت وجه شده است")
+    # 🌊 W3/MISS-02 — اگر پول واقعی در درگاه گرفته شده (ref_id دارد)،
+    # reversal خودکار ممکن نیست (فقط برای verifyنشده‌ها)؛ بازوی درگاهی
+    # «دستی» علامت می‌خورد تا اپراتور در پنل زرین‌پال هم اقدام کند.
+    gateway_reversal = None
+    if (payment.get("method") == "zarinpal" or payment.get("zarinpal_authority")) \
+            and payment.get("zarinpal_ref_id"):
+        gateway_reversal = "manual_required"
+        await db.sub_payment_mark_gateway_reversal(str(payment["_id"]))
+    revoked = False
+    if body.revoke_subscription:
+        revoked = await db.sub_revoke(beneficiary, f"بازگشت وجه: {reason}",
+                                      int(user["id"]))
+    # 💰 W6 — بازگشت وجه = اعتبار کیف پول داخلی (نه فقط status).
+    # مبلغ از خودِ رسید (سرور-ساید)؛ idempotency با کلید یکتای
+    # (sub_payment_refund, payment_id) — حتی اگر این خط دوبار اجرا شود.
+    # اگر اعتبار ناموفق باشد، مغایرت‌گیری «refund_without_wallet_credit»
+    # را بحرانی پرچم می‌کند (هرگز خطای مالی پنهان نمی‌شود).
+    amount = int(payment.get("final_price") or payment.get("amount") or 0)
+    credit_tx = None
+    balance_after = None
+    if amount > 0:
+        try:
+            tx = await db.wallet_credit(
+                uid, amount, "refund_credit", "sub_payment_refund",
+                str(payment["_id"]), int(user["id"]),
+                f"بازگشت وجه — {payment.get('plan_name') or 'اشتراک'}")
+            credit_tx = str(tx.get("_id"))
+            balance_after = tx.get("balance_after")
+        except Exception as e:
+            logger.warning(f"refund wallet credit failed {payment_id}: {e}")
+    log_id = await _audit(
+        int(user["id"]), "بازگشت وجه رسید پرداخت", severity="CRITICAL",
+        target_type="sub_payment", target_id=str(payment["_id"]),
+        target_label=f"رسید کاربر {uid}",
+        before={"status": "approved",
+                "amount": payment.get("final_price", payment.get("amount"))},
+        after={"status": "refunded", "reason": reason,
+               "revoked_subscription": revoked,
+               "wallet_credited": bool(credit_tx),
+               "wallet_tx_id": credit_tx,
+               "gateway_reversal": gateway_reversal},
+        tags=["مالی", "بازگشت_وجه"])
+    if amount > 0 and credit_tx:
+        text = (f"💸 مبلغ {amount:,} تومان به کیف پول شما بازگشت. "
+                f"می‌توانید با آن اشتراک بخرید.")
+    else:
+        text = f"💸 بازگشت وجه رسید شما ثبت شد: {reason}"
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:refund", "chat_id": uid, "sent": False,
+        "text": text, "created_at": _now()})
+    return {"ok": True, "payment_id": str(payment["_id"]),
+            "gateway_reversal": gateway_reversal,
+            "revoked_subscription": bool(revoked),
+            "wallet_credited": bool(credit_tx),
+            "wallet_tx_id": credit_tx,
+            "wallet_balance_after": balance_after,
+            "audit_id": log_id}
+
+
+@router.get("/subscription/reconcile")
+async def wa_subscription_reconcile(
+        user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — مغایرت‌گیری مالی فقط‌خواندنی: ناهم‌خوانی‌های بین
+    sub_payments و subscriptions که هر کدام یعنی «پول/دسترسی بی‌حساب».
+
+    همه‌ی خواندن‌ها کرانه‌دار است (to_list محدود) — بدون اسکن بی‌پایان."""
+    items = []
+    active_subs = {s["_id"] for s in await db.subscriptions.find(
+        {"status": "active"}).to_list(length=10000)}
+    users_with_approved = {
+        int(r["_id"]) for r in await db.sub_payments.aggregate([
+            {"$match": {"status": "approved",
+                        "plan_id": {"$ne": "wallet_topup"}}},
+            {"$group": {"_id": "$user_id"}},
+        ]).to_list(length=10000)}
+    # ۱) تأییدشده ولی کاربر اشتراک فعال ندارد
+    # 🛡 W1 — رسید شارژ ذاتاً اشتراک نمی‌سازد (آشکارساز ۱-ب)؛
+    # رسید هدیه هم اشتراکِ «گیرنده» را می‌سازد نه payer.
+    # 🌊 W5 — پنجره‌ی زمانی: اشتراکی که خیلی وقت پیش به‌صورت طبیعی
+    # منقضی شده «ناهم‌خوانی» نیست؛ فقط پنجره‌ی اخیر پرچم می‌خورد تا
+    # لیست با نویز انقضاهای قدیمی دفن نشود.
+    try:
+        _w5win = max(7, int(await db.get_setting("recon_window_days", 90) or 90))
+    except Exception:
+        _w5win = 90
+    _cutoff = (datetime.now(timezone.utc) - timedelta(days=_w5win)).isoformat()
+    _skipped_stale = 0
+    async for p in db.sub_payments.find(
+            {"status": "approved"}).sort("reviewed_at", -1).limit(200):
+        if str(p.get("plan_id") or "") == "wallet_topup":
+            continue
+        _at = str(p.get("reviewed_at") or p.get("submitted_at") or "")
+        if _at < _cutoff:
+            _skipped_stale += 1
+            continue
+        uid = int(p.get("user_id") or 0)
+        gift_to = int((p.get("gift") or {}).get("to") or 0)
+        if (gift_to or uid) not in active_subs:
+            items.append({"type": "approved_no_active_sub", "user_id": uid,
+                          "payment": p,
+                          "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۱-ب) 🛡 W1 — رسید شارژِ تأییدشده که اعتبارش به کیف ننشسته
+    # (کرش بین تأیید و finalize) — اقدام: اجرای idempotent دوباره‌ی finalize.
+    async for p in db.sub_payments.find(
+            {"status": "approved", "plan_id": "wallet_topup",
+             "topup_credited_at": None}).sort("reviewed_at", -1).limit(200):
+        items.append({"type": "approved_topup_not_credited",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment": p,
+                      "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۱-ج) 🌊 W3 — پرداخت تأییدشده‌ای که کد تخفیفش بعد از پرداخت موفق
+    # ظرفیت نداشت (overrun) — پول گرفته و approve شده؛ بازبینی مدیریتی.
+    async for p in db.sub_payments.find(
+            {"status": "approved", "discount_overrun": True}).sort("reviewed_at", -1).limit(200):
+        items.append({"type": "approved_discount_overrun",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment": p,
+                      "at": p.get("reviewed_at") or p.get("submitted_at")})
+    # ۲) اشتراک فعال (منبع پرداخت) بدون هیچ پرداخت تأییدشده
+    async for s in db.subscriptions.find(
+            {"status": "active", "source": "payment"}).limit(200):
+        uid = int(s["_id"])
+        if uid not in users_with_approved:
+            items.append({"type": "active_sub_no_approved_payment",
+                          "user_id": uid, "payment": None,
+                          "at": s.get("end_date")})
+    # ۳) بازگشت وجه شده ولی اشتراک هنوز فعال
+    async for p in db.sub_payments.find(
+            {"status": "refunded"}).sort("refunded_at", -1).limit(200):
+        uid = int(p.get("user_id") or 0)
+        if uid in active_subs:
+            items.append({"type": "refunded_but_active_sub", "user_id": uid,
+                          "payment": p,
+                          "at": p.get("refunded_at")})
+    # ۴) رسیدهای مانده‌ی قدیمی (>۷۲ ساعت)
+    stale = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    async for p in db.sub_payments.find(
+            {"status": "pending",
+             "submitted_at": {"$lt": stale}}).limit(200):
+        items.append({"type": "pending_stale",
+                      "user_id": int(p.get("user_id") or 0),
+                      "payment": p,
+                      "at": p.get("submitted_at")})
+    # 🌊 W5 — مغایرت باید برای ادمین انسانی باشد: نام کاربر، مبلغ، پلن،
+    # جمله‌ی توضیح و اقدامِ ممکن. ID فقط در technical.
+    uids = list({i["user_id"] for i in items})
+    users = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": uids}}).to_list(1000):
+            users[int(u["user_id"])] = u
+    summary = {t: sum(1 for i in items if i["type"] == t)
+               for t in _RECON_META}
+    out_items = []
+    for i in items:
+        sev, label = _RECON_META[i["type"]]
+        p = i.get("payment") or {}
+        u = users.get(i["user_id"]) or {}
+        who = u.get("name") or f"کاربر #{i['user_id']}"
+        amount = p.get("final_price", p.get("amount"))
+        t = i["type"]
+        if t == "approved_no_active_sub":
+            text = (f"رسید {who} به مبلغ {int(amount or 0):,} تومان تأیید شده "
+                    f"ولی هیچ اشتراک فعالی برایش وجود ندارد.")
+            actions = [{"key": "activate", "label": "فعال‌سازی امن اشتراک"},
+                       {"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
+        elif t == "approved_topup_not_credited":
+            text = (f"رسید شارژ {who} به مبلغ {int(amount or 0):,} تومان تأیید شده "
+                    f"ولی اعتبارش به کیف پول ننشسته است.")
+            actions = [{"key": "finalize_topup", "label": "اعمال اعتبار شارژ"},
+                       {"key": "go", "label": "بررسی کیف پول",
+                        "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}]
+        elif t == "approved_discount_overrun":
+            text = (f"پرداخت {who} به مبلغ {int(amount or 0):,} تومان با کد تخفیف "
+                    f"«{p.get('discount_code') or '—'}» تأیید شده ولی ظرفیت کد تمام شده بود — "
+                    f"تخفیف خارج از ظرفیت داده شد؛ بازبینی شود.")
+            actions = [{"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&q={i['user_id']}"}]
+        elif t == "active_sub_no_approved_payment":
+            text = (f"{who} اشتراک فعال دارد (منبع: پرداخت) ولی هیچ رسید "
+                    f"تأییدشده‌ای برایش ثبت نشده — دسترسی بی‌حساب.")
+            actions = [{"key": "go", "label": "بررسی مشترک",
+                        "go": f"/subscriptions?tab=subscribers&q={i['user_id']}"}]
+        elif t == "refunded_but_active_sub":
+            text = (f"وجه رسید {who} بازگشت داده شده ولی اشتراک هنوز فعال "
+                    f"است — تصمیم: revoke یا نگهداری آگاهانه.")
+            actions = [{"key": "go", "label": "مدیریت/revoke اشتراک",
+                        "go": f"/subscriptions?tab=subscribers&q={i['user_id']}"}]
+        else:
+            text = f"رسید {who} بیش از ۷۲ ساعت در انتظار بررسی مانده است."
+            actions = [{"key": "go", "label": "بررسی رسید",
+                        "go": f"/subscriptions?tab=payments&status=pending&q={i['user_id']}"}]
+        out_items.append({
+            "type": t, "severity": sev, "label": label,
+            "user_id": i["user_id"], "user_name": u.get("name") or "",
+            "student_id": u.get("student_id") or "",
+            "payment_id": str(p["_id"]) if p.get("_id") else None,
+            "amount": amount, "plan_name": p.get("plan_name") or "",
+            "at": i["at"], "summary": text, "actions": actions,
+            "technical": str(p.get("_id") or ""),
+        })
+    # 💰 W6 — مغایرت‌های کیف پول: جمله‌ی انسانی، نه OID جارگون
+    witems = await db.wallet_reconcile_items()
+    if witems:
+        wnames = {}
+        for u in await db.users.find(
+                {"user_id": {"$in": [i["user_id"] for i in witems]}}).to_list(200):
+            wnames[int(u["user_id"])] = u.get("name") or ""
+        for i in witems:
+            who = wnames.get(i["user_id"]) or f"کاربر {i['user_id']}"
+            go_wallet = {"key": "go", "label": "بررسی کیف پول",
+                         "go": f"/subscriptions?tab=wallets&q={i['user_id']}"}
+            t = i["type"]
+            if t == "wallet_balance_mismatch":
+                label, sev = "مغایرت حسابداری کیف پول", "critical"
+                text = (f"موجودی ثبت‌شده‌ی کیف پول {who} "
+                        f"({i['balance']:,} تومان) با جمع ledger "
+                        f"({i['ledger']:,} تومان) نمی‌خواند — اختلاف "
+                        f"{abs(i['amount']):,} تومان.")
+                actions = [{"key": "resync",
+                            "label": "هم‌ترازسازی با ledger (امن)"},
+                           go_wallet]
+            elif t == "refund_without_wallet_credit":
+                label, sev = "بازگشت وجه بدون اعتبار کیف پول", "critical"
+                text = (f"بازگشت وجه {i['amount']:,} تومان برای {who} ثبت "
+                        f"شده ولی اعتبار کیف پول ایجاد نشده است.")
+                actions = [{"key": "recredit", "label": "اعتبار مجدد کیف پول",
+                            "payment_id": i["payment_id"]}, go_wallet]
+            elif t == "wallet_debit_without_payment":
+                label, sev = "کسر کیف پول بدون پرداخت تأییدشده", "critical"
+                text = (f"کسر {i['amount']:,} تومان از کیف پول {who} بدون "
+                        f"رسید تأییدشده‌ی متناظر انجام شده است.")
+                actions = [go_wallet]
+            else:
+                label, sev = "تراکنش کیف پول در انتظار", "warning"
+                text = (f"تراکنش {i['amount']:,} تومانی کیف پول {who} در "
+                        f"حالت معلق مانده است (احتمالاً کرش بین مراحل).")
+                actions = [{"key": "resolve_tx",
+                            "label": "تعیین تکلیف تراکنش",
+                            "tx_id": i.get("tx_id")},
+                           go_wallet]
+            out_items.append({
+                "type": t, "severity": sev, "label": label,
+                "user_id": i["user_id"], "user_name": who,
+                "student_id": "", "payment_id": i.get("payment_id"),
+                "amount": i.get("amount") or 0, "plan_name": "",
+                "at": i.get("at"), "summary": text, "actions": actions,
+                "technical": i.get("tx_id") or i.get("payment_id") or "",
+            })
+    # 🌊 W5 — داشبورد مغایرت (§۳۷): چند مورد امروز با اقدام واقعی رفع شده؟
+    today = datetime.now(timezone.utc).date().isoformat()
+    resolved_today = await db.audit_logs.count_documents({
+        "action": {"$regex": "رفع مغایرت مالی"},
+        "timestamp": {"$gte": today}})
+    return {"items": out_items,
+            "summary": {**summary, "total": len(out_items),
+                        "resolved_today": resolved_today,
+                        "window_days": _w5win,
+                        "skipped_stale": _skipped_stale,
+                        "checked_at": _now()}}
+
+
+class WaReconActivateBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/subscription/reconcile/{payment_id}/activate")
+async def wa_reconcile_activate(payment_id: str, body: WaReconActivateBody,
+                                user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — اقدام مغایرت «تأیید بدون اشتراک فعال»: فعال‌سازی امن با همان
+    primitive رسمی finalize_approved_payment (plan days از پلن واقعی).
+    اتمیک و تأیید صریح؛ اگر اشتراک هم‌زمان فعال شده باشد 409."""
+    if not body.confirm:
+        raise HTTPException(400, "برای فعال‌سازی، تأیید صریح لازم است")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل فعال‌سازی است")
+    uid = int(payment.get("user_id") or 0)
+    sub = await db.sub_get(uid)
+    if sub and sub.get("status") == "active":
+        raise HTTPException(409, "کاربر هم‌اکنون اشتراک فعال دارد؛ مغایرتی نیست")
+    try:
+        result = await db.finalize_approved_payment(payment, int(user["id"]))
+    except ValueError:
+        raise HTTPException(422, "مدت پلن این رسید نامعتبر است؛ بررسی دستی لازم است")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی: فعال‌سازی امن اشتراک",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=str(payment["_id"]), target_label=f"رسید کاربر {uid}",
+        before={"subscription": (sub or {}).get("status")},
+        after={"status": "active", "end_date": result.get("end_date")},
+        tags=["مالی", "مغایرت‌گیری"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:subscription_active", "chat_id": uid, "sent": False,
+        "text": "✅ اشتراک شما فعال شد؛ پایان دوره در پروفایل قابل مشاهده است.",
+        "created_at": _now()})
+    return {"ok": True, "end_date": result.get("end_date"), "audit_id": log_id}
+
+
+class WaReconFinalizeTopupBody(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/subscription/reconcile/{payment_id}/finalize-topup")
+async def wa_reconcile_finalize_topup(payment_id: str, body: WaReconFinalizeTopupBody,
+                                      user=Depends(_perm("subscription.manage"))):
+    """🌊 W1 — اقدام مغایرت «شارژ تأییدشده بدون اعتبار»: اجرای idempotent
+    دوباره‌ی finalize_approved_payment برای رسید شارژ (همان primitive تأیید).
+    اگر اعتبار قبلاً نشسته باشد، اثر دوم ساخته نمی‌شود (already)."""
+    if not body.confirm:
+        raise HTTPException(400, "برای اعمال اعتبار، تأیید صریح لازم است")
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    if str(payment.get("plan_id") or "") != "wallet_topup":
+        raise HTTPException(409, "فقط رسید شارژ کیف پول قابل finalize است")
+    if payment.get("status") != "approved":
+        raise HTTPException(409, "فقط رسید تأییدشده قابل finalize است")
+    uid = int(payment.get("user_id") or 0)
+    try:
+        result = await db.finalize_approved_payment(payment, int(user["id"]))
+    except ValueError:
+        raise HTTPException(422, "مبلغ این رسید شارژ نامعتبر است؛ بررسی دستی لازم است")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی: اعمال اعتبار شارژ",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=str(payment["_id"]), target_label=f"رسید شارژ کاربر {uid}",
+        before={"topup_credited": False},
+        after={"topup_credited": True, "already": bool(result.get("already")),
+               "amount": result.get("amount"),
+               "balance_after": result.get("balance_after")},
+        tags=["مالی", "مغایرت‌گیری"])
+    if not result.get("already"):
+        await db.client["medicalbot"]["bot_notifications"].insert_one({
+            "type": "event:wallet_credit", "chat_id": uid, "sent": False,
+            "text": f"💰 مبلغ {int(result.get('amount') or 0):,} تومان به کیف پول شما اضافه شد.",
+            "created_at": _now()})
+    already = bool(result.get("already"))
+    return {"ok": True, "already": already, "already_credited": already,
+            "amount": result.get("amount"),
+            "balance_after": result.get("balance_after"),
+            "tx_id": result.get("tx_id"), "audit_id": log_id}
+
+
+@router.get("/subscription/finance")
+async def wa_subscription_finance(user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — مرکز مالی: aggregate واقعی از sub_payments (نه شمارش فرانت).
+    درآمد = فقط رسیدهای تأییدشده؛ بازگشت وجه جدا؛ روند ۱۴ روزه کرانه‌دار."""
+    totals = {}
+    async for row in db.sub_payments.aggregate([
+            {"$group": {"_id": "$status", "count": {"$sum": 1},
+                        "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}}]):
+        totals[row["_id"] or "unknown"] = {"count": int(row["count"]),
+                                           "total": int(row["total"])}
+    pad_since = (now_utc() - timedelta(days=16)).isoformat()
+    start_day = (today_tehran() - timedelta(days=13)).isoformat()
+    daily = []
+    async for row in db.sub_payments.aggregate([
+            {"$match": {"status": "approved",
+                        "reviewed_at": {"$gte": pad_since}}},
+            {"$addFields": {"_event_dt": {"$convert": {
+                "input": "$reviewed_at", "to": "date",
+                "onError": None, "onNull": None}}}},
+            {"$match": {"_event_dt": {"$ne": None}}},
+            {"$group": {"_id": {"$dateToString": {
+                "format": "%Y-%m-%d", "date": "$_event_dt",
+                "timezone": "Asia/Tehran"}},
+                "total": {"$sum": {"$ifNull": ["$final_price", 0]}}}},
+            {"$sort": {"_id": 1}}]):
+        if row.get("_id") and row["_id"] >= start_day:
+            daily.append({"day": row["_id"], "total": int(row["total"])})
+    refunds = []
+    uids = set()
+    rdocs = await db.sub_payments.find({"status": "refunded"}).sort(
+        "refunded_at", -1).limit(20).to_list(20)
+    for p in rdocs:
+        uids.add(int(p.get("user_id") or 0))
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(500):
+            names[int(u["user_id"])] = u.get("name") or ""
+    for p in rdocs:
+        uid = int(p.get("user_id") or 0)
+        refunds.append({"payment_id": str(p["_id"]), "user_id": uid,
+                        "user_name": names.get(uid, ""),
+                        "amount": p.get("final_price", p.get("amount")),
+                        "reason": (p.get("refund") or {}).get("reason") or p.get("refund_reason") or "",
+                        "at": p.get("refunded_at"),
+                        "by": (p.get("refund") or {}).get("by") or p.get("refunded_by")})
+    appr = totals.get("approved", {"count": 0, "total": 0})
+    rej = totals.get("rejected", {"count": 0, "total": 0})
+    ref = totals.get("refunded", {"count": 0, "total": 0})
+    decided = appr["count"] + rej["count"]
+    week = (today_tehran() - timedelta(days=6)).isoformat()
+    revenue_week = sum(d["total"] for d in daily if d["day"] >= week)
+    return {"totals": totals,
+            "revenue_total": appr["total"],
+            "revenue_week": revenue_week,
+            "revenue_refunded": ref["total"],
+            "refunded_count": ref["count"],
+            "pending_count": totals.get("pending", {"count": 0, "total": 0})["count"],
+            "success_rate": round(100.0 * appr["count"] / decided, 1) if decided else None,
+            "refund_rate": round(100.0 * ref["count"] / (appr["count"] + ref["count"]), 1)
+            if (appr["count"] + ref["count"]) else None,
+            "wallet": await db.wallet_stats_global(),
+            "daily": daily, "refunds": refunds, "checked_at": _now()}
+
+
+@router.get("/subscription/payments/{payment_id}/trace")
+async def wa_payment_trace(payment_id: str,
+                           user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — ردیابی کامل یک رسید (§۱۱): کاربر ← پرداخت ← اشتراک ←
+    بازگشت وجه ← خط زمانی حسابرسی. فقط خواندنی و کرانه‌دار."""
+    payment = await db.sub_payment_get(payment_id)
+    if not payment:
+        raise HTTPException(404, "رسید پیدا نشد")
+    uid = int(payment.get("user_id") or 0)
+    u = await db.users.find_one({"user_id": uid})
+    sub = await db.sub_get(uid)
+    logs = await db.audit_logs.find({"target.id": str(payment["_id"])}).sort(
+        "timestamp", -1).limit(8).to_list(8)
+    # 💰 W6 — زنجیره‌ی مالی رسید در کیف پول (refund credit / wallet debit /
+    # reversal) تا کل chain در یک نما trace شود
+    wtxs = await db.wallet_transactions.find(
+        {"reference_id": str(payment["_id"]),
+         "reference_type": {"$in": ["sub_payment_refund",
+                                    "sub_payment_wallet",
+                                    "sub_payment_wallet_reversal"]}}
+    ).sort("created_at", -1).to_list(10)
+    return {
+        "payment": {"id": str(payment["_id"]), "status": payment.get("status"),
+                    "plan_name": payment.get("plan_name"),
+                    "price": payment.get("price"),
+                    "final_price": payment.get("final_price"),
+                    "discount_code": payment.get("discount_code"),
+                    "submitted_at": payment.get("submitted_at"),
+                    "reviewed_at": payment.get("reviewed_at"),
+                    "review_note": payment.get("review_note")},
+        "user": {"user_id": uid, "name": (u or {}).get("name") or "",
+                 "student_id": (u or {}).get("student_id") or "",
+                 "username": (u or {}).get("username") or ""} if u else None,
+        "subscription": {"status": sub.get("status"), "plan_name": sub.get("plan_name"),
+                         "start_date": sub.get("start_date"),
+                         "end_date": sub.get("end_date"),
+                         "source": sub.get("source")} if sub else None,
+        "refund": {"reason": payment.get("refund_reason") or
+                   (payment.get("refund") or {}).get("reason"),
+                   "at": payment.get("refunded_at"),
+                   "by": (payment.get("refund") or {}).get("by")}
+        if payment.get("status") == "refunded" else None,
+        "gift": payment.get("gift"),
+        "wallet_txs": [{"id": str(t["_id"]), "type": t.get("type"),
+                        "direction": t.get("direction"),
+                        "amount": int(t.get("amount") or 0),
+                        "label": t.get("label"), "status": t.get("status"),
+                        "balance_after": t.get("balance_after"),
+                        "at": t.get("created_at")} for t in wtxs],
+        "audit": [{"id": str(l["_id"]), "at": l.get("timestamp"),
+                   "actor_name": (l.get("actor") or {}).get("name", ""),
+                   "action": l.get("action", ""), "severity": l.get("severity")}
+                  for l in logs],
+    }
+
+
+@router.get("/exports/payments.csv")
+async def wa_export_payments_csv(status: str = Query("", max_length=20),
+                                 user=Depends(_perm("subscription.manage"))):
+    """🌊 W5 — خروجی CSV کرانه‌دار رسیدها (حداکثر ۲۰۰ سطر) با header انسانی."""
+    flt = {"status": status} if status else {}
+    rows = await db.sub_payments.find(flt).sort("submitted_at", -1).limit(2000).to_list(2000)
+    uids = {int(p.get("user_id") or 0) for p in rows}
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(2000):
+            names[int(u["user_id"])] = u.get("name") or ""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "پلن", "مبلغ پایه", "مبلغ نهایی",
+                "کد تخفیف", "وضعیت", "ثبت", "بررسی", "بازگشت وجه"])
+    for p in rows:
+        uid = int(p.get("user_id") or 0)
+        w.writerow([str(p["_id"]), names.get(uid, ""), uid, p.get("plan_name") or "",
+                    p.get("price") or "", p.get("final_price") or "",
+                    p.get("discount_code") or "", p.get("status") or "",
+                    p.get("submitted_at") or "", p.get("reviewed_at") or "",
+                    p.get("refunded_at") or ""])
+    log_id = await _audit(int(user["id"]), "خروجی CSV رسیدها",
+                          severity="INFO", target_type="export",
+                          target_id=f"payments:{status or 'all'}",
+                          after={"rows": len(rows)}, tags=["مالی", "خروجی"])
+    return Response(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=humsyar-payments.csv",
+                 "X-Audit-Id": str(log_id)})
+
+
+@router.get("/exports/wallet.csv")
+async def wa_export_wallet_csv(user_id: int = Query(0),
+                               user=Depends(_perm("subscription.manage"))):
+    """🌊 W1 — خروجی CSV کرانه‌دار دفترکل کیف پول (حداکثر ۲۰۰۰ سطر آخر).
+    user_id اختیاری: فقط تراکنش‌های همان کاربر."""
+    flt = {"user_id": int(user_id)} if int(user_id or 0) else {}
+    rows = await db.wallet_transactions.find(flt).sort("_id", -1).limit(2000).to_list(2000)
+    uids = {int(t.get("user_id") or 0) for t in rows}
+    names = {}
+    if uids:
+        for u in await db.users.find({"user_id": {"$in": list(uids)}}).to_list(2000):
+            names[int(u["user_id"])] = u.get("name") or ""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["شناسه", "کاربر", "شماره تلگرام", "نوع", "جهت", "مبلغ (تومان)",
+                "موجودی پس‌از", "نوع مرجع", "شناسه مرجع", "ثبت‌کننده", "تاریخ"])
+    for t in rows:
+        uid = int(t.get("user_id") or 0)
+        w.writerow([str(t.get("_id")), names.get(uid, ""), uid,
+                    t.get("label") or t.get("type") or "",
+                    t.get("direction") or "",
+                    t.get("amount") if t.get("amount") is not None else "",
+                    t.get("balance_after") if t.get("balance_after") is not None else "",
+                    t.get("reference_type") or "", t.get("reference_id") or "",
+                    t.get("actor_id") if t.get("actor_id") is not None else t.get("actor") or "",
+                    t.get("at") or t.get("created_at") or ""])
+    log_id = await _audit(int(user["id"]), "خروجی CSV دفترکل کیف پول",
+                          severity="INFO", target_type="export",
+                          target_id=f"wallet:{user_id or 'all'}",
+                          after={"rows": len(rows)}, tags=["مالی", "خروجی"])
+    return Response(
+        "\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=humsyar-wallet.csv",
+                 "X-Audit-Id": str(log_id)})
+
+
+# ── 💰 W6 — مدیریت کیف پول‌ها ──────────────────────────────────
+class WaWalletAdjustBody(BaseModel):
+    amount: int = Field(..., description="مبلغ به تومان؛ مثبت=افزایش، منفی=کسر")
+    reason: str = Field(..., min_length=3, max_length=200)
+    confirm: bool = False
+
+
+class WaRecreditBody(BaseModel):
+    payment_id: str
+    confirm: bool = False
+
+
+class WaWalletResyncBody(BaseModel):
+    confirm: bool = False
+
+
+class WaTxResolveBody(BaseModel):
+    action: str = Field(..., description="complete یا cancel")
+    confirm: bool = False
+
+
+@router.get("/wallets")
+async def wa_wallets(skip: int = Query(0, ge=0),
+                     limit: int = Query(30, ge=1, le=100),
+                     q: str = Query("", max_length=80),
+                     user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — لیست کیف پول‌ها با نام/موجودی (جست‌وجو: uid/نام/شماره دانشجویی)."""
+    flt = {}
+    if q.strip():
+        qq = q.strip()
+        ors = []
+        if qq.isdigit():
+            ors.append({"user_id": int(qq)})
+        ors += [{"name": {"$regex": re.escape(qq), "$options": "i"}},
+                {"student_id": {"$regex": re.escape(qq), "$options": "i"}}]
+        uids = [int(u["user_id"]) for u in await db.users.find(
+            {"$or": ors}, {"user_id": 1}).limit(500)]
+        flt = {"user_id": {"$in": uids}} if uids else {"user_id": -1}
+    total = await db.wallets.count_documents(flt)
+    docs = await db.wallets.find(flt).sort("balance", -1).skip(skip).limit(limit).to_list(limit)
+    users = {}
+    if docs:
+        for u in await db.users.find(
+                {"user_id": {"$in": [d["user_id"] for d in docs]}}).to_list(500):
+            users[int(u["user_id"])] = u
+    return {"total": total, "items": [{
+        "user_id": d["user_id"],
+        "user_name": (users.get(d["user_id"]) or {}).get("name") or "",
+        "student_id": (users.get(d["user_id"]) or {}).get("student_id") or "",
+        "balance": int(d.get("balance", 0)),
+        "currency": d.get("currency") or "تومان",
+        "updated_at": d.get("updated_at"),
+    } for d in docs]}
+
+
+@router.get("/wallets/{uid}")
+async def wa_wallet_detail(uid: int,
+                           skip: int = Query(0, ge=0),
+                           limit: int = Query(20, ge=1, le=50),
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — جزئیات کیف پول: موجودی + آمار + تاریخچه صفحه‌بندی‌شده.
+    تراکنش‌ها human-readable (label فارسی) و IDها فقط فنی."""
+    u = await db.users.find_one({"user_id": uid})
+    summary = await db.wallet_summary(uid)
+    txs = await db.wallet_tx_list(uid, skip=skip, limit=limit)
+    # 🌊 W6.1 — تراکنش‌های معلق (کرش) در صفحه‌ی اول دیده می‌شوند تا ادمین
+    # بتواند همان‌جا تعیین تکلیف کند؛ در ledger کاربر شمارش نمی‌شوند.
+    pend = []
+    if skip == 0:
+        pend = await db.wallet_transactions.find(
+            {"user_id": uid, "status": "pending"}
+        ).sort([("created_at", -1), ("_id", -1)]).to_list(10)
+    txs = list(pend) + list(txs)
+    return {"summary": {**summary,
+                        "user_name": (u or {}).get("name") or "",
+                        "student_id": (u or {}).get("student_id") or ""},
+            "transactions": [{
+                "id": str(t["_id"]), "type": t.get("type"),
+                "direction": t.get("direction"), "amount": int(t.get("amount") or 0),
+                "label": t.get("label"), "status": t.get("status"),
+                "balance_before": t.get("balance_before"),
+                "balance_after": t.get("balance_after"),
+                "reference_type": t.get("reference_type"),
+                "reference_id": t.get("reference_id"),
+                "actor_id": t.get("actor_id"), "at": t.get("created_at"),
+            } for t in txs],
+            "tx_total": await db.wallet_tx_count(uid)}
+
+
+@router.post("/wallets/{uid}/adjust")
+async def wa_wallet_adjust(uid: int, body: WaWalletAdjustBody,
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — تنظیم دستی موجودی: فقط با دلیل + تأیید صریح + audit بحرانی.
+    هیچ تنظیم بی‌صدایی وجود ندارد؛ کسر با موجودی ناکافی ۴۰۰ می‌گیرد."""
+    if not body.confirm:
+        raise HTTPException(400, "تنظیم دستی بدون تأیید صریح ممکن نیست")
+    amount = int(body.amount)
+    if amount == 0 or abs(amount) > 50_000_000:
+        raise HTTPException(400, "مبلغ نامعتبر است")
+    u = await db.users.find_one({"user_id": uid})
+    if not u:
+        raise HTTPException(404, "کاربر پیدا نشد")
+    token = secrets.token_hex(8)
+    try:
+        if amount > 0:
+            tx = await db.wallet_credit(
+                uid, amount, "admin_credit", "admin_adjustment", token,
+                int(user["id"]), f"افزایش دستی — {body.reason}")
+        else:
+            tx = await db.wallet_debit(
+                uid, -amount, "admin_debit", "admin_adjustment", token,
+                int(user["id"]), f"کسر دستی — {body.reason}")
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "insufficient_balance":
+            raise HTTPException(400, "موجودی کیف پول برای این کسر کافی نیست")
+        # 🛡 W3/SEC-02 — سقف روزانه به‌جای ۵۰۰ خام، پاسخ معنادار می‌دهد
+        if code == "daily_limit_exceeded":
+            raise HTTPException(429, str(e) or "سقف روزانه کیف پول")
+        if code == "daily_limit_unavailable":
+            raise HTTPException(
+                503, "سامانه سقف روزانه موقتاً در دسترس نیست؛ "
+                     "لطفاً دقایقی دیگر تلاش کنید")
+        raise
+    log_id = await _audit(
+        int(user["id"]), "تنظیم دستی کیف پول", severity="CRITICAL",
+        target_type="wallet", target_id=str(uid),
+        target_label=(u.get("name") or f"کاربر {uid}"),
+        before={"balance": int(tx.get("balance_before") or 0)},
+        after={"balance": tx.get("balance_after"), "amount": amount,
+               "reason": body.reason, "tx_id": str(tx["_id"])},
+        tags=["مالی", "کیف_پول", "تنظیم_دستی"])
+    await db.client["medicalbot"]["bot_notifications"].insert_one({
+        "type": "event:wallet", "chat_id": uid, "sent": False,
+        "text": (f"{'➕' if amount > 0 else '➖'} {'افزایش' if amount > 0 else 'کسر'} "
+                 f"{abs(amount):,} تومان در کیف پول شما — {body.reason}"),
+        "created_at": _now()})
+    return {"ok": True, "tx_id": str(tx["_id"]),
+            "balance_after": tx.get("balance_after"), "audit_id": log_id}
+
+
+@router.post("/wallets/{uid}/resync")
+async def wa_wallet_resync(uid: int, body: WaWalletResyncBody,
+                           user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — هم‌ترازسازی موجودی کش با ledger (§۹۰ repair امن):
+    ledger منبع حقیقت است؛ موجودی کش فقط بهینه‌سازی. اگر جمع ledger منفی
+    شود یعنی خودِ ledger ناهنجار است — آن حالت هرگز خودکار «اصلاح»
+    نمی‌شود و برای بررسی انسانی پرچم می‌ماند."""
+    if not body.confirm:
+        raise HTTPException(400, "هم‌ترازسازی بدون تأیید صریح ممکن نیست")
+    w = await db.wallets.find_one({"user_id": uid})
+    if not w:
+        raise HTTPException(404, "کیف پول پیدا نشد")
+    # 🌊 W6.1 — تا تراکنش معلقی تعیین‌تکلیف نشده، هم‌ترازسازی ممنوع:
+    # وگرنه جمع ledgerِ ok بدون اثرِ در راه محاسبه و موجودی خراب می‌شود.
+    if await db.wallet_pending_count(uid):
+        raise HTTPException(
+            409, "این کیف پول تراکنش معلق دارد؛ ابتدا آن را تعیین تکلیف "
+                 "کنید (کامل یا لغو)، سپس هم‌ترازسازی ممکن است")
+    ledger = 0
+    async for row in db.wallet_transactions.aggregate([
+            {"$match": {"user_id": uid, "status": "ok"}},
+            {"$group": {"_id": None, "s": {"$sum": {"$cond": [
+                {"$eq": ["$direction", "credit"]},
+                "$amount", {"$multiply": ["$amount", -1]}]}}}}]):
+        ledger = int(row["s"])
+    if ledger < 0:
+        raise HTTPException(
+            409, "جمع ledger منفی است — تراکنش‌ها ناهنجارند؛ "
+                 "اصلاح خودکار انجام نشد و مورد نیازمند بررسی دستی است")
+    before = int(w.get("balance", 0))
+    await db.wallets.update_one(
+        {"user_id": uid},
+        {"$set": {"balance": ledger, "updated_at": _now()}})
+    log_id = await _audit(
+        int(user["id"]), "هم‌ترازسازی موجودی کیف پول با ledger",
+        severity="CRITICAL", target_type="wallet", target_id=str(uid),
+        target_label=f"کیف پول کاربر {uid}",
+        before={"balance": before}, after={"balance": ledger},
+        tags=["مالی", "کیف_پول", "مغایرت"])
+    return {"ok": True, "balance": ledger, "audit_id": log_id}
+
+
+@router.post("/wallet-tx/{tx_id}/resolve")
+async def wa_wallet_tx_resolve(tx_id: str, body: WaTxResolveBody,
+                               user=Depends(_perm("subscription.manage"))):
+    """🌊 W6.1 — تعیین تکلیف تراکنش معلق (کرش بین مراحل ledger):
+    تشخیص اینکه اثر مالی اعمال شده یا نه در لایه‌ی db و evidence-based
+    است؛ اینجا فقط گیت مجوز + تأیید صریح + audit بحرانی اضافه می‌شود."""
+    if not body.confirm:
+        raise HTTPException(400, "تعیین تکلیف بدون تأیید صریح ممکن نیست")
+    try:
+        res = await db.wallet_resolve_pending(tx_id, int(user["id"]),
+                                              body.action)
+    except Exception as e:
+        code = getattr(e, "code", "")
+        if code == "tx_not_found":
+            raise HTTPException(404, str(e))
+        if code == "tx_not_pending":
+            raise HTTPException(409, str(e))
+        if code == "bad_action":
+            raise HTTPException(400, str(e))
+        if code == "insufficient_balance":
+            raise HTTPException(400, "اعمال کسر ممکن نیست — موجودی کافی نیست")
+        if code == "cancel_would_overdraw":
+            raise HTTPException(409, str(e))
+        raise
+    log_id = await _audit(
+        int(user["id"]), "تعیین تکلیف تراکنش معلق کیف پول",
+        severity="CRITICAL", target_type="wallet_tx", target_id=tx_id,
+        target_label=f"تراکنش کیف پول",
+        before={"status": "pending"},
+        after={**res},
+        tags=["مالی", "کیف_پول", "کرش_ریکاوری"])
+    return {**res, "audit_id": log_id}
+
+
+@router.post("/subscription/reconcile/wallet-recredit")
+async def wa_wallet_recredit(body: WaRecreditBody,
+                             user=Depends(_perm("subscription.manage"))):
+    """💰 W6 — اقدام امن روی مغایرت «بازگشت وجه بدون اعتبار کیف پول»:
+    اعتبار مجدد **idempotent** (کلید = همان sub_payment_refund/payment_id)؛
+    دوبار اجرا = یک اثر اقتصادی. این یک repair مالی است: audit بحرانی."""
+    if not body.confirm:
+        raise HTTPException(400, "این اقدام مالی بدون تأیید صریح ممکن نیست")
+    payment = await db.sub_payment_get(body.payment_id)
+    if not payment or payment.get("status") != "refunded":
+        raise HTTPException(409, "فقط رسید بازگشت‌وجه‌شده قابل اعتبار مجدد است")
+    uid = int(payment.get("user_id") or 0)
+    amount = int(payment.get("final_price") or payment.get("amount") or 0)
+    if amount <= 0:
+        raise HTTPException(409, "مبلغ معتبری برای اعتبار یافت نشد")
+    tx = await db.wallet_credit(
+        uid, amount, "refund_credit", "sub_payment_refund",
+        str(payment["_id"]), int(user["id"]),
+        f"بازگشت وجه (اعتبار مجدد مغایرت) — {payment.get('plan_name') or 'اشتراک'}")
+    log_id = await _audit(
+        int(user["id"]), "رفع مغایرت مالی — اعتبار مجدد کیف پول",
+        severity="CRITICAL", target_type="sub_payment",
+        target_id=body.payment_id, target_label=f"رسید کاربر {uid}",
+        before={"wallet_credited": False},
+        after={"wallet_credited": True, "amount": amount,
+               "tx_id": str(tx["_id"]),
+               "already_credited": tx.get("balance_after") is None},
+        tags=["مالی", "مغایرت", "کیف_پول"])
+    return {"ok": True, "tx_id": str(tx["_id"]),
+            "balance_after": tx.get("balance_after"), "audit_id": log_id}
 
 
 @router.get("/subscription/subscribers")
@@ -4615,7 +6524,8 @@ class WaAiConfigUpdate(BaseModel):
     """پیکربندی غیرsecret؛ extra=forbid مانع عبور دستی api_key می‌شود."""
     model_config = ConfigDict(extra="forbid")
     enabled: bool
-    provider: str = Field(pattern="^(gemini|openrouter)$")
+    provider: str = Field(
+        pattern="^(gemini|openrouter|groq|cerebras|mistral|deepseek)$")
     model: str = Field(min_length=2, max_length=150)
     daily_limit: int = Field(ge=0, le=1000)
     thinking: str = Field(pattern="^(auto|high)$")
@@ -4637,6 +6547,12 @@ class WaAiPersonaCreate(BaseModel):
 class WaAiDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     notes: str = Field(min_length=3, max_length=2000)
+
+
+@router.get("/ai/models")
+async def wa_ai_models(user=Depends(_perm("ai.manage"))):
+    """🌊 W9 — کاتالوگ مرکزی مدل‌ها برای selectهای پنل وب."""
+    return await ai_admin_api.models_catalog(admin=user)
 
 
 @router.get("/ai/config")
@@ -4671,28 +6587,33 @@ async def wa_ai_config_update(
 
 @router.post("/ai/api-key/rotate")
 async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
-                               user=Depends(get_admin_user)):
-    """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود."""
+                               user=Depends(_perm("ai.manage"))):
+    """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود. Vault-aware: کلید برای provider فعلی در vault ذخیره می‌شود."""
     secret = body.api_key.strip()
     if len(secret) < 8:
         raise HTTPException(422, "کلید API معتبر نیست")
-    old_secret = (await ai_admin_api.get_ai_config()).get("api_key") or ""
+    cfg = await ai_admin_api.get_ai_config()
+    provider = cfg.get("provider") or "gemini"
+    old_secret = cfg.get("api_key") or ""
     before_configured = bool(old_secret)
+    # ذخیره در vault برای provider فعلی + legacy برای سازگاری
+    await ai_admin_api.set_api_key_for_provider(provider, secret)
     await ai_admin_api.set_ai_setting("api_key", secret)
     try:
         await _audit(user["id"], "AI API key rotated", severity="CRITICAL",
-                     target_type="ai_secret", target_label="Houshyar API key",
-                     before={"configured": before_configured},
-                     after={"configured": True},
+                     target_type="ai_secret", target_label=f"Houshyar API key ({provider})",
+                     before={"configured": before_configured, "provider": provider},
+                     after={"configured": True, "provider": provider},
                      tags=["هوشیار", "secret_rotation", "owner_only", "پنل_وب"])
     except Exception:
+        await ai_admin_api.set_api_key_for_provider(provider, old_secret)
         await ai_admin_api.set_ai_setting("api_key", old_secret)
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ کلید قبلی بازگردانده شد")
-    return {"ok": True, "has_api_key": True}
+    return {"ok": True, "has_api_key": True, "provider": provider}
 
 
 @router.post("/ai/test")
-async def wa_ai_test(user=Depends(get_admin_user)):
+async def wa_ai_test(user=Depends(_perm("ai.manage"))):
     started = time.perf_counter()
     result = await ai_admin_api.test_connection(admin=user)
     result["response_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
@@ -4705,7 +6626,7 @@ async def wa_ai_test(user=Depends(get_admin_user)):
 
 
 @router.get("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
+async def wa_ai_user_profile(user_id: int, user=Depends(_perm("ai.manage"))):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -4718,7 +6639,7 @@ async def wa_ai_user_profile(user_id: int, user=Depends(get_admin_user)):
 
 
 @router.delete("/ai/users/{user_id}/profile")
-async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
+async def wa_ai_user_profile_clear(user_id: int, user=Depends(_perm("ai.manage"))):
     target = await db.get_user(user_id)
     if not target:
         raise HTTPException(404, "کاربر پیدا نشد")
@@ -4740,7 +6661,7 @@ async def wa_ai_user_profile_clear(user_id: int, user=Depends(get_admin_user)):
 
 
 @router.get("/ai/personas")
-async def wa_ai_personas(user=Depends(get_admin_user)):
+async def wa_ai_personas(user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     meta_raw = await db.get_setting("ai_personas_meta", {})
     meta = meta_raw if isinstance(meta_raw, dict) else {}
@@ -4753,7 +6674,7 @@ async def wa_ai_personas(user=Depends(get_admin_user)):
 
 
 @router.post("/ai/personas")
-async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_user)):
+async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     name = body.name.strip()
     prompt = (body.prompt or cfg.get("system_prompt") or "").strip()
@@ -4781,7 +6702,7 @@ async def wa_ai_persona_create(body: WaAiPersonaCreate, user=Depends(get_admin_u
 
 
 @router.post("/ai/personas/{name}/activate")
-async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
+async def wa_ai_persona_activate(name: str, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     prompt = (cfg.get("personas") or {}).get(name)
     if not prompt:
@@ -4800,7 +6721,7 @@ async def wa_ai_persona_activate(name: str, user=Depends(get_admin_user)):
 
 
 @router.delete("/ai/personas/{name}")
-async def wa_ai_persona_delete(name: str, user=Depends(get_admin_user)):
+async def wa_ai_persona_delete(name: str, user=Depends(_perm("ai.manage"))):
     cfg = await ai_admin_api.get_ai_config()
     old_prompt = (cfg.get("personas") or {}).get(name)
     if old_prompt is None:
@@ -5146,7 +7067,14 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
         "route": 1, "method": 1, "status": 1, "duration_ms": 1, "request_id": 1, "at": 1,
     }).sort("at", -1).limit(30).to_list(30)
     total, errors = int(total or 0), int(errors or 0)
+    # 🌊 W5/REL-03 — شمارنده‌های همه‌ی /api/* (افزایشی؛ قرارداد قبلی سر جایش)
+    try:
+        from api.api_counters import snapshot as _api_snapshot
+        _api = _api_snapshot()
+    except Exception:
+        _api = {"routes": [], "recent_5xx": [], "total": 0, "ephemeral": True}
     return {"hours": hours, "total": total, "errors": errors,
+            "api": _api,
             "error_rate": round(errors * 100 / total, 2) if total else None,
             "routes": [{"route": row.get("_id"), "requests": row.get("requests", 0),
                         "errors": row.get("errors", 0), "avg_ms": round(float(row.get("avg_ms") or 0), 2),
@@ -5156,6 +7084,178 @@ async def wa_system_observability(hours: int = Query(24, ge=1, le=720),
                                "at": item.get("at").isoformat() if hasattr(item.get("at"), "isoformat") else str(item.get("at") or "")}
                               for item in recent],
             "retention_days": 30, "persisted": True}
+
+
+class FeaturePolicyBody(BaseModel):
+    enabled: bool | None = None
+    access: str | None = None
+    trial_allowed: bool | None = None
+    quota_kind: str | None = None
+    quota_limit: int | None = None
+    fail_open: bool | None = None
+    note: str | None = Field(default=None, max_length=300)
+    pending_access: str | None = None
+    effective_from: str | None = Field(default=None, max_length=40)
+
+
+@router.get("/features")
+async def wa_features_list(user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — کاتالوگ + پالیسی همه‌ی فیچرها برای پنل دسترسی."""
+    from core.features import FEATURE_CATALOG, default_policy
+    docs = await db.feature_policies.find(
+        {"_id": {"$in": list(FEATURE_CATALOG)}}).to_list(50)
+    by_id = {d.get("_id"): d for d in docs}
+    items = []
+    for key, spec in FEATURE_CATALOG.items():
+        d = by_id.get(key) or {}
+        pol = default_policy(key)
+        for k in ("enabled", "access", "trial_allowed", "quota", "fail_open",
+                  "note", "pending_access", "effective_from"):
+            if k in d:
+                pol[k] = d[k]
+        prev = d.get("prev") or {}
+        items.append({
+            "key": key, "label": spec.get("label", key),
+            "category": spec.get("category", ""),
+            "desc": spec.get("desc", ""),
+            "enforced": bool(spec.get("enforced")),
+            "stored": bool(d), "policy": pol,
+            "updated_by": d.get("updated_by_name", "") or "",
+            "updated_at": d.get("updated_at"),
+            "has_prev": bool(prev),
+            "prev_at": prev.get("_at"), "prev_by": prev.get("_by_name", ""),
+        })
+    return {"items": items}
+
+
+@router.put("/features/{key}")
+async def wa_feature_update(key: str, body: FeaturePolicyBody,
+                            user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — تغییر پالیسی یک فیچر (audit اجباری + جبران در شکست audit)."""
+    from core.features import FEATURE_CATALOG, ACCESS_MODES, QUOTA_KINDS
+    if key not in FEATURE_CATALOG:
+        raise HTTPException(404, "فیچر ناشناخته")
+    patch = {}
+    if body.enabled is not None:
+        patch["enabled"] = bool(body.enabled)
+    if body.access is not None:
+        if body.access not in ACCESS_MODES:
+            raise HTTPException(422, "حالت دسترسی نامعتبر")
+        patch["access"] = body.access
+    if body.trial_allowed is not None:
+        patch["trial_allowed"] = bool(body.trial_allowed)
+    if body.quota_kind is not None or body.quota_limit is not None:
+        cur = await db.get_feature_policy(key) or {}
+        q = dict(cur.get("quota") or {"kind": "none", "limit": 0})
+        if body.quota_kind is not None:
+            if body.quota_kind not in QUOTA_KINDS:
+                raise HTTPException(422, "نوع سهمیه نامعتبر")
+            q["kind"] = body.quota_kind
+        if body.quota_limit is not None:
+            if body.quota_limit < 0 or body.quota_limit > 1000000:
+                raise HTTPException(422, "سقف سهمیه نامعتبر")
+            q["limit"] = int(body.quota_limit)
+        patch["quota"] = q
+    if body.fail_open is not None:
+        patch["fail_open"] = bool(body.fail_open)
+    if body.note is not None:
+        patch["note"] = (body.note or "")[:300]
+    if body.pending_access is not None:
+        if body.pending_access not in ("", *ACCESS_MODES):
+            raise HTTPException(422, "حالت زمان‌بندی نامعتبر")
+        patch["pending_access"] = body.pending_access or None
+    if body.effective_from is not None:
+        eff = (body.effective_from or "").strip() or None
+        if eff:
+            try:
+                from datetime import datetime
+                datetime.fromisoformat(eff)
+            except ValueError:
+                raise HTTPException(422, "زمان شروع نامعتبر (ISO)")
+        patch["effective_from"] = eff
+    if not patch:
+        raise HTTPException(422, "تغییری ارسال نشده")
+    res = await db.set_feature_policy(
+        key, patch, user["id"], (user.get("_db") or {}).get("name", ""))
+    from core.access import invalidate_policy_cache
+    invalidate_policy_cache(key)
+    try:
+        await _audit(user["id"], f"تغییر دسترسی فیچر «{key}»",
+                     severity="HIGH", target_id=key, target_type="feature",
+                     target_label=(FEATURE_CATALOG[key].get("label") or key),
+                     before=res["before"], after=res["after"],
+                     tags=["فیچر", "دسترسی", "پنل_وب", f"feature:{key}"])
+    except Exception:
+        # جبران: مثل settings_center — برگرداندن پالیسیِ قبلی
+        try:
+            await db.set_feature_policy(key, res["before"], user["id"], "")
+            invalidate_policy_cache(key)
+        except Exception:
+            pass
+        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
+    try:
+        await db.log_feature_event(key, "feature_policy_changed",
+                                   user["id"], {"after": res["after"]})
+    except Exception:
+        pass
+    return {"ok": True, "after": res["after"]}
+
+
+@router.post("/features/{key}/rollback")
+async def wa_feature_rollback(key: str,
+                              user=Depends(_perm("subscription.manage"))):
+    """🌊 W7 — بازگردانی به پالیسی قبلی (دو بار = redo)."""
+    from core.features import FEATURE_CATALOG
+    if key not in FEATURE_CATALOG:
+        raise HTTPException(404, "فیچر ناشناخته")
+    res = await db.rollback_feature_policy(
+        key, user["id"], (user.get("_db") or {}).get("name", ""))
+    if not res:
+        raise HTTPException(409, "پالیسی قبلی وجود ندارد")
+    from core.access import invalidate_policy_cache
+    invalidate_policy_cache(key)
+    try:
+        await _audit(user["id"], f"بازگردانی دسترسی فیچر «{key}»",
+                     severity="HIGH", target_id=key, target_type="feature",
+                     before=res["before"], after=res["after"],
+                     tags=["فیچر", "دسترسی", "بازگردانی", f"feature:{key}"])
+    except Exception:
+        try:
+            await db.set_feature_policy(key, res["before"], user["id"], "")
+            invalidate_policy_cache(key)
+        except Exception:
+            pass
+        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
+    return {"ok": True, "after": res["after"]}
+
+
+@router.get("/system/client-errors")
+async def wa_system_client_errors(hours: int = Query(24, ge=1, le=720),
+                                  limit: int = Query(50, ge=1, le=200),
+                                  user=Depends(_perm("system.manage"))):
+    """🌊 W5/REL-03 — خطاهای گزارش‌شده‌ی فرانت (مینی‌اپ/وب‌ادمین)."""
+    since = now_utc() - timedelta(hours=hours)
+    rows = await db.client_errors.find(
+        {"at": {"$gte": since}}).sort("at", -1).to_list(limit)
+    groups = await db.client_errors.aggregate([
+        {"$match": {"at": {"$gte": since}}},
+        {"$group": {"_id": {"app": "$app", "message": "$message"},
+                    "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}}, {"$limit": 20},
+    ]).to_list(20)
+    items = []
+    for r in rows:
+        at = r.get("at")
+        items.append({
+            "app": r.get("app") or "", "path": r.get("path") or "",
+            "message": (r.get("message") or "")[:200],
+            "user_id": r.get("user_id"),
+            "at": at.isoformat() if hasattr(at, "isoformat") else str(at or ""),
+        })
+    return {"hours": hours, "items": items,
+            "groups": [{"app": (g.get("_id") or {}).get("app") or "",
+                        "message": ((g.get("_id") or {}).get("message") or "")[:200],
+                        "count": int(g.get("n") or 0)} for g in groups]}
 
 
 @router.get("/system/jobs")
@@ -5557,6 +7657,216 @@ async def wa_schedule_flex_change(
     return await content_api.flex_change(sid=sid, body=body, admin=user)
 
 
+# ── 📅 الگوی هفتگی (شنبه-جمعه) + اسکن هوشیار — پروکسی وب‌ادمین ───
+@router.get("/schedule/templates")
+async def wa_schedule_templates_list(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_list(group=group, admin=user)
+
+@router.post("/schedule/templates/bulk")
+async def wa_schedule_templates_bulk(
+    body: academic_api.TemplateBulk,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_bulk(body=body, admin=user)
+
+@router.delete("/schedule/templates")
+async def wa_schedule_templates_delete(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_clear(group=group, admin=user)
+
+
+@router.delete("/schedule/templates/clear")
+async def wa_schedule_templates_clear_alias(
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    """Alias قدیمی برای سازگاری با کش فرانت — همان پاک‌سازی الگو."""
+    return await academic_api.schedule_templates_clear(group=group, admin=user)
+
+
+@router.delete("/schedule")
+async def wa_schedule_bulk_delete(
+    group: Optional[str] = Query(None),
+    stype: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    """پاک‌سازی گروهی برنامه‌های تولیدشده (schedules) — برای «پاکسازی این گروه» یکپارچه.
+
+    بدون پارامتر ⇒ همه‌ی برنامه‌ها پاک می‌شود (با تأیید فرانت).
+    group با normalize + aliasهای legacy، stype اختیاری (class/exam/makeup).
+    هیچ‌وقت 404 نمی‌دهد؛ حتی اگر چیزی برای حذف نبود deleted=0 برمی‌گردد.
+    """
+    q: dict = {}
+    if group is not None and str(group).strip() != "":
+        norm = db.normalize_group(group)
+        # برای 1 و 2 تمام aliasها را پاک کن تا legacy نماند
+        if norm in ("1", "2"):
+            q["group"] = {"$in": db.group_aliases(norm)}
+        else:
+            q["group"] = norm
+    if stype:
+        if stype not in ("class", "exam", "makeup"):
+            raise HTTPException(400, "stype نامعتبر است")
+        q["type"] = stype
+    r = await db.schedules.delete_many(q)
+    n = int(getattr(r, "deleted_count", 0) or 0)
+    try:
+        await _audit(user["id"], f"پاک‌سازی گروهی برنامه‌ها ({n} مورد)", "Schedules", severity="WARNING",
+                     target_type="schedule", target_label=str(group or "همه"),
+                     after={"deleted": n, "group": group, "stype": stype},
+                     tags=["برنامه", "پاکسازی_گروهی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "deleted": n}
+
+
+class BulkScheduleDeleteIn(BaseModel):
+    ids: Optional[List[str]] = None
+    group: Optional[str] = None
+    stype: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    delete_all: bool = False
+
+
+@router.post("/schedule/bulk-delete")
+async def wa_schedule_bulk_delete_post(
+    body: BulkScheduleDeleteIn,
+    user=Depends(_perm("schedules.manage")),
+):
+    """حذف گروهی پیشرفته — انتخاب چندتایی / بازه‌ی تاریخی / همه.
+
+    - اگر ids داده شود: همان‌ها حذف می‌شوند (حتی اگر ادغام‌شده باشند).
+    - وگرنه فیلتر group/stype/date_from/date_to اعمال می‌شود.
+    - اگر هیچ‌کدام نبود و delete_all=false → 400 (جلوگیری از حذف تصادفی).
+    - هیچ‌وقت 404 نمی‌دهد؛ deleted=0 هم ok است.
+    """
+    from bson import ObjectId
+    q: dict = {}
+
+    # حالت 1: حذف بر اساس ids صریح
+    if body.ids:
+        oids = []
+        for sid in body.ids:
+            try:
+                oids.append(ObjectId(str(sid).strip()))
+            except Exception:
+                continue
+        if not oids:
+            raise HTTPException(400, "شناسه‌های نامعتبر")
+        q["_id"] = {"$in": oids}
+    else:
+        # حالت 2: فیلتر
+        has_filter = any([body.group not in (None, ""), body.stype not in (None, ""), body.date_from, body.date_to, body.delete_all])
+        if not has_filter:
+            raise HTTPException(400, "برای حذف گروهی باید ids یا فیلتر یا delete_all ارسال شود")
+
+        if body.group is not None and str(body.group).strip() != "":
+            norm = db.normalize_group(body.group)
+            if norm in ("1", "2"):
+                q["group"] = {"$in": db.group_aliases(norm)}
+            else:
+                q["group"] = norm
+        if body.stype:
+            if body.stype not in ("class", "exam", "makeup"):
+                raise HTTPException(400, "stype نامعتبر است")
+            q["type"] = body.stype
+        # بازه‌ی تاریخی — هماهنگ با time.js جلالی→میلادی و ارقام فارسی
+        if body.date_from or body.date_to:
+            date_q = {}
+            def _to_gregorian(s: str) -> str:
+                from time_utils import en_digits as _en
+                s = _en(str(s)).strip()
+                if not s:
+                    return ""
+                s_norm = s.replace("/", "-").replace("٫", "-").replace("،", "-")
+                # جلالی با ارقام فارسی یا لاتین: 14xx-xx-xx
+                try:
+                    if s_norm[:2] == "14" or (len(s_norm) >= 4 and s_norm[:4].startswith("14")):
+                        from time_utils import parse_jalali_date
+                        d = parse_jalali_date(s)
+                        return d.isoformat()
+                except Exception:
+                    pass
+                try:
+                    from time_utils import parse_gregorian_date
+                    d = parse_gregorian_date(s_norm[:10])
+                    return d.isoformat()
+                except Exception:
+                    return s_norm[:10]
+            if body.date_from:
+                g = _to_gregorian(body.date_from)
+                if g:
+                    date_q["$gte"] = g
+            if body.date_to:
+                g = _to_gregorian(body.date_to)
+                if g:
+                    date_q["$lte"] = g
+            if date_q:
+                # اعتبارسنجی ترتیب بازه (هماهنگ با فرانت PersianDatePicker)
+                if "$gte" in date_q and "$lte" in date_q and date_q["$gte"] > date_q["$lte"]:
+                    raise HTTPException(400, "بازه‌ی تاریخ نامعتبر است: تاریخ شروع باید قبل از پایان باشد")
+                q["date"] = date_q
+        # اگر delete_all بدون فیلتر دیگر، q خالی می‌ماند → حذف همه
+        if not q and body.delete_all:
+            q = {}
+
+    if not q and not body.ids and not body.delete_all:
+        raise HTTPException(400, "فیلتر حذف خالی است")
+
+    r = await db.schedules.delete_many(q)
+    n = int(getattr(r, "deleted_count", 0) or 0)
+    try:
+        await _audit(user["id"], f"حذف گروهی پیشرفته ({n} مورد)", "Schedules", severity="WARNING",
+                     target_type="schedule", target_label=str(body.group or body.stype or ("ids:"+str(len(body.ids or [])) if body.ids else "همه")),
+                     after={"deleted": n, "filters": body.model_dump()},
+                     tags=["برنامه", "حذف_گروهی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "deleted": n}
+
+@router.post("/schedule/templates/generate")
+async def wa_schedule_templates_generate(
+    body: academic_api.TemplateGenerate,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_generate(body=body, admin=user)
+
+@router.post("/schedule/templates/scan")
+async def wa_schedule_templates_scan(
+    file: UploadFile = File(...),
+    group: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_scan(file=file, group=group, admin=user)
+
+@router.post("/schedule/templates/scan/confirm")
+async def wa_schedule_templates_scan_confirm(
+    body: academic_api.TemplateBulk,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_templates_scan_confirm(body=body, admin=user)
+
+@router.post("/schedule/exams/scan")
+async def wa_schedule_exams_scan(
+    file: UploadFile = File(...),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_exams_scan(file=file, admin=user)
+
+@router.post("/schedule/exams/scan/confirm")
+async def wa_schedule_exams_scan_confirm(
+    body: academic_api.ExamBulkConfirm,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.schedule_exams_scan_confirm(body=body, admin=user)
+
+
 # ── Grades: global/scoped permissions ──────────────────────────────
 
 async def _grade_intake_scope(user: dict) -> Optional[str]:
@@ -5609,6 +7919,15 @@ async def wa_grades_term_options(
     منوی ترم در پنل ۴۰۴ می‌گیرد و خالی می‌ماند.
     """
     return await academic_api.grades_term_options(admin=user)
+
+
+@router.get("/grades/lesson-term")
+async def wa_grades_lesson_term(
+    lesson: str = Query(..., min_length=1, max_length=120),
+    user=Depends(_perm_any("grades.manage", "grades.scoped")),
+):
+    """🛡 §۸۲-ج — پروکسی حدس ترم از روی درس برای پرکردن خودکار منوی ترم."""
+    return await academic_api.grades_lesson_term(lesson=lesson, admin=user)
 
 
 @router.get("/grades/intakes")
@@ -5681,3 +8000,158 @@ async def wa_grade_delete(
 ):
     await _grade_for_actor(grade_id, user)
     return await academic_api.grade_delete(grade_id=grade_id, admin=user)
+
+
+# ═══════════════════════════════════════════════════════════
+# 🌱 W13 / 💳 W14 — مدیریت رشد (ریفرال + پیگیری پرداخت)
+# ═══════════════════════════════════════════════════════════
+
+class GrowthConfigBody(BaseModel):
+    ref: dict = {}
+    dun: dict = {}
+
+
+class GrowthReviewBody(BaseModel):
+    approve: bool
+
+
+@router.get("/growth/config")
+async def wa_growth_config(user=Depends(_perm("subscription.manage"))):
+    """خواندن کانفیگ رشد (ریفرال + dunning) با پیش‌فرض‌های امن."""
+    import growth_rules as _gr
+    ref_stored = await db.get_setting("ref_cfg", None)
+    dun_stored = await db.get_setting("dun_cfg", None)
+    return {
+        "ref": _gr.merge_ref_config(
+            ref_stored if isinstance(ref_stored, dict) else None),
+        "dun": _gr.merge_dun_config(
+            dun_stored if isinstance(dun_stored, dict) else None),
+    }
+
+
+@router.put("/growth/config")
+async def wa_growth_config_update(body: GrowthConfigBody,
+                                  user=Depends(_perm("subscription.manage"))):
+    """به‌روزرسانی کانفیگ رشد (partial؛ اعتبارسنجی + audit اجباری)."""
+    import growth_rules as _gr
+    before_ref = await db.get_setting("ref_cfg", None) or {}
+    before_dun = await db.get_setting("dun_cfg", None) or {}
+    patch_ref = body.ref if isinstance(body.ref, dict) else {}
+    patch_dun = body.dun if isinstance(body.dun, dict) else {}
+    if not patch_ref and not patch_dun:
+        raise HTTPException(422, "تغییری ارسال نشده")
+    merged_ref = dict(before_ref)
+    merged_ref.update(patch_ref)
+    if "rewards" in patch_ref and isinstance(patch_ref["rewards"], dict):
+        rw = dict((before_ref.get("rewards") or {}))
+        for k, v in patch_ref["rewards"].items():
+            if k in _gr.REWARD_TYPES and isinstance(v, dict):
+                one = dict(rw.get(k) or {})
+                one.update(v)
+                rw[k] = one
+        merged_ref["rewards"] = rw
+    after_ref = _gr.merge_ref_config(merged_ref)
+    after_dun = _gr.merge_dun_config({**before_dun, **patch_dun})
+    await db.set_setting("ref_cfg", after_ref)
+    await db.set_setting("dun_cfg", after_dun)
+    try:
+        await _audit(user["id"], "تغییر کانفیگ رشد (ریفرال/dunning)",
+                     severity="HIGH", target_type="growth",
+                     before={"ref": before_ref, "dun": before_dun},
+                     after={"ref": after_ref, "dun": after_dun},
+                     tags=["رشد", "ریفرال", "dunning", "پنل_وب"])
+    except Exception:
+        try:
+            await db.set_setting("ref_cfg", before_ref)
+            await db.set_setting("dun_cfg", before_dun)
+        except Exception:
+            pass
+        raise HTTPException(500, "ثبت audit ناموفق بود؛ تغییر برگردانده شد")
+    return {"ok": True, "ref": after_ref, "dun": after_dun}
+
+
+@router.get("/growth/referrals")
+async def wa_growth_referrals(status: str = Query(default=""),
+                              inviter: int = Query(default=0),
+                              skip: int = Query(default=0, ge=0),
+                              limit: int = Query(default=20, ge=1, le=100),
+                              user=Depends(
+                                  _perm("subscription.manage"))):
+    """فهرست دعوت‌ها (فیلتر وضعیت/دعوت‌کننده + صفحه‌بندی)."""
+    if status and status not in ("counted", "flagged", "capped",
+                                 "rejected"):
+        raise HTTPException(422, "وضعیت نامعتبر")
+    docs = await db.ref_list(inviter_id=inviter, status=status,
+                             skip=skip, limit=limit)
+    total = await db.ref_count(inviter_id=inviter, status=status)
+    uids = {d.get("inviter_id") for d in docs} | \
+        {d.get("invitee_id") for d in docs}
+    names = {}
+    try:
+        users = await db.get_users_by_ids([u for u in uids if u])
+        names = {u: (d or {}).get("name", "") for u, d in users.items()}
+    except Exception:
+        pass
+    items = [{
+        "id": str(d.get("_id")),
+        "inviter_id": d.get("inviter_id"),
+        "inviter_name": names.get(d.get("inviter_id"), ""),
+        "invitee_id": d.get("invitee_id"),
+        "invitee_name": names.get(d.get("invitee_id"), ""),
+        "source": d.get("source", ""),
+        "status": d.get("status", ""),
+        "flag_reason": d.get("flag_reason", ""),
+        "created_at": d.get("created_at", ""),
+        "reward_register": bool(d.get("reward_register")),
+        "reward_buy": bool(d.get("reward_buy")),
+        "first_buy_at": d.get("invitee_first_buy_at"),
+        "granted": d.get("granted") or {},
+    } for d in docs]
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/growth/referrals/{rid}/review")
+async def wa_growth_review(rid: str, body: GrowthReviewBody,
+                           user=Depends(_perm("subscription.manage"))):
+    """تأیید/رد دستی دعوت مشکوک (تأیید → اعطای جوایز سررسیده)."""
+    doc = await db.ref_set_status(rid, "counted" if body.approve
+                                  else "rejected", user["id"])
+    if not doc:
+        raise HTTPException(404, "دعوت پیدا نشد یا قابل‌بازبینی نیست")
+    granted_all = {}
+    if body.approve and doc.get("status") == "counted":
+        try:
+            r1 = await db.ref_grant(doc, "register")
+            granted_all["register"] = r1.get("granted", {})
+            if doc.get("invitee_first_buy_at"):
+                r2 = await db.ref_grant(doc, "buy")
+                granted_all["buy"] = r2.get("granted", {})
+            if granted_all.get("register") or granted_all.get("buy"):
+                from referral import notify_inviter as _notify
+                await _notify(int(doc["inviter_id"]),
+                              {**granted_all.get("register", {}),
+                               **granted_all.get("buy", {})},
+                              "register")
+        except Exception:
+            pass
+    try:
+        await _audit(user["id"],
+                     f"بازبینی دعوت: {'تأیید' if body.approve else 'رد'}",
+                     severity="HIGH", target_id=str(doc.get("_id")),
+                     target_type="referral",
+                     target_label=f"{doc.get('inviter_id')}→"
+                                  f"{doc.get('invitee_id')}",
+                     tags=["رشد", "ریفرال", "بازبینی", "پنل_وب"])
+    except Exception:
+        pass
+    return {"ok": True, "status": doc.get("status"),
+            "granted": granted_all}
+
+
+@router.get("/growth/stats")
+async def wa_growth_stats(user=Depends(_perm("subscription.manage"))):
+    """آمار یک‌نگاه رشد: ریفرال + پیگیری پرداخت."""
+    return {
+        "referral": await db.ref_global_stats(),
+        "dunning": await db.dun_stats(),
+    }

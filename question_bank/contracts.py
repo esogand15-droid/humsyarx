@@ -27,6 +27,26 @@ _SOURCE_ALIASES = {
 }
 
 
+# 🌊 QBANK-W1 — سال آزمون: رشته‌ی ۴رقمی شمسی با بازه‌ی باز (۱۳۹۰–۱۴۳۰) تا
+# سال‌های آینده بدون تغییر کد پذیرفته شوند (§۱۵.۳ نقشه‌ی راه بر §۳.۳ اولویت دارد).
+EXAM_YEAR_MIN = "1390"
+EXAM_YEAR_MAX = "1430"
+
+# 🌊 QBANK-W1 — منبع محتوا (برند سؤال) — مستقل از `source` قدیمی (کانال ساخت).
+CONTENT_SOURCES = {
+    "hamsyar": "بانک اختصاصی همشیار",
+    "konkoor_sarasari": "کنکور سراسری علوم پایه",
+    "sib_sabz": "سیب سبز",
+    "prognoz": "پروگنوز",
+    "other": "سایر",
+}
+CONTENT_SOURCE_DEFAULT = "hamsyar"
+
+# 🌊 QBANK-W1/§۱۵.۲ — رشته‌ی آزمون منبع؛ فقط ردیابی در provenance، نه فیلتر UI.
+EXAM_TRACKS = frozenset({"medicine", "dentistry"})
+EXAM_TRACK_DEFAULT = "medicine"
+
+
 @dataclass
 class QuestionDomainError(ValueError):
     code: str
@@ -69,6 +89,34 @@ def canonical_source(value: Any, creator_type: str = "student") -> str:
     if value in _SOURCE_ALIASES:
         return _SOURCE_ALIASES[value]
     return "system" if creator_type == "system" else "student_bot"
+
+
+def canonical_exam_year(value: Any, *, strict: bool = True) -> str | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    text = text.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+    if len(text) == 4 and text.isdigit() and EXAM_YEAR_MIN <= text <= EXAM_YEAR_MAX:
+        return text
+    if strict:
+        raise QuestionDomainError("invalid_exam_year", f"سال آزمون باید بین {EXAM_YEAR_MIN} تا {EXAM_YEAR_MAX} باشد")
+    return None
+
+
+def canonical_content_source(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return CONTENT_SOURCE_DEFAULT
+    if text in CONTENT_SOURCES:
+        return text
+    raise QuestionDomainError("invalid_content_source", "منبع محتوا معتبر نیست")
+
+
+def canonical_exam_track(value: Any) -> str:
+    text = clean_text(value).lower()
+    if text in EXAM_TRACKS:
+        return text
+    return EXAM_TRACK_DEFAULT
 
 
 def approved_query() -> dict:
@@ -131,6 +179,11 @@ def validate_question_payload(payload: Mapping[str, Any]) -> dict:
     if not 0 <= correct < 4:
         raise QuestionDomainError("invalid_correct_option", "گزینه صحیح باید بین ۱ تا ۴ باشد")
     difficulty = canonical_difficulty(payload.get("difficulty") or "medium")
+    exam_year = canonical_exam_year(payload.get("exam_year"))
+    content_source = canonical_content_source(payload.get("content_source"))
+    confidence = clean_text(payload.get("exam_year_confidence"))
+    if confidence not in {"extracted", "inferred_from_filename", "unknown"}:
+        confidence = "unknown" if not exam_year else "extracted"
     return {
         "question": question,
         "options": options,
@@ -138,10 +191,20 @@ def validate_question_payload(payload: Mapping[str, Any]) -> dict:
         "difficulty": difficulty,
         "explanation": clean_text(payload.get("explanation"), 4000),
         "content_hash": question_content_hash(question, options),
+        "exam_year": exam_year,
+        "exam_year_confidence": confidence,
+        "content_source": content_source,
+        "content_source_label_fa": CONTENT_SOURCES[content_source],
     }
 
 
 def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dict:
+    from .images import image_state as _image_state
+    _img = _image_state(document)
+    _qid = str(document.get("_id") or document.get("id") or "")
+    _cs = clean_text(document.get("content_source"))
+    if _cs not in CONTENT_SOURCES:
+        _cs = CONTENT_SOURCE_DEFAULT
     result = {
         "id": str(document.get("_id") or document.get("id") or ""),
         "lesson_id": str(document.get("lesson_id") or ""),
@@ -155,6 +218,15 @@ def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dic
         "source": canonical_source(document.get("source"), clean_text(document.get("creator_type"))),
         "creator_type": clean_text(document.get("creator_type")) or "student",
         "provenance": dict(document.get("provenance") or {}),
+        "exam_year": clean_text(document.get("exam_year")) or None,
+        "exam_year_confidence": clean_text(document.get("exam_year_confidence")) or "unknown",
+        "content_source": _cs,
+        "content_source_label_fa": CONTENT_SOURCES[_cs],
+        "exam_track": canonical_exam_track((document.get("provenance") or {}).get("exam_track")),
+        "image": {"has_image": _img["has_image"], "pending_upload": _img["pending_upload"],
+                  "alt_text": _img["alt_text"]},
+        "image_url": (f"/api/questions/image/{_qid}"
+                      if (_img["has_image"] and not _img["pending_upload"] and _qid) else None),
     }
     if reveal:
         result.update({

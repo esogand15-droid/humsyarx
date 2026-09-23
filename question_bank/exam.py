@@ -1,6 +1,7 @@
 """Persistent shared exam domain for Bot, API and PDF output."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 import uuid
@@ -17,43 +18,71 @@ OUTPUT_MODES = frozenset({"bot", "app", "pdf_practice", "pdf_exam"})
 EXAM_STATUSES = frozenset({"active", "finished", "expired", "abandoned"})
 
 
+# 🌊 W6/PERF-03 — کش کوتاه‌مدت PDF (همان ورودی ⇒ همان بایت؛ باطل‌سازی با
+# updated_at سؤال). کرانه‌دار و TTLدار تا حافظه نشت نکند.
+_PDF_CACHE: dict = {}
+_PDF_CACHE_TTL_S = 600
+_PDF_CACHE_MAX = 30
+
+
 class ExamService:
     def __init__(self, database):
         self.db = database
         self.qbank = QuestionBankService(database)
         self.sessions = database.exam_sessions
 
+    @staticmethod
+    def _filters(exam_year_from=None, exam_year_to=None, content_source=None) -> dict:
+        sources = None
+        if content_source is not None:
+            sources = [content_source] if isinstance(content_source, str) else list(content_source)
+        return {"exam_year_from": exam_year_from, "exam_year_to": exam_year_to,
+                "content_source": sources}
+
     async def preview(self, *, user: Mapping, taxonomy: Mapping,
                       requested_count: int, minutes: int, output_mode: str,
-                      difficulty: str | None = None) -> dict:
+                      difficulty: str | None = None,
+                      exam_year_from: str | None = None,
+                      exam_year_to: str | None = None,
+                      content_source=None) -> dict:
         if output_mode not in OUTPUT_MODES:
             raise QuestionDomainError("invalid_output_mode", "نوع اجرای آزمون معتبر نیست")
         if not 5 <= int(requested_count) <= 100:
             raise QuestionDomainError("invalid_question_count", "تعداد سؤال باید بین ۵ تا ۱۰۰ باشد")
         if not 0 <= int(minutes) <= 180:
             raise QuestionDomainError("invalid_exam_duration", "زمان آزمون معتبر نیست")
-        available = await self.qbank.capacity(user=user, taxonomy=taxonomy, difficulty=difficulty)
+        available = await self.qbank.capacity(user=user, taxonomy=taxonomy, difficulty=difficulty,
+                                              exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                              content_source=content_source)
         return {"requested_count": int(requested_count), "available_count": available,
                 "can_start": available >= int(requested_count),
                 "max_count": available, "minutes": int(minutes), "output_mode": output_mode,
-                "taxonomy": dict(taxonomy)}
+                "taxonomy": dict(taxonomy),
+                "filters": self._filters(exam_year_from, exam_year_to, content_source)}
 
     async def create(self, *, user: Mapping, taxonomy: Mapping,
                      requested_count: int, minutes: int, output_mode: str,
                      difficulty: str | None = None,
+                     exam_year_from: str | None = None,
+                     exam_year_to: str | None = None,
+                     content_source=None,
                      allow_smaller: bool = False) -> dict:
         existing = await self.active(user=user)
         if existing and existing.get("status") == "active":
             raise QuestionDomainError("active_exam_exists", "ابتدا آزمون فعال را ادامه دهید یا رها کنید", 409,
                                       {"exam": existing})
         preview = await self.preview(user=user, taxonomy=taxonomy, requested_count=requested_count,
-                                     minutes=minutes, output_mode=output_mode, difficulty=difficulty)
+                                     minutes=minutes, output_mode=output_mode, difficulty=difficulty,
+                                     exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                     content_source=content_source)
         if not preview["available_count"]:
             raise QuestionDomainError("no_questions", "برای این فیلتر سؤالی وجود ندارد", 404, preview)
         if not preview["can_start"] and not allow_smaller:
             raise QuestionDomainError("insufficient_questions", "تعداد سؤال‌های موجود کمتر از انتخاب شماست", 409, preview)
         actual = min(int(requested_count), preview["available_count"])
-        query = self.qbank.eligible_query(taxonomy, intakes=self.qbank.student_intakes(user), difficulty=difficulty)
+        query = self.qbank.eligible_query(taxonomy, intakes=self.qbank.student_intakes(user), difficulty=difficulty,
+                                          exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                          content_source=content_source)
         rows = await self.db.questions.aggregate([
             {"$match": query}, {"$sample": {"size": actual}}, {"$project": {"_id": 1}},
         ]).to_list(actual)
@@ -62,6 +91,9 @@ class ExamService:
         now = now_utc()
         session_id = uuid.uuid4().hex[:20]
         deadline = now + timedelta(minutes=int(minutes)) if minutes else None
+        # 🌊 W3 — TTL field for auto-cleanup (7d after deadline or start) — Date for TTL
+        from datetime import timedelta as _td
+        expires_at = (deadline + _td(days=7) if deadline else now + _td(days=7))
         document = {
             "session_id": session_id, "user_id": int(user.get("id") or 0),
             "lesson_id": str(taxonomy.get("lesson_id") or ""),
@@ -70,8 +102,10 @@ class ExamService:
             "difficulty": difficulty or "", "question_ids": [str(x["_id"]) for x in rows],
             "requested_count": int(requested_count), "actual_count": actual,
             "minutes": int(minutes), "duration_seconds": int(minutes) * 60,
+            "filters": self._filters(exam_year_from, exam_year_to, content_source),
             "deadline": deadline.isoformat() if deadline else None,
             "deadline_ts": int(deadline.timestamp()) if deadline else None,
+            "expires_at": expires_at,
             "index": 0, "current_index": 0, "correct": 0, "correct_count": 0,
             "answered": 0, "answers": [], "status": "active",
             "output_mode": output_mode, "started_at": now.isoformat(), "created_at": now.isoformat(),
@@ -195,6 +229,30 @@ class ExamService:
                                             "promotion": {"$ne": True}}, sort=[("started_at", -1)])
         return self.summary(await self.expire(doc)) if doc else None
 
+    @staticmethod
+    async def _pdf_question_images(image_service, questions: list) -> dict:
+        try:
+            from api.telegram_send import download_telegram_file
+        except ImportError:
+            return {}
+        from io import BytesIO
+        from reportlab.lib.utils import ImageReader
+        out = {}
+        for question in questions:
+            qid = str(question.get("_id") or "")
+            if not qid:
+                continue
+            try:
+                resolved = await image_service.resolve_file(qid)
+                if not resolved:
+                    continue
+                raw = await download_telegram_file(resolved["file_id"])
+                if raw:
+                    out[qid] = ImageReader(BytesIO(raw))
+            except Exception:
+                continue
+        return out
+
     async def generate_pdf(self, *, session_id: str, user: Mapping, mode: str) -> tuple[bytes, dict]:
         if mode not in {"practice", "exam"}:
             raise QuestionDomainError("invalid_pdf_mode", "نوع PDF معتبر نیست")
@@ -225,7 +283,26 @@ class ExamService:
                         difficulty=session.get("difficulty") or None,
                         student_name=self.db.display_name_of(db_user),
                         exam_code=session.get("exam_code") or session_id)
-        content = generate_exam_pdf(questions, meta, mode=mode)
+        # 🌊 W6/PERF-03 — کش + عدم‌بلاک event-loop (reportlab همگام است)
+        _pdf_key_src = "|".join(
+            sorted(f"{q.get('_id')}:{q.get('updated_at', '')}"
+                   for q in questions))
+        _pdf_key = hashlib.sha256(
+            f"{session_id}:{mode}:{_pdf_key_src}".encode("utf-8")).hexdigest()
+        _pdf_hit = _PDF_CACHE.get(_pdf_key)
+        if _pdf_hit and _pdf_hit[0] > time.monotonic():
+            return _pdf_hit[1], _pdf_hit[2]
+        # 🌊 QBANK-W3/§۷.۵ — تصاویر سؤالات به builder داده می‌شود؛ دانلود
+        # ناموفق = چاپ بدون تصویر (سؤال حذف نمی‌شود). کلید کش بالای این
+        # تابع updated_at را دارد و attach آن را می‌شکند، پس کش خودبه‌خود
+        # بعد از اتصال تصویر باطل می‌شود.
+        from question_bank.images import QuestionImageService
+        from reportlab.lib.utils import ImageReader
+        question_images = await self._pdf_question_images(
+            QuestionImageService(self.db), questions)
+        content = await asyncio.to_thread(
+            generate_exam_pdf, questions, meta, mode=mode,
+            question_images=question_images)
         generated_at = utc_now_iso(); generation_id = uuid.uuid4().hex
         checksum = hashlib.sha256(content).hexdigest()
         generation = {"generation_id": generation_id, "session_id": session_id,
@@ -246,10 +323,15 @@ class ExamService:
                 # اینجا فقط ۱۰۰ اشاره‌گرِ آخر نگه داشته می‌شود.
                 {"$set": session_set,
                  "$push": {"generation_ids": {"$each": [generation_id], "$slice": -100}}})
-        return content, {"session_id": session_id, "generation_id": generation_id,
-                         "exam_code": meta.exam_code, "mode": mode,
-                         "questions": len(questions), "generated_at": generated_at,
-                         "sha256": checksum, "file_name": generation["file_name"]}
+        _pdf_out = {"session_id": session_id, "generation_id": generation_id,
+                      "exam_code": meta.exam_code, "mode": mode,
+                      "questions": len(questions), "generated_at": generated_at,
+                      "sha256": checksum, "file_name": generation["file_name"]}
+        if len(_PDF_CACHE) >= _PDF_CACHE_MAX:
+            _PDF_CACHE.pop(next(iter(_PDF_CACHE)))
+        _PDF_CACHE[_pdf_key] = (time.monotonic() + _PDF_CACHE_TTL_S,
+                                content, _pdf_out)
+        return content, _pdf_out
 
     @staticmethod
     def summary(session: Mapping) -> dict:
@@ -265,5 +347,6 @@ class ExamService:
                 "percentage": round(correct * 100 / answered, 1) if answered else 0,
                 "current_index": int(session.get("current_index", session.get("index", 0)) or 0),
                 "minutes": int(session.get("minutes") or 0), "deadline": session.get("deadline"),
+                "filters": session.get("filters") or {},
                 "started_at": session.get("started_at"), "finished_at": session.get("finished_at"),
                 "exam_code": session.get("exam_code"), "generation": session.get("generation")}

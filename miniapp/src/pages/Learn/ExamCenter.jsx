@@ -14,6 +14,12 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
+import SubscriptionLock, {
+  isSubscriptionLock,
+  lockKind,
+} from '../../components/shared/SubscriptionLock';
 import QuestionCard from '../../components/shared/QuestionCard';
 import CelebrationOverlay from '../../components/shared/CelebrationOverlay';
 
@@ -109,6 +115,24 @@ export default function ExamCenter() {
     minutes: 20,
   });
 
+  /* 🌊 QBANK-W1 — فیلترهای سال و منبع آزمون */
+  const [yearFrom, setYearFrom] = useState('');
+  const [yearTo, setYearTo] = useState('');
+  const [srcPicked, setSrcPicked] = useState([]);
+  const { data: filterOptions = {} } = useQuery({
+    queryKey: ['question-filters'],
+    queryFn: () =>
+      api.get('/api/questions/filters').then((r) => r.data || {}),
+    staleTime: 10 * 60 * 1000,
+  });
+  const toggleSrc = (code) =>
+    setSrcPicked((cur) =>
+      cur.includes(code) ? cur.filter((c) => c !== code) : [...cur, code]
+    );
+
+  const [outputMode, setOutputMode] =
+    useState('app');
+
   const [
     session,
     setSession,
@@ -173,6 +197,8 @@ export default function ExamCenter() {
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
+    isError: lessonsError,
+    refetch: refetchLessons,
   } = useQuery({
     queryKey: [
       'question-lessons',
@@ -229,6 +255,7 @@ export default function ExamCenter() {
     data: history = [],
     isLoading: historyLoading,
     isError: historyError,
+    error: historyErr,
     refetch: refetchHistory,
   } = useQuery({
     queryKey: [
@@ -257,6 +284,31 @@ export default function ExamCenter() {
         'exam-history',
       ],
     });
+
+  const downloadPdf = async (sid, mode) => {
+    try {
+      const res = await api.get(
+        `/api/questions/custom-exam/${sid}/pdf?mode=${mode}`,
+        { responseType: 'blob' }
+      );
+      const blob = res.data;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `humsyar-exam-${String(sid).slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('PDF آماده شد — دانلود شروع شد 📄', 'success');
+      haptic('medium');
+    } catch (e) {
+      toast(
+        e?.response?.data?.detail || 'دانلود PDF انجام نشد',
+        'error'
+      );
+    }
+  };
 
 
   const loadNext = async (
@@ -341,22 +393,30 @@ export default function ExamCenter() {
               Number(
                 config.minutes
               ),
+
+            output_mode: outputMode,
+            exam_year_from: yearFrom || null,
+            exam_year_to: yearTo || null,
+            content_source: srcPicked.length ? srcPicked : null,
           }
         ),
 
       onSuccess: async (
         response
       ) => {
-        setSession(
-          response.data
-        );
-
+        const data = response.data || {};
+        // PDF mode: directly download
+        if (String(outputMode).startsWith('pdf')) {
+          const mode = outputMode === 'pdf_practice' ? 'practice' : 'exam';
+          toast('⏳ در حال ساخت PDF...', 'info');
+          await downloadPdf(data.session_id, mode);
+          await refreshHistory();
+          setView('history');
+          return;
+        }
+        setSession(data);
         setResult(null);
-
-        await loadNext(
-          response.data
-            .session_id
-        );
+        await loadNext(data.session_id);
       },
 
       onError: (error) =>
@@ -1511,26 +1571,22 @@ export default function ExamCenter() {
           {historyLoading ? (
             <ExamHistorySkeleton />
           ) : historyError ? (
-            <div className="empty card">
-              دریافت تاریخچه انجام نشد.
-
-              <button
-                className="btn btn-p"
-                style={{
-                  marginTop:
-                    12,
-                }}
-                onClick={() =>
-                  refetchHistory()
-                }
-              >
-                تلاش دوباره
-              </button>
-            </div>
+            isSubscriptionLock(historyErr) ? (
+              <SubscriptionLock
+                feature="آزمون‌ها"
+                featureKey="mock_exam"
+                mode={lockKind(historyErr).kind}
+              />
+            ) : (
+              <PageError
+                text="دریافت تاریخچه انجام نشد."
+                onRetry={() => refetchHistory()}
+              />
+            )
           ) : rows.length === 0 ? (
-            <div className="empty card">
+            <EmptyState icon="📝">
               هنوز آزمونی ثبت نشده است.
-            </div>
+            </EmptyState>
           ) : (
             <section
               style={{
@@ -1669,6 +1725,42 @@ export default function ExamCenter() {
                         >
                           ▶️ ادامه آزمون
                         </button>
+                      )}
+
+                      {String(item.output_mode || '').startsWith('pdf') && (
+                        <button
+                          className={
+                            'btn btn-dark btn-full'
+                          }
+                          style={{
+                            marginTop: 8,
+                          }}
+                          onClick={() =>
+                            downloadPdf(
+                              item.session_id,
+                              item.output_mode === 'pdf_practice'
+                                ? 'practice'
+                                : 'exam'
+                            )
+                          }
+                        >
+                          📄 دانلود PDF
+                        </button>
+                      )}
+
+                      {String(item.output_mode || '').startsWith('pdf') && item.status !== 'active' && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            fontSize: 'var(--fs-cap)',
+                            color: 'var(--txm)',
+                            textAlign: 'center',
+                          }}
+                        >
+                          {item.output_mode === 'pdf_practice'
+                            ? '📄 PDF تمرینی — پاسخ زیر هر سوال'
+                            : '📝 PDF آزمونی — پاسخنامه در انتها'}
+                        </div>
                       )}
                     </article>
                   );
@@ -1831,6 +1923,12 @@ export default function ExamCenter() {
                 انتخاب درس
               </option>
 
+              {lessonsError && lessons.length === 0 && (
+                <option value="" disabled>
+                  🌐 دریافت درس‌ها ناموفق بود
+                </option>
+              )}
+
               {lessons.map(
                 (item) => (
                   <option
@@ -1843,6 +1941,18 @@ export default function ExamCenter() {
                 )
               )}
             </select>
+          )}
+
+          {/* 🌊 W8/UX-02 */}
+          {lessonsError && lessons.length === 0 && (
+            <button
+              type="button"
+              className="btn sm"
+              style={{ marginTop: 6 }}
+              onClick={() => refetchLessons()}
+            >
+              تلاش دوباره برای درس‌ها
+            </button>
           )}
 
           <label className="fld-label">
@@ -1972,6 +2082,113 @@ export default function ExamCenter() {
               </select>
             </div>
           </div>
+
+          <label className="fld-label">بازه سال آزمون (اختیاری)</label>
+          <div className="grid2">
+            <div>
+              <select className="inp" value={yearFrom} onChange={(e) => setYearFrom(e.target.value)}>
+                <option value="">از همه سال‌ها</option>
+                {(filterOptions.years || []).map((y) => (
+                  <option key={y} value={y}>از {y}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <select className="inp" value={yearTo} onChange={(e) => setYearTo(e.target.value)}>
+                <option value="">تا همه سال‌ها</option>
+                {(filterOptions.years || []).map((y) => (
+                  <option key={y} value={y}>تا {y}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {(filterOptions.sources || []).length > 0 && (
+            <>
+              <label className="fld-label">منبع سؤال (اختیاری)</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                {(filterOptions.sources || []).map((src) => (
+                  <label key={src.code} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-cap)' }}>
+                    <input type="checkbox" checked={srcPicked.includes(src.code)} onChange={() => toggleSrc(src.code)} />
+                    {src.label} ({src.count})
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+
+          <label className="fld-label">نوع خروجی</label>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr 1fr',
+              gap: 8,
+            }}
+          >
+            {[
+              { id: 'app', icon: '🤖', label: 'داخل اپ', desc: 'تعاملی' },
+              { id: 'pdf_practice', icon: '📄', label: 'PDF تمرینی', desc: 'پاسخ زیر سوال' },
+              { id: 'pdf_exam', icon: '📝', label: 'PDF آزمونی', desc: 'پاسخنامه جدا' },
+            ].map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className={`card ${outputMode === m.id ? 'card-glow' : ''}`}
+                onClick={() => setOutputMode(m.id)}
+                style={{
+                  padding: '10px 6px',
+                  textAlign: 'center',
+                  border:
+                    outputMode === m.id
+                      ? '1.5px solid var(--acc)'
+                      : '1px solid var(--bd)',
+                  background:
+                    outputMode === m.id ? 'var(--acc-soft)' : 'var(--surf-card)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: 18 }}>{m.icon}</div>
+                <div
+                  style={{
+                    fontSize: 'var(--fs-cap)',
+                    fontWeight: 700,
+                    marginTop: 4,
+                    color: outputMode === m.id ? 'var(--acc)' : 'var(--tx)',
+                  }}
+                >
+                  {m.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: 'var(--txm)',
+                    marginTop: 2,
+                  }}
+                >
+                  {m.desc}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {String(outputMode).startsWith('pdf') && (
+            <div
+              className="card"
+              style={{
+                background: 'var(--soft-acc)',
+                border: '1px solid var(--bd-acc)',
+                padding: 10,
+                fontSize: 'var(--fs-cap)',
+                color: 'var(--txm)',
+                lineHeight: 1.6,
+              }}
+            >
+              {outputMode === 'pdf_practice'
+                ? '📄 PDF تمرینی: هر سوال با پاسخ و تحلیل بلافاصله زیر آن — مناسب تمرین و مرور.'
+                : '📝 PDF آزمونی: سوالات بدون پاسخ + پاسخنامه جداگانه در پایان — مناسب چاپ و برگزاری آزمون.'}
+            </div>
+          )}
         </section>
 
         <button

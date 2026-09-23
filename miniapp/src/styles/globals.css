@@ -5067,3 +5067,81 @@ button.badge:active {
     animation: none;
   }
 }
+
+
+/* ─────────────────────────────────────────────
+   🎨 ساخت تصویر (صفحه‌ی AiImage) — W8
+   کاملاً از توکن‌های همان دارک‌مد Design System
+───────────────────────────────────────────── */
+.aiimg-card { display: flex; flex-direction: column; gap: 10px; }
+.aiimg-prompt { resize: vertical; min-height: 92px; }
+.aiimg-count {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--txm);
+}
+.aiimg-ratios {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  -webkit-overflow-scrolling: touch;
+}
+.aiimg-chip {
+  flex: 0 0 auto;
+  border: 1px solid var(--bd);
+  background: var(--elev);
+  color: var(--tx2);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.aiimg-chip--on {
+  border-color: var(--bdg);
+  background: var(--acc-soft);
+  color: var(--tx);
+}
+.aiimg-chip:disabled { opacity: .5; }
+.aiimg-go { margin-top: 4px; }
+.aiimg-quota { font-size: 12px; color: var(--txm); text-align: center; }
+.aiimg-error {
+  color: var(--err);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.aiimg-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 16px;
+  color: var(--tx2);
+  font-size: 13px;
+}
+.aiimg-hint { color: var(--txm); font-size: 11px; }
+.aiimg-spin {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--bd);
+  border-top-color: var(--acc);
+  animation: aiimg-rotate .9s linear infinite;
+}
+@keyframes aiimg-rotate { to { transform: rotate(360deg); } }
+.aiimg-img {
+  width: 100%;
+  max-width: 520px;
+  display: block;
+  margin: 0 auto;
+  border-radius: var(--r-md);
+}
+.aiimg-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.aiimg-actions .btn { flex: 1; text-align: center; text-decoration: none; }
+.aiimg-entry {
+  background: var(--acc-soft);
+  border-color: var(--bdg);
+}

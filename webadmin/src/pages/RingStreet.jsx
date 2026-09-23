@@ -438,7 +438,7 @@ function AnalyticsPanel({ box }) {
       {Object.keys(m).length === 0 && <Empty icon="📭" text="داده‌ای نیست" />}
       {Object.entries(m).map(([k, v]) => <div key={k} style={{ marginBottom: 8 }}>
         <b>{MODE[k] || k}</b>
-        <div className="muted">جلسه: {fa(v.sessions)} · پیام: {fa(v.messages)} · مدت: {fa(v.avg_duration_s)}s</div>
+        <div className="muted">جلسه: {fa(v.sessions)} · پیام: {fa(v.messages)} · مدت: {fa(v.avg_duration_s)} ثانیه</div>
       </div>)}
     </div>
     <div className="panel panel-pad">

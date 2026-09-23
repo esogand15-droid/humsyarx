@@ -1,6 +1,12 @@
 import {
+  useEffect,
+} from 'react';
+
+import {
   useNavigate,
 } from 'react-router-dom';
+
+import api from '../../lib/api';
 
 import {
   haptic,
@@ -43,33 +49,72 @@ const BENEFITS = [
 
 
 
-/* تشخیص قفل اشتراک از روی خطای axios —
-   بک‌اند با 403 + این detail پاسخ می‌دهد */
+/* تشخیص قفل اشتراک — W8 هسته: بک‌اند {code: SUB_REQUIRED} برمی‌گرداند
+   (402 یا 403). برای سازگاری عقب‌رو، رشته‌ی قدیمی هم پذیرفته می‌شود. */
 export function isSubscriptionLock(
   error,
 ) {
+  const d = error?.response?.data?.detail;
+  const code = typeof d === 'object' ? d?.code : null;
+  const msg = typeof d === 'object' ? d?.message : d;
+  const status = error?.response?.status;
+  if (code === 'SUB_REQUIRED' || code === 'SUB_EXPIRED' || code === 'SUB_PENDING') return true;
+  if (status === 402 && code) return true;
+  // 🌊 W7 — سهمیه‌ی فیچر (429) هم قفل است؛ ولی ریت‌لیمیت (429 بدون کد سهمیه) نه
+  if (status === 429 && code === 'QUOTA_EXHAUSTED') return true;
   return (
-    error?.response?.status === 403 &&
-    error?.response?.data?.detail ===
-      'subscription_required'
+    status === 403 &&
+    (msg === 'subscription_required' || d === 'subscription_required')
   );
+}
+
+
+/* 🌊 W7 — نوع قفل از روی خطا: بنر/پی‌وال درست + ایونت درست */
+export function lockKind(
+  error,
+) {
+  const d = error?.response?.data?.detail;
+  const code = typeof d === 'object' ? d?.code : null;
+  const feature = typeof d === 'object' ? d?.feature : null;
+  if (code === 'FEATURE_DISABLED') return { kind: 'disabled', feature };
+  if (code === 'QUOTA_EXHAUSTED') return { kind: 'quota', feature };
+  return { kind: 'sub', feature };
 }
 
 
 export default function SubscriptionLock({
   feature = 'این بخش',
+  featureKey = '',
+  mode = 'sub',
 }) {
   const navigate =
     useNavigate();
+
+  /* 🌊 W7 — ایونت دیده‌شدن پی‌وال (best-effort، بدون اثر روی UX) */
+  useEffect(() => {
+    if (!featureKey) return;
+    api.post('/api/subscription/feature-events', {
+      feature: featureKey, event: 'paywall_viewed', extra: { mode },
+    }).catch(() => {});
+  }, [featureKey]);
 
 
   const goPlans = () => {
     haptic('light');
 
+    if (featureKey) {
+      api.post('/api/subscription/feature-events', {
+        feature: featureKey, event: 'subscription_cta_clicked', extra: {},
+      }).catch(() => {});
+    }
+
     navigate(
       '/me/subscription',
     );
   };
+
+  const isDisabled = mode === 'disabled';
+  const isQuota = mode === 'quota';
 
 
   return (
@@ -107,7 +152,7 @@ export default function SubscriptionLock({
           fontSize: 30,
         }}
       >
-        🔒
+        {isDisabled ? '🛠' : isQuota ? '📊' : '🔒'}
       </div>
 
       <h2
@@ -117,7 +162,11 @@ export default function SubscriptionLock({
           fontWeight: 900,
         }}
       >
-        {feature} مخصوص مشترک‌هاست
+        {isDisabled
+          ? `${feature} فعلاً غیرفعال است`
+          : isQuota
+            ? `سقف مصرف ${feature} تمام شد`
+            : `${feature} مخصوص مشترک‌هاست`}
       </h2>
 
       <p
@@ -128,10 +177,14 @@ export default function SubscriptionLock({
           lineHeight: 1.9,
         }}
       >
-        برای باز شدن کامل این بخش، یکی از
+        {isDisabled
+          ? 'این قابلیت موقتاً توسط تیم فنی خاموش شده است؛ به‌زودی برمی‌گردد.'
+          : isQuota
+            ? 'سهمیه‌ی این دوره تمام شد؛ با شروع دوره‌ی بعد یا ارتقای اشتراک دوباره باز می‌شود.'
+            : `برای باز شدن کامل ${feature}، یکی از
         پلن‌های اشتراک را فعال کنید؛ دسترسی
         شما بلافاصله در ربات و مینی‌اپ
-        هم‌زمان باز می‌شود.
+        هم‌زمان باز می‌شود.`}
       </p>
 
       <div
@@ -179,18 +232,20 @@ export default function SubscriptionLock({
         )}
       </div>
 
-      <button
-        type="button"
-        className={
-          'btn btn-p btn-full'
-        }
-        style={{
-          marginTop: 16,
-        }}
-        onClick={goPlans}
-      >
-        💎 مشاهده پلن‌ها و فعال‌سازی
-      </button>
+      {!isDisabled && (
+        <button
+          type="button"
+          className={
+            'btn btn-p btn-full'
+          }
+          style={{
+            marginTop: 16,
+          }}
+          onClick={goPlans}
+        >
+          💎 مشاهده پلن‌ها و فعال‌سازی
+        </button>
+      )}
     </section>
   );
 }

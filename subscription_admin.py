@@ -1,5 +1,5 @@
 """
-💳 پنل مدیریت اشتراک — فقط ادمین ارشد (ADMIN_ID)
+💳 پنل مدیریت اشتراک — پرمیشن subscription.manage (🌊 W10؛ قبلاً فقط ADMIN_ID)
   ✅ کلید اجباری‌سازی سراسری (پیش‌فرض خاموش)
   ✅ چند پلن هم‌زمان — قیمت/روز هرکدام مستقل
   ✅ شماره کارت
@@ -61,9 +61,18 @@ async def _show_main(query):
     )
     toggle_label  = "🔴 خاموش‌کردن اجباری اشتراک" if enforced else "🟢 اجباری‌کردن اشتراک برای همه"
     protect_label = "🔴 خاموش‌کردن محافظت فایل‌ها" if protect else "🟢 روشن‌کردن محافظت فایل‌ها"
+    # 🌊 W6 — gateway status badge
+    _gw_merchant = (await db.get_setting('zarinpal_merchant_id', '') or '').strip()
+    _gw_enabled = await db.get_setting('zarinpal_enabled', True)
+    _gw_sandbox = await db.get_setting('zarinpal_sandbox', None)
+    if _gw_sandbox is None:
+        _gw_sandbox = not bool(_gw_merchant)
+    _gw_badge = "🟢 فعال" if (_gw_enabled and _gw_merchant) else ("🟡 آزمایشی" if not _gw_merchant else "🔴 غیرفعال")
+    _gw_mode = "سندباکس" if _gw_sandbox else "اصلی"
     keyboard = [
         [InlineKeyboardButton(toggle_label, callback_data='suba:toggle_enforce')],
         [InlineKeyboardButton(protect_label, callback_data='suba:toggle_protect')],
+        [InlineKeyboardButton(f"💳 درگاه زرین‌پال [{_gw_badge} • {_gw_mode}]", callback_data='suba:gateway')],
         [InlineKeyboardButton("📋 پلن‌ها", callback_data='suba:plans'),
          InlineKeyboardButton("💳 شماره کارت", callback_data='suba:card')],
         [InlineKeyboardButton(f"📥 صف در انتظار ({stats['pending']})", callback_data='suba:pending'),
@@ -136,7 +145,8 @@ async def _show_plans(query):
     for p in plans:
         mark = "✅" if p.get('active') else "⛔️"
         sold = await db.sub_payments.count_documents({'plan_id': str(p['_id']), 'status': 'approved'})
-        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش")
+        _aiq = int(p.get('ai_daily_limit') or 0)
+        lines.append(f"{mark} {p['name']} — {p['days']} روز — {_fmt_price(p['price'])} — 🛒 {sold} فروش" + (f" — 🤖 {_aiq}/روز" if _aiq > 0 else ""))
         keyboard.append([
             InlineKeyboardButton("✏️ ویرایش", callback_data=f"suba:plan_edit:{p['_id']}"),
             InlineKeyboardButton(f"{'⛔️ غیرفعال' if p.get('active') else '✅ فعال'}",
@@ -237,8 +247,23 @@ async def handle_card_text(update, context):
     context.user_data.pop('mode', None)
     try:
         num, owner = [p.strip() for p in text.split('|', 1)]
+        _old_num = await db.get_setting('subscription_card_number', '')
+        _old_owner = await db.get_setting('subscription_card_owner', '')
         await db.set_setting('subscription_card_number', num)
         await db.set_setting('subscription_card_owner', owner)
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            # شماره کارت حساس است — فقط 4 رقم آخر در جزئیات
+            _masked = (num[:4] + '****' + num[-4:]) if len(num) >= 8 else '****'
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                "ویرایش اطلاعات کارت اشتراک", module='Subscription', severity='HIGH', actor_role=_ar,
+                before={'card_number': _old_num[:4]+'****' if _old_num else '—', 'owner': _old_owner},
+                after={'card_number': _masked, 'owner': owner},
+                tags=['اشتراک_کارت'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"card audit failed: {_e}")
         await update.message.reply_text("✅ اطلاعات کارت به‌روزرسانی شد.")
     except Exception:
         await update.message.reply_text("❌ فرمت اشتباه بود. مثال: <code>شماره | نام</code>", parse_mode='HTML')
@@ -1040,11 +1065,107 @@ async def handle_grant_days_text(update, context):
 #  callback اصلی
 # ══════════════════════════════════════════════════
 
+# ══════════════════════════════════════════
+#  💳 درگاه زرین‌پال — مدیریت از ربات (W6)
+# ══════════════════════════════════════════
+async def _show_gateway(query):
+    mid = (await db.get_setting('zarinpal_merchant_id', '') or '').strip()
+    masked = (mid[:4] + "****" + mid[-4:]) if len(mid) >= 8 else ("****" if mid else "— (تنظیم نشده)")
+    sb = await db.get_setting('zarinpal_sandbox', None)
+    if sb is None: sb = not bool(mid)
+    cb = (await db.get_setting('zarinpal_callback_url', '') or '').strip() or "— (پیش‌فرض از WEBAPP_URL)"
+    enabled = await db.get_setting('zarinpal_enabled', True)
+    if enabled is None: enabled = True
+    status = "🟢 فعال" if (enabled and mid) else ("🟡 آزمایشی (mock) — بدون merchant" if not mid else "🔴 غیرفعال")
+    mode = "سندباکس (sandbox.zarinpal.com)" if sb else "اصلی (api.zarinpal.com)"
+    # docs link as url button
+    kb = [
+        [InlineKeyboardButton(f"وضعیت: {status}", callback_data='suba:gateway')],
+        [InlineKeyboardButton(f"حالت: {mode}", callback_data='suba:gateway_toggle_sandbox')],
+        [InlineKeyboardButton(f"درگاه: {'فعال' if enabled else 'غیرفعال'}", callback_data='suba:gateway_toggle_enabled')],
+        [InlineKeyboardButton("✏️ Merchant ID (کلید زرین‌پال)", callback_data='suba:gateway_edit_merchant')],
+        [InlineKeyboardButton("🔗 Callback URL", callback_data='suba:gateway_edit_callback')],
+        [InlineKeyboardButton("🧪 تست اتصال", callback_data='suba:gateway_test')],
+        [InlineKeyboardButton("📖 مستندات زرین‌پال", url="https://www.zarinpal.com/docs/howToUse/")],
+        _back(),
+    ]
+    text = (
+        f"💳 <b>درگاه پرداخت زرین‌پال</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🔑 Merchant: <code>{masked}</code>\n"
+        f"🧪 حالت: {mode}\n"
+        f"🔗 Callback: <code>{cb}</code>\n"
+        f"⚙️ وضعیت کلی: {status}\n\n"
+        f"💡 برای اتصال واقعی، Merchant ID ۳۶کاراکتری (UUID) را از پنل زرین‌پال بگیر و اینجا بگذار.\n"
+        f"سندباکس = تست بدون پول واقعی (https://sandbox.zarinpal.com).\n"
+        f"Callback باید https باشد و در پنل زرین‌پال هم ثبت شده باشد."
+    )
+    await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+async def _prompt_gateway_merchant(query, context):
+    context.user_data['mode'] = 'suba_gateway_merchant'
+    await query.edit_message_text("🔑 Merchant ID زرین‌پال را بفرست (۳۶ کاراکتری UUID) — برای پاک کردن و برگشت به mock، بنویس <code>clear</code> یا <code>mock</code>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup([_back('suba:gateway')]))
+
+async def _prompt_gateway_callback(query, context):
+    context.user_data['mode'] = 'suba_gateway_callback'
+    await query.edit_message_text("🔗 آدرس Callback را بفرست (باید https:// باشد) — برای پیش‌فرض خالی بذار: بنویس <code>clear</code>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup([_back('suba:gateway')]))
+
+async def handle_gateway_merchant_text(update, context):
+    text = update.message.text.strip()
+    context.user_data.pop('mode', None)
+    if text.lower() in ("clear","mock","test","empty"):
+        await db.set_setting('zarinpal_merchant_id', '')
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await update.message.reply_text("✅ Merchant پاک شد — حالت آزمایشی (mock) فعال است.")
+        return
+    if len(text) < 10:
+        await update.message.reply_text("❌ Merchant خیلی کوتاه است. دوباره بفرست.")
+        return
+    await db.set_setting('zarinpal_merchant_id', text.strip())
+    try:
+        from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+    except: pass
+    masked = text[:4] + "****" + text[-4:] if len(text)>=8 else "****"
+    await update.message.reply_text(f"✅ ذخیره شد: <code>{masked}</code>", parse_mode='HTML')
+    try:
+        _au = await db.get_user(update.effective_user.id) or {}
+        _an = _au.get('name','مدیر ارشد')
+        _ar = await db.get_actor_role_label(update.effective_user.id)
+        await send_audit_log(context.bot, 'admin', _an, update.effective_user.id, "ویرایش Merchant زرین‌پال", module='Payment', severity='HIGH', actor_role=_ar, after={'merchant_masked': masked}, tags=['درگاه_پرداخت'])
+    except: pass
+
+async def handle_gateway_callback_text(update, context):
+    text = update.message.text.strip()
+    context.user_data.pop('mode', None)
+    if text.lower() in ("clear","empty","default"):
+        await db.set_setting('zarinpal_callback_url', '')
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await update.message.reply_text("✅ Callback به پیش‌فرض (WEBAPP_URL) برگشت.")
+        return
+    cb = text.strip().rstrip("/")
+    if not cb.startswith("https://") and not cb.startswith("http://"):
+        await update.message.reply_text("❌ باید با https:// شروع شود.")
+        return
+    await db.set_setting('zarinpal_callback_url', cb)
+    try:
+        from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+    except: pass
+    await update.message.reply_text(f"✅ Callback ذخیره شد:\n<code>{cb}</code>", parse_mode='HTML')
+
 async def subscription_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid   = update.effective_user.id
-    if uid != ADMIN_ID:
-        await query.answer("❌ این بخش فقط در اختیار مدیر ارشد است.", show_alert=True)
+    # 🌊 W10 — پنل اشتراک با پرمیشن (ADMIN_ID همیشه پاس می‌شود)
+    try:
+        _ok = await db.has_permission(uid, 'subscription.manage')
+    except Exception:
+        _ok = (uid == ADMIN_ID)
+    if not _ok:
+        await query.answer("❌ مجوز مدیریت اشتراک ندارید.", show_alert=True)
         return
     await query.answer()
     parts  = query.data.split(':')
@@ -1052,10 +1173,50 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
 
     if action == 'main':
         await _show_main(query)
+    elif action == 'gateway':
+        await _show_gateway(query)
+    elif action == 'gateway_toggle_sandbox':
+        cur = await db.get_setting('zarinpal_sandbox', None)
+        if cur is None:
+            cur_mid = (await db.get_setting('zarinpal_merchant_id','') or '').strip()
+            cur = not bool(cur_mid)
+        await db.set_setting('zarinpal_sandbox', not cur)
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await _show_gateway(query)
+    elif action == 'gateway_toggle_enabled':
+        cur = await db.get_setting('zarinpal_enabled', True)
+        if cur is None: cur = True
+        await db.set_setting('zarinpal_enabled', not cur)
+        try:
+            from payments.zarinpal import _clear_cfg_cache; _clear_cfg_cache()
+        except: pass
+        await _show_gateway(query)
+    elif action == 'gateway_edit_merchant':
+        await _prompt_gateway_merchant(query, context)
+    elif action == 'gateway_edit_callback':
+        await _prompt_gateway_callback(query, context)
+    elif action == 'gateway_test':
+        mid = (await db.get_setting('zarinpal_merchant_id','') or '').strip()
+        sb = await db.get_setting('zarinpal_sandbox', None)
+        if sb is None: sb = not bool(mid)
+        is_mock = not bool(mid)
+        msg = f"🧪 تست: {'mock (بدون merchant)' if is_mock else ('sandbox' if sb else 'اصلی')} — merchant={'****' if mid else '—'}"
+        await query.answer(msg, show_alert=True)
 
     elif action == 'toggle_enforce':
         cur = await db.get_setting('subscription_enforced', False)
         await db.set_setting('subscription_enforced', not cur)
+        # 🌊 W7 — ماکرو روی پالیسی‌ها (تک‌منبع حقیقت)
+        try:
+            from core.access import invalidate_policy_cache
+            _mode = "subscription" if not cur else "free"
+            for _f in ("question_bank", "resources", "references"):
+                await db.set_feature_policy(_f, {"access": _mode}, uid, "")
+                invalidate_policy_cache(_f)
+        except Exception:
+            pass
         await send_audit_log(
             context.bot, 'admin', 'ادمین ارشد', uid,
             f"{'فعال‌سازی' if not cur else 'خاموش‌کردن'} اجباری اشتراک",
@@ -1080,10 +1241,37 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'plan_edit':
         await _prompt_plan_edit(query, context, parts[2])
     elif action == 'plan_toggle':
+        _pt_old = await db.sub_plan_get(parts[2]) or {}
         await db.sub_plan_toggle(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            _pt_new = await db.sub_plan_get(parts[2]) or {}
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"{'فعال‌سازی' if _pt_new.get('active') else 'غیرفعال‌سازی'} پلن {_pt_new.get('name','')}", module='Subscription', severity='WARNING', actor_role=_ar,
+                target_id=parts[2], target_type='plan', target_label=_pt_new.get('name',''),
+                before={'active': _pt_old.get('active')}, after={'active': _pt_new.get('active')},
+                tags=['پلن'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"plan_toggle audit failed: {_e}")
         await _show_plans(query)
     elif action == 'plan_del':
-        await db.sub_plan_delete(parts[2])
+        _pd_old = await db.sub_plan_get(parts[2]) or {}
+        if not await db.sub_plan_delete(parts[2]):
+            await query.answer("❌ حذف پلن ناموفق بود؛ دوباره تلاش کن.",
+                               show_alert=True)
+            return
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"حذف پلن {_pd_old.get('name','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='plan', target_label=_pd_old.get('name',''),
+                tags=['پلن','حذف_پلن'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"plan_del audit failed: {_e}")
         await _show_plans(query)
 
     elif action == 'card':
@@ -1118,10 +1306,34 @@ async def subscription_admin_callback(update: Update, context: ContextTypes.DEFA
     elif action == 'disc_add':
         await _prompt_discount_add(query, context)
     elif action == 'disc_toggle':
+        _dc_old = await db.discount_get(parts[2]) or {}
         await db.discount_toggle(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            _dc_new = await db.discount_get(parts[2]) or {}
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"{'فعال‌سازی' if _dc_new.get('active') else 'غیرفعال‌سازی'} کد تخفیف {_dc_new.get('code','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='discount', target_label=_dc_new.get('code',''),
+                before={'active': _dc_old.get('active')}, after={'active': _dc_new.get('active')},
+                tags=['تخفیف'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"disc_toggle audit failed: {_e}")
         await _show_discounts(query)
     elif action == 'disc_del':
+        _dd_old = await db.discount_get(parts[2]) or {}
         await db.discount_delete(parts[2])
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                f"حذف کد تخفیف {_dd_old.get('code','')}", module='Subscription', severity='HIGH', actor_role=_ar,
+                target_id=parts[2], target_type='discount', target_label=_dd_old.get('code',''),
+                tags=['تخفیف','حذف_تخفیف'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"disc_del audit failed: {_e}")
         await _show_discounts(query)
     # 🎟 موج D1 — کمپین: پیش‌نمایش/انتشار/آمار
     elif action == 'disc_prev':
@@ -1165,6 +1377,8 @@ TEXT_MODE_HANDLERS = {
     'suba_grant_days':       handle_grant_days_text,
     'suba_grant_list_ids':   handle_grant_list_ids_text,
     'suba_grant_list_days':  handle_grant_list_days_text,
+    'suba_gateway_merchant': handle_gateway_merchant_text,
+    'suba_gateway_callback': handle_gateway_callback_text,
 }
 
 

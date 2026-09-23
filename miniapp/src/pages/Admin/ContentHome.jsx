@@ -15,7 +15,9 @@ import api from '../../lib/api';
 import {
   useContentScopeStore,
 } from '../../stores/contentScopeStore';
+import { useAuthStore } from '../../stores/authStore';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 
 import {
 } from '../../components/shared/Loading';
@@ -132,6 +134,24 @@ const TOOLS = [
       'var(--soft-warn)',
   },
 
+  // 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند
+  {
+    icon: '📥',
+    title: 'درون‌ریزی از URL',
+
+    desc:
+      'سرور فایل را دانلود و به تلگرام منتقل می‌کند',
+
+    route:
+      '/admin/content/url-import',
+
+    color:
+      'var(--t-info)',
+
+    soft:
+      'var(--soft-info)',
+  },
+
   {
     icon: '❓',
     title: 'سؤالات متداول',
@@ -165,6 +185,26 @@ const TOOLS = [
     soft:
       'var(--soft-err)',
   },
+
+  {
+    icon: '🧪',
+    title: 'بانک سؤال ساختاریافته',
+    desc: 'پرونده، سلامت و بازبینی هم‌تراز پنل وب',
+    route: '/admin/questions',
+    color: 'var(--t-pur)',
+    soft: 'var(--soft-pur)',
+    need: ['questions.review', 'questions.review_scoped'],
+  },
+
+  {
+    icon: '📝',
+    title: 'آزمون‌ها',
+    desc: 'ثبت آزمون و خبر به دانشجویان',
+    route: '/admin/exams',
+    color: 'var(--t-acc)',
+    soft: 'var(--soft-acc)',
+    need: ['schedules.manage'],
+  },
 ];
 
 
@@ -181,6 +221,8 @@ const SCOPED_HIDDEN_ROUTES = new Set([
 export default function ContentHome() {
   const navigate =
     useNavigate();
+
+  const authUser = useAuthStore((state) => state.user);
 
   /* ── 🌊 C1: متن ورودی پنل محتوا ── */
   const intake =
@@ -475,15 +517,22 @@ export default function ContentHome() {
 
   /* ابزارهای قابل استفاده در این scope
      (بک‌اند مرجع نهایی است؛ این فقط UX) */
-  const visibleTools =
-    scopeMode === 'scoped'
-      ? TOOLS.filter(
-          (item) =>
-            !SCOPED_HIDDEN_ROUTES.has(
-              item.route
-            )
-        )
-      : TOOLS;
+  const visibleTools = TOOLS.filter((item) => {
+    if (
+      scopeMode === 'scoped' &&
+      SCOPED_HIDDEN_ROUTES.has(item.route)
+    ) {
+      return false;
+    }
+
+    if (!item.need?.length || authUser?.role === 'admin') {
+      return true;
+    }
+
+    const perms = authUser?.perms || [];
+
+    return item.need.some((perm) => perms.includes(perm));
+  });
 
 
   const shownIntakeLabel =
@@ -678,22 +727,10 @@ export default function ContentHome() {
         {isLoading ? (
           <ContentHomeSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            دریافت آمار محتوا انجام نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت آمار محتوا انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : (
           <section
             className="grid2"

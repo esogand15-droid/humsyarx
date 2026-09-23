@@ -424,21 +424,24 @@ function GradeRow({
 }
 
 
-/* 🎓 ترم‌بندی — نوارِ انتخاب ترم.
+/* 🎓 ترم‌بندی — نوارِ انتخاب ترم با طبقه‌بندیِ جدا و میانگین هر ترم.
    کارنامه پیش‌تر همه‌ی ترم‌ها را در یک لیستِ صاف نشان می‌داد و «میانگین»
    یعنی میانگینِ درس‌های ترم ۱ تا ۴ با هم؛ عددی که هیچ معنای تحصیلی ندارد.
-   حالا ترم واحدِ اصلیِ کارنامه است. */
-function TermTabs({ terms, active, onPick }) {
+   حالا ترم واحدِ اصلیِ کارنامه است و هر تب میانگین همان ترم را نشان می‌دهد. */
+function TermTabs({ terms, active, onPick, byTerm = [] }) {
   if (!terms.length) return null;
+  const meta = new Map(byTerm.map((t) => [t.term || '', t]));
   const items = [['', 'همه'], ...terms.map((t) => [t, t])];
   return (
     <div
       className="tab-bar"
       role="tablist"
-      aria-label="انتخاب ترم"
+      aria-label="انتخاب ترم — هر ترم جدا"
     >
       {items.map(([value, label]) => {
         const on = active === value;
+        const stat = meta.get(value || '');
+        const sub = value === '' ? '' : stat?.avg != null ? ` · ${stat.avg}` : '';
         return (
           <button
             key={value || 'all'}
@@ -465,7 +468,7 @@ function TermTabs({ terms, active, onPick }) {
               onPick(value);
             }}
           >
-            {label}
+            {label}{sub}
           </button>
         );
       })}
@@ -754,6 +757,7 @@ export default function Grades() {
               terms={allTerms}
               active={activeTerm}
               onPick={pickTerm}
+              byTerm={byTerm}
             />
           )}
 
@@ -1104,6 +1108,31 @@ export default function Grades() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {byTerm.length > 1 && !activeTerm && (
+              <section className="card" style={{ padding: 12 }}>
+                <div style={{ fontWeight: 800, fontSize: 'var(--fs-sm)', marginBottom: 8 }}>🎓 نمای کلی ترم‌ها — هر ترم جدا</div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {byTerm.map((t) => (
+                    <button
+                      key={t.term || 'none'}
+                      type="button"
+                      onClick={() => pickTerm(t.term)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px',
+                        borderRadius: 'var(--r-md)', border: '1px solid var(--bd)', background: 'var(--bg)',
+                        textAlign: 'right', cursor: 'pointer'
+                      }}
+                    >
+                      <span style={{ fontWeight: 800, fontSize: 'var(--fs-sm)' }}>{t.label || t.term || 'بدون ترم'}</span>
+                      <span style={{ color: 'var(--txm)', fontSize: 'var(--fs-cap)' }}>{t.total} نمره{t.avg != null ? ` · میانگین ${t.avg}/20` : ''}</span>
+                      <span style={{ flex: 1 }} />
+                      <span style={{ color: 'var(--acc)', fontSize: 'var(--fs-cap)', fontWeight: 800 }}>نمایش ←</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
             )}
 
             <div

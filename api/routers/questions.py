@@ -33,6 +33,7 @@ from pydantic import (
 from api.auth import (
     ADMIN_ID,
     get_question_access_user,
+    require_feature,  # 🌊 W7
 )
 
 from api.user_metrics import (
@@ -40,9 +41,14 @@ from api.user_metrics import (
 )
 
 from database import db
+from api.rate_limit import rate_limit_user  # 🛡 W3/SEC-03
 from time_utils import utc_now_iso
 from question_bank import ExamService, QuestionBankService, QuestionDomainError
 from question_bank.ai_practice import AIPersonalPracticeService
+from question_bank.images import QuestionImageService
+from question_bank.contracts import (
+    CONTENT_SOURCE_DEFAULT, CONTENT_SOURCES, and_query, approved_query,
+)
 
 
 router = APIRouter()
@@ -50,6 +56,7 @@ router = APIRouter()
 exam_sessions = db.exam_sessions
 question_bank = QuestionBankService(db)
 exam_domain = ExamService(db)
+question_images = QuestionImageService(db)
 ai_practice = AIPersonalPracticeService(db)
 
 
@@ -414,6 +421,55 @@ async def get_topics(lesson: str, user=Depends(get_question_access_user)):
         for topic in selected["topics"]]}
 
 
+@router.get("/filters")
+async def question_filters(user=Depends(get_question_access_user)):
+    """🌊 QBANK-W1 — منبع‌ها و بازه‌ی سال‌های موجود در بانک (پویا، نه هاردکد)."""
+    intakes = question_bank.student_intakes(user)
+    match = and_query(approved_query(), {"intake": {"$in": intakes}})
+    src_rows = await db.questions.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$content_source", "count": {"$sum": 1}}},
+    ]).to_list(20)
+    merged: dict = {}
+    for row in src_rows:
+        code = row.get("_id")
+        if code not in CONTENT_SOURCES:
+            code = CONTENT_SOURCE_DEFAULT
+        merged[code] = merged.get(code, 0) + int(row.get("count") or 0)
+    sources = [{"code": code, "label": CONTENT_SOURCES[code], "count": merged[code]}
+               for code in sorted(merged)]
+    year_rows = await db.questions.aggregate([
+        {"$match": and_query(match, {"exam_year": {"$ne": None}})},
+        {"$group": {"_id": "$exam_year"}},
+        {"$sort": {"_id": 1}},
+    ]).to_list(100)
+    years = sorted({str(r.get("_id")) for r in year_rows if r.get("_id")})
+    return {"sources": sources, "years": years,
+            "year_min": years[0] if years else None,
+            "year_max": years[-1] if years else None}
+
+
+@router.get("/image/{qid}")
+async def question_image(qid: str, user=Depends(get_question_access_user)):
+    """🌊 QBANK-W3 — پروکسی تصویر سؤال برای مینی‌اپ (با کنترل دسترسی دانشجو)."""
+    from api.telegram_send import download_telegram_file
+    question = await db.get_question_by_id(qid)
+    if not question:
+        raise HTTPException(404, "سؤال پیدا نشد")
+    try:
+        await question_bank.verify_access(question, user)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
+    resolved = await question_images.resolve_file(qid)
+    if not resolved:
+        raise HTTPException(404, "این سؤال تصویر آماده ندارد")
+    raw = await download_telegram_file(resolved["file_id"])
+    if not raw:
+        raise HTTPException(502, "دریافت تصویر از تلگرام ناموفق بود")
+    return Response(content=raw, media_type=resolved["mime_type"],
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
 async def _request_taxonomy(user, lesson_id=None, topic_id=None, lesson=None, topic=None):
     if not any((lesson_id, topic_id, lesson, topic)):
         return {}
@@ -433,16 +489,25 @@ async def practice(
     lesson: str | None = Query(None, max_length=100),
     topic: str | None = Query(None, max_length=100),
     exclude: str | None = Query(None, deprecated=True),
+    exam_year_from: str | None = Query(None, max_length=4),
+    exam_year_to: str | None = Query(None, max_length=4),
+    content_source: List[str] | None = Query(None),
 ):
     taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
     try:
-        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="free")
+        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="free",
+                                                 exam_year_from=exam_year_from,
+                                                 exam_year_to=exam_year_to,
+                                                 content_source=content_source)
     except QuestionDomainError as exc:
         _domain_error(exc)
 
 
 @router.get("/weak")
-async def weak(user=Depends(get_question_access_user)):
+async def weak(user=Depends(get_question_access_user),
+             exam_year_from: str | None = Query(None, max_length=4),
+             exam_year_to: str | None = Query(None, max_length=4),
+             content_source: List[str] | None = Query(None)):
     stats = await question_bank.stats(user=user)
     weak_topics = sorted(stats["weak_topics"], key=lambda x: (x["accuracy"], -x["attempts"]))
     if not weak_topics:
@@ -450,7 +515,13 @@ async def weak(user=Depends(get_question_access_user)):
     selected = weak_topics[0]
     taxonomy = {"lesson_id": selected["lesson_id"], "topic_id": selected["topic_id"],
                 "lesson": selected["lesson"], "topic": selected["topic"]}
-    result = await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="weak")
+    try:
+        result = await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="weak",
+                                                   exam_year_from=exam_year_from,
+                                                   exam_year_to=exam_year_to,
+                                                   content_source=content_source)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
     result["weak_topic"] = selected
     return result
 
@@ -461,9 +532,18 @@ async def hard(
     lesson_id: str | None = Query(None), topic_id: str | None = Query(None),
     lesson: str | None = Query(None), topic: str | None = Query(None),
     exclude: str | None = Query(None, deprecated=True),
+    exam_year_from: str | None = Query(None, max_length=4),
+    exam_year_to: str | None = Query(None, max_length=4),
+    content_source: List[str] | None = Query(None),
 ):
     taxonomy = await _request_taxonomy(user, lesson_id, topic_id, lesson, topic)
-    return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="hard")
+    try:
+        return await question_bank.practice_next(user=user, taxonomy=taxonomy, mode="hard",
+                                                 exam_year_from=exam_year_from,
+                                                 exam_year_to=exam_year_to,
+                                                 content_source=content_source)
+    except QuestionDomainError as exc:
+        _domain_error(exc)
 
 
 class AnswerInput(BaseModel):
@@ -473,6 +553,8 @@ class AnswerInput(BaseModel):
 
 @router.post("/answer")
 async def answer(body: AnswerInput, user=Depends(get_question_access_user)):
+    # 🛡 W3/SEC-03 — سقف گشاد برای آزمون سرعتی، ولی ضد بات
+    await rate_limit_user(user["id"], "q_answer", 100, 60)
     question = await db.get_question_by_id(body.question_id)
     if not question:
         raise HTTPException(404, "سؤال پیدا نشد")
@@ -508,7 +590,9 @@ class AIGenerateInput(BaseModel):
 
 
 @router.post("/practice/ai/generate")
-async def generate_ai_practice(body: AIGenerateInput, user=Depends(get_question_access_user)):
+async def generate_ai_practice(body: AIGenerateInput, user=Depends(require_feature("ai_practice"))):
+    # 🛡 W3/SEC-03 — تولید AI هزینه دارد؛ سقف سخت‌گیرانه
+    await rate_limit_user(user["id"], "ai_generate", 10, 60)
     taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id)
     try:
         return await ai_practice.generate(user=user, taxonomy=taxonomy,
@@ -524,13 +608,13 @@ class AIAnswerInput(BaseModel):
 
 @router.post("/practice/ai/{ai_question_id}/answer")
 async def answer_ai_practice(ai_question_id: str, body: AIAnswerInput,
-                             user=Depends(get_question_access_user)):
+                             user=Depends(require_feature("ai_practice"))):
     try: return await ai_practice.answer(user=user, ai_question_id=ai_question_id, selected=body.selected)
     except QuestionDomainError as exc: _domain_error(exc)
 
 
 @router.post("/practice/ai/{ai_question_id}/propose")
-async def propose_ai_practice(ai_question_id: str, user=Depends(get_question_access_user)):
+async def propose_ai_practice(ai_question_id: str, user=Depends(require_feature("ai_practice"))):
     try: return await ai_practice.propose(user=user, ai_question_id=ai_question_id)
     except QuestionDomainError as exc: _domain_error(exc)
 
@@ -539,8 +623,40 @@ async def propose_ai_practice(ai_question_id: str, user=Depends(get_question_acc
 async def answer_history(
     user=Depends(get_question_access_user),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+    after: Optional[str] = Query(None, max_length=32, description="cursor _id"),
 ):
     query = {"user_id": user["id"]}
+    # 🌊 W4 — cursor pagination
+    if after:
+        try:
+            from bson import ObjectId as _OID
+            if _OID.is_valid(after):
+                query["_id"] = {"$lt": _OID(after)}
+                records = await db.answers.find(query).sort("_id", -1).limit(limit + 1).to_list(limit + 1)
+                has_more = len(records) > limit
+                if has_more:
+                    records = records[:limit]
+                next_cursor = str(records[-1]["_id"]) if records and has_more else None
+                # we still need docs mapping but skip total for cursor
+                ids = [ObjectId(str(x.get("question_id"))) for x in records if ObjectId.is_valid(str(x.get("question_id")))]
+                docs = await db.questions.find({"_id": {"$in": ids}}).to_list(len(ids) or 1)
+                by_id = {str(x["_id"]): x for x in docs}
+                result = []
+                for record in records:
+                    qid = text(record.get("question_id")); question = by_id.get(qid)
+                    if not question: continue
+                    result.append({"id": text(record.get("_id")), "question_id": qid,
+                                   "lesson_id": str(question.get("lesson_id") or ""),
+                                   "topic_id": str(question.get("topic_id") or ""),
+                                   "lesson": text(question.get("lesson")), "topic": text(question.get("topic")),
+                                   "question": text(question.get("question")),
+                                   "selected": non_negative_int(record.get("selected")),
+                                   "correct_answer": non_negative_int(question.get("correct_answer")),
+                                   "is_correct": bool(record.get("is_correct")),
+                                   "answered_at": text(record.get("answered_at"))})
+                return {"answers": result, "total": None, "skip": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more}
+        except Exception:
+            pass
     total = await db.answers.count_documents(query)
     records = await db.answers.find(query).sort("answered_at", -1).skip(skip).limit(limit).to_list(limit)
     ids = [ObjectId(str(x.get("question_id"))) for x in records if ObjectId.is_valid(str(x.get("question_id")))]
@@ -559,7 +675,7 @@ async def answer_history(
                        "correct_answer": non_negative_int(question.get("correct_answer")),
                        "is_correct": bool(record.get("is_correct")),
                        "answered_at": text(record.get("answered_at"))})
-    return {"answers": result, "total": non_negative_int(total), "skip": skip, "limit": limit}
+    return {"answers": result, "total": non_negative_int(total), "skip": skip, "limit": limit, "next_cursor": None, "has_more": skip + len(result) < total}
 
 
 @router.get(
@@ -710,6 +826,9 @@ class ExamStartInput(BaseModel):
     count: int = Field(ge=5, le=100)
     minutes: int = Field(ge=0, le=180)
     output_mode: str = Field(default="app", pattern="^(bot|app|pdf_practice|pdf_exam)$")
+    exam_year_from: Optional[str] = Field(default=None, max_length=4)
+    exam_year_to: Optional[str] = Field(default=None, max_length=4)
+    content_source: Optional[List[str]] = None
     allow_smaller: bool = False
     # ⚔️ True ⇒ شروع چالش ارتقا؛ قواعد سرورمحور قبلی حفظ می‌شود.
     promotion: bool = False
@@ -717,26 +836,27 @@ class ExamStartInput(BaseModel):
 
 @router.get("/custom-exam/history")
 async def exam_history(
-    user=Depends(get_question_access_user),
+    user=Depends(require_feature("mock_exam")),
     skip: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
 ):
     return await exam_domain.history(user=user, skip=skip, limit=limit)
 
 
 @router.get("/custom-exam/active")
-async def active_exam(user=Depends(get_question_access_user)):
+async def active_exam(user=Depends(require_feature("mock_exam"))):
     return {"exam": await exam_domain.active(user=user)}
 
 
 @router.post("/custom-exam/preview")
-async def preview_exam(body: ExamStartInput, user=Depends(get_question_access_user)):
+async def preview_exam(body: ExamStartInput, user=Depends(require_feature("mock_exam"))):
     if body.promotion:
         raise HTTPException(422, "چالش ارتقا preview عمومی ندارد")
     taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id, body.lesson, body.topic)
     try:
         return await exam_domain.preview(user=user, taxonomy=taxonomy,
             requested_count=body.count, minutes=body.minutes,
-            output_mode=body.output_mode)
+            output_mode=body.output_mode, exam_year_from=body.exam_year_from,
+            exam_year_to=body.exam_year_to, content_source=body.content_source)
     except QuestionDomainError as exc:
         _domain_error(exc)
 
@@ -782,6 +902,8 @@ async def start_exam(
         selected_ids = list(chk.get("pool") or [])
         apex = bool(chk.get("apex"))
         now_ts = int(time.time())
+        # 🌊 W3 TTL — Date for TTL index
+        _expires_at_dt = __import__('datetime', fromlist=['datetime']).datetime.fromtimestamp(now_ts + db.CH_TTL_HOURS * 3600, tz=__import__('datetime', fromlist=['timezone']).timezone.utc)
         document = {
             "session_id": uuid.uuid4().hex[:16],
             "user_id": user["id"],
@@ -801,6 +923,7 @@ async def start_exam(
             "target_rank": view.get("target_rank") or "",
             "apex": apex,
             "expires_ts": now_ts + db.CH_TTL_HOURS * 3600,
+            "expires_at": _expires_at_dt,
         }
         await exam_sessions.insert_one(document)
         await db.users.update_one({"user_id": user["id"]},
@@ -827,6 +950,8 @@ async def start_exam(
         return await exam_domain.create(
             user=user, taxonomy=taxonomy, requested_count=body.count,
             minutes=body.minutes, output_mode=body.output_mode,
+            exam_year_from=body.exam_year_from, exam_year_to=body.exam_year_to,
+            content_source=body.content_source,
             allow_smaller=body.allow_smaller)
     except QuestionDomainError as exc:
         _domain_error(exc)
@@ -1359,7 +1484,26 @@ async def abandon_exam(
 
 @router.get("/custom-exam/{session_id}/pdf")
 async def exam_pdf(session_id: str, mode: str = Query("exam", pattern="^(practice|exam)$"),
-                   user=Depends(get_question_access_user)):
+                   user=Depends(require_feature("pdf_generation"))):
+    # 🌊 W7 — مصرف سهمیه‌ی ژنریک (پیش‌فرض نامحدود؛ با ۴۲۹ صادقانه)
+    try:
+        _pol = await db.get_feature_policy("pdf_generation") or {}
+        _q = _pol.get("quota") or {}
+        if _q.get("kind") in ("daily", "monthly") and int(_q.get("limit") or 0) > 0:
+            _ok, _used = await db.feature_consume(
+                user["id"], "pdf_generation", _q["kind"], int(_q["limit"]))
+            if not _ok:
+                from core.errors import Code, DEFAULT_MESSAGE
+                await db.log_feature_event("pdf_generation", "quota_exhausted",
+                                           user["id"], {})
+                raise HTTPException(status_code=429, detail={
+                    "code": Code.QUOTA_EXHAUSTED,
+                    "message": DEFAULT_MESSAGE[Code.QUOTA_EXHAUSTED],
+                    "feature": "pdf_generation"})
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # خطای زیرساخت سهمیه: UX را خراب نکن (لاگ در لایه‌ی db)
     try:
         content, meta = await exam_domain.generate_pdf(session_id=session_id, user=user, mode=mode)
     except QuestionDomainError as exc:

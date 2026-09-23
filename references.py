@@ -5,11 +5,13 @@
 ✅ ذخیره مسیر ناوبری در context
 """
 import logging
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import db
 
 logger = logging.getLogger(__name__)
+BRAND_NAME = os.getenv("BRAND_NAME", "HumsyarX")
 
 
 async def references_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -19,8 +21,8 @@ async def references_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     action = parts[1] if len(parts) > 1 else 'main'
 
     # FIX جدید: دفاع لایه‌دوم اشتراک
-    from subscription import has_access
-    if not await has_access(update.effective_user.id):
+    from subscription import feature_allowed
+    if not await feature_allowed(update.effective_user.id, "references"):
         await query.answer("🔒 اول باید اشتراک فعال کنی — از «📚 منابع» شروع کن.", show_alert=True)
         return
     await query.answer()
@@ -201,10 +203,14 @@ async def _show_lang_choice(query, context, book_id, back_cb='ref:main'):
             f   = lang_files[0]
             fid = str(f['_id'])
             dl  = f.get('downloads', 0)
+            disp = (f.get('display_file_name') or f.get('display_name') or '').strip()
             desc = f.get('description', '')
-            btn_label = f"{lang_icon} {lang_label} | ⬇️ {dl}"
-            if desc:
+            if disp:
+                btn_label = f"{lang_icon} {lang_label} — {disp[:30]} | ⬇️ {dl}"
+            elif desc:
                 btn_label = f"{lang_icon} {lang_label} — {desc[:20]} | ⬇️ {dl}"
+            else:
+                btn_label = f"{lang_icon} {lang_label} | ⬇️ {dl}"
             keyboard.append([InlineKeyboardButton(btn_label,
                                                   callback_data=f'ref:dl:{fid}')])
         else:
@@ -249,10 +255,13 @@ async def _show_volumes(query, context, book_id, lang, back_cb='ref:main'):
         fid  = str(f['_id'])
         vol  = f.get('volume', 1)
         dl   = f.get('downloads', 0)
+        disp = (f.get('display_file_name') or f.get('display_name') or '').strip()
         desc = f.get('description', '')
-
-        if desc:
-            btn_label = f"{lang_icon} جلد {vol} — {desc} | ⬇️ {dl}"
+        # 📄 priority: display name
+        if disp:
+            btn_label = f"{lang_icon} جلد {vol} — {disp[:35]} | ⬇️ {dl}"
+        elif desc:
+            btn_label = f"{lang_icon} جلد {vol} — {desc[:20]} | ⬇️ {dl}"
         else:
             btn_label = f"{lang_icon} جلد {vol} | ⬇️ {dl}"
 
@@ -306,9 +315,14 @@ async def _download_ref(query, file_id_db, uid):
     lang_label = 'ترجمه فارسی' if lang == 'fa' else 'نسخه لاتین (اصلی)'
 
     caption_parts = [f"📘 {lang_icon} {lang_label} — جلد {vol}"]
+    disp = (item.get('display_file_name') or item.get('display_name') or "").strip()
+    if disp:
+        caption_parts.append(f"📄 {disp}")
     if desc:
         caption_parts.append(f"📝 {desc}")
     caption_parts.append(f"📥 {dl} دانلود")
+    if item.get('branding_enabled') and BRAND_NAME:
+        caption_parts.append(f"🏷 {BRAND_NAME}")
     caption = "\n".join(caption_parts)
 
     # دکمه بازگشت به کتاب

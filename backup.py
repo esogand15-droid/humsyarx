@@ -4,7 +4,7 @@
 - Import: بازیابی از فایل JSON
 - فقط ادمین اصلی دسترسی دارد
 """
-import os, json, logging, io
+import os, json, logging, io, gzip
 from datetime import datetime
 from utils import fmt_jalali_dt, now_tehran, now_tehran_str
 from time_utils import utc_now_iso
@@ -18,11 +18,131 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 
 # ── JSON encoder برای ObjectId و datetime ──
+# 🛡 AUDIT-FIX (بکاپ/بازیابی): datetimeها با تگ صریح ذخیره می‌شوند تا
+# (۱) در بازیابی دقیقاً به BSON datetime برگردند (TTL و کوئری‌های
+# مقایسه‌ای تاریخ مثل exam_sessions.expires_at نشکنند)،
+# (۲) هش sha256 سمت تولید و سمت بازیابی یکسان حساب شود — قبلاً
+# str(datetime) با جداکننده‌ی space هش می‌شد ولی فایل ISO با T داشت و
+# هر بکاپی که حتی یک datetime داشت در بازیابی «ناسازگار» رد می‌شد.
+_DT_TAG = '$__hxdt'
+
 class _Enc(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, ObjectId): return str(o)
-        if isinstance(o, datetime):  return o.isoformat()
+        if isinstance(o, datetime):  return {_DT_TAG: o.isoformat()}
         return super().default(o)
+
+
+def _revive_datetypes(node):
+    """بازگردانی بازگشتی datetimeهای تگ‌شده‌ی _Enc (بی‌اثر روی بقیه)."""
+    if isinstance(node, dict):
+        if set(node.keys()) == {_DT_TAG} and isinstance(node[_DT_TAG], str):
+            try:
+                return datetime.fromisoformat(node[_DT_TAG])
+            except ValueError:
+                return node
+        return {k: _revive_datetypes(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_revive_datetypes(v) for v in node]
+    return node
+
+
+# فیلدهایی که «اثبات شده» به‌صورت BSON datetime ذخیره می‌شوند ولی در
+# بکاپ‌های قدیمی (قبل از تگ‌گذاری) رشته‌ی ISO شده‌اند — موقع بازیابی
+# همان‌ها هم revive می‌شوند تا TTL/ایندکس تاریخ نشکند.
+_LEGACY_NATIVE_DT_FIELDS = {
+    'exam_sessions': ('expires_at',),
+}
+
+
+def _sections_digest(sections: dict) -> str:
+    """sha256 روی همان شکلی که داخل فایل می‌نشیند (hash-what-you-ship).
+
+    تولید و بازیابی هر دو از همین تابع استفاده می‌کنند؛ قبلاً هر کدام
+    canonical متفاوتی می‌ساختند و بکاپ‌های دارای datetime همیشه رد می‌شدند.
+    """
+    import hashlib as _hl
+    shaped = json.loads(json.dumps(sections, ensure_ascii=False, cls=_Enc))
+    canon = json.dumps(shaped, ensure_ascii=False, sort_keys=True, default=str)
+    return _hl.sha256(canon.encode('utf-8')).hexdigest()
+
+
+_GZIP_MAGIC = b'\x1f\x8b'
+
+def _encode_backup_bytes(data: dict) -> bytes:
+    """JSON → gzip bytes. فایل کوچک‌تر = جا شدن زیر سقف تلگرام + دانلود سریع‌تر."""
+    raw = json.dumps(data, ensure_ascii=False, indent=2, cls=_Enc).encode('utf-8')
+    return gzip.compress(raw)
+
+
+def _decode_backup_bytes(blob: bytes) -> dict:
+    """تشخیص خودکار gzip با magic bytes؛ فایل‌های legacy (.json ساده) هم خوانده می‌شوند."""
+    raw = bytes(blob or b'')
+    if raw[:2] == _GZIP_MAGIC:
+        raw = gzip.decompress(raw)
+    return json.loads(raw.decode('utf-8'))
+
+
+def _human_size(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return '—'
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n // 1024} KB"
+    return f"{n} B"
+
+
+def build_backup_caption(data: dict, size_bytes: int, encrypted: bool,
+                         title: str = None) -> str:
+    """کپشن یکدست فارسی/جلالی برای همه‌ی ارسال‌کننده‌های بکاپ (خودکار + دستی + وب)."""
+    summary = (data or {}).get('summary') or {}
+    if summary:
+        stats_text = '\n'.join([
+            f"👥 کاربران: {summary.get('users',0)}",
+            f"📖 درس‌ها: {summary.get('lessons',0)}",
+            f"🧪 سوالات: {summary.get('questions',0)}",
+            f"🎫 تیکت‌ها: {summary.get('tickets',0)}",
+            f"💳 اشتراک‌ها: {summary.get('subscriptions',0)}",
+            f"💰 کیف پول‌ها: {summary.get('wallets',0)}",
+        ])
+    else:
+        desc  = (data or {}).get('description', 'بخشی از دیتابیس')
+        total = _count_section_records(data or {})
+        stats_text = f"🗂 بخش: {desc}\n📊 رکوردها: {total}"
+    lock = '🔐 رمزنگاری‌شده' if encrypted else '🔓 بدون رمز'
+    return (
+        f"{title or '💾 <b>بکاپ خودکار روزانه</b>'}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🕐 {now_tehran_str()}\n\n"
+        f"{stats_text}\n\n"
+        f"📦 حجم: {_human_size(size_bytes)} · {lock}"
+    )
+
+
+# لیست‌های استثنای بکاپ — یک منبع واحد برای هر سه سازنده‌ی بکاپ.
+_BACKUP_EXCLUDED_SECURITY = ['web_admin_otps', 'web_admin_sessions']
+_BACKUP_EXCLUDED_SECRETS = ['bot_settings.ai_api_key', 'bot_settings.ai_api_keys',
+                            'bot_settings.ai_api_key_*']
+_BACKUP_EXCLUDED_EPHEMERAL = ['bot_notifications', 'wa_api_metrics', 'feature_events',
+                              'init_nonces', 'admin_op_locks']
+_BACKUP_EXCLUSION_REASON = (
+    'از بازپخش پیام قدیمی، بازیابی نشست/OTP، و ذخیره‌سازی داده‌ی زودگذر جلوگیری می‌شود'
+)
+
+
+def _integrity_skeleton(datasets: dict) -> dict:
+    return {
+        'complete': True,
+        'consistency': 'count-verified-best-effort',
+        'datasets': datasets,
+        'excluded_security_data': list(_BACKUP_EXCLUDED_SECURITY),
+        'excluded_secrets': list(_BACKUP_EXCLUDED_SECRETS),
+        'excluded_ephemeral_data': list(_BACKUP_EXCLUDED_EPHEMERAL),
+        'exclusion_reason': _BACKUP_EXCLUSION_REASON,
+    }
 
 
 class BackupIntegrityError(RuntimeError):
@@ -33,6 +153,10 @@ def _backup_settings_view(document: dict | None) -> dict:
     """Return restorable non-secret settings; credentials never enter artifacts."""
     safe = dict(document or {})
     safe.pop('ai_api_key', None)
+    safe.pop('ai_api_keys', None)
+    for k in list(safe.keys()):
+        if k.startswith('ai_api_key_'):
+            safe.pop(k, None)
     return safe
 
 
@@ -115,6 +239,22 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ در حال آماده‌سازی...", parse_mode='HTML')
         await _export_section(query, context, 'access')
 
+    elif action == 'export_wallets':
+        await query.edit_message_text("⏳ در حال آماده‌سازی...", parse_mode='HTML')
+        await _export_section(query, context, 'wallets')
+
+    elif action == 'export_ring':
+        await query.edit_message_text("⏳ در حال آماده‌سازی...", parse_mode='HTML')
+        await _export_section(query, context, 'ring')
+
+    elif action == 'export_growth':
+        await query.edit_message_text("⏳ در حال آماده‌سازی...", parse_mode='HTML')
+        await _export_section(query, context, 'growth')
+
+    elif action == 'export_ops':
+        await query.edit_message_text("⏳ در حال آماده‌سازی...", parse_mode='HTML')
+        await _export_section(query, context, 'ops')
+
     elif action == 'restore_prompt':
         await query.edit_message_text(
             "📥 <b>بازیابی از فایل پشتیبان</b>\n\n"
@@ -165,7 +305,7 @@ async def _show_auto_settings(query):
     enabled = await db.get_setting('auto_backup_enabled', False)
     hour    = await db.get_setting('auto_backup_hour', 3)
     last_run = await db.get_setting('auto_backup_last_run', None)
-    last_run_label = last_run[:16].replace('T', ' ') if last_run else 'هنوز اجرا نشده'
+    last_run_label = fmt_jalali_dt(last_run) if last_run else 'هنوز اجرا نشده'
 
     status_label = f"✅ فعال — هر روز ساعت {hour}:00" if enabled else "⬜ غیرفعال"
     toggle_label  = "🔴 غیرفعال کردن" if enabled else "🟢 فعال کردن"
@@ -210,6 +350,10 @@ async def _show_menu(query):
         [InlineKeyboardButton("💳 اشتراک و پرداخت", callback_data='backup:export_subscription'),
          InlineKeyboardButton("📊 نمرات",           callback_data='backup:export_grades')],
         [InlineKeyboardButton("🔐 دسترسی‌ها و تنظیمات", callback_data='backup:export_access')],
+        [InlineKeyboardButton("💰 کیف پول", callback_data='backup:export_wallets'),
+         InlineKeyboardButton("🟣 رینگ", callback_data='backup:export_ring')],
+        [InlineKeyboardButton("🌱 رشد و ارجاع", callback_data='backup:export_growth'),
+         InlineKeyboardButton("🛠 عملیات و سلامت", callback_data='backup:export_ops')],
         [InlineKeyboardButton("📥 بازیابی از فایل", callback_data='backup:restore_prompt')],
         [InlineKeyboardButton(auto_label, callback_data='backup:auto_settings')],
         [InlineKeyboardButton("🔙 بازگشت به پنل",   callback_data='admin:cat_settings')],
@@ -219,7 +363,7 @@ async def _show_menu(query):
         f"━━━━━━━━━━━━━━━━\n\n"
         f"🕐 زمان سرور: <code>{now}</code>\n\n"
         f"برای <b>پشتیبان‌گیری</b>، یکی از بخش‌ها را انتخاب کنید.\n"
-        f"برای <b>بازیابی</b>، فایل JSON را آپلود کنید.\n\n"
+        f"برای <b>بازیابی</b>، فایل پشتیبان (.json.gz یا JSON قدیمی) را آپلود کنید.\n\n"
         f"<i>⚠️ فایل پشتیبان شامل file_id های تلگرام است —\n"
         f"برای بازیابی کامل فایل‌ها، ربات باید به همان bot token دسترسی داشته باشد.</i>",
         parse_mode='HTML',
@@ -237,18 +381,10 @@ async def build_full_backup_data() -> dict:
     """
     integrity = {}
     data = {
-        'backup_version': '3.0',
+        'backup_version': '3.1',
         'created_at':     utc_now_iso(),
         'restore_semantics': 'merge_upsert',
-        'integrity': {
-            'complete': True,
-            'consistency': 'count-verified-best-effort',
-            'datasets': integrity,
-            'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
-            'excluded_secrets': ['bot_settings.ai_api_key'],
-            'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
-            'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
-        },
+        'integrity': _integrity_skeleton(integrity),
         'sections':       {}
     }
 
@@ -293,6 +429,7 @@ async def build_full_backup_data() -> dict:
     import_jobs = await _snapshot_collection(db.question_import_jobs, 100000, 'question_import_jobs', integrity)
     import_items = await _snapshot_collection(db.question_import_items, 1000000, 'question_import_items', integrity)
     migration_backups = await _snapshot_collection(db.question_migration_backups, 200000, 'question_migration_backups', integrity)
+    qbank_files = await _snapshot_collection(db.qbank_files, 100000, 'qbank_files', integrity)
     data['sections']['qbank'] = {
         'description': 'دامنه ساختاریافته بانک سؤال، تمرین، آزمون، PDF و import',
         'questions': {'count': len(questions), 'data': questions},
@@ -305,6 +442,7 @@ async def build_full_backup_data() -> dict:
         'import_jobs': {'count': len(import_jobs), 'data': import_jobs},
         'import_items': {'count': len(import_items), 'data': import_items},
         'migration_backups': {'count': len(migration_backups), 'data': migration_backups},
+        'files_meta': {'count': len(qbank_files), 'data': qbank_files},
     }
 
     # ── برنامه ──
@@ -428,12 +566,14 @@ async def build_full_backup_data() -> dict:
 
     prestige_history = await _snapshot_collection(db.prestige_history, 100000, 'prestige_history', integrity)
     feed_reactions = await _snapshot_collection(db.feed_reactions, 100000, 'feed_reactions', integrity)
-    exam_sessions = await _snapshot_collection(db.exam_sessions, 100000, 'exam_sessions', integrity)
+    # 🛡 AUDIT-FIX: exam_sessions قبلاً اینجا هم (با سقف ۱۰۰هزار) اسنپ‌شات
+    # می‌شد و manifest/summary را بازنویسی می‌کرد؛ تنها منبع qbank.exams
+    # است (سقف ۵۰۰هزار). خواننده‌ی prestige.exam_sessions در بازیابی برای
+    # سازگاری با بکاپ‌های قدیمی نگه داشته شده است.
     data['sections']['prestige'] = {
-        'description': 'تاریخچه Prestige، واکنش فید و جلسات آزمون/چالش',
+        'description': 'تاریخچه Prestige و واکنش فید (جلسات آزمون/چالش در qbank.exams)',
         'history': {'count': len(prestige_history), 'data': prestige_history},
         'feed_reactions': {'count': len(feed_reactions), 'data': feed_reactions},
-        'exam_sessions': {'count': len(exam_sessions), 'data': exam_sessions},
     }
 
     saved_views = await _snapshot_collection(db.wa_saved_filters, 100000, 'wa_saved_filters', integrity)
@@ -444,6 +584,65 @@ async def build_full_backup_data() -> dict:
         'saved_views': {'count': len(saved_views), 'data': saved_views},
         'settings_meta': {'count': len(settings_meta), 'data': settings_meta},
         'migrations': {'count': len(migrations), 'data': migrations},
+    }
+
+    # ── کیف پول (پول واقعی — حیاتی) ──
+    wallets = await _snapshot_collection(db.wallets, 100000, 'wallets', integrity)
+    wallet_transactions = await _snapshot_collection(db.wallet_transactions, 1000000, 'wallet_transactions', integrity)
+    data['sections']['wallets'] = {
+        'description': 'کیف پول‌ها و تراکنش‌های مالی',
+        'wallets': {'count': len(wallets), 'data': wallets},
+        'transactions': {'count': len(wallet_transactions), 'data': wallet_transactions},
+    }
+
+    # ── رینگ (۱۲ کالکشن از db.ring_cols) ──
+    _ring = db.ring_cols
+    _ring_snaps = [
+        ('profiles', 'ring_profiles', 500000), ('queue', 'ring_queue', 500000),
+        ('sessions', 'ring_sessions', 500000), ('blocks', 'ring_blocks', 200000),
+        ('reports', 'ring_reports', 200000), ('bans', 'ring_bans', 100000),
+        ('ratings', 'ring_ratings', 500000), ('evidence', 'ring_message_evidence', 200000),
+        ('audit', 'ring_admin_audit', 200000), ('limits', 'ring_limits', 100000),
+        ('daily', 'ring_stats_daily', 100000), ('counters', 'ring_counters', 100000),
+    ]
+    _ring_section = {'description': 'رینگ خیابان — پروفایل‌ها، صف، جلسات، بن‌ها و آمار'}
+    for _sub, _col, _cap in _ring_snaps:
+        _rows = await _snapshot_collection(getattr(_ring, _sub), _cap, _col, integrity)
+        _ring_section[_sub] = {'count': len(_rows), 'data': _rows}
+    data['sections']['ring'] = _ring_section
+
+    # ── رشد و ارجاع + پیکربندی عملیاتی ──
+    referrals = await _snapshot_collection(db.referrals, 500000, 'referrals', integrity)
+    family_invites = await _snapshot_collection(db.family_invites, 100000, 'family_invites', integrity)
+    feature_policies = await _snapshot_collection(db.feature_policies, 10000, 'feature_policies', integrity)
+    schedule_templates = await _snapshot_collection(db.schedule_templates, 10000, 'schedule_templates', integrity)
+    ticket_canned = await _snapshot_collection(db.ticket_canned, 10000, 'ticket_canned', integrity)
+    ticket_overflow = await _snapshot_collection(db.ticket_overflow, 10000, 'ticket_overflow', integrity)
+    db_counters = await _snapshot_collection(db.db_counters, 10000, 'db_counters', integrity)
+    url_import_jobs = await _snapshot_collection(db.url_import_jobs, 50000, 'url_import_jobs', integrity)
+    feature_usage = await _snapshot_collection(db.feature_usage, 500000, 'feature_usage', integrity)
+    data['sections']['growth'] = {
+        'description': 'ارجاع‌ها، دعوت خانواده، سیاست‌های دسترسی، قالب‌های برنامه، پاسخ‌های آماده و شمارنده‌ها',
+        'referrals': {'count': len(referrals), 'data': referrals},
+        'family_invites': {'count': len(family_invites), 'data': family_invites},
+        'feature_policies': {'count': len(feature_policies), 'data': feature_policies},
+        'schedule_templates': {'count': len(schedule_templates), 'data': schedule_templates},
+        'ticket_canned': {'count': len(ticket_canned), 'data': ticket_canned},
+        'ticket_overflow': {'count': len(ticket_overflow), 'data': ticket_overflow},
+        'db_counters': {'count': len(db_counters), 'data': db_counters},
+        'url_import_jobs': {'count': len(url_import_jobs), 'data': url_import_jobs},
+        'feature_usage': {'count': len(feature_usage), 'data': feature_usage},
+    }
+
+    # ── عملیات و سلامت (تله‌متری کم‌حجم و صف audit) ──
+    audit_outbox = await _snapshot_collection(db.audit_outbox, 50000, 'audit_outbox', integrity)
+    audit_delivery_metrics = await _snapshot_collection(db.audit_delivery_metrics, 50000, 'audit_delivery_metrics', integrity)
+    client_errors = await _snapshot_collection(db.client_errors, 5000, 'client_errors', integrity)
+    data['sections']['ops'] = {
+        'description': 'صف تحویل audit و خطاهای کلاینت (کمک به عیب‌یابی پس از بازیابی)',
+        'audit_outbox': {'count': len(audit_outbox), 'data': audit_outbox},
+        'audit_delivery_metrics': {'count': len(audit_delivery_metrics), 'data': audit_delivery_metrics},
+        'client_errors': {'count': len(client_errors), 'data': client_errors},
     }
 
     # آمار خلاصه
@@ -484,12 +683,78 @@ async def build_full_backup_data() -> dict:
         'ai_conversations': len(ai_conversations),
         'prestige_history': len(prestige_history),
         'feed_reactions':  len(feed_reactions),
-        'exam_sessions':   len(exam_sessions),
+        'exam_sessions':   len(exams),
+        'qbank_files':     len(qbank_files),
         'saved_views':     len(saved_views),
         'settings_meta':   len(settings_meta),
         'migrations':      len(migrations),
+        'wallets':         len(wallets),
+        'wallet_transactions': len(wallet_transactions),
+        'ring_profiles':   data['sections']['ring']['profiles']['count'],
+        'ring_sessions':   data['sections']['ring']['sessions']['count'],
+        'referrals':       len(referrals),
+        'family_invites':  len(family_invites),
+        'feature_policies': len(feature_policies),
+        'schedule_templates': len(schedule_templates),
+        'ticket_canned':   len(ticket_canned),
+        'db_counters':     len(db_counters),
+        'url_import_jobs': len(url_import_jobs),
+        'feature_usage':   len(feature_usage),
+        'audit_outbox':    len(audit_outbox),
+        'client_errors':   len(client_errors),
     }
+    # 🌊 W5/REL-04 — اثر tamper-evident: sha256 روی sections کانونیکال.
+    # restore دوباره حساب می‌کند؛ ناسازگاری = توقف بازیابی.
+    try:
+        data['integrity']['sha256_sections'] = _sections_digest(data.get('sections', {}))
+    except Exception as _e:
+        logger.warning(f"backup sha256 failed (non-blocking): {_e}")
     return data
+
+
+# ── 🌊 W3 — streaming backup (memory-safe) ──
+import tempfile, os as _os
+
+async def _snapshot_collection_iter(collection, limit: int, key: str, manifest: dict):
+    """Count-verified but batched iteration — returns list but via cursor batches to reduce peak.
+    For very large collections (>500k), caller should stream to file instead of holding list.
+    """
+    for _attempt in range(2):
+        before = int(await collection.count_documents({}))
+        if before > limit:
+            manifest[key] = {"source_count": before, "exported_count": 0, "limit": limit, "complete": False, "reason": "capacity_exceeded"}
+            raise BackupIntegrityError(f"backup capacity exceeded for {key}: {before}>{limit}")
+        rows = []
+        cursor = collection.find({}).batch_size(1000)
+        # iterate without to_list to allow GC-friendly batching
+        async for doc in cursor:
+            rows.append(doc)
+            if len(rows) > limit:
+                break
+        after = int(await collection.count_documents({}))
+        if before == after == len(rows):
+            manifest[key] = {"source_count": after, "exported_count": len(rows), "limit": limit, "complete": True}
+            return rows
+        # changed during backup, retry
+        rows.clear()
+    manifest[key] = {"source_count": after, "exported_count": len(rows), "limit": limit, "complete": False, "reason": "collection_changed_during_backup"}
+    raise BackupIntegrityError(f"collection changed during backup: {key}")
+
+async def build_full_backup_file(temp_path: str = None):
+    """بکاپ کامل داخل فایل موقت (gzip) — خروجی (path, summary).
+
+    صادقانه: دیکشنری sections در RAM ساخته می‌شود ولی رشته‌ی JSON غول‌پیکر
+    نگه داشته نمی‌شود (کاهش ~۲برابری پیک حافظه) و خروجی gzip است تا زیر
+    سقف تلگرام جا شود. Caller باید فایل را unlink کند.
+    """
+    if not temp_path:
+        fd, temp_path = tempfile.mkstemp(prefix="humsyar_backup_", suffix=".json.gz")
+        _os.close(fd)
+    data = await build_full_backup_data()
+    blob = _encode_backup_bytes(data)
+    with open(temp_path, 'wb') as f:
+        f.write(blob)
+    return temp_path, (data.get('summary') or {})
 
 
 async def _export_all(query, context):
@@ -545,33 +810,13 @@ async def send_backup_to_bot_chat(bot, chat_id: int, data: dict, filename: str =
     FIX جدید: برای بکاپ بخشی (بدون summary کامل)، کپشن به‌جای آمار
     صفرگونه، توضیح بخش و تعداد رکوردهایش را نشان می‌دهد.
     """
-    json_str   = json.dumps(data, ensure_ascii=False, indent=2, cls=_Enc)
-    file_bytes = json_str.encode('utf-8')
+    file_bytes = _encode_backup_bytes(data)
     file_obj   = io.BytesIO(file_bytes)
     now_str    = now_tehran().strftime('%Y%m%d_%H%M')
-    fname      = f"{filename}_{now_str}.json"
+    fname      = f"{filename}_{now_str}.json.gz"
     file_obj.name = fname
 
-    summary = data.get('summary', {})
-    if summary:
-        stats_text = '\n'.join([
-            f"👥 کاربران: {summary.get('users',0)}",
-            f"📖 درس‌ها: {summary.get('lessons',0)}",
-            f"🧪 سوالات: {summary.get('questions',0)}",
-            f"🎫 تیکت‌ها: {summary.get('tickets',0)}",
-        ])
-    else:
-        desc  = data.get('description', 'بخشی از دیتابیس')
-        total = _count_section_records(data)
-        stats_text = f"🗂 بخش: {desc}\n📊 رکوردها: {total}"
-
-    caption = (
-        f"{title or '💾 <b>بکاپ خودکار روزانه</b>'}\n"
-        f"━━━━━━━━━━━━━━━━\n"
-        f"🕐 {now_tehran_str()}\n\n"
-        f"{stats_text}\n\n"
-        f"📦 حجم: {len(file_bytes)//1024} KB"
-    )
+    caption = build_backup_caption(data, len(file_bytes), encrypted=False, title=title)
     sent = await bot.send_document(
         chat_id, document=file_obj, caption=caption,
         parse_mode='HTML', filename=fname
@@ -612,6 +857,10 @@ BACKUP_SECTION_LABELS = {
     'subscription': 'اشتراک و پرداخت',
     'grades':       'نمرات',
     'access':       'دسترسی‌ها و تنظیمات',
+    'wallets':      'کیف پول',
+    'ring':         'رینگ',
+    'growth':       'رشد و ارجاع',
+    'ops':          'عملیات و سلامت',
 }
 
 
@@ -623,18 +872,11 @@ async def build_section_backup_data(section: str) -> dict:
     """
     integrity = {}
     data = {
-        'backup_version': '3.0',
+        'backup_version': '3.1',
         'section':        section,
         'created_at':     utc_now_iso(),
         'restore_semantics': 'merge_upsert',
-        'integrity': {
-            'complete': True, 'consistency': 'count-verified-best-effort',
-            'datasets': integrity,
-            'excluded_security_data': ['web_admin_otps', 'web_admin_sessions'],
-            'excluded_secrets': ['bot_settings.ai_api_key'],
-            'excluded_ephemeral_data': ['bot_notifications', 'wa_api_metrics'],
-            'exclusion_reason': 'از بازپخش پیام قدیمی و بازیابی نشست/OTP جلوگیری می‌شود',
-        },
+        'integrity': _integrity_skeleton(integrity),
     }
 
     if section == 'users':
@@ -673,6 +915,7 @@ async def build_section_backup_data(section: str) -> dict:
             ('import_jobs', db.question_import_jobs, 100000, 'question_import_jobs'),
             ('import_items', db.question_import_items, 1000000, 'question_import_items'),
             ('migration_backups', db.question_migration_backups, 200000, 'question_migration_backups'),
+            ('files_meta', db.qbank_files, 100000, 'qbank_files'),
         ]
         data['description'] = 'دامنه ساختاریافته بانک سؤال'
         for key, collection, cap, name in snapshots:
@@ -721,6 +964,54 @@ async def build_section_backup_data(section: str) -> dict:
         data['intakes']     = {'count': len(intakes),     'data': intakes}
         data['settings']    = {'count': 1 if settings_doc else 0, 'data': settings_doc or {}}
 
+    elif section == 'wallets':
+        wallets      = await _snapshot_collection(db.wallets, 100000, 'wallets', integrity)
+        transactions = await _snapshot_collection(db.wallet_transactions, 1000000, 'wallet_transactions', integrity)
+        data['description']   = 'کیف پول‌ها و تراکنش‌های مالی'
+        data['wallets']       = {'count': len(wallets),      'data': wallets}
+        data['transactions']  = {'count': len(transactions), 'data': transactions}
+
+    elif section == 'ring':
+        _ring = db.ring_cols
+        _ring_snaps = [
+            ('profiles', 'ring_profiles', 500000), ('queue', 'ring_queue', 500000),
+            ('sessions', 'ring_sessions', 500000), ('blocks', 'ring_blocks', 200000),
+            ('reports', 'ring_reports', 200000), ('bans', 'ring_bans', 100000),
+            ('ratings', 'ring_ratings', 500000), ('evidence', 'ring_message_evidence', 200000),
+            ('audit', 'ring_admin_audit', 200000), ('limits', 'ring_limits', 100000),
+            ('daily', 'ring_stats_daily', 100000), ('counters', 'ring_counters', 100000),
+        ]
+        data['description'] = 'رینگ خیابان — پروفایل‌ها، صف، جلسات، بن‌ها و آمار'
+        for _sub, _col, _cap in _ring_snaps:
+            _rows = await _snapshot_collection(getattr(_ring, _sub), _cap, _col, integrity)
+            data[_sub] = {'count': len(_rows), 'data': _rows}
+
+    elif section == 'growth':
+        _growth_snaps = [
+            ('referrals', db.referrals, 500000, 'referrals'),
+            ('family_invites', db.family_invites, 100000, 'family_invites'),
+            ('feature_policies', db.feature_policies, 10000, 'feature_policies'),
+            ('schedule_templates', db.schedule_templates, 10000, 'schedule_templates'),
+            ('ticket_canned', db.ticket_canned, 10000, 'ticket_canned'),
+            ('ticket_overflow', db.ticket_overflow, 10000, 'ticket_overflow'),
+            ('db_counters', db.db_counters, 10000, 'db_counters'),
+            ('url_import_jobs', db.url_import_jobs, 50000, 'url_import_jobs'),
+            ('feature_usage', db.feature_usage, 500000, 'feature_usage'),
+        ]
+        data['description'] = 'ارجاع‌ها، دعوت خانواده، سیاست‌های دسترسی، قالب‌های برنامه و شمارنده‌ها'
+        for _sub, _col, _cap, _name in _growth_snaps:
+            _rows = await _snapshot_collection(_col, _cap, _name, integrity)
+            data[_sub] = {'count': len(_rows), 'data': _rows}
+
+    elif section == 'ops':
+        audit_outbox = await _snapshot_collection(db.audit_outbox, 50000, 'audit_outbox', integrity)
+        audit_delivery_metrics = await _snapshot_collection(db.audit_delivery_metrics, 50000, 'audit_delivery_metrics', integrity)
+        client_errors = await _snapshot_collection(db.client_errors, 5000, 'client_errors', integrity)
+        data['description'] = 'صف تحویل audit و خطاهای کلاینت'
+        data['audit_outbox'] = {'count': len(audit_outbox), 'data': audit_outbox}
+        data['audit_delivery_metrics'] = {'count': len(audit_delivery_metrics), 'data': audit_delivery_metrics}
+        data['client_errors'] = {'count': len(client_errors), 'data': client_errors}
+
     else:
         raise ValueError(f"بخش نامعتبر: {section}")
 
@@ -758,12 +1049,11 @@ async def _export_section(query, context, section: str):
 
 
 async def _send_json_file(query, data: dict, filename: str):
-    """ارسال فایل JSON به ادمین"""
-    json_str  = json.dumps(data, ensure_ascii=False, indent=2, cls=_Enc)
-    file_bytes= json_str.encode('utf-8')
+    """ارسال فایل پشتیبان (gzip) به ادمین"""
+    file_bytes= _encode_backup_bytes(data)
     file_obj  = io.BytesIO(file_bytes)
     now_str   = now_tehran().strftime('%Y%m%d_%H%M')
-    fname     = f"{filename}_{now_str}.json"
+    fname     = f"{filename}_{now_str}.json.gz"
     file_obj.name = fname
 
     # خلاصه آمار
@@ -847,9 +1137,11 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if context.user_data.get('backup_mode') != 'waiting_restore': return
 
     doc = update.message.document
-    if not doc or not doc.file_name.endswith('.json'):
+    _fname = (doc.file_name if doc else "") or ""
+    if not doc or not (_fname.endswith('.json') or _fname.endswith('.json.gz')
+                       or _fname.endswith('.json.enc') or _fname.endswith('.json.gz.enc')):
         await update.message.reply_text(
-            "❌ لطفاً یک فایل <b>.json</b> ارسال کنید.",
+            "❌ لطفاً یک فایل <b>.json.gz</b> (یا <b>.json</b> قدیمی، با/بدون <b>.enc</b>) ارسال کنید.",
             parse_mode='HTML')
         return
 
@@ -861,12 +1153,27 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     try:
         tg_file    = await context.bot.get_file(doc.file_id)
-        file_bytes = await tg_file.download_as_bytearray()
-        data       = json.loads(file_bytes.decode('utf-8'))
+        file_bytes = bytes(await tg_file.download_as_bytearray())
+        # 🌊 W5/REL-04 — رمزگشایی بکاپ خودکارِ رمزنگاری‌شده
+        if _fname.endswith('.enc'):
+            from utils_crypto import decrypt_bytes
+            _dec = decrypt_bytes(file_bytes)
+            if _dec is None:
+                await update.message.reply_text("❌ فایل رمزنگاری‌شده است ولی کلید (FERNET_KEY) در دسترس/معتبر نیست.")
+                return
+            file_bytes = _dec
+        # رمزگشایی اول، بعد تشخیص خودکار gzip/JSON ساده (سازگار با legacy)
+        data       = _decode_backup_bytes(file_bytes)
         integrity = data.get('integrity') if isinstance(data, dict) else None
         if isinstance(integrity, dict) and integrity.get('complete') is not True:
             await update.message.reply_text("❌ این فایل پشتیبان ناقص است و بازیابی نمی‌شود.")
             return
+        # 🌊 W5/REL-04 — راستی‌آزمایی sha (بکاپ‌های جدید)؛ legacy بدون هش رد می‌شود با هشدار
+        _expect = integrity.get('sha256_sections') if isinstance(integrity, dict) else None
+        if _expect:
+            if _sections_digest(data.get('sections', {})) != _expect:
+                await update.message.reply_text("❌ جمع‌بندی یکپارچگی (sha256) ناسازگار است — فایل خراب یا دست‌کاری‌شده؛ بازیابی متوقف شد.")
+                return
 
         version = data.get('backup_version', '1.0')
         created_raw = data.get('created_at')
@@ -890,6 +1197,9 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"🧾 رسیدهای پرداخت: {summary.get('sub_payments',0)}",
                 f"📊 نمرات: {summary.get('grades',0)}",
                 f"🔐 نقش‌های ادمین: {summary.get('admin_roles',0)}",
+                f"💰 کیف پول‌ها: {summary.get('wallets',0)}",
+                f"🟣 رینگ (پروفایل): {summary.get('ring_profiles',0)}",
+                f"🌱 ارجاع‌ها: {summary.get('referrals',0)}",
                 f"⚙️ تنظیمات ربات: {'دارد' if summary.get('settings',0) else 'ندارد'}",
             ])
         else:
@@ -903,7 +1213,7 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"━━━━━━━━━━━━━━━━\n"
             f"📅 تاریخ ساخت: <code>{created}</code>\n"
             f"🔖 نسخه: {version}\n"
-            f"📦 بخش: {section}\n"
+            f"📦 بخش: {BACKUP_SECTION_LABELS.get(section, section)}\n"
             f"{integrity_info}\n\n"
             f"{info}\n\n"
             f"⚠️ <b>آیا مطمئن هستید؟</b>\n"
@@ -914,8 +1224,8 @@ async def backup_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("❌ لغو",              callback_data='backup:menu')],
             ]))
 
-    except json.JSONDecodeError:
-        await update.message.reply_text("❌ فایل معتبر نیست — JSON خراب است.")
+    except (json.JSONDecodeError, gzip.BadGzipFile, UnicodeDecodeError):
+        await update.message.reply_text("❌ فایل معتبر نیست — JSON خراب یا gzip ناقص است.")
     except Exception as e:
         logger.error(f"Restore parse error: {e}")
         await update.message.reply_text(f"❌ خطا در پردازش فایل:\n<code>{e}</code>",
@@ -956,10 +1266,27 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             tags=['بازیابی_بکاپ', 'restore_started'],
         )
         restored = {}
-
-        for sec_name, sec_data in sections.items():
-            count = await _restore_section(sec_name, sec_data)
-            restored[sec_name] = count
+        # 🌊 W3 — try transactional restore (replica set); fallback to best-effort
+        _use_tx = True
+        try:
+            # quick check if transactions supported (will fail on standalone)
+            async with await db.client.start_session() as _sess:
+                async with _sess.start_transaction():
+                    for sec_name, sec_data in sections.items():
+                        count = await _restore_section(sec_name, sec_data, session=_sess)
+                        restored[sec_name] = count
+                    # commit happens on exit
+            _use_tx = True
+        except Exception as _tx_e:
+            # fallback: non-transactional (standalone or error)
+            if restored:
+                # already partially restored in failed tx attempt? Mongo aborted, so safe to retry without tx
+                restored = {}
+            logger.warning(f"restore transaction not available, fallback to non-transactional: {_tx_e}")
+            for sec_name, sec_data in sections.items():
+                count = await _restore_section(sec_name, sec_data)
+                restored[sec_name] = count
+            _use_tx = False
 
         context.user_data.pop('restore_data', None)
         context.user_data.pop('restore_section', None)
@@ -984,6 +1311,10 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             'ai':                    '🤖 داده‌های پایدار هوشیار',
             'prestige':              '🏅 تاریخچه Prestige و چالش‌ها',
             'webadmin_state':         '🖥 وضعیت پایدار WebAdmin',
+            'wallets':                '💰 کیف پول و تراکنش‌ها',
+            'ring':                   '🟣 رینگ',
+            'growth':                 '🌱 رشد و ارجاع',
+            'ops':                    '🛠 عملیات و سلامت',
         }
         for k, v in restored.items():
             result_lines.append(f"{labels.get(k, k)}: {v} رکورد")
@@ -1031,16 +1362,21 @@ async def backup_confirm_restore(update: Update, context: ContextTypes.DEFAULT_T
             ]]))
 
 
-async def _restore_section(section: str, sec_data: dict) -> int:
+async def _restore_section(section: str, sec_data: dict, session=None) -> int:
     """بازیابی یک بخش — upsert بر اساس _id"""
     from bson import ObjectId
 
-    def _prep(doc):
-        """تبدیل string _id به ObjectId"""
-        d = dict(doc)
+    def _prep(doc, legacy_dt_fields=()):
+        """تبدیل string _id به ObjectId + احیای datetimeهای تگ‌شده/legacy"""
+        d = _revive_datetypes(dict(doc))
         if '_id' in d and isinstance(d['_id'], str):
             try: d['_id'] = ObjectId(d['_id'])
             except Exception: pass   # 🛡 §۲۰ — bare except، CancelledError را هم می‌بلعید
+        # بکاپ‌های قدیمی: فیلدهای datetime به رشته‌ی ISO تبدیل شده بودند
+        for _lf in legacy_dt_fields or ():
+            if isinstance(d.get(_lf), str) and d[_lf]:
+                try: d[_lf] = datetime.fromisoformat(d[_lf])
+                except ValueError: pass
         # فیلدهای رابطه‌ای
         for fk in ['lesson_id','session_id','subject_id','book_id','user_id']:
             if fk in d and isinstance(d[fk], str) and len(d[fk]) == 24:
@@ -1048,15 +1384,17 @@ async def _restore_section(section: str, sec_data: dict) -> int:
                 except Exception: pass
         return d
 
-    async def _upsert_many(col, docs):
+    async def _upsert_many(col, docs, legacy_dt_fields=()):
         count = 0
         for doc in docs:
-            doc = _prep(doc)
+            doc = _prep(doc, legacy_dt_fields)
             _id = doc.get('_id')
+            # W3: if session provided, use it for transactional restore
+            opts = {'session': session} if session is not None else {}
             if _id:
-                await col.replace_one({'_id': _id}, doc, upsert=True)
+                await col.replace_one({'_id': _id}, doc, upsert=True, **opts)
             else:
-                await col.insert_one(doc)
+                await col.insert_one(doc, **opts)
             count += 1
         return count
 
@@ -1084,9 +1422,11 @@ async def _restore_section(section: str, sec_data: dict) -> int:
             ('pdf_generations', 'question_pdf_generations'),
             ('import_jobs', 'question_import_jobs'), ('import_items', 'question_import_items'),
             ('migration_backups', 'question_migration_backups'),
+            ('files_meta', 'qbank_files'),
         ]:
             rows = sec_data.get(sub, {}).get('data', [])
-            total += await _upsert_many(getattr(db, col), rows)
+            total += await _upsert_many(getattr(db, col), rows,
+                                        _LEGACY_NATIVE_DT_FIELDS.get(col, ()))
 
     elif section == 'schedules':
         rows = sec_data.get('data', [])
@@ -1114,7 +1454,7 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         settings_data = dict(sec_data.get('settings', {}).get('data', {}) or {})
         if settings_data:
             settings_data.pop('_id', None)
-            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True)
+            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True, **({'session': session} if session is not None else {}))
             total += 1
 
     elif section in ('subscription_system', 'subscription'):
@@ -1136,7 +1476,7 @@ async def _restore_section(section: str, sec_data: dict) -> int:
         settings_data = dict(sec_data.get('data', {}) or {})
         if settings_data:
             settings_data.pop('_id', None)
-            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True)
+            await db.settings.update_one({'_id': 'global'}, {'$set': settings_data}, upsert=True, **({'session': session} if session is not None else {}))
             total += 1
 
     elif section == 'logs':
@@ -1162,14 +1502,47 @@ async def _restore_section(section: str, sec_data: dict) -> int:
             total += await _upsert_many(getattr(db, col), rows)
 
     elif section == 'prestige':
+        # exam_sessions فقط در بکاپ‌های قدیمی اینجاست؛ خواننده نگه داشته شده.
         for sub, col in [('history', 'prestige_history'), ('feed_reactions', 'feed_reactions'),
                          ('exam_sessions', 'exam_sessions')]:
             rows = sec_data.get(sub, {}).get('data', [])
-            total += await _upsert_many(getattr(db, col), rows)
+            total += await _upsert_many(getattr(db, col), rows,
+                                        _LEGACY_NATIVE_DT_FIELDS.get(col, ()))
 
     elif section == 'webadmin_state':
         for sub, col in [('saved_views', 'wa_saved_filters'),
                          ('settings_meta', 'settings_meta'), ('migrations', 'migrations')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'wallets':
+        for sub, col in [('wallets', 'wallets'), ('transactions', 'wallet_transactions')]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'ring':
+        _ring = db.ring_cols
+        for sub in ['profiles', 'queue', 'sessions', 'blocks', 'reports', 'bans',
+                    'ratings', 'evidence', 'audit', 'limits', 'daily', 'counters']:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(_ring, sub), rows)
+
+    elif section == 'growth':
+        for sub, col in [
+            ('referrals', 'referrals'), ('family_invites', 'family_invites'),
+            ('feature_policies', 'feature_policies'),
+            ('schedule_templates', 'schedule_templates'),
+            ('ticket_canned', 'ticket_canned'), ('ticket_overflow', 'ticket_overflow'),
+            ('db_counters', 'db_counters'), ('url_import_jobs', 'url_import_jobs'),
+            ('feature_usage', 'feature_usage'),
+        ]:
+            rows = sec_data.get(sub, {}).get('data', [])
+            total += await _upsert_many(getattr(db, col), rows)
+
+    elif section == 'ops':
+        for sub, col in [('audit_outbox', 'audit_outbox'),
+                         ('audit_delivery_metrics', 'audit_delivery_metrics'),
+                         ('client_errors', 'client_errors')]:
             rows = sec_data.get(sub, {}).get('data', [])
             total += await _upsert_many(getattr(db, col), rows)
 

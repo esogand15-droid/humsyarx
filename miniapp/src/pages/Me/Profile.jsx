@@ -9,6 +9,10 @@ import { faDate, number, percent, errorText } from '../../lib/format';
 import { useState } from 'react';
 
 import {
+  useNavigate,
+} from 'react-router-dom';
+
+import {
   useMutation,
   useQuery,
   useQueryClient,
@@ -578,6 +582,90 @@ function NicknameCard({
 }
 
 
+// 🌱 W13 — کارت دعوت دوستان (فقط وقتی بک‌اند enabled بدهد رندر می‌شود)
+function ReferralCard({ data }) {
+  const toast = useUIStore((s) => s.toast);
+  const stats = data?.stats || {};
+  const byStatus = stats.by_status || {};
+  const earned = stats.earned || {};
+  const rewards = data?.rewards || {};
+  const rewardLine = [
+    rewards.sub_days ? `🎁 ${rewards.sub_days.amount} روز اشتراک` : '',
+    rewards.wallet ? `👛 ${Number(rewards.wallet.amount).toLocaleString('fa-IR')} تومان` : '',
+    rewards.discount ? `🎟 تخفیف ${rewards.discount.amount}٪` : '',
+    rewards.xp ? `⚡ ${rewards.xp.amount} XP` : '',
+  ].filter(Boolean).join(' · ');
+
+  const copyLink = async () => {
+    haptic('light');
+    try {
+      await navigator.clipboard.writeText(data.link || '');
+      toast('لینک دعوت کپی شد ✅');
+    } catch {
+      toast('کپی نشد — لینک را دستی کپی کن', 'err');
+    }
+  };
+
+  return (
+    <section className="card" style={{ marginTop: 12 }}>
+      <div className="sec-title">
+        🎁 دعوت دوستان
+      </div>
+      <div
+        className="row"
+        style={{ gap: 8, marginTop: 6 }}
+      >
+        <div
+          dir="ltr"
+          style={{
+            flex: 1, overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', fontSize: 'var(--fs-cap)',
+            color: 'var(--txm)',
+          }}
+        >
+          {data.link || '—'}
+        </div>
+        <button
+          type="button"
+          className="btn sm"
+          onClick={copyLink}
+        >
+          📋 کپی
+        </button>
+      </div>
+      <div
+        className="row"
+        style={{ gap: 8, marginTop: 10 }}
+      >
+        <span className="badge b-acc">👥 {stats.total || 0} دعوت</span>
+        <span className="badge b-grn">✅ {byStatus.counted || 0}</span>
+        {(stats.awaiting_buy || 0) > 0 && (
+          <span className="badge b-yel">⏳ {stats.awaiting_buy} در انتظار خرید</span>
+        )}
+      </div>
+      {!!rewardLine && (
+        <div
+          className="muted"
+          style={{ marginTop: 8, fontSize: 'var(--fs-cap)' }}
+        >
+          با هر دعوت موفق: {rewardLine}
+        </div>
+      )}
+      {(earned.sub_days || earned.wallet || earned.xp) ? (
+        <div
+          className="muted"
+          style={{ marginTop: 4, fontSize: 'var(--fs-cap)' }}
+        >
+          مجموع جوایزت: {earned.sub_days || 0} روز،{' '}
+          {Number(earned.wallet || 0).toLocaleString('fa-IR')} تومان،{' '}
+          {earned.xp || 0} XP
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+
 export default function Profile() {
   const [
     editField,
@@ -628,6 +716,27 @@ export default function Profile() {
 
     staleTime:
       3 * 60 * 1000,
+  });
+
+
+  // 🌱 W13 — دعوت‌های من (با کلید خاموش، enabled=false و کارت مخفی)
+  const {
+    data: referral,
+  } = useQuery({
+    queryKey: [
+      'referral-mine',
+    ],
+
+    queryFn: () =>
+      api
+        .get('/api/referral/mine')
+        .then(
+          (response) =>
+            response.data
+        ),
+
+    staleTime:
+      5 * 60 * 1000,
   });
 
 
@@ -735,6 +844,12 @@ export default function Profile() {
         .invalidateQueries({
           queryKey:
             ['schedule'],
+        }),
+
+      queryClient
+        .invalidateQueries({
+          queryKey:
+            ['referral-mine'],
         }),
 
       refreshAuth(),
@@ -1364,6 +1479,13 @@ export default function Profile() {
             )}
 
 
+            <WalletMiniCard />
+
+
+            {referral?.enabled && (
+              <ReferralCard data={referral} />
+            )}
+
             <section className="card">
               <div className="sec-title">
                 📊 عملکرد تحصیلی
@@ -1658,5 +1780,45 @@ export default function Profile() {
         )}
       </main>
     </>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// 💰 W6 — کارت کوچک کیف پول در پروفایل (§۱۴): موجودی از API canonical
+// + میان‌بر به صفحه‌ی اشتراک برای خرید/تاریخچه. READ-ONLY در فرانت.
+// ════════════════════════════════════════════════════════════════
+export function WalletMiniCard() {
+  const nav = useNavigate();
+  const walletQuery = useQuery({
+    queryKey: ['wallet'],
+    queryFn: () => api.get('/api/subscription/wallet').then((r) => r.data),
+  });
+  const w = walletQuery.data;
+  return (
+    <section className="card">
+      <div className="sec-title">👛 کیف پول</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 18 }}>
+          {walletQuery.isLoading ? '…' : `${number(w?.balance ?? 0)} تومان`}
+        </b>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription?wallet=topup')}>
+          💳 شارژ کیف پول
+        </button>
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
+          💰 خرید اشتراک
+        </button>
+        <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
+          🧾 تاریخچه
+        </button>
+      </div>
+      {w?.last_tx && (
+        <div className="muted" style={{ marginTop: 6 }}>
+          آخرین تراکنش: {w.last_tx.direction === 'credit' ? '➕' : '➖'}{' '}
+          {number(w.last_tx.amount)} — {w.last_tx.label}
+        </div>
+      )}
+    </section>
   );
 }

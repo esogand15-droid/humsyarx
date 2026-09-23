@@ -16,6 +16,10 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import SubscriptionLock, {
+  isSubscriptionLock,
+  lockKind,
+} from '../../components/shared/SubscriptionLock';
 import QuestionCard from '../../components/shared/QuestionCard';
 import CelebrationOverlay from '../../components/shared/CelebrationOverlay';
 
@@ -771,6 +775,61 @@ export default function Questions() {
     setExcluded,
   ] = useState([]);
 
+  /* 🌊 QBANK-W1 — فیلترهای سال و منبع تمرین */
+  const [
+    yearFrom,
+    setYearFrom,
+  ] = useState('');
+
+  const [
+    yearTo,
+    setYearTo,
+  ] = useState('');
+
+  const [
+    srcPicked,
+    setSrcPicked,
+  ] = useState([]);
+
+  const {
+    data: filterOptions = {},
+  } = useQuery({
+    queryKey: [
+      'question-filters',
+    ],
+
+    queryFn: () =>
+      api
+        .get(
+          '/api/questions/filters'
+        )
+        .then(
+          (response) =>
+            response.data || {}
+        ),
+
+    staleTime:
+      10 * 60 * 1000,
+  });
+
+  const toggleSrc = (
+    code
+  ) =>
+    setSrcPicked(
+      (current) =>
+        current.includes(
+          code
+        )
+          ? current.filter(
+              (item) =>
+                item !== code
+            )
+          : [
+              ...current,
+              code,
+            ]
+    );
+
   const [
     summary,
     setSummary,
@@ -802,6 +861,8 @@ export default function Questions() {
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
+    isError: lessonsError,
+    refetch: refetchLessons,
   } = useQuery({
     queryKey: [
       'question-lessons',
@@ -843,6 +904,35 @@ export default function Questions() {
               ','
             );
 
+          /* 🌊 QBANK-W1 — فیلترهای سال/منبع */
+          const filterParams =
+            new URLSearchParams();
+
+          if (yearFrom)
+            filterParams.append(
+              'exam_year_from',
+              yearFrom
+            );
+
+          if (yearTo)
+            filterParams.append(
+              'exam_year_to',
+              yearTo
+            );
+
+          srcPicked.forEach(
+            (code) =>
+              filterParams.append(
+                'content_source',
+                code
+              )
+          );
+
+          const filterQuery =
+            filterParams.toString()
+              ? `&${filterParams.toString()}`
+              : '';
+
           let url;
 
           if (
@@ -850,14 +940,16 @@ export default function Questions() {
             'weak'
           ) {
             url =
-              '/api/questions/weak';
+              filterParams.toString()
+                ? `/api/questions/weak?${filterParams.toString()}`
+                : '/api/questions/weak';
 
           } else if (
             practiceMode ===
             'hard'
           ) {
             url =
-              `/api/questions/hard?exclude=${exclude}`;
+              `/api/questions/hard?exclude=${exclude}${filterQuery}`;
 
           } else {
             const lessonQuery =
@@ -870,7 +962,7 @@ export default function Questions() {
                 : '';
 
             url =
-              `/api/questions/practice?${lessonQuery}exclude=${exclude}`;
+              `/api/questions/practice?${lessonQuery}exclude=${exclude}${filterQuery}`;
           }
 
           const response =
@@ -898,6 +990,12 @@ export default function Questions() {
           );
 
         } catch (error) {
+          /* 🌊 W7 — قفل دسترسی فیچر: پی‌وال به‌جای تست */
+          if (isSubscriptionLock(error)) {
+            setLockErr(error);
+            return;
+          }
+
           toast(
             error?.response
               ?.data
@@ -916,7 +1014,12 @@ export default function Questions() {
         }
       },
 
-      [toast]
+      [
+        toast,
+        yearFrom,
+        yearTo,
+        srcPicked,
+      ]
     );
 
 
@@ -1051,7 +1154,14 @@ export default function Questions() {
   };
 
 
+  const [
+    lockErr,
+    setLockErr,
+  ] = useState(null);
+
+
   const back = () => {
+    setLockErr(null);
     setView('menu');
     setQuestion(null);
     setResult(null);
@@ -1063,6 +1173,20 @@ export default function Questions() {
       <DesignQuestion
         onBack={back}
       />
+    );
+  }
+
+
+  /* 🌊 W7 — پی‌وال بانک سؤال */
+  if (lockErr) {
+    return (
+      <main className="page">
+        <SubscriptionLock
+          feature="بانک سؤال"
+          featureKey="question_bank"
+          mode={lockKind(lockErr).kind}
+        />
+      </main>
     );
   }
 
@@ -1174,6 +1298,35 @@ export default function Questions() {
                   </div>
                 </div>
               </div>
+            </section>
+
+
+            <section className="card" style={{ marginBottom: 17, padding: 12 }}>
+              <b style={{ fontSize: 'var(--fs-cap)' }}>🌊 فیلتر سال و منبع (اختیاری)</b>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+                <select className="inp" value={yearFrom} onChange={(e) => setYearFrom(e.target.value)}>
+                  <option value="">از همه سال‌ها</option>
+                  {(filterOptions.years || []).map((y) => (
+                    <option key={y} value={y}>از {y}</option>
+                  ))}
+                </select>
+                <select className="inp" value={yearTo} onChange={(e) => setYearTo(e.target.value)}>
+                  <option value="">تا همه سال‌ها</option>
+                  {(filterOptions.years || []).map((y) => (
+                    <option key={y} value={y}>تا {y}</option>
+                  ))}
+                </select>
+              </div>
+              {(filterOptions.sources || []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                  {(filterOptions.sources || []).map((src) => (
+                    <label key={src.code} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-cap)' }}>
+                      <input type="checkbox" checked={srcPicked.includes(src.code)} onChange={() => toggleSrc(src.code)} />
+                      {src.label} ({src.count})
+                    </label>
+                  ))}
+                </div>
+              )}
             </section>
 
 
@@ -1446,6 +1599,14 @@ export default function Questions() {
 
             {lessonsLoading ? (
               <SkTileGrid n={6} />
+            ) : lessonsError && lessons.length === 0 ? (
+              <button
+                type="button"
+                className="btn btn-full"
+                onClick={() => refetchLessons()}
+              >
+                🌐 دریافت درس‌ها ناموفق بود — تلاش دوباره
+              </button>
             ) : (
               <section className="grid2">
                 {lessons.map(

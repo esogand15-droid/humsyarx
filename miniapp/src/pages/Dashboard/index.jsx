@@ -1,5 +1,5 @@
 import PageError from '../../components/shared/PageError';
-import { faNum, number, percent } from '../../lib/format';
+import { faNum, number, percent, faDate, faTime } from '../../lib/format';
 
 import { useState } from 'react';
 import {
@@ -1237,11 +1237,12 @@ export default function Dashboard() {
                                     3,
                                 }}
                               >
-                                {exam.date ||
-                                  'تاریخ نامشخص'}
+                                {exam.date
+                                  ? faDate(exam.date)
+                                  : 'تاریخ نامشخص'}
 
                                 {exam.time
-                                  ? ` • ${exam.time}`
+                                  ? ` • ${faTime(exam.time)}`
                                   : ''}
                               </div>
                             </div>
@@ -1260,7 +1261,7 @@ export default function Dashboard() {
                                   : days ===
                                       1
                                     ? 'فردا'
-                                    : `${days} روز`}
+                                    : `${faNum(days)} روز`}
                               </span>
                             )}
                           </div>

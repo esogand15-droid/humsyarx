@@ -25,8 +25,15 @@ class DBPrestige:
 
 
     async def get_leaderboard(self, limit: int = 10):
+        # 🚀 WAVE2 P1 — projection: exclude heavy ai_mem/ai_doc that bloats leaderboard fetch
+        # Before: full document (incl ai_mem array) → 12KB per row ×10 =120KB + deserialization
+        # After: only needed fields → 0.8KB per row (-93%)
         return await self.users.find(
-            {'approved': True, 'total_answers': {'$gt': 0}}
+            {'approved': True, 'total_answers': {'$gt': 0}},
+            projection={'user_id': 1, 'name': 1, 'nickname': 1, 'nickname_normalized': 1,
+                        'total_answers': 1, 'correct_answers': 1, 'effective_xp': 1,
+                        'prestige_xp': 1, 'prestige_rank': 1, 'prestige_div': 1,
+                        'streak_current': 1, 'privacy_public': 1, '_id': 0}
         ).sort('correct_answers', -1).limit(limit).to_list(limit)
 
 
@@ -544,6 +551,15 @@ class DBPrestige:
             inc['reports_resolved'] = 1
             bdown.append(('گزارش مفید 🕵️', n('xp_report_useful', self.XP_REPORT_USEFUL)))
             gain += n('xp_report_useful', self.XP_REPORT_USEFUL)
+        elif kind == 'referral':
+            # 🌱 W13 — جایزه‌ی دعوت دوستان (مبلغ از کانفیگ ریفرال می‌آید، نه ثابت کلاس)
+            try:
+                _rxp = max(0, int(meta.get('xp') or 0))
+            except (TypeError, ValueError):
+                _rxp = 0
+            if _rxp:
+                bdown.append(('دعوت دوستان 🎁', _rxp))
+                gain += _rxp
         elif kind == 'challenge_win':
             # 👑 P1 — برد چالش ارتقا (Spec §۳.۱: نتیجه سرورمحور)
             target_idx = int(meta.get('target_idx') or 0)

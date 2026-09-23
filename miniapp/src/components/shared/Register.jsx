@@ -15,6 +15,7 @@ import {
   tg,
   haptic,
   hapticNotif,
+  getStartParam,
 } from '../../lib/telegram';
 
 import {
@@ -496,6 +497,9 @@ export default function Register() {
             intake,
             student_id:
               studentId.trim(),
+            // 🌱 W13 — کد دعوت از دیپ‌لینک (اختیاری)
+            ref:
+              getStartParam() || '',
           }
         ),
 

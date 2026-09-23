@@ -30,6 +30,70 @@ GROUP_ICONS = {'1': '1️⃣', '2': '2️⃣', 'هر دو': '👥', '': '👥'}
 def _fa_time(value) -> str:
     return format_time_fa(value, fallback=str(value or '—'))
 
+def _fa_interval(start, end=None) -> str:
+    if start and end:
+        try:
+            # normalize via en_digits if needed
+            from time_utils import en_digits as _en
+            s = _en(str(start)).strip()
+            e = _en(str(end)).strip()
+            # fix 01-05 -> 13-17 for display (PM)
+            def _fix(v):
+                try:
+                    hh, mm = v.split(':')
+                    h = int(hh)
+                    if 1 <= h <= 5:
+                        return f"{h+12:02d}:{mm}"
+                    return v
+                except: return v
+            s = _fix(s); e = _fix(e)
+            return f"{_fa_time(s)} تا {_fa_time(e)}"
+        except: 
+            return f"{_fa_time(start)} تا {_fa_time(end)}"
+    return _fa_time(start)
+
+def _doc_time_display(doc: dict) -> str:
+    if not doc: return _fa_time('')
+    return _fa_interval(doc.get('time'), doc.get('end_time') or doc.get('time_end'))
+
+def _parse_interval(raw: str):
+    """Parse '08:00-10:00' / '08:00 تا 10:00' / '8-10' / '08:00' -> (start, end|None) or (None,None)"""
+    if not raw: return None, None
+    from time_utils import en_digits as _en
+    import re
+    tmp = _en(str(raw)).replace('—','-').replace('–','-').replace('تا','-')
+    times = re.findall(r'(\d{1,2}:\d{2})', tmp)
+    if len(times) >= 2:
+        s = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+        e = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+        return s, e
+    if len(times) == 1:
+        hh, mm = times[0].split(':')
+        s = f"{int(hh):02d}:{mm}"
+        # check if dash with hour only second part like "08:00-10"
+        if '-' in tmp:
+            # try to find second hour without minutes
+            after = tmp.split('-',1)[1]
+            m2 = re.search(r'(\d{1,2})', after)
+            if m2:
+                # if times only one colon, the dash part might be "10" -> assume ":00"
+                if ':' not in after:
+                    e = f"{int(m2.group(1)):02d}:00"
+                    return s, e
+        return s, None
+    # handle "8-10" without colon
+    if '-' in tmp:
+        parts = tmp.split('-')
+        if len(parts)==2:
+            m1 = re.search(r'(\d{1,2})', parts[0])
+            m2 = re.search(r'(\d{1,2})', parts[1])
+            if m1 and m2:
+                s = f"{int(m1.group(1)):02d}:00"
+                e = f"{int(m2.group(1)):02d}:00"
+                return s, e
+    return None, None
+
+
 
 async def _can_manage_schedule(uid: int) -> bool:
     """گیت مشترک mutationهای schedule در Bot و Web Admin."""
@@ -64,7 +128,7 @@ async def _notify_schedule_deleted(context, item: dict):
         f"❌ <b>{type_fa} لغو شد</b>\n\n"
         f"📚 {item.get('lesson','')}\n"
         f"👨‍🏫 {item.get('teacher','')}\n"
-        f"📅 {jalali_display}  ⏰ {_fa_time(item.get('time'))}\n"
+        f"📅 {jalali_display}  ⏰ {_doc_time_display(item)}\n"
         f"📍 {item.get('location','')}{g_label}"
     )
     await broadcast_message(context.bot, users, notif_msg)
@@ -405,6 +469,56 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
         )
 
+    # ══════════════════════════════════════════════
+    # 📸 اسکن با هوشیار + الگوی هفتگی
+    # ══════════════════════════════════════════════
+    elif action == 'scan_menu' and can_manage:
+        await _show_scan_menu(query)
+
+    elif action == 'scan_weekly' and can_manage:
+        context.user_data['mode'] = 'schedule_scan_weekly'
+        await query.edit_message_text(
+            "📸 <b>اسکن برنامه هفتگی با هوشیار</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "عکس جدول برنامه کلاسی (شنبه تا جمعه) را بفرستید.\n"
+            "هوشیار آن را به الگوی هفتگی تبدیل می‌کند — بعد پیش‌نمایش را تایید می‌کنید.\n\n"
+            "💡 نکته: جدول باید خوانا باشد (۸-۱۰، ۱۰-۱۲ ... یا ساعت دقیق). "
+            "برای کلاس‌های عملی/آز، نوع «منعطف» پیشنهاد می‌شود ولی قابل ویرایش است.\n\n"
+            "برای لغو /cancel بزنید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'scan_exam' and can_manage:
+        context.user_data['mode'] = 'schedule_scan_exam'
+        await query.edit_message_text(
+            "📝 <b>اسکن برنامه امتحانات با هوشیار</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "عکس جدول امتحانات (تاریخ + ساعت + درس) را بفرستید.\n"
+            "هوشیار آن را استخراج می‌کند — پیش‌نمایش را تایید کنید تا ثبت شود.\n\n"
+            "برای لغو /cancel بزنید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'scan_confirm' and can_manage:
+        await _confirm_scan(query, context, kind='weekly')
+
+    elif action == 'scan_exam_confirm' and can_manage:
+        await _confirm_scan(query, context, kind='exam')
+
+    elif action == 'scan_cancel' and can_manage:
+        context.user_data.pop('scan_preview', None)
+        context.user_data.pop('mode', None)
+        await query.edit_message_text("❌ اسکن لغو شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_menu')]]))
+
+    elif action == 'template_menu' and can_manage:
+        await _show_template_menu(query)
+
+    elif action == 'template_generate' and can_manage:
+        await _handle_template_generate(query, context)
+
+    elif action == 'template_clear' and can_manage:
+        await _handle_template_clear(query)
+
 
 # ══════════════════════════════════════════════════
 #  UI
@@ -458,7 +572,7 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
         from schedule_pdf import generate_schedule_pdf
         student_name = user.get('name', '') if user else ''
         pdf_bytes = await asyncio.to_thread(
-            generate_schedule_pdf, items, user_group or 'همه', student_name
+            generate_schedule_pdf, items, user_group or 'همه', student_name, stype
         )
     except Exception as e:
         logger.exception("schedule PDF export failed")
@@ -467,12 +581,23 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
 
     type_slug = stype or 'hame'
     type_label = TYPE_NAMES.get(stype, '📋 همه‌ی برنامه‌ها') if stype else '📋 همه‌ی برنامه‌ها'
+    # 🔢 منطق شمارش: برای کلاسِ هفتگی، ۲۰۰ ردیفِ تاریخ‌دار نداریم، ۲۷ کلاسِ یک هفته است
+    display_count = len(items)
+    try:
+        if stype == 'class' or (stype is None and items and all((it.get('type') or 'class') == 'class' for it in items)):
+            from schedule_pdf import _should_use_weekly_grid, _collect_weekly_slots
+            if _should_use_weekly_grid(items, stype):
+                sm, wkinfo = _collect_weekly_slots(items) or (None, (None, None))
+                if sm and wkinfo and wkinfo[0]:
+                    display_count = sum(len(v) for day in sm.values() for v in day.values())
+    except Exception:
+        display_count = len(items)
     file_obj = io.BytesIO(pdf_bytes)
     fname = f"barname_{type_slug}_{user_group or 'hamzyar'}_{now_tehran().strftime('%Y%m%d')}.pdf"
     file_obj.name = fname
     await query.message.reply_document(
         document=file_obj,
-        caption=f"{type_label}\n👥 گروه {user_group or 'همه'}\n🔢 {len(items)} مورد",
+        caption=f"{type_label}\n👥 گروه {user_group or 'همه'}\n🔢 {display_count} مورد",
         parse_mode='HTML',
         filename=fname,
     )
@@ -521,11 +646,11 @@ async def _show_group_schedule(query, user_group: str):
         for c in items:
             flex = c.get('flex_type', 'fixed')
             if flex == 'flexible':
-                time_part = f"🔄 زمان متغیر — آخرین اعلام: {_fa_time(c.get('time'))}"
+                time_part = f"🔄 زمان متغیر — آخرین اعلام: {_doc_time_display(c)}"
                 if c.get('flex_note'):
                     time_part += f" ({c['flex_note']})"
             else:
-                time_part = f"⏰ {_fa_time(c.get('time'))}"
+                time_part = f"⏰ {_doc_time_display(c)}"
             lines.append(
                 f"   • <b>{c.get('lesson','')}</b>\n"
                 f"     {time_part}\n"
@@ -542,7 +667,7 @@ async def _show_group_schedule(query, user_group: str):
         lines.append("📝 <b>امتحانات نزدیک</b>")
         for e in group_exams[:5]:
             jalali = fmt_jalali(e.get('date', ''))
-            lines.append(f"   • {e.get('lesson','')} — {jalali} {_fa_time(e.get('time'))}")
+            lines.append(f"   • {e.get('lesson','')} — {jalali} {_doc_time_display(e)}")
 
     text = '\n'.join(lines)
     if len(text) > 4000:
@@ -592,7 +717,7 @@ async def _show_schedule_list(query, items: list, title: str, stype: str = None,
         lines.append(
             f"{icon} <b>{s.get('lesson', '')}</b>  {g_icon}{weekly}\n"
             f"   📅 {jalali}  |  {d_label}\n"
-            f"   ⏰ {_fa_time(s.get('time'))}  |  👨‍🏫 {s.get('teacher', '')}\n"
+            f"   ⏰ {_doc_time_display(s)}  |  👨‍🏫 {s.get('teacher', '')}\n"
             f"   📍 {s.get('location', '')}\n"
             + (f"   📝 {s['notes']}\n" if s.get('notes') else '')
         )
@@ -644,7 +769,7 @@ async def _show_manage_list(query, stype: str):
     for s in items[:30]:
         sid = str(s['_id'])
         jd  = fmt_jalali(s.get('date', ''))
-        label = f"{s.get('lesson','')} | {jd} {_fa_time(s.get('time'))}"
+        label = f"{s.get('lesson','')} | {jd} {_doc_time_display(s)}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f'schedule:item:{sid}')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:manage_types')])
     text = f"✏️ <b>{type_fa}</b>\n\nیک مورد را برای مشاهده/ویرایش/حذف انتخاب کنید:"
@@ -671,7 +796,7 @@ async def _show_item_detail(query, sid: str):
         f"📚 <b>درس:</b> {item.get('lesson','')}\n"
         f"👨‍🏫 <b>استاد:</b> {item.get('teacher','')}\n"
         f"📅 <b>تاریخ:</b> {jalali_display}\n"
-        f"⏰ <b>ساعت:</b> {_fa_time(item.get('time'))}\n"
+        f"⏰ <b>ساعت:</b> {_doc_time_display(item)}\n"
         f"📍 <b>مکان:</b> {item.get('location','')}\n"
         f"👥 <b>گروه:</b> {g_label}\n"
         f"🔁 <b>نوع زمان‌بندی:</b> {flex_label}\n"
@@ -826,11 +951,23 @@ async def handle_edit_schedule_field_text(update: Update, context: ContextTypes.
         notif_text = "زمان کلاس تغییر کرده است." if item.get('type') == 'class' else f"⏰ زمان {type_fa} تغییر کرده است."
     else:
         notif_text = f"برنامه {type_fa} شما بروزرسانی شد."
+    # interval-aware display for time edit
+    if field == 'time':
+        s_disp, e_disp = _parse_interval(value)
+        # if interval parsed, show range
+        if s_disp and e_disp:
+            time_disp = _fa_interval(s_disp, e_disp)
+        elif s_disp:
+            time_disp = _fa_time(s_disp)
+        else:
+            time_disp = _fa_time(value)
+    else:
+        time_disp = _doc_time_display(item)
     notif_msg = (
         f"🔔 <b>{notif_text}</b>\n\n"
         f"📚 {item.get('lesson','')}\n"
         f"📅 {fmt_jalali(value) if field=='date' else fmt_jalali(item.get('date',''))}"
-        f"  ⏰ {_fa_time(value if field=='time' else item.get('time'))}\n"
+        f"  ⏰ {time_disp}\n"
         f"📍 {value if field=='location' else item.get('location','')}"
     )
     sent, _ = await broadcast_message(context.bot, users, notif_msg)
@@ -886,7 +1023,7 @@ async def _show_flex_list(query):
     for s in flex_items[:20]:
         sid = str(s['_id'])
         jd  = fmt_jalali(s.get('date', ''))
-        label = f"🔄 {s.get('lesson','')} | {jd} {_fa_time(s.get('time'))}"
+        label = f"🔄 {s.get('lesson','')} | {jd} {_doc_time_display(s)}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f'schedule:flex_change:{sid}')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')])
     await query.edit_message_text(
@@ -920,12 +1057,29 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
         return
 
     new_date_raw = parts[0]
-    new_time     = parts[1]
+    new_time_raw = parts[1].strip()
     note         = parts[2] if len(parts) > 2 else ''
-
-    if not _is_valid_time(new_time):
-        await update.message.reply_text("❌ فرمت ساعت اشتباه است. مثال: 14:00")
+    s_parsed, e_parsed = _parse_interval(new_time_raw)
+    if not s_parsed:
+        await update.message.reply_text("❌ فرمت ساعت اشتباه است. مثال: 14:00 یا 08:00 تا 10:00")
         return
+    new_time = s_parsed
+    new_end = e_parsed or ''
+    if new_end:
+        try:
+            from time_utils import parse_clock_time as _pct
+            _pct(new_time); _pct(new_end)
+            if int(new_end.split(':')[0])*60+int(new_end.split(':')[1]) <= int(new_time.split(':')[0])*60+int(new_time.split(':')[1]):
+                await update.message.reply_text("❌ پایان باید بعد از شروع باشد.")
+                return
+        except Exception:
+            await update.message.reply_text("❌ ساعت نامعتبر.")
+            return
+    else:
+        # synthesize common end if missing
+        synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
+        if new_time in synth:
+            new_end = synth[new_time]
 
     new_date = _parse_jalali_date(new_date_raw)
     try:
@@ -939,7 +1093,7 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
         await update.message.reply_text("❌ این کلاس پیدا نشد.")
         return
 
-    ok = await db.update_schedule_time(sid, new_date, new_time, note)
+    ok = await db.update_schedule_time(sid, new_date, new_time, note, end_time=new_end)
     if not ok:
         await update.message.reply_text("❌ خطا در ذخیره تغییر.")
         return
@@ -954,7 +1108,7 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
         f"🔄 <b>تغییر زمان کلاس</b>\n\n"
         f"📚 {lesson}\n"
         f"👨‍🏫 {teacher}\n\n"
-        f"📅 <b>زمان جدید:</b> {jalali_display}  ⏰ {new_time}\n"
+        f"📅 <b>زمان جدید:</b> {jalali_display}  ⏰ {_fa_interval(new_time, new_end)}\n"
         f"📍 {location}"
         + (f"\n\n📝 {note}" if note else '')
     )
@@ -971,14 +1125,14 @@ async def handle_flex_time_change_text(update: Update, context: ContextTypes.DEF
         "تغییر زمان کلاس", module='Schedules', severity='WARNING',
         actor_role=actor_role,
         target_id=sid, target_type='schedule', target_label=lesson,
-        before={'زمان': f"{old_jalali} {_fa_time(schedule_doc.get('time'))}"},
-        after={'زمان': f"{jalali_display} {new_time}"},
+        before={'زمان': f"{old_jalali} {_doc_time_display(schedule_doc)}"},
+        after={'زمان': f"{jalali_display} {_fa_interval(new_time, new_end)}"},
         tags=['تغییر_زمان_کلاس']
     )
 
     await update.message.reply_text(
         f"✅ <b>تغییر زمان ثبت و اعلام شد!</b>\n\n"
-        f"📚 {lesson}\n📅 {jalali_display}  ⏰ {new_time}\n\n"
+        f"📚 {lesson}\n📅 {jalali_display}  ⏰ {_fa_interval(new_time, new_end)}\n\n"
         f"🔔 <b>{sent} نفر</b> مطلع شدند.",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([[
@@ -1067,7 +1221,7 @@ async def _show_schedule_preview(message_or_query, context, edit: bool = False):
         f"📚 <b>درس:</b> {p['lesson']}\n"
         f"👨‍🏫 <b>استاد:</b> {p['teacher']}\n"
         f"📅 <b>تاریخ:</b> {jalali_display}\n"
-        f"⏰ <b>ساعت:</b> {_fa_time(p['time'])}\n"
+        f"⏰ <b>ساعت:</b> {_fa_interval(p['time'], p.get('end_time') or p.get('time_end'))}\n"
         f"📍 <b>مکان:</b> {p['location']}\n"
         f"👥 <b>گروه هدف:</b> {g_label}\n"
         f"🔁 <b>نوع زمان‌بندی:</b> {flex_label}\n"
@@ -1109,6 +1263,7 @@ async def _finalize_schedule_add(update_or_query, context):
             p['location'], p.get('notes', ''), p['group'],
             flex_type=p.get('flex_type', 'fixed'),
             flex_note=p.get('time', '') if p.get('flex_type') == 'flexible' else '',
+            end_time=p.get('end_time','') or p.get('time_end',''),
         )
         sid = edit_sid
         if not ok:
@@ -1126,6 +1281,7 @@ async def _finalize_schedule_add(update_or_query, context):
             p['location'], p.get('notes', ''), p['group'],
             flex_type=p.get('flex_type', 'fixed'),
             flex_note=p.get('time', '') if p.get('flex_type') == 'flexible' else '',
+            end_time=p.get('end_time','') or p.get('time_end',''),
         )
 
     # FIX جدید: نوتیف جبرانی جدا از برنامه کلاسی عادی است
@@ -1143,7 +1299,7 @@ async def _finalize_schedule_add(update_or_query, context):
         f"{title_line}\n\n"
         f"📚 {p['lesson']}\n"
         f"👨‍🏫 {p['teacher']}\n"
-        f"📅 {jalali_display}  ⏰ {_fa_time(p['time'])}\n"
+        f"📅 {jalali_display}  ⏰ {_fa_interval(p['time'], p.get('end_time'))}\n"
         f"📍 {p['location']}{g_label}"
     )
     sent, _ = await broadcast_message(context.bot, users, notif_msg)
@@ -1240,20 +1396,26 @@ async def handle_add_schedule_text(update: Update, context: ContextTypes.DEFAULT
         if len(remaining) < 2:
             raise ValueError("ساعت و مکان الزامی هستند")
 
-        # FIX: پیدا کردن ساعت
+        # FIX interval: پیدا کردن ساعت — پشتیبانی از بازه 08:00-10:00 یا 08:00 تا 10:00
         time_str = None
+        end_str = None
         time_idx = None
         for i, r in enumerate(remaining):
-            if _is_valid_time(r):
-                time_str = r.strip()
+            s,e = _parse_interval(r)
+            if s:
+                time_str = s
+                end_str = e
                 time_idx = i
                 break
 
         if not time_str:
-            # شاید ساعت قبل از تاریخ بود — اگه هنوز نداریم خطا
             raise ValueError(
-                f"ساعت معتبر پیدا نشد! فرمت صحیح: <code>09:00</code>"
+                f"ساعت معتبر پیدا نشد! فرمت صحیح: <code>09:00</code> یا <code>08:00 تا 10:00</code>"
             )
+        # synthesize end if missing with common intervals
+        if not end_str:
+            synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
+            end_str = synth.get(time_str, "")
 
         after_time = remaining[time_idx + 1:]
         location   = after_time[0].strip() if after_time else 'اعلام نشده'
@@ -1272,7 +1434,7 @@ async def handle_add_schedule_text(update: Update, context: ContextTypes.DEFAULT
         # و یک پیش‌نمایش + انتخاب نوع زمان‌بندی نشان می‌دهیم.
         pending = {
             'stype': stype, 'lesson': lesson, 'teacher': teacher,
-            'date': date, 'time': time_str, 'location': location,
+            'date': date, 'time': time_str, 'end_time': end_str or '', 'location': location,
             'group': group, 'notes': notes,
         }
         # FIX جدید (بخش اول — ویرایش کامل): اگر این متن برای ویرایش یک
@@ -1305,3 +1467,287 @@ async def handle_add_schedule_text(update: Update, context: ContextTypes.DEFAULT
                 InlineKeyboardButton("❌ لغو",         callback_data=cancel_cb),
             ]])
         )
+
+
+# ══════════════════════════════════════════════════
+#  📸 اسکن با هوشیار — منطق Bot
+# ══════════════════════════════════════════════════
+
+async def _show_scan_menu(query):
+    txt = (
+        "📸 <b>اسکن با هوشیار</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "عکس جدول را بفرستید تا هوشیار آن را به‌صورت ساختاریافته استخراج کند.\n"
+        "بعد پیش‌نمایش را تایید می‌کنید — هیچ چیزی بدون تایید ذخیره نمی‌شود.\n\n"
+        "• <b>برنامه هفتگی</b> → به الگوی شنبه-جمعه تبدیل می‌شود (تکرار خودکار هفته بعد)\n"
+        "• <b>امتحانات</b> → مستقیم به لیست امتحانات می‌رود"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 اسکن برنامه هفتگی (شنبه-جمعه)", callback_data='schedule:scan_weekly')],
+        [InlineKeyboardButton("📝 اسکن لیست امتحانات", callback_data='schedule:scan_exam')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')],
+    ])
+    await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+
+async def _show_template_menu(query):
+    templates = await db.get_schedule_templates()
+    total = len(templates or [])
+    g1 = sum(1 for t in (templates or []) if t.get('group') == '1')
+    g2 = sum(1 for t in (templates or []) if t.get('group') == '2')
+    both = total - g1 - g2
+    txt = (
+        "🔁 <b>الگوی هفتگی (شنبه-جمعه)</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"📦 الگوهای ذخیره‌شده: <b>{total}</b> (گ۱: {g1} | گ۲: {g2} | هر دو: {both})\n\n"
+        "الگو هر هفته تکرار می‌شود؛ کافی است بازه را انتخاب کنید و «تولید» بزنید.\n"
+        "استثنا (لغو/جبرانی) را از بخش ویرایش/حذف تک‌جلسه انجام دهید — الگو دست‌نخورده می‌ماند."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ تولید برای ۴ هفته آینده", callback_data='schedule:template_generate')],
+        [InlineKeyboardButton("🗑 پاک‌سازی الگوها", callback_data='schedule:template_clear')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')],
+    ])
+    await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+
+async def _handle_template_generate(query, context):
+    from datetime import timedelta
+    from time_utils import parse_gregorian_date as _pgd
+    import jdatetime
+    today = now_tehran().date()
+    # start = this Saturday
+    start = start_of_week_tehran(today).date().isoformat().replace('-', '/')
+    # convert to jalali for generate API
+    # we pass jalali to db layer which handles both
+    try:
+        jd = jdatetime.date.fromgregorian(date=today)
+        # use jalali formatting YYYY/MM/DD
+        jalali_today = f"{jd.year}/{jd.month:02d}/{jd.day:02d}"
+        start_j = jalali_today  # approx; db will handle correctly via parse_jalali
+        # end = 4 weeks later
+        end_date = today + timedelta(days=28)
+        jd2 = jdatetime.date.fromgregorian(date=end_date)
+        end_j = f"{jd2.year}/{jd2.month:02d}/{jd2.day:02d}"
+    except Exception:
+        end_date = today + timedelta(days=28)
+        start_j = today.isoformat().replace('-', '/')
+        end_j = end_date.isoformat().replace('-', '/')
+    await query.edit_message_text("⏳ در حال تولید برنامه ۴ هفته از روی الگو...")
+    res = await db.generate_schedules_from_templates(start_j, end_j)
+    if not res.get('ok'):
+        await query.edit_message_text(f"❌ خطا: {res.get('error')}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]]))
+        return
+    created = res.get('created', 0)
+    skipped = res.get('skipped', 0)
+    await query.edit_message_text(
+        f"✅ تولید انجام شد\n\n"
+        f"🆕 ایجاد: <b>{created}</b>\n"
+        f"⏭ تکراری (رد): <b>{skipped}</b>\n"
+        f"📅 بازه: {start_j} تا {end_j}",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]])
+    )
+    try:
+        admin_user = await db.get_user(query.from_user.id)
+        await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                             "تولید برنامه از الگو (Bot)", module='Schedules', severity='INFO',
+                             after={'created': created, 'skipped': skipped}, tags=['الگوی_هفتگی','تولید','ربات'])
+    except Exception:
+        pass
+
+async def _handle_template_clear(query):
+    n = await db.clear_schedule_templates()
+    await query.edit_message_text(f"🗑 الگوها پاک شدند ({n} ردیف).", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:template_menu')]]))
+
+WEEKDAY_FA = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه"]
+
+async def handle_schedule_scan_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get('mode', '')
+    kind = 'weekly' if mode == 'schedule_scan_weekly' else 'exam' if mode == 'schedule_scan_exam' else None
+    if kind not in ('weekly','exam'):
+        return
+    msg = update.message
+    # get largest photo or document image
+    file_obj = None
+    try:
+        if msg.photo:
+            file_obj = await msg.photo[-1].get_file()
+        elif msg.document and (msg.document.mime_type or '').startswith('image/'):
+            file_obj = await msg.document.get_file()
+    except Exception as e:
+        await msg.reply_text(f"❌ دریافت عکس ناموفق: {e}")
+        return
+    if not file_obj:
+        await msg.reply_text("❌ عکسی دریافت نشد.")
+        return
+    # download
+    try:
+        bio = io.BytesIO()
+        await file_obj.download_to_memory(bio)
+        image_bytes = bio.getvalue()
+    except Exception as e:
+        await msg.reply_text(f"❌ دانلود عکس ناموفق: {e}")
+        return
+    if len(image_bytes) < 500:
+        await msg.reply_text("❌ عکس خراب یا خیلی کوچک است.")
+        return
+    if len(image_bytes) > 12*1024*1024:
+        await msg.reply_text("❌ حجم عکس خیلی زیاد است (حداکثر ۱۲MB).")
+        return
+    # guess mime
+    mime = "image/jpeg"
+    try:
+        if image_bytes[:2] == b'\xff\xd8':
+            mime = "image/jpeg"
+        elif image_bytes[:8].startswith(b'\x89PNG'):
+            mime = "image/png"
+        elif image_bytes[:4] == b'RIFF' and b'WEBP' in image_bytes[:12]:
+            mime = "image/webp"
+    except Exception:
+        pass
+    await msg.reply_text("⏳ هوشیار در حال خواندن جدول است... لطفاً صبر کنید.")
+    try:
+        from ai_solver import scan_weekly_schedule_image, scan_exam_schedule_image
+        if kind == 'weekly':
+            parsed = await scan_weekly_schedule_image(image_bytes, mime)
+            slots = parsed.get('slots') or []
+            if not slots:
+                await msg.reply_text("❌ چیزی در عکس تشخیص داده نشد. لطفاً عکسی خوانا و واضح بفرستید.")
+                return
+            context.user_data['scan_preview'] = {'kind': 'weekly', 'slots': slots}
+            context.user_data.pop('mode', None)
+            # preview text
+            # group by weekday
+            by_w = {i: [] for i in range(7)}
+            for s in slots:
+                try:
+                    w = int(s.get('weekday', -1))
+                    if 0 <= w <= 6:
+                        by_w[w].append(s)
+                except Exception:
+                    continue
+            lines = ["👁 <b>پیش‌نمایش اسکن — برنامه هفتگی</b>", "━━━━━━━━━━━━━━━━", f"🔢 تعداد ردیف: <b>{len(slots)}</b>", ""]
+            for w in range(7):
+                lst = sorted(by_w[w], key=lambda x: x.get('time',''))
+                if not lst:
+                    continue
+                lines.append(f"📅 <b>{WEEKDAY_FA[w]}</b>")
+                for s in lst:
+                    fl = "🔄" if s.get('flex_type') == 'flexible' else "📌"
+                    gl = s.get('group','هر دو')
+                    lines.append(f"  {fl} {_fa_interval(s.get('time',''), s.get('end_time') or s.get('time_end',''))} — <b>{s.get('lesson','')}</b> ({gl}) {s.get('teacher','') or ''} {s.get('location','') or ''}".strip())
+                lines.append("")
+            lines.append("برای تایید و ذخیره به‌عنوان الگوی هفتگی، دکمه تایید را بزنید.")
+            lines.append("بعد از ذخیره، از بخش «🔁 الگوی هفتگی → تولید» برنامه ۴ هفته را بسازید.")
+            txt = "\n".join(lines)[:3800]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ تایید و ذخیره ({len(slots)} ردیف)", callback_data='schedule:scan_confirm')],
+                [InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_cancel')],
+            ])
+            await msg.reply_text(txt, parse_mode='HTML', reply_markup=kb)
+        else:
+            parsed = await scan_exam_schedule_image(image_bytes, mime)
+            exams = parsed.get('exams') or []
+            if not exams:
+                await msg.reply_text("❌ امتحانی تشخیص داده نشد.")
+                return
+            context.user_data['scan_preview'] = {'kind': 'exam', 'exams': exams}
+            context.user_data.pop('mode', None)
+            lines = ["👁 <b>پیش‌نمایش اسکن — امتحانات</b>", "━━━━━━━━━━━━━━━━", f"🔢 تعداد: <b>{len(exams)}</b>", ""]
+            for e in exams[:30]:
+                lines.append(f"• <b>{e.get('lesson','')}</b> — {e.get('date','')} {_fa_time(e.get('time',''))} 📍{e.get('location','') or '—'} ({e.get('group','هر دو')})")
+            if len(exams) > 30:
+                lines.append(f"... و {len(exams)-30} مورد دیگر")
+            txt = "\n".join(lines)[:3800]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"✅ تایید و ثبت ({len(exams)} امتحان)", callback_data='schedule:scan_exam_confirm')],
+                [InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_cancel')],
+            ])
+            await msg.reply_text(txt, parse_mode='HTML', reply_markup=kb)
+    except Exception as e:
+        from ai_solver import AIConfigError, AIError
+        if isinstance(e, AIConfigError):
+            await msg.reply_text(f"⚠️ هوشیار پیکربندی نشده: {e}\n\nاز پنل وب → تنظیمات Vault → AI API Keys یک مدل vision (gemini/openrouter) ست کنید.")
+        elif isinstance(e, AIError):
+            await msg.reply_text(f"❌ اسکن ناموفق: {e}")
+        else:
+            logger.exception("schedule scan failed")
+            await msg.reply_text(f"❌ خطای اسکن: {str(e)[:300]}")
+        # keep mode so admin can retry
+        return
+
+async def _confirm_scan(query, context, kind: str):
+    preview = context.user_data.get('scan_preview')
+    if not preview or preview.get('kind') != kind:
+        await query.edit_message_text("❌ پیش‌نمایشی پیدا نشد. دوباره عکس بفرستید.")
+        return
+    if kind == 'weekly':
+        slots = preview.get('slots') or []
+        # validate times
+        for s in slots:
+            if not _is_valid_time(s.get('time','')):
+                await query.edit_message_text("❌ زمان نامعتبر در پیش‌نمایش — دوباره اسکن کنید.")
+                return
+        res = await db.bulk_upsert_schedule_templates(slots)
+        context.user_data.pop('scan_preview', None)
+        await query.edit_message_text(
+            f"✅ الگوی هفتگی ذخیره شد\n\n"
+            f"➕ افزوده: <b>{res.get('added',0)}</b> | ✏️ به‌روز: <b>{res.get('updated',0)}</b> | مجموع: <b>{res.get('total',0)}</b>\n"
+            f"حالا از «🔁 الگوی هفتگی → تولید» برنامه را برای هفته‌های آینده بسازید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔁 تولید برنامه ۴ هفته", callback_data='schedule:template_generate'), InlineKeyboardButton("🔙 پنل", callback_data='admin:cat_schedule')]])
+        )
+        try:
+            admin_user = await db.get_user(query.from_user.id)
+            await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                                 "اسکن و ذخیره الگوی هفتگی (Bot هوشیار)", module='Schedules', severity='INFO',
+                                 after=res, tags=['الگوی_هفتگی','اسکن_هوشیار','ربات'])
+        except Exception:
+            pass
+    else:
+        exams = preview.get('exams') or []
+        from time_utils import parse_gregorian_date, parse_jalali_date, TimeContractError, en_digits
+        created = 0; skipped = 0
+        for raw in exams:
+            try:
+                lesson = str(raw.get('lesson') or '').strip()
+                if not lesson: 
+                    skipped += 1; continue
+                raw_date = str(raw.get('date') or '').strip()
+                if not raw_date:
+                    skipped += 1; continue
+                norm = en_digits(raw_date).replace('/', '-')
+                try:
+                    y = int(norm.split('-',1)[0])
+                    if 1200 <= y <= 1600:
+                        gdate = parse_jalali_date(raw_date).isoformat()
+                    else:
+                        gdate = parse_gregorian_date(norm).isoformat()
+                except Exception:
+                    skipped += 1; continue
+                time_v = str(raw.get('time') or '08:00').strip()
+                try:
+                    parse_clock_time(time_v)
+                except Exception:
+                    time_v = '08:00'
+                group = db.normalize_group(raw.get('group') or 'هر دو') or 'هر دو'
+                loc = str(raw.get('location') or '').strip()[:80]
+                exists = await db.schedules.find_one({"date": gdate, "type": "exam", "lesson": lesson, "time": time_v})
+                if exists:
+                    skipped +=1; continue
+                await db.add_schedule("exam", lesson, "", gdate, time_v, loc, "", group)
+                created +=1
+            except Exception:
+                skipped+=1; continue
+        context.user_data.pop('scan_preview', None)
+        await query.edit_message_text(
+            f"✅ امتحانات ثبت شد\n\n🆕 ایجاد: <b>{created}</b> | ⏭ تکراری: <b>{skipped}</b>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 پنل", callback_data='admin:cat_schedule')]])
+        )
+        try:
+            admin_user = await db.get_user(query.from_user.id)
+            await send_audit_log(context.bot, 'admin', admin_user.get('name','ادمین') if admin_user else 'ادمین', query.from_user.id,
+                                 "اسکن و ثبت امتحانات (Bot هوشیار)", module='Schedules', severity='INFO',
+                                 after={'created':created,'skipped':skipped}, tags=['امتحان','اسکن_هوشیار','ربات'])
+        except Exception:
+            pass

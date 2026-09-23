@@ -13,8 +13,10 @@ from pymongo import ReturnDocument
 
 from time_utils import day_bounds_utc, now_utc, utc_now_iso
 from .contracts import (
-    DIFFICULTY_LABELS, QUESTION_STATUSES, QuestionDomainError, and_query,
-    approved_query, canonical_difficulty, canonical_source, canonical_status,
+    CONTENT_SOURCES, DIFFICULTY_LABELS, EXAM_TRACK_DEFAULT,
+    QUESTION_STATUSES, QuestionDomainError, and_query,
+    approved_query, canonical_content_source, canonical_difficulty,
+    canonical_exam_year, canonical_source, canonical_status,
     clean_text, normalized_question_text, public_question, status_query,
     validate_question_payload,
 )
@@ -142,13 +144,50 @@ class QuestionBankService:
             parts.append({"intake": {"$in": intakes}})
         return and_query(*parts)
 
+    @staticmethod
+    def _year_source_clauses(*, exam_year_from: str | None = None,
+                             exam_year_to: str | None = None,
+                             content_source=None) -> list[dict]:
+        """🌊 QBANK-W1 — فیلترهای مستقل سال/منبع؛ AND با taxonomy، نه جایگزین آن."""
+        clauses = []
+        year_from = canonical_exam_year(exam_year_from)
+        year_to = canonical_exam_year(exam_year_to)
+        if year_from and year_to and year_from > year_to:
+            raise QuestionDomainError("invalid_exam_year_range", "بازه‌ی سال آزمون معتبر نیست")
+        if year_from or year_to:
+            year_clause: dict = {}
+            if year_from:
+                year_clause["$gte"] = year_from
+            if year_to:
+                year_clause["$lte"] = year_to
+            # سؤال‌های بدون سال (null/غایب) در فیلتر سال‌دار شرکت نمی‌کنند.
+            clauses.append({"exam_year": year_clause})
+        if content_source is None or content_source == "":
+            return clauses
+        sources = [content_source] if isinstance(content_source, str) else list(content_source)
+        sources = [clean_text(x) for x in sources if clean_text(x)]
+        unknown = [x for x in sources if x not in CONTENT_SOURCES]
+        if unknown:
+            raise QuestionDomainError("invalid_content_source", "منبع محتوا معتبر نیست")
+        if sources:
+            clauses.append({"content_source": {"$in": sources}})
+        return clauses
+
     def eligible_query(self, taxonomy: Mapping, *, intakes: list[str] | None,
-                       difficulty: str | None = None) -> dict:
-        parts = [approved_query(), self.taxonomy_scope_query(taxonomy, intakes=intakes)]
+                       difficulty: str | None = None,
+                       exam_year_from: str | None = None,
+                       exam_year_to: str | None = None,
+                       content_source=None) -> dict:
+        # 🌊 QBANK-W3 — سؤالِ منتظرِ تصویر در هیچ تمرین/آزمونی نیست (§۱۰).
+        parts = [approved_query(), self.taxonomy_scope_query(taxonomy, intakes=intakes),
+                 {"image.pending_upload": {"$ne": True}}]
         if difficulty:
             canonical = canonical_difficulty(difficulty)
             legacy = DIFFICULTY_LABELS[canonical]
             parts.append({"difficulty": {"$in": [canonical, legacy]}})
+        parts.extend(self._year_source_clauses(
+            exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+            content_source=content_source))
         return and_query(*parts)
 
     #  §W8 — سقفِ کرانه‌دار برای `$nin`.
@@ -182,9 +221,14 @@ class QuestionBankService:
                                    content_hash: str, intakes: list[str] | None,
                                    correct_answer: int | None = None,
                                    limit: int = 5,
-                                   exclude_question_id: str | None = None) -> dict:
+                                   exclude_question_id: str | None = None,
+                                   exam_year: str | None = None) -> dict:
+        # 🌊 QBANK-W1 — وقتی سال مشخص است، dedup هم‌سال است: متن یکسان در دو
+        # سال مختلف دو ردیف مجزاست تا «سؤالات سال X» کامل بماند. سال نامشخص
+        # (None) رفتار قدیمی (بدون scope سال) را حفظ می‌کند.
         base = and_query(self.taxonomy_scope_query(taxonomy, intakes=intakes),
-                         {"status": {"$ne": "rejected"}})
+                         {"status": {"$ne": "rejected"}},
+                         {"exam_year": exam_year} if exam_year is not None else None)
         if exclude_question_id and ObjectId.is_valid(str(exclude_question_id)):
             base = and_query(base, {"_id": {"$ne": ObjectId(str(exclude_question_id))}})
         exact = await self.db.questions.find_one(and_query(base, {"content_hash": content_hash}))
@@ -273,6 +317,7 @@ class QuestionBankService:
                 "source": canonical_source(source, creator_type),
                 "creator_type": creator_type,
                 "created_by": int(actor.get("id") or actor.get("user_id") or 0),
+                "exam_track": EXAM_TRACK_DEFAULT,
                 **({"ai": {"generated_by": clean_text(payload.get("generated_by")),
                             "model": clean_text(payload.get("model")),
                             "prompt_version": clean_text(payload.get("prompt_version")),
@@ -465,6 +510,9 @@ class QuestionBankService:
             "correct_answer": payload.get("correct_answer", payload.get("correct", existing.get("correct_answer"))),
             "difficulty": payload.get("difficulty", existing.get("difficulty")),
             "explanation": payload.get("explanation", existing.get("explanation")),
+            "exam_year": payload.get("exam_year", existing.get("exam_year")),
+            "exam_year_confidence": payload.get("exam_year_confidence", existing.get("exam_year_confidence")),
+            "content_source": payload.get("content_source", existing.get("content_source")),
         }
         normalized = validate_question_payload(merged)
         taxonomy = await self.resolve_taxonomy(
@@ -543,6 +591,12 @@ class QuestionBankService:
             raise QuestionDomainError("question_not_editable", "فقط سؤال ردشده یا نیازمند اصلاح قابل ویرایش است", 409)
         if not resubmit:
             raise QuestionDomainError("resubmit_required", "اصلاح باید همراه با ارسال مجدد به صف بررسی باشد", 409)
+        # 🌊 QBANK-W1 — ارسال مجدد نباید سال/منبع را به پیش‌فرض برگرداند.
+        payload = {**payload,
+                   "exam_year": payload.get("exam_year", existing.get("exam_year")),
+                   "exam_year_confidence": payload.get("exam_year_confidence",
+                                                       existing.get("exam_year_confidence")),
+                   "content_source": payload.get("content_source") or existing.get("content_source")}
         normalized = validate_question_payload(payload)
         taxonomy = await self.resolve_taxonomy(
             lesson_id=payload.get("lesson_id"), topic_id=payload.get("topic_id"),
@@ -686,7 +740,10 @@ class QuestionBankService:
                  "$inc": {"attempts": 1, "correct": 1 if is_correct else 0}}, upsert=True)
 
     async def practice_next(self, *, user: Mapping, taxonomy: Mapping,
-                            mode: str = "free") -> dict:
+                            mode: str = "free",
+                            exam_year_from: str | None = None,
+                            exam_year_to: str | None = None,
+                            content_source=None) -> dict:
         """Return one unsolved question without a client/Python-side ID fetch.
 
         The progress lookup is executed in MongoDB and uses the unique
@@ -695,7 +752,9 @@ class QuestionBankService:
         """
         intakes = self.student_intakes(user)
         difficulty = "hard" if mode == "hard" else None
-        eligible = self.eligible_query(taxonomy, intakes=intakes, difficulty=difficulty)
+        eligible = self.eligible_query(taxonomy, intakes=intakes, difficulty=difficulty,
+                                       exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                       content_source=content_source)
         uid = int(user.get("id") or 0)
 
         # 🐛 §W8 — سؤالی که همین کاربر گزارش کرده نباید دوباره به او
@@ -744,9 +803,14 @@ class QuestionBankService:
                 "ai_available": exhausted}
 
     async def capacity(self, *, user: Mapping, taxonomy: Mapping,
-                       difficulty: str | None = None) -> int:
+                       difficulty: str | None = None,
+                       exam_year_from: str | None = None,
+                       exam_year_to: str | None = None,
+                       content_source=None) -> int:
         return await self.db.questions.count_documents(
-            self.eligible_query(taxonomy, intakes=self.student_intakes(user), difficulty=difficulty))
+            self.eligible_query(taxonomy, intakes=self.student_intakes(user), difficulty=difficulty,
+                                exam_year_from=exam_year_from, exam_year_to=exam_year_to,
+                                content_source=content_source))
 
     async def stats(self, *, user: Mapping) -> dict:
         uid = int(user.get("id") or 0)

@@ -31,6 +31,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from database import db
+try:
+    from utils_crypto import decrypt_value, encrypt_value, is_encryption_enabled
+except Exception:
+    decrypt_value = lambda x: x if isinstance(x,str) else (x.get("c","") if isinstance(x,dict) else str(x or ""))
+    encrypt_value = lambda x: x
+    is_encryption_enabled = lambda: False
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -41,10 +47,424 @@ ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 DEFAULT_MODELS = {
     'gemini':     'gemini-2.5-flash',
     'openrouter': 'google/gemma-4-31b-it:free',
+    'groq':       'llama-3.3-70b-versatile',
+    'cerebras':   'llama-3.3-70b',
+    'mistral':    'mistral-large-latest',
+    'deepseek':   'deepseek-chat',
+    'nvidia':     'deepseek-ai/deepseek-v3',
+    'huggingface':'meta-llama/Meta-Llama-3.1-70B-Instruct',
+    'together':   'meta-llama/Llama-3.3-70B-Instruct-Turbo',
 }
+
+# ══════════════════════════════════════════════════
+#  🌊 W9 — کاتالوگ مرکزی providerها و مدل‌ها (منبع واحد حقیقت).
+#  بات (ai_admin)، پنل وب و مینی‌اپ همه از همین‌جا می‌خوانند تا
+#  هیچ‌جا مدل دستی تایپ نشود. base_urlها اندپوینتِ سازگار با
+#  OpenAI هر provider است (همه‌شان /chat/completions دارند).
+# ══════════════════════════════════════════════════
+PROVIDERS = {
+    'gemini': {
+        'label': '🟦 Google Gemini',
+        'url': None,   # مسیر اختصاصیِ خودش (_stream_gemini)
+        'vision': True, 'images': True,
+    },
+    'openrouter': {
+        'label': '🟪 OpenRouter — هاب مدل‌های رایگان (freellm.net)',
+        'url': 'https://openrouter.ai/api/v1',
+        'vision': True, 'images': True,
+    },
+    'groq': {
+        'label': '🟧 Groq — سریع‌ترین inference',
+        'url': 'https://api.groq.com/openai/v1',
+        'vision': False, 'images': True,
+    },
+    'cerebras': {
+        'label': '🟨 Cerebras',
+        'url': 'https://api.cerebras.ai/v1',
+        'vision': False, 'images': False,
+    },
+    'mistral': {
+        'label': '🟠 Mistral — ۱ میلیارد توکن/ماه رایگان',
+        'url': 'https://api.mistral.ai/v1',
+        'vision': False, 'images': False,
+    },
+    'deepseek': {
+        'label': '🐋 DeepSeek — استدلال قوی و ارزان',
+        'url': 'https://api.deepseek.com/v1',
+        'vision': False, 'images': False,
+    },
+    # 🌊 FreeLLM-favorite free providers — OpenAI-compatible base_url
+    'nvidia': {
+        'label': '🖥️ NVIDIA NIM — مدل‌های آزاد',
+        'url': 'https://integrate.api.nvidia.com/v1',
+        'vision': True, 'images': False,
+    },
+    'huggingface': {
+        'label': '🤗 Hugging Face Inference',
+        'url': 'https://api-inference.huggingface.co/v1',
+        'vision': True, 'images': True,
+    },
+    'together': {
+        'label': '🤝 Together AI — رایگان',
+        'url': 'https://api.together.xyz/v1',
+        'vision': True, 'images': True,
+    },
+}
+
+# (شناسه‌ی مدل, برچسب فارسی, رایگان؟) — منبع: https://freellm.net/models/?free=1 (299 مدل رایگان، 239 تأیید Live 2026-09-08)
+MODEL_CATALOG = {
+    'gemini': [
+        ('gemini-3.6-flash',      '🌟 Gemini 3.6 Flash (جدیدترین، پیشنهادی)', False),
+        ('gemini-3.5-flash',      '🆕 Gemini 3.5 Flash (قوی، استدلال سنگین)', False),
+        ('gemini-3.5-flash-lite', '🆕 Gemini 3.5 Flash-Lite (سریع/ارزان)', False),
+        ('gemini-2.5-flash',      '⚡ Gemini 2.5 Flash (پایدار)', True),
+        ('gemini-flash-latest',   '🔄 Gemini Flash Latest', True),
+        ('gemini-2.5-flash-lite', '💨 Gemini 2.5 Flash-Lite (سبک‌تر)', True),
+        ('gemini-2.5-pro',        '🧠 Gemini 2.5 Pro (دقیق‌تر)', False),
+        ('gemini-2.0-flash-exp',  '🧪 Gemini 2.0 Flash Exp (رایگان)', True),
+    ],
+    'openrouter': [
+        # FreeLLM top free models aggregated under OpenRouter OpenAI-compatible API
+        ('deepseek/deepseek-chat-v3-0324:free', '🐋 DeepSeek V3 (رایگان، freellm verified)', True),
+        ('deepseek/deepseek-r1:free', '🧠 DeepSeek R1 (رایگان، استدلال)', True),
+        ('qwen/qwen3-235b-a22b:free',           '🎯 Qwen3 235B (رایگان)', True),
+        ('qwen/qwen3-coder:free',                '👨‍💻 Qwen3 Coder (رایگان)', True),
+        ('qwen/qwen2.5-vl-32b-instruct:free',   '👁️ Qwen2.5 VL 32B (رایگان، vision)', True),
+        ('google/gemma-3-27b-it:free',           '⚡ Gemma 3 27B (رایگان، vision)', True),
+        ('google/gemma-4-31b-it:free',           '⚡ Gemma 4 31B (رایگان، تصویر+متن)', True),
+        ('meta-llama/llama-3.3-70b-instruct:free', '🦙 Llama 3.3 70B Instruct (رایگان)', True),
+        ('meta-llama/llama-4-maverick:free',    '🦙 Llama 4 Maverick (رایگان)', True),
+        ('mistralai/mistral-small-3.1-24b-instruct:free', '🌪 Mistral Small 3.1 24B (رایگان)', True),
+        ('thinkingmachines/inkling-small:free', '💡 Inkling Small (رایگان، image-capable)', True),
+        ('inclusionai/ling-3.0-flash-sante:free','🌟 Ling 3.0 Sante (رایگان)', True),
+        ('nvidia/llama-3.1-nemotron-70b-instruct:free', '🖥️ Nemotron 70B (رایگان)', True),
+        ('openrouter/free',                     '🎲 انتخاب خودکار مدل رایگان', True),
+    ],
+    'groq': [
+        ('llama-3.3-70b-versatile', '🦙 Llama 3.3 70B (رایگان، سریع)', True),
+        ('llama-3.1-8b-instant',    '⚡ Llama 3.1 8B Instant (رایگان)', True),
+        ('openai/gpt-oss-120b',     '🧠 GPT-OSS 120B (رایگان، استدلال)', True),
+        ('openai/gpt-oss-20b',      '💨 GPT-OSS 20B (رایگان، سبک)', True),
+        ('mixtral-8x7b-32768',      '🔀 Mixtral 8x7B (رایگان)', True),
+        ('llama-3.2-11b-vision-preview', '👁️ Llama 3.2 11B Vision (رایگان)', True),
+    ],
+    'cerebras': [
+        ('llama-3.3-70b',  '🦙 Llama 3.3 70B (رایگان)', True),
+        ('qwen-3-32b',     '🎯 Qwen3 32B (رایگان)', True),
+        ('llama-4-maverick-17b-128e-instruct', '🦙 Llama 4 Maverick 17B (رایگان)', True),
+    ],
+    'mistral': [
+        ('mistral-large-latest', '🌪 Mistral Large (پرچم‌دار)', False),
+        ('mistral-small-latest', '💨 Mistral Small (سریع)', False),
+        ('codestral-latest',     '👨‍💻 Codestral (کدنویسی)', False),
+        ('mistral-small-3.1-24b-instruct:free','💨 Mistral Small 3.1 24B (رایگان FreeLLM)', True),
+    ],
+    'deepseek': [
+        ('deepseek-chat',     '💬 DeepSeek V3 (چت عمومی)', False),
+        ('deepseek-reasoner', '🧠 DeepSeek R1 (استدلال عمیق)', False),
+        ('deepseek-chat:free', '💬 DeepSeek V3 Free (via OpenRouter)', True),
+    ],
+    'nvidia': [
+        ('deepseek-ai/deepseek-v3', '🐋 DeepSeek V3 (NIM)', True),
+        ('moonshotai/kimi-k2-instruct', '🌙 Kimi K2 (vision, free)', True),
+        ('qwen/qwen3-235b-a22b', '🎯 Qwen3 235B (NIM)', True),
+    ],
+    'huggingface': [
+        ('black-forest-labs/FLUX.1-schnell', '⚡ Flux Schnell (رایگان، image)', True),
+        ('stabilityai/stable-diffusion-3.5-large', '🖼 SD 3.5 Large (رایگان، image)', True),
+    ],
+    'together': [
+        ('meta-llama/Llama-3.3-70B-Instruct-Turbo', '🦙 Llama 3.3 Turbo (رایگان)', True),
+        ('Qwen/Qwen2.5-VL-72B-Instruct', '👁️ Qwen2.5 VL 72B (vision)', True),
+    ],
+}
+
+# مدل‌های تصویر — universal: Gemini native + OpenAI-compatible (OpenRouter/HF/Together) — freellm.net verified image-capable
+IMAGE_MODEL_CATALOG = [
+    ('gemini-2.5-flash-image',    '🍌 Gemini 2.5 Flash Image (نانوبانانا)', False),
+    ('gemini-3-pro-image-preview', '🖼 Gemini 3 Pro Image (پیش‌نمایش)', False),
+    ('google/gemini-2.5-flash-image:free', '🍌 Gemini Image Free (OpenRouter)', True),
+    ('black-forest-labs/FLUX.1-schnell:free', '⚡ Flux Schnell (رایگان، سریع)', True),
+    ('black-forest-labs/FLUX.1-dev:free', '🎨 Flux 1 Dev (رایگان)', True),
+    ('stabilityai/stable-diffusion-3.5-large:free', '🖼 SD 3.5 Large (رایگان)', True),
+    ('stabilityai/stable-diffusion-xl:free', '🖼 SDXL (رایگان)', True),
+    ('thinkingmachines/inkling-small:free', '💡 Inkling Small Image (رایگان)', True),
+]
+
+
+def ai_catalog_payload() -> dict:
+    """خروجی JSON کاتالوگ برای هر سه UI (بات/وب/مینی‌اپ)."""
+    return {
+        'providers': [
+            {
+                'id': pid,
+                'label': meta['label'],
+                'vision': meta['vision'],
+                'images': meta['images'],
+                'default_model': DEFAULT_MODELS.get(pid, ''),
+                'models': [
+                    {'id': mid, 'label': label, 'free': free}
+                    for mid, label, free in MODEL_CATALOG.get(pid, [])
+                ],
+            }
+            for pid, meta in PROVIDERS.items()
+        ],
+        'image_models': [
+            {'id': mid, 'label': label, 'free': free}
+            for mid, label, free in IMAGE_MODEL_CATALOG
+        ],
+        'default_image_model': DEFAULT_IMAGE_MODEL,
+    }
 DEFAULT_MODEL  = DEFAULT_MODELS['gemini']   # برای سازگاری با کدهای قبلی
 DEFAULT_LIMIT  = 15   # سقف روزانه‌ی هر کاربر عادی؛ 0 = نامحدود
 MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگیری از هدررفت توکن/هزینه)
+
+# 🎨 تولید تصویر — مدل/کرانه‌ها از settings قابل تغییرند (ai_image_model و
+# ai_image_daily_limit)؛ اینها فقط پیش‌فرض‌اند. aspect ratioها همان فهرست
+# رسمی gemini-2.5-flash-image (نانوبانانا) است.
+DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image'
+DEFAULT_IMAGE_LIMIT = 10          # سقف روزانه‌ی تصویر؛ 0 = نامحدود
+IMG_RETRY_BASE_DELAY = 0.8        # ثانیه — backoff: 0.8s سپس 1.6s
+IMG_RETRY_AFTER_CAP = 25.0        # سقف پذیرش Retry-After (ثانیه)
+IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
+                       '3:2', '2:3', '21:9', '5:4', '4:5')
+IMAGE_PROMPT_MIN = 3
+IMAGE_PROMPT_MAX = 1000
+
+# 🛡 W1 — پیام واحد بن هوشیار (قبلاً تعریف‌نشده صدا زده می‌شد → NameError)
+AI_BANNED_MSG = "⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده."
+
+
+class AiImageError(Exception):
+    """خطای نگاشت‌شده‌ی تولید تصویر — code ماشین‌خوان + پیام امن کاربر.
+    جزئیات خام provider هرگز از اینجا بیرون نمی‌رود."""
+
+    def __init__(self, code: str, user_message: str, detail: str = ''):
+        super().__init__(code)
+        self.code = code
+        self.user_message = user_message
+        self.detail = detail
+
+
+# نگاشت aspectRatio به size برای APIهای OpenAI-compatible
+_ASPECT_TO_SIZE = {
+    '1:1': '1024x1024', '4:3': '1024x768', '3:4': '768x1024',
+    '16:9': '1792x1024', '9:16': '1024x1792', '3:2': '1024x683',
+    '2:3': '683x1024', '21:9': '1792x768', '5:4': '1024x819', '4:5': '819x1024',
+}
+
+async def _generate_image_gemini(api_key: str, model: str, prompt: str,
+                                  aspect_ratio: str, timeout: int, max_retries: int) -> dict:
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/" f"{model}:generateContent")
+    payload = {'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'responseModalities': ['IMAGE'], 'imageConfig': {'aspectRatio': aspect_ratio}}}
+    headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+    last_err = None
+    retry_after = None
+    for attempt in range(max_retries + 1):
+        if attempt:
+            if retry_after is not None:
+                if retry_after > IMG_RETRY_AFTER_CAP:
+                    raise last_err
+                delay = retry_after
+                retry_after = None
+            else:
+                delay = IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            await _img_sleep(delay)
+        try:
+            async with _image_http_client(timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            last_err = AiImageError('GEMINI_TIMEOUT', 'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
+            logger.warning("imggen timeout attempt=%s err=%s", attempt, type(e).__name__)
+            continue
+        except httpx.HTTPError as e:
+            last_err = AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen network error attempt=%s err=%s", attempt, type(e).__name__)
+            continue
+        if resp.status_code in (429, 500, 502, 503):
+            try:
+                body_snip = resp.text[:300].replace('\n', ' ')
+            except Exception:
+                body_snip = ''
+            if resp.status_code == 429:
+                last_err = AiImageError('GEMINI_RATE_LIMIT', 'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه بعد دوباره تلاش کن.')
+                ra = resp.headers.get('Retry-After') or resp.headers.get('retry-after')
+                try:
+                    retry_after = float(ra) if ra else None
+                except ValueError:
+                    retry_after = None
+            else:
+                last_err = AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen transient status=%s attempt=%s retry_after=%s body=%s", resp.status_code, attempt, retry_after, body_snip)
+            continue
+        if resp.status_code in (401, 403):
+            raise AiImageError('GEMINI_AUTH_ERROR', 'سرویس تصویر توسط مدیریت آماده نشده است.')
+        if resp.status_code == 400:
+            raise AiImageError('GEMINI_INVALID_REQUEST', 'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.')
+        if resp.status_code != 200:
+            raise AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر پاسخ نامعتبر داد؛ دوباره تلاش کن.')
+        try:
+            data = resp.json()
+        except ValueError:
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر خوانده نشد.')
+        return _parse_image_response(data)
+    raise last_err or AiImageError('GEMINI_UNAVAILABLE', 'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+
+async def _generate_image_openai(api_key: str, model: str, prompt: str,
+                                  aspect_ratio: str, provider: str,
+                                  timeout: int, max_retries: int) -> dict:
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or 'https://openrouter.ai/api/v1'
+    url = f"{base}/images/generations"
+    size = _ASPECT_TO_SIZE.get(aspect_ratio, '1024x1024')
+    payload = {'model': model, 'prompt': prompt, 'n': 1, 'size': size, 'response_format': 'b64_json'}
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    if provider == 'openrouter':
+        headers['HTTP-Referer'] = 'https://humsyar.local'
+        headers['X-Title'] = 'Humsyar'
+    last_err = None
+    retry_after = None
+    for attempt in range(max_retries + 1):
+        if attempt:
+            if retry_after is not None:
+                if retry_after > IMG_RETRY_AFTER_CAP:
+                    raise last_err
+                delay = retry_after
+                retry_after = None
+            else:
+                delay = IMG_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            await _img_sleep(delay)
+        try:
+            async with _image_http_client(timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.TimeoutException as e:
+            last_err = AiImageError('IMAGE_TIMEOUT', 'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
+            logger.warning("imggen openai timeout provider=%s attempt=%s err=%s", provider, attempt, type(e).__name__)
+            continue
+        except httpx.HTTPError as e:
+            last_err = AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen openai network error provider=%s attempt=%s err=%s", provider, attempt, type(e).__name__)
+            continue
+        if resp.status_code in (429, 500, 502, 503):
+            try:
+                body_snip = resp.text[:400].replace('\n', ' ')
+            except Exception:
+                body_snip = ''
+            if resp.status_code == 429:
+                last_err = AiImageError('IMAGE_RATE_LIMIT', 'سرویس تصویر محدود شده؛ چند دقیقه بعد دوباره تلاش کن.')
+                ra = resp.headers.get('Retry-After') or resp.headers.get('retry-after')
+                try:
+                    retry_after = float(ra) if ra else None
+                except ValueError:
+                    retry_after = None
+            else:
+                last_err = AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر در دسترس نیست؛ کمی بعد دوباره تلاش کن.')
+            logger.warning("imggen openai transient provider=%s status=%s attempt=%s retry_after=%s body=%s", provider, resp.status_code, attempt, retry_after, body_snip)
+            continue
+        if resp.status_code in (401, 403):
+            raise AiImageError('IMAGE_AUTH_ERROR', f'کلید {meta.get("label", provider)} برای ساخت تصویر تنظیم نشده یا نامعتبر است.')
+        if resp.status_code == 400:
+            body = ''
+            try:
+                body = resp.text[:600]
+            except Exception:
+                pass
+            if 'not support' in body.lower() or 'unsupported' in body.lower() or 'image' in body.lower():
+                raise AiImageError('IMAGE_NOT_SUPPORTED', 'این مدل قابلیت ساخت تصویر ندارد؛ مدل دیگری (مثلاً Flux یا Gemini Image) را انتخاب کن.')
+            raise AiImageError('IMAGE_INVALID_REQUEST', 'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.')
+        if resp.status_code == 404:
+            raise AiImageError('IMAGE_NOT_SUPPORTED', 'این ارائه‌دهنده/مدل از ساخت تصویر پشتیبانی نمی‌کند؛ مدل دیگری را امتحان کن.')
+        if resp.status_code != 200:
+            raise AiImageError('IMAGE_UNAVAILABLE', 'سرویس تصویر پاسخ نامعتبر داد؛ دوباره تلاش کن.')
+        try:
+            data = resp.json()
+        except ValueError:
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر خوانده نشد.')
+        try:
+            d = (data.get('data') or [])[0] if isinstance(data.get('data'), list) else {}
+            b64 = d.get('b64_json') or d.get('b64Json') or d.get('image') or ''
+            if not b64:
+                url_img = d.get('url')
+                if url_img and url_img.startswith('http'):
+                    async with _image_http_client(timeout) as client2:
+                        r2 = await client2.get(url_img)
+                        if r2.status_code == 200:
+                            import base64
+                            b64 = base64.b64encode(r2.content).decode('utf-8')
+            if not b64:
+                raise AiImageError('IMAGE_PARSE_FAILED', 'تصویری در پاسخ سرویس پیدا نشد؛ مدل دیگری را امتحان کن.')
+            mime = 'image/png'
+            return {'mime': mime, 'data_b64': b64}
+        except AiImageError:
+            raise
+        except Exception:
+            raise AiImageError('IMAGE_PARSE_FAILED', 'پاسخ سرویس تصویر قابل پردازش نبود.')
+    raise last_err or AiImageError('IMAGE_UNAVAILABLE', 'ساخت تصویر ناموفق بود؛ دوباره تلاش کن.')
+
+async def generate_image(api_key: str, model: str, prompt: str,
+                         aspect_ratio: str = '1:1',
+                         timeout: int = 90, max_retries: int = 2,
+                         provider: str | None = None) -> dict:
+    aspect_ratio = aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else '1:1'
+    if not api_key:
+        raise AiImageError('IMAGE_AUTH_ERROR', 'کلید API برای ساخت تصویر تنظیم نشده.')
+    if not provider:
+        provider = _detect_provider_for_model(model) or 'gemini'
+    if model.startswith('gemini') or provider == 'gemini':
+        return await _generate_image_gemini(api_key, model, prompt, aspect_ratio, timeout, max_retries)
+    if provider in PROVIDERS and PROVIDERS[provider].get('url'):
+        try:
+            return await _generate_image_openai(api_key, model, prompt, aspect_ratio, provider, timeout, max_retries)
+        except AiImageError as e:
+            if e.code == 'IMAGE_NOT_SUPPORTED':
+                raise
+            raise
+    try:
+        return await _generate_image_openai(api_key, model, prompt, aspect_ratio, provider or 'openrouter', timeout, max_retries)
+    except AiImageError:
+        raise
+
+
+def _image_http_client(timeout: int) -> httpx.AsyncClient:
+    """ساخت کلاینت HTTP لایه‌ی تصویر — هوکِ تست‌پذیری (MockTransport)."""
+    return httpx.AsyncClient(timeout=timeout)
+
+
+async def _img_sleep(seconds: float) -> None:
+    """هوکِ تست‌پذیری برای انتظار بین retryها."""
+    await asyncio.sleep(seconds)
+
+
+def _parse_image_response(data: dict) -> dict:
+    """استخراج تصویر inline از پاسخ generateContent + نگاشت safety.
+    تابع خالص — مستقیماً unit-test می‌شود."""
+    pf = data.get('promptFeedback') or {}
+    if pf.get('blockReason'):
+        raise AiImageError('GEMINI_SAFETY_BLOCK',
+                           'این درخواست قابل پردازش نیست. لطفاً توضیح '
+                           'متفاوتی برای تصویر وارد کنید.')
+    candidates = data.get('candidates') or []
+    if not candidates:
+        raise AiImageError('IMAGE_PARSE_FAILED',
+                           'تصویری تولید نشد؛ دوباره تلاش کن.')
+    cand = candidates[0]
+    if (cand.get('finishReason') or '') in (
+            'SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST',
+            'RECITATION', 'SPII'):
+        raise AiImageError('GEMINI_SAFETY_BLOCK',
+                           'این درخواست قابل پردازش نیست. لطفاً توضیح '
+                           'متفاوتی برای تصویر وارد کنید.')
+    parts = ((cand.get('content') or {}).get('parts')) or []
+    for part in parts:
+        inline = part.get('inlineData') or part.get('inline_data')
+        if inline and inline.get('data'):
+            mime = (inline.get('mimeType') or inline.get('mime_type')
+                    or 'image/png')
+            if not mime.startswith('image/'):
+                continue
+            return {'mime': mime, 'data_b64': inline['data']}
+    raise AiImageError('IMAGE_PARSE_FAILED',
+                       'تصویری در پاسخ سرویس پیدا نشد؛ دوباره تلاش کن.')
 
 # ══════════════════════════════════════════════════
 #  حافظه‌ی مکالمه — ⚠️ فیکس: قبلاً فقط توی RAM بود و با هر ری‌استارتِ
@@ -178,28 +598,160 @@ def _cache_for_report(chat_id: int, message_id: int, uid: int, name: str,
 DEFAULT_DISABLED_MSG = "🤖 بخش هوش مصنوعی توسط مدیریت غیرفعال شد."
 
 
+def _detect_provider_for_model(model_id: str) -> str | None:
+    """تشخیص provider از روی model_id با کاتالوگ."""
+    if not model_id:
+        return None
+    mid = model_id.strip()
+    for pid, models in MODEL_CATALOG.items():
+        for m_id, _, _ in models:
+            if m_id == mid:
+                return pid
+    for m_id, _, _ in IMAGE_MODEL_CATALOG:
+        if m_id == mid:
+            if m_id.startswith('gemini'):
+                return 'gemini'
+            if 'FLUX' in m_id or 'stable' in m_id.lower() or 'flux' in m_id.lower():
+                return 'openrouter'
+            if 'gemini' in m_id:
+                return 'gemini'
+            return 'openrouter'
+    if '/' in mid:
+        if ':free' in mid or '/' in mid:
+            return 'openrouter'
+    if mid.startswith('gemini'):
+        return 'gemini'
+    return None
+
+
+def _maybe_decrypt(v):
+    if isinstance(v, dict) and "c" in v:
+        return decrypt_value(v)
+    if isinstance(v, str) and v.startswith("gAAAAA"):
+        # bare Fernet token stored as string (legacy)
+        return decrypt_value(v)
+    return v
+
+def _load_vault(raw: dict) -> dict:
+    vault: dict = {}
+    raw_vault = raw.get('ai_api_keys', '')
+    # W1: decrypt if encrypted dict
+    if isinstance(raw_vault, dict) and raw_vault.get("enc"):
+        try:
+            raw_vault = decrypt_value(raw_vault)
+        except: raw_vault = ""
+    if raw_vault:
+        if isinstance(raw_vault, dict):
+            vault = dict(raw_vault)
+        elif isinstance(raw_vault, str):
+            raw_vault = raw_vault.strip()
+            if raw_vault:
+                try:
+                    loaded = json.loads(raw_vault)
+                    if isinstance(loaded, dict):
+                        vault = loaded
+                    elif isinstance(loaded, str) and loaded.startswith("gAAAAA"):
+                        vault = json.loads(decrypt_value(loaded) or "{}") if decrypt_value(loaded) else {}
+                except Exception:
+                    # maybe encrypted JSON string
+                    try:
+                        dec = decrypt_value(raw_vault)
+                        loaded = json.loads(dec)
+                        if isinstance(loaded, dict): vault = loaded
+                    except: vault = {}
+    # legacy single key fallback (may be encrypted)
+    legacy = raw.get('ai_api_key')
+    legacy = _maybe_decrypt(legacy) if legacy is not None else ""
+    legacy = (legacy or "").strip()
+    provider = raw.get('ai_provider', 'gemini')
+    if legacy and not vault:
+        vault[provider] = legacy
+    for pid in PROVIDERS:
+        kv = raw.get(f'ai_api_key_{pid}')
+        kv = _maybe_decrypt(kv) if kv is not None else ""
+        k = (kv or "").strip()
+        if k and pid not in vault:
+            vault[pid] = k
+    return vault
+
+
 async def get_ai_config() -> dict:
     raw = await db.get_settings_by_prefix('ai_')
-    provider = raw.get('ai_provider', 'gemini')
+    provider = (raw.get('ai_provider', 'gemini') or 'gemini').strip() or 'gemini'
+    if provider not in PROVIDERS:
+        provider = 'gemini'
     personas_raw = raw.get('ai_personas', '{}')
     try:
         personas = json.loads(personas_raw) if isinstance(personas_raw, str) else (personas_raw or {})
     except (ValueError, TypeError):
         personas = {}
+    vault = _load_vault(raw)
+    model = raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
+    detected = _detect_provider_for_model(model)
+    if detected and detected != provider and detected in vault and vault.get(detected):
+        provider = detected
+    api_key = vault.get(provider) or raw.get('ai_api_key', '') or ''
+    image_model = raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL
+    image_enabled = str(raw.get('ai_image_enabled', '1')) not in ('0', 'false', 'False', '')
+    image_daily_limit = int(raw.get('ai_image_daily_limit', DEFAULT_IMAGE_LIMIT) or 0)
+    image_provider_raw = (raw.get('ai_image_provider') or '').strip()
+    if image_provider_raw and image_provider_raw in PROVIDERS:
+        image_provider = image_provider_raw
+    else:
+        d2 = _detect_provider_for_model(image_model)
+        image_provider = d2 or provider
+        if image_provider not in PROVIDERS:
+            image_provider = provider
+    image_api_key = vault.get(image_provider) or vault.get(provider) or raw.get('ai_api_key', '') or ''
     return {
         'enabled':          bool(raw.get('ai_enabled', False)),
         'provider':         provider,
-        'api_key':          raw.get('ai_api_key', ''),
-        'model':            raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL),
+        'api_key':          api_key,
+        'api_keys':         vault,
+        'vault':            vault,
+        'model':            model,
         'daily_limit':      int(raw.get('ai_daily_limit', DEFAULT_LIMIT) or 0),
         'system_prompt':    raw.get('ai_system_prompt', DEFAULT_PROMPT),
         'disabled_message': raw.get('ai_disabled_message', ''),
-        'personas':         personas,   # {نامِ_پرسونا: متنِ_پرامپت}
-        # ⚠️ قابلیت جدید: عمقِ استدلال. 'auto' یعنی دست‌نخورده (پیش‌فرضِ
-        # خودِ مدل)، 'high' یعنی برای سوالاتِ سخت بیشتر «فکر کنه» قبل از
-        # جواب — رایگانه، فقط جزوِ توکنِ خروجی حساب می‌شه.
+        'personas':         personas,
         'thinking':         raw.get('ai_thinking', 'auto'),
+        'image_enabled':    image_enabled,
+        'image_model':      image_model,
+        'image_provider':   image_provider,
+        'image_api_key':    image_api_key,
+        'image_daily_limit': image_daily_limit,
     }
+
+
+async def set_api_key_for_provider(provider: str, key: str) -> None:
+    provider = (provider or 'gemini').strip() or 'gemini'
+    key = (key or '').strip()
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    if key:
+        vault[provider] = key
+    else:
+        vault.pop(provider, None)
+    # W1: encrypt vault JSON if FERNET_KEY enabled
+    vault_json = json.dumps(vault, ensure_ascii=False)
+    if is_encryption_enabled():
+        await db.set_setting('ai_api_keys', encrypt_value(vault_json))
+    else:
+        await db.set_setting('ai_api_keys', vault_json)
+    enc_key = encrypt_value(key) if is_encryption_enabled() and key else (key or "")
+    if key:
+        await db.set_setting(f'ai_api_key_{provider}', enc_key)
+    else:
+        await db.set_setting(f'ai_api_key_{provider}', '')
+    cur = (raw.get('ai_provider') or 'gemini').strip() or 'gemini'
+    if provider == cur and key:
+        await db.set_setting('ai_api_key', enc_key if is_encryption_enabled() else key)
+    elif provider == cur and not key:
+        await db.set_setting('ai_api_key', '')
+
+
+async def delete_api_key_for_provider(provider: str) -> None:
+    await set_api_key_for_provider(provider, '')
 
 
 async def set_ai_setting(key: str, value) -> None:
@@ -472,7 +1024,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                 f"نام: {user.get('name','—')}\n"
                 f"گروه: {user.get('group','—')} | ورودی: {user.get('intake','—')}\n"
                 f"وضعیتِ تایید: {'تاییدشده ✅' if user.get('approved') else 'در انتظارِ تایید ⏳'}\n"
-                f"تاریخِ عضویت: {user.get('registered_at','—')}"
+                f"تاریخِ عضویت: {format_datetime_fa(user.get('registered_at',''), fallback='—')}"
             )
 
         if name == 'remember_about_me':
@@ -504,7 +1056,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                         f"- {u.get('name','—')} (آیدی: {u.get('user_id')}) | "
                         f"یوزرنیم: @{u.get('username') or '—'} | گروه: {u.get('group','—')} | "
                         f"ورودی: {u.get('intake','—')} | تایید‌شده: {'بله' if u.get('approved') else 'خیر'} | "
-                        f"ثبت‌نام: {u.get('registered_at','—')} | آخرین فعالیت: {u.get('last_active','—')} | "
+                        f"ثبت‌نام: {format_datetime_fa(u.get('registered_at',''), fallback='—')} | آخرین فعالیت: {format_datetime_fa(u.get('last_active',''), fallback='—')} | "
                         f"مسدودِ هوشیار: {'بله' if u.get('ai_banned') else 'خیر'}"
                     )
                 return "\n".join(lines)
@@ -561,7 +1113,7 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
                     f"👤 {u.get('name','—')} (آیدی: {u.get('user_id')})\n"
                     f"یوزرنیم: @{u.get('username') or '—'} | گروه: {u.get('group','—')} | ورودی: {u.get('intake','—')}\n"
                     f"تایید‌شده: {'بله' if u.get('approved') else 'خیر'} | مسدودِ هوشیار: {'بله' if u.get('ai_banned') else 'خیر'}\n"
-                    f"ثبت‌نام: {u.get('registered_at','—')} | آخرین فعالیت: {u.get('last_active','—')}\n"
+                    f"ثبت‌نام: {format_datetime_fa(u.get('registered_at',''), fallback='—')} | آخرین فعالیت: {format_datetime_fa(u.get('last_active',''), fallback='—')}\n"
                     f"📊 تعدادِ نمراتِ ثبت‌شده: {len(grades)}\n"
                     f"🎫 تیکتِ بازِ این کاربر: {len(open_tickets)}"
                 )
@@ -867,19 +1419,29 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
     yield {'type': 'done', 'answer': answer, 'tokens': total_tokens}
 
 
-async def _call_openrouter(api_key: str, model: str, system_prompt: str,
-                            text: str = None, image_bytes: bytes = None,
-                            image_mime: str = 'image/jpeg', history: list = None,
-                            **_) -> tuple:
+async def _call_openai_compat(api_key: str, model: str, system_prompt: str,
+                              text: str = None, image_bytes: bytes = None,
+                              image_mime: str = 'image/jpeg', history: list = None,
+                              provider: str = 'openrouter', **_) -> tuple:
     """
-    ارائه‌دهنده‌ی جایگزین رایگان (openrouter.ai) — مستقل از مشکل فعلی
-    کلیدهای AQ. گوگل. برای گرفتن کلید: openrouter.ai/keys (بدون کارت).
+    🌊 W9 — فراخوان عمومیِ همه‌ی providerهای سازگار با OpenAI
+    (openrouter/groq/cerebras/mistral/deepseek). همه‌شان همان
+    /chat/completions را با Bearer token حرف می‌زنند؛ فقط base_url فرق
+    می‌کند. پیام‌های خطای خاص OpenRouter (۴۰۲) به‌صورت شرطی حفظ شده‌اند.
     """
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or PROVIDERS['openrouter']['url']
+    url = f"{base}/chat/completions"
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Content-Type':  'application/json',
     }
+
+    if image_bytes and not meta.get('vision'):
+        raise AIConfigError(
+            f"ارائه‌دهنده‌ی {meta.get('label', provider)} ورودی تصویر را "
+            "پشتیبانی نمی‌کند — برای سوالِ تصویری provider را روی Gemini "
+            "یا OpenRouter بگذارید.")
 
     content = []
     if text:
@@ -923,14 +1485,18 @@ async def _call_openrouter(api_key: str, model: str, system_prompt: str,
     if resp.status_code == 429:
         raise AIQuotaError("سقف رایگان API برای امروز پر شده — کمی بعد دوباره امتحان کن.")
     if resp.status_code == 402:
+        if provider == 'openrouter':
+            raise AIConfigError(
+                "خطای ۴۰۲ (نیاز به پرداخت) از OpenRouter. معمولاً یکی از این‌هاست:\n"
+                "۱) نام مدل درست/کامل نیست — باید دقیقاً مثل فهرست کاتالوگ باشه "
+                "(با :free آخرش)\n"
+                "۲) موجودی حساب openrouter.ai/settings/credits منفیه\n"
+                "۳) توی تنظیمات اکانت OpenRouter، Provider ی که این مدل رایگان رو "
+                "می‌ده Ignore/بلاک شده"
+            )
         raise AIConfigError(
-            "خطای ۴۰۲ (نیاز به پرداخت) از OpenRouter. معمولاً یکی از این‌هاست:\n"
-            "۱) نام مدل درست/کامل نیست — باید دقیقاً google/gemma-4-31b-it:free "
-            "باشه (با google/ اول و :free آخرش)\n"
-            "۲) موجودی حساب openrouter.ai/settings/credits منفیه\n"
-            "۳) توی تنظیمات اکانت OpenRouter، Provider ی که این مدل رایگان رو "
-            "می‌ده Ignore/بلاک شده"
-        )
+            "خطای ۴۰۲ (نیاز به پرداخت) — سهمیه‌ی رایگانِ این ارائه‌دهنده تمام "
+            "شده یا مدل انتخابی پولی است.")
     if resp.status_code in (400, 401, 403, 404):
         raise AIConfigError(
             "کلید API نامعتبره، مدل اشتباهه یا دسترسی لازم رو نداره — ادمین باید از پنل "
@@ -959,18 +1525,25 @@ STREAM_PROVIDERS = {
 }
 
 
-async def _openrouter_as_stream(**kwargs):
-    """
-    OpenRouter فعلاً استریمِ واقعی نداره؛ برای اینکه رابطِ یکسانی به
-    فراخوان بدیم، کل جواب رو یک‌جا می‌گیریم و به‌عنوان یک delta واحد +
-    یک done برمی‌گردونیم — کدِ بالادستی (نمایشِ پیام) فرقی نمی‌کنه.
-    """
-    answer, tokens = await _call_openrouter(**kwargs)
-    yield {'type': 'delta', 'text': answer}
-    yield {'type': 'done', 'answer': answer, 'tokens': tokens}
+def _make_compat_stream(provider_name: str):
+    """🌊 W9 — استریمِ همسان‌ساز برای providerهای سازگار با OpenAI.
+    استریم واقعی ندارن؛ کل جواب یک‌جا به‌عنوان delta واحد + done
+    برمی‌گردد — کدِ بالادستی (نمایش پیام) فرقی نمی‌کند."""
+    async def _stream(**kwargs):
+        answer, tokens = await _call_openai_compat(
+            provider=provider_name, **kwargs)
+        yield {'type': 'delta', 'text': answer}
+        yield {'type': 'done', 'answer': answer, 'tokens': tokens}
+    return _stream
 
 
-STREAM_PROVIDERS['openrouter'] = _openrouter_as_stream
+for _p in ('openrouter', 'groq', 'cerebras', 'mistral', 'deepseek', 'nvidia', 'huggingface', 'together'):
+    STREAM_PROVIDERS[_p] = _make_compat_stream(_p)
+
+
+# سازگاری با نامِ قدیمی (اگر جای دیگری صدا زده می‌شد)
+async def _call_openrouter(**kwargs):
+    return await _call_openai_compat(provider='openrouter', **kwargs)
 
 
 async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
@@ -1424,7 +1997,8 @@ async def check_and_consume_quota(uid: int) -> tuple:
     می‌شه (خودِ record_token_usage بعد از جواب گرفتن رویش $inc می‌زند).
     """
     cfg = await get_ai_config()
-    limit = cfg['daily_limit']
+    # 🌊 W6/MISS-04 — سقف پلنی (پیش‌فرض: سراسری)؛ همه‌ی صداکننده‌ها خودکار پلنی شدند
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     today = today_tehran().isoformat()
     # The DB conditional update is the source of truth; this remains correct
     # when Bot and Mini App requests land on different processes.
@@ -1447,6 +2021,11 @@ async def record_token_usage(uid: int, tokens: int) -> None:
 
 async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     cfg = await get_ai_config()
 
     if not cfg['enabled']:
@@ -1457,7 +2036,7 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['mode'] = 'ai_query'
 
-    limit = cfg['daily_limit']
+    limit = await db.ai_limit_for_user(uid, cfg['daily_limit'])
     if uid == ADMIN_ID or limit <= 0:
         quota_line = "🔓 امروز محدودیتی نداری — هر چقدر دلت خواست بپرس"
     else:
@@ -1480,7 +2059,10 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "برای چیزای مهم حتماً با منبع درسی یا استاد هم یه چک بزن.\n\n"
         "هر وقت خواستی بری سراغ کارِ دیگه، کافیه یه دکمه‌ی دیگه از منو رو بزنی — "
         "من همیشه همینجام 👋",
-        parse_mode='HTML'
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart'),
+        ]]) if cfg.get('image_enabled') else None,
     )
 
 
@@ -1804,8 +2386,114 @@ async def ai_release_inflight(uid: int) -> None:
         logger.exception("ai_release_inflight failed for %s", uid)
 
 
+async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎨 تولید تصویر در بات — متنِ حالتِ ai_image_prompt.
+
+    ترتیبِ گاردها عمداً همین است: ban → enabled → اعتبارسنجی ورودی →
+    سهمیه → قفلِ سراسری → provider؛ سهمیه فقط **بعد از موفقیت** مصرف
+    می‌شود تا شکستِ provider سهمیه‌ی کاربر را نسوزاند.
+    """
+    uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_image"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_image")
+        return
+    text = (update.message.text or '').strip()
+    if not text:
+        return
+
+    cfg = await get_ai_config()
+    if not cfg['enabled'] or not cfg.get('image_enabled'):
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG)
+        return
+
+    # universal image: use image_provider/image_api_key from vault, not hard-coded gemini
+    effective_key = cfg.get('image_api_key') or cfg.get('api_key') or ''
+    effective_model = cfg.get('image_model') or DEFAULT_IMAGE_MODEL
+    effective_provider = cfg.get('image_provider') or cfg.get('provider') or 'gemini'
+    if not effective_key:
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(
+            "🎨 کلید API برای ساخت تصویر هنوز تنظیم نشده — از پنل مدیریت کلید مربوطه را وارد کن.")
+        return
+
+    if await db.ai_is_banned(uid):
+        context.user_data.pop('mode', None)
+        await update.message.reply_text(AI_BANNED_MSG, disable_web_page_preview=True)
+        return
+
+    if not (IMAGE_PROMPT_MIN <= len(text) <= IMAGE_PROMPT_MAX):
+        await update.message.reply_text(
+            f"✋ توضیح تصویر باید بین {IMAGE_PROMPT_MIN} و "
+            f"{IMAGE_PROMPT_MAX} نویسه باشه.")
+        return
+
+    img_limit = cfg['image_daily_limit']
+    today = today_tehran().isoformat()
+    if uid != ADMIN_ID and img_limit > 0:
+        used = await db.ai_image_used_today(uid, today)
+        if used >= img_limit:
+            await update.message.reply_text(
+                f"📊 سهمیه‌ی امروزت ({img_limit} تصویر) تموم شده — "
+                "فردا دوباره بیا، یا از حالت پرسش استفاده کن. 💬")
+            return
+
+    claimed = await ai_claim_inflight(uid)
+    if not claimed:
+        await update.message.reply_text(
+            "⏳ یه لحظه! یه درخواست هوش مصنوعی‌ات هنوز در حال انجامه — "
+            "صبر کن تموم شه، بعد اینو بزن.")
+        return
+
+    status = await update.message.reply_text(
+        "🎨 در حال ساخت تصویر... یه لحظه صبر کن 🖌️\n"
+        "(ممکنه تا یک دقیقه طول بکشه)")
+    try:
+        try:
+            res = await generate_image(effective_key, effective_model,
+                                       text, '1:1', provider=effective_provider)
+        except AiImageError as e:
+            logger.warning("bot image generation failed uid=%s code=%s",
+                           uid, e.code)
+            await status.edit_text(e.user_message)
+            return
+
+        img_bytes = base64.b64decode(res['data_b64'])
+        from io import BytesIO
+        await update.message.reply_photo(
+            BytesIO(img_bytes), filename='humsyar_image.png',
+            caption=f"🎨 تصویرت آماده شد!\n«{text[:80]}»")
+        if uid != ADMIN_ID and img_limit > 0:
+            try:
+                await db.ai_image_inc(uid, today)
+            except Exception:
+                logger.exception("ثبت مصرف تصویر ناموفق بود uid=%s", uid)
+        try:
+            await status.edit_text("✅ تصویرت ارسال شد!")
+        except Exception:
+            pass  # پیامِ وضعیت پاک نشه — مشکلی نیست
+    except Exception:
+        logger.exception("bot image generation crashed uid=%s", uid)
+        try:
+            await status.edit_text(
+                "❌ یه مشکلِ فنی پیش اومد؛ چند لحظه دیگه دوباره تلاش کن.")
+        except Exception:
+            pass
+    finally:
+        await ai_release_inflight(uid)
+
+
 async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
     text = (update.message.text or '').strip()
     if not text:
         return
@@ -1817,7 +2505,7 @@ async def handle_ai_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     if len(text) > MAX_INPUT_CHARS:
@@ -1912,6 +2600,12 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     مدلِ هزینه (این‌ها هم جزوِ همون Free Tier هستن).
     """
     uid = update.effective_user.id
+    # 🌊 W7 — گیت فیچر (پیش‌فرض FREE ⇒ بدون تغییر رفتار امروز)
+    from subscription import feature_allowed, show_paywall
+    if not await feature_allowed(uid, "ai_chat"):
+        context.user_data.pop('mode', None)
+        await show_paywall(update.message, uid, feature="ai_chat")
+        return
 
     cfg = await get_ai_config()
     if not cfg['enabled']:
@@ -1920,7 +2614,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await db.ai_is_banned(uid):
-        await update.message.reply_text("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.")
+        await update.message.reply_text(AI_BANNED_MSG)
         return
 
     kind = None
@@ -2062,6 +2756,48 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("✅ حافظه‌ی مکالمه (و سندِ مرجعِ فعال، اگه بود) پاک شد؛ از اول شروع کن 🙂", show_alert=True)
         return
 
+    if action == 'imgstart':
+        await query.answer()
+        cfg = await get_ai_config()
+        if not cfg['enabled'] or not cfg.get('image_enabled'):
+            await query.message.reply_text(
+                "🎨 بخشِ ساخت تصویر فعلاً توسط مدیریت غیرفعال است.")
+            return
+        # universal image — any provider allowed, just check image_enabled
+        # (key check is done at generation time, so button stays enabled for all providers)
+        context.user_data['mode'] = 'ai_image_prompt'
+        context.user_data['last_question'] = ''
+        img_limit = cfg['image_daily_limit']
+        if uid == ADMIN_ID or img_limit <= 0:
+            q_line = "🔓 امروز محدودیتی نداری."
+        else:
+            used = await db.ai_image_used_today(uid, today_tehran().isoformat())
+            q_line = f"📊 {used} از {img_limit} تصویرِ امروزت استفاده شده."
+        await query.message.reply_text(
+            "🎨 <b>حالت ساخت تصویر</b>\n\n"
+            "توضیح تصویری که می‌خوای رو <b>همینجا تایپ کن</b> — هرچی "
+            "جزئیات بیشتر بدی، نتیجه بهتر می‌شه:\n\n"
+            "مثلاً: «یک کتابخانه‌ی چوبیِ گرم با نور عصرگاهی، سبک "
+            "واقع‌گرایانه»\n\n"
+            "برای بازگشت به حالت سوال، فقط سوالتو بفرست یا از منو «پرسش از "
+            "هوشیار» رو دوباره بزن.\n"
+            "برای لغو: /cancel",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "💬 بازگشت به پرسش", callback_data='aiu:imgoff')],
+            ]),
+        )
+        return
+
+    if action == 'imgoff':
+        await query.answer("💬 برگشتیم به حالت پرسش.", show_alert=False)
+        context.user_data['mode'] = 'ai_query'
+        await query.message.reply_text(
+            "💬 هر سوالی داری بفرست؛ برای ساخت تصویر دوباره از منو یا "
+            "دکمه‌ی 🎨 استفاده کن.")
+        return
+
     if action == 'fu':
         fu_type = parts[2] if len(parts) > 2 else ''
         prompts = {
@@ -2079,7 +2815,7 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(cfg.get('disabled_message') or DEFAULT_DISABLED_MSG, show_alert=True)
             return
         if await db.ai_is_banned(uid):
-            await query.answer("⛔️ دسترسیِ شما به هوشیار توسط مدیریت مسدود شده.", show_alert=True)
+            await query.answer(AI_BANNED_MSG, show_alert=True)
             return
         if not await ai_claim_inflight(uid):
             await query.answer("⏳ صبر کن جوابِ قبلی آماده بشه.", show_alert=True)
@@ -2129,3 +2865,360 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
+
+# ══════════════════════════════════════════════════
+#  📅 اسکن برنامه با هوشیار — الگوی هفتگی و امتحان
+#  ورودی: عکس جدول (vision) → JSON ساختاریافته
+#  هیچ‌چیز هاردکد نیست: از همین vault/provider فعلی استفاده می‌کند
+# ══════════════════════════════════════════════════
+
+# توجه: برای schedule_scan provider باید vision True باشد؛ در غیر این صورت fallback به Gemini/OpenRouter vision-free model
+
+WEEKLY_SCHEDULE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'slots': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'weekday': {'type': 'integer', 'description': '0=شنبه ... 6=جمعه'},
+                    'time': {'type': 'string', 'description': 'HH:MM شروع مثل 08:00'},
+                    'end_time': {'type': 'string', 'description': 'HH:MM پایان مثل 10:00 — برای بازه 8-10'},
+                    'lesson': {'type': 'string', 'description': 'نام درس کامل فارسی'},
+                    'teacher': {'type': 'string', 'description': 'نام استاد اگر دیده شد'},
+                    'location': {'type': 'string', 'description': 'مکان/کلاس'},
+                    'group': {'type': 'string', 'description': '1 یا 2 یا هر دو'},
+                    'flex_type': {'type': 'string', 'description': 'fixed یا flexible'},
+                    'notes': {'type': 'string', 'description': 'توضیح کوتاه اختیاری'},
+                },
+                'required': ['weekday', 'time', 'lesson'],
+            },
+        }
+    },
+    'required': ['slots'],
+}
+
+EXAM_SCHEDULE_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'exams': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'date': {'type': 'string', 'description': 'تاریخ شمسی YYYY/MM/DD — دقیقاً همان که در عکس است'},
+                    'time': {'type': 'string', 'description': 'ساعت HH:MM یا بازه مثل 10:00'},
+                    'lesson': {'type': 'string', 'description': 'نام درس'},
+                    'location': {'type': 'string'},
+                    'group': {'type': 'string', 'description': 'گروه اگر مشخص است'},
+                },
+                'required': ['date', 'lesson'],
+            }
+        }
+    },
+    'required': ['exams'],
+}
+
+def _pick_vision_config(cfg: dict) -> tuple:
+    """Choose vision-capable provider/model/key from current config, with fallback."""
+    vault = cfg.get('vault') or {}
+    provider = cfg.get('provider') or 'gemini'
+    model = cfg.get('model') or ''
+    key = cfg.get('api_key') or ''
+    meta = PROVIDERS.get(provider) or {}
+    if meta.get('vision') and key and not key.strip() == '':
+        return provider, model, key
+    # fallback: try gemini vault
+    if vault.get('gemini') and PROVIDERS['gemini']['vision']:
+        return 'gemini', DEFAULT_MODELS['gemini'], vault['gemini']
+    # fallback: any vision provider with key
+    for pid in ('openrouter', 'nvidia', 'together', 'huggingface'):
+        if PROVIDERS.get(pid, {}).get('vision') and vault.get(pid):
+            m = DEFAULT_MODELS.get(pid) or MODEL_CATALOG.get(pid, [(None, '', True)])[0][0]
+            # for openrouter use vision model
+            if pid == 'openrouter':
+                m = 'qwen/qwen2.5-vl-32b-instruct:free'
+            return pid, m, vault[pid]
+    # last resort: current even if non-vision (will error clearly)
+    return provider, model, key
+
+WEEKLY_SYSTEM = (
+    "تو یک دستیار استخراج برنامه کلاسی دانشگاه پزشکی هستی. از روی عکس جدول هفتگی (شنبه تا جمعه، ستون‌ها روز، سطرها ساعت 8-10/10-12/13-15/15-17/17-19) تمام درس‌ها را استخراج کن.\n"
+    "قواعد:\n"
+    "• weekday: شنبه=0، یکشنبه=1، دوشنبه=2، سه‌شنبه=3، چهارشنبه=4، پنج‌شنبه=5، جمعه=6\n"
+    "• time/end_time: بازه کامل را استخراج کن — ابتدا و انتها هر دو HH:MM (مثلاً بازه 8-10 → time=08:00 و end_time=10:00، 10-12→10:00/12:00، 13-15→13:00/15:00، 15-17→15:00/17:00، 17-19→17:00/19:00). هر slot باید نمایانگر یک کلاس ۲ساعته واحد باشد، نه دو slot مجزا.\n"
+    "• اگر یک خانه دو درس موازی دارد (مثلاً 'آیین زندگی (دخترا) / عملی (پسرا)' یا 'آز بیوشیمی / بیوشیمی') هر دو را به‌صورت دو slot جداگانه با همان weekday/time/end_time تولید کن.\n"
+    "• group: اگر جدول برای گروه 1 یا 2 جداست همان را بگذار؛ اگر ستون 'هر دو' یا نامشخص است 'هر دو'.\n"
+    "• flex_type: درس‌های عملی/آز/آزمایشگاه → flexible، بقیه fixed.\n"
+    "• فقط JSON مطابق schema برگردان، بدون توضیح اضافه."
+)
+
+EXAM_SYSTEM = (
+    "تو یک دستیار استخراج برنامه امتحانی هستی. از روی عکس جدول امتحانات، تمام ردیف‌ها را استخراج کن.\n"
+    "• date: تاریخ شمسی دقیقاً همان که در عکس دیده می‌شود به شکل YYYY/MM/DD (اعداد انگلیسی، مثل 1405/10/26). اگر تاریخ میلادی دیدی همان را حفظ کن.\n"
+    "• time: ساعت شروع امتحان به HH:MM (مثلاً '10-12'→10:00، '08:00'→08:00). اگر بازه بود ابتدای بازه.\n"
+    "• lesson: نام کامل درس فارسی.\n"
+    "• فقط JSON مطابق schema برگردان."
+)
+
+async def _vision_json_gemini(api_key: str, model: str, system_prompt: str, user_prompt: str, image_bytes: bytes, image_mime: str, schema: dict) -> dict:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+    payload = {
+        'system_instruction': {'parts': [{'text': system_prompt}]},
+        'contents': [{'role': 'user', 'parts': [
+            {'inline_data': {'mime_type': image_mime or 'image/jpeg', 'data': base64.b64encode(image_bytes).decode('utf-8')}},
+            {'text': user_prompt},
+        ]}],
+        'generationConfig': _no_thinking({
+            'responseMimeType': 'application/json',
+            'responseSchema': schema,
+            'maxOutputTokens': 4096,
+        }),
+    }
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code != 200:
+        _raise_gemini_status_error(resp.status_code)
+    data = resp.json()
+    raw = _extract_gemini_text(data, "برنامه")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # fallback: extract first {...}
+        m = re.search(r'\{.*\}', raw, flags=re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise AIConfigError("هوشیار خروجی قابل فهم برنگرداند — دوباره با عکس واضح‌تر امتحان کن.")
+
+async def _vision_json_openai(api_key: str, model: str, system_prompt: str, user_prompt: str, image_bytes: bytes, image_mime: str, provider: str) -> dict:
+    meta = PROVIDERS.get(provider) or {}
+    base = meta.get('url') or PROVIDERS['openrouter']['url']
+    url = f"{base}/chat/completions"
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    if provider == 'openrouter':
+        headers['HTTP-Referer'] = 'https://humsyar.local'
+        headers['X-Title'] = 'Humsyar'
+    b64 = base64.b64encode(image_bytes).decode('utf-8')
+    messages = [
+        {'role': 'system', 'content': system_prompt},
+        {'role': 'user', 'content': [
+            {'type': 'text', 'text': user_prompt},
+            {'type': 'image_url', 'image_url': {'url': f'data:{image_mime or "image/jpeg"};base64,{b64}'}},
+        ]},
+    ]
+    payload = {
+        'model': model,
+        'messages': messages,
+        'temperature': 0.1,
+        'max_tokens': 4096,
+    }
+    # ask for JSON
+    if provider in ('openrouter', 'together'):
+        payload['response_format'] = {'type': 'json_object'}
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if resp.status_code == 429:
+        raise AIQuotaError("سقف API پر شد — کمی بعد دوباره امتحان کن.")
+    if resp.status_code >= 400:
+        raise AIConfigError(f"خطای سرویس هوشیار ({resp.status_code}) — تنظیمات را بررسی کن.")
+    data = resp.json()
+    try:
+        txt = data['choices'][0]['message']['content']
+    except Exception:
+        raise AIConfigError("پاسخ هوشیار خوانده نشد.")
+    txt = txt.strip()
+    # strip markdown fences
+    if txt.startswith('```'):
+        txt = re.sub(r'^```(?:json)?\s*', '', txt)
+        txt = re.sub(r'\s*```$', '', txt)
+    try:
+        return json.loads(txt)
+    except json.JSONDecodeError:
+        m = re.search(r'\{.*\}', txt, flags=re.S)
+        if m:
+            return json.loads(m.group(0))
+        raise AIConfigError("هوشیار JSON معتبر برنگرداند.")
+
+async def scan_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg', kind: str = 'weekly', group_hint: str = None, extra_note: str = None) -> dict:
+    """Single entry for image scan — kind: weekly|exam. Returns parsed JSON."""
+    if not image_bytes or len(image_bytes) < 100:
+        raise AIError("عکس نامعتبر یا خیلی کوچک است.")
+    if len(image_bytes) > 12 * 1024 * 1024:
+        raise AIError("حجم عکس بیش از حد زیاد است — نسخه کم‌حجم‌تر بفرست.")
+    cfg = await get_ai_config()
+    if not cfg.get('enabled'):
+        raise AIConfigError("بخش هوشیار غیرفعال است.")
+    provider, model, key = _pick_vision_config(cfg)
+    if not key:
+        raise AIConfigError("کلید API vision تنظیم نشده — از پنل هوشیار یک کلید Gemini/OpenRouter وارد کن.")
+    if kind == 'exam':
+        system = EXAM_SYSTEM
+        schema = EXAM_SCHEDULE_SCHEMA
+        prompt = "این عکس جدول امتحانات است. تمام ردیف‌ها را استخراج کن و فقط JSON برگردان."
+        if extra_note:
+            prompt += f"\nنکته: {extra_note}"
+    else:
+        system = WEEKLY_SYSTEM
+        schema = WEEKLY_SCHEDULE_SCHEMA
+        prompt = "این عکس جدول برنامه هفتگی کلاسی است. تمام خانه‌های پر را استخراج کن و فقط JSON برگردان."
+        if group_hint and group_hint.strip() not in ('', 'هر دو'):
+            prompt += f"\nاین جدول مربوط به گروه {group_hint} است؛ اگر گروه در عکس مشخص نبود همین را بگذار."
+        if extra_note:
+            prompt += f"\nنکته: {extra_note}"
+    # choose path
+    if provider == 'gemini':
+        return await _vision_json_gemini(key, model, system, prompt, image_bytes, image_mime, schema)
+    else:
+        # openai-compatible vision
+        return await _vision_json_openai(key, model, system, prompt, image_bytes, image_mime, provider)
+
+async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg', group_hint: str = None) -> dict:
+    data = await scan_schedule_image(image_bytes, image_mime, kind='weekly', group_hint=group_hint)
+    # normalize — interval-aware + 12h → 24h fix
+    slots = data.get('slots') or []
+    norm = []
+    # helper: 01:00-05:00 → 13:00-17:00 (دانشگاه بعدازظهر)
+    def _fix_pm(hhmm: str) -> str:
+        try:
+            if not hhmm:
+                return hhmm
+            hh, mm = hhmm.split(':')
+            h = int(hh)
+            if 1 <= h <= 5:
+                return f"{h+12:02d}:{mm}"
+            return hhmm
+        except Exception:
+            return hhmm
+    SYNTH_END = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
+    for s in slots:
+        try:
+            wd = int(s.get('weekday'))
+            if not 0 <= wd <= 6:
+                continue
+            t = str(s.get('time') or '').strip()
+            et = str(s.get('end_time') or s.get('time_end') or '').strip()
+            # legacy: time may contain range "08:00-10:00" or "08:00 تا 10:00"
+            if t and ("-" in t or "تا" in t) and not et:
+                from time_utils import en_digits as _en
+                tmp = _en(t).replace('—','-').replace('–','-').replace('تا','-')
+                times = re.findall(r'(\d{1,2}:\d{2})', tmp)
+                if len(times) >=2:
+                    t = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                    et = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+            # ensure HH:MM
+            for val in (t, et):
+                pass
+            if not re.match(r'^\d{2}:\d{2}$', t):
+                if re.match(r'^\d{1,2}:\d{2}$', t):
+                    hh, mm = t.split(':')
+                    t = f"{int(hh):02d}:{mm}"
+                else:
+                    continue
+            # normalize end_time
+            if et:
+                if not re.match(r'^\d{2}:\d{2}$', et):
+                    if re.match(r'^\d{1,2}:\d{2}$', et):
+                        hh, mm = et.split(':')
+                        et = f"{int(hh):02d}:{mm}"
+                    else:
+                        et = ""
+            t = _fix_pm(t)
+            if et:
+                et = _fix_pm(et)
+            # validate times
+            from time_utils import parse_clock_time as _pct
+            try:
+                _pct(t)
+                if et:
+                    _pct(et)
+                    if int(et.split(':')[0])*60+int(et.split(':')[1]) <= int(t.split(':')[0])*60+int(t.split(':')[1]):
+                        et = SYNTH_END.get(t, "")
+            except Exception:
+                continue
+            if not et:
+                et = SYNTH_END.get(t, "")
+            lesson = str(s.get('lesson') or '').strip()
+            if not lesson:
+                continue
+            g = str(s.get('group') or group_hint or 'هر دو').strip() or 'هر دو'
+            from database import db as _db
+            g = _db.normalize_group(g) or 'هر دو'
+            if g not in ('1','2','هر دو'):
+                g = 'هر دو'
+            flex = str(s.get('flex_type') or '').strip().lower()
+            if flex not in ('fixed','flexible'):
+                flex = 'flexible' if any(k in lesson for k in ('عملی','آز','آزمایشگاه')) else 'fixed'
+            norm.append({
+                'weekday': wd,
+                'time': t,
+                'end_time': et,
+                'lesson': lesson[:120],
+                'teacher': str(s.get('teacher') or '').strip()[:80],
+                'location': str(s.get('location') or '').strip()[:80],
+                'group': g,
+                'type': 'class',
+                'flex_type': flex,
+                'notes': str(s.get('notes') or '').strip()[:200],
+            })
+        except Exception:
+            continue
+    # dedup: یک کلاس 2ساعته نباید دو ردیف شود — اگر دقیقاً (weekday,time,end_time,lesson,group) تکراری بود حذف
+    seen = set()
+    deduped = []
+    for it in norm:
+        k = (it['weekday'], it['time'], it['end_time'], it['lesson'], it['group'])
+        if k in seen:
+            continue
+        seen.add(k)
+        deduped.append(it)
+    return {'slots': deduped}
+
+async def scan_exam_schedule_image(image_bytes: bytes, image_mime: str = 'image/jpeg') -> dict:
+    data = await scan_schedule_image(image_bytes, image_mime, kind='exam')
+    exams = data.get('exams') or []
+    norm = []
+    for e in exams:
+        try:
+            lesson = str(e.get('lesson') or '').strip()
+            if not lesson:
+                continue
+            raw_date = str(e.get('date') or '').strip()
+            if not raw_date:
+                continue
+            # normalize digits and slashes
+            from time_utils import en_digits
+            raw_date = en_digits(raw_date).replace('-', '/').strip()
+            # ensure YYYY/MM/DD
+            parts = re.split(r'[/\s]+', raw_date)
+            if len(parts) >= 3:
+                y, m, d = parts[0], parts[1], parts[2]
+                raw_date = f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
+            t = str(e.get('time') or '08:00').strip()
+            t = en_digits(t)
+            # extract HH:MM from possibly "10-12" or "۱۰:۰۰"
+            m = re.search(r'(\d{1,2}):(\d{2})', t)
+            if m:
+                t = f"{int(m.group(1)):02d}:{m.group(2)}"
+            elif re.search(r'(\d{1,2})\s*-\s*(\d{1,2})', t):
+                hh = int(re.search(r'(\d{1,2})', t).group(1))
+                t = f"{hh:02d}:00"
+            else:
+                t = '08:00'
+            g = str(e.get('group') or 'هر دو').strip() or 'هر دو'
+            from database import db as _db
+            g = _db.normalize_group(g) or 'هر دو'
+            norm.append({
+                'date': raw_date,
+                'time': t,
+                'lesson': lesson[:120],
+                'teacher': '',
+                'location': str(e.get('location') or '').strip()[:80],
+                'group': g,
+                'type': 'exam',
+            })
+        except Exception:
+            continue
+    return {'exams': norm}
+

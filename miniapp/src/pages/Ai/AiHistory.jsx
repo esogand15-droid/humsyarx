@@ -13,6 +13,7 @@ import {
 } from 'react-router-dom';
 
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -72,6 +73,9 @@ export default function AiHistory() {
   const {
     data: convData,
     isPending: convsPending,
+    isError: convsError,
+    refetch: refetchConvs,
+    isRefetching: convsRefetching,
   } = useQuery({
     queryKey: [
       'ai-conversations',
@@ -258,6 +262,18 @@ export default function AiHistory() {
           شروع گفت‌وگوی جدید
         </button>
 
+        <button
+          type="button"
+          className="conv-new aiimg-entry"
+          onClick={() => {
+            haptic('light');
+            navigate('/ai/image');
+          }}
+        >
+          🎨
+          ساخت تصویر با هوشیار
+        </button>
+
         <SearchField
           value={query}
           onChange={(event) =>
@@ -267,6 +283,15 @@ export default function AiHistory() {
           ariaLabel="جست‌وجو در گفت‌وگوها"
           style={{ marginBottom: 9 }}
         />
+
+        {/* 🌊 W8/UX-02 */}
+        {!convsPending && convsError && (
+          <PageError
+            text="دریافت گفت‌وگوها انجام نشد."
+            onRetry={() => refetchConvs()}
+            pending={convsRefetching}
+          />
+        )}
 
         <div className="conv-list">
           {

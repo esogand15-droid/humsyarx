@@ -24,6 +24,60 @@ def _qerror(exc: QuestionDomainError):
                                           **({"details": exc.details} if exc.details else {})})
 TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
+# سقف آپلود: زیر سقف ۵۰MB بات تلگرام (deployment رسمی) با حاشیه‌ی امن
+MAX_UPLOAD_BYTES = 45 * 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, cap: int) -> bytes:
+    """خواندن stream با سقف — فایل بیش‌ازحد به‌جای بلعیدن کامل حافظه،
+    در همان نقطه‌ی عبور از سقف با ۴۱۳ رد می‌شود (منطق قبلی: read کامل
+    و بعد چک — برای ویدیوی بزرگ هم حافظه هم پهنای باند هدر می‌رفت)."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+# 🛡 W1 — magic-byte validation (content-type spoofing defence)
+# Only checks obvious mismatches; passes unknown types through (fail-open for valid but rare formats).
+def _validate_magic(data: bytes, declared_mime: str, filename: str = "") -> None:
+    if not data or len(data) < 4:
+        return
+    head = data[:12]
+    mime = (declared_mime or "").lower()
+    name = (filename or "").lower()
+    # PDF must be %PDF
+    if mime == "application/pdf" or name.endswith(".pdf"):
+        if not head.startswith(b"%PDF"):
+            raise HTTPException(422, "فایل PDF نامعتبر است (امضای فایل هم‌خوانی ندارد)")
+    # ZIP-based: pptx/xlsx/docx are ZIP archives (PK..)
+    if any(name.endswith(x) for x in (".pptx",".xlsx",".docx",".zip")):
+        if not head.startswith(b"PK"):
+            # Some old .ppt/.doc are OLE (D0 CF 11 E0) — allow both
+            if not head.startswith(b"\xD0\xCF\x11\xE0"):
+                raise HTTPException(422, "فایل Office نامعتبر است")
+    if mime.startswith("image/"):
+        # JPEG FF D8, PNG 89 50 4E 47, GIF 47 49 46, WEBP RIFF....WEBP
+        if head.startswith(b"\xFF\xD8\xFF"):
+            return
+        if head.startswith(b"\x89PNG"):
+            return
+        if head.startswith(b"GIF8"):
+            return
+        if head.startswith(b"RIFF") and b"WEBP" in head:
+            return
+        # allow but log mismatch for images
+        logger.warning("IMAGE_MAGIC_MISMATCH mime=%s filename=%s head=%s", mime, filename, head[:8].hex())
+    if mime.startswith("video/"):
+        # MP4 ftyp, WEBM 1A 45 DF A3, etc — just ensure not PDF/zip masquerading as video
+        if head.startswith(b"%PDF") or head.startswith(b"PK"):
+            raise HTTPException(422, "فایل ویدیویی نامعتبر است")
 GLOBAL_USER = get_content_global_user  # بخش‌های بدون scope (schedule/grades/reports) — رفتار دقیق قبلی
 
 
@@ -90,6 +144,26 @@ async def _deny_create_in(bucket: str, admin: dict):
     raise HTTPException(403, "intake_out_of_scope")
 
 
+def _list_intake(iv: str):
+    """ورودی مشخص → همان سطل به‌علاوه‌ی سراسری. خالی → فقط سراسری."""
+    return [iv, ""] if iv else iv
+
+
+def _child_view(admin: dict, requested: Optional[str]):
+    """None = بدون فیلتر (ارشد روی سطل سراسری).
+    لیست = نمای مؤثر همان ورودی به‌علاوه‌ی سراسری.
+    ورودی‌خاص همیشه روی scope خودش قفل است.
+    """
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        own = scope.get("intake") or ""
+        return [own, ""] if own else [""]
+    if isinstance(requested, str) and requested:
+        iv = resolve_content_intake(admin, requested)
+        return [iv, ""] if iv else None
+    return None
+
+
 @router.get("/intakes")
 async def content_intakes(admin=Depends(get_content_admin_user)):
     """🌊 C1 — لیست ورودی‌های فعال برای picker مینی‌اپ + scope فعلی کاربر.
@@ -135,12 +209,37 @@ async def overview(admin=Depends(get_content_admin_user),
 @router.get("/questions/pending")
 async def pending_questions(admin=Depends(get_question_reviewer),
                             intake: Optional[str] = Query(None),
-                            skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+                            skip: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+                            after: Optional[str] = Query(None, max_length=32, description="cursor _id")):
     iv = resolve_content_intake(admin, intake)
     query = {"$and": [status_query("pending"), {"intake": iv}]}
+    # 🌊 W4 — cursor pagination
+    if after:
+        try:
+            from bson import ObjectId as _OID
+            if _OID.is_valid(after):
+                query["$and"].append({"_id": {"$gt": _OID(after)}})
+                docs = await db.questions.find(query).sort("_id", 1).limit(limit + 1).to_list(limit + 1)
+                has_more = len(docs) > limit
+                if has_more:
+                    docs = docs[:limit]
+                next_cursor = str(docs[-1]["_id"]) if docs and has_more else None
+                # for cursor we don't need total
+                return {"intake": iv, "total": None, "skip": None, "limit": limit, "next_cursor": next_cursor, "has_more": has_more,
+        "questions":[{"id":str(d["_id"]),"lesson_id":str(d.get("lesson_id") or ""),
+        "topic_id":str(d.get("topic_id") or ""),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
+        "difficulty":canonical_difficulty(d.get("difficulty"), strict=False),"question":d.get("question",""),"options":d.get("options",[]),
+        "correct":d.get("correct_answer",0),"explanation":d.get("explanation",""),
+        "creator_name":d.get("creator_name",""),"creator_id":d.get("creator_id"),
+        "creator_type":d.get("creator_type","student"),"created_at":d.get("created_at") or None,
+        "updated_at":d.get("updated_at") or None,"intake":d.get("intake",""),
+        "status":canonical_status(d),"review_reason":d.get("review_reason", ""),
+        "source":d.get("source","system")} for d in docs]}
+        except Exception:
+            pass
     total = await db.questions.count_documents(query)
     docs = await db.questions.find(query).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
-    return {"intake": iv, "total": total, "skip": skip, "limit": limit,
+    return {"intake": iv, "total": total, "skip": skip, "limit": limit, "next_cursor": None, "has_more": skip + len(docs) < total,
         "questions":[{"id":str(d["_id"]),"lesson_id":str(d.get("lesson_id") or ""),
         "topic_id":str(d.get("topic_id") or ""),"lesson":d.get("lesson",""),"topic":d.get("topic",""),
         "difficulty":canonical_difficulty(d.get("difficulty"), strict=False),"question":d.get("question",""),"options":d.get("options",[]),
@@ -377,7 +476,7 @@ async def patch_question(qid: str, body: QuestionPatch,
         await db.log_action(
             admin["id"], (admin.get("_db") or {}).get("name", str(admin["id"])),
             await db.get_actor_role_label(admin["id"]),
-            "ویرایش سؤال توسط بازبین", "Questions", "admin", "WARNING",
+            "ویرایش سؤال توسط بازبین", "QBank", "qbank", "WARNING",
             str(qid), "question", f"{q.get('lesson','')} — {q.get('topic','')}"[:300],
             {"version": q.get("version", 1)},
             {"version": updated.get("version"), "fields": sorted(payload)},
@@ -467,7 +566,11 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
                "group": group, "notified": notice.get("notified", 0)},
         tags=["برنامه", body.type, "پنل_وب"],
     )
-    return {"ok": True, "id": str(sid), "notified": notice.get("notified", 0)}
+    # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
+    conflicts = await db.schedule_find_conflicts(
+        group, body.date, body.time, '', exclude_id=str(sid))
+    return {"ok": True, "id": str(sid), "notified": notice.get("notified", 0),
+            "warnings": {"schedule_conflicts": conflicts}}
 
 
 class ScheduleUpdate(BaseModel):
@@ -596,6 +699,35 @@ async def del_faq(fid: str, admin=Depends(get_content_admin_user)):
         tags=["FAQ", "حذف", "پنل_وب"])
     return {"ok":True}
 
+class FaqUpdate(BaseModel):
+    category: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    question: Optional[str] = Field(default=None, min_length=5, max_length=500)
+    answer: Optional[str] = Field(default=None, min_length=5, max_length=5000)
+
+@router.patch("/faq/{fid}")
+async def edit_faq(fid: str, body: FaqUpdate, admin=Depends(get_content_admin_user)):
+    old = await db.faq_get(fid)
+    if not old:
+        raise HTTPException(404, "پرسش متداول پیدا نشد")
+    payload = body.model_dump(exclude_none=True)
+    # strip
+    for k in list(payload.keys()):
+        if isinstance(payload[k], str):
+            payload[k] = payload[k].strip()
+            if not payload[k]:
+                del payload[k]
+    if not payload:
+        raise HTTPException(422, "چیزی برای ویرایش نیست")
+    ok = await db.faq_update(fid, payload)
+    if not ok:
+        raise HTTPException(500, "ویرایش انجام نشد")
+    await _audit(admin, "ویرایش پرسش متداول", "Content", severity="WARNING",
+        target_id=fid, target_type="faq", target_label=payload.get("question", old.get("question",""))[:300],
+        before={"question": old.get("question",""), "answer": old.get("answer","")[:300], "category": old.get("category","")},
+        after=payload,
+        tags=["FAQ", "ویرایش", "پنل_وب"])
+    return {"ok": True, "changed": list(payload.keys())}
+
 class GradeBulk(BaseModel):
     entries: List[dict]; lesson: str; exam_title: str; exam_date: str
 
@@ -681,25 +813,29 @@ async def bs_lessons(term: str = Query(...), admin=Depends(get_content_admin_use
                      intake: Optional[str] = Query(None)):
     iv = resolve_content_intake(admin, intake)
     scope = admin.get("_scope") or {}
-    # 🌊 C1.5 — ادمین ورودی خاص: درس‌های سراسری هم با فلگ readonly
-    # دیده می‌شوند (§۲۲ spec: Global=هسته‌ی پایه، فقط‌خواندنی)
-    if scope.get("kind") == "scoped":
-        items = await db.bs_get_lessons(term, intake=[iv, ''])
-        # 🛡 C3.1 — «ورودی من» تنها وقتی معنای نوشتن دارد که scope تنظیم شده
-        # باشد؛ برای scopedِ بدون-scope همه‌چیز فقط‌خواندنی است (iv='' و
-        # own='' نباید با «سطل سراسری مال من است» اشتباه گرفته شود).
-        own = scope.get("intake") or ""
-        # 🌊 C3 — روی درس سراسری «فقط‌خواندنی» است، ولی می‌تواند جلسه‌ی
-        # فقط-ورودی‌خودش را زیرش بسازد ⇒ UI باید دکمه‌ی افزودن را باز بگذارد.
-        return {"intake": iv,
-            "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),
-                        "teacher":l.get("teacher",""),
-                        "readonly": not own or (l.get("intake") or '') != own,
-                        "can_create_sessions": bool(own) and (l.get("intake") or '') == ''} for l in items]}
-    items = await db.bs_get_lessons(term, intake=iv)
-    return {"intake": iv,
-        "lessons":[{"id":str(l["_id"]),"name":l.get("name",""),"teacher":l.get("teacher",""),
-                    "readonly": False} for l in items]}
+    scoped = scope.get("kind") == "scoped"
+    own = scope.get("intake") or ""
+    # داخل ورودی انتخاب‌شده، سراسری هم می‌آید. readonly فقط برای ورودی‌خاص است؛
+    # ارشد می‌تواند سراسری را ویرایش کند و با fork مخصوص همین ورودی کند.
+    items = await db.bs_get_lessons(term, intake=_list_intake(iv))
+    lessons = []
+    for lesson in items:
+        li = lesson.get("intake") or ""
+        if scoped:
+            readonly = not own or li != own
+            can_create = bool(own) and li == ""
+        else:
+            readonly = False
+            can_create = False
+        lessons.append({
+            "id": str(lesson["_id"]),
+            "name": lesson.get("name", ""),
+            "teacher": lesson.get("teacher", ""),
+            "intake": li,
+            "readonly": readonly,
+            "can_create_sessions": can_create,
+        })
+    return {"intake": iv, "lessons": lessons}
 
 class BsLessonCreate(BaseModel):
     term: str; name: str = Field(min_length=1); teacher: str = ""; intake: str = ""
@@ -764,33 +900,36 @@ async def bs_del_lesson_ep(lid: str, admin=Depends(get_content_admin_user)):
     return {"ok":True}
 
 @router.get("/basic-science/lessons/{lid}/sessions")
-async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user)):
-    # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ جلساتِ درسِ سراسری برای scoped
+async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user),
+                         intake: Optional[str] = Query(None)):
+    # مشاهده‌ی فقط‌خواندنیِ جلساتِ درسِ سراسری برای scoped؛
+    # اگر ورودی انتخاب شده باشد، ارشد هم نمای مؤثر (سراسری + همان ورودی) می‌گیرد.
     li = await db.lesson_intake(lid)
     ro = await _read_intake(li, admin)
     scope = admin.get("_scope") or {}
-    # 🍴 C2 — نمای مؤثر برای scoped روی درس سراسری: fork خودش جایگزین base
-    if ro and scope.get("kind") == "scoped":
-        items = await db.bs_get_sessions_effective(
-            lid, [scope.get("intake") or '', ''])
-    else:
+    view = _child_view(admin, intake)
+    if view is None:
         items = await db.bs_get_sessions(lid)
+    else:
+        items = await db.bs_get_sessions_effective(lid, view)
     # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
     child = await db.scoped_child_intake(admin["id"], li)
     own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
     next_number = await db.bs_next_session_number(lid, (child or None) if child else None)
+    sessions = []
+    for s in items:
+        resolved = (s.get("intake") if "intake" in s else li) or ""
+        sessions.append({
+            "id": str(s["_id"]), "number": s.get("number", 0),
+            "topic": s.get("topic", ""), "teacher": s.get("teacher", ""),
+            # intake مؤثر، نه فقط فیلد خام — تا ✂️ فقط روی پایه‌ی سراسری بیاید
+            "intake": resolved, "is_fork": bool(s.get("fork_of")),
+            "own": (not bool(s.get("fork_of"))) and bool(own_iv) and resolved == own_iv,
+        })
     return {"readonly": ro,
-        # can_create_own: درس برای این کاربر فقط‌خواندنی است ولی می‌تواند
-        # جلسه‌ای که فقط برای ورودی خودش است اضافه کند (§۱۱ گزارش)
         "can_create_own": bool(child not in (None, '')),
         "next_number": next_number,
-        "sessions":[{"id":str(s["_id"]),"number":s.get("number",0),"topic":s.get("topic",""),
-        "teacher":s.get("teacher",""),
-        # 🍴 C2 — متادیتای fork برای رندر دکمه‌های ✂️/↩️ و نشان ⭐ در مینی‌اپ
-        "intake":s.get("intake") or "", "is_fork":bool(s.get("fork_of")),
-        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
-        "own": (not bool(s.get("fork_of"))) and bool(own_iv)
-                and (s.get("intake") or '') == own_iv} for s in items]}
+        "sessions": sessions}
 
 class BsSessionCreate(BaseModel):
     number: int = Field(ge=1, le=10000)
@@ -888,28 +1027,76 @@ async def bs_content_ep(sid: str, admin=Depends(get_content_admin_user)):
     items = await db.bs_get_content(sid)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     sdoc = await db.bs_get_session(sid) or {}
+    def _display(c):
+        return c.get("display_file_name") or c.get("display_name") or c.get("original_file_name") or c.get("description") or ""
     return {"readonly": ro, "is_fork": bool(sdoc.get("fork_of")),
         "content":[{"id":str(c["_id"]),"type":c.get("type",""),"description":c.get("description",""),
+        "display_name": _display(c), "original_name": c.get("original_file_name",""),
+        "file_extension": c.get("file_extension",""), "file_size": c.get("file_size",0),
+        "branding_enabled": c.get("branding_enabled", False),
         "extra_info":c.get("extra_info",""),"downloads":c.get("downloads",0)} for c in items]}
 
 @router.post("/basic-science/sessions/{sid}/content")
 async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str = Form(""),
-                             extra_info: str = Form(""), file: UploadFile = File(...),
+                             extra_info: str = Form(""), display_name: str = Form(""),
+                             branding_enabled: bool = Form(False),
+                             file: UploadFile = File(...),
                              admin=Depends(get_content_admin_user)):
     if ctype not in CONTENT_TYPES: raise HTTPException(422, "نوع محتوا نامعتبر")
     await _deny_intake(await db.session_intake(sid), admin)
-    raw = await file.read()
-    if len(raw) > 45 * 1024 * 1024: raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
-    file_id = await upload_and_get_file_id(admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
-    cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip())
+    # File naming pipeline — sanitize + preserve extension
+    orig_fname = (file.filename or "file").strip() or "file"
+    # Use utility for final name; caller may send display_name empty -> fallback to original
+    from utils_file_naming import prepare_rename, get_extension
+    # If no display_name provided, use original
+    desired = (display_name or "").strip() or orig_fname
+    # Resolve final via DB dedup logic later, but need to decide filename to upload
+    # Build upload filename as sanitized display (so Telegram stores correct name)
+    # We precompute via prepare_rename with existing set (peek)
+    existing_for_upload = set()
+    try:
+        async for d in db.bs_content.find({'session_id': sid}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing_for_upload.add(n)
+    except Exception:
+        pass
+    prep_for_upload = prepare_rename(desired, orig_fname, existing_names=existing_for_upload, fallback='فایل')
+    upload_fname = prep_for_upload['display_name']
+    # but preserve original extension if caller provided different one? prepare_rename already does
+    logger.info("UPLOAD_REQUEST_RECEIVED route=session_content sid=%s ctype=%s "
+                "filename=%s display=%s admin=%s", sid, ctype, orig_fname, upload_fname, admin["id"])
+    raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    _validate_magic(raw, file.content_type or "", upload_fname)
+    logger.info("FILE_VALIDATED size=%s mime=%s", len(raw),
+                file.content_type or "")
+    # upload with final sanitized name (single upload, no re-upload needed per spec)
+    try:
+        file_id = await upload_and_get_file_id(admin["id"], upload_fname, raw,
+            file.content_type or "application/octet-stream")
+    except Exception as e:
+        logger.warning("UPLOAD_FAILED stage=storage route=session_content "
+                       "err=%s size=%s", type(e).__name__, len(raw))
+        raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                 "جزئیات در لاگ سرور ثبت شد")
+    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                            "جزئیات در لاگ سرور ثبت شد")
+    ext_for_db = get_extension(upload_fname)
+    cid = await db.bs_add_content(sid, ctype, file_id, description.strip(), extra_info.strip(),
+                                   original_name=orig_fname, display_name=upload_fname,
+                                   file_extension=ext_for_db,
+                                   mime_type=file.content_type or "application/octet-stream",
+                                   file_size=len(raw),
+                                   branding_enabled=bool(branding_enabled))
+    logger.info("UPLOAD_SUCCESS route=session_content sid=%s content_id=%s "
+                "size=%s display=%s", sid, cid, len(raw), upload_fname)
     await _audit(admin, "افزودن فایل جلسه", "Content", severity="INFO",
         target_id=str(cid), target_type="content_item",
-        target_label=description.strip() or (file.filename or "file"),
-        after={"session_id": sid, "type": ctype, "extra_info": extra_info.strip()},
+        target_label=description.strip() or upload_fname,
+        after={"session_id": sid, "type": ctype, "display_name": upload_fname,
+               "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["محتوا", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":str(cid)}
+    return {"ok":True, "id":str(cid), "display_name": upload_fname}
 
 @router.delete("/basic-science/content/{cid}")
 async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
@@ -925,6 +1112,58 @@ async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
         after={"deleted": True}, tags=["محتوا", "حذف_فایل", "پنل_وب"])
     return {"ok":True}
 
+class RenameBody(BaseModel):
+    new_name: str = Field(min_length=1, max_length=220)
+
+@router.patch("/basic-science/content/{cid}/rename")
+async def bs_rename_content_ep(cid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+    old = await db.bs_get_content_item(cid)
+    if not old:
+        raise HTTPException(404, "فایل پیدا نشد")
+    await _deny_intake(await db.content_intake(cid), admin)
+    sess_id = old.get("session_id", "")
+    # Build sanitized new display via utility (dedup)
+    from utils_file_naming import prepare_rename, get_extension
+    orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
+    existing = set()
+    try:
+        async for d in db.bs_content.find({'session_id': sess_id, '_id': {'$ne': old["_id"]}}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(body.new_name.strip(), orig, existing_names=existing, fallback='فایل')
+    new_display = prep['display_name']
+    # Try re-upload to change Telegram filename (best effort). If fails, just DB rename.
+    new_file_id = old.get("file_id", "")
+    reuploaded = False
+    try:
+        from api.telegram_send import download_telegram_file, upload_and_get_file_id
+        data = await download_telegram_file(old.get("file_id",""))
+        if data is not None:
+            # need mime
+            mime = old.get("mime_type", "application/octet-stream")
+            # Re-upload with new name (single upload)
+            nf = await upload_and_get_file_id(admin["id"], new_display, data, mime)
+            if nf:
+                new_file_id = nf
+                reuploaded = True
+    except Exception as e:
+        logger.warning("RENAME_REUPLOAD_FAILED cid=%s err=%s", cid, type(e).__name__)
+    await db.bs_content.update_one({'_id': old["_id"]}, {'$set': {
+        'display_file_name': new_display,
+        'display_name': new_display,
+        'file_extension': get_extension(new_display),
+        'file_id': new_file_id,
+    }})
+    await _audit(admin, "تغییر نام فایل جلسه", "Content", severity="WARNING",
+        target_id=cid, target_type="content_item",
+        target_label=old.get("display_file_name", "") or old.get("description",""),
+        before={"display_name": old.get("display_file_name","")}, after={"display_name": new_display, "reuploaded": reuploaded},
+        tags=["محتوا", "تغییر_نام", "پنل_وب"])
+    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded}
+
 # ══════════════════════════════════════════════
 # 📖 رفرنس‌ها — موضوع‌ها / کتاب‌ها / فایل‌ها
 # ══════════════════════════════════════════════
@@ -934,19 +1173,20 @@ async def ref_subjects_ep(admin=Depends(get_content_admin_user),
                           intake: Optional[str] = Query(None)):
     iv = resolve_content_intake(admin, intake)
     scope = admin.get("_scope") or {}
-    # 🌊 C1.5 — ادمین ورودی خاص: موضوعات سراسری هم با فلگ readonly (§۲۲)
-    if scope.get("kind") == "scoped":
-        items = await db.ref_get_subjects(intake=[iv, ''])
-        # 🛡 C3.1 — همان قاعده‌ی bs_lessons: بدون scope تنظیم‌شده همه‌چیز 🔒
-        own = scope.get("intake") or ""
-        return {"intake": iv,
-            "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
-                         "intake": s.get("intake") or "",
-                         "readonly": not own or (s.get("intake") or '') != own} for s in items]}
-    items = await db.ref_get_subjects(intake=iv)
-    return {"intake": iv,
-        "subjects":[{"id":str(s["_id"]),"name":s.get("name",""),
-                     "intake": s.get("intake") or "", "readonly": False} for s in items]}
+    scoped = scope.get("kind") == "scoped"
+    own = scope.get("intake") or ""
+    items = await db.ref_get_subjects(intake=_list_intake(iv))
+    subjects = []
+    for subject in items:
+        si = subject.get("intake") or ""
+        readonly = (not own or si != own) if scoped else False
+        subjects.append({
+            "id": str(subject["_id"]),
+            "name": subject.get("name", ""),
+            "intake": si,
+            "readonly": readonly,
+        })
+    return {"intake": iv, "subjects": subjects}
 
 class RefSubjectCreate(BaseModel):
     name: str = Field(min_length=1); intake: str = ""
@@ -1024,29 +1264,32 @@ async def ref_del_subject_ep(sid: str, admin=Depends(get_content_admin_user)):
     return {"ok":True}
 
 @router.get("/references/subjects/{sid}/books")
-async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user)):
-    # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ کتاب‌های موضوع سراسری برای scoped
+async def ref_books_ep(sid: str, admin=Depends(get_content_admin_user),
+                       intake: Optional[str] = Query(None)):
+    # مشاهده‌ی فقط‌خواندنی برای scoped؛ ارشد با ورودی انتخاب‌شده نمای مؤثر می‌گیرد.
     _si = await db.ref_subject_intake(sid)
     ro = await _read_intake(_si, admin)
     scope = admin.get("_scope") or {}
-    # 🍴 C2 — نمای مؤثر برای scoped روی موضوع سراسری: fork جایگزین base
-    if ro and scope.get("kind") == "scoped":
-        items = await db.ref_get_books_effective(
-            sid, [scope.get("intake") or '', ''])
-    else:
+    view = _child_view(admin, intake)
+    if view is None:
         items = await db.ref_get_books(sid)
-    # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
+    else:
+        items = await db.ref_get_books_effective(sid, view)
     child = await db.scoped_child_intake(admin["id"], _si)
     own_iv = (scope.get("intake") or '') if scope.get("kind") == "scoped" else ''
+    books = []
+    for book in items:
+        resolved = (book.get("intake") if "intake" in book else _si) or ""
+        books.append({
+            "id": str(book["_id"]),
+            "name": book.get("name", ""),
+            "intake": resolved,
+            "is_fork": bool(book.get("fork_of")),
+            "own": (not bool(book.get("fork_of"))) and bool(own_iv) and resolved == own_iv,
+        })
     return {"readonly": ro,
-        # can_create_own: موضوع فقط‌خواندنی است ولی کاربر می‌تواند کتابی که
-        # فقط برای ورودی خودش است اضافه کند (قرارداد هم‌نامِ bs_sessions_ep)
         "can_create_own": bool(child not in (None, '')),
-        "books":[{"id":str(b["_id"]),"name":b.get("name",""),
-        "intake":b.get("intake") or "", "is_fork":bool(b.get("fork_of")),
-        # 🌊 C3 — own = فرزندِ سطل خودِ کاربر ⇒ بدون فورک هم قابل ویرایش/حذف
-        "own": (not bool(b.get("fork_of"))) and bool(own_iv)
-                and (b.get("intake") or '') == own_iv} for b in items]}
+        "books": books}
 
 class RefBookCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -1143,30 +1386,66 @@ async def ref_files_ep(bid: str, skip: int = Query(0, ge=0),
     items, total = await db.ref_get_files_page(bid, skip=skip, limit=limit)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     bdoc = await db.ref_get_book(bid) or {}
+    def _disp(f):
+        return f.get("display_file_name") or f.get("display_name") or f.get("original_file_name") or f.get("description") or ""
     return {"readonly": ro, "is_fork": bool(bdoc.get("fork_of")),
         "total": total, "skip": skip, "limit": limit,
         "has_more": skip + len(items) < total,
         "files":[{"id":str(f["_id"]),"lang":f.get("lang","fa"),"volume":f.get("volume",1),
-        "description":f.get("description",""),"downloads":f.get("downloads",0)} for f in items]}
+        "description":f.get("description",""),"display_name": _disp(f),
+        "original_name": f.get("original_file_name",""),"file_extension": f.get("file_extension",""),
+        "downloads":f.get("downloads",0)} for f in items]}
 
 @router.post("/references/books/{bid}/files")
 async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1),
-                           description: str = Form(""), file: UploadFile = File(...),
+                           description: str = Form(""), display_name: str = Form(""),
+                           branding_enabled: bool = Form(False),
+                           file: UploadFile = File(...),
                            admin=Depends(get_content_admin_user)):
     if lang not in ("fa","en"): raise HTTPException(422, "زبان نامعتبر")
     await _deny_intake(await db.ref_book_intake(bid), admin)
-    raw = await file.read()
-    if len(raw) > 45 * 1024 * 1024: raise HTTPException(413, "حجم فایل بیش از حد مجاز است (۴۵MB)")
-    file_id = await upload_and_get_file_id(admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود")
-    fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip())
+    orig_fname = (file.filename or "file").strip() or "file"
+    from utils_file_naming import prepare_rename, get_extension
+    desired = (display_name or "").strip() or orig_fname
+    existing_for_upload = set()
+    try:
+        async for d in db.ref_files.find({'book_id': bid}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing_for_upload.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(desired, orig_fname, existing_names=existing_for_upload, fallback='فایل')
+    upload_fname = prep['display_name']
+    logger.info("UPLOAD_REQUEST_RECEIVED route=ref_file bid=%s filename=%s display=%s "
+                "admin=%s", bid, orig_fname, upload_fname, admin["id"])
+    raw = await _read_capped(file, MAX_UPLOAD_BYTES)
+    _validate_magic(raw, file.content_type or "", upload_fname)
+    try:
+        file_id = await upload_and_get_file_id(admin["id"], upload_fname, raw,
+            file.content_type or "application/octet-stream")
+    except Exception as e:
+        logger.warning("UPLOAD_FAILED stage=storage route=ref_file "
+                       "err=%s size=%s", type(e).__name__, len(raw))
+        raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                 "جزئیات در لاگ سرور ثبت شد")
+    if not file_id: raise HTTPException(502, "آپلود فایل به تلگرام ناموفق بود — "
+                                            "جزئیات در لاگ سرور ثبت شد")
+    ext_for_db = get_extension(upload_fname)
+    fid = await db.ref_add_file(bid, lang, file_id, volume, description.strip(),
+                                original_name=orig_fname, display_name=upload_fname,
+                                file_extension=ext_for_db,
+                                mime_type=file.content_type or "application/octet-stream",
+                                file_size=len(raw), branding_enabled=bool(branding_enabled))
+    logger.info("UPLOAD_SUCCESS route=ref_file bid=%s file_id=%s size=%s display=%s",
+                bid, fid, len(raw), upload_fname)
     await _audit(admin, "افزودن فایل رفرنس", "Content", severity="INFO",
         target_id=str(fid), target_type="reference_file",
-        target_label=description.strip() or (file.filename or "file"),
-        after={"book_id": bid, "lang": lang, "volume": volume},
+        target_label=description.strip() or upload_fname,
+        after={"book_id": bid, "lang": lang, "volume": volume, "display_name": upload_fname,
+               "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["رفرنس", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":fid}
+    return {"ok":True, "id":fid, "display_name": upload_fname}
 
 @router.delete("/references/files/{fid}")
 async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
@@ -1180,6 +1459,51 @@ async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
                 "volume": old.get("volume")}, after={"deleted": True},
         tags=["رفرنس", "حذف_فایل", "پنل_وب"])
     return {"ok":True}
+
+@router.patch("/references/files/{fid}/rename")
+async def ref_rename_file_ep(fid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+    old = await db.ref_get_file(fid)
+    if not old:
+        raise HTTPException(404, "فایل رفرنس پیدا نشد")
+    await _deny_intake(await db.ref_file_intake(fid), admin)
+    book_id = old.get("book_id", "")
+    from utils_file_naming import prepare_rename, get_extension
+    orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
+    existing = set()
+    try:
+        async for d in db.ref_files.find({'book_id': book_id, '_id': {'$ne': old["_id"]}}, {'display_name': 1, 'display_file_name': 1}):
+            n = d.get('display_file_name') or d.get('display_name') or ''
+            if n:
+                existing.add(n)
+    except Exception:
+        pass
+    prep = prepare_rename(body.new_name.strip(), orig, existing_names=existing, fallback='فایل')
+    new_display = prep['display_name']
+    new_file_id = old.get("file_id", "")
+    reuploaded = False
+    try:
+        from api.telegram_send import download_telegram_file, upload_and_get_file_id
+        data = await download_telegram_file(old.get("file_id",""))
+        if data is not None:
+            mime = old.get("mime_type", "application/octet-stream")
+            nf = await upload_and_get_file_id(admin["id"], new_display, data, mime)
+            if nf:
+                new_file_id = nf
+                reuploaded = True
+    except Exception as e:
+        logger.warning("RENAME_REUPLOAD_FAILED fid=%s err=%s", fid, type(e).__name__)
+    await db.ref_files.update_one({'_id': old["_id"]}, {'$set': {
+        'display_file_name': new_display,
+        'display_name': new_display,
+        'file_extension': get_extension(new_display),
+        'file_id': new_file_id,
+    }})
+    await _audit(admin, "تغییر نام فایل رفرنس", "Content", severity="WARNING",
+        target_id=fid, target_type="reference_file",
+        target_label=old.get("display_file_name","") or old.get("description",""),
+        before={"display_name": old.get("display_file_name","")}, after={"display_name": new_display, "reuploaded": reuploaded},
+        tags=["رفرنس", "تغییر_نام", "پنل_وب"])
+    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded}
 
 # ══════════════════════════════════════════════
 # 🍴 موج C2 — Fork/Unfork (سفارشی‌سازی سراسری برای یک ورودی)
@@ -1406,48 +1730,12 @@ async def qbank_file_detail(file_id: str, admin=Depends(get_content_admin_user))
 
 
 @router.post("/qbank/files")
-async def qbank_file_upload(
-    lesson: str = Form(..., min_length=2, max_length=100),
-    topic: str = Form(..., min_length=2, max_length=100),
-    description: str = Form("", max_length=500),
-    intake: Optional[str] = Form(None, max_length=50),
-    file: UploadFile = File(...),
-    admin=Depends(get_content_admin_user),
-):
-    target = resolve_content_intake(admin, intake)
-    if target and target not in await _intakes_active_codes():
-        raise HTTPException(422, "کد ورودی نامعتبر است")
-    if not await db.can_access_intake(admin["id"], target):
-        raise HTTPException(403, "intake_out_of_scope")
-    raw = await file.read()
-    # Telegram Bot API's practical sendDocument limit is 50 MB. Rejecting
-    # before the network call also prevents an unbounded browser upload.
-    if not raw or len(raw) > 50 * 1024 * 1024:
-        raise HTTPException(413, "حجم فایل باید بین ۱ بایت و ۵۰ مگابایت باشد")
-    telegram_file_id = await upload_and_get_file_id(
-        admin["id"], file.filename or "file", raw,
-        file.content_type or "application/octet-stream")
-    if not telegram_file_id:
-        raise HTTPException(503, "آپلود فایل به تلگرام انجام نشد")
-    item = await db.qbank_file_add(
-        intake=target, lesson=lesson, topic=topic, description=description,
-        filename=file.filename or "file", mime_type=file.content_type or "application/octet-stream",
-        size=len(raw), telegram_file_id=telegram_file_id, uploaded_by=admin["id"],
+async def qbank_file_upload(admin=Depends(get_content_admin_user)):
+    """بانک فایل بازنشسته است. فهرست و حذف قبلی می‌ماند؛ نوشتن تازه بسته است."""
+    raise HTTPException(
+        status_code=410,
+        detail="بانک فایل سؤال بازنشسته است. سؤال تازه را در بانک ساخت‌یافته ثبت کنید.",
     )
-    try:
-        await _audit(
-            admin, "آپلود فایل بانک سؤال", "QuestionBank", severity="INFO",
-            target_id=str(item["_id"]), target_type="qbank_file",
-            target_label=f"{lesson} — {topic}",
-            after={"intake": target, "filename": item["filename"], "size": len(raw)},
-            tags=["بانک_سؤال", "آپلود", "پنل_وب"],
-        )
-    except Exception:
-        # The Telegram upload already succeeded, so compensate the metadata
-        # write when the mandatory durable audit is unavailable.
-        await db.qbank_file_delete(str(item["_id"]))
-        raise
-    return {"ok": True, "file": _qbank_file_response(item)}
 
 
 @router.delete("/qbank/files/{file_id}")

@@ -98,10 +98,15 @@ async def _audit(user: dict, action: str, target: str, note: str = "",
         raise HTTPException(status_code=503, detail="ثبت حسابرسی رینگ انجام نشد؛ دوباره تلاش کنید")
     try:
         actor = user.get("_db") or {}
+        # unify: ring → system/integration with correct actor_role from DB
+        try:
+            _role_ring = await db.get_actor_role_label(actor.get("user_id", _admin(user)) or 0)
+        except Exception:
+            _role_ring = actor.get("name", "مدیر رینگ") or "ring"
         await db.log_action(
             actor.get("user_id", _admin(user)) or 0,
-            actor.get("name", "مدیر رینگ"), "ring",
-            action, "ring", target_type="ring", target_id=str(target),
+            actor.get("name", "مدیر رینگ"), _role_ring,
+            action, "System", category="system", target_type="ring", target_id=str(target),
             target_label=str(note)[:120], details=str(details or "")[:400],
             tags=["#پنل_وب", "#رینگ"])
     except Exception as e:

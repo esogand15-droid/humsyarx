@@ -308,8 +308,11 @@ async def cancel_handler(update, context):
         'ticket_mode', 'mode', 'creating_question',
         'profile_edit', 'awaiting_search', 'search_mode',
         'edit_user', 'backup_mode',
+        'scan_preview', 'pending_schedule', 'schedule_type', 'schedule_edit_sid',
+        'edit_schedule_sid', 'edit_schedule_field', 'flex_change_sid',
         # FIX جدید: سیستم اشتراک
         'sub_mode', 'sub_plan_id', 'sub_final_price', 'sub_discount_code',
+        'sub_topup_amount',
         'sub_reject_pid', 'suba_target_uid', 'suba_grant_role',
         'suba_plan_edit_id', 'suba_grant_list',
         'grade_intake_scope', 'grade_lesson', 'grade_exam_title',
@@ -409,15 +412,82 @@ def safe_send_status(exc) -> str:
     return 'retry'
 
 
+def _split_smart(text: str, limit: int = 4096) -> list:
+    """🌊 W5 — برش هوشمند پیام طولانی: جدول/كد را وسط نمی‌برد.
+    - ترجيح: برش روی \n\n، سپس \n، سپس فاصله، هرگز وسط code-block یا |…|
+    - هر chunk ≤ limit و با header اگر چندتایی شد
+    """
+    if len(text) <= limit:
+        return [text]
+    # تشخیص بلوک کد
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        # ناحیه امن برای برش
+        window = remaining[:limit]
+        # اگر داخل بلوک کد هستیم، تا انتهای بلوک صبر کن
+        # شمارش ``` در window زوج نیست => داخل کد هستیم
+        if window.count("```") % 2 == 1:
+            # پیدا کردن بسته شدن
+            end = remaining.find("```", limit)
+            if end != -1 and end - len(remaining[:limit]) < 800:
+                # کمی فراتر برو تا بلوک کامل شود (تا 800 اضافه مجاز)
+                cut = end + 3
+                if cut > limit and cut < limit + 800:
+                    chunks.append(remaining[:cut])
+                    remaining = remaining[cut:].lstrip("\n")
+                    continue
+        # ترجیح برش روی \n\n
+        cut = window.rfind("\n\n")
+        if cut < limit * 0.5:
+            cut = window.rfind("\n")
+        if cut < limit * 0.4:
+            cut = window.rfind(" ")
+        if cut < limit * 0.3:
+            cut = limit
+        else:
+            # برای \n\n شاملش
+            if remaining[cut:cut+2] == "\n\n":
+                cut += 2
+            elif remaining[cut] in ("\n", " "):
+                cut += 1
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    # اگر چند chunks، هدر شماره اضافه کن (اختیاری)
+    if len(chunks) > 1:
+        headered = []
+        for i, ch in enumerate(chunks, 1):
+            hdr = f"[{i}/{len(chunks)}]\n" if len(chunks) > 1 else ""
+            # اگر header + ch > limit، ch را کوتاه کن (نادر)
+            if len(hdr) + len(ch) > limit:
+                ch = ch[:limit - len(hdr) - 10] + "…"
+            headered.append(hdr + ch)
+        return headered
+    return chunks
+
 async def safe_send_ex(bot, uid: int, text: str, **kwargs):
     """همان safe_send با جزئیات تشخیصی — ``(ok, error_text, exception)``.
 
     صف‌های ماندگار برای تصمیم «بستن/عقب‌انداختن/تلاش مجدد» به خودِ خطا
     نیاز دارند، نه فقط bool. safe_send روی همین تابع نشسته تا رفتار
     همه‌ی صدازننده‌ها عوض نشود.
+    🌊 W5 — اگر text > 4096، برش هوشمند و ارسال چندپیامه (همه یا هیچ نه، best-effort)
     """
     import asyncio
     from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
+    # 🌊 W5 smart chunk
+    parts = _split_smart(text, 4096)
+    if len(parts) > 1:
+        # ارسال چندپیام با تاخیر کوتاه بین هر chunk تا flood نشود
+        for idx, part in enumerate(parts):
+            ok, err, exc = await safe_send_ex(bot, uid, part, **kwargs)
+            if not ok:
+                return False, err, exc
+            if idx < len(parts) - 1:
+                await asyncio.sleep(0.35)
+        return True, "", None
     last_err = None
     for attempt in range(3):
         try:
@@ -497,21 +567,56 @@ async def broadcast_message(bot, users: List[dict], text: str,
 # روی چه چیزی/چه تغییری/چه سطح اهمیتی — بدون نیاز به مراجعه به دیتابیس.
 
 SEVERITY_META = {
+    'DEBUG':    {'icon': '⚪', 'label': 'DEBUG'},
     'INFO':     {'icon': '🟢', 'label': 'INFO'},
-    'WARNING':  {'icon': '🟡', 'label': 'WARNING'},
+    'LOW':      {'icon': '🔵', 'label': 'LOW'},
+    'MEDIUM':   {'icon': '🟡', 'label': 'MEDIUM'},
     'HIGH':     {'icon': '🟠', 'label': 'HIGH'},
     'CRITICAL': {'icon': '🔴', 'label': 'CRITICAL'},
+    # Legacy compat
+    'WARNING':  {'icon': '🟡', 'label': 'MEDIUM'},
 }
 
 
 def new_correlation_id() -> str:
     """
-    FIX طبق سند: شناسه رهگیری برای عملیات چندمرحله‌ای (مثل broadcast
-    که شروع/ارسال/پایان دارد) — همه با یک correlation_id مشترک ثبت
-    می‌شوند تا با get_logs_by_correlation کل فرآیند قابل پیگیری باشد.
+    🆕 Audit Refactor — HY-YYYYMMDD-XXXXXX (§10)
+    قابل جستجو، قابل مرتب‌سازی زمانی، prefix HY برای فیلتر سریع.
+    تمام مراحل یک User Action یک correlation_id مشترک دارند.
+    Fallback: همچنان uuid کوتاه اگر timezone در دسترس نباشد.
     """
+    try:
+        from time_utils import now_tehran
+        today = now_tehran().strftime("%Y%m%d")
+    except Exception:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
     import uuid
-    return uuid.uuid4().hex[:10]
+    rand = uuid.uuid4().hex[:6].upper()
+    return f"HY-{today}-{rand}"
+
+
+def new_event_id() -> str:
+    """§5 — Event ID یکتای 32hex برای Idempotency (§43)."""
+    import uuid
+    return uuid.uuid4().hex
+
+
+def sanitize_audit_data(data):
+    """Sanitizer مرکزی — §9: Redact قبل از Persistence."""
+    try:
+        from audit import sanitize_audit_data as _san
+        return _san(data)
+    except Exception:
+        return data
+
+
+def get_correlation_id(explicit=None) -> str:
+    try:
+        from audit import get_correlation_id as _g
+        return _g(explicit)
+    except Exception:
+        return explicit or new_correlation_id()
 
 
 def _fa_module(module: str) -> str:
@@ -527,81 +632,62 @@ def build_audit_log_text(category: str, actor_name: str, actor_id: int,
                           target_label: str = '', before: dict = None,
                           after: dict = None, tags: list = None) -> str:
     """
-    🧱 متن نهایی پیام لاگ — تابع خالص بدون وابستگی به تلگرام، تا هم
-    ربات (send_audit_log) و هم بک‌اند مینی‌اپ (صف bot_notifications)
-    دقیقاً همان قالب را تولید کنند و لاگ هر دو کانال در گروه یکدست
-    به‌نظر برسد.
-
-    FIX باگ: همه‌ی فیلدهای داینامیک html-escape می‌شوند — پیام با
-    parse_mode=HTML فرسته می‌شود و قبل از این، یک نام یا جزئیات حاوی
-    «<» یا «&» کل پیام را BadRequest می‌کرد و لاگ بی‌صدا گم می‌شد.
-    FIX باگ: سقف ۴۰۹۶ کاراکتر تلگرام — متن به ۴۰۰۰ کاراکتر محدود
-    می‌شود تا لاگ‌های پرجزئیات (مثل broadcast) هرگز drop نشوند.
+    🧱 متن نهایی پیام لاگ — حالا Delegate به audit.py مرکزی (§20-§22).
+    همان قالب حرفه‌ای، HTML-Safe، تگ‌دار، با before/after خلاصه.
+    سازگاری Legacy حفظ شده — تمام فراخوان‌های قدیمی بدون تغییر کار می‌کنند.
     """
+    try:
+        from audit import build_audit_log_text as _central
+        return _central(category, actor_name, actor_id, action, module, details,
+                        severity, actor_role, target_id, target_type,
+                        target_label, before, after, tags)
+    except Exception:
+        # Fallback قدیمی اگر audit.py لود نشد — نباید رخ دهد ولی safe است
+        pass
     def esc(v) -> str:
         return html.escape(str(v))
-
-    sev_meta  = SEVERITY_META.get(severity, SEVERITY_META['INFO'])
+    try:
+        from audit import normalize_severity
+        sev_n = normalize_severity(severity)
+    except Exception:
+        sev_n = (severity or "INFO").upper()
+    sev_meta  = SEVERITY_META.get(sev_n, SEVERITY_META['INFO'])
     cat_icon  = '🛡' if category == 'admin' else '🎓'
     cat_title = 'گزارش فعالیت مدیریتی' if category == 'admin' else 'گزارش فعالیت محتوا'
     now_str   = now_tehran_str()
     module_fa = _fa_module(module) if module else ''
-
     lines = [
         f"{cat_icon} <b>{cat_title}</b>",
-        "",
-        f"🕒 <b>زمان</b>",
-        esc(now_str),
-        "",
+        "", f"🕒 <b>زمان</b>", esc(now_str), "",
         f"👤 <b>انجام‌دهنده</b>",
         f"• نام: {esc(actor_name)}",
         f"• نقش: {esc(actor_role or 'نامشخص')}",
         f"• شناسه: <code>{esc(actor_id)}</code>",
-        "",
-        f"⚡ <b>عملیات</b>",
-        esc(action),
+        "", f"⚡ <b>عملیات</b>", esc(action),
     ]
-
     if target_label or target_id:
         lines += ["", f"🎯 <b>هدف</b>"]
-        if target_label:
-            lines.append(f"• عنوان: {esc(target_label)}")
-        if target_id:
-            lines.append(f"• شناسه: <code>{esc(target_id)}</code>")
-
-    if module_fa:
-        lines += ["", f"📂 <b>بخش</b>", esc(module_fa)]
-
-    if details:
-        lines += ["", f"📝 <b>جزئیات</b>", esc(details)]
-
+        if target_label: lines.append(f"• عنوان: {esc(target_label)}")
+        if target_id: lines.append(f"• شناسه: <code>{esc(target_id)}</code>")
+    if module_fa: lines += ["", f"📂 <b>بخش</b>", esc(module_fa)]
+    if details: lines += ["", f"📝 <b>جزئیات</b>", esc(details[:800])]
     if before and after:
         change_lines = []
         for key in after:
             old_val = before.get(key, '—')
             new_val = after.get(key, '—')
             change_lines.append(f"• {esc(key)}: {esc(old_val)} ← {esc(new_val)}")
-        if change_lines:
-            lines += ["", f"🔄 <b>تغییرات</b>"] + change_lines
-
+        if change_lines: lines += ["", f"🔄 <b>تغییرات</b>"] + change_lines[:3]
     lines += ["", f"🏷 <b>سطح اهمیت</b>", f"{sev_meta['icon']} {sev_meta['label']}"]
-
-    # تگ‌های جستجو — همیشه ماژول فارسی + نقش، به‌علاوه تگ‌های اضافی
     auto_tags = []
-    if module_fa:
-        auto_tags.append(module_fa.replace(' ', '_'))
+    if module_fa: auto_tags.append(module_fa.replace(' ', '_'))
     if actor_role:
         clean_role = actor_role.split('(')[0].strip().replace(' ', '_')
-        if clean_role:
-            auto_tags.append(clean_role)
-    # حذف تگ تکراری با حفظ ترتیب
+        if clean_role: auto_tags.append(clean_role)
     all_tags = list(dict.fromkeys(auto_tags + (tags or [])))
-    if all_tags:
-        lines += ["", ' '.join(f"#{esc(t)}" for t in all_tags if t)]
-
+    if all_tags: lines += ["", ' '.join(f"#{esc(t)}" for t in all_tags if t)]
     text = '\n'.join(lines)
-    if len(text) > 4000:
-        text = text[:3960] + "\n… <i>(ادامه در لاگ دیتابیس)</i>"
+    if len(text) > 4000: text = text[:3960] + "\n… <i>(ادامه در لاگ دیتابیس)</i>"
     return text
 
 
@@ -611,67 +697,129 @@ async def send_audit_log(bot, category: str, actor_name: str, actor_id: int,
                           target_id: str = '', target_type: str = '',
                           target_label: str = '', before: dict = None,
                           after: dict = None, tags: list = None,
-                          correlation_id: str = None) -> str:
+                          correlation_id: str = None,
+                          # 🚀 New optional enriched fields (§5) — backward compat
+                          event_id: str = None, actor_type: str = None,
+                          source: str = None, channel: str = None,
+                          request_id: str = None, ip: str = None,
+                          user_agent: str = None, metadata: dict = None,
+                          result: str = None, status: str = None,
+                          error_code: str = None, error_message: str = None,
+                          target_context: dict = None) -> str:
     """
-    ثبت در دیتابیس + ارسال همان متن به گروه لاگ تلگرام.
-    متن پیام را build_audit_log_text می‌سازد (مشترک با وب‌پنل).
-
-    FIX پایداری: اگر ارسال به گروه شکست بخورد (ربات اخراج شده، گروه
-    حذف یا به سوپرگروه تبدیل شده و آیدی عوض شده)، قبلاً فقط یک warning
-    در لاگ سرور می‌ماند و کسی متوجه نمی‌شد. حالا فقط در اولین شکست،
-    یک هشدار به پیوی مدیر ارشد می‌رود (فلگ log_group_alerted_*) و با
-    اولین موفقیت مجدد، فلگ پاک می‌شود — نه اسپم، نه سکوت مرگبار.
-    اگر گروه لاگ تنظیم نشده باشد، فقط در دیتابیس ثبت می‌شود — هرگز
-    به پیوی شخصی ادمین ارشد نمی‌رود.
+    ثبت در دیتابیس + ارسال همان متن به گروه لاگ تلگرام — نسخه‌ی بازطراحی‌شده §13§35
+    ✅ Audit Persistence و Audit Delivery دو مرحله مستقل هستند (§13).
+       DB Audit موفق → Business SUCCESS حتی اگر Telegram Fail شود.
+       Delivery Failure هرگز Silent نیست (§16): ثبت در delivery_status + retry + alert.
+    ✅ Outbox قابل Retry (§14) + Retry Policy طبقه‌بندی‌شده (§15)
+    ✅ Business Status vs Logging Status جدا (§12, §35)
+    ✅ Sanitization + HTML Safety مرکزی (§9, §22)
+    ✅ Correlation / Event ID (§10-§11) + Actor/Target کامل (§6-§8)
+    Legacy سازگاری کامل: تمام فراخوان‌های قدیمی بدون تغییر کار می‌کنند.
     """
-    from database import db
-
-    log_id = await db.log_action(
-        actor_id, actor_name, actor_role, action, module, category,
-        severity, target_id, target_type, target_label,
-        before, after, details, tags, correlation_id
-    )
-
-    group_key = 'log_group_admin' if category == 'admin' else 'log_group_content'
-    alert_key = f'log_group_alerted_{category}'
-    chat_id   = await db.get_setting(group_key, None)
-    if not chat_id:
-        return log_id
-
-    text = build_audit_log_text(
-        category, actor_name, actor_id, action,
-        module=module, details=details, severity=severity,
-        actor_role=actor_role, target_id=target_id, target_type=target_type,
-        target_label=target_label, before=before, after=after, tags=tags,
-    )
-
+    # Delegate به audit.py مرکزی — Single Source of Truth §47
     try:
-        await bot.send_message(int(chat_id), text, parse_mode='HTML')
-        # موفقیت — اگر قبلاً هشدار خرابی داده بودیم، فلگ را پاک کن
-        if await db.get_setting(alert_key, False):
-            await db.set_setting(alert_key, False)
-    except Exception as e:
-        logger.warning(f"send_audit_log failed for chat {chat_id}: {e}")
-        # هشدار یک‌باره به مدیر ارشد تا گروه را دوباره تنظیم کند
+        from audit import audit_event as _audit_event
+        # تعیین source/channel اگر نداده
+        src = source or ("bot" if bot else "system")
+        ch = channel or "telegram"
+        # Correlation از context اگر نداده
+        corr = correlation_id or get_correlation_id()
+        # actor_type اگر نداده — حدس از role
+        atype = actor_type
+        if not atype:
+            if actor_role and "مدیر ارشد" in actor_role: atype = "SUPER_ADMIN"
+            elif actor_role and "محتوا" in actor_role: atype = "CONTENT_ADMIN"
+            elif actor_role and "ادمین" in actor_role: atype = "ADMIN"
+            else: atype = "USER"
+        res = await _audit_event(
+            bot,
+            actor_id=actor_id, actor_name=actor_name, actor_role=actor_role, actor_type=atype,
+            module=module or category, category=category, action=action,
+            severity=severity, target_id=target_id, target_type=target_type,
+            target_label=target_label, before=before, after=after,
+            result=result or "SUCCESS", status=status or "SUCCESS",
+            source=src, channel=ch, request_id=request_id, correlation_id=corr,
+            ip=ip, user_agent=user_agent, metadata=metadata,
+            error_code=error_code, error_message=error_message,
+            tags=tags, details=details, target_context=target_context,
+            telegram_chat_id=None,  # audit_event خودش group را resolve می‌کند
+        )
+        # Recovery detection (§42) — اگر delivery بعد از downtime موفق شد، recovery event
+        # توسط audit.py در _delivery_health ردیابی می‌شود؛ اینجا نیاز به کار اضافی نیست
+        # ولی برای سازگاری با فلگ قدیمی log_group_alerted_*, همگام می‌کنیم:
         try:
-            if not await db.get_setting(alert_key, False):
-                await db.set_setting(alert_key, True)
-                group_fa = 'لاگ مدیریت' if category == 'admin' else 'لاگ محتوا'
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"🚨 <b>ارسال لاگ به گروه {group_fa} ناموفق بود</b>\n\n"
-                    f"🔑 گروه فعلی: <code>{chat_id}</code>\n"
-                    f"⚠️ خطا: <code>{str(e)[:300]}</code>\n\n"
-                    "💡 معمولاً یعنی ربات از گروه حذف/اخراج شده یا گروه به "
-                    "سوپرگروه تبدیل شده و آیدی‌اش عوض شده. لطفاً از مسیر «پنل "
-                    "مدیریت ← ⚙️ تنظیمات ← تنظیم گروه لاگ» دوباره تنظیمش کن.\n"
-                    "تا درست نشود، لاگ‌ها فقط در دیتابیس ثبت می‌شوند و هیچ‌جا "
-                    "نمایش داده نمی‌شوند.",
-                    parse_mode='HTML')
+            from database import db as _db
+            from audit import get_delivery_health
+            health = get_delivery_health()
+            alert_key = f'log_group_alerted_{category}'
+            if health.get("is_healthy") and await _db.get_setting(alert_key, False):
+                await _db.set_setting(alert_key, False)
+                # Recovery notification به گروه (اختیاری — فقط یکبار)
+                if health.get("recovered_at"):
+                    try:
+                        fallback_chat = await _db.get_setting('log_group_admin' if category=='admin' else 'log_group_content', None)
+                        if fallback_chat and bot:
+                            await bot.send_message(int(fallback_chat),
+                                f"🟢 <b>بازیابی سیستم لاگ</b>\n\nارسال لاگ به گروه دوباره برقرار شد.\n⏱ بازیابی: {health['recovered_at']}",
+                                parse_mode='HTML')
+                    except Exception:
+                        pass
+            # اگر delivery FAILED بود و فلگ هنوز False است، هشدار یک‌باره (سازگاری با قدیم)
+            if res.get("delivery") in ("FAILED", "ENQUEUE_FAILED"):
+                if not await _db.get_setting(alert_key, False):
+                    await _db.set_setting(alert_key, True)
+                    try:
+                        group_fa = 'لاگ مدیریت' if category == 'admin' else 'لاگ محتوا'
+                        chat_id = await _db.get_setting('log_group_admin' if category=='admin' else 'log_group_content', None)
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"🚨 <b>ارسال لاگ به گروه {group_fa} ناموفق بود</b>\n\n"
+                            f"🔑 گروه فعلی: <code>{chat_id}</code>\n"
+                            f"⚠️ خطا: <code>Delivery={res.get('delivery')}</code>\n\n"
+                            "💡 ربات از گروه حذف/اخراج شده یا گروه به سوپرگروه تبدیل شده. لطفاً دوباره تنظیمش کن.\n"
+                            "لاگ‌ها در دیتابیس محفوظ‌اند و صف Retry فعال است.",
+                            parse_mode='HTML')
+                    except Exception:
+                        pass
         except Exception:
             pass
-
-    return log_id
+        return res.get("audit_id") or res.get("event_id")
+    except Exception as e:
+        # اگر audit.py هر دلیلی fail شد (نباید)، fallback به مسیر قدیمی با log قابل مشاهده (§34)
+        logger.exception("audit_event delegation failed, falling back to legacy: %s", e)
+        try:
+            from database import db as _db2
+            log_id = await _db2.log_action(
+                actor_id, actor_name, actor_role, action, module, category,
+                severity, target_id, target_type, target_label,
+                before, after, details, tags, correlation_id,
+                event_id=event_id, actor_type=actor_type, source=source, channel=channel,
+                request_id=request_id, ip=ip, user_agent=user_agent, metadata=metadata,
+                result=result, status=status, error_code=error_code, error_message=error_message,
+                target_context=target_context,
+            )
+        except Exception as e2:
+            logger.exception("legacy log_action also failed: %s", e2)
+            raise
+        # تلاش ارسال best-effort (بدون شکستن business)
+        try:
+            group_key = 'log_group_admin' if category == 'admin' else 'log_group_content'
+            chat_id = await _db2.get_setting(group_key, None)
+            if chat_id and bot:
+                text = build_audit_log_text(
+                    category, actor_name, actor_id, action,
+                    module=module, details=details, severity=severity,
+                    actor_role=actor_role, target_id=target_id, target_type=target_type,
+                    target_label=target_label, before=before, after=after, tags=tags,
+                )
+                try:
+                    await bot.send_message(int(chat_id), text, parse_mode='HTML')
+                except Exception as ee:
+                    logger.warning(f"send_audit_log fallback delivery failed for chat {chat_id}: {ee}")
+        except Exception:
+            pass
+        return log_id
 
 
 # ══════════════════════════════════════════════════
@@ -739,3 +887,19 @@ def webapp_kb(link: str, label: str = '📱 باز کردن در هامزیار'
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(label, web_app=WebAppInfo(url=url))
     ]])
+
+
+# ─── Audit health helpers (proxy to audit.py مرکزی) ───
+def get_audit_delivery_health() -> dict:
+    try:
+        from audit import get_delivery_health as _h
+        return _h()
+    except Exception:
+        return {"is_healthy": True, "consecutive_failures": 0}
+
+async def get_audit_db_health(days: int = 7) -> dict:
+    try:
+        from database import db as _db
+        return await _db.get_audit_health_metrics()
+    except Exception:
+        return {}

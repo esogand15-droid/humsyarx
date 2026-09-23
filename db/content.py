@@ -14,7 +14,7 @@ from urllib.parse import quote
 from bson import ObjectId
 from pymongo import ReturnDocument
 import motor.motor_asyncio
-from time_utils import today_tehran, utc_now_iso, now_utc
+from time_utils import today_tehran, utc_now_iso, now_utc, format_date_fa, format_time_fa
 from question_bank.contracts import (
     DIFFICULTY_LABELS, and_query, approved_query, canonical_difficulty,
     canonical_status, status_query,
@@ -207,15 +207,77 @@ class DBContent:
         return await self.bs_content.find({'session_id': session_id}).sort('order', 1).to_list(50)
 
 
+    # ── 📄 File naming & branding — Step 4-14 of rename spec ──
     async def bs_add_content(self, session_id: str, ctype: str, file_id: str,
-                             description: str = '', extra_info: str = ''):
+                             description: str = '', extra_info: str = '',
+                             original_name: str = '', display_name: str = '',
+                             file_extension: str = '', mime_type: str = '',
+                             file_size: int = 0, branding_enabled: bool = False):
+        """
+        Extended with file-naming fields (backward compatible).
+        original_name: Telegram original file_name (or synthetic for photo)
+        display_name: admin-chosen final name (includes extension)
+        If display_name empty -> derived from original_name or fallback.
+        Handles duplicate (1), sanitization assumed done by caller; here
+        we defensively sanitize again and ensure extension preservation.
+        """
+        from utils_file_naming import (
+            prepare_rename, get_extension, sanitize_filename)
+        # Determine extension
+        ext = (file_extension or '').strip().lower().lstrip('.')
+        if not ext and display_name:
+            ext = get_extension(display_name)
+        if not ext and original_name:
+            ext = get_extension(original_name)
+        if not ext:
+            # infer from mime? keep empty
+            ext = ''
+        # Prepare display name via utility (sanitize + truncate + dedup)
+        existing = set()
+        try:
+            async for doc in self.bs_content.find({'session_id': session_id}, {'display_name': 1}):
+                dn = doc.get('display_name') or doc.get('display_file_name') or ''
+                if dn:
+                    existing.add(dn)
+        except Exception:
+            pass
+        # Choose user_input vs original
+        user_input = (display_name or '').strip()
+        orig_for_build = original_name or display_name or ''
+        # If both empty, fallback to generic
+        if not user_input and not orig_for_build:
+            fallback_base = 'فایل'
+            # use description as hint?
+            if description.strip():
+                fallback_base = sanitize_filename(description.strip()[:60]) or 'فایل'
+            user_input = fallback_base
+        prep = prepare_rename(user_input, orig_for_build or (mime_type or ''), existing_names=existing, fallback='فایل')
+        final_display = prep['display_name']
+        # If caller forced ext separately and prep didn't use it, fix
+        if ext and get_extension(final_display) != ext:
+            base = final_display.rsplit('.', 1)[0] if '.' in final_display else final_display
+            final_display = f"{base}.{ext}"
+        final_original = original_name or final_display
+        # Ensure original sanitized for storage but preserve as given for audit
+        mime = (mime_type or 'application/octet-stream').strip()[:120]
+        size = max(0, int(file_size or 0))
         count = await self.bs_content.count_documents({'session_id': session_id})
-        r = await self.bs_content.insert_one({
+        doc = {
             'session_id': session_id, 'type': ctype, 'file_id': file_id,
             'description': description, 'extra_info': extra_info,
             'order': count, 'uploaded_at': utc_now_iso(), 'downloads': 0,
-            'notif_sent': False,   # FIX جدید: برای batch نوتیف منابع جدید
-        })
+            'notif_sent': False,
+            # new naming fields
+            'original_file_name': final_original[:255],
+            'display_file_name': final_display[:255],
+            # legacy alias for older code (display || original)
+            'display_name': final_display[:255],
+            'file_extension': ext[:10],
+            'mime_type': mime,
+            'file_size': size,
+            'branding_enabled': bool(branding_enabled),
+        }
+        r = await self.bs_content.insert_one(doc)
         return r.inserted_id
 
 
@@ -416,6 +478,92 @@ class DBContent:
         except Exception:
             pass
 
+
+    def _resolve_display_name(self, doc: dict) -> str:
+        """Backward-compatible filename resolver (display||original||description||file_id)."""
+        for key in ('display_file_name', 'display_name', 'original_file_name', 'description'):
+            val = (doc or {}).get(key, '')
+            if isinstance(val, str) and val.strip():
+                # ensure extension preserved? just return
+                return val.strip()
+        # fallback: file_id short
+        fid = (doc or {}).get('file_id', '') or 'فایل'
+        return str(fid)[:40]
+
+    async def bs_update_content_filename(self, content_id: str, new_display: str) -> bool:
+        """Rename existing content (re-upload already done outside). Idempotent."""
+        try:
+            from utils_file_naming import sanitize_filename, get_extension, truncate_display_filename
+            # sanitize but keep ext
+            ext = get_extension(new_display)
+            base = new_display.rsplit('.', 1)[0] if ext and '.' in new_display else new_display
+            base = sanitize_filename(base)
+            final = f"{base}.{ext}" if ext else base
+            final = truncate_display_filename(final)
+            await self.bs_content.update_one({'_id': ObjectId(content_id)}, {'$set': {
+                'display_file_name': final[:255],
+                'display_name': final[:255],
+                'file_extension': ext[:10],
+            }})
+            return True
+        except Exception:
+            return False
+
+    async def migrate_file_naming(self):
+        """Idempotent migration: backfill missing naming fields for legacy docs."""
+        already = await self.get_setting('file_naming_migration_done', False)
+        if already:
+            return {'bs': 0, 'ref': 0, 'skipped': True}
+        bs_mod = 0
+        ref_mod = 0
+        # bs_content
+        async for doc in self.bs_content.find({'display_file_name': {'$exists': False}}):
+            # derive from description or file_id
+            hint = (doc.get('description') or '').strip()[:60] or 'فایل'
+            # use generic fallback + type as ext hint? keep plain
+            fallback = hint
+            # pick ext from type?
+            type_ext = {'pdf': 'pdf', 'ppt': 'pptx', 'video': 'mp4', 'voice': 'mp3'}.get(doc.get('type',''), '')
+            if type_ext and '.' not in fallback:
+                fallback = f"{fallback}.{type_ext}"
+            # try to store
+            try:
+                from utils_file_naming import get_extension, sanitize_filename
+                # simple
+                await self.bs_content.update_one({'_id': doc['_id']}, {'$set': {
+                    'display_file_name': fallback[:255],
+                    'display_name': fallback[:255],
+                    'original_file_name': fallback[:255],
+                    'file_extension': get_extension(fallback),
+                    'mime_type': 'application/octet-stream',
+                    'file_size': 0,
+                    'branding_enabled': False,
+                }})
+                bs_mod += 1
+            except Exception:
+                continue
+        async for doc in self.ref_files.find({'display_file_name': {'$exists': False}}):
+            hint = (doc.get('description') or '').strip()[:60] or f"رفرنس_{doc.get('volume',1)}"
+            fallback = hint
+            if '.' not in fallback:
+                fallback = f"{fallback}.pdf"
+            try:
+                from utils_file_naming import get_extension
+                await self.ref_files.update_one({'_id': doc['_id']}, {'$set': {
+                    'display_file_name': fallback[:255],
+                    'display_name': fallback[:255],
+                    'original_file_name': fallback[:255],
+                    'file_extension': get_extension(fallback),
+                    'mime_type': 'application/octet-stream',
+                    'file_size': 0,
+                    'branding_enabled': False,
+                }})
+                ref_mod += 1
+            except Exception:
+                continue
+        await self.set_setting('file_naming_migration_done', True)
+        logger.info(f"📄 file_naming migration: bs={bs_mod} ref={ref_mod}")
+        return {'bs': bs_mod, 'ref': ref_mod, 'skipped': False}
 
     async def search_resources(self, query_text: str, intake=None):
         """
@@ -741,17 +889,54 @@ class DBContent:
 
 
     async def ref_add_file(self, book_id: str, lang: str, file_id: str,
-                           volume: int = 1, description: str = ''):
-        # FIX جدید: notif_sent اضافه شد تا این فایل وارد صف نوتیف
-        # «منابع جدید» (همون jobـی که برای bs_content کار می‌کند) بشود.
-        # چه فایل کاملاً جدید باشد چه جایگزین‌شدن یک جلد/زبان موجود،
-        # از نظر دانشجو محتوای تازه است و باید در صف قرار بگیرد.
+                           volume: int = 1, description: str = '',
+                           original_name: str = '', display_name: str = '',
+                           file_extension: str = '', mime_type: str = '',
+                           file_size: int = 0, branding_enabled: bool = False):
+        # Extended with file-naming (backward compatible). See bs_add_content.
+        from utils_file_naming import prepare_rename, get_extension, sanitize_filename
+        ext = (file_extension or '').strip().lower().lstrip('.')
+        if not ext and display_name:
+            ext = get_extension(display_name)
+        if not ext and original_name:
+            ext = get_extension(original_name)
+        if not ext:
+            ext = ''
+        # collect existing display names for this book
+        existing_set = set()
+        try:
+            async for doc in self.ref_files.find({'book_id': book_id}, {'display_name': 1, 'display_file_name': 1}):
+                dn = doc.get('display_name') or doc.get('display_file_name') or ''
+                if dn:
+                    existing_set.add(dn)
+        except Exception:
+            pass
+        user_input = (display_name or '').strip()
+        orig_for_build = original_name or display_name or ''
+        if not user_input and not orig_for_build:
+            fallback_base = sanitize_filename(description.strip()[:60]) if description.strip() else 'فایل'
+            user_input = fallback_base or 'فایل'
+        prep = prepare_rename(user_input, orig_for_build or (mime_type or ''), existing_names=existing_set, fallback='فایل')
+        final_display = prep['display_name']
+        if ext and get_extension(final_display) != ext:
+            base = final_display.rsplit('.', 1)[0] if '.' in final_display else final_display
+            final_display = f"{base}.{ext}"
+        final_original = (original_name or final_display)[:255]
+        mime = (mime_type or 'application/octet-stream').strip()[:120]
+        size = max(0, int(file_size or 0))
         existing = await self.ref_files.find_one({'book_id': book_id, 'lang': lang, 'volume': volume})
         if existing:
             await self.ref_files.update_one({'_id': existing['_id']}, {'$set': {
                 'file_id': file_id, 'description': description,
                 'uploaded_at': utc_now_iso(),
                 'notif_sent': False,
+                'original_file_name': final_original,
+                'display_file_name': final_display[:255],
+                'display_name': final_display[:255],
+                'file_extension': ext[:10],
+                'mime_type': mime,
+                'file_size': size,
+                'branding_enabled': bool(branding_enabled),
             }})
             return str(existing['_id'])
         count = await self.ref_files.count_documents({'book_id': book_id})
@@ -760,6 +945,13 @@ class DBContent:
             'description': description, 'file_id': file_id,
             'uploaded_at': utc_now_iso(), 'downloads': 0, 'order': count,
             'notif_sent': False,
+            'original_file_name': final_original,
+            'display_file_name': final_display[:255],
+            'display_name': final_display[:255],
+            'file_extension': ext[:10],
+            'mime_type': mime,
+            'file_size': size,
+            'branding_enabled': bool(branding_enabled),
         })
         return str(r.inserted_id)
 
@@ -1063,35 +1255,122 @@ class DBContent:
     #  برنامه
     # ══════════════════════════════════════════════════
 
+    @staticmethod
+    def _sched_minutes(hm: str) -> int | None:
+        """HH:MM → دقیقه از نیمه‌شب؛ نامعتبر ⇒ None."""
+        try:
+            h, m = str(hm or '').strip().split(':')
+            h, m = int(h), int(m)
+            if 0 <= h < 24 and 0 <= m < 60:
+                return h * 60 + m
+        except (ValueError, AttributeError):
+            pass
+        return None
+
+    async def schedule_find_conflicts(self, group: str, date: str,
+                                      time: str, end_time: str = '',
+                                      exclude_id: str = '') -> list:
+        """🌊 W8/UX-05 — برنامه‌های هم‌گروهِ هم‌روز که بازه‌ی زمانی‌شان
+        با بازه‌ی داده‌شده هم‌پوشانی دارد (هشدار، نه خطا).
+
+        بدون ساعت ⇒ بدون تداخل؛ بدون end_time ⇒ ‎۹۰ دقیقه پیش‌فرض.
+        گروه «هر دو» با همه تداخل می‌کند. قالب‌های هفتگی (is_weekly)
+        چون تاریخ عینی ندارند لحاظ نمی‌شوند.
+        """
+        start = self._sched_minutes(time)
+        if start is None:
+            return []
+        end = self._sched_minutes(end_time)
+        if end is None or end <= start:
+            end = start + 90
+        group = (group or 'هر دو').strip()
+        cur = await self.schedules.find(
+            {'date': date, 'is_weekly': {'$ne': True}}).to_list(200)
+        out = []
+        for s in cur or []:
+            if exclude_id and str(s.get('_id')) == str(exclude_id):
+                continue
+            g = (s.get('group') or 'هر دو').strip()
+            if group != 'هر دو' and g != 'هر دو' and g != group:
+                continue
+            s0 = self._sched_minutes(s.get('time') or '')
+            if s0 is None:
+                continue
+            s1 = self._sched_minutes(s.get('end_time') or '')
+            if s1 is None or s1 <= s0:
+                s1 = s0 + 90
+            if start < s1 and s0 < end:
+                out.append({'id': str(s.get('_id')),
+                            'type': s.get('type', ''),
+                            'lesson': s.get('lesson', ''),
+                            'teacher': s.get('teacher', ''),
+                            'time': s.get('time', ''),
+                            'end_time': s.get('end_time', ''),
+                            'group': g})
+        return out
+
     async def add_schedule(self, stype: str, lesson: str, teacher: str,
                            date: str, time: str, location: str,
                            notes: str = '', group: str = 'هر دو', is_weekly: bool = False,
-                           flex_type: str = 'fixed', flex_note: str = ''):
+                           flex_type: str = 'fixed', flex_note: str = '', end_time: str = ''):
         """
         FIX جدید: flex_type — 'fixed' (ثابت) یا 'flexible' (منعطف).
         برای کلاس منعطف، flex_note آخرین زمان اعلام‌شده را نگه می‌دارد.
+        🕒 range: end_time اختیاری HH:MM برای بازه (08:00 تا 10:00) — اگر خالی باشد تک‌ساعت حساب می‌شود.
         """
         group = self.normalize_group(group) or 'هر دو'
-        r = await self.schedules.insert_one({
+        # normalize time/end_time: if time contains range like "08:00-10:00" split
+        _etime = (end_time or "").strip()
+        _stime = (time or "").strip()
+        if _stime and ("-" in _stime or "تا" in _stime) and not _etime:
+            try:
+                from time_utils import en_digits as _en
+                import re as _re
+                raw = _en(_stime).replace('—','-').replace('–','-').replace('تا','-')
+                times = _re.findall(r'(\d{1,2}:\d{2})', raw)
+                if len(times) >= 2:
+                    _stime = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                    _etime = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+                elif len(times)==1 and '-' in raw:
+                    # try 8-10 without colon
+                    parts = raw.split('-')
+                    if len(parts)==2:
+                        b = _re.search(r'(\d{1,2})', parts[1])
+                        if b:
+                            _etime = f"{int(b.group(1)):02d}:00"
+                            _stime = times[0]
+            except Exception:
+                pass
+        doc = {
             'type': stype, 'lesson': lesson, 'teacher': teacher,
-            'date': date, 'time': time, 'location': location,
+            'date': date, 'time': _stime, 'location': location,
             'notes': notes, 'group': group, 'is_weekly': is_weekly,
             'flex_type': flex_type, 'flex_note': flex_note,
             'created_at': utc_now_iso(), 'notified_days': [],
-        })
+        }
+        if _etime:
+            doc['end_time'] = _etime
+        r = await self.schedules.insert_one(doc)
         return r.inserted_id
 
 
-    async def update_schedule_time(self, sid: str, new_date: str, new_time: str, note: str = ''):
+    async def update_schedule_time(self, sid: str, new_date: str, new_time: str, note: str = '', end_time: str = ''):
         """
         FIX جدید: تغییر زمان یک کلاس منعطف — برای اعلام به‌روز شدن زمان
         برگزاری به دانشجویان استفاده می‌شود.
+        🕒 range: اگر end_time داده شد ذخیره می‌شود، در غیر این صورت پاک نمی‌شود تا داده قدیمی حفظ شود.
         """
         try:
+            payload = {'date': new_date, 'time': new_time, 'flex_note': note,
+                       'last_time_change': utc_now_iso()}
+            if end_time is not None and str(end_time).strip() != "":
+                payload['end_time'] = str(end_time).strip()
+            elif end_time == "":
+                # explicit empty -> remove? keep as empty to clear legacy range
+                payload['end_time'] = ""
             await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
-                {'$set': {'date': new_date, 'time': new_time, 'flex_note': note,
-                          'last_time_change': utc_now_iso()}}
+                {'$set': payload}
             )
             return True
         except Exception:
@@ -1134,22 +1413,26 @@ class DBContent:
     async def update_schedule_full(self, sid: str, lesson: str, teacher: str,
                                     date: str, time: str, location: str,
                                     notes: str = '', group: str = 'هر دو',
-                                    flex_type: str = 'fixed', flex_note: str = '') -> bool:
+                                    flex_type: str = 'fixed', flex_note: str = '', end_time: str = '') -> bool:
         """
         FIX جدید (بخش اول — ویرایش برنامه): ویرایش کامل همه فیلدهای یک
         برنامه‌ی موجود با یک UPDATE واحد. رکورد جدید ساخته نمی‌شود و
         ID برنامه دست‌نخورده باقی می‌ماند.
+        🕒 range: end_time اختیاری
         """
         try:
             group = self.normalize_group(group) or 'هر دو'
+            payload = {
+                'lesson': lesson, 'teacher': teacher, 'date': date, 'time': time,
+                'location': location, 'notes': notes, 'group': group,
+                'flex_type': flex_type, 'flex_note': flex_note,
+                'last_edited_at': utc_now_iso(),
+            }
+            if end_time is not None:
+                payload['end_time'] = str(end_time).strip()
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
-                {'$set': {
-                    'lesson': lesson, 'teacher': teacher, 'date': date, 'time': time,
-                    'location': location, 'notes': notes, 'group': group,
-                    'flex_type': flex_type, 'flex_note': flex_note,
-                    'last_edited_at': utc_now_iso(),
-                }}
+                {'$set': payload}
             )
             return result.matched_count > 0
         except Exception:
@@ -1221,9 +1504,14 @@ class DBContent:
         if teacher:
             html_lines.append(f'👨‍🏫 {escape(teacher)}')
             plain_lines.append(f'👨‍🏫 {teacher}')
-        when = f'📅 {escape(date)}' + (f'  ⏰ {escape(time)}' if time else '')
+        # 🛡 AUDIT-FIX (جلالی): تاریخ میلادیِ ذخیره‌سازی هرگز خام به کاربر
+        # نشان داده نمی‌شود — هم‌سبک مسیر ربات (schedule.py/bot.py).
+        date_fa = format_date_fa(date, long=True, weekday=True, date_only=True,
+                                 fallback=date) if date else ''
+        time_fa = format_time_fa(time, fallback=time) if time else ''
+        when = f'📅 {escape(date_fa)}' + (f'  ⏰ {escape(time_fa)}' if time_fa else '')
         html_lines.append(when)
-        plain_lines.append(f'📅 {date}' + (f'  ⏰ {time}' if time else ''))
+        plain_lines.append(f'📅 {date_fa}' + (f'  ⏰ {time_fa}' if time_fa else ''))
         if location:
             html_lines.append(f'📍 {escape(location)}')
             plain_lines.append(f'📍 {location}')
@@ -1253,6 +1541,241 @@ class DBContent:
             logger.warning('schedule notification failed (%s/%s): %s', stype, event, exc)
             return {'notified': 0, 'preference': pref, 'group': group}
 
+
+    # ══════════════════════════════════════════════════
+    #  📅 الگوهای هفتگی (شنبه-جمعه) — تکرار خودکار
+    #  هر الگو یک کلاسِ هفتگی است که در expand به تاریخ‌های واقعی تبدیل می‌شود
+    # ══════════════════════════════════════════════════
+
+    async def get_schedule_templates(self, group: str = None) -> list:
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        return await self.schedule_templates.find(q).sort([('weekday', 1), ('time', 1)]).to_list(500)
+
+    async def clear_schedule_templates(self, group: str = None) -> int:
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        r = await self.schedule_templates.delete_many(q)
+        return int(getattr(r, 'deleted_count', 0) or 0)
+
+    async def bulk_upsert_schedule_templates(self, items: list) -> dict:
+        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, end_time HH:MM?, lesson, teacher, location, group, flex_type."""
+        from time_utils import parse_clock_time, TimeContractError, en_digits
+        import re as _re
+        inserted = 0
+        updated = 0
+        skipped = 0
+        # dedup within batch by (weekday,time,end_time,lesson,group) to avoid double-counting divisions
+        seen_keys = set()
+        for raw in (items or []):
+            try:
+                wd = int(raw.get('weekday'))
+                if not 0 <= wd <= 6:
+                    skipped += 1
+                    continue
+                t_raw = str(raw.get('time') or '').strip()
+                et_raw = str(raw.get('end_time') or raw.get('time_end') or '').strip()
+                # support legacy "08:00-10:00" in time field
+                if t_raw and ("-" in t_raw or "تا" in t_raw) and not et_raw:
+                    # parse range
+                    tmp = en_digits(t_raw).replace('—','-').replace('–','-').replace('تا','-')
+                    times = _re.findall(r'(\d{1,2}:\d{2})', tmp)
+                    if len(times) >= 2:
+                        t_raw = f"{int(times[0].split(':')[0]):02d}:{times[0].split(':')[1]}"
+                        et_raw = f"{int(times[1].split(':')[0]):02d}:{times[1].split(':')[1]}"
+                    elif '-' in tmp:
+                        parts = tmp.split('-')
+                        if len(parts)==2:
+                            # handle "8-10"
+                            m1 = _re.search(r'(\d{1,2})', parts[0])
+                            m2 = _re.search(r'(\d{1,2})', parts[1])
+                            if m1 and m2:
+                                t_raw = f"{int(m1.group(1)):02d}:00"
+                                et_raw = f"{int(m2.group(1)):02d}:00"
+                # normalize AM/PM confusion: schedule never at 01:00-05:00 AM, so 01-05 means 13-17
+                def _fix_pm(hhmm: str) -> str:
+                    if not hhmm:
+                        return hhmm
+                    try:
+                        hh = int(hhmm.split(':')[0])
+                        mm = hhmm.split(':')[1]
+                        if 1 <= hh <= 5:
+                            # if already have valid end_time with 13-17 context, shift
+                            # heuristic: 01-05 always maps to 13-17 for university schedule
+                            hh += 12
+                            return f"{hh:02d}:{mm}"
+                        return hhmm
+                    except Exception:
+                        return hhmm
+                # only apply fix if raw contains no leading 1x already present? apply universally for 1-5
+                # but avoid double-shifting if already 13+; we already handle.
+                t = _fix_pm(en_digits(t_raw).strip())
+                et = _fix_pm(en_digits(et_raw).strip()) if et_raw else ""
+                # validate start
+                parse_clock_time(t)
+                if et:
+                    parse_clock_time(et)
+                    # ensure end after start
+                    st = parse_clock_time(t)
+                    en = parse_clock_time(et)
+                    if en.hour*60+en.minute <= st.hour*60+st.minute:
+                        skipped += 1
+                        continue
+                else:
+                    # synthesize common 2h block if possible from template time
+                    # keep empty to allow flexible; but for known intervals we synthesize
+                    # mapping: 08->10, 10->12, 13->15, 15->17, 17->19
+                    synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
+                    # apply only if t in synth and not flexible 1h?
+                    if t in synth:
+                        et = synth[t]
+                lesson = str(raw.get('lesson') or '').strip()
+                if not lesson:
+                    skipped += 1
+                    continue
+                group = self.normalize_group(raw.get('group') or 'هر دو') or 'هر دو'
+                flex_type = str(raw.get('flex_type') or 'fixed').strip().lower()
+                if flex_type not in ('fixed', 'flexible'):
+                    flex_type = 'flexible' if 'عمل' in lesson or 'آز' in lesson else 'fixed'
+                key = (wd, t, et, lesson, group)
+                if key in seen_keys:
+                    skipped += 1
+                    continue
+                seen_keys.add(key)
+                doc = {
+                    'weekday': wd,
+                    'time': t,
+                    'end_time': et,
+                    'lesson': lesson[:120],
+                    'teacher': str(raw.get('teacher') or '').strip()[:80],
+                    'location': str(raw.get('location') or '').strip()[:80],
+                    'group': group,
+                    'type': str(raw.get('type') or 'class').strip() or 'class',
+                    'flex_type': flex_type,
+                    'notes': str(raw.get('notes') or raw.get('note') or '').strip()[:300],
+                    'updated_at': utc_now_iso(),
+                }
+                # upsert by (weekday,time,lesson,group) — two rows at same time with different lesson both stay
+                # include end_time in lookup to distinguish different durations of same lesson (rare)
+                existing = await self.schedule_templates.find_one({
+                    'weekday': wd, 'time': t, 'lesson': doc['lesson'], 'group': group
+                })
+                if existing:
+                    await self.schedule_templates.update_one({'_id': existing['_id']}, {'$set': doc})
+                    updated += 1
+                else:
+                    doc['created_at'] = utc_now_iso()
+                    await self.schedule_templates.insert_one(doc)
+                    inserted += 1
+            except (TimeContractError, ValueError, TypeError, AttributeError):
+                skipped += 1
+                continue
+        return {'inserted': inserted, 'updated': updated, 'skipped': skipped, 'total': inserted + updated}
+
+    async def generate_schedules_from_templates(self, start_date: str, end_date: str, group: str = None, dry_run: bool = False) -> dict:
+        """Expand weekly templates into dated schedules for range inclusive."""
+        from time_utils import parse_gregorian_date, parse_jalali_date, en_digits, TimeContractError
+        # parse start/end — accept jalali YYYY/MM/DD or gregorian YYYY-MM-DD
+        def _to_date(s: str):
+            raw = str(s or '').strip()
+            if not raw:
+                raise TimeContractError('empty date')
+            normalized = ''.join(c for c in en_digits(raw) if c.isprintable()).strip().replace('/', '-').replace('\\\\', '-')
+            # decide jalali vs gregorian by year range
+            try:
+                y = int(normalized.split('-', 1)[0])
+                if 1200 <= y <= 1600:
+                    return parse_jalali_date(raw)
+                return parse_gregorian_date(normalized)
+            except Exception:
+                raise TimeContractError(f'invalid date: {s}')
+        try:
+            start = _to_date(start_date)
+            end = _to_date(end_date)
+        except TimeContractError as e:
+            return {'ok': False, 'error': str(e)}
+        if end < start:
+            return {'ok': False, 'error': 'end_before_start'}
+        # fetch templates
+        q = {}
+        if group:
+            q['group'] = self.normalize_group(group)
+        templates = await self.schedule_templates.find(q).to_list(500)
+        if not templates:
+            return {'ok': False, 'error': 'no_templates'}
+        created = 0
+        skipped = 0
+        preview = []
+        cur = start
+        while cur <= end:
+            wd = (cur.weekday() - 5) % 7  # 0=Sat
+            day_str = cur.isoformat()
+            for tpl in templates:
+                if int(tpl.get('weekday')) != wd:
+                    continue
+                # idempotent: check existing schedule with same date/time/lesson/group/type
+                # include end_time for range uniqueness (e.g., 08-10 vs 08-12)
+                q_exist = {
+                    'date': day_str,
+                    'time': tpl.get('time'),
+                    'lesson': tpl.get('lesson'),
+                    'group': tpl.get('group'),
+                    'type': tpl.get('type', 'class'),
+                }
+                # if template has end_time, also match it (but fallback to match without for legacy schedules)
+                if tpl.get('end_time'):
+                    q_exist['end_time'] = tpl.get('end_time')
+                exists = await self.schedules.find_one(q_exist)
+                if not exists and tpl.get('end_time'):
+                    # legacy schedule without end_time field — treat as duplicate if same date/time/lesson exists
+                    alt = await self.schedules.find_one({
+                        'date': day_str,
+                        'time': tpl.get('time'),
+                        'lesson': tpl.get('lesson'),
+                        'group': tpl.get('group'),
+                        'type': tpl.get('type', 'class'),
+                    })
+                    if alt:
+                        exists = alt
+                if exists:
+                    skipped += 1
+                    continue
+                preview.append({
+                    'date': day_str,
+                    'weekday': wd,
+                    'time': tpl.get('time'),
+                    'end_time': tpl.get('end_time',''),
+                    'lesson': tpl.get('lesson'),
+                    'teacher': tpl.get('teacher', ''),
+                    'location': tpl.get('location', ''),
+                    'group': tpl.get('group'),
+                    'type': tpl.get('type', 'class'),
+                    'flex_type': tpl.get('flex_type', 'fixed'),
+                })
+                if not dry_run:
+                    doc = {
+                        'type': tpl.get('type', 'class'),
+                        'lesson': tpl.get('lesson'),
+                        'teacher': tpl.get('teacher', ''),
+                        'date': day_str,
+                        'time': tpl.get('time'),
+                        'end_time': tpl.get('end_time',''),
+                        'location': tpl.get('location', ''),
+                        'notes': tpl.get('notes', ''),
+                        'group': tpl.get('group'),
+                        'is_weekly': False,
+                        'flex_type': tpl.get('flex_type', 'fixed'),
+                        'flex_note': '',
+                        'created_at': utc_now_iso(),
+                        'notified_days': [],
+                    }
+                    # keep time field clean (no range)
+                    await self.schedules.insert_one(doc)
+                    created += 1
+            cur = cur + timedelta(days=1)
+        return {'ok': True, 'created': created if not dry_run else 0, 'skipped': skipped, 'preview': preview[:50], 'total_matched': len(preview), 'dry_run': dry_run}
 
     async def upcoming_exams(self, days: int = 7, group: str = None):
         """Return near exams, optionally limited to a student's group.
@@ -1331,6 +1854,27 @@ class DBContent:
         except Exception as e:
             logger.error(f"faq_delete failed for {fid}: {e}")
             return None
+
+
+    async def faq_update(self, fid: str, data: dict):
+        """ویرایش سؤال متداول — فیلدهای مجاز: question/answer/category/order."""
+        allowed = {'question', 'answer', 'category', 'order'}
+        payload = {k: v for k, v in (data or {}).items() if k in allowed}
+        if not payload:
+            return False
+        # اعتبارسنجی سبک
+        if 'question' in payload and not str(payload['question']).strip():
+            return False
+        if 'answer' in payload and not str(payload['answer']).strip():
+            return False
+        if 'category' in payload:
+            payload['category'] = str(payload['category']).strip() or 'عمومی'
+        try:
+            r = await self.faq.update_one({'_id': ObjectId(fid)}, {'$set': payload})
+            return bool(r.matched_count)
+        except Exception as e:
+            logger.error(f"faq_update failed for {fid}: {e}")
+            return False
 
 
     async def seed_subscription_copyright_faqs(self):
@@ -1468,6 +2012,14 @@ class DBContent:
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(c['_id']),
+                # carry file naming fields
+                'original_file_name': c.get('original_file_name', ''),
+                'display_file_name': c.get('display_file_name', ''),
+                'display_name': c.get('display_name', c.get('display_file_name', '')),
+                'file_extension': c.get('file_extension', ''),
+                'mime_type': c.get('mime_type', ''),
+                'file_size': c.get('file_size', 0),
+                'branding_enabled': c.get('branding_enabled', False),
             })
         return new_sid
 
@@ -1516,6 +2068,14 @@ class DBContent:
                 'downloads': 0,
                 'notif_sent': True,
                 'fork_of': str(f['_id']),
+                # carry file naming fields
+                'original_file_name': f.get('original_file_name', ''),
+                'display_file_name': f.get('display_file_name', ''),
+                'display_name': f.get('display_name', f.get('display_file_name', '')),
+                'file_extension': f.get('file_extension', ''),
+                'mime_type': f.get('mime_type', ''),
+                'file_size': f.get('file_size', 0),
+                'branding_enabled': f.get('branding_enabled', False),
             })
         return new_bid
 
@@ -1839,23 +2399,8 @@ class DBContent:
                              description: str, filename: str, mime_type: str,
                              size: int, telegram_file_id: str, uploaded_by: int,
                              file_type: str = 'document'):
-        document = {
-            'intake': str(intake or ''),
-            'lesson': str(lesson or '').strip()[:100],
-            'topic': str(topic or '').strip()[:100],
-            'description': str(description or '').strip()[:500],
-            'filename': str(filename or 'file')[:255],
-            'mime_type': str(mime_type or 'application/octet-stream')[:120],
-            'size': max(0, int(size or 0)),
-            'file_id': str(telegram_file_id),
-            'file_type': str(file_type or 'document')[:30],
-            'downloads': 0,
-            'uploaded_by': int(uploaded_by),
-            'created_at': utc_now_iso(),
-        }
-        result = await self.qbank_files.insert_one(document)
-        document['_id'] = result.inserted_id
-        return document
+        # کالکشن qbank_files تا تأیید مهاجرت واقعی حذف نمی‌شود؛ فقط نوشتن تازه بسته است.
+        raise RuntimeError('legacy_qbank_frozen')
 
 
     async def qbank_file_delete(self, file_id: str) -> bool:

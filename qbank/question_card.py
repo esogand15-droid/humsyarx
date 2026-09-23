@@ -11,7 +11,7 @@
 """
 from reportlab.lib.units import mm
 
-from qbank.fonts_rtl import rtl, wrap_rtl, text_width, REGULAR, MEDIUM, BOLD
+from qbank.fonts_rtl import rtl, fa_digits, wrap_rtl, text_width, REGULAR, MEDIUM, BOLD
 from qbank.styles import (
     PAGE_W, MARGIN, CONTENT_W, TEXT_DARK, TEXT_BODY, GRAY, WHITE,
     BRAND_GREEN, CARD_BG, CARD_BORDER, OPT_BG, OPT_BORDER, OPT_LETTERS,
@@ -100,6 +100,12 @@ def draw_question_card(c, q: dict, index: int, y: float, show_answer: bool = Tru
     card_h = measure_card_height(q, show_answer, question_image) - 6 * mm
     card_top = y
 
+    # soft shadow
+    from reportlab.lib.colors import HexColor
+    c.setFillColor(HexColor('#e6e8ec'))
+    c.setFillAlpha(0.55)
+    c.roundRect(MARGIN + 0.7*mm, card_top - card_h - 0.7*mm, CONTENT_W, card_h, 3 * mm, fill=1, stroke=0)
+    c.setFillAlpha(1)
     c.setFillColor(CARD_BG)
     c.roundRect(MARGIN, card_top - card_h, CONTENT_W, card_h, 3 * mm, fill=1, stroke=0)
     c.setStrokeColor(CARD_BORDER)
@@ -116,7 +122,7 @@ def draw_question_card(c, q: dict, index: int, y: float, show_answer: bool = Tru
     c.circle(bx, row_y, badge_r, fill=1, stroke=0)
     c.setFillColor(WHITE)
     c.setFont(BOLD, 11)
-    c.drawCentredString(bx, row_y - 3.6, str(index))
+    c.drawCentredString(bx, row_y - 3.6, fa_digits(index))
 
     cursor_x = bx - badge_r - 4 * mm  # لبه‌ی راستِ فضای باقی‌مانده، برای عناصر بعدی سمت چپ بج
 

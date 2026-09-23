@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, errText } from '../api.js';
 import { DataTable, Loading, ErrorState, B, FaDateTime, FilterBar, PageHeader, ScopeBadge, toast, Drawer, Modal, Empty, NoPerm } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
+import { formatFaDateTime } from '../time.js';
 import { queryNumber, readHashQuery, writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
@@ -18,7 +19,10 @@ const SRC = {
 const CLASS_LABEL = {
   ready: 'آماده', error: 'خطای ساختار', unmatched: 'taxonomy نامشخص', ambiguous: 'taxonomy مبهم',
   exact_duplicate: 'تکراری قطعی', probable_duplicate: 'احتمالاً تکراری', conflict: 'تعارض پاسخ',
+  ready_pending_image: 'منتظر تصویر',
 };
+// 🌊 QBANK-W1 — برچسب فارسی ۵ منبع محتوا (هم‌راستا با contracts.CONTENT_SOURCES)
+const CONTENT_SRC = { hamsyar: 'بانک اختصاصی همشیار', konkoor_sarasari: 'کنکور سراسری علوم پایه', sib_sabz: 'سیب سبز', prognoz: 'پروگنوز', other: 'سایر' };
 
 // §W9 — نگاشتِ سطحِ شدتِ گزارش به نشانِ بصری. آستانه‌ها سمتِ سرور
 // تعیین می‌شوند (قابلِ تنظیم)؛ اینجا فقط نمایش است.
@@ -68,6 +72,9 @@ export default function Questions({ route = '', go }) {
   const [delTarget, setDelTarget] = useState(null); // {id, question, reason}
   const [createOpen, setCreateOpen] = useState(new URLSearchParams(route.split('?')[1] || '').get('create') === '1');
   const [importOpen, setImportOpen] = useState(false);
+  // 🌊 WA22 — سلامت سؤال + نمای ۳۶۰
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [q360Id, setQ360Id] = useState(null);
   const LIMIT = 30;
 
   // §W9 — شمارشِ گزارشِ باز برای سؤال‌های همین صفحه. یک درخواستِ
@@ -143,17 +150,18 @@ export default function Questions({ route = '', go }) {
   if (err) return <ErrorState error={err} onRetry={load} />;
 
   const columns = [
-    { k: 'question', label: 'سؤال', render: row => <div style={{ maxWidth: 350, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.question}</div> },
+    { k: 'question', label: 'سؤال', render: row => <div style={{ maxWidth: 350, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.image_pending ? '⏳ ' : ''}{row.question}</div> },
     { k: 'lesson', label: 'درس/مبحث', render: row => <div>{row.lesson}<small className="muted" style={{ display: 'block' }}>{row.topic}</small></div> },
     { k: 'difficulty', label: 'سختی', sortable: true, render: row => { const [label, kind] = DIFF[row.difficulty] || ['—', '']; return <B kind={kind}>{label}</B>; } },
     { k: 'creator', label: 'طراح', stop: true, render: row => <button className="btn sm" disabled={!row.creator_id} onClick={() => go?.(`/users?q=${row.creator_id}`)}>{row.creator_name || '—'}<small className="muted" style={{ display: 'block' }}>{SRC[row.source] || row.source}</small></button> },
     { k: 'intake', label: 'ورودی', render: row => row.intake || <B>سراسری</B> },
+    { k: 'yearsrc', label: 'سال/منبع', render: row => <div>{row.exam_year ? <B kind="purple">📅 {row.exam_year}</B> : <span className="muted">—</span>}<small className="muted" style={{ display: 'block' }}>{CONTENT_SRC[row.content_source] || row.content_source_label_fa || '—'}</small></div> },
     { k: 'status', label: 'چرخه عمر', render: row => { const [label, kind] = STATUS[row.status] || [row.status, '']; return <div><B kind={kind}>{label}</B>{row.review_reason && <small className="muted" style={{ display: 'block', maxWidth: 180 }}>{row.review_reason}</small>}</div>; } },
     { k: 'reports', label: 'گزارش', render: row => {
       const info = reportMap[row.id];
       if (!info?.open) return <span className="muted">—</span>;
       const [label, kind] = SEVERITY[info.severity] || ['', 'warn'];
-      return <B kind={kind || 'warn'} title={`آخرین گزارش: ${info.last_report_at || '—'}`}>
+      return <B kind={kind || 'warn'} title={`آخرین گزارش: ${info.last_report_at ? formatFaDateTime(info.last_report_at) : '—'}`}>
         ⚠️ {fa(info.open)}{label ? ` · ${label}` : ''}
       </B>;
     } },
@@ -161,6 +169,7 @@ export default function Questions({ route = '', go }) {
     { k: 'created_at', label: 'ایجاد', sortable: true, render: row => <FaDateTime value={row.created_at} /> },
     { k: 'ops', label: '', stop: true, render: row => <div className="row" style={{ gap: 4 }}>
       <button className="btn sm" aria-label="مشاهده سؤال" onClick={() => setDetail(row)}>👁</button>
+      <button className="btn sm" aria-label="نمای ۳۶۰ سؤال" title="نمای ۳۶ سؤال" onClick={() => setQ360Id(row.id)}>🩺</button>
       {row.can_approve && <button className="btn sm ok" aria-label="تأیید سؤال" onClick={() => approve(row.id)}>✅</button>}
       {row.can_reject && <button className="btn sm" aria-label="درخواست اصلاح" onClick={() => setReview({ action: 'needs_changes', ids: [row.id], reason: '' })}>✏️</button>}
       {row.can_reject && <button className="btn sm danger" aria-label="رد سؤال" onClick={() => setReview({ action: 'reject', ids: [row.id], reason: '' })}>❌</button>}
@@ -172,9 +181,13 @@ export default function Questions({ route = '', go }) {
 
   return <>
     <PageHeader title="بازبینی سؤال‌ها" description="دامنه مشترک ربات، API و وب‌ادمین؛ رد بدون حذف داده و اصلاح با ارسال مجدد" actions={<>
+      <button className="btn" title="صف سلامت: سیگنال‌های منفی داده‌ای، بدترین‌ها اول" onClick={() => setHealthOpen(true)}>🩺 سلامت سؤال‌ها</button>
       <button className="btn primary" onClick={() => setCreateOpen(true)}>➕ پیشنهاد سؤال</button>
       <button className="btn" onClick={() => setImportOpen(true)}>📥 JSON نسخه‌دار</button>
       <button className="btn" title="خروجی CSV از سؤال‌های فیلترشده" onClick={() => api.exportQuestionsCsv({ status, intake, q: query, difficulty: fdiff, source: fsrc, author, date_from: dateFrom, date_to: dateTo, sort_by: sortBy, sort_dir: sortDir })}>📤 CSV</button>
+      <button className="btn" title="خروجی PDF تمرینی از سؤال‌های انتخاب‌شده (حد ۱۰۰)" disabled={selected.length===0} onClick={async () => { try { await api.exportQuestionsPdf(selected, 'practice'); toast('PDF تمرینی آماده شد 📄'); } catch(e){ toast(errText(e),'err'); } }}>📄 PDF تمرینی</button>
+      <button className="btn" title="خروجی PDF آزمونی از سؤال‌های انتخاب‌شده (پاسخنامه جدا)" disabled={selected.length===0} onClick={async () => { try { await api.exportQuestionsPdf(selected, 'exam'); toast('PDF آزمونی آماده شد 📝'); } catch(e){ toast(errText(e),'err'); } }}>📝 PDF آزمونی</button>
+      {selected.length > 0 && <B kind="warn">📄 {fa(selected.length)} برای PDF انتخاب</B>}
       {status === 'pending' && selected.length > 0 && <>
         <B kind="acc">{fa(selected.length)} انتخاب</B>
         {selected.every(id => rows?.find(row => row.id === id)?.can_approve) && <button className="btn sm ok" onClick={bulkApprove}>✅ تأیید گروهی</button>}
@@ -227,6 +240,8 @@ export default function Questions({ route = '', go }) {
     {bulkResult && <Modal title="نتیجه عملیات گروهی" onClose={() => setBulkResult(null)}><div className="row"><B kind="ok">موفق {fa(bulkResult.succeeded?.length)}</B><B>ردشده {fa(bulkResult.skipped?.length)}</B><B kind="bad">ناموفق {fa(bulkResult.failed?.length)}</B></div>{[...(bulkResult.skipped || []), ...(bulkResult.failed || [])].slice(0, 30).map((item, i) => <div key={`${item.id}-${i}`} className="row"><span className="code">{item.id}</span><span className="muted">{item.reason || item.error}</span></div>)}</Modal>}
     {createOpen && <QuestionCreateModal intake={intake} onClose={ok => { setCreateOpen(false); if (ok) load(); }} />}
     {importOpen && <ImportWizard onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); load(); }} />}
+    {healthOpen && <HealthDrawer onClose={() => setHealthOpen(false)} on360={id => { setHealthOpen(false); setQ360Id(id); }} />}
+    {q360Id && <Question360Drawer qid={q360Id} onClose={() => setQ360Id(null)} />}
   </>;
 }
 
@@ -372,6 +387,7 @@ function ImportWizard({ onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [mapItem, setMapItem] = useState(null);
+  const [jobSource, setJobSource] = useState('');
   useEffect(() => { api.questionImportPrompt().then(setPrompt).catch(e => { const message = e.status === 403 ? 'درون‌ریزی JSON فقط برای مالک فعال است.' : errText(e); setPromptError(message); toast(message, 'err'); }); }, []);
   const loadItems = async (jobId = preview?.job_id, cls = classification) => {
     if (!jobId) return;
@@ -380,7 +396,7 @@ function ImportWizard({ onClose, onDone }) {
   };
   const upload = async () => {
     if (!file) return; setBusy(true);
-    try { const data = await api.questionImportUpload(file); setPreview(data); await loadItems(data.job_id, ''); }
+    try { const data = await api.questionImportUpload(file, jobSource || undefined); setPreview(data); await loadItems(data.job_id, ''); }
     catch (e) { toast(errText(e), 'err'); }
     setBusy(false);
   };
@@ -396,16 +412,17 @@ function ImportWizard({ onClose, onDone }) {
     {!preview && !promptError && <>
       <div className="panel panel-pad" style={{ background: 'var(--bg)' }}><b>۱. استخراج خارج از سامانه</b><p className="muted">prompt نسخه {prompt?.schema_version || '۱.۰'} را کپی کنید، PDF را با آن به مدل بدهید و فقط JSON خروجی را بارگذاری کنید. ورود مستقیم یا فایل با تعداد گزینه غیر از چهار رد می‌شود.</p>
         <button className="btn" disabled={!prompt} onClick={() => navigator.clipboard?.writeText(prompt?.prompt || '').then(() => toast('prompt کپی شد'))}>📋 کپی prompt و schema</button></div>
-      <div className="panel panel-pad" style={{ marginTop: 10 }}><b>۲. بارگذاری برای validation و preview</b><input className="inp" type="file" accept="application/json,.json" onChange={e => setFile(e.target.files?.[0] || null)} style={{ marginTop: 10 }} /><button className="btn primary" disabled={!file || busy || !prompt} onClick={upload} style={{ marginTop: 10 }}>{busy ? 'در حال تحلیل…' : 'ساخت پیش‌نمایش'}</button></div>
+      <div className="panel panel-pad" style={{ marginTop: 10 }}><b>۲. بارگذاری برای validation و preview</b><input className="inp" type="file" accept="application/json,.json" onChange={e => setFile(e.target.files?.[0] || null)} style={{ marginTop: 10 }} /><select className="inp" value={jobSource} onChange={e => setJobSource(e.target.value)} style={{ marginTop: 10 }} title="منبع کل این بچ (اختیاری؛ مقدار سطح ردیف اولویت دارد)"><option value="">منبع بچ: پیش‌فرض (همشیار)</option>{Object.entries(CONTENT_SRC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select><button className="btn primary" disabled={!file || busy || !prompt} onClick={upload} style={{ marginTop: 10 }}>{busy ? 'در حال تحلیل…' : 'ساخت پیش‌نمایش'}</button></div>
     </>}
     {preview && !result && <>
-      <div className="row" style={{ flexWrap: 'wrap' }}><B>کل {fa(counts.total)}</B><B kind="ok">آماده {fa(counts.ready)}</B><B kind="bad">خطا {fa(counts.errors)}</B><B kind="warn">نامشخص/مبهم {fa(Number(counts.unmatched || 0) + Number(counts.ambiguous || 0))}</B><B>تکراری قطعی {fa(counts.exact_duplicates)}</B><B kind="purple">احتمالی/تعارض {fa(Number(counts.probable_duplicates || 0) + Number(counts.conflicts || 0))}</B></div>
+      <div className="row" style={{ flexWrap: 'wrap' }}><B>کل {fa(counts.total)}</B><B kind="ok">آماده {fa(counts.ready)}</B><B kind="purple">🖼 منتظر تصویر {fa(counts.pending_images)}</B><B kind="bad">خطا {fa(counts.errors)}</B><B kind="warn">نامشخص/مبهم {fa(Number(counts.unmatched || 0) + Number(counts.ambiguous || 0))}</B><B>تکراری قطعی {fa(counts.exact_duplicates)}</B><B kind="purple">احتمالی/تعارض {fa(Number(counts.probable_duplicates || 0) + Number(counts.conflicts || 0))}</B></div>
       <div className="muted" style={{ marginTop: 8 }}>job: <span className="code">{preview.job_id}</span> · فایل: {preview.file_name} · تأیید نهایی idempotent است.</div>
+      {(preview.inferred_exam_year || preview.inferred_exam_track || (preview.years || []).length > 0 || (preview.sources || []).length > 0) && <div className="panel panel-pad" style={{ marginTop: 8, background: 'var(--bg)' }}><b>🌊 سال/منبع/TRACK</b><div className="row" style={{ marginTop: 6, flexWrap: 'wrap' }}>{preview.inferred_exam_year && <B kind="purple">📅 سال فایل: {preview.inferred_exam_year}</B>}{preview.inferred_exam_track && <B>{preview.inferred_exam_track === 'dentistry' ? '🦷 دندان‌پزشکی' : '🩺 پزشکی'}</B>}{preview.job_content_source && <B kind="ok">🏷 {CONTENT_SRC[preview.job_content_source] || preview.job_content_source}</B>}{(preview.years || []).map(y => <B key={y.year || '؟'}>سال {y.year || 'نامشخص'}: {fa(y.count)}</B>)}{(preview.sources || []).map(g => <B key={g.source || '؟'}>{CONTENT_SRC[g.source] || g.source || '—'}: {fa(g.count)}</B>)}</div></div>}
       <div className="grid g2" style={{ marginTop: 10 }}>{(preview.classification || []).map(group => <div className="panel panel-pad" key={group.lesson}><b>{group.lesson} · {fa(group.count)}</b><div className="muted">{group.topics.map(t => `${t.topic} (${fa(t.count)})`).join('، ')}</div></div>)}</div>
       <div className="row" style={{ marginTop: 12 }}><select className="inp" value={classification} onChange={async e => { setClassification(e.target.value); await loadItems(preview.job_id, e.target.value); }}><option value="">همه ردیف‌ها</option>{Object.entries(CLASS_LABEL).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select><button className="btn" onClick={refresh}>↻ تازه‌سازی</button></div>
       <DataTable columns={[
         { k: 'row', label: 'ردیف', render: x => fa(x.row) },
-        { k: 'question', label: 'سؤال', render: x => <div style={{ maxWidth: 280 }}>{x.normalized?.question || x.external_id}<small className="muted" style={{ display: 'block' }}>{x.taxonomy?.lesson || x.raw?.lesson || '—'} / {x.taxonomy?.topic || x.raw?.topic || '—'}</small></div> },
+        { k: 'question', label: 'سؤال', render: x => <div style={{ maxWidth: 280 }}>{x.needs_image && <span title="سؤال تصویری — قبل از رد به‌عنوان تکراری، تصویرها را مقایسه کنید">🖼 </span>}{x.normalized?.question || x.external_id}<small className="muted" style={{ display: 'block' }}>{x.taxonomy?.lesson || x.raw?.lesson || '—'} / {x.taxonomy?.topic || x.raw?.topic || '—'}</small>{x.needs_image && x.image_ref && <small className="muted" style={{ display: 'block' }}>📄 ص {x.image_ref.page || x.source_page || '؟'}{x.image_ref.position ? ` · ${x.image_ref.position}` : ''}</small>}</div> },
         { k: 'class', label: 'طبقه‌بندی', render: x => <B kind={x.classification === 'ready' ? 'ok' : x.classification === 'error' ? 'bad' : 'warn'}>{CLASS_LABEL[x.classification] || x.classification}</B> },
         { k: 'issue', label: 'جزئیات', render: x => <span className="muted">{x.errors?.join('، ') || x.duplicate?.question || '—'}</span> },
         { k: 'ops', label: '', stop: true, render: x => <div className="row">{['unmatched', 'ambiguous'].includes(x.classification) && <button className="btn sm" onClick={() => setMapItem(x)}>🧭 نگاشت</button>}{['probable_duplicate', 'conflict'].includes(x.classification) && <><button className="btn sm ok" onClick={() => decision(x, 'import')}>ورود</button><button className="btn sm" onClick={() => decision(x, 'skip')}>ردیابی و رد</button></>}{x.decision && <B>{x.decision}</B>}</div> },
@@ -420,4 +437,90 @@ function ImportWizard({ onClose, onDone }) {
 function ImportMapModal({ item, onClose, onSave }) {
   const [value, setValue] = useState({ lesson_id: '', topic_id: '', lesson: '', topic: '' });
   return <Modal title={`نگاشت taxonomy ردیف ${fa(item.row)}`} onClose={onClose}><TaxonomyFields intake="" value={value} onChange={setValue} /><div className="muted" style={{ marginTop: 8 }}>مقدار ورودی: {item.raw?.lesson || '—'} / {item.raw?.topic || '—'}</div><div className="row" style={{ marginTop: 12 }}><button className="btn primary" disabled={!value.lesson_id || !value.topic_id} onClick={() => onSave(value)}>ثبت نگاشت</button><button className="btn" onClick={onClose}>انصراف</button></div></Modal>;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 🌊 WA22 — سلامت سؤال + نمای ۳۶۰
+// ══════════════════════════════════════════════════════════════════
+
+function scoreKind(score) { return score >= 45 ? 'bad' : score >= 20 ? 'warn' : 'ok'; }
+
+function HealthDrawer({ onClose, on360 }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setData(null); api.questionHealth({ limit: 100 }).then(setData).catch(e => setErr(errText(e))); };
+  useEffect(load, []);
+  return <Drawer wide title="🩺 سلامت سؤال‌ها" onClose={onClose}>
+    <p className="muted" style={{ marginTop: 0 }}>فقط سیگنال‌های موجود در داده: گزارش باز، نرخ پاسخ غلط (با حداقل تلاش ثبت‌شده) و نبود توضیح. بدترین‌ها اول.</p>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !data && <Loading />}
+    {data && <>
+      <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+        <B kind="bad">{fa(data.summary.needs_review)} نیازمند بازبینی</B>
+        <B>{fa(data.summary.considered)} بررسی‌شده</B>
+      </div>
+      <DataTable rowKey="id" rows={data.items} empty={<Empty icon="🩺" text="هیچ سؤالی سیگنال منفی ندارد" />} columns={[
+        { k: 'question', label: 'سؤال', render: r => <div style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.question}</div> },
+        { k: 'score', label: 'امتیاز بیماری', render: r => <B kind={scoreKind(r.score)}>{fa(r.score)}</B> },
+        { k: 'signals', label: 'سیگنال‌ها', render: r => <div>{(r.signals || []).map(s => <div key={s.key}><small className="muted">{s.label}</small></div>)}</div> },
+        { k: 'attempts', label: 'تلاش/دقت', render: r => `${fa(r.attempt_count)} · ${fa(Math.round((1 - (r.wrong_rate || 0)) * 100))}٪` },
+        { k: 'ops', label: '', stop: true, render: r => <button className="btn sm" aria-label="نمای ۳۶۰ سؤال" onClick={() => on360(r.id)}>۳۶۰</button> },
+      ]} />
+    </>}
+  </Drawer>;
+}
+
+function Question360Drawer({ qid, onClose }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
+  const load = () => { setErr(''); setD(null); api.question360(qid).then(setD).catch(e => setErr(errText(e))); };
+  useEffect(load, [qid]);
+  return <Drawer wide title="🩺 نمای ۳۶۰ سؤال" onClose={onClose}>
+    {err && <ErrorState error={err} onRetry={load} />}
+    {!err && !d && <Loading />}
+    {d && <>
+      <div className="panel panel-pad" style={{ background: 'var(--bg)', marginBottom: 10 }}>
+        <div style={{ fontWeight: 700 }}>{d.question.question || '—'}</div>
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          <B kind={(STATUS[d.question.status] || [d.question.status, ''])[1]}>{(STATUS[d.question.status] || [d.question.status])[0]}</B>
+          <B>{d.question.lesson || '—'} / {d.question.topic || '—'}</B>
+          <B>{(DIFF[d.question.difficulty] || ['—'])[0]}</B>
+          {d.question.intake ? <B kind="acc">{d.question.intake}</B> : <B>سراسری</B>}
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>طراح: {d.question.creator_name || d.question.creator_id || '—'} · منبع: {SRC[d.question.source] || d.question.source || '—'} · <FaDateTime value={d.question.created_at} /></div>
+        {(d.question.options || []).length > 0 && <ol style={{ margin: '8px 0 0', paddingInlineStart: 18 }}>
+          {d.question.options.map((o, i) => <li key={i} style={Number(i) === Number(d.question.correct_answer) ? { fontWeight: 700 } : undefined}>{o}</li>)}
+        </ol>}
+        {d.question.explanation && <div className="muted" style={{ marginTop: 6 }}>توضیح: {d.question.explanation}</div>}
+        {Number(d.question.twins) > 0 && <div style={{ marginTop: 6 }}><B kind="warn">⚠️ {fa(d.question.twins)} نسخه‌ی هم‌محتوا (content_hash)</B></div>}
+      </div>
+      {d.section_errors?.health ? <B kind="warn">بخش سلامت در دسترس نیست</B> : d.health && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <B kind={d.health.needs_review ? 'bad' : 'ok'}>امتیاز بیماری {fa(d.health.score)}</B>
+          {(d.health.signals || []).map(s => <B key={s.key} kind="warn">{s.label}</B>)}
+          {(d.health.signals || []).length === 0 && <B kind="ok">بدون سیگنال منفی</B>}
+        </div>)}
+      {d.section_errors?.reports ? <B kind="warn">بخش گزارش‌ها در دسترس نیست</B> : d.reports && (
+        <div className="panel panel-pad" style={{ marginBottom: 10 }}>
+          <b>🚩 گزارش‌ها</b> <B kind={d.reports.open ? 'bad' : 'ok'}>{fa(d.reports.open)} باز</B> <B>{fa(d.reports.total)} کل</B>
+          {(d.reports.recent || []).length === 0 && <div className="muted" style={{ marginTop: 6 }}>گزارشی ثبت نشده.</div>}
+          {(d.reports.recent || []).map((r, i) => <div key={i} className="row" style={{ gap: 6, marginTop: 6 }}>
+            <B kind={r.status === 'resolved' ? 'ok' : r.status === 'rejected' ? '' : 'warn'}>{REPORT_STATUS_FA[r.status] || r.status}</B>
+            <span>{REPORT_REASON_FA[r.reason] || r.reason}</span>
+            <span className="muted">{r.user_name || r.reporter_id || ''}</span>
+            <span className="muted"><FaDateTime value={r.created_at} /></span>
+          </div>)}
+        </div>)}
+      {d.section_errors?.exams ? <B kind="warn">بخش آزمون‌ها در دسترس نیست</B> : d.exams && (
+        <div className="panel panel-pad">
+          <b>🎯 پاسخ‌های ثبت‌شده در آزمون‌ها</b> <B>{fa(d.exams.attempts)}</B> <B kind="ok">{fa(d.exams.correct)} صحیح</B>
+          {(d.exams.recent || []).length === 0 && <div className="muted" style={{ marginTop: 6 }}>هنوز در آزمونی استفاده نشده.</div>}
+          {(d.exams.recent || []).map((a, i) => <div key={i} className="row" style={{ gap: 6, marginTop: 6 }}>
+            <B kind={a.is_correct ? 'ok' : 'bad'}>{a.is_correct ? 'صحیح' : 'غلط'}</B>
+            <span className="muted">کاربر {fa(a.user_id)} · نشست {String(a.session_id).slice(0, 8)}</span>
+            <span className="muted"><FaDateTime value={a.at} /></span>
+          </div>)}
+        </div>)}
+    </>}
+  </Drawer>;
 }

@@ -1,4 +1,5 @@
 import { confirmAction } from '../../lib/confirm';
+import { faDate } from '../../lib/format';
 import {
   useEffect,
   useRef,
@@ -14,6 +15,8 @@ import {
 
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 
 import {
   Spinner,
@@ -695,26 +698,14 @@ export default function MyQuestions() {
         {isLoading ? (
           <QuestionsListSkeleton />
         ) : isError ? (
-          <div className="empty card">
-            دریافت سؤال‌ها انجام نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت سؤال‌ها انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : questions.length === 0 ? (
-          <div className="empty card">
+          <EmptyState icon="✍️">
             هنوز سؤالی طراحی نکرده‌اید.
-          </div>
+          </EmptyState>
         ) : (
           <section
             style={{
@@ -817,7 +808,7 @@ export default function MyQuestions() {
                           6,
                       }}
                     >
-                      📆 {item.created_at}
+                      📆 {faDate(item.created_at)}
                     </div>
                   )}
 

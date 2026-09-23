@@ -7,6 +7,7 @@
 """
 import os
 import asyncio
+BROADCAST_SEM = asyncio.Semaphore(1)  # 🌊 W3 — یک broadcast در لحظه، جلوگیری از گرسنگی jobهای دیگر
 import logging
 from datetime import datetime, timedelta
 from telegram import (
@@ -27,7 +28,7 @@ from utils import (
     esc as _esc,                                  # 🛡 AUDIT-A6 — escape مرکزی پروژه
     send_audit_log, get_keyboard_for_user, fmt_jalali_dt, now_tehran, now_tehran_str,
 )
-from time_utils import format_time_fa, now_utc, parse_machine_datetime
+from time_utils import fa_digits, format_time_fa, now_utc, parse_machine_datetime
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
@@ -208,6 +209,7 @@ async def _admin_menu(query_or_msg, edit: bool = True, uid: int = None):
             f"📊 آمار سیستم  ({s['users']} کاربر | {s.get('open_tickets', 0)} تیکت باز)",
             callback_data='admin:stats'
         )],
+        [InlineKeyboardButton("⚠️ نیازمند اقدام (بستن هشدار)", callback_data='admin:attention')],
         [InlineKeyboardButton("🧠 مرکز هوش ربات (هشدار و پیش‌بینی)", callback_data='admin:insights')],
         [
             InlineKeyboardButton("👥 کاربران و دسترسی‌ها", callback_data='admin:cat_users'),
@@ -278,8 +280,10 @@ async def _show_cat_schedule(query):
             InlineKeyboardButton("📅 برنامه جدید", callback_data='schedule:add_type'),
             InlineKeyboardButton("🗑 حذف برنامه",  callback_data='schedule:del_list'),
         ],
+        [InlineKeyboardButton("📸 اسکن با هوشیار (عکس جدول → الگو)", callback_data='schedule:scan_menu')],
         [InlineKeyboardButton("✏️ ویرایش برنامه‌ها", callback_data='schedule:manage_types')],
         [InlineKeyboardButton("🔄 اعلام تغییر زمان (کلاس منعطف)", callback_data='schedule:flex_list')],
+        [InlineKeyboardButton("🔁 الگوی هفتگی → تولید برنامه", callback_data='schedule:template_menu')],
         [InlineKeyboardButton("📊 مدیریت نمرات", callback_data='grades:new')],
         [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:main')],
     ]
@@ -330,6 +334,147 @@ async def _show_cat_settings(query, uid: int = None):
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
+
+# 🌊 W7 — نیازمند اقدام در ربات: بستن/بازکردن هشدار با دلیل + مدیریت اسپم کیف پول
+async def _show_attention(query, uid: int):
+    from time_utils import utc_now_iso, now_utc, parse_machine_datetime
+    from datetime import timedelta
+    try:
+        is_owner = uid == ADMIN_ID
+        perms = await db.get_user_perms(uid) if not is_owner else set()
+        items = []
+        try:
+            if is_owner or any(k in perms for k in ('subscription.manage',)):
+                witems = await db.wallet_reconcile_items()
+                wcrit = [x for x in witems if x.get('severity')=='critical']
+                items.append({'key':'wallet_issues','icon':'👛','label':'مغایرت مالی کیف پول','count':len(wcrit),'severity':'critical' if wcrit else 'info','urgent':bool(wcrit)})
+        except Exception: pass
+        try:
+            c = await db.users.count_documents({'approved': False, 'suspended': {'$ne': True}})
+            if c: items.append({'key':'users','icon':'🧑‍🎓','label':'کاربر در انتظار تأیید','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            c = await db.sub_payment_count_all('pending')
+            if c: items.append({'key':'payments','icon':'🧾','label':'رسید پرداخت در انتظار','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            c = await db.tickets.count_documents({'status':'open'})
+            if c: items.append({'key':'tickets','icon':'🎫','label':'تیکت بدون پاسخ','count':c,'severity':'warning','urgent':True})
+        except: pass
+        try:
+            from api.routers.web_admin import _quality_summary
+            qs = await _quality_summary()
+            if qs['count']: items.append({'key':'data_quality','icon':'🧬','label':'ناهنجاری کیفیت داده','count':qs['count'],'severity':'critical' if qs['critical'] else 'warning','urgent':True})
+        except: pass
+        try:
+            runs = await db.get_recent_notif_runs(limit=20)
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            failed = []
+            for r in runs:
+                if int(r.get('failed') or 0)<=0: continue
+                try:
+                    from time_utils import parse_machine_datetime as _pm
+                    if _pm(r.get('started_at') or r.get('created_at')) >= cutoff:
+                        failed.append(r)
+                except: failed.append(r)
+            if failed: items.append({'key':'failed_jobs','icon':'⚙️','label':'اجرای اعلان دارای خطا','count':len(failed),'severity':'critical','urgent':True})
+        except: pass
+        try:
+            dcol = db.client["medicalbot"]["attention_dismissals"]
+            ddocs = await dcol.find({}).to_list(100)
+            from time_utils import now_utc as _nu, parse_machine_datetime as _pm2
+            now = _nu()
+            dmap = {}
+            for d in ddocs:
+                u = d.get('dismissed_until')
+                if u:
+                    try:
+                        if _pm2(u) < now: continue
+                    except: pass
+                dmap[d.get('key')] = d
+        except Exception:
+            dmap = {}
+        active = [x for x in items if x['key'] not in dmap]
+        dismissed = [x for x in items if x['key'] in dmap]
+        for k, d in list(dmap.items()):
+            if k not in [x['key'] for x in items]:
+                dismissed.append({'key':k,'icon':'🔕','label':k,'count':0,'severity':'info','urgent':False,'dismissed':True,'reason':d.get('reason')})
+        try:
+            wallet_enabled = await db.get_setting('wallet_alert_enabled', True)
+            if wallet_enabled is None: wallet_enabled = True
+            wallet_cooldown = await db.get_setting('wallet_alert_cooldown_hours', 6)
+            if wallet_cooldown is None: wallet_cooldown = 6
+            wallet_muted = await db.get_setting('wallet_alert_muted_until', None)
+        except: wallet_enabled, wallet_cooldown, wallet_muted = True, 6, None
+        text_lines = ["⚠️ <b>نیازمند اقدام</b>", "━━━━━━━━━━━━━━━━", ""]
+        if not active and not dismissed:
+            text_lines.append("✅ هیچ مورد فعالی نیست — همه صف‌ها خالی‌اند 🎉")
+        if active:
+            text_lines.append(f"<b>فعال ({len(active)}):</b>")
+            for it in active:
+                text_lines.append(f"{it['icon']} {it['label']}: <b>{it['count']}</b> — {it['key']}")
+            text_lines.append("")
+        if dismissed:
+            text_lines.append(f"<b>بسته‌شده ({len(dismissed)}):</b>")
+            for it in dismissed:
+                d = dmap.get(it['key'], {})
+                until = d.get('dismissed_until') or 'دائم'
+                text_lines.append(f"🔕 {it['key']}: {d.get('reason','—')} (تا {until})")
+            text_lines.append("")
+        text_lines.append(f"👛 هشدار کیف پول: {'فعال' if wallet_enabled else 'غیرفعال'} | ضداسپم {fa_digits(wallet_cooldown)}ساعت" + (f" | بی‌صدا تا {fmt_jalali_dt(wallet_muted)}" if wallet_muted else ""))
+        text = "\n".join(text_lines)
+        kb = []
+        for it in active:
+            kb.append([InlineKeyboardButton(f"🔕 بستن «{it['label']}» ۲۴ساعته", callback_data=f"admin:att_dis:{it['key']}:24"), InlineKeyboardButton(f"۷۲ساعت", callback_data=f"admin:att_dis:{it['key']}:72")])
+            kb[-1].append(InlineKeyboardButton("دائم", callback_data=f"admin:att_dis:{it['key']}:0"))
+        for it in dismissed:
+            kb.append([InlineKeyboardButton(f"↩️ بازکردن «{it['key']}»", callback_data=f"admin:att_res:{it['key']}")])
+        kb.append([InlineKeyboardButton("👛 هشدار کیف پول: " + ("غیرفعال کن" if wallet_enabled else "فعال کن"), callback_data="admin:att_wallet_toggle")])
+        if wallet_muted:
+            kb.append([InlineKeyboardButton("🔔 لغو بی‌صدا", callback_data="admin:att_wallet_unmute")])
+        else:
+            kb.append([InlineKeyboardButton("🔕 بی‌صدا ۲۴ساعت", callback_data="admin:att_wallet_mute24")])
+        kb.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:main')])
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        await query.edit_message_text(f"خطا در نمایش نیازمند اقدام: {e}", parse_mode='HTML')
+
+async def _attention_dismiss_bot(query, uid, key, hours, context):
+    from time_utils import now_utc, utc_now_iso
+    from datetime import timedelta
+    allowed_keys = {"users","payments","questions","tickets","reports","failed_jobs","outbox_backlog","outbox_scheduled","dlq","imports","data_quality","wallet_issues","backup_issue"}
+    if key not in allowed_keys:
+        await query.answer("کلید نامعتبر", show_alert=True); return
+    until = None
+    if hours and hours>0:
+        until = (now_utc() + timedelta(hours=hours)).isoformat()
+    reason = "بسته شد از ربات تلگرام (بررسی ادمین)"
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    await dcol.update_one({"key": key}, {"$set": {"key": key, "reason": reason, "dismissed_at": utc_now_iso(), "dismissed_until": until, "dismissed_by": uid}}, upsert=True)
+    try:
+        u = await db.get_user(uid)
+        await db.log_action(uid, (u or {}).get("name", str(uid)), await db.get_actor_role_label(uid), f"بستن هشدار نیازمند اقدام: {key}", "BotAdmin", category="admin", severity="WARNING", target_id=key, target_type="attention", target_label=reason[:80])
+    except: pass
+    await query.answer(f"🔕 {key} بسته شد ({'دائم' if not until else f'{fa_digits(hours)} ساعت'})", show_alert=True)
+    await _show_attention(query, uid)
+
+async def _attention_restore_bot(query, uid, key, context):
+    dcol = db.client["medicalbot"]["attention_dismissals"]
+    res = await dcol.delete_one({"key": key})
+    if not res.deleted_count:
+        await query.answer("این هشدار بسته نشده", show_alert=True); return
+    try:
+        u = await db.get_user(uid)
+        await db.log_action(uid, (u or {}).get("name", str(uid)), await db.get_actor_role_label(uid), f"بازکردن هشدار نیازمند اقدام: {key}", "BotAdmin", category="admin", severity="INFO", target_id=key, target_type="attention")
+    except: pass
+    await query.answer(f"↩️ {key} باز شد", show_alert=True)
+    await _show_attention(query, uid)
+
+
+
 async def show_admin_main(message, uid: int = None):
     await _admin_menu(message, edit=False, uid=uid)
 
@@ -364,8 +509,15 @@ ROOT_ONLY_ACTIONS = {
 
 async def _h_notif_set_interval(query, context, parts, uid):
     hours = int(parts[2])
+    _old_h = await db.get_setting('resource_notif_interval_hours', 24)
     await db.set_setting('resource_notif_interval_hours', hours)
-    await query.answer(f"✅ فاصله اعلان منابع جدید: هر {hours} ساعت", show_alert=True)
+    try:
+        _au = await db.get_user(uid) or {}
+        _an = _au.get('name','مدیر ارشد')
+        _ar = await db.get_actor_role_label(uid)
+        await send_audit_log(context.bot,'admin',_an,uid,"تغییر فاصله اعلان منابع",module='Settings',severity='WARNING',actor_role=_ar,before={'hours': _old_h},after={'hours': hours},tags=['اعلان'])
+    except Exception as _e: import logging; logging.getLogger(__name__).warning(f"notif interval audit failed: {_e}")
+    await query.answer(f"✅ فاصله اعلان منابع جدید: هر {fa_digits(hours)} ساعت", show_alert=True)
     await _show_notif_manage(query)
 
 async def _h_notif_history(query, context, parts, uid):
@@ -524,6 +676,40 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'insights':
         await _show_admin_insights(query)
+
+    elif action == 'attention':
+        await _show_attention(query, uid)
+    elif action == 'att_dis':
+        # admin:att_dis:<key>:<hours>
+        try:
+            _k = parts[2] if len(parts)>2 else ""
+            _h = int(parts[3]) if len(parts)>3 else 24
+            await _attention_dismiss_bot(query, uid, _k, _h, context)
+        except Exception as e:
+            await query.answer(f"خطا: {e}", show_alert=True)
+    elif action == 'att_res':
+        try:
+            _k = parts[2] if len(parts)>2 else ""
+            await _attention_restore_bot(query, uid, _k, context)
+        except Exception as e:
+            await query.answer(f"خطا: {e}", show_alert=True)
+    elif action == 'att_wallet_toggle':
+        cur = await db.get_setting('wallet_alert_enabled', True)
+        if cur is None: cur = True
+        await db.set_setting('wallet_alert_enabled', not cur)
+        await query.answer(f"هشدار کیف پول {'غیرفعال' if cur else 'فعال'} شد", show_alert=True)
+        await _show_attention(query, uid)
+    elif action == 'att_wallet_mute24':
+        from time_utils import now_utc
+        from datetime import timedelta
+        until = (now_utc() + timedelta(hours=24)).isoformat()
+        await db.set_setting('wallet_alert_muted_until', until)
+        await query.answer("۲۴ ساعت بی‌صدا شد 🔕", show_alert=True)
+        await _show_attention(query, uid)
+    elif action == 'att_wallet_unmute':
+        await db.set_setting('wallet_alert_muted_until', None)
+        await query.answer("بی‌صدا لغو شد 🔔", show_alert=True)
+        await _show_attention(query, uid)
 
     # ══════════════════════════════════════════════
     # 🗂 منوهای دسته‌بندی‌شده پنل ادمین (لایه ناوبری جدید)
@@ -1111,11 +1297,37 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📅 <b>افزودن ورودی جدید</b>\n\nفرمت: <code>کد, برچسب</code>\nمثال: <code>bahman_1404, بهمن ۱۴۰۴</code>", parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='admin:intakes')]]))
     elif action == 'intake_toggle':
-        new_state = await db.toggle_intake(parts[2])
+        code_it = parts[2]
+        old_intake = next((i for i in (await db.get_all_intakes()) if i.get('code')==code_it), {})
+        new_state = await db.toggle_intake(code_it)
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "تغییر وضعیت ورودی" if new_state else "تغییر وضعیت ورودی",
+                module='Users', severity='WARNING', actor_role=_ar,
+                target_id=code_it, target_type='intake', target_label=old_intake.get('label', code_it),
+                before={'active': not new_state}, after={'active': new_state},
+                tags=['ورودی'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"intake_toggle audit failed: {_e}")
         await query.answer(f"{'✅ فعال' if new_state else '❌ غیرفعال'} شد", show_alert=True)
         await _show_intakes(query)
     elif action == 'intake_del':
-        await db.delete_intake(parts[2])
+        _del_code = parts[2]
+        _del_old = next((i for i in (await db.get_all_intakes()) if i.get('code')==_del_code), {})
+        await db.delete_intake(_del_code)
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "حذف ورودی", module='Users', severity='HIGH', actor_role=_ar,
+                target_id=_del_code, target_type='intake', target_label=_del_old.get('label', _del_code),
+                tags=['ورودی','حذف_ورودی'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"intake_del audit failed: {_e}")
         await query.answer("🗑 ورودی حذف شد!", show_alert=True)
         await _show_intakes(query)
     elif action == 'intake_view':
@@ -1149,13 +1361,37 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("➕ کاربر مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action == 'ca_set':
         target_uid = int(parts[2])
+        _t_before = await db.get_user(target_uid) or {}
         await db.update_user(target_uid, {'role': 'content_admin'})
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "اعطای دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
+                target_id=str(target_uid), target_type='user', target_label=_t_before.get('name',''),
+                before={'role': _t_before.get('role','')}, after={'role': 'content_admin'},
+                tags=['اعطای_نقش'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"ca_set audit failed: {_e}")
         await safe_send(context.bot, target_uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", parse_mode='HTML', reply_markup=content_admin_keyboard())
         await query.answer("✅ دسترسی داده شد!", show_alert=True)
         await _show_cat_users(query, uid=uid)
     elif action == 'ca_remove':
         target_uid = int(parts[2])
+        _t_before2 = await db.get_user(target_uid) or {}
         await db.update_user(target_uid, {'role': 'student'})
+        try:
+            _au = await db.get_user(uid) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(uid)
+            await send_audit_log(context.bot, 'admin', _an, uid,
+                "لغو دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
+                target_id=str(target_uid), target_type='user', target_label=_t_before2.get('name',''),
+                before={'role': _t_before2.get('role','')}, after={'role': 'student'},
+                tags=['لغو_نقش'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"ca_remove audit failed: {_e}")
         await safe_send(context.bot, target_uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", reply_markup=main_keyboard())
         await query.answer("↩️ دسترسی لغو شد!", show_alert=True)
         await _show_cat_users(query, uid=uid)
@@ -1455,7 +1691,7 @@ async def _broadcast_show_preview(query_or_msg, context, scheduled: bool = False
     if delay_min and delay_min > 0:
         h = delay_min // 60
         m = delay_min % 60
-        t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
+        t_str = f"{fa_digits(h)} ساعت {fa_digits(m)} دقیقه" if h else f"{fa_digits(m)} دقیقه"
         send_time = format_time_fa(now_utc() + timedelta(minutes=delay_min))
         schedule_line = f"\n⏰ ارسال در: <b>{t_str} دیگر</b> (حدوداً ساعت {send_time})"
 
@@ -1529,7 +1765,7 @@ async def _broadcast_send_test(query, context):
         await query.answer("❌ پیامی برای ارسال آزمایشی وجود ندارد!", show_alert=True)
         return
     tester_uid = query.from_user.id
-    sent, _, _ = await _do_broadcast_send(context.bot, [{'user_id': tester_uid}], msg_data)
+    sent, _, _ = await _do_broadcast_send_guarded(context.bot, [{'user_id': tester_uid}], msg_data)
     if sent:
         await query.answer("✅ پیام آزمایشی برای شما ارسال شد — پایین چت خودتان را چک کنید.", show_alert=True)
     else:
@@ -1555,7 +1791,7 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
     if delay_min > 0:
         h = delay_min // 60
         m = delay_min % 60
-        t_str = f"{h} ساعت {m} دقیقه" if h else f"{m} دقیقه"
+        t_str = f"{fa_digits(h)} ساعت {fa_digits(m)} دقیقه" if h else f"{fa_digits(m)} دقیقه"
         due = now_utc() + timedelta(minutes=delay_min)
         send_time = format_time_fa(due)
         campaign = await create_broadcast_campaign(
@@ -1615,7 +1851,7 @@ async def _broadcast_do_send(query, context, scheduled: bool = False):
         # همیشه آزاد شود و ادمین برای همیشه پشت یک ارسالِ «گیر کرده»
         # قفل نماند.
         await _broadcast_inbox_mirror(users_list, msg_data)
-        sent, failed_total, blocked = await _do_broadcast_send(
+        sent, failed_total, blocked = await _do_broadcast_send_guarded(
             context.bot, users_list, msg_data, progress_cb=_progress)
     finally:
         context.user_data['bc_sending'] = False
@@ -1654,7 +1890,7 @@ async def _scheduled_broadcast_job(context: ContextTypes.DEFAULT_TYPE):
     admin_id = data.get('admin_id', ADMIN_ID)
     users_list = await _get_target_users(target)
     await _broadcast_inbox_mirror(users_list, msg_data)
-    sent, failed_total, blocked = await _do_broadcast_send(context.bot, users_list, msg_data)
+    sent, failed_total, blocked = await _do_broadcast_send_guarded(context.bot, users_list, msg_data)
     other_failed = failed_total - blocked
     # پاک‌سازی رکورد ماندگارشده — دیگر لازم نیست چون همین الان ارسال شد
     try:
@@ -1692,7 +1928,7 @@ async def _broadcast_inbox_mirror(users_list: list, msg_data: dict) -> None:
     ])
 
 
-async def _do_broadcast_send(bot, users_list: list, msg_data: dict, progress_cb=None) -> tuple:
+async def _do_broadcast_send_guarded(bot, users_list: list, msg_data: dict, progress_cb=None) -> tuple:
     """
     FIX کامل (حرفه‌ای‌سازی ارسال همگانی):
     - RetryAfter (محدودیت نرخ تلگرام) → صبر دقیق به‌اندازه‌ی زمان اعلام‌شده
@@ -1756,6 +1992,9 @@ async def _do_broadcast_send(bot, users_list: list, msg_data: dict, progress_cb=
             await asyncio.sleep(0.05)
 
     return sent, failed + blocked, blocked
+
+
+# 🌊 W3 — wrapper with semaphore to avoid starvation
 
 
 async def _get_target_users(target: str) -> list:
@@ -2030,7 +2269,7 @@ async def _show_stats(query):
     peak_txt = "—"
     if pulse.get('peak_hour') is not None:
         h = int(pulse['peak_hour'])
-        peak_txt = f"ساعت {h:02d}:۰۰–{(h+1)%24:02d}:۰۰  ({pulse['peak_hour_count']} کنش)"
+        peak_txt = f"ساعت {fa_digits(f'{h:02d}:00–{(h+1)%24:02d}:00')} ({fa_digits(pulse['peak_hour_count'])} کنش)"
 
     text = (
         "📊 <b>آمار سیستم — نمای کلی</b>\n━━━━━━━━━━━━━━━━\n\n"
@@ -3175,12 +3414,25 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     if mode == 'set_maintenance_text':
         context.user_data['mode'] = ''
+        _old_mt = await db.get_setting('maintenance_text', '')
         if text in ('پیشفرض', 'پیش‌فرض', '-'):
             await db.set_setting('maintenance_text', '')
             msg = "✅ متن حالت تعمیر به پیش‌فرض بازگشت."
+            _new_mt = ''
         else:
             await db.set_setting('maintenance_text', text)
             msg = "✅ متن حالت تعمیر ذخیره شد."
+            _new_mt = text
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                "تغییر متن حالت تعمیر", module='Settings', severity='HIGH', actor_role=_ar,
+                before={'maintenance_text': _old_mt or '(پیش‌فرض)'}, after={'maintenance_text': _new_mt or '(پیش‌فرض)'},
+                tags=['حالت_تعمیر'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"maintenance_text audit failed: {_e}")
         await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')
         ]]))
@@ -3191,7 +3443,19 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         key = 'log_group_admin' if mode == 'set_log_group_admin' else 'log_group_content'
         context.user_data['mode'] = ''
         if text in ('حذف', '-'):
+            _old_lg = await db.get_setting(key, None)
             await db.set_setting(key, None)
+            try:
+                _au = await db.get_user(update.effective_user.id) or {}
+                _an = _au.get('name', 'مدیر ارشد')
+                _ar = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                    f"حذف گروه لاگ {key}", module='Settings', severity='HIGH', actor_role=_ar,
+                    before={'group': str(_old_lg) if _old_lg else 'تنظیم نشده'}, after={'group': 'حذف شد'},
+                    target_id=key, target_type='settings',
+                    tags=['گروه_لاگ'])
+            except Exception as _e:
+                import logging; logging.getLogger(__name__).warning(f"del log group audit failed: {_e}")
             await update.message.reply_text(
                 "✅ تنظیم گروه حذف شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')]])
@@ -3226,7 +3490,19 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 parse_mode='HTML'
             )
             return True
+        _old_lg2 = await db.get_setting(key, None)
         await db.set_setting(key, chat_id)
+        try:
+            _au = await db.get_user(update.effective_user.id) or {}
+            _an = _au.get('name', 'مدیر ارشد')
+            _ar = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                f"تنظیم گروه لاگ {key}", module='Settings', severity='HIGH', actor_role=_ar,
+                before={'group': str(_old_lg2) if _old_lg2 else 'تنظیم نشده'}, after={'group': str(chat_id)},
+                target_id=key, target_type='settings',
+                tags=['گروه_لاگ'])
+        except Exception as _e:
+            import logging; logging.getLogger(__name__).warning(f"set log group audit failed: {_e}")
         try:
             await context.bot.send_message(chat_id, "✅ این گروه به‌عنوان گروه لاگ ربات تنظیم شد.")
         except Exception:
@@ -3243,7 +3519,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if mode == 'set_poll_channel':
         context.user_data['mode'] = ''
         if text in ('حذف', '-'):
+            _old_pc = await db.get_setting('poll_channel_id', None)
             await db.set_setting('poll_channel_id', None)
+            try:
+                _au2 = await db.get_user(update.effective_user.id) or {}
+                _an2 = _au2.get('name','مدیر ارشد')
+                _ar2 = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot,'admin',_an2,update.effective_user.id,"حذف کانال نظرسنجی",module='Settings',severity='WARNING',actor_role=_ar2,before={'poll_channel_id': str(_old_pc) if _old_pc else 'تنظیم نشده'},after={'poll_channel_id': 'حذف شد'},tags=['کانال','نظرسنجی'])
+            except Exception as _e: import logging; logging.getLogger(__name__).warning(f"poll_channel delete audit failed: {_e}")
             await update.message.reply_text(
                 "✅ کانال نظرسنجی حذف شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⚙️ بازگشت به تنظیمات", callback_data='admin:settings')]])
@@ -3263,7 +3546,14 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 parse_mode='HTML'
             )
             return True
+        _old_pc2 = await db.get_setting('poll_channel_id', None)
         await db.set_setting('poll_channel_id', channel_id)
+        try:
+            _au3 = await db.get_user(update.effective_user.id) or {}
+            _an3 = _au3.get('name','مدیر ارشد')
+            _ar3 = await db.get_actor_role_label(update.effective_user.id)
+            await send_audit_log(context.bot,'admin',_an3,update.effective_user.id,"تنظیم کانال نظرسنجی",module='Settings',severity='WARNING',actor_role=_ar3,before={'poll_channel_id': str(_old_pc2) if _old_pc2 else 'تنظیم نشده'},after={'poll_channel_id': str(channel_id)},tags=['کانال','نظرسنجی'])
+        except Exception as _e: import logging; logging.getLogger(__name__).warning(f"poll_channel set audit failed: {_e}")
         try:
             await context.bot.send_message(channel_id, "✅ این کانال به‌عنوان کانال نظرسنجی / اطلاع‌رسانی ربات تنظیم شد.")
         except Exception:
@@ -3406,7 +3696,20 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         field = info.get('field')
         label = info.get('label', '')
         if uid and field:
+            _eu_before = await db.get_user(uid) or {}
+            _eu_old = _eu_before.get(field, '')
             await db.update_user(uid, {field: text})
+            try:
+                _au = await db.get_user(update.effective_user.id) or {}
+                _an = _au.get('name', 'مدیر ارشد')
+                _ar = await db.get_actor_role_label(update.effective_user.id)
+                await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                    f"ویرایش کاربر {field}", module='Users', severity='WARNING', actor_role=_ar,
+                    target_id=str(uid), target_type='user', target_label=_eu_before.get('name',''),
+                    before={field: _eu_old}, after={field: text},
+                    tags=['ویرایش_کاربر'])
+            except Exception as _e:
+                import logging; logging.getLogger(__name__).warning(f"edit_user audit failed: {_e}")
             context.user_data['mode'] = ''
             await update.message.reply_text(f"✅ {label} ویرایش شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f'admin:user_detail:{uid}')]]))
@@ -3419,6 +3722,17 @@ async def handle_admin_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 raise ValueError("فرمت اشتباه")
             code, label = pts[0], pts[1]
             ok = await db.add_intake(code, label)
+            if ok:
+                try:
+                    _au = await db.get_user(update.effective_user.id) or {}
+                    _an = _au.get('name', 'مدیر ارشد')
+                    _ar = await db.get_actor_role_label(update.effective_user.id)
+                    await send_audit_log(context.bot, 'admin', _an, update.effective_user.id,
+                        "افزودن ورودی جدید", module='Users', severity='INFO', actor_role=_ar,
+                        target_id=code, target_type='intake', target_label=label,
+                        tags=['ورودی'])
+                except Exception as _e:
+                    import logging; logging.getLogger(__name__).warning(f"add_intake audit failed: {_e}")
             context.user_data.pop('mode', None)
             if ok:
                 await update.message.reply_text(f"✅ ورودی <b>{label}</b> اضافه شد!", parse_mode='HTML',

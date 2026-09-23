@@ -10,6 +10,7 @@ import os
 import sys
 import html
 import re
+import time
 import logging
 import asyncio
 from datetime import time as dtime, timezone, timedelta
@@ -65,8 +66,43 @@ from subscription import subscription_callback, screenshot_handler as sub_screen
 from subscription_admin import subscription_admin_callback
 from grades import grades_callback
 from profile import profile_callback
+from referral import referral_callback          # 🌱 W13 — دعوت دوستان
+from dunning import dunning_job, dunning_click  # 💳 W14 — پیگیری پرداخت
 from message_router import route_message
 from basic_science import basic_science_callback
+
+# 🌊 W5 — Flood-Control per-user (in-memory token bucket)
+import collections as _coll
+_FLOOD_WINDOW = 5  # seconds
+_FLOOD_LIMIT = 5  # msgs per window
+_FLOOD_BLOCK = 30  # seconds block
+_FLOOD_HIST: dict[int, _coll.deque] = {}
+_FLOOD_BLOCKED: dict[int, float] = {}
+def _check_flood(uid: int) -> tuple[bool, int]:
+    now = time.time()
+    blocked_until = _FLOOD_BLOCKED.get(uid, 0)
+    if now < blocked_until:
+        return True, int(blocked_until - now)
+    dq = _FLOOD_HIST.get(uid)
+    if dq is None:
+        dq = _coll.deque()
+        _FLOOD_HIST[uid] = dq
+    # prune
+    while dq and now - dq[0] > _FLOOD_WINDOW:
+        dq.popleft()
+    dq.append(now)
+    if len(dq) > _FLOOD_LIMIT:
+        _FLOOD_BLOCKED[uid] = now + _FLOOD_BLOCK
+        # keep only last
+        dq.clear()
+        return True, _FLOOD_BLOCK
+    # also 30 per minute guard
+    if len(dq) > 30:
+        # check 60s window approximate
+        pass
+    return False, 0
+_FLOOD_WARNED: dict[int, float] = {}
+
 from resources import resources_callback
 from references import references_callback
 from content_admin import content_admin_callback, ca_file_handler, ca_text_handler
@@ -75,7 +111,8 @@ from ticket import ticket_callback, ticket_message_handler
 from reports import report_callback, handle_report_note_text   # FIX جدید
 from ai_admin import ai_admin_callback, ai_admin_text_handler   # 🤖 هوشیار
 from ai_solver import (                                          # 🤖 هوشیار
-    handle_ai_text, handle_ai_media, ai_user_callback,
+    handle_ai_text, handle_ai_media, handle_ai_image_prompt,
+    ai_user_callback,
 )
 from database import db
 
@@ -207,14 +244,17 @@ async def daily_question_job(context: ContextTypes.DEFAULT_TYPE):
         )
         users = await db.notif_users('daily_question')
         await db.notif_run_set_message(run_id, text)
-        _qkb = webapp_kb('/learn/questions')
-        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به بانک سؤال)
+        # 🌊 W5 — Deep-Link به همان سؤال (qid)
+        _qid = str(q.get('_id') or q.get('id') or '')
+        _deep = f"/learn/questions?hl={_qid}" if _qid else '/learn/questions'
+        _qkb = webapp_kb(_deep)
+        # 🔔 موج ۴.۹۰ — اینباکس مینی‌اپ (Deep Link به همان سؤال)
         await db.inbox_add_many([
             {'user_id': u['user_id'], 'type': 'daily_question',
              'title': '🧪 سؤال روزانه رسید',
              'body': (f"📚 {q.get('lesson', '')} — {q.get('topic', '')}\n"
                       f"❓ {q.get('question', '')[:140]}"),
-             'link': '/learn/questions'}
+             'link': _deep}
             for u in users if u.get('user_id')
         ])
         for u in users:
@@ -772,6 +812,227 @@ async def subscription_expiry_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"subscription_expiry_job error: {e}")
 
 
+async def subscription_expiry_sweep_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — sweep سبک هر ساعت: فقط expiredها را status می‌زند (بدون نوتیف تکراری).
+    نوتیف اصلی روزانه ساعت ۹:۱۵ می‌ماند؛ این فقط خلأ ۲۴ساعته را پر می‌کند
+    (کاربر ساعت ۰۹:۱۶ منقضی شود تا فردا بی‌خبر نماند)."""
+    try:
+        expired = await db.sub_expire_due()
+        if expired:
+            logger.info(f"⌛ sweep: {len(expired)} اشتراک منقضی شد (hourly)")
+    except Exception as e:
+        logger.warning(f"subscription_expiry_sweep error: {e}")
+
+async def ticket_stale_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W8/UX-04 — یادآوری تیکت‌های بازِ بدون پاسخ (هر ۶ ساعت).
+
+    برای هر تیکت: به مسئول تخصیص‌یافته (وگرنه مالک) پیام می‌دهد؛
+    اگر SLA هم رد شده باشد با پرچم 🔴. ضدتکرار با stale_nudged_at.
+    """
+    try:
+        try:
+            stale_h = max(1, int(await db.get_setting('ticket_stale_hours', 24) or 24))
+        except Exception:
+            stale_h = 24
+        tickets = await db.tickets_needing_nudge(stale_h)
+        if not tickets:
+            return
+        from time_utils import utc_now_iso
+        now = utc_now_iso()
+        for t in tickets:
+            tid = t.get('ticket_id')
+            sla = db.ticket_sla_info(t)
+            target = int(t.get('assignee_id') or 0) or ADMIN_ID
+            icon = '🔴' if sla.get('breached') else '⏳'
+            extra = ' — <b>مهلت SLA گذشته!</b>' if sla.get('breached') else ''
+            try:
+                await safe_send(
+                    context.bot, target,
+                    f"{icon} <b>تیکت #{tid} بی‌پاسخ مانده</b>{extra}\n"
+                    f"👤 {t.get('user_name', '')} — 📋 {t.get('subject', '')[:60]}",
+                    parse_mode='HTML')
+            except Exception:
+                pass
+            try:
+                await db.tickets.update_one(
+                    {'ticket_id': tid}, {'$set': {'stale_nudged_at': now}})
+            except Exception:
+                pass
+        logger.info(f"🎫 ticket stale nudge: {len(tickets)}")
+    except Exception as e:
+        logger.warning(f"ticket_stale_job error: {e}")
+
+
+async def wallet_reconcile_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — مغایرت‌گیری کیف پول هر ۳۰ دقیقه + گزارش به لاگ/ادمین.
+    🌊 W7 — ضداسپم + توضیح‌دار: dismiss respected + cooldown + hash + mute + جزئیات انسانی.
+    stuck pending قدیمی را فقط لاگ می‌کند (تصمیم دستی) — auto-complete نمی‌کند
+    چون 증거 جبران نیازمند تایید انسانی است."""
+    try:
+        from time_utils import parse_machine_datetime as _parse_dt, now_utc as _now_utc, utc_now_iso as _utc_iso
+        import hashlib, json as _json
+        items = await db.wallet_reconcile_items(limit=20)
+        if not items:
+            return
+        crit = [x for x in items if x.get('severity') == 'critical']
+        if not crit:
+            logger.info(f"wallet reconcile: {len(items)} warnings (no critical)")
+            return
+        logger.warning(f"💰 wallet reconcile {len(items)} items ({len(crit)} critical): {crit[:3]}")
+        # ── W7: settings ──
+        try:
+            enabled = await db.get_setting("wallet_alert_enabled", True)
+            if enabled is None:
+                enabled = True
+            if not enabled:
+                logger.info("wallet reconcile: alerts disabled via setting")
+                return
+            muted_until = await db.get_setting("wallet_alert_muted_until", None)
+            if muted_until:
+                try:
+                    if _parse_dt(muted_until) > _now_utc():
+                        logger.info(f"wallet reconcile muted until {muted_until}")
+                        return
+                except Exception:
+                    pass
+            # attention dismissal for wallet_issues
+            try:
+                ddoc = await db.client["medicalbot"]["attention_dismissals"].find_one({"key": "wallet_issues"})
+                if ddoc:
+                    until = ddoc.get("dismissed_until")
+                    dismissed = not until or _parse_dt(until) > _now_utc()
+                    if dismissed:
+                        logger.info(f"wallet reconcile suppressed by attention dismissal: {ddoc.get('reason','')}")
+                        return
+            except Exception:
+                pass
+            # cooldown + hash dedup
+            cooldown = int(await db.get_setting("wallet_alert_cooldown_hours", 6) or 6)
+            last_at = await db.get_setting("wallet_alert_last_at", None)
+            last_hash = await db.get_setting("wallet_alert_last_hash", None)
+            cur_hash = hashlib.sha256(_json.dumps(sorted([(c.get("type"), c.get("user_id"), int(c.get("amount") or 0)) for c in crit]), sort_keys=True).encode()).hexdigest()[:16]
+            if last_hash and last_at and last_hash == cur_hash:
+                try:
+                    elapsed_h = (_now_utc() - _parse_dt(last_at).astimezone(__import__('datetime').timezone.utc)).total_seconds() / 3600
+                    if elapsed_h < cooldown:
+                        logger.info(f"wallet reconcile throttled: same {len(crit)} crit within {elapsed_h:.1f}h < {cooldown}h")
+                        return
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"wallet reconcile settings check failed: {e}")
+            cur_hash = "unknown"
+            cooldown = 6
+        # ── W7: ساخت پیام توضیح‌دار (تا ۳ مورد، human-readable) ──
+        try:
+            # نام کاربران برای جزئیات
+            uids = list({int(c.get("user_id") or 0) for c in crit[:5] if c.get("user_id")})
+            names = {}
+            if uids:
+                for u in await db.users.find({"user_id": {"$in": uids}}, {"user_id": 1, "name": 1}).to_list(20):
+                    names[int(u["user_id"])] = u.get("name") or ""
+            _type_fa = {
+                "wallet_balance_mismatch": "مغایرت حسابداری",
+                "refund_without_wallet_credit": "بازگشت وجه بدون اعتبار",
+                "topup_without_wallet_credit": "شارژ بدون اعتبار",
+                "wallet_debit_without_payment": "کسر بی‌پشتوانه",
+                "wallet_tx_stuck_pending": "تراکنش معلق",
+            }
+            lines = []
+            for c in crit[:3]:
+                uid = int(c.get("user_id") or 0)
+                nm = names.get(uid) or f"کاربر {uid}"
+                tp = _type_fa.get(c.get("type"), c.get("type") or "نامشخص")
+                amt = c.get("amount")
+                if amt is not None:
+                    lines.append(f"• {nm} — {tp} ({int(amt):,} تومان)")
+                else:
+                    lines.append(f"• {nm} — {tp}")
+            if len(crit) > 3:
+                lines.append(f"… و {len(crit)-3} مورد دیگر")
+            detail = "\n".join(lines) if lines else ""
+            text = f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی"
+            if detail:
+                text += "\n" + detail
+            text += "\n\n📊 مغایرت‌گیری: /subscriptions?tab=reconcile  |  👛 کیف پول‌ها: /subscriptions?tab=wallets"
+            text += "\n🔕 بستن هشدار تا ۲۴ساعته: /api/web-admin/attention/dismiss  یا از داشبورد «نیازمند اقدام» ببندید"
+            await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': text, 'sent': False, 'created_at': _utc_iso()})
+            # ذخیره برای dedup بعدی
+            try:
+                await db.set_setting("wallet_alert_last_at", _utc_iso())
+                await db.set_setting("wallet_alert_last_hash", cur_hash)
+            except Exception:
+                pass
+        except Exception as ie:
+            logger.warning(f"wallet reconcile notify failed: {ie}")
+            try:
+                await db.bot_notifs.insert_one({'type': 'wallet_reconcile', 'chat_id': __import__('os').getenv('ADMIN_ID','0'), 'text': f"⚠️ مغایرت کیف پول: {len(crit)} مورد بحرانی", 'sent': False, 'created_at': _utc_iso()})
+            except: pass
+    except Exception as e:
+        logger.warning(f"wallet_reconcile_job error: {e}")
+
+async def audit_retention_job(context: ContextTypes.DEFAULT_TYPE):
+    """🗄 W4/DB-02 — retention روزانه‌ی audit_logs + هشدار حجم.
+
+    اگر audit_retention_days=0 باشد نگهداری نامحدود است (apply_retention
+    خودش ۰ برمی‌گرداند). آستانه‌ی هشدار حجم با audit_log_alert_count
+    قابل تنظیم است (پیش‌فرض ۵۰۰٬۰۰۰ سند)."""
+    try:
+        deleted = await db.audit_retention_cleanup()
+        try:
+            await db.set_setting("audit_retention_last_run",
+                                 __import__("time_utils").utc_now_iso())
+            await db.set_setting("audit_retention_last_deleted",
+                                 int(deleted or 0))
+        except Exception:
+            pass
+        try:
+            alert_at = int(
+                await db.get_setting("audit_log_alert_count", 500000)
+                or 500000)
+        except Exception:
+            alert_at = 500000
+        if alert_at > 0:
+            total = await db.audit_logs.count_documents({})
+            if total > alert_at:
+                logger.warning(
+                    "audit_logs volume %d exceeds alert threshold %d",
+                    total, alert_at)
+        logger.info("audit retention cleanup deleted=%d", deleted)
+    except Exception as e:
+        logger.warning(f"audit_retention error: {e}")
+
+
+async def zarinpal_cleanup_job(context: ContextTypes.DEFAULT_TYPE):
+    """🌊 W2 — پرداخت‌های zarinpal_pending که بیش‌از ۱ ساعت رها شده → لغو + آزادسازی کد تخفیف."""
+    try:
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        pending = await db.sub_payments.find({'status': 'zarinpal_pending', 'submitted_at': {'$lt': cutoff}}).to_list(50)
+        for doc in pending:
+            try:
+                flipped = await db.sub_payments.update_one({'_id': doc['_id'], 'status': 'zarinpal_pending'}, {'$set': {'status': 'cancelled', 'cancel_reason': 'timeout 1h', 'cancelled_at': __import__('time_utils').utc_now_iso()}})
+                code = (doc.get('discount_code') or '').strip()
+                if code:
+                    await db.discount_release(code, user_id=doc.get('user_id'))
+                # 🌊 W3/MISS-02 — آزادسازی فوری hold درگاه اگر کاربر پول داده
+                # ولی verify نکرده بود؛ best-effort و ثبت نتیجه روی سند.
+                if flipped.modified_count == 1 and doc.get('zarinpal_authority'):
+                    try:
+                        from payments.zarinpal import zarinpal_reverse as _zp_rev
+                        rev = await _zp_rev(doc['zarinpal_authority'])
+                        await db.sub_payments.update_one({'_id': doc['_id']}, {'$set': {
+                            'zarinpal_reversed': bool(rev.get('ok')),
+                            'zarinpal_reverse_code': rev.get('code'),
+                            'zarinpal_reversed_at': __import__('time_utils').utc_now_iso()}})
+                    except Exception as e2:
+                        logger.warning(f"zarinpal reverse failed {doc.get('_id')}: {e2}")
+                logger.info(f"zarinpal cleanup cancelled {doc['_id']} authority={doc.get('zarinpal_authority')}")
+            except Exception as e:
+                logger.warning(f"zarinpal cleanup failed {doc.get('_id')}: {e}")
+    except Exception as e:
+        logger.warning(f"zarinpal_cleanup error: {e}")
+
 async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
     """
     FIX جدید: بکاپ خودکار روزانه. این job هر ساعت اجرا می‌شود و
@@ -796,10 +1057,62 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             if (now_utc() - last_dt.astimezone(timezone.utc)).total_seconds() < 3600 * 20:
                 return  # کمتر از ۲۰ ساعت از آخرین بکاپ گذشته — رد کن
 
-        from backup import build_full_backup_data, send_backup_to_bot_chat
+        # 🌊 W3 — streaming backup to temp file (memory-safe) + send
+        from backup import build_full_backup_file
         from utils import send_audit_log
-        data = await build_full_backup_data()
-        msg_id = await send_backup_to_bot_chat(context.bot, ADMIN_ID, data, filename='backup_auto')
+        import os as _os
+        temp_path, _auto_summary = await build_full_backup_file()
+        # 🌊 W5/REL-04 — گیت حجم: ارسالِ محکوم‌به‌شکستِ بالای ۵۰MB تلگرام
+        # انجام نمی‌شود؛ خطا به مسیر consec_fail/alert موجود می‌رود.
+        try:
+            import os as _sz
+            _size = _sz.path.getsize(temp_path)
+        except Exception:
+            _size = 0
+        if _size >= 48 * 1024 * 1024:
+            raise RuntimeError(
+                f"backup file too large for Telegram ({_size // (1024 * 1024)}MB ≥ 48MB) — "
+                f"offsite لازم است (docs/runbook.md §۸)")
+        if _size >= 40 * 1024 * 1024:
+            logger.warning("backup size %dMB approaching Telegram 50MB limit",
+                           _size // (1024 * 1024))
+        # 🌊 W5/REL-04 — رمزنگاری بکاپ خودکار اگر کلید تنظیم شده باشد
+        _enc_suffix = ""
+        try:
+            from utils_crypto import is_encryption_enabled, encrypt_bytes
+            if is_encryption_enabled():
+                with open(temp_path, 'rb') as _rf:
+                    _enc = encrypt_bytes(_rf.read())
+                if _enc is not None:
+                    with open(temp_path, 'wb') as _wf:
+                        _wf.write(_enc)
+                    _enc_suffix = ".enc"
+                    logger.info("auto backup encrypted (Fernet)")
+        except Exception as _ee:
+            logger.warning(f"backup encryption skipped: {_ee}")
+        try:
+            # send file without holding json string in RAM
+            from backup import build_backup_caption
+            try:
+                _send_size = _os.path.getsize(temp_path)
+            except Exception:
+                _send_size = _size
+            with open(temp_path, 'rb') as f:
+                now_str = now_tehran().strftime('%Y%m%d_%H%M')
+                fname = f"backup_auto_{now_str}.json.gz{_enc_suffix}"
+                _cap = build_backup_caption(
+                    {'summary': _auto_summary or {}}, _send_size,
+                    encrypted=bool(_enc_suffix))
+                # use bot.send_document with file handle
+                sent = await context.bot.send_document(
+                    chat_id=ADMIN_ID, document=f, caption=_cap,
+                    filename=fname, parse_mode='HTML')
+                msg_id = getattr(sent, 'message_id', None)
+        finally:
+            try: _os.unlink(temp_path)
+            except: pass
+        # summary واقعی برای audit log و history (دیگر حدس صفر نیست)
+        data = {"summary": _auto_summary or {}}
         await db.set_setting('auto_backup_last_run', utc_now_iso())
         logger.info("💾 بکاپ خودکار با موفقیت ارسال شد")
         # 🛡 AUDIT-V2 — نگهداریِ کرانه‌دار: سابقه‌ی بکاپ‌های خودکار در یک
@@ -815,7 +1128,7 @@ async def auto_backup_job(context: ContextTypes.DEFAULT_TYPE):
             if not isinstance(hist, list):
                 hist = []
             hist.append({'at': utc_now_iso(), 'msg_id': msg_id,
-                         'size_kb': (len(data.get('__bytes__', '') or '') // 1024) or None,
+                         'size_kb': (int(_send_size) // 1024) if '_send_size' in dir() and _send_size else None,
                          'users': (data.get('summary') or {}).get('users', 0)})
             hist = hist[-(keep * 3):]                       # کرانه‌ی خودِ سابقه
             stale = hist[:-keep] if len(hist) > keep else []
@@ -1122,10 +1435,24 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W5 — Flood-Control برای فایل هم (جلوگیری از اسپم و هزینه)
+    if uid != ADMIN_ID:
+        is_blocked, wait = _check_flood(uid)
+        if is_blocked:
+            try:
+                await update.message.reply_text(f"⏳ لطفاً کمی صبر کنید ({wait}s)")
+            except: pass
+            return
+
 
     # ۰. FIX جدید: اسکرین‌شات رسید پرداخت اشتراک
     if context.user_data.get('sub_mode') == 'awaiting_screenshot' and update.message.photo:
         return await sub_screenshot_handler(update, context)
+
+    # 🌊 W6.2 — اسکرین‌شات رسید شارژ کیف پول
+    if context.user_data.get('sub_mode') == 'awaiting_topup_screenshot' and update.message.photo:
+        from subscription import topup_screenshot_handler
+        return await topup_screenshot_handler(update, context)
 
     # 🤖 هوشیار — عکس/PDF/صدا در حالت «پرسش از AI»
     # ⚠️ قابلیتِ جدید: قبلاً فقط عکس پشتیبانی می‌شد؛ حالا PDF (جزوه/برگه‌ی
@@ -1147,6 +1474,15 @@ async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # ۲. FIX: broadcast — عکس/ویدیو/فایل در حالت broadcast
     if uid == ADMIN_ID and context.user_data.get('mode') == 'broadcast':
         return await admin_broadcast_handler(update, context)
+
+    # 📅 اسکن برنامه هفتگی/امتحانات با هوشیار (عکس جدول)
+    scan_mode = context.user_data.get('mode', '')
+    if scan_mode in ('schedule_scan_weekly', 'schedule_scan_exam'):
+        # فقط ادمین برنامه
+        if await db.has_permission(uid, "schedules.manage") or (await db.get_content_scope(uid) or {}).get("kind") == "global":
+            if update.message.photo or (update.message.document and (update.message.document.mime_type or '').startswith('image/')):
+                from schedule import handle_schedule_scan_photo
+                return await handle_schedule_scan_photo(update, context)
 
     # ۳. محتوا ادمین
     ca_mode = context.user_data.get('ca_mode', '')
@@ -1355,7 +1691,7 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # بعدی او در هر بخش دیگری از ربات به اشتباه به همین mode می‌رسد.
 INTERRUPTIBLE_SIMPLE_MODES = {
     'search_user', 'edit_user', 'add_intake', 'add_admin_role',
-    'add_schedule', 'flex_time_change',
+    'add_schedule', 'flex_time_change', 'schedule_scan_weekly', 'schedule_scan_exam',
     'set_auto_backup_hour', 'report_note', 'ticket_search',
     'set_maintenance_text', 'set_log_group_admin', 'set_log_group_content',
     'add_required_channel', 'edit_schedule_field', 'set_donation_link',
@@ -1410,6 +1746,20 @@ MENU_BUTTON_TEXTS = _menu_button_texts()
 
 async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # 🌊 W5 — Flood-Control: 5 msg/5s → 30s block (admin exempt)
+    if uid != ADMIN_ID:
+        is_blocked, wait = _check_flood(uid)
+        if is_blocked:
+            # warn at most once per block
+            last = _FLOOD_WARNED.get(uid, 0)
+            now = time.time()
+            if now - last > 8:
+                _FLOOD_WARNED[uid] = now
+                try:
+                    await update.message.reply_text(f"⏳ لطفاً کمی صبر کنید ({wait}s) — پیام‌های شما خیلی سریع است.")
+                except: pass
+            return
+
 
     # FIX باگ لغو رول/گزارش/و غیره گیر کردن: اگر کاربر دکمه منو زده
     # و در یکی از modeهای ساده گیر بود، آن mode را پاک کن و رد شو
@@ -1502,6 +1852,8 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return await ai_admin_text_handler(update, context)
 
     # ۴e. 🤖 هوشیار — حالت «پرسش از AI» برای هر کاربر تأییدشده
+    if context.user_data.get('mode') == 'ai_image_prompt':
+        return await handle_ai_image_prompt(update, context)
     if context.user_data.get('mode') == 'ai_query':
         return await handle_ai_text(update, context)
 
@@ -1536,8 +1888,10 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # ۶. ca_text_handler
     ca_mode = context.user_data.get('ca_mode', '')
     ca_text_modes = {
-        'add_lesson', 'add_session', 'waiting_description',
-        'waiting_ref_description', 'add_faq', 'add_ref_subject',
+        'add_lesson', 'add_session', 'waiting_filename', 'confirming_filename',
+        'waiting_description', 'waiting_ref_description',
+        'add_faq', 'add_ref_subject',
+        'ui_url', 'ui_lesson', 'ui_topic',  # 📥 URL-Import
         'add_ref_book', 'edit_lesson', 'edit_session',
         'edit_ref_subject', 'edit_ref_book',
     }
@@ -1735,6 +2089,8 @@ def build_application() -> Application:
         (grades_callback,             r'^grades:'),
         (ai_admin_callback,           r'^ai:'),   # 🤖 هوشیار — پنل ادمین
         (ai_user_callback,            r'^aiu:'),  # 🤖 هوشیار — دکمه‌های زیر جواب (گفتگوی جدید/گزارش)
+        (referral_callback,           r'^ref:'),   # 🌱 W13 — دعوت دوستان
+        (dunning_click,               r'^dun:'),   # 💳 W14 — ادامه‌ی پرداخت نیمه‌تمام
     ]
     for handler, pattern in cbs:
         app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
@@ -1798,6 +2154,44 @@ async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
+    # 🌊 W5 — ثبت دستورات تلگرام (منوی / ) و توضیح کوتاه
+    try:
+        from telegram import BotCommand
+        cmds = [
+            BotCommand("start", "شروع / ثبت‌نام"),
+            BotCommand("help", "راهنما"),
+            BotCommand("cancel", "لغو عملیات"),
+            BotCommand("profile", "پروفایل"),
+            BotCommand("schedule", "برنامه کلاسی"),
+        ]
+        await application.bot.set_my_commands(cmds)
+        try:
+            await application.bot.set_my_short_description("هامشیار — دستیار آموزشی پزشکی")
+            await application.bot.set_my_description("هامشیار: منابع، بانک سوال، برنامه کلاسی و پشتیبانی — همه در یک ربات.")
+            await application.bot.set_chat_menu_button(menu_button=None)
+        except Exception:
+            pass
+        logger.info("✅ دستورات تلگرام ثبت شد")
+    except Exception as e:
+        logger.warning(f"setMyCommands failed: {e}")
+    # 🌊 W5 — Webhook اگر تنظیم شده باشد (Railway: WEBHOOK_URL + WEBHOOK_SECRET)
+    try:
+        wh_url = (os.getenv("WEBHOOK_URL") or os.getenv("BOT_WEBHOOK_URL") or "").strip()
+        wh_secret = (os.getenv("WEBHOOK_SECRET") or os.getenv("BOT_WEBHOOK_SECRET") or "").strip() or None
+        if wh_url:
+            # اگر webhook ست شده، polling conflict می‌دهد — فقط set کن، run_polling در این حالت توسط run_webhook جایگزین می‌شود (پایین)
+            # اینجا فقط اطمینان از ثبت است؛ اگر در حالت polling باشیم، حذف webhook
+            if os.getenv("BOT_WEBHOOK_MODE", "").lower() in ("1","true","webhook"):
+                await application.bot.set_webhook(url=wh_url, secret_token=wh_secret, allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+                logger.info(f"🔗 Webhook ثبت شد: {wh_url}")
+            else:
+                # در حالت polling، webhook باید حذف باشد تا polling کار کند
+                try:
+                    await application.bot.delete_webhook(drop_pending_updates=False)
+                except: pass
+    except Exception as e:
+        logger.warning(f"webhook setup failed: {e}")
+
     # 💓 اولین تپش قلب: همان لحظه که ربات بالا آمد (قبل از هر کار کند)
     # نوشته می‌شود تا /api/health/deep بداند polling شروع شده است.
     from bot_heartbeat import write_heartbeat
@@ -1897,6 +2291,14 @@ async def post_init(application: Application):
             name='new_resources_notif'
         )
 
+        # 🌊 W8/UX-04 — یادآوری تیکت‌های مانده (هر ۶ ساعت)
+        application.job_queue.run_repeating(
+            ticket_stale_job,
+            interval=21600,
+            first=600,
+            name='ticket_stale'
+        )
+
         # FIX جدید: بکاپ خودکار — هر ساعت چک می‌شود، فقط در ساعت
         # تنظیم‌شده (از پنل ادمین) واقعاً بکاپ می‌گیرد
         application.job_queue.run_repeating(
@@ -1911,6 +2313,31 @@ async def post_init(application: Application):
             subscription_expiry_job,
             time=dtime(hour=9, minute=15, tzinfo=TEHRAN),
             name='subscription_expiry'
+        )
+        # 🗄 W4/DB-02 — retention روزانه‌ی audit_logs (۰۳:۳۰ تهران؛
+        # خارج از ساعت بکاپ و رینگ)
+        application.job_queue.run_daily(
+            audit_retention_job,
+            time=dtime(hour=3, minute=30, tzinfo=TEHRAN),
+            name='audit_retention'
+        )
+        # 🌊 W2 — sweep ساعتی (بدون نوتیف تکراری) + reconcile کیف پول + cleanup زرین‌پال
+        application.job_queue.run_repeating(
+            subscription_expiry_sweep_job,
+            interval=3600, first=600, name='subscription_expiry_sweep'
+        )
+        application.job_queue.run_repeating(
+            wallet_reconcile_job,
+            interval=1800, first=300, name='wallet_reconcile'
+        )
+        application.job_queue.run_repeating(
+            zarinpal_cleanup_job,
+            interval=3600, first=1200, name='zarinpal_cleanup'
+        )
+        # 💳 W14 — پیگیری پرداخت نیمه‌تمام درگاه (با کلید خاموش بی‌کار است)
+        application.job_queue.run_repeating(
+            dunning_job,
+            interval=600, first=120, name='dunning_tick'
         )
 
         # بستن هفته‌ی Prestige — شنبه ۰۰:۰۵ تهران (PTB: شنبه=۶)
@@ -1975,30 +2402,115 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in ('1', 'true', 'yes', 'on')
 
 
-def main():
-    app = build_application()
-    app.post_init = post_init
+def _run_polling_with_retry(build_app):
+    """🛡 HOTFIX پایداری startup — کرش مشاهده‌شده در دیپلوی:
 
-    # 🔁 موج Railway — updateهای pending دیگر کورکورانه دور ریخته نمی‌شوند.
-    #
-    # چرا این تغییر لازم بود: drop_pending_updates=True در ابتدای هر
-    # polling، صف updateهای تلگرام را خالی می‌کند. در Railway هر deploy /
-    # restart (شامل ری‌استارت خودکار supervisor پس از کرش) آن پیام‌ها را
-    # برای همیشه حذف می‌کرد: پیامی که کاربر حین deploy فرستاده بود هیچ‌وقت
-    # پردازش نمی‌شد و کاربر بی‌پاسخ می‌ماند.
-    #
-    # رفتار پیش‌فرض حالا «حفظ» است؛ با BOT_DROP_PENDING=1 می‌توان آگاهانه
-    # برگشت (مثلاً برای پاک‌کردن یک صف گیرکرده‌ی بزرگ پس از یک incident).
+    یک TimedOut گذرا به api.telegram.org حین initialize کل پروسه را
+    می‌کشت؛ با چند کرش پیاپی، supervisor به FATAL می‌رفت و بات برای
+    همه‌ی پیام‌ها (شامل /start) کاملاً خاموش می‌ماند. حالا خطاهای
+    شبکه‌ای با backoff retry می‌شوند و اپلیکیشن در هر تلاش بازسازی
+    می‌شود. خطای پیکربندی (InvalidToken) هرگز retry نمی‌شود — باید
+    همان کرش صریح بماند تا مشکل توکن دیده شود.
+    🌊 W5 — اگر BOT_WEBHOOK_MODE=1 و WEBHOOK_URL ست باشد، به‌جای polling از webhook استفاده می‌شود (پایدارتر روی Railway).
+    """
+    from telegram.error import TimedOut, NetworkError, RetryAfter
+
     drop_pending = _env_flag('BOT_DROP_PENDING', False)
     if drop_pending:
         logger.warning("⚠️ BOT_DROP_PENDING=1 — updateهای pending در شروع حذف می‌شوند")
 
-    logger.info("🩺 ربات پزشکی شروع به کار کرد...")
-    app.run_polling(
-        drop_pending_updates=drop_pending,
-        allowed_updates=Update.ALL_TYPES,
-        poll_interval=0.5,
-    )
+    # 🌊 W5 webhook mode check
+    wh_mode = _env_flag('BOT_WEBHOOK_MODE', False) or _env_flag('WEBHOOK_MODE', False)
+    wh_url = (os.getenv('WEBHOOK_URL') or os.getenv('BOT_WEBHOOK_URL') or '').strip()
+    wh_secret = (os.getenv('WEBHOOK_SECRET') or os.getenv('BOT_WEBHOOK_SECRET') or '').strip() or None
+    if wh_mode and wh_url:
+        # 🛡 W3/BUG-06 — حالت webhook روی Railway تک‌پورت پشتیبانی
+        # نمی‌شود (تک‌پورت با uvicorn تداخل می‌کند)؛ مسیر سالم polling
+        # است. این شاخه فقط برای سازگاری/دیباگ نگه داشته شده — جزئیات در
+        # docs/runbook.md (بخش «حالت webhook»).
+        logger.warning(
+            "BOT_WEBHOOK_MODE is set but webhook is NOT supported on "
+            "single-port Railway — use polling (unset BOT_WEBHOOK_MODE). "
+            "See docs/runbook.md.")
+        # در حالت webhook، polling اجرا نمی‌شود — webhook server
+        attempt = 0
+        while True:
+            app = build_app()
+            logger.info("🩺 ربات پزشکی (webhook) شروع به کار کرد... url=%s (تلاش %d)", wh_url, attempt + 1)
+            try:
+                # Railway: پورت داخلی BOT_WEBHOOK_PORT (پیش‌فرض 8001) — باید از WEBHOOK_URL مسیر را جدا کنیم
+                import urllib.parse as _up
+                parsed = _up.urlparse(wh_url)
+                # مسیر webhook: اگر URL شامل path باشد همان، وگرنه /bot-webhook
+                url_path = (parsed.path or '/bot-webhook').lstrip('/') or 'bot-webhook'
+                listen = os.getenv('BOT_WEBHOOK_LISTEN', '0.0.0.0')
+                port = int(os.getenv('BOT_WEBHOOK_PORT') or os.getenv('PORT') or '8001')
+                app.run_webhook(
+                    listen=listen, port=port, url_path=url_path,
+                    webhook_url=wh_url, secret_token=wh_secret,
+                    drop_pending_updates=drop_pending, allowed_updates=Update.ALL_TYPES,
+                )
+                return
+            except (TimedOut, NetworkError, RetryAfter) as e:
+                attempt += 1
+                delay = min(30, 2 ** min(attempt, 4))
+                logger.error("⚠️ webhook startup ناپایدار (%s: %s)؛ retry در %dث", type(e).__name__, e, delay)
+                time.sleep(delay)
+            except Exception as e:
+                # InvalidToken یا خطای پیکربندی نباید retry شود
+                if 'InvalidToken' in type(e).__name__ or 'Unauthorized' in str(e):
+                    raise
+                attempt += 1
+                delay = min(30, 2 ** min(attempt, 4))
+                logger.error("⚠️ webhook error (%s) retry در %dث", e, delay)
+                time.sleep(delay)
+
+    attempt = 0
+    while True:
+        app = build_app()
+        logger.info("🩺 ربات پزشکی شروع به کار کرد... (تلاش %d)", attempt + 1)
+        try:
+            app.run_polling(
+                drop_pending_updates=drop_pending,
+                allowed_updates=Update.ALL_TYPES,
+                poll_interval=0.5,
+            )
+            return  # خروج تمیز (SIGINT/stop) — نه کرش
+        except (TimedOut, NetworkError, RetryAfter) as e:
+            attempt += 1
+            delay = min(30, 2 ** min(attempt, 4))
+            logger.error(
+                "⚠️ اتصال تلگرام در startup ناپایدار بود (%s: %s)؛ "
+                "تلاش مجدد در %d ثانیه — پروسه زنده می‌ماند تا "
+                "supervisor به FATAL نرود.",
+                type(e).__name__, e, delay)
+            time.sleep(delay)
+
+
+async def _graceful_shutdown(app):
+    # 🌊 W3 — graceful: بستن http client مشترک + آزادسازی db
+    try:
+        from http_client import aclose_shared_client
+        await aclose_shared_client()
+    except Exception: pass
+    try:
+        # short grace for in-flight handlers
+        import asyncio as _aio
+        await _aio.sleep(0.2)
+    except: pass
+    try:
+        db.client.close()
+    except: pass
+
+def _build_application_with_post_init():
+    app = build_application()
+    app.post_init = post_init
+    app.post_shutdown = _graceful_shutdown
+    return app
+
+
+def main():
+    _run_polling_with_retry(_build_application_with_post_init)
 
 
 if __name__ == '__main__':

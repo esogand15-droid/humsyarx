@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from api.auth import get_resource_access_user
-from api.telegram_send import send_bs_content
+from api.auth import get_current_user, get_resource_access_user
+from api.telegram_send import (
+    is_previewable, preview_token, proxy_telegram_preview,
+    send_bs_content, verify_preview_token,
+)
 from database import db
 
 logger = logging.getLogger(__name__)
@@ -90,6 +93,12 @@ def _public_file(
                 item.get("downloads")
             ),
         ),
+        # 🌊 W8/UX-03 — پیش‌نمایش داخل مینی‌اپ
+        "mime": _text(item.get("mime_type")),
+        "size": max(0, _safe_int(item.get("file_size"))),
+        "preview": bool(is_previewable(
+            _text(item.get("mime_type")),
+            _text(item.get("file_extension")))),
     }
 
 
@@ -452,6 +461,105 @@ async def download(
         _sending_users.discard(
             user_id
         )
+
+
+async def _preview_user(request: Request) -> dict:
+    """🌊 W8/UX-03 — احراز پیش‌نمایش: هدر initData یا توکن امضای تک‌فایل.
+
+    تگ‌های <video>/<audio> هدر نمی‌فرستند؛ مینی‌اپ اول از preview-url
+    توکن ۱۰دقیقه‌ای می‌گیرد. مسیر توکن هم گارد فیچر W7 را رد می‌کند و
+    گارد ورودی پایین‌تر با کاربر تازه‌خوانده‌شده اعمال می‌شود.
+    """
+    from core.access import require_feature_access
+    if request.headers.get("X-Init-Data"):
+        user = await get_current_user(
+            request, request.headers.get("X-Init-Data", ""))
+        await require_feature_access(user["id"], "resources")
+        return user
+    qp = request.query_params
+    try:
+        uid, exp = int(qp.get("uid") or 0), int(qp.get("exp") or 0)
+    except (TypeError, ValueError):
+        uid, exp = 0, 0
+    fid = (request.path_params.get("content_id") or "")
+    if uid and verify_preview_token(qp.get("token", ""), uid, "res",
+                                    fid, exp):
+        db_user = await db.get_user(uid) or {}
+        if db_user:
+            await require_feature_access(uid, "resources")
+            return {"id": uid, "_db": db_user}
+    raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@router.get("/preview-url/{content_id}")
+async def preview_url(
+    content_id: str,
+    user=Depends(get_resource_access_user),
+):
+    """🌊 W8/UX-03 — صدور آدرس امضاشده‌ی پیش‌نمایش (۱۰ دقیقه، تک‌فایل)."""
+    import time as _t
+    item = await db.bs_get_content_item(content_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="فایل پیدا نشد")
+    _filt = await _viewer_intake(user)
+    _intake_guard(await db.content_intake(content_id), _filt, "این فایل")
+    mime = _text(item.get("mime_type")) or "application/octet-stream"
+    if not is_previewable(mime, _text(item.get("file_extension"))):
+        raise HTTPException(
+            status_code=415,
+            detail="این نوع فایل پیش‌نمایش ندارد؛ از دانلود استفاده کنید")
+    exp = int(_t.time()) + 600
+    tok = preview_token(int(user["id"]), "res", content_id, exp)
+    return {"url": (f"/api/resources/preview/{content_id}"
+                    f"?uid={int(user['id'])}&exp={exp}&token={tok}")}
+
+
+@router.get("/preview/{content_id}")
+async def preview(
+    content_id: str,
+    request: Request,
+    user=Depends(_preview_user),
+):
+    """🌊 W8/UX-03 — استریم فایل برای پخش داخل مینی‌اپ (Range پشتیبانی می‌شود).
+
+    همان گاردهای download (دسترسی + ورودی + fork)؛ توکن تلگرام هرگز
+    به کلاینت داده نمی‌شود — بایت‌ها از همین سرور پروکسی می‌شوند.
+    """
+    from api.rate_limit import rate_limit_user as _rl
+
+    user_id = int(user["id"])
+    await _rl(user_id, "preview", 300, 3600)
+
+    item = await db.bs_get_content_item(content_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="فایل پیدا نشد")
+    _filt = await _viewer_intake(user)
+    _intake_guard(await db.content_intake(content_id), _filt, "این فایل")
+    if _filt is not None:
+        _sess_fk = await db.session_superseded_by_fork(
+            item.get("session_id", ""),
+            (user.get("_db") or {}).get("intake", ""),
+        )
+        if _sess_fk:
+            _fk_content = await db.bs_content.find_one({
+                "session_id": str(_sess_fk["_id"]),
+                "fork_of": content_id,
+            })
+            if _fk_content:
+                item = _fk_content
+    file_id = _text(item.get("file_id"))
+    if not file_id:
+        raise HTTPException(status_code=422,
+                            detail="شناسه تلگرام این فایل ثبت نشده است")
+    mime = _text(item.get("mime_type")) or "application/octet-stream"
+    if not is_previewable(mime, _text(item.get("file_extension"))):
+        raise HTTPException(
+            status_code=415,
+            detail="این نوع فایل پیش‌نمایش ندارد؛ از دانلود استفاده کنید")
+    name = (_text(item.get("display_file_name"))
+            or _text(item.get("name")) or "file")
+    return await proxy_telegram_preview(
+        file_id, mime, name, request.headers.get("range"))
 
 
 @router.get("/search")

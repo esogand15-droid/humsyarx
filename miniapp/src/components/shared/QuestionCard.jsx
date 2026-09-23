@@ -8,6 +8,71 @@ import {
 } from '../../lib/telegram';
 
 
+import api from '../../lib/api';
+
+
+/* 🌊 QBANK-W3/§۷.۴ — تصویر سؤال با احراز هویت (هدر X-Init-Data)؛
+   تگ img خام هدر نمی‌فرستد پس blob با axios گرفته می‌شود. */
+function QuestionImage({
+  url,
+  alt,
+}) {
+  const [
+    src,
+    setSrc,
+  ] = useState(null);
+
+  useEffect(() => {
+    if (!url) {
+      return undefined;
+    }
+
+    let alive = true;
+    let obj = null;
+
+    api
+      .get(url, {
+        responseType: 'blob',
+      })
+      .then((response) => {
+        if (alive) {
+          obj = URL.createObjectURL(
+            response.data
+          );
+
+          setSrc(obj);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      alive = false;
+
+      if (obj) {
+        URL.revokeObjectURL(obj);
+      }
+    };
+  }, [url]);
+
+  if (!src) {
+    return null;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt || 'تصویر سؤال'}
+      loading="lazy"
+      style={{
+        maxWidth: '100%',
+        borderRadius: 'var(--r-md)',
+        marginBottom: 12,
+      }}
+    />
+  );
+}
+
+
 const LETTERS = [
   'الف',
   'ب',
@@ -110,6 +175,19 @@ export default function QuestionCard({
           </span>
         )}
 
+        {/* 🌊 QBANK-W1 — سال و منبع سؤال */}
+        {question.exam_year && (
+          <span className="badge b-gray">
+            📅 {question.exam_year}
+          </span>
+        )}
+
+        {question.content_source_label_fa && (
+          <span className="badge b-gray">
+            🏷 {question.content_source_label_fa}
+          </span>
+        )}
+
         <span
           className={`badge ${
             question.difficulty
@@ -131,6 +209,19 @@ export default function QuestionCard({
             'متوسط 🟡'}
         </span>
       </div>
+
+
+      {Boolean(
+        question.image_url
+      ) && (
+        <QuestionImage
+          url={question.image_url}
+          alt={
+            question.image
+              ?.alt_text
+          }
+        />
+      )}
 
 
       <div

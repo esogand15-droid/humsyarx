@@ -140,6 +140,11 @@ const AiHomeScreen = lazyScreen(
   () => <SkRowList n={4} />
 );
 
+const AiImageScreen = lazyScreen(
+  () => import('./pages/Ai/AiImage'),
+  () => <SkRowList n={3} />
+);
+
 const GlobalSearchScreen = lazyScreen(
   () => import('./pages/Search/GlobalSearch'),
   SearchResultsSkeleton
@@ -223,6 +228,12 @@ const SubscriptionScreen = lazyScreen(
   SubscriptionSkeleton
 );
 
+// 🌊 W2 — لندینگ بازگشت از درگاه زرین‌پال
+const PaymentVerifyScreen = lazyScreen(
+  () => import('./pages/Payment/Verify'),
+  SubscriptionSkeleton
+);
+
 const TicketsScreen = lazyScreen(
   () => import('./pages/Me/Tickets'),
   TicketsSkeleton
@@ -283,6 +294,53 @@ const AuditLogScreen = lazyScreen(
 const SystemSettingsScreen = lazyScreen(
   () => import('./pages/Admin/SystemSettings'),
   SettingsSkeleton
+);
+
+/* میزهای هم‌تراز با پنل وب — صفحه‌های قدیمی سر جایشان می‌مانند */
+const AttentionDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'AttentionDesk'
+);
+const OperationsDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'OperationsDesk'
+);
+const QuestionsDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  QuestionsListSkeleton,
+  'QuestionsDesk'
+);
+const FeaturesDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  SettingsSkeleton,
+  'FeaturesDesk'
+);
+const GrowthDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'GrowthDesk'
+);
+const RingDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'RingDesk'
+);
+const SystemJobsDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'SystemJobsDesk'
+);
+const FinanceDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  AdminOpsSkeleton,
+  'FinanceDesk'
+);
+const ExamsDeskScreen = lazyScreen(
+  () => import('./pages/Admin/WebSync'),
+  ScheduleAdminSkeleton,
+  'ExamsDesk'
 );
 
 /* 🛡 مدیریت نقش‌ها — موج RBAC-W2 */
@@ -380,6 +438,13 @@ const ReferencesAdminScreen = lazyScreen(
   () => import('./pages/Admin/ContentLibrary'),
   LibraryRowsSkeleton,
   'ReferencesAdmin'
+);
+
+// 📥 URL-Import — صفحه‌ی درون‌ریزی محتوای راه‌دور
+const UrlImportScreen = lazyScreen(
+  () => import('./pages/Admin/UrlImport'),
+  LibraryRowsSkeleton,
+  'UrlImport'
 );
 
 const QbankAdminScreen = lazyScreen(
@@ -578,6 +643,13 @@ function AdminRoute({
     ['/admin/analytics', ['stats.view']],
     ['/admin/audit', ['audit.view']],
     ['/admin/settings', ['settings.manage', 'notifications.manage', 'backup.manage']],
+    ['/admin/questions', ['questions.review', 'questions.review_scoped']],
+    ['/admin/features', ['subscription.manage']],
+    ['/admin/growth', ['subscription.manage']],
+    ['/admin/ring', ['ring.manage']],
+    ['/admin/system', ['system.manage', 'notifications.manage', 'backup.manage']],
+    ['/admin/finance', ['subscription.manage']],
+    ['/admin/exams', ['schedules.manage']],
     ['/admin/users', ['users.view', 'users.manage']],
     ['/admin/roles', ['roles.manage']],
     ['/admin/intakes', ['users.manage']],
@@ -929,6 +1001,13 @@ export default function App() {
         />
 
         <Route
+          path="/ai/image"
+          element={
+            <AiImageScreen />
+          }
+        />
+
+        <Route
           path="/search"
           element={
             <GlobalSearchScreen />
@@ -1040,6 +1119,13 @@ export default function App() {
         />
 
         <Route
+          path="/payment/verify"
+          element={
+            <PaymentVerifyScreen />
+          }
+        />
+
+        <Route
           path="/me/tickets"
           element={
             <TicketsScreen />
@@ -1125,6 +1211,16 @@ export default function App() {
             </AdminRoute>
           }
         />
+
+        <Route path="/admin/attention" element={<AdminRoute><AttentionDeskScreen /></AdminRoute>} />
+        <Route path="/admin/operations" element={<AdminRoute><OperationsDeskScreen /></AdminRoute>} />
+        <Route path="/admin/questions" element={<AdminRoute><QuestionsDeskScreen /></AdminRoute>} />
+        <Route path="/admin/features" element={<AdminRoute><FeaturesDeskScreen /></AdminRoute>} />
+        <Route path="/admin/growth" element={<AdminRoute><GrowthDeskScreen /></AdminRoute>} />
+        <Route path="/admin/ring" element={<AdminRoute><RingDeskScreen /></AdminRoute>} />
+        <Route path="/admin/system" element={<AdminRoute><SystemJobsDeskScreen /></AdminRoute>} />
+        <Route path="/admin/finance" element={<AdminRoute><FinanceDeskScreen /></AdminRoute>} />
+        <Route path="/admin/exams" element={<AdminRoute><ExamsDeskScreen /></AdminRoute>} />
 
 
         {/* مدیریت کاربران */}
@@ -1303,6 +1399,16 @@ export default function App() {
           element={
             <PermissionRoute any={['content.manage', 'content.scoped']}>
               <QbankAdminScreen />
+            </PermissionRoute>
+          }
+        />
+
+        {/* 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند */}
+        <Route
+          path="/admin/content/url-import"
+          element={
+            <PermissionRoute any={['content.manage', 'content.scoped']}>
+              <UrlImportScreen />
             </PermissionRoute>
           }
         />

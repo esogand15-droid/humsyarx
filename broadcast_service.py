@@ -105,11 +105,12 @@ async def resolve_recipients(target: str | dict, actor_id: int | None = None,
         status = str(target.get("subscription_status") or "")
         now = now_utc()
         if status == "active":
-            ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}})
+            ids = await store.subscription_ids_by_end(earliest=now)
         elif status == "expiring_7":
-            ids = await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat(), "$lte": (now + timedelta(days=7)).isoformat()}})
+            ids = await store.subscription_ids_by_end(
+                earliest=now, latest=now + timedelta(days=7))
         elif status == "inactive":
-            active = set(await store.subscriptions.distinct("_id", {"status": "active", "end_date": {"$gte": now.isoformat()}}))
+            active = set(await store.subscription_ids_by_end(earliest=now))
             ids = [u.get("user_id") for u in users if u.get("user_id") not in active]
         else: raise ValueError("subscription_status_required")
         allowed = set(ids); users = [u for u in users if u.get("user_id") in allowed]
@@ -179,7 +180,7 @@ async def send_payload(bot, chat_id: int, payload: dict):
 
 
 async def send_payload_http(chat_id: int, payload: dict) -> dict:
-    """همان normalize/payload برای test-send وب، از Telegram HTTP transport."""
+    """همان normalize/payload برای test-send وب، از Telegram HTTP transport — با shared client + bounded retry."""
     p = normalize_payload(payload)
     if not BOT_TOKEN:
         raise RuntimeError("telegram_not_configured")
@@ -189,10 +190,12 @@ async def send_payload_http(chat_id: int, payload: dict) -> dict:
         method, field = MEDIA_METHOD[p["type"]]
         body = {"chat_id": chat_id, field: p["file_id"]}
         if p.get("caption"): body.update({"caption": p["caption"], "parse_mode": "HTML"})
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(f"{API_BASE}/{method}", json=body)
-    data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    if response.status_code != 200 or not data.get("ok"):
+    from http_client import telegram_post, _timeout
+    import httpx
+    # reuse shared client; per-call timeout 30s
+    resp = await telegram_post(f"{API_BASE}/{method}", json=body, timeout=_timeout(httpx.Timeout(15, read=30)))
+    data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    if resp.status_code != 200 or not data.get("ok"):
         raise RuntimeError("telegram_test_send_failed")
     return {"ok": True, "message_id": (data.get("result") or {}).get("message_id")}
 
@@ -201,12 +204,14 @@ async def upload_media(chat_id: int, kind: str, filename: str, raw: bytes, mime:
     if kind not in MEDIA_METHOD or not BOT_TOKEN:
         raise ValueError("unsupported_media_type")
     method, field = MEDIA_METHOD[kind]
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(f"{API_BASE}/{method}",
-            data={"chat_id": chat_id, "disable_notification": True},
-            files={field: (filename, raw, mime or "application/octet-stream")})
-    data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    if response.status_code != 200 or not data.get("ok"):
+    from http_client import telegram_post, _timeout
+    import httpx
+    resp = await telegram_post(f"{API_BASE}/{method}",
+        data={"chat_id": chat_id, "disable_notification": True},
+        files={field: (filename, raw, mime or "application/octet-stream")},
+        timeout=_timeout(httpx.Timeout(connect=15, read=180, write=300, pool=15)))
+    data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    if resp.status_code != 200 or not data.get("ok"):
         raise RuntimeError("telegram_media_upload_failed")
     result = data["result"]
     if kind == "photo": return result["photo"][-1]["file_id"]

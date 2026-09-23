@@ -276,7 +276,10 @@ export function BasicScienceAdmin() {
     queryFn: () =>
       api
         .get(
-          `/api/content/basic-science/lessons/${lesson.id}/sessions`
+          `/api/content/basic-science/lessons/${lesson.id}/sessions`,
+          {
+            params: iv ? { intake: iv } : {},
+          }
         )
         .then(
           (response) =>
@@ -471,10 +474,14 @@ export function BasicScienceAdmin() {
         upload.file
       );
 
+      // 🐛 FIX آپلود ویدیو — تایم‌اوت سراسری ۱۵ ثانیه است؛ آپلود فایل
+      // (به‌ویژه ویدیو) دو هاپ دارد (مرورگر→سرور→تلگرام) و عملاً همیشه
+      // از ۱۵ ثانیه بیشتر می‌شود. فقط همین درخواست مهلت طولانی می‌گیرد.
       return api.post(
         `/api/content/basic-science/sessions/${session.id}/content`,
 
-        body
+        body,
+        { timeout: 600000 }
       );
     },
 
@@ -817,6 +824,19 @@ export function BasicScienceAdmin() {
                             </span>
                           )}
 
+                          {!item.readonly && iv && !item.intake && (
+                            <span
+                              style={{
+                                display: 'block',
+                                color: 'var(--gold, #d4a017)',
+                                fontSize: 'var(--fs-cap)',
+                                marginTop: 2,
+                              }}
+                            >
+                              🌐 سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                            </span>
+                          )}
+
                           <span
                             style={{
                               display:
@@ -846,7 +866,9 @@ export function BasicScienceAdmin() {
                           onClick={async () => {
                             const accepted =
                               await confirmAction(
-                                'درس و زیرمجموعه‌های آن حذف شود؟'
+                                iv && !item.intake
+                                  ? 'این درس سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و ✂️ بزنید. ادامه می‌دهید؟'
+                                  : 'درس و زیرمجموعه‌های آن حذف شود؟'
                               );
 
                             if (accepted) {
@@ -911,6 +933,15 @@ export function BasicScienceAdmin() {
                 >
                   📅 این جلسه فقط برای ورودی شما ساخته می‌شود؛
                   نسخه‌ی سراسریِ درس تغییر نمی‌کند.
+                </div>
+              ) : !lessonRO && iv ? (
+                <div
+                  style={{
+                    color: 'var(--txm)',
+                    fontSize: 'var(--fs-cap)',
+                  }}
+                >
+                  🌐 جلسه‌ی جدید سراسری می‌شود. برای مخصوص‌کردن یک جلسه‌ی موجود همین ورودی، ✂️ را بزنید.
                 </div>
               ) : null}
 
@@ -1108,6 +1139,9 @@ export function BasicScienceAdmin() {
                                 خودِ کاربر است (فرزند، نه فورک) */}
                             {item.own &&
                               ' • 📅 فقط ورودی من'}
+
+                            {iv && !item.is_fork && !item.intake &&
+                              ' • 🌐 سراسری'}
                           </span>
                         </button>
 
@@ -1116,9 +1150,10 @@ export function BasicScienceAdmin() {
                              برای ورودی خودش؛ ↩️ حذف نسخه‌ی من
                              🌊 C3 — روی «فرزند ورودی من» فورک معنا ندارد
                              (مستقیماً ویرایش می‌شود) ⇒ دکمه مخفی */}
-                        {lessonRO &&
+                        {iv &&
                           !item.is_fork &&
-                          !item.own && (
+                          !item.own &&
+                          !item.intake && (
                             <button
                               type="button"
                               title="سفارشی‌سازی برای ورودی من"
@@ -1157,7 +1192,7 @@ export function BasicScienceAdmin() {
                             </button>
                           )}
 
-                        {lessonRO &&
+                        {iv &&
                           item.is_fork && (
                             <button
                               type="button"
@@ -1208,7 +1243,9 @@ export function BasicScienceAdmin() {
                           onClick={async () => {
                             const accepted =
                               await confirmAction(
-                                'جلسه حذف شود؟'
+                                iv && !item.intake
+                                  ? 'این جلسه سراسری است. حذف برای همه است. اگر فقط همین ورودی را می‌خواهید، حذف نکنید و ✂️ بزنید. ادامه می‌دهید؟'
+                                  : 'جلسه حذف شود؟'
                               );
 
                             if (accepted) {
@@ -1327,6 +1364,16 @@ export function BasicScienceAdmin() {
               <input
                 className="inp"
                 type="file"
+                accept={
+                  // 🐛 FIX آپلود ویدیو — انتخابگر فایل هم‌راستا با نوع
+                  // محتوا؛ قبلاً بدون accept بود (انتخاب فایل اشتباه).
+                  upload.type === 'video' ? 'video/*'
+                  : upload.type === 'voice' ? 'audio/*'
+                  : upload.type === 'pdf' ? 'application/pdf,.pdf'
+                  : upload.type === 'ppt'
+                    ? '.ppt,.pptx,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                  : 'image/*,application/pdf,.pdf'
+                }
                 onChange={(event) =>
                   setUpload({
                     ...upload,
@@ -1339,12 +1386,24 @@ export function BasicScienceAdmin() {
                 }
               />
 
+              {/* 🐛 FIX آپلود ویدیو — سقف حجم قبل از ارسال (۴۵MB = سقف
+                  سرور)؛ پیام شفاف به‌جای خطای عمومی پس از آپلود کامل. */}
+              {upload.file && upload.file.size > 45 * 1024 * 1024 && (
+                <div
+                  className="muted"
+                  style={{ color: 'var(--red, #e5484d)', margin: '0 2px 9px' }}
+                >
+                  ⚠️ حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
+                </div>
+              )}
+
               <button
                 className={
                   'btn btn-p btn-full'
                 }
                 disabled={
                   !upload.file ||
+                  upload.file.size > 45 * 1024 * 1024 ||
                   mutation.isPending
                 }
                 onClick={() =>
@@ -1608,7 +1667,10 @@ export function ReferencesAdmin() {
     queryFn: () =>
       api
         .get(
-          `/api/content/references/subjects/${subject.id}/books`
+          `/api/content/references/subjects/${subject.id}/books`,
+          {
+            params: iv ? { intake: iv } : {},
+          }
         )
         .then(
           (response) =>
@@ -1794,7 +1856,9 @@ export function ReferencesAdmin() {
       return api.post(
         `/api/content/references/books/${book.id}/files`,
 
-        body
+        body,
+        // 🐛 FIX آپلود ویدیو — مهلت طولانی فقط برای آپلود فایل
+        { timeout: 600000 }
       );
     },
 
@@ -1978,6 +2042,9 @@ export function ReferencesAdmin() {
                 className="btn btn-p"
                 disabled={
                   !upload.file ||
+                  // 🐛 FIX آپلود ویدیو — سقف ۴۵MB سمت کلاینت هم اعمال
+                  // می‌شود (سرور همچنان مرجع است).
+                  upload.file.size > 45 * 1024 * 1024 ||
                   mutation.isPending
                 }
                 onClick={() =>
@@ -2122,6 +2189,19 @@ export function ReferencesAdmin() {
                           🔒 سراسری — فقط‌خواندنی
                         </span>
                       )}
+
+                      {!item.readonly && iv && !item.intake && (
+                        <span
+                          style={{
+                            display: 'block',
+                            color: 'var(--gold, #d4a017)',
+                            fontSize: 'var(--fs-cap)',
+                            marginTop: 2,
+                          }}
+                        >
+                          🌐 سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                        </span>
+                      )}
                     </button>
 
                     {/* 🌊 C1.5 — حذف روی سراسری برای scoped مخفی */}
@@ -2134,7 +2214,9 @@ export function ReferencesAdmin() {
                       onClick={async () => {
                         const accepted =
                           await confirmAction(
-                            'موضوع حذف شود؟'
+                            iv && !item.intake
+                              ? 'این موضوع سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، کتاب را باز کنید و ✂️ بزنید. ادامه می‌دهید؟'
+                              : 'موضوع حذف شود؟'
                           );
 
                         if (accepted) {
@@ -2223,14 +2305,18 @@ export function ReferencesAdmin() {
                         {/* 🌊 C3 — کتابی که فقط برای ورودی خودِ کاربر است */}
                         {item.own &&
                           ' • 📅 فقط ورودی من'}
+
+                        {iv && !item.is_fork && !item.intake &&
+                          ' • 🌐 سراسری'}
                       </b>
                     </button>
 
                     {/* 🍴 C2 — روی موضوع سراسری (فقط‌خواندنی برای
                          ادمین ورودی‌خاص): ✂️ fork / ↩️ unfork */}
-                    {subjectRO &&
+                    {iv &&
                       !item.is_fork &&
-                      !item.own && (
+                      !item.own &&
+                      !item.intake && (
                         <button
                           type="button"
                           title="سفارشی‌سازی برای ورودی من"
@@ -2268,7 +2354,7 @@ export function ReferencesAdmin() {
                         </button>
                       )}
 
-                    {subjectRO &&
+                    {iv &&
                       item.is_fork && (
                         <button
                           type="button"
@@ -3170,13 +3256,8 @@ export function ContentReportsAdmin() {
 
             <button
               className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
+              style={{ marginTop: 12 }}
+              onClick={() => refetch()}
             >
               تلاش دوباره
             </button>

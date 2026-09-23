@@ -19,15 +19,18 @@ from api.routers import (
     admin_panel,
     ai,
     ai_management,
+    client_errors,
     content_admin,
     dashboard,
     faq,
     global_search,
     grades,
     notifications,
+    payment_gateway,
     profile,
     questions,
     rbac,
+    referral,
     references,
     registration,
     reports,
@@ -37,11 +40,17 @@ from api.routers import (
     subscription,
     subscription_management,
     tickets,
+    url_import,
     web_admin,
 )
 from database import db
 from request_context import current_request_id
 from time_utils import now_utc
+# 🛡 W1 — rate limiter (optional, env RATE_LIMIT_ENABLED=1)
+try:
+    from api.rate_limit import check_global as _rl_check_global
+except Exception:
+    _rl_check_global = None
 
 
 _BOOTSTRAP_STATE = {"ready": False, "steps": {}, "started_at": None}
@@ -50,6 +59,17 @@ _BOOTSTRAP_STATE = {"ready": False, "steps": {}, "started_at": None}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _BOOTSTRAP_STATE["started_at"] = now_utc().isoformat()
+    # 🚀 WAVE2 — warm shared http client at startup (pool ready before first request)
+    try:
+        from http_client import get_shared_client
+        await get_shared_client()
+    except Exception: pass
+    # 🌊 W3 — migrations قبل از هر چیز
+    try:
+        from db.migrations import run_migrations
+        await run_migrations(db)
+    except Exception as _e:
+        _BOOTSTRAP_STATE.setdefault("steps", {})["migrations"] = {"ok": False, "error": str(_e)}
     shared, question_indexes = await asyncio.gather(
         db.bootstrap_shared(),
         questions.ensure_indexes(),
@@ -67,15 +87,44 @@ async def lifespan(app: FastAPI):
     else:
         _BOOTSTRAP_STATE.setdefault("steps", {})["question_indexes"] = {"ok": True}
 
+    # 📥 URL-Import — §82: jobهای نیمه‌کاره‌ی پیش از restart علامت‌گذاری
+    try:
+        import url_import_service as _uis
+        _BOOTSTRAP_STATE.setdefault("steps", {})["url_import_recover"] = {
+            "ok": True, "recovered": await _uis.recover_stale_jobs()}
+    except Exception as exc:  # pragma: no cover
+        _BOOTSTRAP_STATE.setdefault("steps", {})["url_import_recover"] = {
+            "ok": False, "error": str(exc)}
+
     yield
 
-    db.client.close()
+    # 🌊 W3 — graceful: shared http client + cancel pending tasks
+    try:
+        from http_client import aclose_shared_client
+        await aclose_shared_client()
+    except Exception: pass
+    # allow in-flight requests to finish (best-effort 2s)
+    try:
+        await asyncio.sleep(0.1)
+    except: pass
+    try:
+        db.client.close()
+    except: pass
 
+
+# 🛡 W4/SEC-01 — مستندات تعاملی API به‌صورت پیش‌فرض بسته است؛ اسکیمای
+# اندپوینت‌های ادمین نباید عمومی باشد. برای بازکردن در dev:
+# API_DOCS_ENABLED=1
+_DOCS_ON = (os.getenv("API_DOCS_ENABLED", "0").strip().lower()
+            in ("1", "true", "yes", "on"))
 
 app = FastAPI(
     title="Humsyar API",
     version="2.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ON else None,
+    redoc_url="/redoc" if _DOCS_ON else None,
+    openapi_url="/openapi.json" if _DOCS_ON else None,
 )
 
 #: مبنای محاسبه‌ی uptime برای /api/health — در زمان import تنظیم می‌شود.
@@ -134,7 +183,17 @@ async def request_context_and_safe_errors(request: Request, call_next):
     """
     started = time.perf_counter()
     supplied = (request.headers.get("x-request-id") or "").strip()
-    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied) else uuid.uuid4().hex[:16]
+    if supplied and re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied):
+        request_id = supplied
+    else:
+        # 🆕 Audit Refactor §10 — HY-YYYYMMDD-XXXXXX برای قابلیت جستجو/مرتب‌سازی
+        try:
+            from time_utils import now_tehran
+            today = now_tehran().strftime("%Y%m%d")
+        except Exception:
+            from datetime import datetime, timezone
+            today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        request_id = f"HY-{today}-{uuid.uuid4().hex[:6].upper()}"
     token = current_request_id.set(request_id)
     try:
         try:
@@ -165,6 +224,19 @@ async def request_context_and_safe_errors(request: Request, call_next):
             # 🛡 AUDIT-M1 — تسک با مرجع و لاگ خطا
             from utils import spawn_bg
             spawn_bg(persist_metric(), 'wa_api_metric')
+        # 🌊 W5/REL-03 — شمارنده‌ی ارزانِ همه‌ی /api/* (درون‌حافظه‌ای؛
+        # wa_api_metrics همچنان منبع ماندگار وب‌ادمین است)
+        try:
+            from api.api_counters import record as _api_count
+            _p = _raw_path(request)
+            if _p.startswith("/api/"):
+                _tpl = (getattr(request.scope.get("route"), "path", "")
+                        or re.sub(r"/(?:(?:[0-9]+)|(?:[0-9a-fA-F]{24}))(?=/|$)",
+                                  "/:id", _p))
+                _api_count(request.method, _tpl,
+                           int(response.status_code), request_id)
+        except Exception:
+            pass
         return response
     finally:
         current_request_id.reset(token)
@@ -270,6 +342,11 @@ app.include_router(
 )
 
 app.include_router(
+    client_errors.router,
+    prefix="/api",
+)
+
+app.include_router(
     questions.router,
     prefix="/api/questions",
 )
@@ -307,6 +384,11 @@ app.include_router(
 app.include_router(
     tickets.router,
     prefix="/api/tickets",
+)
+
+app.include_router(
+    referral.router,
+    prefix="/api/referral",
 )
 
 app.include_router(
@@ -354,6 +436,12 @@ app.include_router(
     prefix="/api/content",
 )
 
+# 📥 URL-Import — همان prefix محتوا؛ تنها پایپ‌لاین canonical درون‌ریزی
+app.include_router(
+    url_import.router,
+    prefix="/api/content",
+)
+
 app.include_router(
     academic_admin.router,
     prefix="/api/academic-admin",
@@ -385,6 +473,12 @@ app.include_router(
     web_admin.router,
     prefix="/api/web-admin",
     tags=["web-admin"],
+)
+
+app.include_router(
+    payment_gateway.router,
+    prefix="/api",
+    tags=["payment-gateway"],
 )
 
 
@@ -701,6 +795,23 @@ async def _spa_cache_headers(request, call_next):
     # X-Frame-Options/CSPframe-ancestors روی /app/* بگذاریم.
     # (پالیسی امنیتی وب‌ادمین عمداً به اینجا سرایت نمی‌کند.)
     return resp
+
+
+# 🛡 W1 — global rate limit (120/min per IP on /api/*) — best-effort
+@app.middleware("http")
+async def _w1_rate_limit(request, call_next):
+    if _rl_check_global is not None:
+        try:
+            await _rl_check_global(request)
+        except Exception as e:
+            # rate limited → return 429 (preserves Retry-After header)
+            from fastapi import HTTPException as _HE
+            if isinstance(e, _HE) and getattr(e, "status_code", None) == 429:
+                from fastapi.responses import JSONResponse as _JR
+                return _JR(status_code=429, content={"detail": "rate_limited"}, headers=getattr(e, "headers", None) or {"Retry-After": "60"})
+            # other errors → fail-open
+            pass
+    return await call_next(request)
 
 
 # ──────────────────────────────────────────────────────────

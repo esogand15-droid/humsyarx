@@ -14,6 +14,7 @@ import {
 } from '@tanstack/react-query';
 
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -22,6 +23,7 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { confirmAction } from '../../lib/confirm';
 import {
   useUIStore,
 } from '../../stores/uiStore';
@@ -660,17 +662,10 @@ export function AdminRoles() {
           ))}
 
         {rolesQuery.isError && (
-          <div className="empty card">
-            <div style={{ fontSize: 28 }}>📡</div>
-            <p>نقش‌ها بارگذاری نشد</p>
-            <button
-              type="button"
-              className="btn btn-d"
-              onClick={() => rolesQuery.refetch()}
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="نقش‌ها بارگذاری نشد"
+            onRetry={() => rolesQuery.refetch()}
+          />
         )}
 
         {roles.map((role, index) => (
@@ -799,15 +794,12 @@ export function AdminRoles() {
                         ? 'ابتدا نقش را از کاربران بگیر'
                         : 'حذف نقش'
                   }
-                  onClick={() => {
+                  onClick={async () => {
                     haptic('light');
-                    if (
-                      window.confirm(
-                        `حذف نقش «${role.label}»؟ این کار برگشت‌ناپذیر است.`,
-                      )
-                    ) {
-                      deleteMutation.mutate(role.key);
-                    }
+                    const ok = await confirmAction(
+                      `حذف نقش «${role.label}»؟ این کار برگشت‌ناپذیر است.`,
+                    );
+                    if (ok) deleteMutation.mutate(role.key);
                   }}
                 >
                   🗑

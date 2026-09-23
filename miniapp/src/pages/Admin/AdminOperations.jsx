@@ -1,6 +1,7 @@
+import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
-import { number, errorText } from '../../lib/format';
+import { number, errorText, faDateTime } from '../../lib/format';
 
 import { confirmAction } from '../../lib/confirm';
 import {
@@ -441,7 +442,7 @@ export function AdminTickets() {
 
                           {' • '}
 
-                          {item.at}
+                          {faDateTime(item.at)}
                         </div>
                       </div>
                     </div>
@@ -636,22 +637,10 @@ export function AdminTickets() {
         {isLoading ? (
           <AdminOpsSkeleton />
         ) : isError ? (
-          <EmptyState>
-            دریافت تیکت‌ها انجام نشد.
-
-            <button
-              className="btn btn-p"
-              style={{
-                marginTop:
-                  12,
-              }}
-              onClick={() =>
-                refetch()
-              }
-            >
-              تلاش دوباره
-            </button>
-          </EmptyState>
+          <PageError
+            text="دریافت تیکت‌ها انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : tickets.length === 0 ? (
           <EmptyState>
             تیکتی در این وضعیت نیست.

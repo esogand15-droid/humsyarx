@@ -1,4 +1,5 @@
 import { confirmAction } from '../../lib/confirm';
+import { faDate, faTime } from '../../lib/format';
 import { useState } from 'react';
 import {
   useMutation,
@@ -7,6 +8,8 @@ import {
 } from '@tanstack/react-query';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+import PageError from '../../components/shared/PageError';
+import EmptyState from '../../components/shared/EmptyState';
 import {
   Spinner,
 } from '../../components/shared/Loading';
@@ -32,6 +35,7 @@ const EMPTY_FORM = {
   teacher: '',
   date: '',
   time: '',
+  end_time: '',
   group: 'هر دو',
   location: '',
   note: '',
@@ -74,6 +78,7 @@ export default function AcademicScheduleAdmin() {
   ] = useState({
     date: '',
     time: '',
+    end_time: '',
     note: '',
   });
 
@@ -222,6 +227,7 @@ export default function AcademicScheduleAdmin() {
       setFlexForm({
         date: '',
         time: '',
+        end_time: '',
         note: '',
       });
 
@@ -268,6 +274,7 @@ export default function AcademicScheduleAdmin() {
       teacher: item.teacher || '',
       date: item.date || '',
       time: item.time || '',
+      end_time: item.end_time || item.time_end || '',
 
       group: [
         '1',
@@ -384,7 +391,7 @@ export default function AcademicScheduleAdmin() {
               placeholder="نام استاد"
             />
 
-            <div className="grid2">
+            <div className="grid2" style={{ gridTemplateColumns: '1fr auto auto' }}>
               <input
                 className="inp"
                 type="date"
@@ -402,15 +409,36 @@ export default function AcademicScheduleAdmin() {
                 className="inp"
                 type="time"
                 value={form.time}
+                onChange={(event) => {
+                  const v = event.target.value;
+                  const synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"};
+                  setForm({
+                    ...form,
+                    time: v,
+                    end_time: form.end_time || synth[v] || form.end_time,
+                  });
+                }}
+                title="شروع"
+              />
+              <input
+                className="inp"
+                type="time"
+                value={form.end_time}
                 onChange={(event) =>
                   setForm({
                     ...form,
-                    time:
+                    end_time:
                       event.target.value,
                   })
                 }
+                title="پایان"
               />
             </div>
+            {form.time && form.end_time && (
+              <div className="muted" style={{ fontSize: 'var(--fs-cap)' }}>
+                ⏰ {faTime(form.time)} تا {faTime(form.end_time)}
+              </div>
+            )}
 
             <div className="grid2">
               <select
@@ -564,20 +592,14 @@ export default function AcademicScheduleAdmin() {
         {isLoading ? (
           <ScheduleAdminSkeleton />
         ) : isError ? (
-          <div className="empty">
-            دریافت برنامه‌ها انجام نشد.
-
-            <button
-              className="btn btn-p"
-              onClick={() => refetch()}
-            >
-              تلاش دوباره
-            </button>
-          </div>
+          <PageError
+            text="دریافت برنامه‌ها انجام نشد."
+            onRetry={() => refetch()}
+          />
         ) : items.length === 0 ? (
-          <div className="empty">
+          <EmptyState icon="📭">
             موردی ثبت نشده است.
-          </div>
+          </EmptyState>
         ) : (
           items.map((item) => (
             <div
@@ -612,10 +634,10 @@ export default function AcademicScheduleAdmin() {
                       marginTop: 3,
                     }}
                   >
-                    {item.date || '—'}
+                    {item.date ? faDate(item.date) : '—'}
 
                     {item.time
-                      ? ` • ${item.time}`
+                      ? ` • ${faTime(item.time)}${(item.end_time||item.time_end)?` تا ${faTime(item.end_time||item.time_end)}`:''}`
                       : ''}
 
                     {' • '}
@@ -689,6 +711,8 @@ export default function AcademicScheduleAdmin() {
                           item.date || '',
                         time:
                           item.time || '',
+                        end_time:
+                          item.end_time || item.time_end || '',
                         note:
                           item.flex_note ||
                           '',
@@ -766,6 +790,7 @@ export default function AcademicScheduleAdmin() {
               }
             />
 
+            <div style={{ display:'flex', gap: 8 }}>
             <input
               className="inp"
               type="time"
@@ -777,7 +802,22 @@ export default function AcademicScheduleAdmin() {
                     event.target.value,
                 })
               }
+              title="شروع"
             />
+            <input
+              className="inp"
+              type="time"
+              value={flexForm.end_time}
+              onChange={(event) =>
+                setFlexForm({
+                  ...flexForm,
+                  end_time:
+                    event.target.value,
+                })
+              }
+              title="پایان"
+            />
+            </div>
 
             <textarea
               className="inp"
