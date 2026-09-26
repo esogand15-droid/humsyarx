@@ -13,11 +13,12 @@ from pymongo import ReturnDocument
 
 from time_utils import day_bounds_utc, now_utc, utc_now_iso
 from .contracts import (
-    CONTENT_SOURCES, DIFFICULTY_LABELS, EXAM_TRACK_DEFAULT,
-    QUESTION_STATUSES, QuestionDomainError, and_query,
+    BASIC_SCIENCE_SUBJECTS, CONTENT_SOURCES, DIFFICULTY_LABELS, EXAM_TRACK_DEFAULT,
+    QBANK_LESSON_TERM, QUESTION_STATUSES, QuestionDomainError, and_query,
     approved_query, canonical_content_source, canonical_difficulty,
     canonical_exam_year, canonical_source, canonical_status,
-    clean_text, normalized_question_text, public_question, status_query,
+    clean_text, default_exam_bucket_topic, normalize_basic_science_lesson,
+    normalized_question_text, public_question, status_query,
     validate_question_payload,
 )
 from .permissions import QuestionPermissionService
@@ -54,32 +55,56 @@ class QuestionBankService:
     ) -> dict:
         intake_filter = {} if visible_intakes is None else {"intake": {"$in": visible_intakes}}
         lesson_doc = None
+        lesson_name = normalize_basic_science_lesson(lesson) or clean_text(lesson)
         if lesson_id and ObjectId.is_valid(str(lesson_id)):
             lesson_doc = await self.db.bs_lessons.find_one({"_id": ObjectId(str(lesson_id)), **intake_filter})
-        if not lesson_doc and clean_text(lesson):
-            candidates = await self.db.bs_lessons.find({"name": clean_text(lesson), **intake_filter}).sort("intake", -1).limit(10).to_list(10)
-            if len(candidates) == 1:
-                lesson_doc = candidates[0]
-            elif len(candidates) > 1:
-                own = [x for x in candidates if x.get("intake") and x.get("intake") in (visible_intakes or [])]
-                lesson_doc = own[0] if len(own) == 1 else None
-                if not lesson_doc:
-                    raise QuestionDomainError("ambiguous_lesson", "درس انتخاب‌شده مبهم است", 409,
-                                              {"matches": [{"id": str(x["_id"]), "name": x.get("name"), "intake": x.get("intake", "")} for x in candidates]})
+        if not lesson_doc and lesson_name:
+            # Prefer QBank catalog term when multiple same-name lessons exist
+            # (content-admin lecture lessons vs bank subjects).
+            qbank_hits = await self.db.bs_lessons.find(
+                {"name": lesson_name, "term": QBANK_LESSON_TERM, **intake_filter}
+            ).limit(5).to_list(5)
+            if len(qbank_hits) == 1:
+                lesson_doc = qbank_hits[0]
+            elif not qbank_hits:
+                candidates = await self.db.bs_lessons.find(
+                    {"name": lesson_name, **intake_filter}
+                ).sort("intake", -1).limit(10).to_list(10)
+                if len(candidates) == 1:
+                    lesson_doc = candidates[0]
+                elif len(candidates) > 1:
+                    own = [x for x in candidates if x.get("intake") and x.get("intake") in (visible_intakes or [])]
+                    lesson_doc = own[0] if len(own) == 1 else None
+                    if not lesson_doc:
+                        # Prefer empty-intake (global) single hit
+                        globals_ = [x for x in candidates if not (x.get("intake") or "")]
+                        lesson_doc = globals_[0] if len(globals_) == 1 else None
+                    if not lesson_doc:
+                        raise QuestionDomainError(
+                            "ambiguous_lesson", "درس انتخاب‌شده مبهم است", 409,
+                            {"matches": [{"id": str(x["_id"]), "name": x.get("name"),
+                                          "intake": x.get("intake", ""), "term": x.get("term", "")}
+                                         for x in candidates]},
+                        )
         if not lesson_doc:
             raise QuestionDomainError("lesson_not_found", "درس در taxonomy معتبر پیدا نشد", 422)
 
         topic_doc = None
         lesson_key = str(lesson_doc["_id"])
+        topic_name = clean_text(topic)
         if topic_id and ObjectId.is_valid(str(topic_id)):
             topic_doc = await self.db.bs_sessions.find_one({"_id": ObjectId(str(topic_id)), "lesson_id": lesson_key})
-        if not topic_doc and clean_text(topic):
-            candidates = await self.db.bs_sessions.find({"lesson_id": lesson_key, "topic": clean_text(topic)}).limit(10).to_list(10)
+        if not topic_doc and topic_name:
+            candidates = await self.db.bs_sessions.find(
+                {"lesson_id": lesson_key, "topic": topic_name}
+            ).limit(10).to_list(10)
             if len(candidates) == 1:
                 topic_doc = candidates[0]
             elif len(candidates) > 1:
-                raise QuestionDomainError("ambiguous_topic", "مبحث انتخاب‌شده مبهم است", 409,
-                                          {"matches": [{"id": str(x["_id"]), "name": x.get("topic")} for x in candidates]})
+                raise QuestionDomainError(
+                    "ambiguous_topic", "مبحث انتخاب‌شده مبهم است", 409,
+                    {"matches": [{"id": str(x["_id"]), "name": x.get("topic")} for x in candidates]},
+                )
         if require_topic and not topic_doc:
             raise QuestionDomainError("topic_not_found", "مبحث در taxonomy معتبر پیدا نشد", 422)
         return {
@@ -89,6 +114,115 @@ class QuestionBankService:
             "topic": clean_text((topic_doc or {}).get("topic")),
             "term": clean_text(lesson_doc.get("term")),
             "intake": clean_text(lesson_doc.get("intake")),
+        }
+
+    async def ensure_taxonomy_for_import(
+        self, *, lesson: str | None, topic: str | None = None,
+        exam_year: str | None = None, exam_session: str | None = None,
+        auto_create: bool = True,
+    ) -> dict:
+        """🌊 QBANK-W6 — resolve/create lesson + exam-bucket topic for archive import.
+
+        Content-admin lecture sessions (منابع) are NOT required. Import only needs:
+          • one of the 15 basic-science subject lessons
+          • one bucket topic per exam sitting (e.g. «شهریور ۱۴۰۴»)
+        Finer topic tagging can happen later without blocking import.
+        """
+        lesson_name = normalize_basic_science_lesson(lesson)
+        if not lesson_name:
+            raise QuestionDomainError("lesson_required", "نام درس برای درون‌ریزی لازم است", 422)
+
+        topic_name = default_exam_bucket_topic(
+            exam_session=exam_session, exam_year=exam_year, topic=topic,
+        )
+
+        # 1) Lesson: prefer dedicated QBank term catalog
+        lesson_doc = await self.db.bs_lessons.find_one(
+            {"name": lesson_name, "term": QBANK_LESSON_TERM, "intake": ""}
+        )
+        if not lesson_doc:
+            # any global lesson with same canonical name
+            lesson_doc = await self.db.bs_lessons.find_one(
+                {"name": lesson_name, "$or": [{"intake": ""}, {"intake": {"$exists": False}}]}
+            )
+        if not lesson_doc and auto_create:
+            if lesson_name not in BASIC_SCIENCE_SUBJECTS:
+                # Still allow create for forward-compatible subject names from JSON,
+                # but mark term as QBank catalog.
+                pass
+            count = await self.db.bs_lessons.count_documents({"term": QBANK_LESSON_TERM})
+            result = await self.db.bs_lessons.insert_one({
+                "term": QBANK_LESSON_TERM,
+                "name": lesson_name,
+                "teacher": "",
+                "intake": "",
+                "order": int(count),
+                "qbank_catalog": True,
+                "created_at": utc_now_iso(),
+            })
+            lesson_doc = await self.db.bs_lessons.find_one({"_id": result.inserted_id})
+        if not lesson_doc:
+            raise QuestionDomainError(
+                "lesson_not_found",
+                f"درس «{lesson_name}» در کاتالوگ بانک سؤال پیدا نشد",
+                422,
+            )
+
+        lesson_key = str(lesson_doc["_id"])
+
+        # 2) Topic bucket under that lesson
+        topic_doc = await self.db.bs_sessions.find_one(
+            {"lesson_id": lesson_key, "topic": topic_name}
+        )
+        if not topic_doc and auto_create:
+            # next number among this lesson
+            mx = 0
+            async for row in self.db.bs_sessions.find({"lesson_id": lesson_key}, {"number": 1}):
+                try:
+                    mx = max(mx, int(row.get("number") or 0))
+                except (TypeError, ValueError):
+                    pass
+            number = mx + 1
+            # Prefer DB helper when available (keeps uniqueness rules)
+            sid = None
+            if hasattr(self.db, "bs_add_session"):
+                try:
+                    sid = await self.db.bs_add_session(lesson_key, number, topic_name, "")
+                except Exception:
+                    logger.exception("bs_add_session failed; falling back to insert")
+                    sid = None
+            if not sid:
+                ins = await self.db.bs_sessions.insert_one({
+                    "lesson_id": lesson_key,
+                    "number": number,
+                    "topic": topic_name,
+                    "teacher": "",
+                    "order": number,
+                    "qbank_exam_bucket": True,
+                    "created_at": utc_now_iso(),
+                })
+                sid = str(ins.inserted_id)
+            topic_doc = await self.db.bs_sessions.find_one({"_id": ObjectId(str(sid))}) \
+                if ObjectId.is_valid(str(sid)) else await self.db.bs_sessions.find_one({"_id": sid})
+            if not topic_doc:
+                topic_doc = await self.db.bs_sessions.find_one(
+                    {"lesson_id": lesson_key, "topic": topic_name}
+                )
+        if not topic_doc:
+            raise QuestionDomainError(
+                "topic_not_found",
+                f"مبحث «{topic_name}» برای درس «{lesson_name}» پیدا نشد",
+                422,
+            )
+
+        return {
+            "lesson_id": lesson_key,
+            "topic_id": str(topic_doc["_id"]),
+            "lesson": clean_text(lesson_doc.get("name")) or lesson_name,
+            "topic": clean_text(topic_doc.get("topic")) or topic_name,
+            "term": clean_text(lesson_doc.get("term")) or QBANK_LESSON_TERM,
+            "intake": clean_text(lesson_doc.get("intake")),
+            "auto_provisioned": True,
         }
 
     async def taxonomy_tree(self, *, visible_intakes: list[str] | None = None,

@@ -103,7 +103,7 @@ def _otp_rl_allow(key: str) -> bool:
                 _otp_rl.pop(k, None)
     return allowed
 
-TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
+TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵', 'بانک سؤال']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
 
 

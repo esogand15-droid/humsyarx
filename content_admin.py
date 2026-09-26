@@ -15,7 +15,7 @@ from database import db
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
-TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
+TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵', 'بانک سؤال']
 CONTENT_TYPES = [
     ('video', '🎥 ویدیو کلاس'),
     ('ppt',   '📊 پاورپوینت'),

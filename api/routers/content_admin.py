@@ -22,7 +22,8 @@ question_bank = QuestionBankService(db)
 def _qerror(exc: QuestionDomainError):
     raise HTTPException(exc.status_code, {"code": exc.code, "message": exc.message,
                                           **({"details": exc.details} if exc.details else {})})
-TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵']
+# 🌊 QBANK-W6 — include QBank catalog term used by archive import auto-provision.
+TERMS = ['ترم ۱', 'ترم ۲', 'ترم ۳', 'ترم ۴', 'ترم ۵', 'بانک سؤال']
 CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice']
 # سقف آپلود: زیر سقف ۵۰MB بات تلگرام (deployment رسمی) با حاشیه‌ی امن
 MAX_UPLOAD_BYTES = 45 * 1024 * 1024

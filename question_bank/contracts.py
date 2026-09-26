@@ -61,6 +61,47 @@ EXAM_SESSIONS = {
 }
 EXAM_SESSION_DEFAULT = None  # نوبت اختیاری است؛ بدون حدس.
 
+# 🌊 QBANK-W6 — کاتالوگ درس‌های علوم‌پایه برای بانک سؤال (سطح درس، نه مبحث محتوا).
+# این فهرست data-driven است و از bs_content / جلسات تدریس ادمین محتوا مستقل است.
+# ترم اختصاصی تا با منابع کلاسی قاطی نشود؛ ربات بانک‌سؤال این ترم را جدا نشان می‌دهد.
+QBANK_LESSON_TERM = "بانک سؤال"
+
+BASIC_SCIENCE_SUBJECTS = (
+    "آناتومی",
+    "فیزیولوژی",
+    "بیوشیمی",
+    "باکتری شناسی",
+    "انگل شناسی",
+    "حشره شناسی",
+    "قارچ شناسی",
+    "ویروس شناسی",
+    "بافت شناسی",
+    "جنین شناسی",
+    "اصول خدمات سلامت",
+    "اپیدمیولوژی",
+    "ایمونولوژی",
+    "زبان انگلیسی",
+    "انقلاب و اندیشه اسلامی",
+)
+
+# OCR / املای رایج → نام canonical کاتالوگ
+_BASIC_SCIENCE_LESSON_ALIASES = {
+    "فیزیولوژِی": "فیزیولوژی",
+    "فیزیولوژی": "فیزیولوژی",
+    "اپیدمولوژِی": "اپیدمیولوژی",
+    "اپیدمولوژی": "اپیدمیولوژی",
+    "اپیدمیولوژی": "اپیدمیولوژی",
+    "ایمونولوژِی": "ایمونولوژی",
+    "ایمونولوژی": "ایمونولوژی",
+    "باکتری‌شناسی": "باکتری شناسی",
+    "انگل‌شناسی": "انگل شناسی",
+    "حشره‌شناسی": "حشره شناسی",
+    "قارچ‌شناسی": "قارچ شناسی",
+    "ویروس‌شناسی": "ویروس شناسی",
+    "بافت‌شناسی": "بافت شناسی",
+    "جنین‌شناسی": "جنین شناسی",
+}
+
 
 @dataclass
 class QuestionDomainError(ValueError):
@@ -132,6 +173,51 @@ def canonical_exam_track(value: Any) -> str:
     if text in EXAM_TRACKS:
         return text
     return EXAM_TRACK_DEFAULT
+
+
+def normalize_basic_science_lesson(value: Any) -> str:
+    """نام درس را به canonical کاتالوگ علوم‌پایه نزدیک می‌کند (بدون حدس موضوعی)."""
+    text = clean_text(value)
+    if not text:
+        return ""
+    text = text.replace("\u0650", "")  # kasra OCR
+    text = text.replace("ي", "ی").replace("ك", "ک").replace("\u200c", "")
+    text = " ".join(text.split())
+    if text in _BASIC_SCIENCE_LESSON_ALIASES:
+        return _BASIC_SCIENCE_LESSON_ALIASES[text]
+    if text in BASIC_SCIENCE_SUBJECTS:
+        return text
+    compact = text.replace(" ", "").replace("\u200c", "")
+    for name in BASIC_SCIENCE_SUBJECTS:
+        if name.replace(" ", "") == compact:
+            return name
+    return text
+
+
+def default_exam_bucket_topic(*, exam_session: str | None = None,
+                             exam_year: str | None = None,
+                             topic: Any = None) -> str:
+    """باکت مبحث سطح‌نوبت برای import آرشیو (جزئیات مبحثی بعداً توسط ادمین)."""
+    explicit = clean_text(topic)
+    if explicit and explicit not in {"", "-", "نامشخص", "unknown"}:
+        return explicit
+    session = None
+    if exam_session not in (None, ""):
+        try:
+            session = canonical_exam_session(exam_session, strict=False)
+        except QuestionDomainError:
+            session = None
+    year = clean_text(exam_year) or ""
+    if session:
+        fa = EXAM_SESSIONS.get(session, session)
+        if year:
+            y_fa = year.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+            return f"{fa} {y_fa}"
+        return fa
+    if year:
+        y_fa = year.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+        return f"آزمون {y_fa}"
+    return "طبقه‌بندی موقت"
 
 
 def canonical_exam_session(value: Any, *, strict: bool = True) -> str | None:

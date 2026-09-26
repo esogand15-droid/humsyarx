@@ -121,3 +121,19 @@ Archive/Folder
 python qbank_import_cli.py ocr-status
 python qbank_import_cli.py sessions
 ```
+
+## 🌊 QBANK-W6 — taxonomy سطح درس (مستقل از منابع محتوا)
+
+مشکل: `bs_sessions` بخش **منابع** مباحث تدریس (مثلاً «فیزیولوژی سلول | دکتر …») را نگه می‌دارد
+و با ۱۵ درس آزمون علوم‌پایه یکی نیست → import همه ردیف‌ها `unmatched` می‌شد.
+
+راه‌حل:
+- کاتالوگ `BASIC_SCIENCE_SUBJECTS` (۱۵ درس) در `contracts.py`
+- ترم اختصاصی `QBANK_LESSON_TERM = "بانک سؤال"`
+- `QuestionBankService.ensure_taxonomy_for_import` هنگام preview:
+  - درس را در ترم بانک‌سؤال پیدا/ایجاد می‌کند
+  - یک **باکت مبحث** سطح نوبت می‌سازد (مثلاً «شهریور ۱۴۰۴»)
+- جزئیات مبحثی سؤال بعداً با ویرایش ادمین ممکن است؛ import را بلاک نمی‌کند
+- `image.required` آرشیو دیگر `ready_pending_image` اجباری نمی‌سازد
+
+فایل آپلود پنل: فقط `qbank_shahrivar_1404.json` (schema 1.0).

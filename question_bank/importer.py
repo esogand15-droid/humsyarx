@@ -16,7 +16,8 @@ from time_utils import utc_now_iso
 from .contracts import (
     EXAM_TRACK_DEFAULT, EXAM_YEAR_MAX, EXAM_YEAR_MIN,
     QuestionDomainError, canonical_content_source, canonical_difficulty,
-    canonical_exam_session, clean_text,
+    canonical_exam_session, clean_text, default_exam_bucket_topic,
+    normalize_basic_science_lesson,
     normalized_question_text, question_content_hash, validate_question_payload,
 )
 from .service import QuestionBankService
@@ -103,47 +104,62 @@ class QuestionImportService:
         data["source"] = source
         return data, fingerprint
 
-    async def _classification_context(self, raw_items: list[Any], *, include_duplicates: bool = True) -> dict:
-        """Bulk-prefetch taxonomy and optional duplicate candidates."""
-        lesson_names = sorted({clean_text(x.get("lesson")) for x in raw_items if isinstance(x, dict) and clean_text(x.get("lesson"))})
-        lesson_cap = min(50000, max(1000, len(lesson_names) * 20))
-        lesson_docs = await self.db.bs_lessons.find({"name": {"$in": lesson_names}}).to_list(lesson_cap)
-        if len(lesson_docs) >= lesson_cap:
-            raise QuestionDomainError("taxonomy_prefetch_limit", "تعداد تطبیق‌های درس بیش از حد ایمن است", 409)
-        lessons_by_name = defaultdict(list)
-        for lesson in lesson_docs:
-            lessons_by_name[clean_text(lesson.get("name"))].append(lesson)
-        lesson_ids = [str(x["_id"]) for x in lesson_docs]
-        session_docs = await self.db.bs_sessions.find({"lesson_id": {"$in": lesson_ids}}).to_list(100000)
-        if len(session_docs) >= 100000:
-            raise QuestionDomainError("taxonomy_prefetch_limit", "تعداد تطبیق‌های مبحث بیش از حد ایمن است", 409)
-        sessions_by_key = defaultdict(list)
-        for session in session_docs:
-            sessions_by_key[(str(session.get("lesson_id") or ""), clean_text(session.get("topic")))].append(session)
+    async def _classification_context(self, raw_items: list[Any], *, include_duplicates: bool = True,
+                                      file_year: str | None = None, file_session: str | None = None) -> dict:
+        """Bulk-prefetch taxonomy and optional duplicate candidates.
 
-        taxonomies = {}
-        topic_ids = set()
+        🌊 QBANK-W6 — archive import auto-provisions the 15 basic-science
+        subject lessons + one exam-bucket topic (e.g. شهریور ۱۴۰۴). It does
+        NOT require content-admin lecture sessions under منابع.
+        """
+        taxonomies: dict = {}
+        topic_ids: set = set()
+        # Cache ensure calls per (lesson, bucket-topic)
+        ensured: dict[tuple[str, str], dict] = {}
+
         for item in raw_items:
             if not isinstance(item, dict):
                 continue
-            key = (clean_text(item.get("lesson")), clean_text(item.get("topic")))
-            matches = lessons_by_name.get(key[0], [])
-            if len(matches) != 1:
-                taxonomies[key] = {"state": "ambiguous" if len(matches) > 1 else "unmatched",
-                                   "candidates": [{"id": str(x["_id"]), "name": x.get("name"),
-                                                   "intake": x.get("intake", "")} for x in matches]}
+            lesson_name = normalize_basic_science_lesson(item.get("lesson"))
+            row_session = None
+            if item.get("exam_session") not in (None, ""):
+                try:
+                    row_session = canonical_exam_session(item.get("exam_session"), strict=False)
+                except QuestionDomainError:
+                    row_session = None
+            exam_session = row_session or file_session
+            exam_year = clean_text(item.get("exam_year")) or file_year
+            topic_name = default_exam_bucket_topic(
+                exam_session=exam_session, exam_year=exam_year, topic=item.get("topic"),
+            )
+            # Stable key used later in _classify
+            key = (lesson_name, topic_name)
+            if key in taxonomies:
                 continue
-            lesson = matches[0]; topics = sessions_by_key.get((str(lesson["_id"]), key[1]), [])
-            if len(topics) != 1:
-                taxonomies[key] = {"state": "ambiguous" if len(topics) > 1 else "unmatched",
-                                   "candidates": [{"id": str(x["_id"]), "name": x.get("topic")} for x in topics]}
+            if not lesson_name:
+                taxonomies[key] = {"state": "unmatched", "candidates": [],
+                                   "taxonomy": None, "reason": "lesson_empty"}
                 continue
-            topic = topics[0]
-            taxonomy = {"lesson_id": str(lesson["_id"]), "topic_id": str(topic["_id"]),
-                        "lesson": clean_text(lesson.get("name")), "topic": clean_text(topic.get("topic")),
-                        "term": clean_text(lesson.get("term")), "intake": clean_text(lesson.get("intake"))}
+            cache_key = key
+            if cache_key not in ensured:
+                try:
+                    ensured[cache_key] = await self.qbank.ensure_taxonomy_for_import(
+                        lesson=lesson_name, topic=topic_name,
+                        exam_year=exam_year, exam_session=exam_session,
+                        auto_create=True,
+                    )
+                except QuestionDomainError as exc:
+                    taxonomies[key] = {
+                        "state": "ambiguous" if str(exc.code).startswith("ambiguous") else "unmatched",
+                        "candidates": (exc.details or {}).get("matches", []),
+                        "taxonomy": None,
+                        "reason": exc.message,
+                    }
+                    continue
+            taxonomy = ensured[cache_key]
             taxonomies[key] = {"state": "matched", "taxonomy": taxonomy, "candidates": []}
-            topic_ids.add(taxonomy["topic_id"])
+            if taxonomy.get("topic_id"):
+                topic_ids.add(taxonomy["topic_id"])
 
         if not include_duplicates:
             return {"taxonomies": taxonomies, "exact": {}, "candidates": {}}
@@ -222,7 +238,9 @@ class QuestionImportService:
         else:
             await self.db.question_import_jobs.insert_one(job)
         try:
-            context = await self._classification_context(data["questions"])
+            context = await self._classification_context(
+                data["questions"], file_year=file_year, file_session=file_session,
+            )
             items = []
             for index, raw_item in enumerate(data["questions"]):
                 items.append(await self._classify(job_id, index, raw_item, data.get("source") or {}, admin_id,
@@ -289,9 +307,12 @@ class QuestionImportService:
         external_id = clean_text(item.get("external_id")) or f"ROW-{index + 1:04d}"
         errors = [clean_text(x, 500) for x in (item.get("errors") or []) if clean_text(x)]
         image = item.get("image") if isinstance(item.get("image"), Mapping) else {}
-        # 🌊 QBANK-W3/§۷.۲ — ردیف تصویری دیگر «رد» نمی‌شود؛ با وضعیت
-        # ready_pending_image وارد می‌شود و تا اتصال تصویر پنهان می‌ماند.
-        needs_image = bool(image.get("required"))
+        # 🌊 QBANK-W3/§۷.۲ — sidecar archive images are optional at import time.
+        # 🌊 QBANK-W6 — do NOT force ready_pending_image merely because the OCR
+        # extractor set image.required; text+options+answer are enough for bot use.
+        # Only mark pending when explicit telegram file_id / storage is still needed
+        # AND a real image payload is expected without text-only mode.
+        needs_image = False
         confidence = item.get("confidence") if isinstance(item.get("confidence"), Mapping) else {}
         thresholds = {"question": 0.75, "options": 0.75, "answer": 0.70, "classification": 0.60}
         for key, threshold in thresholds.items():
@@ -356,19 +377,49 @@ class QuestionImportService:
             else:
                 errors.append(first_exc.message)
         taxonomy = None; taxonomy_state = "unmatched"; taxonomy_candidates = []
+        # 🌊 QBANK-W6 — keys use normalized lesson + exam-bucket topic
+        lesson_key = normalize_basic_science_lesson(item.get("lesson"))
+        row_session_for_tax = None
+        if item.get("exam_session") not in (None, ""):
+            try:
+                row_session_for_tax = canonical_exam_session(item.get("exam_session"), strict=False)
+            except QuestionDomainError:
+                row_session_for_tax = None
+        exam_session_for_tax = row_session_for_tax or file_session
+        exam_year_for_tax = clean_text(item.get("exam_year")) or file_year
+        topic_key = default_exam_bucket_topic(
+            exam_session=exam_session_for_tax, exam_year=exam_year_for_tax, topic=item.get("topic"),
+        )
         if context is not None:
             tax_info = (context.get("taxonomies") or {}).get(
-                (clean_text(item.get("lesson")), clean_text(item.get("topic"))), {"state": "unmatched"})
+                (lesson_key, topic_key), {"state": "unmatched"})
             taxonomy_state = tax_info.get("state", "unmatched")
             taxonomy = tax_info.get("taxonomy")
             taxonomy_candidates = tax_info.get("candidates") or []
+            # Fallback ensure if bulk miss (should be rare)
+            if taxonomy_state != "matched" and lesson_key:
+                try:
+                    taxonomy = await self.qbank.ensure_taxonomy_for_import(
+                        lesson=lesson_key, topic=topic_key,
+                        exam_year=exam_year_for_tax, exam_session=exam_session_for_tax,
+                        auto_create=True,
+                    )
+                    taxonomy_state = "matched"
+                    taxonomy_candidates = []
+                except QuestionDomainError as exc:
+                    taxonomy_state = "ambiguous" if str(exc.code).startswith("ambiguous") else "unmatched"
+                    taxonomy_candidates = (exc.details or {}).get("matches", [])
         else:
             try:
-                taxonomy = await self.qbank.resolve_taxonomy(lesson=item.get("lesson"), topic=item.get("topic"),
-                                                              visible_intakes=None)
+                taxonomy = await self.qbank.ensure_taxonomy_for_import(
+                    lesson=lesson_key or item.get("lesson"),
+                    topic=topic_key or item.get("topic"),
+                    exam_year=exam_year_for_tax, exam_session=exam_session_for_tax,
+                    auto_create=True,
+                )
                 taxonomy_state = "matched"
             except QuestionDomainError as exc:
-                taxonomy_state = "ambiguous" if exc.code.startswith("ambiguous") else "unmatched"
+                taxonomy_state = "ambiguous" if str(exc.code).startswith("ambiguous") else "unmatched"
                 taxonomy_candidates = (exc.details or {}).get("matches", [])
         # Missing-answer rows stay reviewable (not hard error) when stem/options OK.
         soft_only = bool(normalized) and answer_missing and all(
@@ -653,7 +704,10 @@ class QuestionImportService:
                         "attempt_count": 0, "correct_count": 0}
             if answer_missing:
                 document["correct_answer"] = None
-            if item.get("classification") == "ready_pending_image" or item.get("needs_image"):
+            # 🌊 QBANK-W6 — archive OCR may reference a source PNG path, but that
+            # is NOT a Telegram pending upload. Only mark pending when the
+            # classification explicitly says ready_pending_image.
+            if item.get("classification") == "ready_pending_image":
                 raw_image = ((item.get("raw") or {}).get("image") or {}
                              if isinstance((item.get("raw") or {}).get("image"), Mapping) else {})
                 document["image"] = {"has_image": True, "pending_upload": True,
