@@ -2103,6 +2103,24 @@ def build_application() -> Application:
     # را با همان تابع قبلی (cancel_handler) پاک کند.
     app.add_handler(CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE))
 
+    # 🎨 تست custom emoji پریموم (تشخیص Premium صاحب ربات / پک)
+    async def _emoji_test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.effective_user or not update.message:
+            return
+        try:
+            from premium_emoji import send_emoji_diagnostic, load_pack_map, install_telegram_hooks
+            install_telegram_hooks()
+            st = await send_emoji_diagnostic(context.bot, update.effective_chat.id)
+            logger.info("emoji_test user=%s status=%s pack=%s", update.effective_user.id, st, len(load_pack_map()))
+        except Exception as e:
+            logger.exception("emoji_test failed")
+            try:
+                await update.message.reply_text(f"emoji_test error: {e}")
+            except Exception:
+                pass
+
+    app.add_handler(CommandHandler('emoji_test', _emoji_test_cmd, filters=filters.ChatType.PRIVATE))
+
     # 💍 Ring Street — ثبت *قبل* از هندلرهای یکپارچه، چون در PTB
     # «ترتیب ثبت = اولویت» است. فیلتر این هندلرها «کاربر در flow/چت
     # رینگ است» ⇒ وقتی رینگ خاموش است یا کاربر در رینگ نیست، update
