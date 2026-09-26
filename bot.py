@@ -2166,8 +2166,11 @@ async def post_init(application: Application):
         ]
         await application.bot.set_my_commands(cmds)
         try:
-            await application.bot.set_my_short_description("هامشیار — دستیار آموزشی پزشکی")
-            await application.bot.set_my_description("هامشیار: منابع، بانک سوال، برنامه کلاسی و پشتیبانی — همه در یک ربات.")
+            # برند رسمی: هامزیار (ربات) + هوشیار (AI) — هرگز «همشیار/هامشیار»
+            await application.bot.set_my_short_description("هوشیار — دستیار آموزشی پزشکی")
+            await application.bot.set_my_description(
+                "هامزیار با دستیار هوشیار: منابع، بانک سؤال، برنامه کلاسی و پشتیبانی — همه در یک ربات."
+            )
             await application.bot.set_chat_menu_button(menu_button=None)
         except Exception:
             pass

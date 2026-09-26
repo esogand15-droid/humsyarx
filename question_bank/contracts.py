@@ -33,12 +33,13 @@ EXAM_YEAR_MIN = "1390"
 EXAM_YEAR_MAX = "1430"
 
 # 🌊 QBANK-W1 — منبع محتوا (برند سؤال) — مستقل از `source` قدیمی (کانال ساخت).
+# برچسب‌های کاربرپسند منابع بانک سؤال (نام محصول: هامزیار / هوشیار — نه همشیار)
 CONTENT_SOURCES = {
-    "hamsyar": "بانک اختصاصی همشیار",
+    "hamsyar": "هوشیار (طراحی با AI هامزیار)",
     "konkoor_sarasari": "کنکور سراسری علوم پایه",
     "sib_sabz": "سیب سبز",
     "prognoz": "پروگنوز",
-    "other": "سایر",
+    "other": "سؤالات دانشجویان",
 }
 CONTENT_SOURCE_DEFAULT = "hamsyar"
 
