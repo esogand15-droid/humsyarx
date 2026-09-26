@@ -51,3 +51,18 @@ python -m pyflakes <file>              # بدون هشدار جدید (۴ هشد
 - `docs/runbook.md` — ران‌بوک عملیات و بازیابی
 - `.env.example` — همه‌ی متغیرهای محیطی با پیش‌فرض
 - `FINAL_REPORT.md` — گزارش تاریخی پروژه
+
+## QBank Import (پایدار / چندسال)
+
+برای وارد کردن آزمون‌های علوم‌پایه از آرشیو تصویری یا PDF:
+
+```bash
+python qbank_import_cli.py extract \
+  --source path/to/archive.rar \
+  --work /tmp/qbank-work \
+  --exam-year 1404 \
+  --session shahrivar
+```
+
+جزئیات: [`docs/qbank-import.md`](docs/qbank-import.md) · گزارش شهریور ۱۴۰۴: [`QBANK_IMPORT_REPORT_SHahrivar_1404.md`](QBANK_IMPORT_REPORT_SHahrivar_1404.md)
+

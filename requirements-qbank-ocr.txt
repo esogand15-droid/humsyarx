@@ -1,0 +1,7 @@
+# Optional local OCR stack for `python qbank_import_cli.py extract`
+# Runtime Docker image does NOT install these by default (keeps Railway slim).
+# Install on a worker/dev machine:
+#   pip install -r requirements-qbank-ocr.txt
+#   apt-get install -y tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng
+pytesseract==0.3.13
+Pillow>=10.0.0
