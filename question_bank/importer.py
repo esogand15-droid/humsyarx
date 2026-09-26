@@ -15,7 +15,8 @@ from pymongo import UpdateOne
 from time_utils import utc_now_iso
 from .contracts import (
     EXAM_TRACK_DEFAULT, EXAM_YEAR_MAX, EXAM_YEAR_MIN,
-    QuestionDomainError, canonical_content_source, canonical_difficulty, clean_text,
+    QuestionDomainError, canonical_content_source, canonical_difficulty,
+    canonical_exam_session, clean_text,
     normalized_question_text, question_content_hash, validate_question_payload,
 )
 from .service import QuestionBankService
@@ -39,6 +40,12 @@ def infer_exam_track_from_filename(file_name: str) -> str:
     """🌊 QBANK-W1/§۱۵.۲ — رشته از نام فایل؛ پیش‌فرض پزشکی."""
     lowered = clean_text(file_name).lower()
     return "dentistry" if any(k in lowered for k in _DENTISTRY_KEYWORDS) else EXAM_TRACK_DEFAULT
+
+
+def infer_exam_session_from_filename(file_name: str) -> str | None:
+    """🌊 QBANK-W5 — نوبت آزمون از نام فایل/مسیر؛ data-driven، بدون hard-code سال."""
+    from .exam_meta import infer_exam_session_from_filename as _infer
+    return _infer(file_name)
 
 
 class QuestionImportService:
@@ -178,6 +185,22 @@ class QuestionImportService:
         job_source = canonical_content_source(job_content_source) if job_content_source not in (None, "") else None
         file_year = infer_exam_year_from_filename(file_name)
         file_track = infer_exam_track_from_filename(file_name)
+        # 🌊 QBANK-W5 — نوبت: از source JSON (اگر extractor گذاشته) یا نام فایل.
+        src_meta = data.get("source") if isinstance(data.get("source"), dict) else {}
+        exam_meta = data.get("exam") if isinstance(data.get("exam"), dict) else {}
+        file_session = (
+            canonical_exam_session(src_meta.get("exam_session") or exam_meta.get("session"), strict=False)
+            or infer_exam_session_from_filename(file_name)
+            or infer_exam_session_from_filename(str(src_meta.get("title") or ""))
+        )
+        if not file_year:
+            file_year = clean_text(src_meta.get("exam_year") or exam_meta.get("year")) or file_year
+            if file_year:
+                try:
+                    from .contracts import canonical_exam_year
+                    file_year = canonical_exam_year(file_year, strict=False)
+                except Exception:
+                    pass
         admin_id = int(admin.get("id") or 0)
         previous = await self.db.question_import_jobs.find_one(
             {"admin_id": admin_id, "fingerprint": fingerprint})
@@ -187,8 +210,10 @@ class QuestionImportService:
         job = {"_id": job_id, "job_id": job_id, "admin_id": admin_id,
                "file_name": clean_text(file_name, 240), "schema_version": IMPORT_SCHEMA_VERSION,
                "fingerprint": fingerprint, "source": data.get("source") or {},
+               "exam": exam_meta or {},
                "job_content_source": job_source,
                "inferred_exam_year": file_year, "inferred_exam_track": file_track,
+               "inferred_exam_session": file_session,
                "status": "validating", "started_at": now, "created_at": (previous or {}).get("created_at", now),
                "finished_at": None, "counts": {}, "mapping": {}, "error": None}
         if previous:
@@ -202,7 +227,8 @@ class QuestionImportService:
             for index, raw_item in enumerate(data["questions"]):
                 items.append(await self._classify(job_id, index, raw_item, data.get("source") or {}, admin_id,
                                                   context=context, job_content_source=job_source,
-                                                  file_year=file_year, file_track=file_track))
+                                                  file_year=file_year, file_track=file_track,
+                                                  file_session=file_session))
         except Exception as exc:
             await self.db.question_import_jobs.update_one(
                 {"_id": job_id}, {"$set": {"status": "failed", "finished_at": utc_now_iso(),
@@ -247,7 +273,9 @@ class QuestionImportService:
                   "unmatched": counts["unmatched"], "ambiguous": counts["ambiguous"],
                   "exact_duplicates": counts["exact_duplicate"],
                   "probable_duplicates": counts["probable_duplicate"],
-                  "conflicts": counts["conflict"], "imported": 0, "skipped": 0}
+                  "conflicts": counts["conflict"],
+                  "needs_review": counts["needs_review"],
+                  "imported": 0, "skipped": 0}
         await self.db.question_import_jobs.update_one({"_id": job_id},
             {"$set": {"status": "preview_ready", "counts": totals, "validated_at": utc_now_iso()}})
         return await self.preview(job_id)
@@ -255,7 +283,8 @@ class QuestionImportService:
     async def _classify(self, job_id: str, index: int, raw: Any, source: Mapping, admin_id: int,
                         context: Mapping | None = None,
                         job_content_source: str | None = None,
-                        file_year: str | None = None, file_track: str | None = None) -> dict:
+                        file_year: str | None = None, file_track: str | None = None,
+                        file_session: str | None = None) -> dict:
         item = raw if isinstance(raw, dict) else {}
         external_id = clean_text(item.get("external_id")) or f"ROW-{index + 1:04d}"
         errors = [clean_text(x, 500) for x in (item.get("errors") or []) if clean_text(x)]
@@ -293,7 +322,11 @@ class QuestionImportService:
             image_ref = {"page": image.get("page") or item.get("page"),
                          "position": clean_text(image.get("position")) or None}
         normalized = None
+        answer_missing = False
         try:
+            # 🌊 QBANK-W5 — ابتدا سخت‌گیرانه؛ اگر فقط پاسخ غایب بود، با
+            # allow_missing_answer دوباره تلاش می‌کنیم تا stem/options سالم
+            # به‌عنوان needs_review وارد صف ادمین شوند (هرگز پاسخ جعلی نیست).
             normalized = validate_question_payload({
                 "question": item.get("question"), "options": item.get("options"),
                 "correct_answer": item.get("correct_option"),
@@ -303,8 +336,25 @@ class QuestionImportService:
                 "exam_year_confidence": year_confidence,
                 "content_source": content_source,
             })
-        except QuestionDomainError as exc:
-            errors.append(exc.message)
+        except QuestionDomainError as first_exc:
+            raw_correct = item.get("correct_option", item.get("correct_answer"))
+            if raw_correct in (None, "") and first_exc.code == "invalid_correct_option":
+                try:
+                    normalized = validate_question_payload({
+                        "question": item.get("question"), "options": item.get("options"),
+                        "correct_answer": None,
+                        "explanation": item.get("explanation"),
+                        "difficulty": item.get("difficulty") or "medium",
+                        "exam_year": exam_year,
+                        "exam_year_confidence": year_confidence,
+                        "content_source": content_source,
+                    }, allow_missing_answer=True)
+                    answer_missing = True
+                    errors.append("پاسخ صحیح در منبع یافت نشد — needs_review")
+                except QuestionDomainError as exc:
+                    errors.append(exc.message)
+            else:
+                errors.append(first_exc.message)
         taxonomy = None; taxonomy_state = "unmatched"; taxonomy_candidates = []
         if context is not None:
             tax_info = (context.get("taxonomies") or {}).get(
@@ -320,9 +370,35 @@ class QuestionImportService:
             except QuestionDomainError as exc:
                 taxonomy_state = "ambiguous" if exc.code.startswith("ambiguous") else "unmatched"
                 taxonomy_candidates = (exc.details or {}).get("matches", [])
-        classification = "error" if errors or normalized is None else taxonomy_state
+        # Missing-answer rows stay reviewable (not hard error) when stem/options OK.
+        soft_only = bool(normalized) and answer_missing and all(
+            ("needs_review" in e) or ("پاسخ صحیح" in e) or e.startswith("اطمینان answer")
+            or e.startswith("confidence_answer") for e in errors
+        ) if errors else False
+        # Drop confidence-answer noise from hard-error path when answer intentionally null.
+        if answer_missing:
+            errors = [e for e in errors if not (
+                e.startswith("اطمینان answer") or "confidence_answer" in e
+            )] or errors
+        # Soft markers (missing answer) never block structural classification alone.
+        soft_markers = ("پاسخ صحیح", "needs_review")
+        hard_errors = [
+            e for e in errors
+            if not any(m in e for m in soft_markers)
+        ]
+        classification = "error" if hard_errors or normalized is None else taxonomy_state
+        if normalized and not hard_errors and answer_missing:
+            # taxonomy may still be unmatched; that state wins for mapping UI
+            if taxonomy_state == "matched":
+                classification = "needs_review"
+            else:
+                classification = taxonomy_state
+        elif normalized and not hard_errors and errors and taxonomy_state == "matched":
+            # low-confidence etc. without structural failure
+            if any("اطمینان" in e or "confidence" in e for e in errors):
+                classification = "needs_review"
         duplicate = None
-        if normalized and taxonomy and not errors:
+        if normalized and taxonomy and not hard_errors and classification not in {"needs_review"}:
             year_scope = {"exam_year": normalized["exam_year"]} if normalized.get("exam_year") else {}
             if context is not None:
                 exact = (context.get("exact") or {}).get(normalized["content_hash"])
@@ -359,11 +435,30 @@ class QuestionImportService:
                     classification = "probable_duplicate" if same_answer else "conflict"
                     duplicate = best
                 elif taxonomy_state == "matched":
-                    classification = "ready_pending_image" if needs_image else "ready"
+                    if answer_missing:
+                        classification = "needs_review"
+                    else:
+                        classification = "ready_pending_image" if needs_image else "ready"
+        if classification in {"ready", "ready_pending_image"} and answer_missing:
+            classification = "needs_review"
         exam_track = file_track or EXAM_TRACK_DEFAULT
+        # 🌊 QBANK-W5 — نوبت در سطح ردیف (از extractor) یا job.
+        row_session = canonical_exam_session(item.get("exam_session"), strict=False) if item.get("exam_session") not in (None, "") else None
+        exam_session = row_session or file_session
+        exam_session_label = clean_text(item.get("exam_session_label")) or None
+        if exam_session and not exam_session_label:
+            from .exam_meta import session_label as _session_label
+            exam_session_label = _session_label(exam_session, (normalized or {}).get("exam_year") or file_year)
+        if normalized is not None:
+            normalized = dict(normalized)
+            if exam_session:
+                normalized["exam_session"] = exam_session
+            if exam_session_label:
+                normalized["exam_session_label"] = exam_session_label
         return {"job_id": job_id, "row": index + 1, "external_id": external_id,
                 "source_page": item.get("page"), "raw": item, "normalized": normalized,
                 "exam_track": exam_track, "exam_year_source": exam_year_source,
+                "exam_session": exam_session, "exam_session_label": exam_session_label,
                 "image_ref": image_ref,
                 "needs_image": needs_image,
                 "taxonomy": taxonomy, "taxonomy_state": taxonomy_state,
@@ -404,6 +499,8 @@ class QuestionImportService:
                 "job_content_source": job.get("job_content_source"),
                 "inferred_exam_year": job.get("inferred_exam_year"),
                 "inferred_exam_track": job.get("inferred_exam_track"),
+                "inferred_exam_session": job.get("inferred_exam_session"),
+                "exam": job.get("exam") or {},
                 "years": years, "sources": sources, "year_confidence": confidence,
                 "source": job.get("source") or {}, "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
@@ -448,7 +545,13 @@ class QuestionImportService:
             elif duplicate_result["probable"]:
                 classification = "probable_duplicate"; duplicate = duplicate_result["probable"][0]
             else:
-                classification = ("ready_pending_image" if item.get("needs_image") else "ready")
+                missing = (item.get("normalized") or {}).get("correct_answer") is None or (
+                    (item.get("normalized") or {}).get("answer_missing")
+                )
+                if missing:
+                    classification = "needs_review"
+                else:
+                    classification = ("ready_pending_image" if item.get("needs_image") else "ready")
                 duplicate = None
         await self.db.question_import_items.update_one({"_id": item["_id"]},
             {"$set": {"taxonomy": taxonomy, "taxonomy_state": "matched", "classification": classification,
@@ -466,6 +569,7 @@ class QuestionImportService:
             raise QuestionDomainError("import_item_not_found", "ردیف پیدا نشد", 404)
         if decision == "import" and item.get("classification") in {"error", "unmatched", "ambiguous", "exact_duplicate"}:
             raise QuestionDomainError("unsafe_import_decision", "این ردیف پیش از رفع خطا قابل import نیست", 409)
+        # needs_review is intentionally importable → lands as pending for admin edit.
         await self.db.question_import_items.update_one({"_id": item["_id"]}, {"$set": {"decision": decision}})
         return {"ok": True}
 
@@ -478,7 +582,8 @@ class QuestionImportService:
                   "pending_images": c.get("ready_pending_image", 0), "errors": c.get("error", 0),
                   "unmatched": c.get("unmatched", 0), "ambiguous": c.get("ambiguous", 0),
                   "exact_duplicates": c.get("exact_duplicate", 0),
-                  "probable_duplicates": c.get("probable_duplicate", 0), "conflicts": c.get("conflict", 0)}
+                  "probable_duplicates": c.get("probable_duplicate", 0), "conflicts": c.get("conflict", 0),
+                  "needs_review": c.get("needs_review", 0)}
         await self.db.question_import_jobs.update_one({"_id": job_id}, {"$set": {"counts": counts}})
         return counts
 
@@ -497,7 +602,7 @@ class QuestionImportService:
             raise QuestionDomainError("import_in_progress", "درون‌ریزی هم‌زمان در حال اجراست", 409)
         candidate_query = {"job_id": job_id, "$or": [
             {"classification": {"$in": ["ready", "ready_pending_image"]}},
-            {"classification": {"$in": ["probable_duplicate", "conflict"]}, "decision": "import"},
+            {"classification": {"$in": ["probable_duplicate", "conflict", "needs_review"]}, "decision": "import"},
         ]}
         candidates = await self.db.question_import_items.find(candidate_query).sort("row", 1).to_list(5000)
         imported = skipped = failed = 0; errors = []
@@ -505,27 +610,49 @@ class QuestionImportService:
         for item in candidates:
             identity = hashlib.sha256(
                 f"{job['fingerprint']}:{item['external_id']}:{item['normalized']['content_hash']}".encode()).hexdigest()
-            now = utc_now_iso(); taxonomy = item["taxonomy"]; normalized = item["normalized"]
+            now = utc_now_iso(); taxonomy = item["taxonomy"]; normalized = dict(item["normalized"])
+            exam_session = item.get("exam_session") or normalized.get("exam_session")
+            exam_session_label = item.get("exam_session_label") or normalized.get("exam_session_label")
+            answer_missing = normalized.get("correct_answer") is None or normalized.pop("answer_missing", False)
+            # 🌊 QBANK-W5 — بدون پاسخ قطعی هرگز approved/eligible نمی‌شود.
+            if answer_missing or item.get("classification") == "needs_review":
+                q_status, q_approved = "pending", False
+                review_reason = "درون‌ریزی با نیاز به بازبینی (پاسخ/OCR)"
+                history_to = "pending"
+            else:
+                q_status, q_approved = "approved", True
+                review_reason = "درون‌ریزی تأییدشده توسط مالک"
+                history_to = "approved"
             document = {**normalized, **taxonomy, "intake": taxonomy.get("intake", ""),
-                        "status": "approved", "approved": True,
+                        "status": q_status, "approved": q_approved,
                         "source": "ai_admin_import", "creator_type": "admin",
+                        "exam_session": exam_session,
+                        "exam_session_label": exam_session_label,
                         "provenance": {"source": "ai_admin_import", "creator_type": "admin",
                                        "created_by": int(admin.get("id") or 0),
                                        "exam_track": item.get("exam_track") or EXAM_TRACK_DEFAULT,
+                                       "exam_session": exam_session,
+                                       "exam_session_label": exam_session_label,
+                                       "exam_id": (job.get("exam") or {}).get("exam_id") or (job.get("source") or {}).get("exam_id"),
                                        "import": {"job_id": job_id, "schema_version": IMPORT_SCHEMA_VERSION,
                                                   "file_name": job.get("file_name"),
                                                   "source_page": item.get("source_page"),
-                                                  "external_id": item.get("external_id")}},
+                                                  "external_id": item.get("external_id"),
+                                                  "needs_review": bool(answer_missing)}},
                         "creator_id": int(admin.get("id") or 0),
                         "creator_name": self.db.display_name_of(admin.get("_db") or admin),
                         "import_job_id": job_id, "import_identity": identity,
                         "source_file_name": job.get("file_name"), "source_page": item.get("source_page"),
                         "external_question_id": item.get("external_id"),
-                        "created_at": now, "updated_at": now, "reviewed_at": now,
-                        "reviewed_by": int(admin.get("id") or 0), "review_reason": "درون‌ریزی تأییدشده توسط مالک",
-                        "version": 1, "review_history": [{"from": None, "to": "approved",
-                            "by": int(admin.get("id") or 0), "at": now, "reason": "درون‌ریزی JSON تأییدشده"}],
+                        "created_at": now, "updated_at": now,
+                        "reviewed_at": now if q_approved else None,
+                        "reviewed_by": int(admin.get("id") or 0) if q_approved else None,
+                        "review_reason": review_reason,
+                        "version": 1, "review_history": [{"from": None, "to": history_to,
+                            "by": int(admin.get("id") or 0), "at": now, "reason": review_reason}],
                         "attempt_count": 0, "correct_count": 0}
+            if answer_missing:
+                document["correct_answer"] = None
             if item.get("classification") == "ready_pending_image" or item.get("needs_image"):
                 raw_image = ((item.get("raw") or {}).get("image") or {}
                              if isinstance((item.get("raw") or {}).get("image"), Mapping) else {})

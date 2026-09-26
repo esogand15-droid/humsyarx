@@ -46,6 +46,21 @@ CONTENT_SOURCE_DEFAULT = "hamsyar"
 EXAM_TRACKS = frozenset({"medicine", "dentistry"})
 EXAM_TRACK_DEFAULT = "medicine"
 
+# 🌊 QBANK-W5 — نوبت آزمون (data-driven؛ سال/نوبت hard-code نمی‌شود).
+# کلیدها پایدار و لاتین‌اند؛ برچسب فارسی فقط برای نمایش.
+EXAM_SESSIONS = {
+    "shahrivar": "شهریور",
+    "esfand": "اسفند",
+    "ordibehesht": "اردیبهشت",
+    "mehr": "مهر",
+    "azar": "آذر",
+    "dey": "دی",
+    "farvardin": "فروردین",
+    "mordad": "مرداد",
+    "other": "سایر",
+}
+EXAM_SESSION_DEFAULT = None  # نوبت اختیاری است؛ بدون حدس.
+
 
 @dataclass
 class QuestionDomainError(ValueError):
@@ -119,6 +134,29 @@ def canonical_exam_track(value: Any) -> str:
     return EXAM_TRACK_DEFAULT
 
 
+def canonical_exam_session(value: Any, *, strict: bool = True) -> str | None:
+    """Normalize exam session key (shahrivar/esfand/…). Empty → None."""
+    text = clean_text(value).casefold()
+    if not text:
+        return None
+    # Persian label → key
+    for key, label in EXAM_SESSIONS.items():
+        if text == key or text == label or text == label.casefold():
+            return key
+    # Common aliases
+    aliases = {
+        "sep": "shahrivar", "september": "shahrivar", "شهریورماه": "shahrivar",
+        "feb": "esfand", "february": "esfand", "اسفندماه": "esfand",
+    }
+    if text in aliases:
+        return aliases[text]
+    if text in EXAM_SESSIONS:
+        return text
+    if strict:
+        raise QuestionDomainError("invalid_exam_session", "نوبت آزمون معتبر نیست")
+    return None
+
+
 def approved_query() -> dict:
     """Read new status and legacy approved=True without a destructive migration."""
     return {"$or": [
@@ -162,7 +200,7 @@ def question_content_hash(question: Any, options: list[Any]) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def validate_question_payload(payload: Mapping[str, Any]) -> dict:
+def validate_question_payload(payload: Mapping[str, Any], *, allow_missing_answer: bool = False) -> dict:
     question = clean_text(payload.get("question"), 2000)
     if len(question) < 10:
         raise QuestionDomainError("question_too_short", "متن سؤال باید حداقل ۱۰ کاراکتر باشد")
@@ -172,12 +210,20 @@ def validate_question_payload(payload: Mapping[str, Any]) -> dict:
     options = [clean_text(item, 500) for item in raw_options]
     if any(not item for item in options) or len({normalized_question_text(x) for x in options}) != 4:
         raise QuestionDomainError("unique_options_required", "چهار گزینه متفاوت و غیرخالی لازم است")
-    try:
-        correct = int(payload.get("correct_answer", payload.get("correct", payload.get("correct_option"))))
-    except (TypeError, ValueError):
-        raise QuestionDomainError("invalid_correct_option", "گزینه صحیح معتبر نیست")
-    if not 0 <= correct < 4:
-        raise QuestionDomainError("invalid_correct_option", "گزینه صحیح باید بین ۱ تا ۴ باشد")
+    raw_correct = payload.get("correct_answer", payload.get("correct", payload.get("correct_option")))
+    correct: int | None
+    if raw_correct is None or raw_correct == "":
+        if allow_missing_answer:
+            correct = None
+        else:
+            raise QuestionDomainError("invalid_correct_option", "گزینه صحیح معتبر نیست")
+    else:
+        try:
+            correct = int(raw_correct)
+        except (TypeError, ValueError):
+            raise QuestionDomainError("invalid_correct_option", "گزینه صحیح معتبر نیست")
+        if not 0 <= correct < 4:
+            raise QuestionDomainError("invalid_correct_option", "گزینه صحیح باید بین ۱ تا ۴ باشد")
     difficulty = canonical_difficulty(payload.get("difficulty") or "medium")
     exam_year = canonical_exam_year(payload.get("exam_year"))
     content_source = canonical_content_source(payload.get("content_source"))
@@ -195,6 +241,7 @@ def validate_question_payload(payload: Mapping[str, Any]) -> dict:
         "exam_year_confidence": confidence,
         "content_source": content_source,
         "content_source_label_fa": CONTENT_SOURCES[content_source],
+        "answer_missing": correct is None,
     }
 
 
@@ -205,6 +252,21 @@ def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dic
     _cs = clean_text(document.get("content_source"))
     if _cs not in CONTENT_SOURCES:
         _cs = CONTENT_SOURCE_DEFAULT
+    _prov = dict(document.get("provenance") or {})
+    _session_raw = document.get("exam_session") or _prov.get("exam_session")
+    try:
+        _session = canonical_exam_session(_session_raw, strict=False) if _session_raw else None
+    except QuestionDomainError:
+        _session = None
+    _session_label = clean_text(document.get("exam_session_label") or _prov.get("exam_session_label")) or None
+    if _session and not _session_label:
+        _year = clean_text(document.get("exam_year")) or None
+        fa = EXAM_SESSIONS.get(_session, _session)
+        if _year:
+            y_fa = _year.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+            _session_label = f"{fa} {y_fa}"
+        else:
+            _session_label = fa
     result = {
         "id": str(document.get("_id") or document.get("id") or ""),
         "lesson_id": str(document.get("lesson_id") or ""),
@@ -217,12 +279,14 @@ def public_question(document: Mapping[str, Any], *, reveal: bool = False) -> dic
         "options": [str(x) for x in (document.get("options") or [])],
         "source": canonical_source(document.get("source"), clean_text(document.get("creator_type"))),
         "creator_type": clean_text(document.get("creator_type")) or "student",
-        "provenance": dict(document.get("provenance") or {}),
+        "provenance": _prov,
         "exam_year": clean_text(document.get("exam_year")) or None,
         "exam_year_confidence": clean_text(document.get("exam_year_confidence")) or "unknown",
+        "exam_session": _session,
+        "exam_session_label": _session_label,
         "content_source": _cs,
         "content_source_label_fa": CONTENT_SOURCES[_cs],
-        "exam_track": canonical_exam_track((document.get("provenance") or {}).get("exam_track")),
+        "exam_track": canonical_exam_track(_prov.get("exam_track")),
         "image": {"has_image": _img["has_image"], "pending_upload": _img["pending_upload"],
                   "alt_text": _img["alt_text"]},
         "image_url": (f"/api/questions/image/{_qid}"

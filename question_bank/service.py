@@ -179,8 +179,10 @@ class QuestionBankService:
                        exam_year_to: str | None = None,
                        content_source=None) -> dict:
         # 🌊 QBANK-W3 — سؤالِ منتظرِ تصویر در هیچ تمرین/آزمونی نیست (§۱۰).
+        # 🌊 QBANK-W5 — سؤال بدون پاسخ قطعی (import needs_review) eligible نیست.
         parts = [approved_query(), self.taxonomy_scope_query(taxonomy, intakes=intakes),
-                 {"image.pending_upload": {"$ne": True}}]
+                 {"image.pending_upload": {"$ne": True}},
+                 {"correct_answer": {"$in": [0, 1, 2, 3]}}]
         if difficulty:
             canonical = canonical_difficulty(difficulty)
             legacy = DIFFICULTY_LABELS[canonical]
