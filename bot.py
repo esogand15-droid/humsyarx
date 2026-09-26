@@ -2154,6 +2154,15 @@ async def bot_heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
+    # 🎨 Premium custom emoji (khoshgelasion pack) — HTML messages only
+    try:
+        from premium_emoji import install_telegram_hooks, load_pack_map
+        install_telegram_hooks()
+        n = len(load_pack_map())
+        logger.info("✅ premium_emoji hooks ready (%s pack glyphs)", n)
+    except Exception as e:
+        logger.warning("premium_emoji init skipped: %s", e)
+
     # 🌊 W5 — ثبت دستورات تلگرام (منوی / ) و توضیح کوتاه
     try:
         from telegram import BotCommand
