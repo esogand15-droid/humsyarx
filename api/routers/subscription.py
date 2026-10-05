@@ -1270,8 +1270,12 @@ class ZarinpalRequestBody(BaseModel):
 async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_current_user)):
     if _HAS_RL:
         await rate_limit_user(user["id"], "zarinpal_req", 10, 60)
-    from payments.zarinpal import zarinpal_request as _zp_req
+    from payments.zarinpal import zarinpal_request as _zp_req, gateway_public_status
     user_id = user["id"]
+    # 🐞 BUGFIX — مثل topup: اگر درگاه خاموش/غیرمجاز است، درخواست پرداخت ساخته نشود
+    _gw = await gateway_public_status()
+    if not _gw.get("online_pay_enabled"):
+        raise HTTPException(status_code=503, detail="پرداخت آنلاین در حال حاضر فعال نیست")
     plan = await db.sub_plan_get(body.plan_id)
     if not plan or not plan.get("active"):
         raise HTTPException(status_code=404, detail="پلن پیدا نشد")
@@ -1304,8 +1308,11 @@ async def zarinpal_request_ep(body: ZarinpalRequestBody, user=Depends(get_curren
     # idempotency guard
     if idem:
         ex = await db.sub_payments.find_one({"idem_key": idem})
-        if ex and ex.get("zarinpal_authority"):
-            return {"ok": True, "authority": ex["zarinpal_authority"], "url": f"https://sandbox.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}" if ex["zarinpal_authority"].startswith("TEST-") else f"https://www.zarinpal.com/pg/StartPay/{ex['zarinpal_authority']}", "payment_id": str(ex["_id"]), "replay": True, "final_price": int(ex.get("final_price") or price)}
+        # 🐞 BUGFIX — idem پیش‌فرض برای همه‌ی کاربران یکتا نیست؛ پرداخت کاربر
+        # دیگر نباید replay شود. URL هم از کانفیگ واقعی sandbox ساخته می‌شود.
+        if ex and int(ex.get("user_id") or 0) == user_id and ex.get("zarinpal_authority"):
+            from payments.zarinpal import _pay_url_async
+            return {"ok": True, "authority": ex["zarinpal_authority"], "url": await _pay_url_async(ex["zarinpal_authority"]), "payment_id": str(ex["_id"]), "replay": True, "final_price": int(ex.get("final_price") or price)}
     # discount not consumed yet — will be consumed atomically at verify (after payment) to avoid stuck reservation
     # gateway request
     cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())
@@ -1356,8 +1363,8 @@ async def zarinpal_topup_ep(body: ZarinpalTopupBody, user=Depends(get_current_us
     ex = await db.sub_payments.find_one({"idem_key": idem})
     if ex is not None and int(ex.get("user_id") or 0) == user_id and ex.get("zarinpal_authority"):
         auth = ex["zarinpal_authority"]
-        host = "sandbox.zarinpal.com" if auth.startswith("TEST-") else "www.zarinpal.com"
-        return {"ok": True, "authority": auth, "url": f"https://{host}/pg/StartPay/{auth}",
+        from payments.zarinpal import _pay_url_async
+        return {"ok": True, "authority": auth, "url": await _pay_url_async(auth),
                 "payment_id": str(ex["_id"]), "replay": True,
                 "final_price": int(ex.get("final_price") or amount)}
     cb = _clamp_callback_url(body.callback_url, _gateway_callback_default())

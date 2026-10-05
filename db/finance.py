@@ -727,6 +727,46 @@ class DBFinance:
         return {'ok': True, 'end_date': end_date,
                 'plan_name': str(owner_sub.get('plan_name') or '')}
 
+    async def family_admin_add(self, owner_id: int, member_id: int,
+                               actor_id: int = 0) -> dict:
+        """🐞 BUGFIX — افزودن مستقیم عضو توسط ادمین (پنل وب این مسیر را صدا
+        می‌زد ولی backend نداشت). همان قواعد family_redeem بدون کد دعوت."""
+        owner_id, member_id = int(owner_id), int(member_id)
+        if owner_id == member_id:
+            return {'ok': False, 'error': 'مالک نمی‌تواند عضو خانواده‌ی خودش باشد'}
+        if not await self.get_user(member_id):
+            return {'ok': False, 'error': 'کاربر پیدا نشد'}
+        owner_sub = await self.sub_get(owner_id)
+        if not owner_sub or not await self.sub_is_active(owner_id):
+            return {'ok': False, 'error': 'اشتراک مالک خانواده فعال نیست'}
+        if await self.sub_is_active(member_id):
+            return {'ok': False, 'error': 'این کاربر الان اشتراک فعال دارد'}
+        seats = await self.family_plan_seats(owner_id)
+        if seats['total'] <= 1:
+            return {'ok': False, 'error': 'پلن مالک خانوادگی نیست'}
+        if seats['left'] <= 0:
+            return {'ok': False, 'error': 'ظرفیت خانواده پر شده'}
+        raw_end = owner_sub.get('end_date')
+        try:
+            end_date = canonical_utc(raw_end)
+        except (TimeContractError, ValueError, TypeError):
+            end_date = raw_end
+        now = utc_now_iso()
+        await self.subscriptions.update_one(
+            {'_id': member_id},
+            {'$set': {'status': 'active',
+                      'plan_name': str(owner_sub.get('plan_name') or 'خانواده'),
+                      'plan_id': str(owner_sub.get('plan_id') or ''),
+                      'start_date': now, 'end_date': end_date,
+                      'source': 'family', 'granted_by': int(actor_id or owner_id),
+                      'family_owner_id': owner_id,
+                      'family_code': '',
+                      'last_plan_days': int(owner_sub.get('last_plan_days') or 0),
+                      'reminder_3d_sent': False, 'reminder_1d_sent': False,
+                      'updated_at': now}},
+            upsert=True)
+        return {'ok': True, 'end_date': end_date}
+
     async def family_remove(self, owner_id: int, member_id: int,
                             actor_id: int = 0) -> dict:
         """حذف عضو (توسط مالک یا ادمین): revoke اشتراک عضو."""

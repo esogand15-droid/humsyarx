@@ -1354,7 +1354,7 @@ async def exam_answer(
                 "pass_pct": pass_pct,
                 "need": need,
                 "apex": apex,
-                "reward": ((db.CH_APEX_WIN if apex else db.CH_CHALLENGE_WIN)
+                "reward": ((db.XP_APEX_WIN if apex else db.XP_CHALLENGE_WIN)
                            if res.get("win") else 0),
                 "celebration": res.get("celebration"),
                 "cooldown_h": res.get("cooldown_h"),

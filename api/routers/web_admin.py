@@ -5490,6 +5490,67 @@ async def wa_subscription_receipt(
     return await subscription_api.payment_receipt(payment_id=payment_id, admin=user)
 
 
+# 🐞 BUGFIX — پنل وب (Subscriptions → خانواده) این سه endpoint را صدا می‌زد
+# ولی در backend تعریف نشده بودند (همیشه 404).
+class _WaFamilyAddBody(BaseModel):
+    owner_id: int
+    user_id: int
+
+
+@router.get("/subscription/family")
+async def wa_subscription_family(
+    owner_id: int = Query(..., ge=1),
+    user=Depends(_perm("subscription.manage")),
+):
+    seats = await db.family_plan_seats(owner_id)
+    members = []
+    if seats["total"] > 1:
+        for m in await db.family_members(owner_id):
+            u = await db.get_user(int(m["_id"])) or {}
+            members.append({
+                "user_id": int(m["_id"]),
+                "name": u.get("name", ""),
+                "status": m.get("status", ""),
+                "end_date": m.get("end_date"),
+            })
+    return {"owner_id": owner_id, "total": seats["total"], "used": seats["used"],
+            "left": seats["left"], "plan_id": seats["plan_id"], "members": members}
+
+
+@router.post("/subscription/family/members")
+async def wa_subscription_family_add(
+    body: _WaFamilyAddBody,
+    user=Depends(_perm("subscription.manage")),
+):
+    res = await db.family_admin_add(body.owner_id, body.user_id, actor_id=user["id"])
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("error") or "افزودن عضو ممکن نشد")
+    await _audit(user["id"], "افزودن عضو خانواده", severity="WARNING",
+                 target_id=str(body.user_id), target_type="subscription",
+                 target_label=f"owner:{body.owner_id}",
+                 after={"owner_id": body.owner_id, "member_id": body.user_id,
+                        "end_date": res.get("end_date")},
+                 tags=["اشتراک", "خانواده", "پنل_وب"])
+    return res
+
+
+@router.delete("/subscription/family/members/{member_id}")
+async def wa_subscription_family_remove(
+    member_id: int,
+    owner_id: int = Query(..., ge=1),
+    user=Depends(_perm("subscription.manage")),
+):
+    res = await db.family_remove(owner_id, member_id, actor_id=user["id"])
+    if not res.get("ok"):
+        raise HTTPException(409, res.get("error") or "حذف عضو ممکن نشد")
+    await _audit(user["id"], "حذف عضو خانواده", severity="WARNING",
+                 target_id=str(member_id), target_type="subscription",
+                 target_label=f"owner:{owner_id}",
+                 before={"owner_id": owner_id, "member_id": member_id},
+                 tags=["اشتراک", "خانواده", "پنل_وب"])
+    return res
+
+
 @router.get("/subscription/discounts")
 async def wa_subscription_discounts(user=Depends(_perm("subscription.manage"))):
     return await subscription_api.discounts(admin=user)
@@ -6937,7 +6998,7 @@ async def wa_audit_undo(log_id: str, body: UndoBody,
     result = await db.undo_audit_log(log_id, user["id"])
     if not result.get("ok"):
         raise HTTPException(result.get("status", 409), result.get("error", "بازگردانی ممکن نشد"))
-    await _audit(user, "بازگردانی تغییر", "Audit", severity="HIGH",
+    await _audit(user["id"], "بازگردانی تغییر", severity="HIGH",
                  target_id=log_id, target_type="audit_log",
                  target_label=str(result.get("target_id")),
                  before={"undone": False},
@@ -7716,7 +7777,7 @@ async def wa_schedule_bulk_delete(
     r = await db.schedules.delete_many(q)
     n = int(getattr(r, "deleted_count", 0) or 0)
     try:
-        await _audit(user["id"], f"پاک‌سازی گروهی برنامه‌ها ({n} مورد)", "Schedules", severity="WARNING",
+        await _audit(user["id"], f"پاک‌سازی گروهی برنامه‌ها ({n} مورد)", severity="WARNING",
                      target_type="schedule", target_label=str(group or "همه"),
                      after={"deleted": n, "group": group, "stype": stype},
                      tags=["برنامه", "پاکسازی_گروهی", "پنل_وب"])
@@ -7822,7 +7883,7 @@ async def wa_schedule_bulk_delete_post(
     r = await db.schedules.delete_many(q)
     n = int(getattr(r, "deleted_count", 0) or 0)
     try:
-        await _audit(user["id"], f"حذف گروهی پیشرفته ({n} مورد)", "Schedules", severity="WARNING",
+        await _audit(user["id"], f"حذف گروهی پیشرفته ({n} مورد)", severity="WARNING",
                      target_type="schedule", target_label=str(body.group or body.stype or ("ids:"+str(len(body.ids or [])) if body.ids else "همه")),
                      after={"deleted": n, "filters": body.model_dump()},
                      tags=["برنامه", "حذف_گروهی", "پنل_وب"])

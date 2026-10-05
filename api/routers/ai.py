@@ -1116,10 +1116,14 @@ async def delete_conversation(
         await _clear_memory(user_id)
         document = await db.ai_get_doc(user_id)
         if document:
-            await _delete_remote_reference(
-                document.get("references") or []
-            )
             await db.ai_clear_doc(user_id)
+            try:
+                await _delete_remote_reference(
+                    await get_ai_config(),
+                    document,
+                )
+            except Exception:
+                logger.info("legacy reference cleanup failed", exc_info=True)
         return {"ok": True, "legacy": True}
 
     ok = await db.ai_conv_delete(cid, user_id)

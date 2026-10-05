@@ -528,7 +528,7 @@ async def questions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif action == 'ca_q_view':
         qid = parts[2] if len(parts) > 2 else ''
-        await _ca_question_view(query, uid, qid)
+        await _ca_question_view(query, uid, qid, context)
 
     elif action == 'ca_q_del':
         await _h_ca_q_del(query, context, uid, parts[2] if len(parts) > 2 else '', target='rejected')
@@ -1756,7 +1756,7 @@ async def _ca_question_list(query, uid: int, context):
         pass
 
 
-async def _ca_question_view(query, uid: int, qid: str):
+async def _ca_question_view(query, uid: int, qid: str, context=None):
     """نمایش کامل یک سوال با دکمه‌های مدیریت"""
     if not (await db.has_permission(uid, 'questions.review') or await db.has_permission(uid, 'questions.review_scoped')):
         await query.answer("❌ مجوز بررسی سؤال را ندارید.", show_alert=True)

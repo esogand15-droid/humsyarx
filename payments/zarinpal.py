@@ -12,7 +12,9 @@ API v4: request.json + verify.json  (amount in Rial)
 Our plan.price is in Toman → Rial = Toman * 10
 
 Mock mode: when merchant unset, we generate TEST-authority and verify always succeeds.
-This allows local dev / Railway without real Zarinpal credentials.
+This allows local dev / staging without real Zarinpal credentials.
+⚠️ In production (RAILWAY_ENVIRONMENT_NAME/APP_ENV=production) mock is DISABLED
+unless ZARINPAL_ALLOW_MOCK=1 is set explicitly.
 
 Idempotency: authority is stored on sub_payments doc (field zarinpal_authority)
 and verified only once via atomic CAS (pending_zarinpal → approved).
@@ -72,6 +74,27 @@ async def _get_cfg() -> dict:
     _CFG_CACHE["data"] = cfg
     return cfg
 
+def _mock_allowed() -> bool:
+    """🐞 BUGFIX (CRITICAL) — حالت mock یعنی «پرداخت بدون پول همیشه موفق».
+    قبلاً اگر مرچنت در production خالی/پاک می‌شد، هر کاربر می‌توانست
+    اشتراک بخرد یا کیف پولش را شارژ کند بدون پرداخت واقعی.
+    حالا mock فقط در dev/staging مجاز است، یا وقتی صریحاً
+    ZARINPAL_ALLOW_MOCK=1 تنظیم شده باشد (مثلاً دموی عمومی)."""
+    v = (os.getenv("ZARINPAL_ALLOW_MOCK", "") or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    env = (os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("RAILWAY_ENVIRONMENT")
+           or os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+    return env not in ("production", "prod")
+
+
+def _merchant_is_mock(merchant_id: str) -> bool:
+    mid = (merchant_id or "").strip()
+    return (not mid) or mid.lower() in ("test", "mock", "sandbox")
+
+
 def _clear_cfg_cache():
     _CFG_CACHE["at"] = 0
     _CFG_CACHE["data"] = None
@@ -109,7 +132,8 @@ async def gateway_public_status() -> dict:
     mid = (cfg.get("merchant_id") or "").strip()
     mock = (not mid) or (mid.lower() in ("test", "mock", "sandbox"))
     return {
-        "online_pay_enabled": bool(cfg.get("enabled")),
+        # 🐞 BUGFIX — mock غیرمجاز (production بدون مرچنت) = پرداخت آنلاین خاموش
+        "online_pay_enabled": bool(cfg.get("enabled")) and (not mock or _mock_allowed()),
         "mock": mock,
         "sandbox": bool(cfg.get("sandbox")),
         "bot_username": (os.environ.get("BOT_USERNAME") or "").strip(),
@@ -140,7 +164,8 @@ async def zarinpal_request(amount_toman: int, description: str, callback_url: st
     # Mock
     is_mock = not merchant_id or merchant_id.lower() in ("test", "mock", "sandbox")
     if is_mock:
-        authority = f"A000000000000000000000000000{uuid.uuid4().hex[:6]}"
+        if not _mock_allowed():
+            raise RuntimeError("zarinpal merchant not configured (mock disabled in production)")
         # Use deterministic prefix for mock detection in verify
         authority = "TEST-" + uuid.uuid4().hex[:28].upper()
         url = f"https://sandbox.zarinpal.com/pg/StartPay/{authority}" if sandbox else f"https://www.zarinpal.com/pg/StartPay/{authority}"
@@ -176,7 +201,10 @@ async def zarinpal_request(amount_toman: int, description: str, callback_url: st
         err = data.get("errors") or {}
         # errors may be dict with message/code
         raise RuntimeError(f"zarinpal_request_failed code={code} err={err}")
-    pay_url = _pay_url(authority)
+    # 🐞 BUGFIX — قبلاً از SANDBOX محیطی استفاده می‌شد نه کانفیگ DB؛
+    # با تغییر sandbox از پنل، request به یک سرور و redirect به سرور دیگر می‌رفت.
+    pay_url = (f"https://sandbox.zarinpal.com/pg/StartPay/{authority}" if sandbox
+               else f"https://www.zarinpal.com/pg/StartPay/{authority}")
     return {"authority": authority, "url": pay_url, "code": code, "mock": False}
 
 async def zarinpal_verify(authority: str, amount_toman: int) -> dict:
@@ -191,7 +219,15 @@ async def zarinpal_verify(authority: str, amount_toman: int) -> dict:
     if not authority:
         raise ValueError("authority required")
     # Mock verify
-    is_mock = authority.startswith("TEST-") or not merchant_id or merchant_id.lower() in ("test","mock","sandbox")
+    # 🐞 BUGFIX (CRITICAL) — قبلاً هر authority با پیشوند TEST- حتی با مرچنت
+    # واقعی «پرداخت موفق» برمی‌گشت. حالا mock فقط وقتی مرچنت mock است.
+    is_mock = _merchant_is_mock(merchant_id)
+    if not is_mock and authority.startswith("TEST-"):
+        logger.warning(f"zarinpal verify rejected mock authority in live mode: {authority}")
+        return {"ok": False, "code": -99, "errors": {"message": "mock_authority_in_live_mode"}, "mock": False}
+    if is_mock and not _mock_allowed():
+        logger.warning("zarinpal verify rejected: mock disabled in production")
+        return {"ok": False, "code": -98, "errors": {"message": "mock_disabled"}, "mock": True}
     if is_mock:
         # In mock, authority starting with TEST- always succeeds
         ref_id = int(uuid.uuid4().int % 900000) + 100000
@@ -231,8 +267,10 @@ async def zarinpal_reverse(authority: str) -> dict:
     sandbox = cfg.get("sandbox") if cfg.get("sandbox") is not None else SANDBOX
     if not authority:
         raise ValueError("authority required")
-    is_mock = (authority.startswith("TEST-") or not merchant_id
-               or merchant_id.lower() in ("test", "mock", "sandbox"))
+    is_mock = _merchant_is_mock(merchant_id)
+    if not is_mock and authority.startswith("TEST-"):
+        # authority ساختگیِ دوره‌ی mock؛ پولی جابه‌جا نشده که reverse شود
+        return {"ok": True, "code": 100, "mock": True}
     if is_mock:
         logger.info(f"[ZARINPAL MOCK] reverse authority={authority}")
         return {"ok": True, "code": 100, "mock": True}

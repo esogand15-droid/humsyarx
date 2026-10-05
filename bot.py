@@ -1340,6 +1340,11 @@ TRANSIENT_ERRORS = (
     "httpx.ReadError", "httpx.WriteError", "Connection error",
     "Server disconnected", "Temporary failure in name resolution",
     "Network is unreachable", "Connection reset by peer", "timed out",
+    # 🐞 BUGFIX — 5xxهای موقت سرور تلگرام: PTB این‌ها را به‌صورت
+    # NetworkError("Bad Gateway") بالا می‌دهد که نه در TRANSIENT_TYPES بود
+    # نه در این لیست؛ پس هر بار به‌عنوان «خطای ربات» به ادمین پیوی می‌شد.
+    "Bad Gateway", "Gateway Timeout", "Service Unavailable",
+    "Internal Server Error", "Too Many Requests: retry later",
 )
 # نامِ کلاس‌هایی که همیشه گذرا هستند. عمداً isinstance نه: در PTB 21.3
 # `BadRequest ⊂ NetworkError` است و با isinstance، خطای منطقیِ API هم
@@ -1803,7 +1808,18 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return await admin_broadcast_handler(update, context)
 
     # ⚠️ قابلیتِ جدید: نکته‌های اطلاعیه برای هوشیار (دستیارِ نوشتنِ اطلاعیه)
-    if uid == ADMIN_ID and context.user_data.get('mode') == 'bc_ai_notes':
+    if context.user_data.get('mode') == 'bc_ai_notes':
+        # مسئول اطلاعیه هم باید بتواند از دستیار AI استفاده کند، نه فقط مالک.
+        try:
+            _can_broadcast = (
+                uid == ADMIN_ID
+                or await db.has_permission(uid, 'broadcast.send')
+                or await db.has_permission(uid, 'broadcast')
+            )
+        except Exception:
+            _can_broadcast = uid == ADMIN_ID
+        if not _can_broadcast:
+            return
         from admin import _broadcast_ai_generate
         context.user_data['mode'] = ''
         context.user_data['bc_ai_notes'] = update.message.text or ''

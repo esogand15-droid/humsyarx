@@ -18,6 +18,21 @@ from utils import send_audit_log, safe_send, spawn_bg   # 🛡 AUDIT-M1
 from time_utils import format_datetime_fa, now_utc, utc_now_iso
 
 logger = logging.getLogger(__name__)
+
+
+async def _campaign_audit(query, action: str, _module: str = 'subscriptions'):
+    """🐞 BUGFIX — قبلاً send_audit_log با امضای اشتباه صدا زده می‌شد
+    (TypeError که در except بلعیده می‌شد) و هیچ لاگ کمپینی ثبت نمی‌شد."""
+    try:
+        u = query.from_user
+        _au = await db.get_user(u.id) or {}
+        _ar = await db.get_actor_role_label(u.id)
+        await send_audit_log(query.get_bot(), 'admin',
+                             _au.get('name') or u.full_name or str(u.id), u.id,
+                             action, module='Subscription', actor_role=_ar,
+                             tags=['کمپین_تخفیف'])
+    except Exception as _e:
+        logger.warning(f"campaign audit failed: {_e}")
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 
@@ -641,7 +656,7 @@ async def _show_discount_preview(query, code: str):
         parse_mode='HTML',
         reply_markup=_campaign_cta_kb(discount))
     try:
-        await send_audit_log(query.from_user, f"👁 پیش‌نمایش کمپین کد {code}", 'subscriptions')
+        await _campaign_audit(query, f"👁 پیش‌نمایش کمپین کد {code}", 'subscriptions')
     except Exception:
         pass
 
@@ -721,7 +736,7 @@ async def _execute_discount_broadcast(query, context, code: str, segment: str):
         ]])
     )
     try:
-        await send_audit_log(query.from_user,
+        await _campaign_audit(query,
             f"📣 شروع انتشار کد {code} → {seg_label} ({bid})", 'subscriptions')
     except Exception:
         pass
@@ -835,11 +850,11 @@ async def _execute_discount_broadcast(query, context, code: str, segment: str):
             await safe_send(context.bot, query.from_user.id, summary)
         try:
             if cancelled:
-                await send_audit_log(query.from_user,
+                await _campaign_audit(query,
                     f"⛔ انتشار {code} لغو شد — تا لحظه‌ی توقف ✅{sent} ❌{failed} 🚫{blocked} ({bid})",
                     'subscriptions')
             else:
-                await send_audit_log(query.from_user,
+                await _campaign_audit(query,
                     f"📣 انتشار {code} تمام شد — ✅{sent} ❌{failed} 🚫{blocked} ({bid})",
                     'subscriptions')
         except Exception:

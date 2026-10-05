@@ -1629,7 +1629,7 @@ async def _broadcast_ai_generate(query_or_msg, context, is_message: bool = False
     """
     from ai_solver import generate_broadcast_ai, AIError
 
-    notes = context.user_data.get('bc_ai_notes', '')
+    notes = (context.user_data.get('bc_ai_notes', '') or '').strip()
 
     async def _edit(text, reply_markup):
         if is_message:
@@ -1648,11 +1648,19 @@ async def _broadcast_ai_generate(query_or_msg, context, is_message: bool = False
                 [InlineKeyboardButton("✏️ خودم می‌نویسم", callback_data='admin:bc_edit')],
             ]))
         return
-    except Exception:
+    except Exception as e:
+        # 🐞 BUGFIX: خطای واقعی قبلاً فقط در لاگ می‌رفت و ادمین پیام مبهم
+        # «خطای غیرمنتظره» می‌دید؛ تشخیص مدل/پاسخ خراب/تنظیمات نامعتبر
+        # غیرممکن می‌شد. جزئیات کنترل‌شده نشان داده می‌شود، بدون نشت کلید.
         logger.exception("تولید اطلاعیه با AI ناموفق بود")
         await _edit(
-            "⚠️ یه خطای غیرمنتظره پیش اومد. می‌تونی خودت دستی بنویسی.",
-            InlineKeyboardMarkup([[InlineKeyboardButton("✏️ خودم می‌نویسم", callback_data='admin:bc_edit')]]))
+            "⚠️ هوشیار نتونست اطلاعیه را بسازه.\n\n"
+            f"<i>{html.escape(str(e)[:500])}</i>\n\n"
+            "تنظیمات کلید و مدل هوش مصنوعی را بررسی کن یا دستی بنویس.",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 دوباره امتحان کن", callback_data='admin:bc_ai_regen')],
+                [InlineKeyboardButton("✏️ خودم می‌نویسم", callback_data='admin:bc_edit')],
+            ]))
         return
 
     context.user_data['bc_ai_draft'] = draft

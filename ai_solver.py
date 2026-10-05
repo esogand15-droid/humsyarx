@@ -1887,6 +1887,9 @@ BROADCAST_STYLE_INSTRUCTION = """تو دستیارِ نوشتنِ اطلاعیه
 
 async def generate_broadcast_ai(notes: str) -> str:
     """از روی چند نکته/بولت‌پوینتی که ادمین می‌ده، متنِ کاملِ اطلاعیه رو طبقِ استانداردِ هامزیار می‌سازه."""
+    notes = (notes or "").strip()
+    if not notes:
+        raise AIError("اول چند نکته برای ساخت اطلاعیه بنویس.")
     cfg = await get_ai_config()
     if not cfg['enabled']:
         raise AIConfigError("بخش هوش مصنوعی فعلاً توسط مدیریت غیرفعال است.")
@@ -1913,7 +1916,19 @@ async def generate_broadcast_ai(notes: str) -> str:
     if resp.status_code != 200:
         _raise_gemini_status_error(resp.status_code)
 
-    return _sanitize_tg_html(_extract_gemini_text(resp.json(), "اطلاعیه"))
+    try:
+        data = resp.json()
+    except (ValueError, TypeError) as e:
+        logger.error("Gemini broadcast returned invalid JSON: %s", e)
+        raise AIError("پاسخ سرویس هوش مصنوعی قابل خواندن نبود — دوباره امتحان کن.")
+    try:
+        text = _extract_gemini_text(data, "اطلاعیه")
+    except AIError:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        logger.error("Gemini broadcast response shape was invalid: %s", e)
+        raise AIError("پاسخ سرویس هوش مصنوعی ناقص بود — دوباره امتحان کن.")
+    return _sanitize_tg_html(text)
 
 
 TICKET_REPLY_INSTRUCTION = """تو داری به ادمینِ پشتیبانیِ ربات «هامزیار» (ربات آموزشیِ دانشگاه علوم پزشکی هرمزگان) کمک می‌کنی تا به تیکتِ یک دانشجو جواب بده.
