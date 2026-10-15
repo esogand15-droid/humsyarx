@@ -868,8 +868,12 @@ class DBCore:
         # 🧠 N1.2 — گارد canonical: اگر کاربر کلید جدید یا قدیمی را خاموش
         # کرده باشد خارج می‌شود؛ سندهای کهنه (فقط کلید قدیمی) دقیقاً همان
         # رفتار دیروز را حفظ می‌کنند، کاربر تازه هم که خاموش کند اثر دارد.
+        # 🔴 FIX-R1 (مورد ۱): کاربرانی که ربات را بلاک کرده‌اند از
+        # گیرندگان اعلان حذف می‌شوند — ارسال به آن‌ها همیشه Forbidden
+        # می‌شود و فقط «خطای اجرا»ی کاذب در داشبورد می‌سازد.
         canon = self.PREF_ALIAS.get(ntype, ntype) or ntype
         query = {'approved': True,
+                 'blocked_bot': {'$ne': True},
                  f'notification_settings.{canon}': {'$ne': False},
                  f'notification_settings.{ntype}': {'$ne': False}}
         normalized_group = self.normalize_group(group)
@@ -1531,29 +1535,35 @@ class DBCore:
         inactive_14 = (now - timedelta(days=14)).isoformat()
         inactive_30 = (now - timedelta(days=30)).isoformat()
 
+        # 🔴 FIX-R1 (مورد ۱) — بلاک‌کنندگان ربات از همه‌ی شاخص‌های
+        # «کاربر» داشبورد کسر می‌شوند (total_approved، گروه‌ها، فعال،
+        # غیرفعال، سگمنت ورودی). تعدادشان جداگانه در blocked_bot
+        # برمی‌گردد تا پنل بتواند کارت جدا نشان دهد. new_* (ثبت‌نام)
+        # واقعیت تاریخی است و دست نمی‌خورد.
+        _not_blocked = {'blocked_bot': {'$ne': True}}
         (total_approved, total_pending, new_today, new_week, new_month,
          g1, g2, active_today, active_week, blocked_bot, content_admins,
          inactive_14d, inactive_30d, growth_rows, intake_rows,
          all_intakes, all_roles) = await asyncio.gather(
-            self.users.count_documents({'approved': True}),
+            self.users.count_documents({'approved': True, **_not_blocked}),
             self.users.count_documents({'approved': False}),
             self.users.count_documents({'registered_at': {'$gte': today_start}}),
             self.users.count_documents({'registered_at': {'$gte': week_ago}}),
             self.users.count_documents({'registered_at': {'$gte': month_ago}}),
-            self.users.count_documents({'approved': True, 'group': '1'}),
-            self.users.count_documents({'approved': True, 'group': '2'}),
-            self.users.count_documents({'last_active': {'$gte': today_start}}),
-            self.users.count_documents({'last_active': {'$gte': week_ago}}),
+            self.users.count_documents({'approved': True, 'group': '1', **_not_blocked}),
+            self.users.count_documents({'approved': True, 'group': '2', **_not_blocked}),
+            self.users.count_documents({'last_active': {'$gte': today_start}, **_not_blocked}),
+            self.users.count_documents({'last_active': {'$gte': week_ago}, **_not_blocked}),
             self.users.count_documents({'blocked_bot': True}),
             self.users.count_documents({'role': 'content_admin'}),
-            self.users.count_documents({'approved': True, '$or': [
+            self.users.count_documents({'approved': True, **_not_blocked, '$or': [
                 {'last_active': {'$lt': inactive_14}}, {'last_active': {'$exists': False}},
                 {'last_active': None}, {'last_active': ''}]}),
-            self.users.count_documents({'approved': True, '$or': [
+            self.users.count_documents({'approved': True, **_not_blocked, '$or': [
                 {'last_active': {'$lt': inactive_30}}, {'last_active': {'$exists': False}},
                 {'last_active': None}, {'last_active': ''}]}),
             self.users.aggregate([
-                {'$match': {'approved': True, 'registered_at': {'$gte': week_ago}}},
+                {'$match': {'approved': True, **_not_blocked, 'registered_at': {'$gte': week_ago}}},
                 {'$addFields': {'_registered_dt': {'$convert': {
                     'input': '$registered_at', 'to': 'date', 'onError': None, 'onNull': None}}}},
                 {'$match': {'_registered_dt': {'$ne': None}}},
@@ -1562,7 +1572,7 @@ class DBCore:
                     'count': {'$sum': 1}}},
             ]).to_list(10),
             self.users.aggregate([
-                {'$match': {'approved': True}},
+                {'$match': {'approved': True, **_not_blocked}},
                 {'$group': {'_id': {'$ifNull': ['$intake', '']}, 'count': {'$sum': 1}}},
                 {'$sort': {'count': -1}},
             ]).to_list(500),
@@ -3234,18 +3244,41 @@ class DBCore:
 
 
     async def notif_run_finish(self, run_id: str, sent: int, failed: int, total: int,
-                                status: str = 'completed', error: str = ''):
+                                status: str = 'completed', error: str = '',
+                                blocked: int = 0):
         try:
             await self.notif_runs.update_one(
                 {'_id': ObjectId(run_id)},
                 {'$set': {
                     'sent': sent, 'failed': failed, 'total': total,
+                    'blocked': int(blocked or 0),
                     'status': status, 'error': error,
                     'finished_at': utc_now_iso(),
                 }}
             )
         except Exception:
             pass
+
+
+    async def notif_runs_close_stale(self, max_age_hours: int = 2) -> int:
+        """🔴 FIX-R1 (مورد ۲) — بستن اجراهای «running» مانده.
+
+        اگر پروسه وسطِ یک اجرا بمیرد، سند notif_run برای همیشه روی
+        status=running می‌ماند و در تاریخچه/گزارش‌ها ابهام می‌سازد.
+        این متد اجراهای قدیمی‌تر از max_age_hours را «error» با توضیح
+        می‌بندد. idempotent است و روی هر بار اجرا امن است."""
+        try:
+            from datetime import datetime, timezone as _tz
+            cutoff = (datetime.now(_tz.utc) - timedelta(hours=max_age_hours)).isoformat()
+            res = await self.notif_runs.update_many(
+                {'status': 'running', 'started_at': {'$lt': cutoff}},
+                {'$set': {'status': 'error',
+                          'error': 'اجراهای مانده (running) به‌صورت خودکار بسته شد — پروسه حین اجرا قطع شده بود.',
+                          'finished_at': utc_now_iso()}}
+            )
+            return int(res.modified_count or 0)
+        except Exception:
+            return 0
 
 
     async def get_recent_notif_runs(self, job_name: str = None, limit: int = 15) -> list:
@@ -3428,21 +3461,68 @@ class DBCore:
         await self.set_setting('notif_defaults', defaults)
 
 
-    async def mark_user_blocked(self, uid: int, blocked: bool = True):
+    async def mark_user_blocked(self, uid: int, blocked: bool = True,
+                                reason: str = 'blocked_by_user'):
         """
         FIX (ارسال همگانی حرفه‌ای‌تر): وقتی ارسال پیام به کاربری با خطای
         Forbidden (کاربر ربات را بلاک کرده) مواجه می‌شود، این پرچم را
         ذخیره می‌کنیم — هم برای گزارش دقیق‌تر ارسال همگانی، هم برای
         اینکه دفعات بعد بلافاصله این کاربر را در آمار «مسدود» بشماریم.
+
+        🔴 FIX-R1 (مورد ۱): حالا reason هم ذخیره می‌شود و «بلاک‌کردن»
+        معکوس‌پذیر است — کاربر با هر آپدیت واقعی (مثل /start) دوباره
+        «فعال و قابل دریافت پیام» می‌شود.
+        reason: blocked_by_user | user_deactivated | chat_not_found | other
         """
         try:
+            now = utc_now_iso()
+            if blocked:
+                await self.users.update_one(
+                    {'user_id': uid},
+                    {'$set': {'blocked_bot': True,
+                              'blocked_bot_at': now,
+                              'blocked_bot_reason': reason}}
+                )
+            else:
+                await self.users.update_one(
+                    {'user_id': uid, 'blocked_bot': True},
+                    {'$set': {'blocked_bot': False,
+                              'blocked_bot_unblock_at': now,
+                              'blocked_bot_reason': None}}
+                )
+        except Exception:
+            pass
+
+    async def unmark_user_blocked(self, uid: int, source: str = 'activity'):
+        """🔴 FIX-R1 — رفع برچسب بلاک وقتی کاربر دوباره ربات را استارت/استفاده می‌کند.
+
+        اگر کاربری ربات را آنبلاک کرده و پیامی بفرستد، هر آپدیت واقعی
+        از او (پیام/کلیک/callback) این متد را صدا می‌زند؛ چون ارسال به
+        کاربرِ بلاک‌کرده ممکن نیست، رسیدن آپدیت یعنی دیگر بلاک نیست.
+        idempotent است و فقط اگر قبلاً بلاک بوده بنویسد (بی‌دلیل دیتابیس
+        را نمی‌نویسد)."""
+        try:
             await self.users.update_one(
-                {'user_id': uid},
-                {'$set': {'blocked_bot': blocked,
-                          'blocked_bot_at': utc_now_iso()}}
+                {'user_id': uid, 'blocked_bot': True},
+                {'$set': {'blocked_bot': False,
+                          'blocked_bot_unblock_at': utc_now_iso(),
+                          'blocked_bot_reason': None,
+                          'blocked_bot_unblock_source': source}}
             )
         except Exception:
             pass
+
+    async def count_blocked_users(self) -> int:
+        """تعداد کاربرانی که ربات را بلاک کرده‌اند (از کل فعال‌ها کم می‌شود)."""
+        return await self.users.count_documents({'blocked_bot': True})
+
+    async def count_reachable_users(self) -> int:
+        """کاربران «فعال و قابل دریافت پیام» = تأییدشده − بلاک‌کننده ربات.
+
+        این تعریف واحد در همه‌جا (داشبورد، KPI پنل کاربران، گزارش‌ها)
+        استفاده می‌شود تا عدد «فعال» یکسان بماند."""
+        return await self.users.count_documents(
+            {'approved': True, 'blocked_bot': {'$ne': True}})
 
 
     async def apply_notif_default_to_all_users(self, ntype: str, value: bool) -> int:
@@ -3456,10 +3536,23 @@ class DBCore:
         قدیمی را برمی‌گرداند، نه پیش‌فرض جدید را).
         این متد با یک UPDATE سراسری، مقدار را برای همه کاربران هم‌زمان
         بازنویسی می‌کند.
+
+        🔴 FIX-R1 (مورد ۳): کلیدهای قدیمیِ هم‌معنا (PREF_ALIAS) هم
+        بازنویسی می‌شوند — کوئری notif_users هر دو کلید (canonical و
+        قدیمی) را با $ne False چک می‌کند؛ اگر فقط canonical نوشته شود،
+        کاربرانِ دارای کلید قدیمیِ خاموش، حتی بعد از «روشن کردن برای
+        همه» توسط ادمین، حذف می‌ماندند و به نظر می‌رسید تغییر
+        «روی همه اعمال نمی‌شود».
         """
         try:
+            # کلید canonical + همه‌ی کلیدهای قدیمیِ نگاشت‌شده به آن
+            keys = {ntype}
+            for old_key, canon in self.PREF_ALIAS.items():
+                if canon == ntype and old_key:
+                    keys.add(old_key)
+            update = {f'notification_settings.{k}': value for k in keys}
             result = await self.users.update_many(
-                {}, {'$set': {f'notification_settings.{ntype}': value}}
+                {}, {'$set': update}
             )
             return result.modified_count
         except Exception:

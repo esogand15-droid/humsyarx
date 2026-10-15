@@ -168,6 +168,12 @@ export const api = {
           ),
         ),
     ),
+  // 🔴 FIX-R1 (مورد ۱) — اسکن بلاک‌کنندگان ربات (شروع/توقف + وضعیت)
+  usersScanBlockedStart: () =>
+    req("/api/web-admin/users/scan-blocked", { method: "POST", body: { scan: "start" } }),
+  usersScanBlockedStop: () =>
+    req("/api/web-admin/users/scan-blocked", { method: "POST", body: { scan: "stop" } }),
+  usersScanBlockedState: () => req("/api/web-admin/users/scan-blocked"),
   exportUsersCsv: (p = {}) =>
     downloadFile(
       "/api/web-admin/exports/users.csv?" +
@@ -1189,7 +1195,17 @@ export const api = {
   // ── ai admin ──
   aiStats: () => req("/api/web-admin/ai/stats"),
   aiConfig: () => req("/api/web-admin/ai/config"),
-  aiModels: () => req("/api/web-admin/ai/models"),
+  // 🔴 FIX-R1 (مورد ۷) — کاتالوگ زنده‌ی مدل‌های ارائه‌دهنده (با همان کلید
+  // ذخیره‌شده). provider خالی = کاتالوگ ثابت همه‌ی ارائه‌دهنده‌ها.
+  aiModels: (provider = "", refresh = false) =>
+    req(
+      "/api/web-admin/ai/models?" +
+        new URLSearchParams(
+          Object.entries({ provider, refresh: refresh ? "true" : "" }).filter(
+            ([, v]) => v !== "" && v !== null && v !== undefined,
+          ),
+        ),
+    ),
   aiConfigUpdate: (body) =>
     req("/api/web-admin/ai/config", { method: "PUT", body }),
   aiKeyRotate: (apiKey) =>

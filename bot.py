@@ -57,7 +57,7 @@ from admin import (
     handle_admin_text, BROADCAST
 )
 from backup import backup_callback, backup_file_handler, backup_confirm_restore
-from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, safe_send_ex, safe_send_status, spawn_bg, CONTENT_ICONS, fmt_jalali, now_tehran_str, webapp_kb
+from utils import cancel_handler, ADMIN_ID, is_maintenance_on, maintenance_message, send_audit_log, safe_send, safe_send_ex, safe_send_status, blocked_reason_of, spawn_bg, CONTENT_ICONS, fmt_jalali, now_tehran_str, webapp_kb
 from time_utils import (
     TEHRAN, format_time_fa, now_tehran, now_utc, parse_gregorian_date,
     parse_machine_datetime, remaining_days, utc_now_iso, week_key_tehran,
@@ -152,7 +152,7 @@ async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     """
     logger.info("🔔 اجرای job یادآوری امتحان...")
     run_id = await db.notif_run_start('exam_reminder')
-    total_sent, total_failed, total_targets = 0, 0, 0
+    total_sent, total_failed, total_targets, total_blocked = 0, 0, 0, 0
     failed_records = []  # FIX جدید: [{'user_id':, 'message':}, ...] برای retry دقیق
     day_labels = {1: "⚠️ فردا امتحان دارید!", 3: "📅 ۳ روز دیگر", 7: "📅 ۷ روز دیگر"}
     try:
@@ -192,10 +192,14 @@ async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                     for u in users if u.get('user_id')
                 ])
                 for u in users:
-                    ok = await safe_send(context.bot, u['user_id'], msg,
-                                         parse_mode='HTML', reply_markup=_ekb)
+                    # 🔴 FIX-R1 (مورد ۲) — بلاک ≠ خطا (شرح در _new_resources_run)
+                    ok, _err, _exc = await safe_send_ex(
+                        context.bot, u['user_id'], msg,
+                        parse_mode='HTML', reply_markup=_ekb)
                     if ok:
                         sent += 1
+                    elif blocked_reason_of(_exc):
+                        total_blocked += 1
                     else:
                         total_failed += 1
                         failed_records.append({'user_id': u['user_id'], 'message': msg})
@@ -204,13 +208,14 @@ async def exam_reminder_job(context: ContextTypes.DEFAULT_TYPE):
                 if sent:
                     await db.mark_exam_notified(sid, days)
                     logger.info(f"امتحان {exam.get('lesson')} — {sent} نفر مطلع شدند")
-        await db.notif_run_finish(run_id, total_sent, total_failed, total_targets)
+        await db.notif_run_finish(run_id, total_sent, total_failed, total_targets,
+                                   blocked=total_blocked)
         if failed_records:
             await db.notif_run_add_failed_detailed(run_id, failed_records)
     except Exception as e:
         logger.error(f"exam_reminder_job error: {e}")
         await db.notif_run_finish(run_id, total_sent, total_failed, total_targets,
-                                   status='error', error=str(e))
+                                   status='error', error=str(e), blocked=total_blocked)
 
 
 async def daily_question_job(context: ContextTypes.DEFAULT_TYPE):
@@ -257,21 +262,27 @@ async def daily_question_job(context: ContextTypes.DEFAULT_TYPE):
              'link': _deep}
             for u in users if u.get('user_id')
         ])
+        blocked = 0
         for u in users:
-            ok = await safe_send(context.bot, u['user_id'], text,
-                                 parse_mode='HTML', reply_markup=_qkb)
+            # 🔴 FIX-R1 (مورد ۲) — بلاک ≠ خطا (شرح در _new_resources_run)
+            ok, _err, _exc = await safe_send_ex(
+                context.bot, u['user_id'], text,
+                parse_mode='HTML', reply_markup=_qkb)
             if ok:
                 sent += 1
+            elif blocked_reason_of(_exc):
+                blocked += 1
             else:
                 failed += 1
                 failed_ids.append(u['user_id'])
             await asyncio.sleep(0.05)
-        await db.notif_run_finish(run_id, sent, failed, len(users))
+        await db.notif_run_finish(run_id, sent, failed, len(users), blocked=blocked)
         if failed_ids:
             await db.notif_run_add_failed(run_id, failed_ids)
     except Exception as e:
         logger.error(f"daily_question_job error: {e}")
-        await db.notif_run_finish(run_id, sent, failed, sent + failed, status='error', error=str(e))
+        await db.notif_run_finish(run_id, sent, failed, sent + failed,
+                                   status='error', error=str(e), blocked=locals().get('blocked', 0))
 
 
 # ── آیکون هر نوع فایل — جایگزین پیشوند متنی «PDF:» / «نمونه سوال:» قبلی؛
@@ -397,7 +408,7 @@ async def _new_resources_run(bot, force: bool = False) -> dict:
         for _it in new_items:
             groups.setdefault(_it.get('_intake') or '', []).append(_it)
 
-        sent, failed, failed_ids, total_recipients = 0, 0, [], 0
+        sent, failed, blocked, failed_ids, total_recipients = 0, 0, 0, [], 0
         first_message = None
         for _icode, _gitems in groups.items():
             text = await _build_new_resources_text(_gitems)
@@ -437,9 +448,17 @@ async def _new_resources_run(bot, force: bool = False) -> dict:
                     for u in users if u.get('user_id')
                 ])
             for u in users:
-                ok = await safe_send(bot, u['user_id'], text, parse_mode='HTML')
+                # 🔴 FIX-R1 (مورد ۲) — تفکیک «بلاک» از «خطا»: کاربری که
+                # ربات را بلاک کرده (Forbidden/deactivated/chat-not-found)
+                # خطای فنی نیست؛ به‌عنوان blocked جدا شمرده می‌شود، در
+                # فهرست retry هم نمی‌رود و دیگر کارتِ «اجرای اعلان دارای
+                # خطا» را قرمز نمی‌کند.
+                ok, err, exc = await safe_send_ex(bot, u['user_id'], text,
+                                                  parse_mode='HTML')
                 if ok:
                     sent += 1
+                elif blocked_reason_of(exc):
+                    blocked += 1
                 else:
                     failed += 1
                     failed_ids.append(u['user_id'])
@@ -453,7 +472,8 @@ async def _new_resources_run(bot, force: bool = False) -> dict:
         await db.mark_ref_files_notified(ref_ids)
         await db.set_setting('resource_notif_last_sent', utc_now_iso())
         await db.set_setting('resource_notif_last_error', None)
-        await db.notif_run_finish(run_id, sent, failed, total_recipients)
+        await db.notif_run_finish(run_id, sent, failed, total_recipients,
+                                   blocked=blocked)
         if failed_ids:
             await db.notif_run_add_failed(run_id, failed_ids)
         logger.info(f"📚 نوتیف منابع جدید: {len(new_items)} مورد به {sent} نفر ارسال شد")
@@ -739,6 +759,18 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                                      "status": "skipped", "sent_at": utc_now_iso()})
                         logger.info(f"📤 outbox #{d['_id']} بسته شد (غیرقابل‌ارسال): "
                                     f"uid={d['chat_id']} err={str(err)[:120]}")
+                        # 🔴 FIX-R1 (مورد ۱) — اگر علتِ دائمی، بلاک/حذفِ
+                        # کاربر است، همان‌جا علامت‌گذاری می‌شود تا از
+                        # آمار فعال کم شود و دفعات بعد اصلاً صف نشود.
+                        try:
+                            from utils import blocked_reason_of
+                            _block_reason = blocked_reason_of(exc)
+                            if _block_reason:
+                                await db.mark_user_blocked(
+                                    d["chat_id"], blocked=True,
+                                    reason=_block_reason)
+                        except Exception:
+                            pass
                     elif kind == "backoff":
                         delay = min(max(int(getattr(exc, "retry_after", 5) or 5), 5), 900)
                         base.update({"status": "backoff", "sent": False,
@@ -1675,6 +1707,11 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
     بوده. فقط در پیوی خصوصی معنی دارد — فعالیت یک کاربر در گروه
     لاگ ربات (که اصلاً عضو معمولی ربات نیست) را نباید به‌عنوان
     «فعالیت در ربات» ثبت کرد.
+
+    🔴 FIX-R1 (مورد ۱): هر آپدیت واقعی از کاربر یعنی ربات را بلاک
+    نکرده — اگر قبلاً به‌اشتباه (یا بعد از آنبلاک) «بلاک‌کرده» علامت
+    خورده بود، همین‌جا برچسب برداشته می‌شود تا دوباره جزو کاربران
+    «فعال و قابل دریافت پیام» شمرده شود.
     """
     if update.effective_chat is None or update.effective_chat.type != 'private':
         return
@@ -1683,12 +1720,49 @@ async def update_last_active(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     try:
         from database import db
+        # FIX-R1 — رفع برچسب بلاک به‌صورت اتمیک در همان نوشتن (بدون
+        # کوئری اضافه: فقط سندهایی که blocked_bot=True دارند match می‌شوند)
+        await db.users.update_one(
+            {'user_id': uid, 'blocked_bot': True},
+            {'$set': {'blocked_bot': False,
+                      'blocked_bot_unblock_at': utc_now_iso(),
+                      'blocked_bot_reason': None,
+                      'blocked_bot_unblock_source': 'user_activity'}}
+        )
         await db.users.update_one(
             {'user_id': uid},
             {'$set': {'last_active': utc_now_iso()}}
         )
     except Exception:
         pass
+
+
+async def my_chat_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🔴 FIX-R1 (مورد ۱) — ردیابی لحظه‌ای بلاک/آنبلاک ربات توسط کاربر.
+
+    Telegram با هر بلاک/آنبلاک، آپدیتِ `my_chat_member` می‌فرستد:
+      • status=kicked  → کاربر ربات را بلاک کرده ⇒ blocked_bot=True
+      • status=member  → دوباره استارت کرده/آنبلاک ⇒ blocked_bot=False
+    این دقیق‌ترین منبع است (حتی قبل از اولین خطای ارسال)."""
+    if not update.my_chat_member:
+        return
+    chat = update.effective_chat
+    if chat is None or chat.type != 'private':
+        return  # فقط بلاک خصوصی کاربر معنا دارد؛ گروه/کانال خارج از scope
+    uid = chat.id
+    new_status = (update.my_chat_member.new_chat_member.status
+                  if update.my_chat_member.new_chat_member else None)
+    old_status = (update.my_chat_member.old_chat_member.status
+                  if update.my_chat_member.old_chat_member else None)
+    if new_status == old_status:
+        return
+    from database import db
+    if new_status == 'kicked':
+        await db.mark_user_blocked(uid, blocked=True, reason='blocked_by_user')
+        logger.info("🚫 کاربر %s ربات را بلاک کرد (my_chat_member)", uid)
+    elif new_status in ('member', 'started'):
+        await db.unmark_user_blocked(uid, source='my_chat_member')
+        logger.info("✅ کاربر %s ربات را دوباره باز کرد (my_chat_member)", uid)
 
 
 # FIX باگ: این modeها وقتی کاربر دکمه‌ی اصلی منو را می‌زند (یعنی
@@ -2149,6 +2223,13 @@ def build_application() -> Application:
     # ── Error handler ──
     app.add_error_handler(error_handler)
 
+    # 🔴 FIX-R1 (مورد ۱) — ردیابی بلاک/آنبلاک ربات توسط کاربر:
+    # آپدیت my_chat_member باید صریحاً ثبت شود تا وقتی کاربر ربات را
+    # می‌بندد همان لحظه (نه بعد از اولین خطای ارسال) در آمار «فعال»
+    # کم شود و دوباره استارت کردنش برچسب را بردارد.
+    app.add_handler(MessageHandler(
+        filters.StatusUpdate.MY_CHAT_MEMBER, my_chat_member_handler))
+
     return app
 
 
@@ -2217,6 +2298,17 @@ async def post_init(application: Application):
     write_heartbeat({'phase': 'post_init', 'started_at': now_utc().isoformat()})
 
     shared_bootstrap = await db.bootstrap_shared()
+
+    # 🔴 FIX-R1 (مورد ۲) — اجراهای notif_run که پروسه‌ی قبلی وسطشان
+    # قطع شده و روی status=running مانده‌اند، هنگام بالا آمدن بسته
+    # می‌شوند تا کارت «اجرای اعلان دارای خطا» و تاریخچه گمراه‌کننده
+    # نباشد. idempotent و بی‌خطر.
+    try:
+        closed = await db.notif_runs_close_stale(max_age_hours=2)
+        if closed:
+            logger.info(f"🧹 {closed} اجرای اعلانِ مانده (running) بسته شد")
+    except Exception as e:
+        logger.warning(f"notif_runs_close_stale failed: {e}")
     logger.info("✅ bootstrap مشترک: آماده=%s", shared_bootstrap.get("ready"))
 
     # 💍 Ring Street — بازیابی گفت‌وگوهای فعال و flowهای معلق از دیتابیس

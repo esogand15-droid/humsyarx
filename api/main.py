@@ -75,6 +75,12 @@ async def lifespan(app: FastAPI):
         questions.ensure_indexes(),
         return_exceptions=True,
     )
+    # 🔴 FIX-R1 (مورد ۲) — بستن اجراهای اعلانیِ «running» مانده از
+    # پروسه‌های قبلی؛ idempotent.
+    try:
+        await db.notif_runs_close_stale(max_age_hours=2)
+    except Exception:
+        pass
     if isinstance(shared, BaseException):
         _BOOTSTRAP_STATE.update({"ready": False, "error": f"{type(shared).__name__}: {shared}"})
     else:

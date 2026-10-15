@@ -20,7 +20,9 @@
 """
 import asyncio
 import csv
+import os
 import hashlib
+import httpx
 import io
 import json
 import logging
@@ -52,7 +54,8 @@ from api.routers import rbac as rbac_api
 from api.routers import resources as resources_api
 import backup as backup_service
 import broadcast_service
-from ai_solver import save_persona, delete_persona, generate_broadcast_ai
+from ai_solver import (save_persona, delete_persona, generate_broadcast_ai,
+                       list_provider_models, sanitize_api_key, api_key_problem)
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
 from question_bank.images import (MAX_IMAGE_BYTES, QuestionImageService,
@@ -657,6 +660,7 @@ async def users_table(
     intake: str | None = Query(None),
     group: str | None = Query(None),
     status: str | None = Query(None),   # pending | suspended | active
+    blocked: str | None = Query(None, pattern="^(blocked|reachable)$"),  # 🔴 FIX-R1
     role: str | None = Query(None, max_length=80),
     activity: str | None = Query(None, pattern="^(never|inactive_14|inactive_30)$"),
     accuracy_max: float | None = Query(None, ge=0, le=100),
@@ -689,6 +693,13 @@ async def users_table(
     elif status == "active":
         filt["approved"] = True
         filt["suspended"] = {"$ne": True}
+    # 🔴 FIX-R1 (مورد ۱) — فیلتر بلاک‌کنندگان ربات:
+    #   blocked   = فقط کسانی که ربات را بسته‌اند (پیام ربات به آن‌ها نمی‌رسد)
+    #   reachable = فعال و قابل دریافت پیام (بلاک‌کننده‌ها حذف می‌شوند)
+    if blocked == "blocked":
+        filt["blocked_bot"] = True
+    elif blocked == "reachable":
+        filt["blocked_bot"] = {"$ne": True}
     if role:
         role_ids = await db.user_ids_by_role(role, limit=100000)
         # users.role فقط mirror سازگاری است؛ user_ids_by_role هر سه منبع را
@@ -747,6 +758,8 @@ async def users_table(
         "registered_at": 1, "last_active": 1, "total_answers": 1,
         "correct_answers": 1, "prestige_rank": 1, "prestige_div": 1,
         "streak_current": 1, "ai_total_usage": 1,
+        # 🔴 FIX-R1 (مورد ۱) — وضعیت بلاک‌کردن ربات برای badge/فیلتر
+        "blocked_bot": 1, "blocked_bot_at": 1, "blocked_bot_reason": 1,
     }
     docs = await (db.users.find(filt, projection)
                   .sort(sort_by, 1 if sort_dir == "asc" else -1)
@@ -793,6 +806,10 @@ async def users_table(
             "intake": u.get("intake", ""), "role": u.get("role", "student"),
             "roles": roles, "role_scope": (role_map.get(uid) or {}).get("scope_intake"),
             "approved": u.get("approved", False), "suspended": u.get("suspended", False),
+            # 🔴 FIX-R1 (مورد ۱) — وضعیت بلاک ربات (badge + tooltip تاریخ/دلیل)
+            "blocked_bot": bool(u.get("blocked_bot")),
+            "blocked_bot_at": u.get("blocked_bot_at") or None,
+            "blocked_bot_reason": u.get("blocked_bot_reason") or None,
             "registered_at": u.get("registered_at") or None,
             "last_active": u.get("last_active") or None,
             "total_answers": total_answers, "correct_answers": correct,
@@ -806,10 +823,19 @@ async def users_table(
                 "end_date": sub.get("end_date") or None, "days_left": days_left,
             } if sub else None,
         })
+    # 🔴 FIX-R1 (مورد ۱) — KPI واحد: کل / قابل دریافت پیام / بلاک‌کننده.
+    # تعریف «فعال» = کل − بلاک‌کنندگان؛ همین تعریف در داشبورد و آمار
+    # هم اعمال می‌شود تا همه‌جا یک عدد نشان داده شود.
+    total_blocked, total_reachable = await asyncio.gather(
+        db.count_blocked_users(), db.count_reachable_users())
     return {
         "total": total, "page": page, "per_page": per_page,
         "pages": (total + per_page - 1) // per_page,
         "users": rows,
+        "summary": {
+            "blocked_bot": total_blocked,
+            "reachable": total_reachable,
+        },
     }
 
 
@@ -817,6 +843,7 @@ async def users_table(
 async def export_users_csv(
     q: str | None = Query(None), intake: str | None = Query(None),
     group: str | None = Query(None), status: str | None = Query(None),
+    blocked: str | None = Query(None, pattern="^(blocked|reachable)$"),
     role: str | None = Query(None), activity: str | None = Query(None),
     accuracy_max: float | None = Query(None, ge=0, le=100),
     sub_expiring_days: int | None = Query(None, ge=1, le=365),
@@ -840,7 +867,7 @@ async def export_users_csv(
                                                 has_open_ticket is not None, smart]))},
                  tags=["خروجی", "کاربران", "پنل_وب"])
     columns = ["telegram_id", "name", "nickname", "username", "student_id", "intake", "group",
-               "status", "roles", "subscription", "subscription_end", "accuracy", "total_answers",
+               "status", "bot_blocked", "roles", "subscription", "subscription_end", "accuracy", "total_answers",
                "exam_count", "ai_usage", "streak", "rank", "last_active", "registered_at"]
 
     def safe(value):
@@ -855,6 +882,7 @@ async def export_users_csv(
         while True:
             result = await users_table(
                 page=page, per_page=100, q=q, intake=intake, group=group, status=status,
+                blocked=blocked,
                 role=role, activity=activity, accuracy_max=accuracy_max,
                 sub_expiring_days=sub_expiring_days, has_open_ticket=has_open_ticket, smart=smart,
                 sort_by=sort_by, sort_dir=sort_dir, user=user,
@@ -866,6 +894,8 @@ async def export_users_csv(
                     row.get("id"), row.get("name"), row.get("nickname"), row.get("username"),
                     row.get("student_id"), row.get("intake"), row.get("group"),
                     "suspended" if row.get("suspended") else "active" if row.get("approved") else "pending",
+                    # 🔴 FIX-R1 (مورد ۱) — ستون وضعیت بلاک ربات در CSV
+                    "yes" if row.get("blocked_bot") else "no",
                     "|".join(row.get("roles") or []), sub.get("status"), _export_instant(sub.get("end_date"), human),
                     row.get("accuracy"), row.get("total_answers"), row.get("exam_count"),
                     row.get("ai_usage"), row.get("streak"),
@@ -1133,11 +1163,20 @@ async def attention(user=Depends(_guard_any_admin)):
             # خیلی قدیمی نباید کارت را برای همیشه قرمز نگه دارد (شمارش
             # قبلی ۲۰ اجرای اخیر را بی‌بازه می‌شمرد). پنجره‌ی ۲۴ ساعته +
             # کارت‌های outbox/DLQ برای backlog واقعی.
+            # 🔴 FIX-R1 (مورد ۲) — دو فیلتر ریشه‌ایِ «خطای همیشگی»:
+            #   ۱) اجراهای status=running شمرده نمی‌شوند (وسط اجرای
+            #      فعلی‌اند، نه خطا؛ نسخه‌های قدیمیِ stuck را
+            #      notif_runs_close_stale در startup می‌بندد).
+            #   ۲) failed فقط «خطای واقعی» است — کاربران بلاک‌کننده
+            #      (Forbidden/deactivated) حالا در فیلد blocked جدا
+            #      شمرده می‌شوند و کارت را قرمز نمی‌کنند.
             runs = await db.get_recent_notif_runs(limit=20)
             cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
             failed = []
             for run in runs:
                 if int(run.get("failed") or 0) <= 0:
+                    continue
+                if (run.get("status") or "") == "running":
                     continue
                 at_raw = run.get("started_at") or run.get("created_at")
                 try:
@@ -1523,9 +1562,23 @@ def _quality_simple_query(kind: str):
             {"lesson": {"$exists": False}}, {"lesson": ""},
             {"options": {"$exists": False}}, {"options.1": {"$exists": False}},
             {"correct_answer": {"$exists": False}}]}),
+        # 🔴 FIX-R1 (مورد ۴) — فقط «نوع» و «عنوان/نام» الزامی‌اند.
+        # توضیح (description) از ابتدا در ربات اختیاری بوده («-» = بدون
+        # توضیح)؛ قبلاً خالی‌بودنِ همین فیلدِ اختیاری ۴۱ مورد «خطا»ی
+        # کاذب می‌ساخت. عنوان واقعی فایل در display_name/display_file_name
+        # ذخیره می‌شود (نه name) — rule قبلی اصلاً آن را چک نمی‌کرد و
+        # به‌جایش فیلد ناموجود «name» را ناقص گزارش می‌کرد.
+        # نوع نامعتبر/غایب: $nin خودش غایب/None/خالی را هم می‌گیرد.
+        # نام: وقتی «هیچ‌کدام» از فیلدهای نام مقدار غیرخالی ندارند.
         "files_missing_metadata": (db.bs_content, {"$or": [
-            {"type": {"$exists": False}}, {"type": ""},
-            {"description": {"$exists": False}}, {"description": ""}]}),
+            {"type": {"$nin": CONTENT_TYPES}},
+            {"$nor": [
+                {"display_name": {"$gt": ""}},
+                {"display_file_name": {"$gt": ""}},
+                {"original_file_name": {"$gt": ""}},
+                {"name": {"$gt": ""}},
+            ]},
+        ]}),
     }.get(kind)
 
 
@@ -1840,17 +1893,35 @@ async def _quality_enrich_items(kind, docs, severity, label, suggestion):
             sess = sessions.get(str(doc.get("session_id") or "")) or {}
             les = lessons.get(str(sess.get("lesson_id") or "")) or {}
             ctype = (doc.get("type") or "").strip()
-            title = title or f"فایل آموزشی{' (' + ctype + ')' if ctype else ''}"
+            # 🔴 FIX-R1 (مورد ۴) — عنوان واقعی فایل از فیلدهای واقعی
+            # (display_name/display_file_name)، نه فیلد ناموجود «name».
+            real_name = (doc.get("display_name") or doc.get("display_file_name")
+                         or doc.get("original_file_name") or doc.get("name") or "").strip()
+            title = real_name or title or f"فایل آموزشی{' (' + ctype + ')' if ctype else ''}"
             parts = []
             if les.get("name"):
                 parts.append(f"درس: {les['name']}")
             if sess.get("name") or sess.get("topic"):
                 parts.append(f"جلسه: {sess.get('name') or sess.get('topic')}")
             context = " · ".join(parts) or "متصل به جلسه‌ی معتبر نیست"
-            missing = [f for f in ("type", "description")
-                       if not (doc.get(f) or "").strip()]
-            if not (doc.get("name") or doc.get("description") or "").strip():
+            # 🔴 FIX-R1 (مورد ۴) — فقط فیلدهای الزامی: نوع و نام.
+            # توضیح اختیاری است و هرگز «ناقص» گزارش نمی‌شود.
+            missing = []
+            if ctype not in CONTENT_TYPES:
+                missing.append("type")
+            if not real_name:
                 missing.append("name")
+            # مقدارهای فعلی سند برای پر کردن فرم ویرایش (قبلاً فرم
+            # همیشه خالی بود چون current ارسال نمی‌شد)
+            item["current"] = {
+                "name": real_name[:200],
+                "type": ctype,
+                "description": (doc.get("description") or "").strip()[:2000],
+            }
+            item["metadata"].update({
+                "type": ctype or None,
+                "file_extension": doc.get("file_extension") or None,
+            })
         elif kind in _QUALITY_ATTACH:
             field = _QUALITY_ATTACH[kind][1]
             context = f"ارجاع شکسته: {field}={doc.get(field) or '—'}"
@@ -1897,26 +1968,35 @@ async def wa_data_quality_repair(item_id: str, body: WaQualityRepairBody,
         raise HTTPException(404, "فایل آموزشی پیدا نشد")
     updates = {}
     if body.name is not None:
+        # 🔴 FIX-R1 (مورد ۴) — «نام» در فیلدهای واقعی سند نوشته می‌شود
+        # (display_name/display_file_name) نه فیلد name که هیچ‌جا خوانده
+        # نمی‌شد و رکورد عملاً «اصلاح‌شده» تلقی می‌شد ولی rule همچنان
+        # آن را ناقص می‌شمرد.
         name = body.name.strip()
         if len(name) < 3:
             raise HTTPException(422, "نام باید حداقل ۳ نویسه باشد")
-        updates["name"] = name[:200]
+        updates["display_name"] = name[:200]
+        updates["display_file_name"] = name[:200]
     if body.type is not None:
         ctype = body.type.strip().lower()
         if ctype not in CONTENT_TYPES:
             raise HTTPException(422, "نوع معتبر نیست؛ مجاز: " + "، ".join(CONTENT_TYPES))
         updates["type"] = ctype
     if body.description is not None:
+        # 🔴 FIX-R1 (مورد ۴) — توضیح اختیاری است: خالی و «-» مجازند
+        # و ذخیره می‌شوند (بدون حداقل طول اجباری).
         desc = body.description.strip()
-        if len(desc) < 3:
-            raise HTTPException(422, "توضیح باید حداقل ۳ نویسه باشد")
+        if desc in ("-", "—", "–"):
+            desc = ""
         updates["description"] = desc[:2000]
     if not updates:
         raise HTTPException(400, "هیچ فیلدی برای اصلاح داده نشد")
     await db.bs_content.update_one({"_id": doc["_id"]}, {"$set": updates})
     after = await db.bs_content.find_one({"_id": doc["_id"]})
-    resolved = bool((after.get("type") or "").strip()) and \
-        bool((after.get("description") or "").strip())
+    # 🔴 FIX-R1 (مورد ۴) — «برطرف‌شدگی» = نوع معتبر + نام واقعی؛
+    # توضیح اختیاری است و در این شرط نقشی ندارد.
+    resolved = ((after.get("type") or "").strip() in CONTENT_TYPES) and bool(
+        ((after.get("display_name") or after.get("display_file_name") or "")).strip())
     log_id = await _audit(
         user["id"], "اصلاح کیفیت داده: تکمیل متادیتای فایل آموزشی",
         severity="INFO", target_type="content", target_id=item_id,
@@ -4481,6 +4561,113 @@ async def wa_user_message(uid: int, body: DmIn, user=Depends(_perm("users.messag
     return {"ok": True}
 
 
+# ══════════════════════════════════════════════════════════════════
+# 🔴 FIX-R1 (مورد ۱) — اسکن بلاک‌کنندگان ربات (Background Scan)
+#
+# آپدیت my_chat_member بلاکِ لحظه‌ای را می‌گیرد، ولی برای کاربرانی که
+# قبل از این فیکس بلاک کرده بودند، یک اسکن پس‌زمینه‌ی ادمینی: با
+# sendChatAction (که برای کاربر هیچ چیزی نمایش نمی‌دهد) تک‌تک
+# کاربرانِ سالم بررسی می‌شوند؛ خطای Forbidden یعنی بلاک است.
+# با فاصله‌ی ۰٫۷ ثانیه بین هر کاربر تا flood limit تلگرام فعال نشود.
+# قابل توقف است (همان endpoint با scan=stop).
+# ══════════════════════════════════════════════════════════════════
+_block_scan_state: dict = {"running": False, "stop": False, "started_by": None,
+                           "progress": 0, "total": 0, "found": 0, "finished_at": None}
+
+
+def _public_scan_state() -> dict:
+    return {k: _block_scan_state.get(k) for k in
+            ("running", "progress", "total", "found", "finished_at")}
+
+
+class WaScanBlocked(BaseModel):
+    scan: str = "start"   # start | stop
+
+
+@router.post("/users/scan-blocked")
+async def wa_users_scan_blocked(body: WaScanBlocked | None = None,
+                                user=Depends(_perm("users.manage"))):
+    """اسکن پس‌زمینه‌ی بلاک‌کنندگان ربات — شروع/توقف + وضعیت زنده."""
+    global _block_scan_state
+    command = (body.scan if body else "start")
+    if command == "stop":
+        _block_scan_state["stop"] = True
+        return {"ok": True, "message": "درخواست توقف ثبت شد؛ اسکن بعد از کاربر جاری متوقف می‌شود.",
+                "state": _public_scan_state()}
+    if _block_scan_state.get("running"):
+        return {"ok": False, "state": _public_scan_state(),
+                "message": "اسکن قبلی هنوز در حال اجراست."}
+    token = os.getenv("TELEGRAM_TOKEN", "")
+    if not token:
+        raise HTTPException(503, "TELEGRAM_TOKEN در سرور تنظیم نشده است")
+    starter = user["id"]
+
+    async def _scan_task():
+        global _block_scan_state
+        _block_scan_state.update({"running": True, "stop": False, "started_by": starter,
+                                  "progress": 0, "found": 0})
+        try:
+            # فقط کاربرانِ تأییدشده‌ای که بلاک علامت نخورده‌اند
+            cursor = db.users.find({"approved": True, "blocked_bot": {"$ne": True}},
+                                   {"user_id": 1})
+            ids = [d["user_id"] async for d in cursor]
+            _block_scan_state["total"] = len(ids)
+            async with httpx.AsyncClient(timeout=10) as client:
+                for i, uid in enumerate(ids):
+                    if _block_scan_state.get("stop"):
+                        break
+                    try:
+                        resp = await client.get(
+                            f"https://api.telegram.org/bot{token}/sendChatAction",
+                            params={"chat_id": uid, "action": "typing"})
+                        if resp.status_code == 200:
+                            pass  # قابل دریافت پیام
+                        else:
+                            payload = {}
+                            try:
+                                payload = resp.json() or {}
+                            except Exception:
+                                pass
+                            desc = str(payload.get("description", "")).lower()
+                            if resp.status_code == 403 or "blocked" in desc or "forbidden" in desc:
+                                await db.mark_user_blocked(uid, blocked=True,
+                                                           reason="blocked_by_user")
+                                _block_scan_state["found"] += 1
+                            elif "deactivated" in desc:
+                                await db.mark_user_blocked(uid, blocked=True,
+                                                           reason="user_deactivated")
+                                _block_scan_state["found"] += 1
+                            # 429/شبکه/سایر → عمداً علامت زده نمی‌شود
+                    except Exception:
+                        pass  # خطای شبکه یعنی «نامعلوم»، نه بلاک
+                    _block_scan_state["progress"] = i + 1
+                    await asyncio.sleep(0.7)
+        finally:
+            _block_scan_state.update({"running": False, "stop": False,
+                                      "finished_at": _now()})
+            try:
+                await _audit(starter, "اسکن بلاک‌کنندگان ربات", severity="INFO",
+                             target_type="system", target_label="scan_blocked",
+                             after={"checked": _block_scan_state["progress"],
+                                    "found": _block_scan_state["found"],
+                                    "total": _block_scan_state["total"]},
+                             tags=["بلاک", "اسکن", "پنل_وب"])
+            except Exception:
+                pass
+
+    asyncio.create_task(_scan_task())
+    return {"ok": True, "message": "اسکن پس‌زمینه شروع شد (~۱٫۵ کاربر در ثانیه).",
+            "state": _public_scan_state()}
+
+
+@router.get("/users/scan-blocked")
+async def wa_users_scan_blocked_status(user=Depends(_perm_any("users.view", "users.manage"))):
+    """وضعیت زنده‌ی اسکن جاری برای نمایش progress در پنل + شمارنده‌های فعلی."""
+    return {"state": _public_scan_state(),
+            "blocked_now": await db.count_blocked_users(),
+            "reachable_now": await db.count_reachable_users()}
+
+
 class UserActionIn(BaseModel):
     action: str          # approve|reject|suspend|unsuspend|delete|block|unblock
     reason: str = ""
@@ -6611,8 +6798,20 @@ class WaAiDraft(BaseModel):
 
 
 @router.get("/ai/models")
-async def wa_ai_models(user=Depends(_perm("ai.manage"))):
-    """🌊 W9 — کاتالوگ مرکزی مدل‌ها برای selectهای پنل وب."""
+async def wa_ai_models(provider: str | None = Query(None),
+                       refresh: bool = Query(False),
+                       user=Depends(_perm("ai.manage"))):
+    """🌊 W9 — کاتالوگ مرکزی مدل‌ها برای selectهای پنل وب.
+
+    🔴 FIX-R1 (مورد ۷) — با ?provider= فهرست زنده‌ی مدل‌ها از خود
+    ارائه‌دهنده با همان API key خوانده می‌شود (auto-detect؛ نام مدل‌ها
+    تغییر می‌کند/مدل جدید می‌آید و این فهرست همیشه مطابق واقع است).
+    ?refresh=true کش را دور می‌زند."""
+    if provider:
+        cfg = await ai_admin_api.get_ai_config()
+        vault = cfg.get("api_keys") or cfg.get("vault") or {}
+        return await list_provider_models(provider.strip(), vault.get(provider.strip(), ""),
+                                          refresh=refresh)
     return await ai_admin_api.models_catalog(admin=user)
 
 
@@ -6650,7 +6849,13 @@ async def wa_ai_config_update(
 async def wa_ai_api_key_rotate(body: WaAiKeyRotate,
                                user=Depends(_perm("ai.manage"))):
     """چرخش secret فقط مالک؛ مقدار هرگز response/audit نمی‌شود. Vault-aware: کلید برای provider فعلی در vault ذخیره می‌شود."""
-    secret = body.api_key.strip()
+    secret = sanitize_api_key(body.api_key or "")
+    # 🔴 FIX-R1 (مورد ۶) — اعتبارسنجی کلید پیش از ذخیره: کلید با حروف
+    # فارسی/کاراکتر نامرئی با پیام روشن رد می‌شود (این همان ریشه‌ی
+    # خطای «ascii codec can't encode» در ربات بود).
+    problem = api_key_problem(secret)
+    if problem:
+        raise HTTPException(422, problem)
     if len(secret) < 8:
         raise HTTPException(422, "کلید API معتبر نیست")
     cfg = await ai_admin_api.get_ai_config()
@@ -7080,9 +7285,15 @@ async def wa_system_status(
     if allow("notifications.manage", "system.manage"):
         try:
             recent = await db.get_recent_notif_runs(limit=10)
+            # 🔴 FIX-R1 (مورد ۲) — اجرای running شمرده نمی‌شود؛ blocked
+            # از failed جدا است. (این نمایش System status است.)
             out["notifications"] = {
                 "pending_queue": await db.bot_notifs.count_documents({"sent": False}),
-                "recent_failed_runs": sum(1 for r in recent if int(r.get("failed") or 0) > 0),
+                "recent_failed_runs": sum(
+                    1 for r in recent
+                    if int(r.get("failed") or 0) > 0
+                    and (r.get("status") or "") != "running"),
+                "recent_blocked": sum(int(r.get("blocked") or 0) for r in recent),
                 "last_run": (recent[0].get("started_at") if recent else None),
             }
         except Exception:
@@ -7654,11 +7865,14 @@ async def wa_log_groups_test(
 @router.get("/content/reports")
 async def wa_content_reports(
     status: Optional[str] = Query(None), skip: int = Query(0, ge=0),
-    limit: int = Query(30, ge=1, le=100),
+    limit: int = Query(30, ge=1, le=100), target_info: bool = Query(True),
     user=Depends(_perm("reports.review")),
 ):
+    # 🔴 FIX-R1 (مورد ۵) — target_info هم پاس می‌شود تا ردیف‌ها
+    # اطلاعات خوانای هدف (عنوان/درس/جلسه) داشته باشند.
     return await content_api.reports_list_ep(
-        status=status, skip=skip, limit=limit, admin=user)
+        status=status, skip=skip, limit=limit, admin=user,
+        target_info=target_info)
 
 
 @router.get("/content/reports/stats")
@@ -7668,9 +7882,11 @@ async def wa_content_report_stats(user=Depends(_perm("reports.review"))):
 
 @router.post("/content/reports/{rid}/status")
 async def wa_content_report_status(
-    rid: int, body: content_api.ReportStatusUpdate,
+    rid, body: content_api.ReportStatusUpdate,
     user=Depends(_perm("reports.review")),
 ):
+    # 🔴 FIX-R1 (مورد ۵) — rid می‌تواند report_id عددی یا ObjectId
+    # سند باشد؛ delegation بدون تبدیل int انجام می‌شود.
     return await content_api.report_status_ep(rid=rid, body=body, admin=user)
 
 

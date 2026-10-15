@@ -21,9 +21,12 @@ from ai_solver import (
     ai_catalog_payload,
     ask_ai,
     get_ai_config,
+    list_provider_models,
     set_ai_setting,
     set_api_key_for_provider,
     delete_api_key_for_provider,
+    sanitize_api_key,
+    api_key_problem,
 )
 
 from database import db
@@ -120,9 +123,19 @@ class UserAction(BaseModel):
 
 @router.get("/models")
 async def models_catalog(
+    provider: str | None = None,
+    refresh: bool = False,
     admin=Depends(require_perm("ai.manage")),
 ):
-    """🌊 W9 — کاتالوگ مرکزی providerها/مدل‌ها برای UI (بدون تایپ دستی)."""
+    """🌊 W9 — کاتالوگ مرکزی providerها/مدل‌ها برای UI (بدون تایپ دستی).
+
+    🔴 FIX-R1 (مورد ۷) — با provider: فهرست زنده‌ی مدل‌ها از خود
+    ارائه‌دهنده با همان API key (auto-detect) برمی‌گردد؛ بدون provider
+    همان کاتالوگ ثابت (fallback آفلاین)."""
+    if provider:
+        cfg = await get_ai_config()
+        api_key = (cfg.get("api_keys") or {}).get(provider, "")
+        return await list_provider_models(provider, api_key, refresh=refresh)
     return ai_catalog_payload()
 
 
@@ -232,14 +245,43 @@ async def update_config(
 
     # فقط اگر کلید جدیدی وارد شده باشد کلید قبلی جایگزین می‌شود.
     # این کلید برای provider فعلی در vault ذخیره می‌شود (auto-vault)
+    # 🔴 FIX-R1 (مورد ۶) — کلید پیش از ذخیره پاکسازی/اعتبارسنجی می‌شود؛
+    # کلید کثیف (کاراکتر نامرئی/فارسی) همان‌جا 422 می‌گیرد و دیگر هرگز
+    # خطای ascii موقع استفاده ساخته نمی‌شود.
     if (
         body.api_key
         and body.api_key.strip()
     ):
-        await set_api_key_for_provider(body.provider, body.api_key.strip())
+        try:
+            await set_api_key_for_provider(body.provider, body.api_key)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    # 🔴 FIX-R1 (مورد ۷) — اعتبارسنجی مدل انتخاب‌شده با فهرست زنده‌ی
+    # provider: اگر فهرست در دسترس بود و مدل داخلش نبود، ذخیره رد
+    # می‌شود (مدل فیک/منقضی انتخاب‌شدنی نیست). فهرست در دسترس نبود
+    # (شبکه/کلید) → عبور با هشدار تا عملیات آفلاین بلاک نشود.
+    model_warning = ""
+    if body.model and body.model.strip():
+        model_id = body.model.strip()
+        cfg_now = await get_ai_config()
+        vault = cfg_now.get("api_keys") or {}
+        live = await list_provider_models(body.provider, vault.get(body.provider, ""))
+        if not live.get("fallback") and live.get("models"):
+            ids = [m["id"] for m in live["models"]]
+            if model_id not in ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=("این مدل در فهرست واقعی مدل‌های ارائه‌دهنده "
+                            f"«{body.provider}» نیست و انتخاب شدنی نیست. "
+                            "از فهرست «به‌روزرسانی مدل‌ها» یکی انتخاب کنید."),
+                )
+        elif live.get("error"):
+            model_warning = live["error"]
 
     return {
         "ok": True,
+        "model_warning": model_warning,
     }
 
 
@@ -272,7 +314,14 @@ async def vault_set(
     key = (body.api_key or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="کلید نمی‌تواند خالی باشد")
-    await set_api_key_for_provider(provider, key)
+    # 🔴 FIX-R1 (مورد ۶) — اعتبارسنجی پیش از ذخیره (پیام فارسی روشن)
+    problem = api_key_problem(key)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    try:
+        await set_api_key_for_provider(provider, key)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     # 🌊 W6/RBAC — نوشتن سکرت با actor تفویض‌شده: audit بدون ماده‌ی کلید
     await _ai_audit(admin["id"], "ثبت کلید API هوشیار",
                     target_id=provider, target_label=provider)

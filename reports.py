@@ -16,6 +16,12 @@ logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
 
+def _esc_safe(text) -> str:
+    """escape سبک برای متن‌های داخل جزئیات گزارش"""
+    import html
+    return html.escape(str(text or ''))[:500]
+
+
 async def _safe_edit(query, text: str, parse_mode: str = 'HTML', reply_markup=None):
     """
     FIX باگ مهم: query.edit_message_text روی پیام‌های بدون متن
@@ -84,17 +90,35 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _show_reports_dashboard(query, parts[2] if len(parts) > 2 else None)
 
     elif action == 'view':
-        rid = int(parts[2])
+        rid_key = parts[2]
+        try:
+            rid = int(rid_key)
+        except ValueError:
+            rid = rid_key
         await _show_report_detail(query, rid)
 
     elif action == 'status':
-        rid    = int(parts[2])
+        # 🔴 FIX-R1 (مورد ۵) — rid می‌تواند report_id عددی یا ObjectId
+        # سند باشد؛ update با کلید یکتای _id انجام می‌شود تا گزارشِ
+        # دارای report_id تکراری (legacy) هم دقیق تغییر کند.
+        rid_key = parts[2]
+        try:
+            rid = int(rid_key)
+        except ValueError:
+            rid = rid_key
         status = parts[3]
         old_report = await db.get_content_report(rid)
         old_status_fa = {'new': 'جدید', 'reviewing': 'در حال بررسی',
                          'resolved': 'رفع شد', 'rejected': 'رد شد'}.get(
             old_report.get('status', '') if old_report else '', 'نامشخص')
-        await db.update_report_status(rid, status, uid)
+        result = {'updated': False}
+        if old_report:
+            result = await db.update_report_status(
+                old_report['_id'], status, resolved_by=uid)
+        if not result.get('updated'):
+            await query.answer("⚠️ وضعیت گزارش تغییر نکرد — دوباره تلاش کن یا گزارش را از لیست باز کن.",
+                               show_alert=True)
+            return
         admin_user = await db.get_user(uid)
         actor_name = admin_user.get('name', 'ادمین') if admin_user else 'ادمین'
         actor_role = await db.get_actor_role_label(uid)
@@ -105,12 +129,12 @@ async def report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.bot, 'content', actor_name, uid,
             "بررسی گزارش محتوا", module='Reports', severity=sev,
             actor_role=actor_role,
-            target_id=str(rid), target_type='report',
+            target_id=str(old_report.get('report_id') or rid), target_type='report',
             before={'وضعیت': old_status_fa}, after={'وضعیت': status_fa},
             tags=['بررسی_گزارش']
         )
         await query.answer(f"✅ وضعیت: {status_fa}", show_alert=True)
-        await _show_report_detail(query, rid)
+        await _show_report_detail(query, old_report['_id'])
 
 
 async def _show_reason_picker(query, target_type: str):
@@ -357,44 +381,66 @@ async def _show_reports_dashboard(query, status_filter: str = None):
     )
 
 
-async def _show_report_detail(query, report_id: int):
-    r = await db.get_content_report(report_id)
+async def _show_report_detail(query, report_key):
+    """🔴 FIX-R1 (مورد ۵) — جزئیات گزارش با اطلاعات خوانای «هدف».
+
+    به‌جای ObjectId خام: متن سؤال (و گزینه‌ها) یا نام فایل + درس/جلسه/
+    استاد. دکمه‌های تغییر وضعیت با کلید یکتای _id ساخته می‌شوند تا حتی
+    با report_id تکراریِ legacy دقیق همین گزارش تغییر کند."""
+    r = await db.get_content_report(report_key)
     if not r:
         await query.answer("❌ گزارش پیدا نشد!", show_alert=True)
         return
 
-    target_label = "🧪 سوال" if r['target_type'] == 'question' else "📁 جزوه/فایل"
-    title = ''
-    if r['target_type'] == 'question':
-        q = await db.get_question_by_id(r['target_id'])
-        if q:
-            title = q.get('question', '')
+    oid = str(r['_id'])
+    info = await db.content_report_target_info(r)
+    if info.get('target_missing'):
+        target_block = "⚠️ <i>محتوای هدف‌گرفته حذف شده است (در بانک موجود نیست).</i>"
     else:
-        item = await db.bs_get_content_item(r['target_id'])
-        if item:
-            title = item.get('description', '')
+        target_block = (
+            f"📌 عنوان: <b>{_esc_safe(info.get('title') or '—')}</b>\n"
+            f"🏷 نوع: {info.get('type_label') or '—'}\n"
+            + (f"📚 درس: {info.get('lesson')}\n" if info.get('lesson') else "")
+            + (f"🗂 جلسه/مبحث: {info.get('session')}\n" if info.get('session') else "")
+            + (f"👨‍🏫 استاد: {info.get('teacher')}\n" if info.get('teacher') else "")
+            + (f"ℹ️ {info.get('detail')}\n" if info.get('detail') else "")
+        )
 
     status_fa = {'new': '🆕 جدید', 'reviewing': '🔍 در حال بررسی',
                  'resolved': '✅ رفع شده', 'rejected': '❌ رد شده'}.get(r['status'], r['status'])
     reason_fa = db.REPORT_REASONS.get(r['reason'], r['reason'])
 
+    # سابقه‌ی تغییر وضعیت (audit) — حداکثر ۳ مورد آخر
+    history_lines = []
+    for h in (r.get('status_history') or [])[-3:]:
+        h_fa = {'new': 'جدید', 'reviewing': 'در بررسی',
+                'resolved': 'حل‌شده', 'rejected': 'ردشده'}.get(h.get('status'), h.get('status'))
+        history_lines.append(f"   • {h_fa} — {fmt_jalali_dt(h.get('at'))}")
+    history_block = ("\n<b>🕰 سابقه:</b>\n" + "\n".join(history_lines)) if history_lines else ""
+
     text = (
-        f"📋 <b>گزارش #{r['report_id']}</b>\n━━━━━━━━━━━━━━━━\n\n"
-        f"{target_label}: {title}\n\n"
+        f"📋 <b>گزارش #{r.get('report_id') or '—'}</b>\n━━━━━━━━━━━━━━━━\n\n"
+        + target_block + "\n"
         f"❌ دلیل: {reason_fa}\n"
-        + (f"📝 توضیح: {r.get('note','')}\n" if r.get('note') else "") +
+        + (f"📝 توضیح: {_esc_safe(r.get('note',''))}\n" if r.get('note') else "") +
         f"👤 گزارش‌دهنده: {r['reporter_name']}\n"
         f"🕐 تاریخ: {fmt_jalali_dt(r.get('created_at'))}\n\n"
         f"📊 وضعیت: <b>{status_fa}</b>"
+        + history_block
     )
     keyboard = []
     if r['status'] not in ('resolved', 'rejected'):
         keyboard.append([
-            InlineKeyboardButton("🔍 در حال بررسی", callback_data=f'report:status:{report_id}:reviewing'),
+            InlineKeyboardButton("🔍 در حال بررسی", callback_data=f'report:status:{oid}:reviewing'),
         ])
         keyboard.append([
-            InlineKeyboardButton("✅ رفع شد",  callback_data=f'report:status:{report_id}:resolved'),
-            InlineKeyboardButton("❌ رد شد",   callback_data=f'report:status:{report_id}:rejected'),
+            InlineKeyboardButton("✅ رفع شد",  callback_data=f'report:status:{oid}:resolved'),
+            InlineKeyboardButton("❌ رد شد",   callback_data=f'report:status:{oid}:rejected'),
+        ])
+    else:
+        # امکان بازگشایی گزارش بسته‌شده
+        keyboard.append([
+            InlineKeyboardButton("🔄 بازگشایی (در بررسی)", callback_data=f'report:status:{oid}:reviewing'),
         ])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data='report:manage:all')])
     await _safe_edit(query, text, reply_markup=InlineKeyboardMarkup(keyboard))

@@ -23,7 +23,7 @@ from ai_solver import (
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
     MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG,
     set_api_key_for_provider, delete_api_key_for_provider,
-    _detect_provider_for_model,
+    _detect_provider_for_model, list_provider_models,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,41 @@ async def show_ai_main(query):
         [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_settings')],
     ]
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _show_pick_model(query, provider: str):
+    """🔴 FIX-R1 (مورد ۷) — منوی انتخاب مدل با فهرست زنده‌ی ارائه‌دهنده.
+
+    فهرست زنده (با همان کلید ذخیره‌شده، کش ۱۲ ساعته) در اولویت است؛
+    در خطا/خالی بودن، کاتالوگ ثابت MODEL_PRESETS نمایش داده می‌شود."""
+    live = {'models': []}
+    try:
+        live = await list_provider_models(provider) or {'models': []}
+    except Exception:
+        live = {'models': []}
+    live_models = live.get('models') or []
+    if live_models:
+        presets = [(m.get('id'), m.get('label') or m.get('id'))
+                   for m in live_models if m.get('id')]
+        src_note = "📡 فهرست زنده از ارائه‌دهنده"
+        if live.get('cached'):
+            src_note += " (کش)"
+    else:
+        presets = MODEL_PRESETS.get(provider, [])
+        src_note = "📦 کاتالوگ ثابت"
+        if live.get('error'):
+            src_note += f" — فهرست زنده در دسترس نیست: {live['error']}"
+    kb = [[InlineKeyboardButton(label, callback_data=f'ai:set_model:{model_id}')]
+          for model_id, label in presets[:30]]
+    kb.append([InlineKeyboardButton("🔄 تازه‌سازی فهرست", callback_data='ai:pick_model_refresh')])
+    kb.append([InlineKeyboardButton("✏️ مدل سفارشی (تایپ دستی)", callback_data='ai:set_model_custom')])
+    kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
+    await query.edit_message_text(
+        f"🧩 <b>انتخاب مدل — ارائه‌دهنده‌ی فعلی: {PROVIDER_LABELS.get(provider, provider)}</b>\n\n"
+        f"<i>منبع فهرست: {src_note}</i>\n\n"
+        "یکی از مدل‌ها رو انتخاب کن یا مدل سفارشی وارد کن:",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 
 async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -283,18 +318,16 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_ai_main(query)
         return
 
-    if action == 'pick_model':
+    if action in ('pick_model', 'pick_model_refresh'):
         cfg = await get_ai_config()
-        presets = MODEL_PRESETS.get(cfg['provider'], [])
-        kb = [[InlineKeyboardButton(label, callback_data=f'ai:set_model:{model_id}')]
-              for model_id, label in presets]
-        kb.append([InlineKeyboardButton("✏️ مدل سفارشی (تایپ دستی)", callback_data='ai:set_model_custom')])
-        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
-        await query.edit_message_text(
-            f"🧩 <b>انتخاب مدل — ارائه‌دهنده‌ی فعلی: {PROVIDER_LABELS.get(cfg['provider'], cfg['provider'])}</b>\n\n"
-            "یکی از مدل‌های آماده رو انتخاب کن یا مدل سفارشی وارد کن:",
-            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
-        )
+        if action == 'pick_model_refresh':
+            # 🔴 FIX-R1 (مورد ۷) — دریافت مجدد فهرست زنده (دور زدن کش)
+            try:
+                await list_provider_models(cfg['provider'], refresh=True)
+            except Exception:
+                pass
+            await query.answer("🔄 فهرست مدل‌ها تازه شد")
+        await _show_pick_model(query, cfg['provider'])
         return
 
     if action == 'set_model':
@@ -665,7 +698,31 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if mode == 'ai_set_key':
         context.user_data.pop('mode', None)
         provider = context.user_data.pop('ai_set_key_provider', None) or (await get_ai_config())['provider']
-        await set_api_key_for_provider(provider, text)
+        # 🔴 FIX-R1 (مورد ۶) — کلید کثیف (کاراکتر فارسی/فاصله/نامرئی) با
+        # پیام فارسی رد می‌شود، نه اینکه وارد vault شود و بعداً خطای
+        # 'ascii codec' بدهد. پیامِ ادمین در هر حالت حذف می‌شود.
+        try:
+            await set_api_key_for_provider(provider, text)
+        except ValueError as e:
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"❌ کلید ذخیره <b>نشد</b>.\n\n⚠️ {_esc(str(e))}\n\n"
+                "کلید را عیناً از سایت ارائه‌دهنده کپی کن و دوباره بفرست."
+            )
+            return
+        except Exception as e:
+            logger.exception('ai_set_key failed')
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+            await update.message.reply_text(
+                "❌ خطای غیرمنتظره هنگام ذخیره‌ی کلید — لاگ ثبت شد. دوباره تلاش کن."
+            )
+            return
         try:
             await update.message.delete()
         except Exception:
@@ -678,8 +735,25 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if mode == 'ai_set_model':
         context.user_data.pop('mode', None)
+        # 🔴 FIX-R1 (مورد ۷) — مدل سفارشی با فهرست زنده‌ی ارائه‌دهنده
+        # مقایسه می‌شود؛ اگر نبود هشدار داده می‌شود (ولی ثبت می‌شود چون
+        # شاید فهرست ناقص/کش قدیمی باشد).
+        warn = ''
+        try:
+            cfg_now = await get_ai_config()
+            live = await list_provider_models(cfg_now['provider']) or {}
+            ids = [m.get('id') for m in (live.get('models') or [])]
+            if ids and text not in ids:
+                warn = ("\n\n⚠️ این مدل در فهرست واقعی ارائه‌دهنده نبود — "
+                        "ممکن است نامش عوض یا حذف شده باشد. اگر کار نکرد از منوی انتخاب مدل یکی را انتخاب کن.")
+        except Exception:
+            pass
         await set_ai_setting('model', text)
-        await update.message.reply_text(f"✅ مدل روی <code>{text}</code> تنظیم شد.", parse_mode='HTML')
+        detected = _detect_provider_for_model(text)
+        if detected and detected in PROVIDER_LABELS:
+            await set_ai_setting('provider', detected)
+        await update.message.reply_text(
+            f"✅ مدل روی <code>{text}</code> تنظیم شد.{warn}", parse_mode='HTML')
         return
 
     if mode == 'ai_set_limit':

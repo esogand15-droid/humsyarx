@@ -8,6 +8,11 @@ const TABS = [['work', '📌 کارهای من'], ['alerts', '🔔 هشداره�
 const sevKind = value => value === 'critical' ? 'bad' : value === 'warning' ? 'warn' : value === 'high' ? 'bad' : 'acc';
 const CONTENT_TYPES = ['video', 'ppt', 'pdf', 'note', 'test', 'voice'];
 const FIELD_FA = { name: 'نام', type: 'نوع', description: 'توضیح' };
+// 🔴 FIX-R1 (مورد ۴) — نوع فایل با برچسب فارسی (قبلاً video/ppt خام بود)
+const TYPE_FA = {
+  video: '🎥 ویدیو', ppt: '📊 پاورپوینت', pdf: '📄 PDF',
+  note: '📝 جزوه', test: '🧪 آزمون', voice: '🎙 فایل صوتی',
+};
 
 export default function Operations({ route = '', me, go }) {
   const requested = new URLSearchParams(route.split('?')[1] || '').get('tab');
@@ -192,12 +197,14 @@ function EditMetaForm({ initial, onSave }) {
   return <div className="q-form">
     <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
       <input className="inp" style={{ flex: 1, minWidth: 180 }} placeholder="نام/عنوان فایل" value={name} onChange={e => setName(e.target.value)} />
-      <select className="inp" style={{ width: 130 }} value={type} onChange={e => setType(e.target.value)}>
+      <select className="inp" style={{ width: 150 }} value={type} onChange={e => setType(e.target.value)}>
         <option value="">— نوع —</option>
-        {CONTENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        {CONTENT_TYPES.map(t => <option key={t} value={t}>{TYPE_FA[t] || t}</option>)}
       </select>
     </div>
-    <textarea className="inp" rows={2} style={{ marginTop: 8, width: '100%' }} placeholder="توضیح (برای دانشجو نمایش داده می‌شود)" value={description} onChange={e => setDescription(e.target.value)} />
+    {/* 🔴 FIX-R1 (مورد ۴) — توضیح صریحاً اختیاری است؛ قبلاً فرم حداقل
+        ۳ نویسه برای توضیح می‌خواست و ادمینِ علامت «-» زده را خطا می‌داد. */}
+    <textarea className="inp" rows={2} style={{ marginTop: 8, width: '100%' }} placeholder="توضیح (اختیاری — برای دانشجو نمایش داده می‌شود)" value={description} onChange={e => setDescription(e.target.value)} />
     <div className="row" style={{ marginTop: 8 }}>
       <button className="btn sm ok" onClick={() => onSave({ name: name.trim(), type: type.trim(), description: description.trim() })}>💾 ذخیره و بازبررسی</button>
       <span className="muted">پس از ذخیره، rule دوباره اجرا می‌شود؛ اگر کامل باشد مورد حذف می‌شود.</span>

@@ -18,12 +18,13 @@ import base64
 import random
 import asyncio
 import logging
+import unicodedata
 from utils import esc as _esc   # 🛡 AUDIT-A6 —escape مرکزی (پارامتر quote حفظ است)
 from collections import deque, OrderedDict
 from datetime import datetime
 from time_utils import (
     format_date_fa, format_datetime_fa, format_time_fa,
-    now_utc, parse_machine_datetime, today_tehran,
+    now_utc, parse_machine_datetime, today_tehran, utc_now_iso,
 )
 
 import httpx
@@ -40,6 +41,74 @@ except Exception:
 
 logger   = logging.getLogger(__name__)
 ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
+
+# ══════════════════════════════════════════════════
+#  🔴 FIX-R1 (مورد ۶) — پاکسازی و اعتبارسنجی کلید API
+#
+#  ریشه‌ی خطای «'ascii' codec can't encode characters»: کلیدی که از
+#  کپی/پیست می‌آید ممکن است کاراکترهای نامرئی (ZWNJ/ZWSP/BOM/RTL-mark)،
+#  ارقام فارسی یا نقل‌قول هوشمند داشته باشد؛ httpx مقدار هدر را با
+#  ascii انکد می‌کند و همان خطای مبهم بالا ساخته می‌شود. این ماژول
+#  «یک نقطه‌ی پاکسازی» برای همه‌ی مسیرهاست (ربات + پنل + مینی‌اپ).
+# ══════════════════════════════════════════════════
+_FA_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+# کاراکترهای نامرئی/کنترلی که در کپی/پیست کلید نفوذ می‌کنند
+# (نقل‌قول‌های هوشمند با escape تا سورس ASCII-تمیز بماند)
+_INVISIBLE_CHARS = [
+    '\u200b',  # ZWSP (zero width space)
+    '\u200c',  # ZWNJ (zero width non-joiner — نیم‌فاصله!)
+    '\u200d',  # ZWJ
+    '\u200e',  # LRM left-to-right mark
+    '\u200f',  # RLM right-to-left mark
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',  # bidi overrides
+    '\ufeff',  # BOM
+    '\u2060',  # word joiner
+    '\u00a0',  # NBSP
+    '\u3000',  # ideographic space
+    '\u201c', '\u201d',  # " "
+    '\u2018', '\u2019',  # ' '
+    '\u00ab', '\u00bb',  # « »
+]
+
+
+def sanitize_api_key(key: str) -> str:
+    """پاکسازی کلید API: حذف فاصله‌ها/کاراکترهای نامرئی + ارقام فارسی→لاتین.
+
+    هم موقع ذخیره (پنل/ربات) و هم موقع خواندن (get_ai_config) اجرا
+    می‌شود تا کلیدِ قدیمیِ کثیف هم بدون دخالت دوباره سالم کار کند."""
+    if not key or not isinstance(key, str):
+        return ''
+    out = key.translate(_FA_DIGITS)
+    for ch in _INVISIBLE_CHARS:
+        out = out.replace(ch, '')
+    # حذف هر کاراکتر کنترلی/نامرئی باقی‌مانده (Cc/Cf/Zs غیر از فاصله عادی)
+    out = ''.join(c for c in out
+                  if c == ' ' or (ord(c) >= 32 and not unicodedata.category(c) in ('Cc', 'Cf')))
+    out = out.strip()
+    return out
+
+
+def api_key_problem(key: str) -> str | None:
+    """اگر کلید پس از پاکسازی هم قابل‌استفاده نیست، متن فارسی مشکل را
+    برمی‌گرداند؛ در غیر این صورت None (کلید سالم)."""
+    cleaned = sanitize_api_key(key)
+    if not cleaned:
+        return None  # خالی بودن جای خودش هندل می‌شود
+    try:
+        cleaned.encode('ascii')
+    except UnicodeEncodeError:
+        return ("کلید API شامل حروف غیرمجاز (فارسی/کاراکتر نامرئی) است — "
+                "کلید را دوباره از سایت ارائه‌دهنده کپی کنید. کاراکترهای "
+                "معتبر کلید فقط حروف لاتین، رقم و علامت‌ها هستند.")
+    if ' ' in cleaned:
+        return "کلید API نباید فاصله داشته باشد — کلید را یک‌تکه کپی کنید."
+    if len(cleaned) < 8:
+        return "کلید API خیلی کوتاه است — کلید کامل را کپی کنید."
+    return None
+
+
+
+
 
 # ══════════════════════════════════════════════════
 #  پیش‌فرض‌ها — فقط وقتی استفاده می‌شن که ادمین هنوز چیزی ست نکرده
@@ -215,6 +284,178 @@ def ai_catalog_payload() -> dict:
         ],
         'default_image_model': DEFAULT_IMAGE_MODEL,
     }
+
+
+# ══════════════════════════════════════════════════
+#  🔴 FIX-R1 (مورد ۷) — Auto-Detect مدل‌ها از خود provider با API key
+#
+#  فهرست مدل‌ها دیگر فقط اسم‌های ثابت hardcode نیست؛ بعد از ثبت کلید،
+#  مدل‌های واقعاً در دسترس از endpoint رسمیِ هر provider خوانده می‌شود
+#  (با کش TTL در bot_settings تا هر بار به provider رد نرود). مدل
+#  تازه‌ی provider بعد از refresh ظاهر می‌شود و انتخاب مدل ناموجود
+#  ممکن نیست.
+# ══════════════════════════════════════════════════
+AI_MODELS_CACHE_TTL_H = 12        # عمر کش فهرست مدل‌ها (ساعت)
+AI_MODELS_LIST_TIMEOUT = 15.0     # timeout درخواست فهرست
+
+# مدل‌هایی که chat نیستند و نباید در انتخاب «مدل گفتگو» بیایند
+_NON_CHAT_MODEL_PATTERNS = (
+    'embedding', 'embed', 'aqa', 'moderation', 'tts', 'whisper',
+    'audio', 'image', 'imagen', 'veo', 'dall-e', 'sora', 'transcribe',
+    'rerank', 'guard', 'shield', 'vision-encoder', 'clip',
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    """فیلتر مدل‌های غیر-چت (embedding/tts/image/…) از فهرست انتخاب."""
+    mid = (model_id or '').lower()
+    if not mid:
+        return False
+    return not any(p in mid for p in _NON_CHAT_MODEL_PATTERNS)
+
+
+async def _list_models_gemini(api_key: str) -> list:
+    """GET /v1beta/models (صفحه‌بندی pageToken) — فقط generateContent."""
+    models, page_token, url_base = [], None, \
+        "https://generativelanguage.googleapis.com/v1beta/models"
+    async with httpx.AsyncClient(timeout=AI_MODELS_LIST_TIMEOUT) as client:
+        for _ in range(10):  # سقف ۱۰ صفحه
+            params = {'pageSize': 100}
+            if page_token:
+                params['pageToken'] = page_token
+            resp = await client.get(url_base, params=params,
+                                    headers={'x-goog-api-key': api_key})
+            if resp.status_code in (400, 401, 403):
+                raise AIConfigError("کلید API گوگل نامعتبر است یا دسترسی Generative Language ندارد.")
+            if resp.status_code == 429:
+                raise AIQuotaError("سهمیه‌ی درخواست به گوگل پر شده — کمی بعد دوباره «به‌روزرسانی» را بزنید.")
+            if resp.status_code != 200:
+                raise AIError(f"دریافت فهرست مدل‌های Gemini ناموفق بود (کد {resp.status_code}).")
+            data = resp.json()
+            for m in (data.get('models') or []):
+                methods = m.get('supportedGenerationMethods') or []
+                if 'generateContent' not in methods:
+                    continue
+                name = (m.get('name') or '').removeprefix('models/')
+                if not name:
+                    continue
+                models.append({
+                    'id': name,
+                    'label': m.get('displayName') or name,
+                    'free': True,   # tier رایگان گوگل روی همه‌ی مدل‌های generateContent
+                })
+            page_token = data.get('nextPageToken')
+            if not page_token:
+                break
+    return models
+
+
+async def _list_models_openai_compat(base_url: str, api_key: str,
+                                     provider_label: str) -> list:
+    """GET {base}/models برای همه‌ی providerهای سازگار با OpenAI."""
+    async with httpx.AsyncClient(timeout=AI_MODELS_LIST_TIMEOUT) as client:
+        resp = await client.get(f"{base_url.rstrip('/')}/models",
+                                headers={'Authorization': f'Bearer {api_key}'})
+    if resp.status_code in (401, 403):
+        raise AIConfigError(f"کلید API {provider_label} نامعتبر است.")
+    if resp.status_code == 429:
+        raise AIQuotaError(f"سهمیه‌ی درخواست به {provider_label} پر شده — کمی بعد دوباره «به‌روزرسانی» را بزنید.")
+    if resp.status_code != 200:
+        raise AIError(f"دریافت فهرست مدل‌های {provider_label} ناموفق بود (کد {resp.status_code}).")
+    data = resp.json()
+    rows = data.get('data') or data.get('models') or []
+    out = []
+    for m in rows:
+        mid = m.get('id') or m.get('name') or ''
+        if not mid:
+            continue
+        out.append({
+            'id': mid,
+            'label': m.get('name') if m.get('name') != mid else mid,
+            'free': ':free' in mid or 'free' in mid.lower(),
+        })
+    return out
+
+
+async def list_provider_models(provider: str, api_key: str = None,
+                               refresh: bool = False) -> dict:
+    """فهرست زنده‌ی مدل‌های یک provider با همان API key (+ کش TTL).
+
+    خروجی: {'models': [{id,label,free,is_new}], 'cached': bool,
+            'fetched_at': str, 'fallback': bool, 'error': str|None}
+    - اگر کلید نباشد یا خطا بخورد: fallback به کاتالوگ ثابت با
+      fallback=True و error مشخص (UI پیام روشن نشان می‌دهد).
+    - is_new: مدل‌هایی که در کشِ قبلی نبودند (برای بج «جدید»).
+    """
+    provider = (provider or '').strip()
+    if provider not in PROVIDERS:
+        return {'models': [], 'cached': False, 'fetched_at': None,
+                'fallback': True, 'error': 'ارائه‌دهنده نامعتبر است.'}
+    # 🔴 FIX-R1 (مورد ۶) — کلید قبل از هر درخواست پاکسازی می‌شود
+    api_key = sanitize_api_key(api_key or '')
+    cache_key = f'ai_models_cache_{provider}'
+
+    if not refresh:
+        cached = await db.get_setting(cache_key, None)
+        if isinstance(cached, dict):
+            try:
+                age = (now_utc() - parse_machine_datetime(cached.get('fetched_at'))) \
+                    .total_seconds() / 3600
+                if age < AI_MODELS_CACHE_TTL_H and cached.get('models'):
+                    models = cached['models']
+                    prev_ids = set(cached.get('prev_ids') or [])
+                    for m in models:
+                        m['is_new'] = m['id'] not in prev_ids and bool(prev_ids)
+                    return {'models': models, 'cached': True,
+                            'fetched_at': cached.get('fetched_at'),
+                            'fallback': False, 'error': None}
+            except Exception:
+                pass
+
+    if not api_key:
+        # بدون کلید، فهرست زنده ممکن نیست — fallback کاتالوگ ثابت
+        return {'models': [{'id': mid, 'label': label, 'free': free, 'is_new': False}
+                           for mid, label, free in MODEL_CATALOG.get(provider, [])],
+                'cached': False, 'fetched_at': None, 'fallback': True,
+                'error': 'برای دیدن فهرست واقعی مدل‌ها، ابتدا کلید API همین ارائه‌دهنده را ثبت کنید.'}
+
+    prev_ids = set()
+    old_cache = await db.get_setting(cache_key, None)
+    if isinstance(old_cache, dict) and old_cache.get('models'):
+        prev_ids = {m.get('id') for m in old_cache['models'] if m.get('id')}
+
+    try:
+        if provider == 'gemini':
+            models = await _list_models_gemini(api_key)
+        else:
+            models = await _list_models_openai_compat(
+                PROVIDERS[provider]['url'], api_key, PROVIDERS[provider]['label'])
+        # فقط مدل‌های چت + مرتب‌سازی الفبایی
+        models = [m for m in models if _is_chat_model(m['id'])]
+        models.sort(key=lambda m: m['id'])
+        for m in models:
+            m['is_new'] = m['id'] not in prev_ids and bool(prev_ids)
+        if models:
+            await db.set_setting(cache_key, {
+                'models': models,
+                'prev_ids': sorted(prev_ids),
+                'fetched_at': utc_now_iso(),
+            })
+        return {'models': models, 'cached': False, 'fetched_at': utc_now_iso(),
+                'fallback': False, 'error': None}
+    except (AIConfigError, AIQuotaError) as e:
+        # کلید نامعتبر و... → fallback با پیام روشن
+        return {'models': [{'id': mid, 'label': label, 'free': free, 'is_new': False}
+                           for mid, label, free in MODEL_CATALOG.get(provider, [])],
+                'cached': False, 'fetched_at': None, 'fallback': True,
+                'error': str(e)}
+    except Exception as e:
+        logger.warning("list_provider_models(%s) failed: %s", provider, e)
+        return {'models': [{'id': mid, 'label': label, 'free': free, 'is_new': False}
+                           for mid, label, free in MODEL_CATALOG.get(provider, [])],
+                'cached': False, 'fetched_at': None, 'fallback': True,
+                'error': f'دریافت فهرست از ارائه‌دهنده ناموفق بود ({type(e).__name__}) — فهرست ثابت نمایش داده می‌شود.'}
+
 DEFAULT_MODEL  = DEFAULT_MODELS['gemini']   # برای سازگاری با کدهای قبلی
 DEFAULT_LIMIT  = 15   # سقف روزانه‌ی هر کاربر عادی؛ 0 = نامحدود
 MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگیری از هدررفت توکن/هزینه)
@@ -686,11 +927,15 @@ async def get_ai_config() -> dict:
     except (ValueError, TypeError):
         personas = {}
     vault = _load_vault(raw)
+    # 🔴 FIX-R1 (مورد ۶) — پاکسازی همه‌ی کلیدها هنگام خواندن: کلیدِ
+    # کثیفِ قدیمی (کاراکتر نامرئی/رقم فارسی) همین‌جا سالم می‌شود تا
+    # هر دو مسیر ربات و پنل با یک مقدار واحد کار کنند.
+    vault = {pid: sanitize_api_key(k) for pid, k in vault.items() if sanitize_api_key(k)}
     model = raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
     detected = _detect_provider_for_model(model)
     if detected and detected != provider and detected in vault and vault.get(detected):
         provider = detected
-    api_key = vault.get(provider) or raw.get('ai_api_key', '') or ''
+    api_key = vault.get(provider) or sanitize_api_key(raw.get('ai_api_key', '') or '') or ''
     image_model = raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL
     image_enabled = str(raw.get('ai_image_enabled', '1')) not in ('0', 'false', 'False', '')
     image_daily_limit = int(raw.get('ai_image_daily_limit', DEFAULT_IMAGE_LIMIT) or 0)
@@ -702,13 +947,18 @@ async def get_ai_config() -> dict:
         image_provider = d2 or provider
         if image_provider not in PROVIDERS:
             image_provider = provider
-    image_api_key = vault.get(image_provider) or vault.get(provider) or raw.get('ai_api_key', '') or ''
+    image_api_key = vault.get(image_provider) or vault.get(provider) or sanitize_api_key(raw.get('ai_api_key', '') or '') or ''
+    # 🔴 FIX-R1 (مورد ۶) — مشکل کلید به‌صورت صریح در config می‌آید تا
+    # «تست اتصال» پنل و پیام خطای ربات دقیقاً یک چیز بگویند، نه
+    # «خطای غیرمنتظره» مبهم.
+    api_key_error = api_key_problem(api_key) if api_key else None
     return {
         'enabled':          bool(raw.get('ai_enabled', False)),
         'provider':         provider,
         'api_key':          api_key,
         'api_keys':         vault,
         'vault':            vault,
+        'api_key_error':    api_key_error,
         'model':            model,
         'daily_limit':      int(raw.get('ai_daily_limit', DEFAULT_LIMIT) or 0),
         'system_prompt':    raw.get('ai_system_prompt', DEFAULT_PROMPT),
@@ -724,8 +974,17 @@ async def get_ai_config() -> dict:
 
 
 async def set_api_key_for_provider(provider: str, key: str) -> None:
+    """🔴 FIX-R1 (مورد ۶) — کلید پیش از ذخیره پاکسازی/اعتبارسنجی می‌شود.
+
+    کلید نامعتبر (مثلاً متن فارسی یا کلید با کاراکتر نامرئی) با
+    ValueError و پیام فارسی رد می‌شود تا هرگز وارد vault نشود — ریشه‌ی
+    خطای ascii همین مقدارهای کثیف بود."""
     provider = (provider or 'gemini').strip() or 'gemini'
-    key = (key or '').strip()
+    key = sanitize_api_key(key or '')
+    if key:
+        problem = api_key_problem(key)
+        if problem:
+            raise ValueError(problem)
     raw = await db.get_settings_by_prefix('ai_')
     vault = _load_vault(raw)
     if key:
@@ -1283,6 +1542,11 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
     # x-goog-api-key است.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
     headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+    # 🔴 FIX-R1 (مورد ۶) — کلید/مدل با کاراکتر غیر ASCII همان‌جا خطای
+    # روشن می‌دهد، نه UnicodeEncodeError مبهم از دل httpx.
+    _key_problem = api_key_problem(api_key)
+    if _key_problem:
+        raise AIConfigError(_key_problem)
 
     contents = []
     for item in (history or []):
@@ -1436,6 +1700,10 @@ async def _call_openai_compat(api_key: str, model: str, system_prompt: str,
         'Authorization': f'Bearer {api_key}',
         'Content-Type':  'application/json',
     }
+    # 🔴 FIX-R1 (مورد ۶) — گارد ascii روی کلید (شرح در _stream_gemini)
+    _key_problem = api_key_problem(api_key)
+    if _key_problem:
+        raise AIConfigError(_key_problem)
 
     if image_bytes and not meta.get('vision'):
         raise AIConfigError(
@@ -1479,6 +1747,11 @@ async def _call_openai_compat(api_key: str, model: str, system_prompt: str,
                 break
     except httpx.TimeoutException:
         raise AIError("سرویس هوش مصنوعی دیر جواب داد (timeout) — دوباره امتحان کن.")
+    except UnicodeEncodeError:
+        # 🔴 FIX-R1 (مورد ۶) — هدر/مدل با حرف غیرلاتین؛ پیام انسانی بده
+        raise AIConfigError(
+            "کلید API یا شناسه مدل شامل حروف غیرمجاز است — کلید را از "
+            "پنل هوشیار دوباره ثبت کنید (فقط حروف لاتین/رقم).")
     except httpx.HTTPError as e:
         raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
 
@@ -1560,6 +1833,11 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
         raise AIConfigError("بخش هوش مصنوعی فعلاً توسط مدیریت غیرفعال است.")
     if not cfg['api_key']:
         raise AIConfigError("هنوز کلید API توسط ادمین تنظیم نشده.")
+    # 🔴 FIX-R1 (مورد ۶) — کلید معیوب: پیام شفاف به‌جای «خطای غیرمنتظره:
+    # 'ascii' codec can't encode...». این پیام هم در ربات و هم در تستِ
+    # اتصال پنل (که همین مسیر را می‌رود) یکسان دیده می‌شود.
+    if cfg.get('api_key_error'):
+        raise AIConfigError(cfg['api_key_error'])
 
     fn = STREAM_PROVIDERS.get(cfg['provider'])
     if not fn:
@@ -1805,6 +2083,11 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
             resp = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException:
         raise AIError("سرویس هوش مصنوعی دیر جواب داد — دوباره امتحان کن.")
+    except UnicodeEncodeError:
+        # 🔴 FIX-R1 (مورد ۶) — کلید/مدل با حرف غیرلاتین؛ پیام انسانی
+        raise AIConfigError(
+            "کلید API یا شناسه مدل شامل حروف غیرمجاز است — کلید را از "
+            "پنل هوشیار دوباره ثبت کنید (فقط حروف لاتین/رقم).")
     except httpx.HTTPError as e:
         raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
 
@@ -1900,6 +2183,10 @@ async def generate_broadcast_ai(notes: str) -> str:
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg['model']}:generateContent"
     headers = {'Content-Type': 'application/json', 'x-goog-api-key': cfg['api_key']}
+    # 🔴 FIX-R1 (مورد ۶) — گارد ascii روی کلید (شرح در _stream_gemini)
+    _key_problem = api_key_problem(cfg['api_key'])
+    if _key_problem:
+        raise AIConfigError(_key_problem)
     payload = {
         'system_instruction': {'parts': [{'text': BROADCAST_STYLE_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': f"این نکته‌ها رو به یه اطلاعیه تبدیل کن:\n\n{notes}"}]}],

@@ -223,6 +223,12 @@ class DBContent:
         """
         from utils_file_naming import (
             prepare_rename, get_extension, sanitize_filename)
+        # 🔴 FIX-R1 (مورد ۴) — «-» یعنی «بدون توضیح» (قرارداد ربات)؛
+        # همیشه به‌صورت رشته‌ی خالی ذخیره می‌شود تا ruleهای کیفیت داده
+        # و نمایش‌ها مقدار واقعی (خالی = اختیاری) را ببینند، نه placeholder.
+        description = (description or '').strip()
+        if description in ('-', '—', '–'):
+            description = ''
         # Determine extension
         ext = (file_extension or '').strip().lower().lstrip('.')
         if not ext and display_name:
@@ -895,6 +901,10 @@ class DBContent:
                            file_size: int = 0, branding_enabled: bool = False):
         # Extended with file-naming (backward compatible). See bs_add_content.
         from utils_file_naming import prepare_rename, get_extension, sanitize_filename
+        # 🔴 FIX-R1 (مورد ۴) — نرمال‌سازی «بدون توضیح» (قرارداد ربات: «-»)
+        description = (description or '').strip()
+        if description in ('-', '—', '–'):
+            description = ''
         ext = (file_extension or '').strip().lower().lstrip('.')
         if not ext and display_name:
             ext = get_extension(display_name)
@@ -2249,7 +2259,10 @@ class DBContent:
             'status': {'$in': ['new', 'reviewing']},
         })
         if existing:
-            return int(existing.get('report_id') or 0)
+            try:
+                return int(existing.get('report_id') or 0)
+            except (TypeError, ValueError):
+                return 0
 
         # §W9 — سقفِ نرخ. عمداً *بعد* از چکِ تکراری است تا تپِ دوباره روی
         # همان سؤال سهمیه مصرف نکند. برگرداندنِ ۰ یعنی «رد شد» و لایه‌ی
@@ -2262,6 +2275,28 @@ class DBContent:
                     "report rate limit hit reporter_id=%s recent=%s max=%s",
                     reporter_id, recent, rate_max)
                 return 0
+
+        # 🔴 FIX-R1 (مورد ۵) — بوت‌استرپ شمارنده از max(report_id) موجود.
+        #
+        # ریشه‌ی «دکمه‌های بررسی/حل/رد بی‌اثر»: شمارنده‌ی اتمیک
+        # db_counters روی دیتابیسی که قبلاً گزارش داشت (با طرحِ قدیمیِ
+        # count+1) از ۱ شروع می‌شد؛ گزارشِ جدید report_id تکراری با
+        # گزارشِ قدیمی می‌گرفت و find_one/update_one روی report_id به
+        # سندِ قدیمی (اولین تطابق) می‌خورد، نه گزارشِ جدیدی که ادمین
+        # روش کلیک کرده بود. نتیجه: پیام «ثبت شد» ولی هیچ تغییری نه در
+        # ربات و نه در پنل. اینجا قبل از هر درج، شمارنده حداقل به
+        # max(existing)+1 برداده می‌شود (idempotent و race-tolerant).
+        try:
+            highest = await self.content_reports.find_one(
+                sort=[('report_id', -1)], projection={'report_id': 1})
+            highest_id = int((highest or {}).get('report_id') or 0)
+        except Exception:
+            highest_id = 0
+        if highest_id:
+            await self.db_counters.update_one(
+                {'_id': 'content_report_id', 'seq': {'$lt': highest_id}},
+                {'$set': {'seq': highest_id}}
+            )
 
         # شمارنده‌ی اتمی — `count_documents()+1` زیرِ دو گزارشِ هم‌زمان
         # شناسه‌ی تکراری می‌داد.
@@ -2282,12 +2317,49 @@ class DBContent:
             'created_at':   utc_now_iso(),
             'resolved_at':  None,
             'resolved_by':  None,
+            'status_history': [
+                {'status': 'new', 'at': utc_now_iso(), 'by': reporter_id}
+            ],
         })
         return report_id
 
 
-    async def get_content_report(self, report_id: int):
-        return await self.content_reports.find_one({'report_id': report_id})
+    async def get_content_report(self, report_id) -> dict:
+        """🔍 FIX-R1 — جستجو با هر دو شکل: report_id (int/str عددی) یا ObjectId.
+
+        گزارش‌های legacy ممکن است report_id نداشته باشند یا به‌صورت رشته
+        ذخیره شده باشند؛ در آن حالت جستجو با _id (ObjectId hex) انجام
+        می‌شود تا هیچ گزارشی «غیرقابل تغییر» نماند."""
+        q = self._report_key_query(report_id)
+        if q:
+            return await self.content_reports.find_one(q)
+        return None
+
+
+    def _report_key_query(self, key) -> dict | None:
+        """ساخت فیلتر یکتا برای یک گزارش: ObjectId یا report_id عددی.
+
+        برخوردِ report_id های تکراری (legacy) همین‌جا خنثی می‌شود:
+        جستجو بر اساس _id همیشه یکتاست؛ جستجو بر اساس report_id فقط
+        وقتی استفاده می‌شود که _id در دسترس نباشد."""
+        if key is None:
+            return None
+        if isinstance(key, ObjectId):
+            return {'_id': key}
+        s = str(key).strip()
+        if not s:
+            return None
+        if ObjectId.is_valid(s) and not s.isdigit():
+            # ObjectId hex (نه عدد خالص — «۱۲ رقمی تمام عددی» هم می‌تواند
+            # report_id باشد، پس اول عددی امتحان می‌شود)
+            try:
+                return {'_id': ObjectId(s)}
+            except Exception:
+                pass
+        try:
+            return {'report_id': int(s)}
+        except (TypeError, ValueError):
+            return None
 
 
     async def get_content_reports(self, status: str = None, limit: int = 50,
@@ -2302,37 +2374,57 @@ class DBContent:
         return await self.content_reports.count_documents(q)
 
 
-    async def update_report_status(self, report_id: int, status: str, resolved_by: int = None):
-        prev = None
-        try:
-            prev = await self.content_reports.find_one({'report_id': report_id})
-        except Exception:
-            pass
-        update_data = {'status': status}
+    async def update_report_status(self, report_id, status: str,
+                                   resolved_by: int = None) -> dict:
+        """🔴 FIX-R1 (مورد ۵) — تغییر وضعیت با کلید یکتا + گزارش نتیجه.
+
+        قبلاً (a) فقط با report_id (که می‌تواند تکراری/legacy باشد)
+        آپدیت می‌کرد، (b) matched_count را چک نمی‌کرد و «موفق» الکی
+        برمی‌گرداند و (c) هیچ سابقه‌ای از تغییر وضعیت نداشت.
+        حالا: آپدیت با _id (یا report_id به‌عنوان fallback)، خروجی
+        {'updated': bool, 'prev_status': str} و ثبت status_history."""
+        if status not in ('new', 'reviewing', 'resolved', 'rejected'):
+            raise ValueError('invalid_status')
+        q = self._report_key_query(report_id)
+        if not q:
+            return {'updated': False, 'prev_status': None}
+        prev = await self.content_reports.find_one(q)
+        if not prev:
+            return {'updated': False, 'prev_status': None}
+        prev_status = prev.get('status', 'new')
+        now = utc_now_iso()
+        update_data = {
+            'status': status,
+            'status_changed_at': now,
+            'status_changed_by': resolved_by,
+        }
         if status in ('resolved', 'rejected'):
-            update_data['resolved_at'] = utc_now_iso()
+            update_data['resolved_at'] = now
             update_data['resolved_by'] = resolved_by
-        await self.content_reports.update_one(
-            {'report_id': report_id}, {'$set': update_data}
+        else:
+            # بازگشت از resolved/rejected به new/reviewing
+            update_data['resolved_at'] = None
+            update_data['resolved_by'] = None
+        # سابقه‌ی تغییر وضعیت (audit) — سقف‌دار تا سند رشد نکند
+        history = list(prev.get('status_history') or [])
+        history.append({'status': status, 'at': now, 'by': resolved_by})
+        update_data['status_history'] = history[-20:]
+        res = await self.content_reports.update_one(
+            {'_id': prev['_id']}, {'$set': update_data}
         )
+        updated = bool(res.matched_count)
         # 👑 P1 — اولین گذار به resolved ⇒ پاداش «گزارش مفید» به گزارش‌دهنده
         # 🧠 N1.2 — سینک‌فیکس: گزارش‌دهنده هیچ‌جا نمی‌فهمید گزارشش بررسی
         # شده؛ حالا تک‌منبع زنده (Inbox + DM + Deep Link به «گزارش‌های من»).
-        try:
-            if (status == 'resolved'
-                    and (prev or {}).get('status') != 'resolved'
-                    and (prev or {}).get('reporter_id')):
+        if updated and status == 'resolved' and prev_status != 'resolved' \
+                and prev.get('reporter_id'):
+            try:
                 rep_uid = int(prev['reporter_id'])
                 await self.prestige_event(rep_uid,
-                    'report_useful', {'report_id': report_id})
-        except Exception:
-            pass
-        # 🧠 N1.2 — خبر در try جدا (ایزوله از موتور پرستیژ)
-        try:
-            if (status == 'resolved'
-                    and (prev or {}).get('status') != 'resolved'
-                    and (prev or {}).get('reporter_id')):
-                rep_uid = int(prev['reporter_id'])
+                    'report_useful', {'report_id': prev.get('report_id')})
+            except Exception:
+                pass
+            try:
                 await self.notify_user(rep_uid, 'report_resolved',
                     title='🩺 گزارشت بررسی شد',
                     body='گزارش محتوایی که فرستادی بررسی و تأیید شد '
@@ -2341,8 +2433,79 @@ class DBContent:
                     dm=('🩺 <b>گزارشت بررسی شد</b>\n\n'
                         'گزارش محتوایی که فرستادی بررسی و تأیید شد. '
                         'از وسواس مثبتی که داری مرسی 🙏'))
-        except Exception:
-            pass
+            except Exception:
+                pass
+        return {'updated': updated, 'prev_status': prev_status}
+
+
+    async def content_report_target_info(self, report_doc: dict) -> dict:
+        """🔴 FIX-R1 (مورد ۵) — اطلاعات خوانا از «هدفِ» گزارش.
+
+        به‌جای نمایش ObjectId خام، برای هر گزارش:
+          • question: متن سؤال، درس، مبحث، گزینه‌ها، گزینه صحیح
+          • resource: نام فایل (display_name)، نوع، درس، جلسه، استاد
+        اگر هدف حذف شده باشد target_missing=True برمی‌گردد (نه خطا)."""
+        out = {
+            'target_missing': False,
+            'title': '',
+            'type_label': '',
+            'lesson': '',
+            'session': '',
+            'teacher': '',
+            'detail': '',
+        }
+        if not report_doc:
+            return out
+        ttype = report_doc.get('target_type')
+        tid = report_doc.get('target_id') or ''
+        if ttype == 'question':
+            q = await self.get_question_by_id(tid) if tid else None
+            if not q:
+                out['target_missing'] = True
+                return out
+            options = q.get('options') or []
+            correct = q.get('correct_answer')
+            try:
+                correct_idx = int(correct) if correct is not None else None
+            except (TypeError, ValueError):
+                correct_idx = None
+            correct_text = ''
+            if correct_idx is not None and 0 <= correct_idx < len(options):
+                correct_text = str(options[correct_idx])
+            out.update({
+                'title': (q.get('question') or '')[:160],
+                'type_label': 'سؤال',
+                'lesson': q.get('lesson') or '',
+                'session': q.get('topic') or '',
+                'detail': f"گزینه صحیح ثبت‌شده: {correct_text or '—'}"
+                          f" · {len(options)} گزینه",
+                'question_options': [str(o)[:120] for o in options[:6]],
+                'correct_answer': correct_text,
+                'question_id': tid,
+            })
+            return out
+        # resource (فایل آموزشی)
+        item = await self.bs_get_content_item(tid) if tid else None
+        if not item:
+            out['target_missing'] = True
+            return out
+        path = await self.bs_get_content_full_path(tid) or {}
+        ctype = (item.get('type') or '').strip()
+        type_fa = {'video': 'ویدیو کلاس', 'ppt': 'پاورپوینت', 'pdf': 'جزوه PDF',
+                   'note': 'نکات', 'test': 'تست', 'voice': 'ویس استاد'}.get(ctype, ctype or '—')
+        name = (item.get('display_name') or item.get('display_file_name')
+                or item.get('original_file_name')
+                or item.get('description') or '')
+        out.update({
+            'title': (name or 'فایل بدون نام')[:160],
+            'type_label': f'فایل ({type_fa})',
+            'lesson': path.get('lesson_name') or '',
+            'session': path.get('topic') or '',
+            'teacher': path.get('teacher') or '',
+            'detail': (item.get('description') or '').strip()[:300],
+            'content_id': tid,
+        })
+        return out
 
 
     async def get_reviewers(self) -> list:

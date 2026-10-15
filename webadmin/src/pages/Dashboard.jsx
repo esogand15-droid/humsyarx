@@ -349,6 +349,11 @@ export default function Dashboard({ me, go }) {
                      value={Number(stats.new_today ?? stats.today_new ?? 0).toLocaleString('fa')} />
             <KpiCard icon="📥" label="کل پاسخ‌های ثبت‌شده" tone="acc" enter="dw-enter-3"
                      value={Number(stats.total_answers ?? 0).toLocaleString('fa')} />
+            {/* 🔴 FIX-R1 (مورد ۱) — بلاک‌کنندگان ربات؛ از شمار کاربران
+                فعال/تأییدشده جدا شده‌اند و اینجا شفاف نمایش داده می‌شوند. */}
+            <KpiCard icon="🔕" label="بلاک‌کننده‌ی ربات" tone="bad" enter="dw-enter-3"
+                     value={Number(stats.blocked_bot ?? 0).toLocaleString('fa')}
+                     hint="در شمار کاربران فعال لحاظ نمی‌شوند" />
           </KpiGrid>
         </Section>
         );

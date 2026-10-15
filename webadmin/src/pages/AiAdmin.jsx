@@ -235,23 +235,63 @@ function AiConfig({ cfg, me, onSaved }) {
   /* 🌊 W9 — کاتالوگ مرکزی مدل‌ها (بدون تایپ دستی) */
   const [cat, setCat] = useState(null);
   useEffect(() => { api.aiModels().then(setCat).catch(() => {}); }, []);
+  /* 🔴 FIX-R1 (مورد ۷) — فهرست زنده‌ی مدل‌ها از ارائه‌دهنده (با همان
+     کلید ذخیره‌شده) + دکمه‌ی تازه‌سازی. بدون provider → کاتالوگ ثابت. */
+  const [live, setLive] = useState(null);       // {models:[], cached, fallback, error, fetched_at}
+  const [liveBusy, setLiveBusy] = useState(false);
+  const loadLive = async (provider, refresh = false) => {
+    if (!provider) return;
+    setLiveBusy(true);
+    try {
+      const r = await api.aiModels(provider, refresh);
+      setLive(r && Array.isArray(r.models) ? r : { models: [], ...r });
+    } catch (e) {
+      setLive({ models: [], error: errText(e) });
+    }
+    setLiveBusy(false);
+  };
+  useEffect(() => { if (cfg?.provider) loadLive(cfg.provider, false); }, [cfg?.provider]);
+  // با تغییر provider در فرم، فهرست زنده‌ی همان provider بار می‌شود
+  useEffect(() => { if (f?.provider) loadLive(f.provider, false); }, [f?.provider]);
   const [keyOpen, setKeyOpen] = useState(false); const [apiKey, setApiKey] = useState('');
   const [testResult, setTestResult] = useState(null);
+  const [modelWarning, setModelWarning] = useState('');  // 🔴 FIX-R1 — هشدار مدلِ خارج از فهرست
   useEffect(() => { if (cfg) setF({ ...cfg }); }, [cfg]);
   if (!cfg) return <Empty icon="⚙️" text="پیکربندی در دسترس نیست" />;
   if (!f) return <Loading rows={3} />;
 
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  /* 🔴 FIX-R1 (مورد ۷) — منبع مدل‌ها: فهرست زنده در اولویت است؛ اگر
+     خطا داشت یا خالی بود، کاتالوگ ثابت. مدل سفارشی همیشه ممکن است. */
+  const modelOptions = (live?.models?.length
+    ? live.models
+    : ((cat?.providers || []).find(p => p.id === f.provider)?.models)) || [];
+  const liveIds = modelOptions.map(m => m.id);
+
   const save = async () => {
     setBusy(true);
     try {
-      await api.aiConfigUpdate({
+      const r = await api.aiConfigUpdate({
         enabled: !!f.enabled, provider: f.provider, model: f.model.trim(),
         daily_limit: Number(f.daily_limit) || 0, thinking: f.thinking,
         system_prompt: f.system_prompt, disabled_message: f.disabled_message || '',
       });
-      toast('پیکربندی ذخیره شد ✅'); onSaved();
-    } catch (e) { toast(errText(e), 'err'); }
+      // 🔴 FIX-R1 (مورد ۷) — هشدار مدل: مدل انتخابی در فهرست واقعی
+      // ارائه‌دهنده نیست (ممکن است حذف/غیرفعال شده باشد).
+      setModelWarning(r?.model_warning || '');
+      if (r?.model_warning) {
+        toast('⚠️ ' + r.model_warning, 'err');
+      } else {
+        toast('پیکربندی ذخیره شد ✅');
+      }
+      onSaved();
+    } catch (e) {
+      // 🔴 FIX-R1 (مورد ۶) — خطای کلید/مدل با پیام فارسی سرور نمایش داده
+      // می‌شود (422)؛ کلیدِ دارای کاراکتر غیرASCII از این به بعد سمت
+      // سرور بلاک می‌شود و دیگر خطای 'ascii codec' در ربات رخ نمی‌دهد.
+      toast(errText(e), 'err');
+    }
     setBusy(false);
   };
 
@@ -275,25 +315,41 @@ function AiConfig({ cfg, me, onSaved }) {
               {(cat?.providers || [{ id: 'gemini', label: 'Gemini' }, { id: 'openrouter', label: 'OpenRouter' }])
                 .map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
             </select></label>
-          <label className="fld"><span>مدل {(() => {
-            const prov = (cat?.providers || []).find(p => p.id === f.provider);
-            const ids = (prov?.models || []).map(m => m.id);
-            const isCustom = f.model && !ids.includes(f.model);
-            return (
+          <label className="fld"><span>
+            مدل
+            {/* 🔴 FIX-R1 (مورد ۷) — دکمه‌ی تازه‌سازی فهرست زنده + نشانگر کش */}
+            <button className="btn sm" style={{ marginInlineStart: 8 }} disabled={liveBusy}
+                    title="دریافت مجدد فهرست مدل‌ها از ارائه‌دهنده"
+                    onClick={() => loadLive(f.provider, true)}>
+              {liveBusy ? '⏳ …' : '🔄 تازه‌سازی'}
+            </button>
+            {live?.cached && <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}> (کش سرور)</span>}
+          </span>
+            <select className="inp" style={{ direction: 'ltr' }}
+                    value={f.model && liveIds.includes(f.model) ? f.model : (f.model ? '__custom' : (modelOptions[0]?.id || ''))}
+                    onChange={e => set('model', e.target.value === '__custom' ? '' : e.target.value)}>
+              {modelOptions.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>))}
+              <option value="__custom">✏️ سفارشی (تایپ دستی)</option>
+            </select>
+            {f.model && !liveIds.includes(f.model) && (
               <>
-                <select className="inp" style={{ direction: 'ltr' }}
-                        value={isCustom ? '__custom' : f.model}
-                        onChange={e => set('model', e.target.value === '__custom' ? '' : e.target.value)}>
-                  {(prov?.models || []).map(m => (
-                    <option key={m.id} value={m.id}>{m.label}</option>))}
-                  <option value="__custom">✏️ سفارشی (تایپ دستی)</option>
-                </select>
-                {isCustom && (
-                  <input className="inp" style={{ direction: 'ltr', marginTop: 6 }}
-                         placeholder="شناسه‌ی دقیق مدل" value={f.model}
-                         onChange={e => set('model', e.target.value)} />)}
-              </>);
-          })()}</span></label>
+                <input className="inp" style={{ direction: 'ltr', marginTop: 6 }}
+                       placeholder="شناسه‌ی دقیق مدل" value={f.model}
+                       onChange={e => set('model', e.target.value)} />
+                {/* 🔴 FIX-R1 (مورد ۷) — مدل انتخابی خارج از فهرست واقعی است */}
+                <div className="muted" style={{ marginTop: 4, color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }}>
+                  ⚠️ این مدل در فهرست واقعی ارائه‌دهنده نیست — ممکن است حذف یا تغییر نام داده باشد.
+                </div>
+              </>
+            )}
+            {/* 🔴 FIX-R1 (مورد ۷) — پیام خطای فهرست زنده (کلید نامعتبر و…) */}
+            {live?.error && (
+              <div className="muted" style={{ marginTop: 4, fontSize: 'var(--fs-caption)' }}>
+                ℹ️ فهرست زنده در دسترس نیست: {live.error} — کاتالوگ ثابت نمایش داده می‌شود.
+              </div>
+            )}
+          </label>
           <label className="fld"><span>سهمیه‌ی روزانه‌ی هر کاربر</span>
             <input className="inp" type="number" min="0" max="1000" value={f.daily_limit}
                    onChange={e => set('daily_limit', e.target.value)} /></label>
@@ -309,6 +365,8 @@ function AiConfig({ cfg, me, onSaved }) {
             {me?.is_owner && <button className="btn sm" onClick={async () => { try { setTestResult(await api.aiTest()); toast('اتصال هوشیار موفق بود ✅'); } catch (e) { toast(errText(e), 'err'); } }}>🧪 تست اتصال</button>}
           </div>
           {testResult && <div className="muted">پاسخ: {testResult.answer} · {Number(testResult.tokens || 0).toLocaleString('fa')} توکن · {Number(testResult.response_time_ms || 0).toLocaleString('fa')} ms · Request ID: <span className="code">{testResult.request_id}</span></div>}
+          {/* 🔴 FIX-R1 (مورد ۷) — هشدار ذخیره‌شده‌ی مدل (پاسخ سرور) */}
+          {modelWarning && <div style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }}>⚠️ {modelWarning}</div>}
         </div>
       </div>
       <div className="panel panel-pad">
@@ -334,6 +392,8 @@ function AiConfig({ cfg, me, onSaved }) {
     {keyOpen && <Modal title="🔐 چرخش API Key — فقط مالک" onClose={() => { setApiKey(''); setKeyOpen(false); }}>
       <input className="inp" type="password" autoComplete="new-password" style={{ width: '100%', direction: 'ltr' }} placeholder="کلید جدید…" value={apiKey} onChange={e => setApiKey(e.target.value)} />
       <div className="muted" style={{ marginTop: 8 }}>مقدار کلید هرگز نمایش، ذخیره در localStorage یا وارد audit نمی‌شود.</div>
+      {/* 🔴 FIX-R1 (مورد ۶) — راهنمای صریح: کلید فقط ASCII بدون فاصله */}
+      <div className="muted" style={{ marginTop: 4 }}>کلید را عیناً از سایت ارائه‌دهنده کپی کنید — کاراکترهای فارسی/فاصله‌ی اضافه باعث خطای رمزگذاری می‌شود و سمت سرور رد می‌شود.</div>
       <div className="row" style={{ marginTop: 12 }}><button className="btn danger" disabled={apiKey.trim().length < 8} onClick={async () => { const secret = apiKey; setApiKey(''); setKeyOpen(false); try { await api.aiKeyRotate(secret); toast('API Key با موفقیت چرخش یافت ✅'); onSaved(); } catch (e) { toast(errText(e), 'err'); } }}>تأیید و چرخش</button><button className="btn" onClick={() => { setApiKey(''); setKeyOpen(false); }}>انصراف</button></div>
     </Modal>}
     </>

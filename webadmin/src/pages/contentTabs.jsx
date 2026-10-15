@@ -3364,6 +3364,14 @@ function FaqEditModal({ item, onClose }) {
 }
 
 // ── 🚩 صف و تاریخچه گزارش‌های محتوا/سؤال ────────────────────────
+// 🔴 FIX-R1 (مورد ۵) — برچسب فارسی وضعیت/دلیل؛ کلید ردیف oid (یکتا)
+const RPT_STATUS_FA = { new: "جدید", reviewing: "در بررسی", resolved: "حل‌شده", rejected: "ردشده" };
+const RPT_REASON_FA = {
+  wrong_answer: "پاسخ اشتباه", wrong_option: "گزینه اشتباه",
+  incomplete: "متن ناقص", unclear: "گنگ/نامفهوم", duplicate: "تکراری",
+  broken_file: "فایل خراب", outdated: "محتوای قدیمی", other: "سایر",
+};
+
 export function ReportsTab() {
   const [status, setStatus] = useState("new");
   const [page, setPage] = useState(1);
@@ -3372,6 +3380,7 @@ export function ReportsTab() {
   const [err, setErr] = useState("");
   const [permErr, setPermErr] = useState(false);
   const [confirm, setConfirm] = useState(null);
+  const [detail, setDetail] = useState(null); // 🔴 FIX-R1 — مودال جزئیات گزارش
   const LIMIT = 30;
   const load = async () => {
     setErr("");
@@ -3395,11 +3404,12 @@ export function ReportsTab() {
   useEffect(() => {
     load();
   }, [status, page]);
+  // 🔴 FIX-R1 (مورد ۵) — تغییر وضعیت با کلید یکتا (oid) + خطای صریح
   const change = async () => {
     const c = confirm;
     setConfirm(null);
     try {
-      await api.caReportStatus(c.row.id, c.status);
+      await api.caReportStatus(c.row.oid || c.row.id, c.status);
       toast("وضعیت گزارش ذخیره شد ✅");
       load();
     } catch (e) {
@@ -3416,22 +3426,66 @@ export function ReportsTab() {
     {
       k: "reason",
       label: "دلیل",
-      render: (r) => <B kind="warn">{r.reason || "—"}</B>,
+      // 🔴 FIX-R1 — دلیل با برچسب فارسی از سرور (reason_key برای عطف)
+      render: (r) => (
+        <B kind="warn">
+          {RPT_REASON_FA[r.reason_key || r.reason] || r.reason || "—"}
+        </B>
+      ),
     },
     {
-      k: "target_type",
-      label: "هدف",
-      render: (r) => (
-        <div>
-          <b>{r.target_type === "question" ? "سؤال" : "محتوا"}</b>
-          <div className="muted code">{r.target_id || "—"}</div>
-        </div>
-      ),
+      k: "target",
+      label: "محتوای گزارش‌شده",
+      // 🔴 FIX-R1 (مورد ۵) — به‌جای ObjectId خام: عنوان خوانا +
+      // درس/جلسه/استاد؛ اگر هدف حذف شده باشد هشدار داده می‌شود.
+      render: (r) => {
+        if (!r.target) {
+          return (
+            <div>
+              <b>{r.target_type_fa || (r.target_type === "question" ? "سؤال" : "محتوا")}</b>
+              <div className="muted">اطلاعات هدف در دسترس نیست</div>
+            </div>
+          );
+        }
+        if (r.target.missing) {
+          return (
+            <div>
+              <b>{r.target_type_fa || (r.target_type === "question" ? "سؤال" : "محتوا")}</b>
+              <div className="muted" style={{ color: "var(--c-bad, #d24)" }}>
+                ⚠️ هدف حذف شده — «{r.target.title || "بدون عنوان"}»
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div>
+            <b>{r.target.title ? r.target.title.slice(0, 80) : "بدون عنوان"}</b>
+            <div className="muted">
+              {r.target_type_fa || (r.target_type === "question" ? "سؤال" : "محتوا")}
+              {r.target.type_label ? ` · ${r.target.type_label}` : ""}
+            </div>
+            {(r.target.lesson || r.target.session) && (
+              <div className="muted" style={{ fontSize: "var(--fs-caption)" }}>
+                📚 {r.target.lesson || "—"}
+                {r.target.session ? ` · ${r.target.session}` : ""}
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     {
       k: "note",
       label: "توضیح",
-      render: (r) => <span className="content-pre-wrap">{r.note || "—"}</span>,
+      render: (r) => (
+        // 🔴 FIX-R1 (مورد ۵) — آیکون‌های جداکننده (▬▬▬) در خروجی سرور
+        // فشرده شده‌اند؛ اینجا هم متن طولانی کوتاه نمایش داده می‌شود.
+        <span className="content-pre-wrap">
+          {(r.note || "—").length > 90
+            ? `${(r.note || "").slice(0, 90)}…`
+            : r.note || "—"}
+        </span>
+      ),
     },
     { k: "reporter_name", label: "گزارش‌دهنده" },
     {
@@ -3442,6 +3496,7 @@ export function ReportsTab() {
     {
       k: "status",
       label: "وضعیت",
+      // 🔴 FIX-R1 — وضعیت با برچسب فارسی (قبلاً new/resolved خام بود)
       render: (r) => (
         <B
           kind={
@@ -3454,7 +3509,7 @@ export function ReportsTab() {
                   : "warn"
           }
         >
-          {r.status}
+          {RPT_STATUS_FA[r.status] || r.status}
         </B>
       ),
     },
@@ -3464,6 +3519,10 @@ export function ReportsTab() {
       stop: true,
       render: (r) => (
         <div className="row content-actions-tight">
+          {/* 🔴 FIX-R1 — دکمه مشاهده جزئیات: متن کامل + گزینه‌ها + سابقه */}
+          <button className="btn sm" onClick={() => setDetail(r)}>
+            🔍 جزئیات
+          </button>
           {r.status !== "reviewing" && (
             <button
               className="btn sm"
@@ -3558,7 +3617,7 @@ export function ReportsTab() {
         <DataTable
           columns={cols}
           rows={data.reports || []}
-          rowKey="id"
+          rowKey={(r) => r.oid || `id-${r.id}`}
           colToggle
           pager={{
             page,
@@ -3572,10 +3631,110 @@ export function ReportsTab() {
       {confirm && (
         <Confirm
           danger={confirm.status === "rejected"}
-          text={`تغییر وضعیت گزارش #${confirm.row.id} به «${confirm.status}»؟`}
+          text={`تغییر وضعیت گزارش #${confirm.row.id} به «${
+            RPT_STATUS_FA[confirm.status] || confirm.status
+          }»؟`}
           onYes={change}
           onNo={() => setConfirm(null)}
         />
+      )}
+      {/* 🔴 FIX-R1 (مورد ۵) — مودال جزئیات کامل گزارش */}
+      {detail && (
+        <Modal
+          title={`📋 گزارش #${detail.id || "—"}`}
+          onClose={() => setDetail(null)}
+          width={620}
+        >
+          <div className="content-pre-wrap" style={{ lineHeight: 1.9 }}>
+            {detail.target ? (
+              <>
+                <div>
+                  <b>محتوای هدف:</b>{" "}
+                  {detail.target.missing ? (
+                    <span style={{ color: "var(--c-bad, #d24)" }}>
+                      ⚠️ حذف شده — {detail.target.title || "بدون عنوان"}
+                    </span>
+                  ) : (
+                    detail.target.title || "بدون عنوان"
+                  )}
+                </div>
+                {detail.target.type_label && (
+                  <div>
+                    <b>نوع:</b> {detail.target.type_label}
+                  </div>
+                )}
+                {detail.target.lesson && (
+                  <div>
+                    <b>درس:</b> {detail.target.lesson}
+                  </div>
+                )}
+                {detail.target.session && (
+                  <div>
+                    <b>جلسه:</b> {detail.target.session}
+                  </div>
+                )}
+                {detail.target.teacher && (
+                  <div>
+                    <b>استاد:</b> {detail.target.teacher}
+                  </div>
+                )}
+                {detail.target.detail && (
+                  <div className="muted">{detail.target.detail}</div>
+                )}
+                {(detail.target.question_options || []).length > 0 && (
+                  <div style={{ marginTop: 6 }}>
+                    <b>گزینه‌ها:</b>
+                    <ol style={{ margin: "4px 18px 0 0" }}>
+                      {detail.target.question_options.map((o, i) => (
+                        <li
+                          key={i}
+                          style={{
+                            color:
+                              detail.target.correct_answer &&
+                              String(detail.target.correct_answer).trim() ===
+                                String(o).trim()
+                                ? "var(--c-ok, #2a2)"
+                                : undefined,
+                          }}
+                        >
+                          {o}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="muted">اطلاعات هدف در دسترس نیست</div>
+            )}
+            <hr />
+            <div>
+              <b>دلیل:</b> {RPT_REASON_FA[detail.reason_key || detail.reason] || detail.reason}
+            </div>
+            <div>
+              <b>توضیح دانشجو:</b> {detail.note || "—"}
+            </div>
+            <div>
+              <b>گزارش‌دهنده:</b> {detail.reporter_name || "—"}
+            </div>
+            <div>
+              <b>وضعیت:</b> {RPT_STATUS_FA[detail.status] || detail.status}
+            </div>
+            {(detail.status_history || []).length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                <b>سابقه‌ی وضعیت:</b>
+                <ul style={{ margin: "4px 18px 0 0" }}>
+                  {detail.status_history.map((h, i) => (
+                    <li key={i} className="muted">
+                      {RPT_STATUS_FA[h.status] || h.status} —{" "}
+                      <FaDateTime value={h.at} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Modal>
       )}
     </>
   );

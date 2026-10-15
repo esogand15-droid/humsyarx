@@ -530,10 +530,16 @@ async def _h_notif_retry(query, context, parts, uid):
 
 async def _h_notif_default_toggle(query, context, parts, uid):
     ntype = parts[2]
+    # 🔴 FIX-R1 (مورد ۳) — دو قاعده‌ی صریح به انتخاب ادمین:
+    #   • حالت «همه» (پیش‌فرض): default برای کاربران جدید ذخیره و همان
+    #     لحظه روی همه‌ی کاربران فعلی هم اعمال (override) می‌شود.
+    #   • حالت «فقط جدیدها»: فقط پیش‌فرض ثبت‌نام‌های بعدی عوض می‌شود و
+    #     تنظیم شخصی کاربران فعلی دست‌نخورده می‌ماند.
+    mode = await db.get_setting('notif_default_apply_mode', 'all') or 'all'
+    apply_existing = (mode != 'new_only')
     defaults = await db.get_notif_defaults()
     new_val  = not defaults.get(ntype, True)
-    # تک‌منبع semantics با WebAdmin: default + اعمال روی کاربران فعلی.
-    result = await db.update_notif_default(ntype, new_val, apply_existing=True)
+    result = await db.update_notif_default(ntype, new_val, apply_existing=apply_existing)
     affected = result['affected_users']
     admin_user = await db.get_user(uid)
     actor_name = admin_user.get('name', 'مدیر ارشد') if admin_user else 'مدیر ارشد'
@@ -545,7 +551,10 @@ async def _h_notif_default_toggle(query, context, parts, uid):
         details=f"پیش‌فرض {ntype}: {'روشن' if new_val else 'خاموش'} | اعمال روی {affected} کاربر",
         tags=['تنظیمات_اعلان']
     )
-    await query.answer(f"✅ بروزرسانی شد و روی {affected} کاربر اعمال شد", show_alert=True)
+    if apply_existing:
+        await query.answer(f"✅ بروزرسانی شد و روی {affected} کاربر (همه) اعمال شد", show_alert=True)
+    else:
+        await query.answer("✅ پیش‌فرض جدیدها تغییر کرد (تنظیم کاربران فعلی حفظ شد)", show_alert=True)
     await _show_notif_defaults(query)
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,6 +986,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'notif_default_toggle':
         await _h_notif_default_toggle(query, context, parts, uid)
+
+    elif action == 'notif_default_mode':
+        await _h_notif_default_mode(query, context, parts, uid)
 
     # ══════════════════════════════════════════════
     # 🛡 سطوح دسترسی چندگانه ادمین (admin_roles)
@@ -2773,17 +2785,26 @@ async def _handle_notif_force_send(query):
 async def _show_notif_defaults(query):
     """
     FIX (بخش سوم): تعیین وضعیت پیش‌فرض (روشن/خاموش) هر دسته اعلان.
-    برخلاف قبل، این مقدار همین لحظه روی همه کاربران — قدیمی، جدید،
-    فعال و غیرفعال — اعمال می‌شود (نه فقط کاربران تازه ثبت‌نام‌شده).
+
+    🔴 FIX-R1 (مورد ۳) — قاعده صریح و قابل انتخاب شد:
+      • حالت «اعمال روی همه» (پیش‌فرض): تغییرِ هر دسته همان لحظه روی
+        همه‌ی کاربران (قدیمی و جدید) اعمال می‌شود؛ عدد کاربران تحت
+        تأثیر هم پاس می‌شود.
+      • حالت «فقط کاربران جدید»: فقط کسانی که از این به بعد ثبت‌نام
+        می‌کنند مقدار جدید را می‌گیرند؛ تنظیم شخصی کاربران فعلی
+        (منوی 🔔 اعلان‌ها خودشان) دست نمی‌خورد.
     """
     # 🧩 N3-fix — NOTIF_ITEMS قدیمی حذف شده بود؛ منبع واحد =
     # کاتالوگ db. کلیدها Canonical‌اند و handler توگل با همان
     # canonical می‌نویسد — زنجیره‌ی set/get سرتاسر یکدست.
     defaults = await db.get_notif_defaults()
+    mode = await db.get_setting('notif_default_apply_mode', 'all') or 'all'
+    mode_label = ("🌍 همه کاربران (قدیمی و جدید — override)" if mode != 'new_only'
+                  else "🆕 فقط کاربران جدید (بدون دست‌کاری تنظیم شخصی)")
     text = (
         "⚙️ <b>وضعیت پیش‌فرض اعلان‌ها</b>\n━━━━━━━━━━━━━━━━\n\n"
-        "تغییر هر مورد، همین الان روی <b>همه کاربران</b> "
-        "(قدیمی و جدید) اعمال می‌شود."
+        f"🎯 قاعده‌ی اعمال فعلی: <b>{mode_label}</b>\n\n"
+        "با دکمه‌ی «🎛 قاعده‌ی اعمال» می‌توانی بین دو حالت جابه‌جا شوی."
     )
     keyboard = []
     for key, label, _desc, _d in db.NOTIF_CATALOG:
@@ -2793,8 +2814,23 @@ async def _show_notif_defaults(query):
             f"{icon} {label} — {'روشن' if is_on else 'خاموش'}",
             callback_data=f'admin:notif_default_toggle:{key}'
         )])
+    # 🔴 FIX-R1 — سوییچ قاعده‌ی اعمال (override همه / فقط جدیدها)
+    keyboard.append([InlineKeyboardButton(
+        f"🎛 قاعده‌ی اعمال: {mode_label}",
+        callback_data='admin:notif_default_mode')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:notif_manage')])
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _h_notif_default_mode(query, context, parts, uid):
+    """🔴 FIX-R1 (مورد ۳) — جابه‌جایی قاعده‌ی اعمال پیش‌فرض اعلان‌ها."""
+    current = await db.get_setting('notif_default_apply_mode', 'all') or 'all'
+    new_mode = 'new_only' if current != 'new_only' else 'all'
+    await db.set_setting('notif_default_apply_mode', new_mode)
+    label = ("🌍 اعمال روی همه کاربران (قدیمی و جدید)" if new_mode == 'all'
+             else "🆕 فقط کاربران جدید")
+    await query.answer(f"✅ قاعده‌ی اعمال: {label}", show_alert=True)
+    await _show_notif_defaults(query)
 
 
 async def _show_notif_history(query, job_name: str = None):

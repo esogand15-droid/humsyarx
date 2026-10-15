@@ -105,9 +105,16 @@ class DBRbac:
     async def notif_users_by_intake(self, intake_code: str, ntype: str) -> list:
         users = await self.get_users_by_intake(intake_code)
         # 🧠 N1.2 — canonical با fallback به مقدار قدیمی ذخیره‌شده
+        # 🔴 FIX-R1 (مورد ۳): defaults حتماً پاس می‌شود — قبلاً None بود و
+        # برای کاربرِ بدون تنظیمِ صریح، همیشه True (روشن) برمی‌گشت؛ یعنی
+        # ادمین پیش‌فرض را خاموش می‌کرد ولی اعلانِ scope-دارِ ورودی همچنان
+        # برای همه می‌رفت. حالا دقیقاً همان منطق notif_pref_on واحد.
+        # 🔴 FIX-R1 (مورد ۱): بلاک‌کننده‌های ربات هم حذف می‌شوند.
+        defaults = await self.get_notif_defaults()
         return [
             u for u in users
-            if self.notif_pref_on(u.get('notification_settings', {}), ntype)
+            if not u.get('blocked_bot')
+            and self.notif_pref_on(u.get('notification_settings', {}), ntype, defaults)
         ]
 
 

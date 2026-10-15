@@ -269,11 +269,14 @@ export default function Users({ go, me, route = '' }) {
   const [accuracyMax, setAccuracyMax] = useState(initial.get('accuracy_max') || '');
   const [subDays, setSubDays] = useState(initial.get('sub_expiring_days') || '');
   const [openTicket, setOpenTicket] = useState(initial.get('has_open_ticket') || '');
+  // 🔴 FIX-R1 (مورد ۱) — فیلتر بلاک‌کنندگان ربات + وضعیت اسکن
+  const [blocked, setBlocked] = useState(initial.get('blocked') || '');
+  const [scan, setScan] = useState({ running: false, progress: 0, total: 0, found: 0 });
   const [smart, setSmart] = useState(() => { try { return initial.get('smart') ? JSON.parse(initial.get('smart')) : null; } catch { return null; } });
   const [smartOpen, setSmartOpen] = useState(false);
   const [sortBy, setSortBy] = useState(initial.get('sort_by') || 'registered_at');
   const [sortDir, setSortDir] = useState(initial.get('sort_dir') || 'desc');
-  const [advanced, setAdvanced] = useState([...initial.keys()].some(k => !['q', 'status', 'intake', 'page', 'per_page'].includes(k)));
+  const [advanced, setAdvanced] = useState([...initial.keys()].some(k => !['q', 'status', 'intake', 'page', 'per_page', 'blocked'].includes(k)));
   const [page, setPage] = useState(queryNumber(initial, 'page', 1));
   const [perPage, setPerPage] = useState(queryNumber(initial, 'per_page', 25));
   const [data, setData] = useState({ users: [], total: 0, pages: 1 });
@@ -337,8 +340,9 @@ export default function Users({ go, me, route = '' }) {
       has_open_ticket: openTicket, smart: smart ? JSON.stringify(smart) : '',
       sort_by: sortBy !== 'registered_at' ? sortBy : '',
       sort_dir: sortDir !== 'desc' ? sortDir : '', page: page > 1 ? page : '',
-      per_page: perPage !== 25 ? perPage : '' });
-  }, [q2, status, intake, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir, page, perPage]);
+      per_page: perPage !== 25 ? perPage : '',
+      blocked });
+  }, [q2, status, intake, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir, page, perPage, blocked]);
 
   const load = async () => {
     setLoading(true); setErr('');
@@ -347,13 +351,30 @@ export default function Users({ go, me, route = '' }) {
         page, per_page: perPage, q, intake, status, group, role, activity,
         accuracy_max: accuracyMax, sub_expiring_days: subDays,
         has_open_ticket: openTicket, smart: smart ? JSON.stringify(smart) : '',
-        sort_by: sortBy, sort_dir: sortDir,
+        sort_by: sortBy, sort_dir: sortDir, blocked,
       }));
     } catch (e) { setErr(errText(e)); }
     setLoading(false);
   };
-  useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir]);
-  useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart]);
+  useEffect(() => { load(); }, [page, perPage, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart, sortBy, sortDir, blocked]);
+  useEffect(() => { setSel([]); }, [page, q, intake, status, group, role, activity, accuracyMax, subDays, openTicket, smart, blocked]);
+
+  // 🔴 FIX-R1 (مورد ۱) — وضعیت اسکن بلاک‌کنندگان: هنگام اجرا هر ۲ ثانیه
+  // poll می‌شود؛ در پایان، جدول/KPIها تازه می‌شوند.
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await api.usersScanBlockedState();
+        if (stop) return;
+        setScan({ ...(r?.state || {}), blocked_now: r?.blocked_now, reachable_now: r?.reachable_now });
+        if (!(r?.state || {}).running) { load(); clearInterval(h); }
+      } catch { /* بی‌صدا — دکمه‌ی توقف در دسترس است */ }
+    };
+    const h = setInterval(tick, 2000);
+    tick();
+    return () => { stop = true; clearInterval(h); };
+  }, []);
 
   const loadSubPlans = () => {
     if (subPlans) return;
@@ -404,6 +425,7 @@ export default function Users({ go, me, route = '' }) {
       { label: 'exams', v: 'exam_count' }, { label: 'ai_usage', v: 'ai_usage' },
       { label: 'last_active', v: r => r.last_active ? formatFaDateTime(r.last_active) : '' }, { label: 'registered_at', v: r => r.registered_at ? formatFaDateTime(r.registered_at) : '' },
       { label: 'status', v: r => r.suspended ? 'suspended' : r.approved ? 'active' : 'pending' },
+      { label: 'bot_blocked', v: r => r.blocked_bot ? 'yes' : 'no' },
     ], rows);
     toast(`خروجی ${rows.length} کاربر دانلود شد 📥`);
   };
@@ -430,7 +452,7 @@ export default function Users({ go, me, route = '' }) {
     { k: 'last_active', label: 'آخرین فعالیت', render: r => <RelativeTime value={r.last_active} /> },
     { k: 'registered_at', label: 'ثبت‌نام', render: r => <FaDateTime value={r.registered_at} /> },
     { k: 'st', label: 'وضعیت', render: r => <div className="row" style={{ gap: 3 }}>{r.suspended
-      ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B>}{r.has_open_ticket && <B kind="warn">🎫 باز</B>}</div> },
+      ? <B kind="bad">تعلیق</B> : r.approved ? <B kind="ok">فعال</B> : <B kind="warn">در انتظار</B>}{r.has_open_ticket && <B kind="warn">🎫 باز</B>}{r.blocked_bot && <B kind="bad" title={r.blocked_bot_reason === 'user_deactivated' ? 'حساب تلگرام غیرفعال شده' : r.blocked_bot_reason === 'chat_not_found' ? 'چت با ربات یافت نشد' : 'کاربر ربات را بلاک کرده'}>🔕 بلاک ربات</B>}</div> },
     { k: 'ops', label: '', stop: true, render: r => (
       <div className="row" style={{ gap: 4 }}>
         {has('users.manage') && !r.approved && !r.suspended && <button className="btn sm ok" onClick={() => setConfirm({ uid: r.id, action: 'approve', text: `تأیید حساب «${r.display_name || r.name}»؟ وضعیت: در انتظار ← فعال` })} aria-label="تأیید کاربر">✅</button>}
@@ -470,7 +492,8 @@ export default function Users({ go, me, route = '' }) {
           <div className="toolbar-group" aria-label="خروجی و عملیات انبوه">
             <button className="btn sm" title="خروجی CSV از همه‌ی نتایج فیلترشده" onClick={() => api.exportUsersCsv({ q, intake, status, group, role, activity,
               accuracy_max: accuracyMax, sub_expiring_days: subDays, has_open_ticket: openTicket,
-              smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir })}>📥 CSV همه نتایج</button>
+              smart: smart ? JSON.stringify(smart) : '', sort_by: sortBy, sort_dir: sortDir,
+              blocked })}>📥 CSV همه نتایج</button>
             {canAnyBatch && <button className="btn sm" title="اجرای عملیات روی فهرستی از شناسه‌ها" onClick={() => setLargeBatch(true)}>⚡ Batch با فهرست ID</button>}
           </div>
         </div>
@@ -510,9 +533,16 @@ export default function Users({ go, me, route = '' }) {
       {/* 📊 Directory summary — real counts from server total + page sample */}
       <div className="grid" style={{ gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:8, marginBottom:10 }}>
         <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>کل کاربران (فیلترشده)</div><b style={{fontSize:'var(--fs-section)'}}>{Number(data.total||0).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{loading?'در حال بارگذاری…':`${(data.users||[]).length.toLocaleString('fa-IR')} در این صفحه`}</div></div>
+        {/* 🔴 FIX-R1 (مورد ۱) — بلاک‌کنندگان ربات و کاربران قابل‌دسترسی */}
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)', cursor:'pointer' }} onClick={() => { setBlocked(blocked === 'blocked' ? '' : 'blocked'); setPage(1); }} title="نمایش/پنهان‌کردن بلاک‌کنندگان ربات">
+          <div className="muted" style={{fontSize:'var(--fs-caption)'}}>🔕 بلاک‌کننده‌ی ربات</div>
+          <b style={{fontSize:'var(--fs-section)', color:'var(--c-bad, #d24)' }}>{Number(data?.summary?.blocked_bot ?? 0).toLocaleString('fa-IR')}</b>
+          <div className="muted" style={{fontSize:'var(--fs-caption)'}}>{blocked === 'blocked' ? '↓ فیلتر فعال — نمایش همه' : 'کلیک: فقط بلاک‌کنندگان'}</div>
+        </div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>✅ قابل‌دسترسی ربات</div><b style={{fontSize:'var(--fs-section)'}}>{Number(data?.summary?.reachable ?? 0).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>گیرندگان واقعی اعلان</div></div>
         <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>صفحه</div><b>{Number(page).toLocaleString('fa-IR')} / {Number(data.pages||1).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>هر صفحه {Number(perPage).toLocaleString('fa-IR')}</div></div>
         <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>انتخاب‌شده</div><b>{Number(sel.length).toLocaleString('fa-IR')}</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{sel.length?'آماده عملیات گروهی':'—'}</div></div>
-        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>فیلتر فعال</div><b>{[q&&'جستجو',status&&'وضعیت',intake&&'ورودی',group&&'گروه',role&&'نقش',activity&&'فعالیت',accuracyMax&&'دقت',subDays&&'انقضا',openTicket&&'تیکت',smart&&'🧠'].filter(Boolean).length.toLocaleString('fa-IR')} مورد</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{smart?'Query ترکیبی فعال':'—'}</div></div>
+        <div className="panel panel-pad" style={{ background:'var(--c-surface)' }}><div className="muted" style={{fontSize:'var(--fs-caption)'}}>فیلتر فعال</div><b>{[q&&'جستجو',status&&'وضعیت',intake&&'ورودی',group&&'گروه',role&&'نقش',activity&&'فعالیت',accuracyMax&&'دقت',subDays&&'انقضا',openTicket&&'تیکت',blocked&&'ربات',smart&&'🧠'].filter(Boolean).length.toLocaleString('fa-IR')} مورد</b><div className="muted" style={{fontSize:'var(--fs-caption)'}}>{smart?'Query ترکیبی فعال':'—'}</div></div>
       </div>
       <FilterBar>
         <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔎 نام، نام‌نما، یوزرنیم، شماره دانشجویی یا Telegram ID…"
@@ -524,6 +554,26 @@ export default function Users({ go, me, route = '' }) {
           <option value="">همه‌ی ورودی‌ها</option>
           {intakes.map(i => <option key={i.code || i} value={i.code || i}>{i.label || i.code || i}</option>)}
         </select>
+        {/* 🔴 FIX-R1 (مورد ۱) — فیلتر وضعیت ربات: همه / بلاک‌کننده / قابل‌دسترسی */}
+        <select className="inp" value={blocked} onChange={e => { setBlocked(e.target.value); setPage(1); }}>
+          <option value="">🤖 وضعیت ربات: همه</option>
+          <option value="blocked">🔕 بلاک‌کننده‌ی ربات</option>
+          <option value="reachable">✅ قابل‌دسترسی</option>
+        </select>
+        {/* 🔴 FIX-R1 (مورد ۱) — اسکن بلاک‌کنندگان با تلگرام (پس‌زمینه) */}
+        {has('users.manage') && (
+          scan.running
+            ? <button className="btn sm danger" onClick={async () => { try { await api.usersScanBlockedStop(); toast('توقف اسکن درخواست شد — تا چند ثانیه‌ی آینده متوقف می‌شود', 'ok'); } catch (e) { toast(errText(e), 'err'); } }}>
+                ⏹ توقف اسکن ({faNum(scan.progress || 0)}/{faNum(scan.total || 0)}) · 🔕 {faNum(scan.found || 0)}
+              </button>
+            : <button className="btn sm" onClick={async () => {
+                try {
+                  const r = await api.usersScanBlockedStart();
+                  toast(r?.message || 'اسکن بلاک‌کنندگان شروع شد', 'ok');
+                  setScan(s => ({ ...s, running: true }));
+                } catch (e) { toast(errText(e), 'err'); }
+              }}>📡 اسکن بلاک‌کننده‌ها</button>
+        )}
         <button className={`btn sm ${advanced ? 'primary' : ''}`} aria-expanded={advanced} onClick={() => setAdvanced(x => !x)}>⚙ فیلترهای سریع</button>
         <button className={`btn sm ${smart ? 'primary' : ''}`} onClick={() => setSmartOpen(true)}>🧠 Query Builder{smart ? ' · فعال' : ''}</button>
       </FilterBar>

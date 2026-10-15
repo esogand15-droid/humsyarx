@@ -476,10 +476,14 @@ async def safe_send_ex(bot, uid: int, text: str, **kwargs):
     نیاز دارند، نه فقط bool. safe_send روی همین تابع نشسته تا رفتار
     همه‌ی صدازننده‌ها عوض نشود.
     🌊 W5 — اگر text > 4096، برش هوشمند و ارسال چندپیامه (همه یا هیچ نه، best-effort)
+    🔴 FIX-R1 (مورد ۱) — خطای «دائمیِ بلاک» (Forbidden: bot was blocked
+    by the user / user is deactivated / chat not found) همان‌جا کاربر را
+    bot_blocked علامت می‌زند تا از آمار «فعال» کم شود و دفعات بعد
+    اصلاً به او ارسال نشود. خطای 429/شبکه هرگز باعث بلاک‌علامتی نمی‌شود.
     """
     import asyncio
     from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest
-    # 🌊 W5 smart chunk
+    # 🧠 FIX-R1 smart chunk
     parts = _split_smart(text, 4096)
     if len(parts) > 1:
         # ارسال چندپیام با تاخیر کوتاه بین هر chunk تا flood نشود
@@ -496,6 +500,16 @@ async def safe_send_ex(bot, uid: int, text: str, **kwargs):
             await bot.send_message(uid, text, **kwargs)
             return True, "", None
         except Exception as e:
+            # 🔴 FIX-R1 (مورد ۱) — خطاهای «کاربر از ربات دست کشیده»:
+            # دائمی‌اند؛ علامت‌گذاری و توقف فوری (retry بی‌معناست).
+            reason = blocked_reason_of(e)
+            if reason:
+                try:
+                    from database import db as _db
+                    await _db.mark_user_blocked(uid, blocked=True, reason=reason)
+                except Exception:
+                    pass
+                return False, str(e), e
             # 🛡 AUDIT-S1b — در PTB خودِ `BadRequest` فرزندِ `NetworkError` است.
             # الگوی قبلی («هر NetworkError ⇒ retry») باعث می‌شد هر خطای
             # **دائمی** (bot kicked / chat not found / متن Too long / خطای
@@ -526,6 +540,26 @@ async def safe_send_ex(bot, uid: int, text: str, **kwargs):
     return False, str(last_err or "send retries exhausted"), last_err
 
 
+def blocked_reason_of(exc: Exception) -> str | None:
+    """🔴 FIX-R1 (مورد ۱) — آیا این خطا یعنی «کاربر دیگر پیام ربات را
+    نمی‌گیرد»؟ خروجی: reason برای mark_user_blocked یا None.
+
+    فقط خطاهای دائمیِ Telegram: Forbidden (بلاک)، deactivated و
+    chat not found. RetryAfter/شبکه/BadRequest هرگز بلاک نیستند."""
+    if exc is None:
+        return None
+    name = type(exc).__name__
+    text = str(exc or '')
+    low = text.lower()
+    if name == 'Forbidden' or 'bot was blocked by the user' in low:
+        return 'blocked_by_user'
+    if 'user is deactivated' in low:
+        return 'user_deactivated'
+    if 'chat not found' in low:
+        return 'chat_not_found'
+    return None
+
+
 async def safe_send(bot, uid: int, text: str, **kwargs) -> bool:
     """
     ارسال پیام با مدیریت خطا — برای broadcast.
@@ -545,11 +579,22 @@ async def safe_send(bot, uid: int, text: str, **kwargs) -> bool:
 
 async def broadcast_message(bot, users: List[dict], text: str,
                             parse_mode: str = 'HTML') -> tuple:
-    """ارسال همگانی — برمی‌گردونه (sent, failed)"""
+    """ارسال همگانی — برمی‌گردونه (sent, failed)
+
+    🔴 FIX-R1 (مورد ۱): کاربران بلاک‌کرده‌ی ربات (blocked_bot) از
+    ابتدا از لیست حذف می‌شوند — ارسال به آن‌ها قطعاً Forbidden است و
+    فقط خطای کاذب در گزارش می‌سازد (به‌جای failed، بی‌صدا skip می‌شوند).
+    امضا (sent, failed) حفظ شده تا تمام فراخوان‌ها بی‌تغییر بمانند.
+    """
     import asyncio
+    # حذف بلاک‌کرنده‌ها (کپی سطحی؛ لیست اصلی دست‌نخورده می‌ماند)
+    targets = [u for u in users if not u.get('blocked_bot')]
+    if len(targets) != len(users):
+        logger.info("broadcast: %s کاربر بلاک‌کرنده ربات skip شد",
+                    len(users) - len(targets))
     sent, failed = 0, 0
     # ارسال دسته‌ای با تاخیر کم برای جلوگیری از flood
-    for i, u in enumerate(users):
+    for i, u in enumerate(targets):
         ok = await safe_send(bot, u['user_id'], text, parse_mode=parse_mode)
         if ok:
             sent += 1

@@ -1773,39 +1773,114 @@ async def qbank_file_remove(file_id: str, admin=Depends(get_content_admin_user))
 async def reports_stats_ep(admin=Depends(GLOBAL_USER)):
     return await db.content_reports_stats()
 
+# 🔴 FIX-R1 (مورد ۵) — برچسب فارسی واحد برای همه‌ی دلیل‌ها و وضعیت‌ها.
+# قبلاً این نگاشت محلی ناقص بود (wrong_option و incomplete نداشت) و
+# دلیل‌ها انگلیسی خام به ادمین نمایش داده می‌شدند.
+REPORT_STATUS_FA = {
+    "new": "جدید", "reviewing": "در بررسی", "resolved": "حل‌شده",
+    "rejected": "ردشده", "pending": "در انتظار",
+}
+REPORT_REASON_FA = {
+    "wrong_answer": "پاسخ اشتباه",
+    "wrong_option": "گزینه اشتباه",
+    "incomplete": "متن ناقص",
+    "unclear": "گنگ/نامفهوم",
+    "duplicate": "تکراری",
+    "broken_file": "فایل خراب",
+    "outdated": "محتوای قدیمی",
+    "other": "سایر",
+}
+import re as _re_sep
+_SEPARATOR_RUN_RE = _re_sep.compile(r"[▬━─═\-]{4,}")
+
+
+def _display_note(note: str) -> str:
+    """نمایش تمیز متن توضیح گزارش: خط‌های جداکننده‌ی تزئینی فشرده
+    می‌شوند تا ستون توضیح آیکون‌های عجیب (▬▬▬…) نشان ندهد."""
+    text = str(note or "")
+    text = _SEPARATOR_RUN_RE.sub(" — ", text)
+    # حذف کاراکترهای کنترلی نامرئی (به‌جز خط جدید)
+    text = "".join(c for c in text if c == "\n" or ord(c) >= 32)
+    return text.strip()[:500]
+
+
 @router.get("/reports")
 async def reports_list_ep(
     status: Optional[str] = Query(None), skip: int = Query(0, ge=0),
     limit: int = Query(30, ge=1, le=100), admin=Depends(GLOBAL_USER),
+    target_info: bool = Query(True),
 ):
+    """🔴 FIX-R1 (مورد ۵) — لیست گزارش‌ها با اطلاعاتی که ادمین می‌فهمد.
+
+    هر ردیف علاوه بر شناسه‌های فنی، «هدفِ» خوانا (متن سؤال/نام فایل +
+    درس/جلسه)، برچسب فارسی دلیل/وضعیت و oid سند (برای تغییر وضعیت
+    دقیق حتی اگر report_id قدیمی تکراری باشد) را برمی‌گرداند."""
     if status and status not in ("new", "reviewing", "resolved", "rejected"):
         raise HTTPException(422, "وضعیت نامعتبر")
     items = await db.get_content_reports(status=status, skip=skip, limit=limit)
     total = await db.content_reports_count(status=status)
-    REASON_FA = {'wrong_answer':'پاسخ اشتباه','unclear':'گنگ/نامفهوم','duplicate':'تکراری',
-        'broken_file':'فایل خراب','outdated':'محتوای قدیمی','other':'سایر'}
-    return {"total": total, "skip": skip, "limit": limit,
-        "reports":[{"id":r.get("report_id"),"target_type":r.get("target_type",""),
-        "target_id":r.get("target_id",""),"reporter_name":r.get("reporter_name",""),
-        "reason":REASON_FA.get(r.get("reason",""), r.get("reason","")),"note":r.get("note",""),
-        "status":r.get("status","new"),"created_at":r.get("created_at") or None,
-        "resolved_at":r.get("resolved_at") or None} for r in items]}
+    rows = []
+    for r in items:
+        row = {
+            "id": r.get("report_id"),
+            # 🔴 FIX-R1 — کلید یکتای واقعی برای تغییر وضعیت (ObjectId)
+            "oid": str(r.get("_id") or ""),
+            "target_type": r.get("target_type", ""),
+            "target_type_fa": "سؤال" if r.get("target_type") == "question" else "محتوا/فایل",
+            "target_id": r.get("target_id", ""),
+            "reporter_id": r.get("reporter_id"),
+            "reporter_name": r.get("reporter_name", ""),
+            "reason": REPORT_REASON_FA.get(r.get("reason", ""), r.get("reason", "")),
+            "reason_key": r.get("reason", ""),
+            "note": _display_note(r.get("note", "")),
+            "status": r.get("status", "new"),
+            "status_fa": REPORT_STATUS_FA.get(r.get("status", "new"), r.get("status", "new")),
+            "created_at": r.get("created_at") or None,
+            "resolved_at": r.get("resolved_at") or None,
+            "status_changed_at": r.get("status_changed_at") or None,
+            "status_history": (r.get("status_history") or [])[-6:],
+        }
+        if target_info:
+            try:
+                info = await db.content_report_target_info(r)
+                row["target"] = {
+                    "title": info.get("title", ""),
+                    "type_label": info.get("type_label", ""),
+                    "lesson": info.get("lesson", ""),
+                    "session": info.get("session", ""),
+                    "teacher": info.get("teacher", ""),
+                    "detail": info.get("detail", ""),
+                    "missing": bool(info.get("target_missing")),
+                    "question_options": info.get("question_options") or [],
+                    "correct_answer": info.get("correct_answer") or "",
+                }
+            except Exception:
+                row["target"] = None
+        rows.append(row)
+    return {"total": total, "skip": skip, "limit": limit, "reports": rows}
 
 class ReportStatusUpdate(BaseModel):
     status: str
 
 @router.post("/reports/{rid}/status")
-async def report_status_ep(rid: int, body: ReportStatusUpdate, admin=Depends(GLOBAL_USER)):
+async def report_status_ep(rid, body: ReportStatusUpdate, admin=Depends(GLOBAL_USER)):
+    """🔴 FIX-R1 (مورد ۵) — تغییر وضعیت با کلید یکتا + پاسخ صادقانه.
+
+    rid می‌تواند ObjectId (hex) یا report_id عددی باشد. اگر گزارش پیدا
+    نشد یا چیزی تغییر نکرد، خطای صریح برمی‌گردد (نه «موفق» الکی)."""
     if body.status not in ("new","reviewing","resolved","rejected"): raise HTTPException(422,"وضعیت نامعتبر")
     r = await db.get_content_report(rid)
-    if not r: raise HTTPException(404)
+    if not r: raise HTTPException(404, "گزارش پیدا نشد")
     old_status = r.get("status", "new")
-    await db.update_report_status(rid, body.status, resolved_by=admin["id"])
+    result = await db.update_report_status(r["_id"], body.status, resolved_by=admin["id"])
+    if not result.get("updated"):
+        # بدون تغییر واقعی → خطای صریح، نه موفقیت دروغین
+        raise HTTPException(409, "تغییر وضعیت ثبت نشد — گزارش همین وضعیت را دارد یا سند در دسترس نیست.")
     await _audit(
         admin, "تغییر وضعیت گزارش محتوا", "Reports", severity="WARNING",
-        target_id=str(rid), target_type="content_report",
-        target_label=f"{r.get('target_type','')} · {r.get('reason','')}"[:300],
+        target_id=str(r.get("report_id") or rid), target_type="content_report",
+        target_label=f"{r.get('target_type','')} · {REPORT_REASON_FA.get(r.get('reason',''), r.get('reason',''))}"[:300],
         before={"status": old_status}, after={"status": body.status},
         tags=["گزارش_محتوا", "بازبینی", "پنل_وب"],
     )
-    return {"ok":True}
+    return {"ok": True, "prev_status": old_status, "status": body.status}
