@@ -439,7 +439,13 @@ def _validate_question(q: dict, valid_pages: set) -> tuple | None:
     if not 0 <= ci <= 3:
         return None
     es = (q.get('explanation_short') or '').strip()
-    if not (5 <= len(es) <= TG_MAX_EXPLANATION) or es.count('\n') > 2:
+    # 🩹 trim نرم (امن برای تلگرام؛ فقط متن توضیحِ ماست): اگر بلند بود
+    # روی مرزِ کلمه کوتاه می‌کنیم، نه اینکه کل سؤال را دور بیندازیم.
+    if len(es) > TG_MAX_EXPLANATION:
+        es = es[:TG_MAX_EXPLANATION].rsplit(' ', 1)[0].rstrip('،.:؛ ') or \
+            es[:TG_MAX_EXPLANATION]
+        q['explanation_short'] = es
+    if len(es) < 5 or es.count('\n') > 2:
         return None
     el = (q.get('explanation_long') or '').strip() or es
     try:
@@ -540,6 +546,9 @@ async def generate_questions_for_topic(doc, topic: dict, want: int,
     from ai_solver import generate_structured_json, get_ai_config
     cfg = await get_ai_config()
     if not cfg.get('enabled'):
+        logger.warning('quiz gen skipped: AI disabled (uid=%s)', user_id)
+        await db.quiz_log_generation(user_id, 'questions', '', '',
+                                      0, False, error_type='ai_disabled')
         return []
 
     for c, n in plan:
@@ -569,11 +578,11 @@ async def generate_questions_for_topic(doc, topic: dict, want: int,
                     cfg.get('model', ''), int((time.monotonic() - t0) * 1000),
                     False, chars_in=len(prompt), error_type=type(e).__name__)
                 break
+            raw = (data or {}).get('questions') or []
             await db.quiz_log_generation(
                 user_id, 'questions', cfg.get('provider', ''), cfg.get('model', ''),
                 int((time.monotonic() - t0) * 1000), True,
-                chars_in=len(prompt), items_out=len((data or {}).get('questions') or []))
-            raw = (data or {}).get('questions') or []
+                chars_in=len(prompt), items_in=len(raw))
             candidates = []
             for q in raw:
                 v = _validate_question(q, valid_pages)
@@ -583,6 +592,11 @@ async def generate_questions_for_topic(doc, topic: dict, want: int,
             verified = await verify_questions(
                 candidates, source, user_id,
                 topic_title=topic['title']) if candidates else []
+            # قیف: raw → validated → verified (تله‌متری تک‌ردیفی)
+            await db.quiz_log_generation(
+                user_id, 'questions', cfg.get('provider', ''),
+                cfg.get('model', ''), 0, True,
+                items_in=len(raw), items_out=len(verified))
             added = 0
             for qd in verified:
                 qd = _finalize_question(qd, topic)
@@ -608,7 +622,9 @@ VERIFY_SCHEMA = {
                 'type': 'OBJECT',
                 'properties': {
                     'index': {'type': 'INTEGER'},
-                    'verdict': {'type': 'STRING'},   # ok | wrong | fixable
+                    # 🔒 enum ⇒ مدل مجبور است دقیقاً یکی از این سه را بدهد
+                    'verdict': {'type': 'STRING',
+                                'enum': ['ok', 'wrong', 'fixable']},
                     'reason': {'type': 'STRING'},
                     'fixed_correct_index': {'type': 'INTEGER'},
                 },
@@ -682,26 +698,43 @@ async def verify_questions(candidates: list, source: str, user_id: int,
     verdicts = {}
     for r in (data or {}).get('results') or []:
         try:
-            verdicts[int(r['index'])] = (str(r.get('verdict', '')).lower(),
-                                         r.get('fixed_correct_index'))
+            v = str(r.get('verdict', '')).strip().lower()
+            # معادل‌های محتمل (مدل ممکن است تغییراتی بدهد)
+            if v in ('ok', 'correct', 'valid', 'سالم', 'درست', 'approved'):
+                v = 'ok'
+            elif v in ('fixable', 'fix', 'fixable_ok', 'اصلاح', 'قابل اصلاح'):
+                v = 'fixable'
+            elif v in ('wrong', 'invalid', 'bad', 'غلط', 'نادرست', 'مردود'):
+                v = 'wrong'
+            else:
+                v = ''      # ناشناخته
+            verdicts[int(r['index'])] = (v, r.get('fixed_correct_index'))
         except (KeyError, TypeError, ValueError):
             continue
+    # 🩹 اگر هویچ verdictی نگاشت نشد (پاسخِ نامتعارف مدل)، سؤال‌ها را
+    # با هشدار نگه می‌داریم — «حذفِ همه به‌خاطر خطای قالبِ بازبینی»
+    # بدترین حالت است؛ سیاست سخت‌گیری فقط برای «wrong» صریح است.
+    if not verdicts:
+        logger.warning('verify: unparsed verdicts — keeping %d candidates '
+                       '(topic=%s)', len(candidates), topic_title or '?')
+        return candidates
     out = []
     for i, q in enumerate(candidates):
         v = verdicts.get(i)
-        if v is None or v[0] != 'ok':
-            if v and v[0] == 'fixable':
-                try:
-                    fx = int(v[1])
-                    if 0 <= fx <= 3 and fx != q['correct_index'] \
-                            and len(set(q['options'])) == 4:
-                        q = dict(q)
-                        q['correct_index'] = fx
-                        out.append(q)
-                        continue
-                except (TypeError, ValueError):
-                    pass
-            continue        # wrong یا نامعتبر → حذف
+        if v is None or v[0] == '':
+            out.append(q)          # سؤالِ بازبینی‌نشده → نگه (سخت‌گیری فقط برای wrong)
+            continue
+        if v[0] == 'wrong':
+            continue
+        if v[0] == 'fixable':
+            try:
+                fx = int(v[1])
+                if 0 <= fx <= 3 and fx != q['correct_index'] \
+                        and len(set(q['options'])) == 4:
+                    q = dict(q)
+                    q['correct_index'] = fx
+            except (TypeError, ValueError):
+                pass
         out.append(q)
     return out
 
@@ -1147,6 +1180,24 @@ async def _build_and_start(chat_id: int, message_id: int, sid: str, uid: int):
                 keyboard=_kb([[InlineKeyboardButton(
                     '📚 آزمون‌ساز', callback_data='quiz:main')]]),
                 bot=_get_bot())
+            # 🧪 تشخیص برای ادمین: خلاصه‌ی تله‌متری همین ساخت — علتِ
+            # واقعی (خطای 400 مدل؟ بازبینی؟ اعتبارسنجی؟) بدون نیاز به
+            # دسترسی به دیتابیس، همان‌جا در پیام ادمین.
+            try:
+                diag = await _generation_diagnostics(uid)
+                if diag:
+                    from utils import ADMIN_ID as _AID
+                    bot = _get_bot()
+                    if bot and _AID:
+                        await bot.send_message(
+                            _AID,
+                            '🛠 <b>ساخت آزمون ناموفق بود</b>\n'
+                            f"👤 کاربر: <code>{uid}</code>\n"
+                            f"📘 سند: {_esc(session.get('doc_name') or '')}\n\n"
+                            f"{_esc(diag)}",
+                            parse_mode='HTML')
+            except Exception:
+                logger.debug('admin diag failed', exc_info=True)
             return
         # کمتر از پلان هم قبول است — پلان را به واقعی می‌چسبانیم
         if total_now < session['total_planned']:
@@ -1192,6 +1243,30 @@ async def _activate(session, chat_id, message_id, total_now=None):
         await _send_batch(session, chat_id, batch=5)
     else:
         await _send_one(session, chat_id)
+
+
+async def _generation_diagnostics(uid: int, minutes: int = 15) -> str:
+    """خلاصه‌ی تله‌متری تولید برای ادمین — فقط اعداد/خطا، بدون محتوا."""
+    from datetime import timedelta
+    from time_utils import now_utc
+    cutoff = (now_utc() - timedelta(minutes=minutes)).isoformat()
+    rows = await db.ai_generation_logs.find(
+        {'user_id': int(uid), 'at': {'$gte': cutoff}}
+    ).sort('at', 1).to_list(100)
+    if not rows:
+        return 'هیچ فراخوانیِ AI ثبت نشده است (خاموشی/خطای قبل از تماس؟)'
+    lines = []
+    for r in rows:
+        tag = '✅' if r.get('ok') else '❌'
+        extra = ''
+        if r.get('error_type'):
+            extra = f" — خطا: {r['error_type']}"
+        elif r.get('items_in') or r.get('items_out'):
+            extra = f" — {r.get('items_in', 0)}→{r.get('items_out', 0)}"
+        lines.append(
+            f"{tag} {r.get('purpose', '?')} • {r.get('provider', '')}/"
+            f"{r.get('model', '')} • {r.get('duration_ms', 0)}ms{extra}")
+    return '\n'.join(lines[:25])
 
 
 # ══════════════════════════════════════════════════

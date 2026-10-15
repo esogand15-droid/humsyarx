@@ -2100,14 +2100,25 @@ def _sanitize_tg_html(text: str) -> str:
     return ''.join(out).strip()
 
 
-def _no_thinking(cfg: dict) -> dict:
-    """تفکرِ داخلی را خاموش می‌کند تا کلِ maxOutputTokens صرفِ متن شود.
+def _no_thinking(cfg: dict, model: str = '') -> dict:
+    """تفکرِ داخلی را کم می‌کند تا maxOutputTokens صرفِ متنِ پاسخ شود.
 
-    فقط روی مدل‌های Gemini اثر دارد؛ برای مدل‌های دیگر بی‌ضرر است چون
-    کلیدِ ناشناخته در generationConfig نادیده گرفته می‌شود.
+    🔴 مدل‌آگاه (مستندات رسمی گوگل):
+    • Gemini 3+ فقط thinkingLevel دارد؛ thinkingBudget منسوخ است و
+      «می‌تواند خطای متناوب 400 INVALID_ARGUMENT بدهد» و روی مدل‌های
+      جدید قطعاً 400 می‌شود ⇒ thinkingLevel: 'low' (کمترین سطحِ
+      پشتیبانی‌شده در همه‌ی مدل‌های 3).
+    • Gemini 2.5 و قدیمی‌تر ⇒ thinkingBudget: 0 (خاموشِ کامل).
+    برای ارائه‌دهنده‌های غیر Gemini بی‌اثر است (کلید ناشناخته در
+    payload آن‌ها به‌کار نمی‌رود).
     """
     cfg = dict(cfg)
-    cfg['thinkingConfig'] = {'thinkingBudget': 0}
+    # gemini-3 و هر نسل بعدی (طبق اعلان گوگل، روی مدل‌های جدید
+    # thinkingBudget قطعاً 400 INVALID_ARGUMENT می‌شود)
+    if re.match(r'gemini-[3-9]', (model or '').strip().lower()):
+        cfg['thinkingConfig'] = {'thinkingLevel': 'low'}
+    else:
+        cfg['thinkingConfig'] = {'thinkingBudget': 0}
     return cfg
 
 
@@ -2193,7 +2204,7 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
             'responseMimeType': 'application/json',
             'responseSchema': QUESTION_SCHEMA,
             'maxOutputTokens': 2048,
-        }),
+        }, cfg['model']),
     }
 
     try:
@@ -2374,7 +2385,7 @@ async def generate_structured_json(prompt: str, schema: dict, purpose: str,
                 'responseMimeType': 'application/json',
                 'responseSchema': schema,
                 'maxOutputTokens': int(max_tokens),
-            }),
+            }, cfg['model']),
         }
         if system_prompt:
             payload['system_instruction'] = {'parts': [{'text': system_prompt}]}
@@ -2449,7 +2460,7 @@ async def generate_broadcast_ai(notes: str) -> str:
     payload = {
         'system_instruction': {'parts': [{'text': BROADCAST_STYLE_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': f"این نکته‌ها رو به یه اطلاعیه تبدیل کن:\n\n{notes}"}]}],
-        'generationConfig': _no_thinking({'maxOutputTokens': 2048}),
+        'generationConfig': _no_thinking({'maxOutputTokens': 2048}, cfg['model']),
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -2504,7 +2515,7 @@ async def generate_ticket_reply_ai(subject: str, ticket_text: str, previous_repl
     payload = {
         'system_instruction': {'parts': [{'text': TICKET_REPLY_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': convo}]}],
-        'generationConfig': _no_thinking({'maxOutputTokens': 1024}),
+        'generationConfig': _no_thinking({'maxOutputTokens': 1024}, cfg['model']),
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -3564,7 +3575,7 @@ async def _vision_json_gemini(api_key: str, model: str, system_prompt: str, user
             'responseMimeType': 'application/json',
             'responseSchema': schema,
             'maxOutputTokens': 4096,
-        }),
+        }, model),
     }
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(url, headers=headers, json=payload)

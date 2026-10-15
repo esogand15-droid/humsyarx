@@ -209,7 +209,11 @@ class QuizValidation(unittest.TestCase):
 
     def test_explanation_limits(self):
         self.assertIsNone(self._v(explanation_short="کم"))          # <5
-        self.assertIsNone(self._v(explanation_short="چ" * 201))     # >200
+        # 🩹 trim نرم: >200 روی مرز کلمه کوتاه می‌شود، نه رد کامل
+        q = self._v(explanation_short="توضیح " + "طولانی" * 60)
+        self.assertIsNotNone(q)
+        self.assertLessEqual(len(q["explanation_short"]), 200)
+        self.assertEqual(q["explanation_short"].startswith("توضیح"), True)
         self.assertIsNone(self._v(explanation_short="a\nb\nc\nd\n"))  # >2 خط
 
     def test_page_ref(self):
