@@ -11,6 +11,11 @@ import SavedViews from '../SavedViews.jsx';
 import { writeHashQuery } from '../urlState.js';
 
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
+
+// 🔍 AUDIT-R1 — برچسب فارسی وضعیت‌ها (قبلاً pending/approved/... خام نمایش داده می‌شد)
+const PAY_STATUS_FA = { pending: 'در انتظار بررسی', approved: 'تأییدشده', rejected: 'ردشده', failed: 'ناموفق' };
+const SUB_STATUS_FA = { active: 'فعال', expired: 'منقضی', pending: 'در انتظار', cancelled: 'لغوشده' };
+const RUN_STATUS_FA = { completed: 'کامل‌شده', sending: 'در حال ارسال', cancelled: 'لغوشده', failed: 'ناموفق' };
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;
 const TABS = [
   ['control', '⚙️ مرکز کنترل'],
@@ -260,7 +265,7 @@ function PaymentsPanel({ initial = {} }) {
     { k: 'discount_code', label: 'تخفیف', render: r => r.discount_code ? <B kind="purple">{r.discount_code} {r.discount_percent ? `· ${fa(r.discount_percent)}٪` : ''}</B> : '—' },
     { k: 'has_receipt', label: 'رسید', render: r => r.has_receipt ? <B kind="acc">🖼 دارد</B> : '—' },
     { k: 'submitted_at', label: 'ثبت', render: r => <FaDateTime value={r.submitted_at} /> },
-    { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{r.status}</B> },
+    { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'pending' ? 'warn' : r.status === 'approved' ? 'ok' : 'bad'}>{PAY_STATUS_FA[r.status] || r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => <div className="row" style={{ gap: 4 }}>
       {r.status === 'pending' && <>
         <button className="btn sm ok" onClick={() => decide(r, true)} aria-label="تأیید رسید پرداخت">✅</button>
@@ -746,7 +751,7 @@ function SubscribersPanel({ ov, refreshOverview, initial = {} }) {
     { k: 'name', label: 'دانشجو', render: r => <div><b>{r.name}</b><div className="muted">{r.student_id || `#${r.user_id}`}</div></div> },
     { k: 'plan_name', label: 'پلن' },
     { k: 'end_date', label: 'پایان', render: r => <FaDateTime value={r.end_date} /> },
-    { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'active' ? 'ok' : r.status === 'expired' ? 'warn' : 'bad'}>{r.status}</B> },
+    { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'active' ? 'ok' : r.status === 'expired' ? 'warn' : 'bad'}>{SUB_STATUS_FA[r.status] || r.status}</B> },
     { k: 'ops', label: '', stop: true, render: r => <button className="btn sm" onClick={() => setSelected(r.user_id)}>مدیریت ‹</button> },
   ];
   return <>
@@ -1028,7 +1033,7 @@ function DiscountDrawer({ item, onClose }) {
       <div className="row" style={{ marginTop: 16 }}><div className="h1" style={{ fontSize: 'var(--fs-section)' }}>تاریخچه انتشار</div>
         <span className="spacer" /><button className="btn sm" onClick={load}>↻ تازه‌سازی وضعیت</button></div>
       {!(runs || []).length ? <Empty text="انتشاری ثبت نشده" /> : <div className="grid" style={{ gap: 6 }}>{runs.map(r => <div key={r.broadcast_id} className="panel panel-pad">
-        <div className="row"><B kind={r.status === 'completed' ? 'ok' : r.status === 'sending' ? 'warn' : 'bad'}>{r.status}</B><B>{r.target}</B>
+        <div className="row"><B kind={r.status === 'completed' ? 'ok' : r.status === 'sending' ? 'warn' : 'bad'}>{RUN_STATUS_FA[r.status] || r.status}</B><B>{r.target}</B>
           <span className="spacer" /><FaDateTime value={r.created_at} />{r.status === 'sending' && <button className="btn sm danger" onClick={() => cancel(r.broadcast_id)}>توقف</button>}</div>
         <div className="row" style={{ marginTop: 6 }}><span>کل {fa(r.total)}</span><span>✅ {fa(r.sent)}</span><span>❌ {fa(r.failed)}</span><span>🚫 {fa(r.blocked)}</span></div>
       </div>)}</div>}

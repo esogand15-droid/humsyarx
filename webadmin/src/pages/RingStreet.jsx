@@ -29,6 +29,10 @@ const STATE_HINT = {
 };
 
 const fa = (n) => Number(n || 0).toLocaleString('fa-IR');
+
+// 🔍 AUDIT-R1 — برچسب فارسی وضعیت صف/گزارش رینگ (قبلاً انگلیسی خام)
+const QSTATUS = { waiting: 'در انتظار', matched: 'جفت‌شده', chatting: 'در گفتگو', closed: 'بسته‌شده', idle: 'بیکار' };
+const RSTATUS = { pending: 'در انتظار بررسی', actioned: 'اقدام‌شده', dismissed: 'ردشده' };
 const MODE = { serious: '💍 جدی', fun: '🎭 فان' };
 const PSTATUS = { active: 'فعال', paused: '⛔ محدود', banned: 'بن', deleted: 'حذف‌شده' };
 const GENDER = { female: 'دختر', male: 'پسر', undisclosed: 'نامشخص' };
@@ -103,7 +107,7 @@ export default function RingStreet({ me }) {
       { k: 'uid', label: 'کاربر', render: r => <span className="code">{fa(r.uid)}</span> },
       { k: 'anon', label: 'ناشناس', render: r => <B kind="acc">#{r.anon || '—'}</B> },
       { k: 'mode', label: 'حالت', render: r => MODE[r.mode] || r.mode || '—' },
-      { k: 'status', label: 'وضعیت', render: r => <B>{r.status}</B> },
+      { k: 'status', label: 'وضعیت', render: r => <B kind={r.status === 'chatting' ? 'ok' : r.status === 'waiting' ? 'warn' : ''}>{QSTATUS[r.status] || r.status}</B> },
       { k: 'wait', label: 'انتظار', render: r => (r.wait_s == null ? '—' : `${fa(Math.round(r.wait_s / 60))} دقیقه`) },
     ];
     if (tab === 'chats') return [
@@ -561,7 +565,7 @@ function ReportDrawerBody({ drawer, busy, onReview, onBan, onLift, onPause, onRe
   return <div style={{ padding: 4 }}>
     <KeyValue label="دلیل" value={r.reason} />
     <KeyValue label="شدت" value={fa(r.severity)} />
-    <KeyValue label="وضعیت" value={r.status} />
+    <KeyValue label="وضعیت" value={RSTATUS[r.status] || QSTATUS[r.status] || r.status} />
     <KeyValue label="توضیح" value={r.details || '—'} />
     <KeyValue label="شواهد" value={fa(ev.length)} />
     {ev.length > 0 && <div className="panel" style={{ marginTop: 8, padding: 8 }}>

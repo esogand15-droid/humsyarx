@@ -445,6 +445,19 @@ class DBCore:
                 self._index(self.sub_payments,
                             [('status', 1), ('created_at', -1)],
                             background=True),
+                # 🔍 AUDIT-R1 — ایندکس‌های مفقودِ کوئری‌های داغ (سنجش
+                # قبل/بعد در گزارش ممیزی): users.blocked_bot (شمارش
+                # بلاک‌کنندگان در هر رندر داشبورد/کاربران)، users.last_active
+                # (فعال امروز/هفته + فیلتر فعالیت)، users.registered_at
+                # (ثبت‌نام‌های جدید + مرتب‌سازی پیش‌فرض جدول کاربران)،
+                # notif_runs.started_at (کارت اجرای اعلان بدون فیلتر job).
+                # (content_reports.report_id از قبل ایندکس دارد — اینجا
+                # دوباره ساخته نشد تا تداخل نام ایندکس نگیرد.)
+                # همه افزودنی؛ create_index تکراری idempotent است.
+                self._index(self.users, [('blocked_bot', 1)], background=True),
+                self._index(self.users, [('last_active', -1)], background=True),
+                self._index(self.users, [('registered_at', -1)], background=True),
+                self._index(self.notif_runs, [('started_at', -1)], background=True),
             ]
             coros = [
                 collection.create_index(*keys, **options)
@@ -879,7 +892,15 @@ class DBCore:
         normalized_group = self.normalize_group(group)
         if normalized_group and normalized_group != 'هر دو':
             query['group'] = {'$in': self.group_aliases(normalized_group)}
-        return await self.users.find(query).to_list(length=None)
+        # 🔍 AUDIT-R1 — projection: تمام مصرف‌کنندگان (broadcast_message،
+        # inbox_add_many، ارسال مستقیم) فقط user_id/name/group/intake و
+        # blocked_bot را می‌خوانند؛ بدون projection هر job اعلان کل سندِ
+        # کاربر (تنظیمات، حافظه‌ی AI و...) منتقل می‌شد
+        # (~۲۶۰ بایت/کاربر → با ۲۰ هزار کاربر ~۴.۵MB در هر اجرا).
+        return await self.users.find(query, {
+            'user_id': 1, 'name': 1, 'username': 1, 'group': 1,
+            'intake': 1, 'blocked_bot': 1,
+        }).to_list(length=None)
 
 
     @staticmethod
