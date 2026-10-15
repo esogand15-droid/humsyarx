@@ -21,3 +21,4 @@ pyrogram==2.0.106
 tgcrypto==1.2.5
 # 🛡 W1 — at-rest encryption for secrets (Fernet)
 cryptography==50.0.1  # 🌊 W10/PIN-01 (py>=3.9; Fernet API stable)
+pypdf>=4.0.0

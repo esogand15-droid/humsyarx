@@ -780,7 +780,14 @@ class AIQuotaError(AIError):
 
 
 class AIConfigError(AIError):
-    pass
+    """خطای پیکربندی (کلید/مدل/دسترسی).
+
+    detail = علتِ دقیقِ برگشتی از provider (بدون secret) — فقط برای لاگ
+    و پیام ادمین؛ متن اصلی همان پیام عمومی کاربرپسند است."""
+
+    def __init__(self, msg: str, detail: str = ''):
+        super().__init__(msg)
+        self.detail = str(detail or '')[:400]
 
 
 # ══════════════════════════════════════════════════
@@ -1470,6 +1477,43 @@ async def _execute_ai_function(name: str, args: dict, uid: int) -> str:
 #  ارجاع بدیم — بدون اینکه هر بار کاربر دوباره فایل رو بفرسته.
 # ══════════════════════════════════════════════════
 
+_GEMINI_FILE_STATE_TIMEOUT = 45.0   # ثانیه؛ پردازش PDF روی سرور گوگل
+_GEMINI_FILE_STATE_POLL = 2.0        # فاصله‌ی هر نظرسنجی
+
+
+async def _gemini_wait_file_active(api_key: str, file_info: dict,
+                                   timeout: float = _GEMINI_FILE_STATE_TIMEOUT) -> dict:
+    """صبر تا فایلِ Gemini روی سرورِ گوگل ACTIVE شود.
+
+    🔴 بعد از upload/finalize فایل‌های PDF در حالت PROCESSING برمی‌گردند؛
+    ارجاع به فایلِ غیرِ ACTIVE در generateContent دقیقاً همان خطای 400
+    است — و اگر پردازش FAILED شود، سندِ ذخیره‌شده هر درخواستِ بعدیِ
+    کاربر را هم می‌شکند. خروجی: file_info با کلید state (ACTIVE |
+    PROCESSING | FAILED)."""
+    name = file_info.get('name') or ''
+    state = (file_info.get('state') or 'ACTIVE').upper()
+    deadline = time.monotonic() + timeout
+    while state == 'PROCESSING' and name and time.monotonic() < deadline:
+        await asyncio.sleep(_GEMINI_FILE_STATE_POLL)
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f'https://generativelanguage.googleapis.com/v1beta/{name}',
+                    headers={'x-goog-api-key': api_key})
+            if r.status_code == 200:
+                fresh = r.json() or {}
+                if fresh.get('state'):
+                    state = str(fresh['state']).upper()
+                    file_info = fresh
+            elif r.status_code == 404:
+                state = 'FAILED'
+                break
+        except Exception:
+            pass   # خطای موقتِ شبکه — نظرسنجی ادامه می‌یابد
+    file_info['state'] = state
+    return file_info
+
+
 async def _gemini_upload_file(api_key: str, file_bytes: bytes, mime_type: str, display_name: str) -> dict:
     base = "https://generativelanguage.googleapis.com/upload/v1beta/files"
     start_headers = {
@@ -1505,7 +1549,36 @@ async def _gemini_upload_file(api_key: str, file_bytes: bytes, mime_type: str, d
         return file_info
 
 
-def _raise_gemini_status_error(status_code: int) -> None:
+def _sanitize_provider_text(text: str) -> str:
+    """ماسک هر الگوی شبیه‌کلید در متن خطا (احتیاط — بدنه‌ی خطای رسمی
+    provider کلید را برنمی‌گرداند، ولی محکم‌کاری می‌کنیم)."""
+    text = re.sub(r'AIza[0-9A-Za-z_\-]{10,}', 'AIza***', text)
+    text = re.sub(r'sk-[0-9A-Za-z_\-]{10,}', 'sk-***', text)
+    text = re.sub(r'Bearer\s+\S+', 'Bearer ***', text, flags=re.I)
+    return ' '.join(text.split())[:400]
+
+
+def _provider_error_detail(body_text: str) -> str:
+    """بدنه‌ی خطای provider → علتِ خوانا و کوتاه برای لاگ/ادمین.
+
+    قالب استاندارد Gemini/OpenAI-compat: {error: {message, status|code}}
+    بدون JSON معتبر → ۴۰۰ کاراکتر اولِ به‌هم‌فشرده."""
+    if not body_text:
+        return ''
+    try:
+        j = json.loads(body_text)
+        err = j.get('error') or {}
+        msg = str(err.get('message') or '').strip()
+        code = str(err.get('status') or err.get('code') or '').strip()
+        if msg:
+            out = f'[{code}] {msg}' if code else msg
+            return _sanitize_provider_text(out)
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return _sanitize_provider_text(body_text[:400])
+
+
+def _raise_gemini_status_error(status_code: int, detail: str = '') -> None:
     if status_code == 429:
         raise AIQuotaError("سقف رایگان API برای امروز پر شده — کمی بعد دوباره امتحان کن.")
     if status_code == 402:
@@ -1515,9 +1588,13 @@ def _raise_gemini_status_error(status_code: int) -> None:
             "دسترس نیست."
         )
     if status_code in (400, 401, 403, 404):
+        if detail:
+            logger.warning("gemini provider error status=%s detail=%s",
+                           status_code, detail)
         raise AIConfigError(
             "کلید API نامعتبره، مدل اشتباهه یا دسترسی لازم رو نداره — ادمین باید از پنل "
-            f"هوشیار تنظیماتش رو چک کنه. (کد خطا: {status_code})"
+            f"هوشیار تنظیماتش رو چک کنه. (کد خطا: {status_code})",
+            detail=detail,
         )
     if status_code >= 500:
         raise AIError("سرویس هوش مصنوعی موقتاً در دسترس نیست — کمی بعد دوباره امتحان کن.")
@@ -1622,7 +1699,15 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
                             if resp.status_code >= 500 and attempt == 0:
                                 await asyncio.sleep(1.5)
                                 continue
-                            _raise_gemini_status_error(resp.status_code)
+                            _err_body = ''
+                            try:
+                                _err_body = (await resp.aread()).decode(
+                                    'utf-8', 'replace')
+                            except Exception:
+                                pass
+                            _raise_gemini_status_error(
+                                resp.status_code,
+                                _provider_error_detail(_err_body))
                         async for line in resp.aiter_lines():
                             if not line.startswith('data:'):
                                 continue
@@ -1771,9 +1856,14 @@ async def _call_openai_compat(api_key: str, model: str, system_prompt: str,
             "خطای ۴۰۲ (نیاز به پرداخت) — سهمیه‌ی رایگانِ این ارائه‌دهنده تمام "
             "شده یا مدل انتخابی پولی است.")
     if resp.status_code in (400, 401, 403, 404):
+        _detail = _provider_error_detail(resp.text)
+        if _detail:
+            logger.warning("provider=%s error status=%s detail=%s",
+                           provider, resp.status_code, _detail)
         raise AIConfigError(
             "کلید API نامعتبره، مدل اشتباهه یا دسترسی لازم رو نداره — ادمین باید از پنل "
-            f"هوشیار تنظیماتش رو چک کنه. (کد خطا: {resp.status_code})"
+            f"هوشیار تنظیماتش رو چک کنه. (کد خطا: {resp.status_code})",
+            detail=_detail,
         )
     if resp.status_code >= 500:
         raise AIError("سرویس هوش مصنوعی موقتاً در دسترس نیست — یه بار دیگه هم امتحان شد ولی جواب نداد؛ کمی بعد دوباره امتحان کن.")
@@ -1821,7 +1911,7 @@ async def _call_openrouter(**kwargs):
 
 async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
                          image_mime: str = 'image/jpeg', history: list = None,
-                         uid: int = None):
+                         uid: int = None, skip_doc: bool = False):
     """
     رابطِ اصلیِ جدید: یک async generator که رویدادهای {'type': 'delta',
     'text': ...} (پاسخِ تدریجی) و در آخر {'type': 'done', 'answer':...,
@@ -1844,7 +1934,7 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
         raise AIConfigError(f"ارائه‌دهنده‌ی «{cfg['provider']}» پشتیبانی نمی‌شود.")
 
     doc = None
-    if cfg['provider'] == 'gemini' and uid is not None:
+    if cfg['provider'] == 'gemini' and uid is not None and not skip_doc:
         try:
             doc = await db.ai_get_doc(uid)
             if doc and doc.get('at') and (now_utc() - parse_machine_datetime(doc['at'])).total_seconds() > 48 * 3600:
@@ -1877,11 +1967,39 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
         kwargs['uid'] = uid
         kwargs['doc'] = doc
 
+    # 🩹 خودترمیمی: اگر سندِ مرجعِ الصاق‌شده (file_uri) باعث خطای 4xx شد —
+    # فایلِ منقضی/حذف‌شده روی سرور گوگل یا state غیر ACTIVE — سند خودکار
+    # جدا می‌شود و همان سوال یک‌بار *بدونِ سند* دوباره پرسیده می‌شود.
+    # بدون این، یک PDFِ خراب چتِ هوشیارِ کاربر را تا ۴۸ ساعت قفل می‌کرد.
+    # فقط وقتی retry می‌کنیم که هنوز هیچ پاسخی به کاربر جاری نشده است.
     full_answer = None
-    async for event in fn(**kwargs):
-        if event['type'] == 'done':
-            full_answer = event['answer']
-        yield event
+    _yielded = False
+    try:
+        async for event in fn(**kwargs):
+            if event['type'] == 'done':
+                full_answer = event['answer']
+            _yielded = True
+            yield event
+    except AIConfigError as e:
+        _why = f"{getattr(e, 'detail', '') or ''} {e}".lower()
+        _doc_broken = doc and not _yielded and (
+            'file' in _why or 'state' in _why or 'precondition' in _why
+            or '(کد خطا: 400)' in str(e) or '(کد خطا: 404)' in str(e))
+        if not _doc_broken:
+            raise
+        logger.warning(
+            'سند مرجع Gemini برای uid=%s معتبر نبود — جدا شد و بدونِ سند '
+            'دوباره پرسیده می‌شود. علت: %s', uid,
+            _sanitize_provider_text(_why[:200]))
+        try:
+            await db.ai_clear_doc(uid)
+        except Exception:
+            logger.exception('ai_clear_doc ناموفق بود')
+        kwargs['doc'] = None
+        async for event in fn(**kwargs):
+            if event['type'] == 'done':
+                full_answer = event['answer']
+            yield event
 
     if full_answer is not None:
         _guard_against_meta_leak(full_answer, cfg)
@@ -2092,7 +2210,9 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
         raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
 
     if resp.status_code != 200:
-        _raise_gemini_status_error(resp.status_code)
+        _raise_gemini_status_error(
+            resp.status_code,
+            _provider_error_detail(resp.text))
 
     try:
         data = resp.json()
@@ -2168,6 +2288,145 @@ BROADCAST_STYLE_INSTRUCTION = """تو دستیارِ نوشتنِ اطلاعیه
 خروجی: فقط متنِ نهاییِ HTML رو تولید کن — هیچ توضیحِ اضافه، هیچ مقدمه یا موخره‌ای نده."""
 
 
+# ══════════════════════════════════════════════════
+#  📚 QUIZ-PDF — primitive مشترکِ تولیدِ JSON ساختاریافته
+#  (منبع واحد برای آزمون‌ساز PDF و هر قابلیت قالب‌محور آینده)
+# ══════════════════════════════════════════════════
+
+def _extract_json_block(text: str):
+    """اولین JSON متوازن (object یا array) را از متن مدل بیرون می‌کشد.
+
+    مدل‌ها گاهی خروجی را داخل ```json ... ``` می‌گذارند یا قبل/بعدش
+    توضیح می‌نویسند؛ این تابع مستقل از provider است."""
+    import json as _json
+    if not text:
+        return None
+    t = text.strip()
+    # حذف code fence
+    if t.startswith('```'):
+        t = re.sub(r'^```[a-zA-Z]*\s*', '', t)
+        t = re.sub(r'\s*```$', '', t.strip())
+    # جستجوی مستقیم
+    try:
+        return _json.loads(t)
+    except (ValueError, TypeError):
+        pass
+    # اولین بلوک متوازن {..} یا [..]
+    for opener, closer in (('{', '}'), ('[', ']')):
+        start = t.find(opener)
+        while start != -1:
+            depth, in_str, esc = 0, False, False
+            for i in range(start, len(t)):
+                ch = t[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == '\\':
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return _json.loads(t[start:i + 1])
+                        except (ValueError, TypeError):
+                            break
+            start = t.find(opener, start + 1)
+    return None
+
+
+async def generate_structured_json(prompt: str, schema: dict, purpose: str,
+                                   max_tokens: int = 8192,
+                                   system_prompt: str = None) -> dict | list:
+    """یکی از دو مسیرِ provider — خروجی همیشه JSON پارس‌شده است.
+
+    • Gemini: responseSchema (تضمین ساختاری سمت سرور).
+    • ارائه‌دهنده‌های سازگار با OpenAI (openrouter/groq/…): دستورِ JSON
+      در پرامپت + استخراجِ بلوک متوازن. اگر خروجی خراب بود، «یک بار»
+      با درخواستِ تعمیر retry می‌شود.
+
+    تنظیمات (provider/model/کلید) از همان get_ai_config پنل خوانده
+    می‌شود — منبع واحد حقیقت، بدون موازی‌کاری."""
+    cfg = await get_ai_config()
+    if not cfg['enabled']:
+        raise AIConfigError("بخش هوش مصنوعی فعلاً توسط مدیریت غیرفعال است.")
+    if not cfg['api_key']:
+        raise AIConfigError("هنوز کلید API توسط ادمین تنظیم نشده.")
+    _key_problem = api_key_problem(cfg['api_key'])
+    if _key_problem:
+        raise AIConfigError(_key_problem)
+
+    async def _gemini_once(repair_note: str = '') -> tuple:
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{cfg['model']}:generateContent")
+        headers = {'Content-Type': 'application/json',
+                   'x-goog-api-key': cfg['api_key']}
+        payload = {
+            'contents': [{'role': 'user',
+                          'parts': [{'text': prompt + repair_note}]}],
+            'generationConfig': _no_thinking({
+                'responseMimeType': 'application/json',
+                'responseSchema': schema,
+                'maxOutputTokens': int(max_tokens),
+            }),
+        }
+        if system_prompt:
+            payload['system_instruction'] = {'parts': [{'text': system_prompt}]}
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            _raise_gemini_status_error(resp.status_code)
+        return _extract_gemini_text(resp.json(), purpose)
+
+    async def _compat_once(repair_note: str = '') -> tuple:
+        sys_txt = (system_prompt or '') + (
+            "\nخروجی را «فقط و فقط» به‌صورت JSON معتبر (بدون متن اضافه، "
+            "بدون code fence، بدون توضیح) با دقیقاً همین ساختارِ خواسته‌شده بده.")
+        raw = await _call_openai_compat(
+            cfg['api_key'], cfg['model'], sys_txt,
+            text=prompt + repair_note, provider=cfg['provider'])
+        # _call_openai_compat برای استریم خروجی میدهد؟ نه — tuple متن نهایی
+        if isinstance(raw, tuple):
+            return raw[0] if raw else ''
+        return raw
+
+    provider = cfg.get('provider') or 'gemini'
+    try:
+        if provider == 'gemini':
+            text = await _gemini_once()
+            parsed = _extract_json_block(text)
+            if parsed is None:
+                raise ValueError('json_parse_failed')
+            return parsed
+        # OpenAI-compatible
+        text = await _compat_once()
+        parsed = _extract_json_block(text)
+        if parsed is None:
+            # یک بار تعمیر بخواه (بدون هزینه‌ی ساخت پرامپت تازه)
+            text = await _compat_once(
+                "\n[توجه] پاسخ قبلی JSON معتبر نبود. فقط JSON بساز.")
+            parsed = _extract_json_block(text)
+            if parsed is None:
+                raise ValueError('json_parse_failed')
+        return parsed
+    except AIConfigError:
+        raise
+    except (httpx.TimeoutException, asyncio.TimeoutError):
+        raise AIError("سرویس هوش مصنوعی دیر جواب داد — دوباره امتحان کن.")
+    except ValueError as e:
+        if str(e) == 'json_parse_failed':
+            raise AIError("پاسخ سرویس هوش مصنوعی قابل خواندن نبود — دوباره امتحان کن.")
+        raise
+    except httpx.HTTPError as e:
+        raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
+
+
 async def generate_broadcast_ai(notes: str) -> str:
     """از روی چند نکته/بولت‌پوینتی که ادمین می‌ده، متنِ کاملِ اطلاعیه رو طبقِ استانداردِ هامزیار می‌سازه."""
     notes = (notes or "").strip()
@@ -2201,7 +2460,9 @@ async def generate_broadcast_ai(notes: str) -> str:
         raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
 
     if resp.status_code != 200:
-        _raise_gemini_status_error(resp.status_code)
+        _raise_gemini_status_error(
+            resp.status_code,
+            _provider_error_detail(resp.text))
 
     try:
         data = resp.json()
@@ -2254,7 +2515,9 @@ async def generate_ticket_reply_ai(subject: str, ticket_text: str, previous_repl
         raise AIError(f"خطا در اتصال به سرویس هوش مصنوعی: {e}")
 
     if resp.status_code != 200:
-        _raise_gemini_status_error(resp.status_code)
+        _raise_gemini_status_error(
+            resp.status_code,
+            _provider_error_detail(resp.text))
 
     return _sanitize_tg_html(_extract_gemini_text(resp.json(), "پاسخِ تیکت"))
 
@@ -2363,8 +2626,9 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "من همیشه همینجام 👋",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart'),
-        ]]) if cfg.get('image_enabled') else None,
+            InlineKeyboardButton("📚 آزمون‌ساز از PDF", callback_data='quiz:main'),
+        ]] + ([[InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart')]]
+              if cfg.get('image_enabled') else [])),
     )
 
 
@@ -2556,7 +2820,12 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
                     f"👤 کاربر: {_esc(update.effective_user.full_name or '—')} "
                     f"(<code>{uid}</code>)\n\n"
                     f"❓ سوال:\n{_esc(question_label[:500])}\n\n"
-                    f"🧩 جزئیات خطا:\n{_esc(str(e))}",
+                    f"🧩 جزئیات خطا:\n{_esc(str(e))}"
+                    + (
+                        f"\n\n🔬 <b>علت اعلام‌شده توسط سرویس AI:</b>\n"
+                        f"{_esc(getattr(e, 'detail', '') or '')}"
+                        if getattr(e, 'detail', '') else ""
+                    ),
                     parse_mode='HTML',
                 )
             except Exception:
@@ -3005,11 +3274,28 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display_name = None
         if update.message.document:
             display_name = update.message.document.file_name
+        _skip_doc_this_time = False
         if kind == 'pdf':
             try:
                 file_info = await _gemini_upload_file(cfg['api_key'], media_bytes, mime, display_name or 'جزوه.pdf')
+                # 🔴 فایل باید روی سرور گوگل ACTIVE شود وگرنه ارجاعِ بعدی
+                # همان 400 معروف را می‌دهد.
+                file_info = await _gemini_wait_file_active(cfg['api_key'], file_info)
+                _state = (file_info.get('state') or 'ACTIVE').upper()
+                if _state == 'FAILED':
+                    await update.message.reply_text(
+                        "⚠️ سرور گوگل نتوانست این PDF را پردازش کند — احتمالاً اسکن/عکس است و "
+                        "متنِ قابل‌انتخاب ندارد. لطفاً نسخه‌ی متنی جزوه را بفرست.")
+                    return
                 await db.ai_set_doc(uid, file_info['uri'], file_info.get('mimeType', mime), display_name or 'جزوه')
                 media_bytes = None   # دیگه لازم نیست inline بفرستیمش؛ از طریقِ doc reference میره
+                if _state != 'ACTIVE':
+                    # پردازشِ گوگل بیش از حد طول کشید؛ سند ذخیره شد ولی
+                    # «این» سوال بدونِ سند پرسیده می‌شود تا 400 نگیریم.
+                    _skip_doc_this_time = True
+                    await update.message.reply_text(
+                        "⏳ جزوه‌ات روی سرور گوگل در حال پردازش است؛ این سوالت را بدونِ جزوه "
+                        "جواب می‌دهم — چند لحظه بعد جزوه خودکار به سوالاتت وصل می‌شود.")
             except Exception:
                 logger.exception("آپلودِ PDF به Gemini Files API ناموفق بود")
                 await update.message.reply_text("⚠️ آپلودِ فایل ناموفق بود — دوباره امتحان کن.")
@@ -3033,7 +3319,8 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history = await _get_history(uid)
         await _answer_with_live_edit(
             update, context,
-            ask_ai_stream(text=caption, image_bytes=media_bytes, image_mime=mime, history=history, uid=uid),
+            ask_ai_stream(text=caption, image_bytes=media_bytes, image_mime=mime,
+                          history=history, uid=uid, skip_doc=_skip_doc_this_time),
             _footer(limit, used), uid, question_label,
         )
     finally:
@@ -3282,7 +3569,9 @@ async def _vision_json_gemini(api_key: str, model: str, system_prompt: str, user
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(url, headers=headers, json=payload)
     if resp.status_code != 200:
-        _raise_gemini_status_error(resp.status_code)
+        _raise_gemini_status_error(
+            resp.status_code,
+            _provider_error_detail(resp.text))
     data = resp.json()
     raw = _extract_gemini_text(data, "برنامه")
     try:

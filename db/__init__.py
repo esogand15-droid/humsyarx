@@ -24,6 +24,8 @@ from .finance import DBFinance
 from .ring import DBRing
 from .wallet import DBWallet, WalletError, WALLET_CURRENCY
 from .referral import DBReferral
+from .ai_quiz import DBAiQuiz
+from .ai_quiz import DBAiQuiz
 
 __all__ = ['DBCore', 'DBContent', 'DBRbac', 'DBPrestige', 'DBFinance', 'DBRing',
-           'DBWallet', 'WalletError', 'WALLET_CURRENCY', 'DBReferral']
+           'DBWallet', 'WalletError', 'WALLET_CURRENCY', 'DBReferral', 'DBAiQuiz']

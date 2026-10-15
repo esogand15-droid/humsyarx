@@ -160,6 +160,11 @@ class DBCore:
         # گفت‌وگو با آرایه‌ی items (سقف‌دار)؛ مسیر قدیمی ai_mem (مشترک با
         # ربات) عیناً حفظ می‌شود.
         self.ai_conversations = _db['ai_conversations']
+        # 📚 QUIZ-PDF — آزمون‌ساز هوشمند از روی PDF (فاز A)
+        self.ai_documents        = _db['ai_documents']
+        self.ai_quiz_sessions    = _db['ai_quiz_sessions']
+        self.ai_quiz_questions   = _db['ai_quiz_questions']
+        self.ai_generation_logs  = _db['ai_generation_logs']
         # 🚀 PERF-O2: TTL cache for bot_settings (hot path: every handler reads notif_defaults/required_channels)
         # Before: find_one({'_id':'global'}) on EVERY request → ~60% of DB reads were settings
         # After: in-process cache 30s, invalidated on set/delete → -90% settings queries under load
@@ -455,6 +460,22 @@ class DBCore:
                 # دوباره ساخته نشد تا تداخل نام ایندکس نگیرد.)
                 # همه افزودنی؛ create_index تکراری idempotent است.
                 self._index(self.users, [('blocked_bot', 1)], background=True),
+                # 📚 QUIZ-PDF — ایندکس‌های آزمون‌ساز:
+                #   نگاشت یکتای poll → سؤال (هندلر poll_answer)، ادامه‌ی
+                #   نشست کاربر، مرتب‌سازی سؤال‌های نشست، تله‌متری تولید.
+                self._index(self.ai_documents,
+                            [('owner_id', 1), ('created_at', -1)], background=True),
+                self._index(self.ai_quiz_sessions,
+                            [('user_id', 1), ('status', 1)], background=True),
+                self._index(self.ai_quiz_sessions,
+                            [('user_id', 1), ('doc_id', 1), ('created_at', -1)], background=True),
+                self._index(self.ai_quiz_questions,
+                            [('telegram_poll_id', 1)], unique=True, sparse=True, background=True),
+                self._index(self.ai_quiz_questions,
+                            [('session_id', 1), ('order_index', 1)], background=True),
+                self._index(self.ai_quiz_questions,
+                            [('user_id', 1), ('doc_id', 1), ('content_hash', 1)], background=True),
+                self._index(self.ai_generation_logs, [('at', -1)], background=True),
                 self._index(self.users, [('last_active', -1)], background=True),
                 self._index(self.users, [('registered_at', -1)], background=True),
                 self._index(self.notif_runs, [('started_at', -1)], background=True),

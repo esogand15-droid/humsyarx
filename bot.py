@@ -22,6 +22,7 @@ load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
+    PollAnswerHandler,
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ConversationHandler, ChatMemberHandler,
     filters, ContextTypes, Application, TypeHandler,
@@ -110,6 +111,11 @@ from faq import faq_callback
 from ticket import ticket_callback, ticket_message_handler
 from reports import report_callback, handle_report_note_text   # FIX جدید
 from ai_admin import ai_admin_callback, ai_admin_text_handler   # 🤖 هوشیار
+from hooshyar_quiz import (                                     # 📚 آزمون‌ساز PDF
+    quiz_callback, quiz_upload_hook, quiz_poll_answer_handler,
+    quiz_housekeeping_job, quiz_retention_job,
+    set_application as _quiz_set_application,
+)
 from ai_solver import (                                          # 🤖 هوشیار
     handle_ai_text, handle_ai_media, handle_ai_image_prompt,
     ai_user_callback,
@@ -1491,6 +1497,12 @@ async def unified_file_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         from subscription import topup_screenshot_handler
         return await topup_screenshot_handler(update, context)
 
+    # 📚 آزمون‌ساز از PDF — باید *قبل از* حالت ai_query چک شود تا
+    # PDF جزوه به «پرسش از هوشیار» نرود (کاربر خودش حالت را انتخاب کرده).
+    if context.user_data.get('quiz_awaiting_pdf') and update.message.document:
+        if await quiz_upload_hook(update, context):
+            return
+
     # 🤖 هوشیار — عکس/PDF/صدا در حالت «پرسش از AI»
     # ⚠️ قابلیتِ جدید: قبلاً فقط عکس پشتیبانی می‌شد؛ حالا PDF (جزوه/برگه‌ی
     # اسکن‌شده) و پیامِ صوتی/فایلِ صوتی (سوالِ گفتاری) هم قبول می‌شه —
@@ -2180,10 +2192,16 @@ def build_application() -> Application:
         (ai_admin_callback,           r'^ai:'),   # 🤖 هوشیار — پنل ادمین
         (ai_user_callback,            r'^aiu:'),  # 🤖 هوشیار — دکمه‌های زیر جواب (گفتگوی جدید/گزارش)
         (referral_callback,           r'^ref:'),   # 🌱 W13 — دعوت دوستان
+        (quiz_callback,               r'^quiz:'),  # 📚 آزمون‌ساز از PDF
         (dunning_click,               r'^dun:'),   # 💳 W14 — ادامه‌ی پرداخت نیمه‌تمام
     ]
     for handler, pattern in cbs:
         app.add_handler(CallbackQueryHandler(handler, pattern=pattern))
+
+    # 📚 آزمون‌ساز — رأی کاربر در Quiz Poll (غیرناشناس).
+    # 🔑 نیازمند is_anonymous=False هنگام ارسال + حضور در allowed_updates
+    #    (هر دو برقرارند: Update.ALL_TYPES در webhook و polling).
+    app.add_handler(PollAnswerHandler(quiz_poll_answer_handler))
 
     # 🧠 FIX معماری: /cancel قبلاً فقط داخل state های حذف‌شده
     # (CA_WAITING_FILE/TEXT، PROFILE_EDIT_WAITING، TICKET_WAITING/
@@ -2326,6 +2344,9 @@ async def post_init(application: Application):
         except Exception as e:
             logger.error(f"ring post_init error: {e}")
 
+    # 📚 آزمون‌ساز — رفرنس اپلیکیشن برای تسک‌های بک‌گراند (bot/job_queue)
+    _quiz_set_application(application)
+
     # FIX: گارد ایمن — اگر JobQueue نصب نباشد، ربات کرش نکند
     if application.job_queue is not None:
         # زمان‌های user-facing مستقیماً با IANA Asia/Tehran ثبت می‌شوند.
@@ -2368,6 +2389,20 @@ async def post_init(application: Application):
             interval=HEARTBEAT_INTERVAL,
             first=0,
             name='bot_heartbeat',
+        )
+
+        # 📚 آزمون‌ساز از PDF — نگهداری نشست‌ها (skip سرسید گذشته) +
+        # حذف اسناد قدیمی (retention). هر دو idempotent و DB-محور.
+        application.job_queue.run_repeating(
+            quiz_housekeeping_job,
+            interval=120,
+            first=90,
+            name='quiz_housekeeping'
+        )
+        application.job_queue.run_daily(
+            quiz_retention_job,
+            time=dtime(hour=4, minute=40, tzinfo=TEHRAN),
+            name='quiz_retention'
         )
 
         # 💍 Ring Street — timeout صف/جلسه + ترمیم claimهای یتیم (§۲۲/§۶۴)
