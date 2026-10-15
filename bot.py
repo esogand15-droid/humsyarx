@@ -23,7 +23,7 @@ load_dotenv()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ConversationHandler,
+    CallbackQueryHandler, ConversationHandler, ChatMemberHandler,
     filters, ContextTypes, Application, TypeHandler,
     ApplicationHandlerStop
 )
@@ -2227,8 +2227,12 @@ def build_application() -> Application:
     # آپدیت my_chat_member باید صریحاً ثبت شود تا وقتی کاربر ربات را
     # می‌بندد همان لحظه (نه بعد از اولین خطای ارسال) در آمار «فعال»
     # کم شود و دوباره استارت کردنش برچسب را بردارد.
-    app.add_handler(MessageHandler(
-        filters.StatusUpdate.MY_CHAT_MEMBER, my_chat_member_handler))
+    # 🩹 FIX-R1-HOTFIX — ثبت با ChatMemberHandler انجام می‌شود؛
+    # filters.StatusUpdate.MY_CHAT_MEMBER در PTB v20+ وجود ندارد و
+    # build_application با AttributeError کرش می‌کرد ⇒ ربات اصلاً
+    # بالا نمی‌آمد و به هیچ پیامی جواب نمی‌داد.
+    app.add_handler(ChatMemberHandler(
+        my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
 
     return app
 

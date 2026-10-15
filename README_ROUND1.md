@@ -1,4 +1,14 @@
-# 🔴 FIX-R1 — بسته‌ی اصلاحات دور اول پنل ادمین «هامزیار»
+# 🔴 FIX-R1 — بسته‌ی اصلاحات دور اول پنل ادمین «هامزیار» (نسخه‌ی ۲ — با هات‌فیکس ربات)
+
+## ⚠️ هات‌فیکس مهم (v2)
+**مشکل «ربات جواب نمی‌داد»** ریشه‌یابی شد: ثبت هندلر `my_chat_member` با
+`filters.StatusUpdate.MY_CHAT_MEMBER` انجام شده بود که در هیچ نسخه‌ی PTB v20+
+وجود ندارد ⇒ `build_application()` با `AttributeError` کرش می‌کرد ⇒ ربات قبل از
+شروع polling می‌مُرد (پنل وب سالم بود چون پروسه‌ی جداست).
+فیکس: `ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER)`.
+تست‌شده: build کامل ۴۷ handler ✓ + شبیه‌سازی ۴ سناریو ✓ + تأیید سازگاری با PTB 21.3 ✓
+**اگر نسخه‌ی قبلی zip را جایگزین کرده‌اید، فقط کافی است `bot.py` این بسته را جایگزین کنید.**
+
 
 برنچ: `fix/admin-panel-round-1` — ۱۹ فایل تغییر یافته + ۱ فایل جدید (migrate_round1.py)
 
