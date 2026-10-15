@@ -502,14 +502,36 @@ QUESTION_PROMPT = '''تو سازنده‌ی سؤال چهارگزینه‌ای �
 {source}'''
 
 
+def _largest_remainder_shares(deficit: int, vols: list) -> dict:
+    """توزیع `deficit` روی [(idx, volume)] با روش بزرگ‌ترین باقیمانده.
+
+    برخلاف تقسیمِ صحیحِ ساده، جمعِ سهم‌ها دقیقاً `deficit` می‌شود — چیزی
+    «گم» نمی‌شود (باگ قبلی: سهم چانک‌های کوچک صفر می‌شد و کمبود بی‌صدا
+    به آخرین چانک می‌افتاد)."""
+    if deficit <= 0 or not vols:
+        return {}
+    total = sum(v for _, v in vols) or 1
+    raw = [(i, deficit * v / total) for i, v in vols]
+    shares = {i: int(r) for i, r in raw}
+    rem = deficit - sum(shares.values())
+    for i, r in sorted(raw, key=lambda x: -(x[1] - int(x[1])))[:max(0, rem)]:
+        shares[i] = shares.get(i, 0) + 1
+    return {i: n for i, n in shares.items() if n > 0}
+
+
 async def generate_questions_for_topic(doc, topic: dict, want: int,
                                        user_id: int,
-                                       difficulty: str = 'mixed') -> list:
-    """تولید سؤال برای یک مبحث — چانک‌بندی + validation + verification.
+                                       difficulty: str = 'mixed',
+                                       seen_hashes: set = None) -> list:
+    """تولید سؤال برای یک مبحث — تا رسیدن به `want` یا تسلیمِ عقلانی.
 
-    هر پاسخ AI → سؤال‌های validate شده → فراخوان verification جدا
-    (مخالف‌خوان) → مردودها یک بار بازتولید. خروجی نهایی بدون تکرار
-    content_hash در کل نشست."""
+    🩹 «۳۰ خواستم، ۱۶ ساخت» — سه علت و سه درمان:
+    • توزیع صحیحِ سهم بین چانک‌ها (بزرگ‌ترین باقیمانده) — قبلاً سهمِ
+      چانک‌های کوچک صفر می‌شد
+    • چنددوریِ پرکردنِ کمبود (تا ۴ دور؛ ۲ دورِ بی‌نتیجه ⇒ تسلیم) و
+      فهرستِ سؤال‌های قبلی در پرامپت برای پرهیز از تکرار
+    • seen_hashes مشترک بین فراخوان‌ها ⇒ ضدتکرار در کلِ نشست
+    هر پاسخ AI → validate سخت → verification مخالف‌خوان → dedupe."""
     pages = [p for p in doc['pages']
              if topic['page_start'] <= p['no'] <= topic['page_end']
              and p['chars'] >= 60]
@@ -530,19 +552,6 @@ async def generate_questions_for_topic(doc, topic: dict, want: int,
     if cur:
         chunks.append(cur)
 
-    # توزیع want روی چانک‌ها به نسبت حجم
-    total_chars = sum(sum(p['chars'] for p in c) for c in chunks) or 1
-    plan = []           # (chunk, n)
-    remaining = want
-    for i, c in enumerate(chunks):
-        n = (want * sum(p['chars'] for p in c)) // total_chars if i < len(chunks) - 1 else remaining
-        n = min(n, remaining)
-        if n > 0:
-            plan.append((c, n))
-            remaining -= n
-
-    out: list = []
-    seen_hashes: set = set()
     from ai_solver import generate_structured_json, get_ai_config
     cfg = await get_ai_config()
     if not cfg.get('enabled'):
@@ -551,66 +560,88 @@ async def generate_questions_for_topic(doc, topic: dict, want: int,
                                       0, False, error_type='ai_disabled')
         return []
 
-    for c, n in plan:
-        for attempt in (1, 2):          # تلاش + یک بازتولید برای مردودها
-            need = n - sum(1 for q in out if q is not None)
-            if need <= 0:
-                break
-            source = '\n\n'.join(
-                f"── صفحه {p['no']} ──\n{p['text']}" for p in c)
-            source = source[:chunk_chars + 3000]
-            prompt = QUESTION_PROMPT.format(
-                want=min(need + 2, batch + 2), pfrom=min(valid_pages),
-                pto=max(valid_pages), topic=topic['title'],
-                tfrom=topic['page_start'], tto=topic['page_end'],
-                source=source)
-            t0 = time.monotonic()
-            try:
-                async with _AI_SEMAPHORE:
-                    data = await generate_structured_json(
-                        prompt, QUESTION_SCHEMA, purpose='تولید سؤال',
-                        max_tokens=8192,
-                        system_prompt='تو مدرس باتجربه هستی؛ فقط JSON؛ فقط از منبع.')
-            except Exception as e:
-                logger.warning('question gen failed: %s', type(e).__name__)
-                await db.quiz_log_generation(
-                    user_id, 'questions', cfg.get('provider', ''),
-                    cfg.get('model', ''), int((time.monotonic() - t0) * 1000),
-                    False, chars_in=len(prompt), error_type=type(e).__name__)
-                break
-            raw = (data or {}).get('questions') or []
-            await db.quiz_log_generation(
-                user_id, 'questions', cfg.get('provider', ''), cfg.get('model', ''),
-                int((time.monotonic() - t0) * 1000), True,
-                chars_in=len(prompt), items_in=len(raw))
-            candidates = []
-            for q in raw:
-                v = _validate_question(q, valid_pages)
-                if v:
-                    candidates.append(v)
-            # verification مخالف‌خوان
-            verified = await verify_questions(
-                candidates, source, user_id,
-                topic_title=topic['title']) if candidates else []
-            # قیف: raw → validated → verified (تله‌متری تک‌ردیفی)
+    out: list = []
+    seen_hashes = seen_hashes if seen_hashes is not None else set()
+    chunk_vols = [(i, sum(p['chars'] for p in c)) for i, c in enumerate(chunks)]
+
+    async def _gen_from_chunk(ci: int, ask: int) -> int:
+        """یک فراخوان تولید+بازبینی روی چانکِ i؛ تعداد افزوده را می‌دهد."""
+        c = chunks[ci]
+        source = '\n\n'.join(
+            f"── صفحه {p['no']} ──\n{p['text']}" for p in c)
+        source = source[:chunk_chars + 3000]
+        avoid_note = ''
+        if out:
+            # در دوری‌های پرکردن، مدل باید از تکرارِ قبلی‌ها پرهیز کند
+            stems = [q['stem'].replace('\n', ' ')[:90] for q in out[:12]]
+            avoid_note = (
+                '\n\n⚠️ این سؤال‌ها قبلاً ساخته شده‌اند — سؤالِ جدید باید '
+                'متفاوت باشد (نه معکوس/نزدیکِ همین‌ها):\n- ' +
+                '\n- '.join(stems))
+        prompt = QUESTION_PROMPT.format(
+            want=min(ask + 2, batch + 2), pfrom=min(valid_pages),
+            pto=max(valid_pages), topic=topic['title'],
+            tfrom=topic['page_start'], tto=topic['page_end'],
+            source=source) + avoid_note
+        t0 = time.monotonic()
+        try:
+            async with _AI_SEMAPHORE:
+                data = await generate_structured_json(
+                    prompt, QUESTION_SCHEMA, purpose='تولید سؤال',
+                    max_tokens=8192,
+                    system_prompt='تو مدرس باتجربه هستی؛ فقط JSON؛ فقط از منبع.')
+        except Exception as e:
+            logger.warning('question gen failed: %s', type(e).__name__)
             await db.quiz_log_generation(
                 user_id, 'questions', cfg.get('provider', ''),
-                cfg.get('model', ''), 0, True,
-                items_in=len(raw), items_out=len(verified))
-            added = 0
-            for qd in verified:
-                qd = _finalize_question(qd, topic)
-                if qd['content_hash'] in seen_hashes:
-                    continue
-                seen_hashes.add(qd['content_hash'])
-                out.append(qd)
-                added += 1
-                if sum(1 for x in out if x) >= n:
-                    break
-            if attempt == 1 and added < need:
-                continue            # یک بازتولید
-            break
-    return [q for q in out if q]
+                cfg.get('model', ''), int((time.monotonic() - t0) * 1000),
+                False, chars_in=len(prompt), error_type=type(e).__name__)
+            return 0
+        raw = (data or {}).get('questions') or []
+        await db.quiz_log_generation(
+            user_id, 'questions', cfg.get('provider', ''), cfg.get('model', ''),
+            int((time.monotonic() - t0) * 1000), True,
+            chars_in=len(prompt), items_in=len(raw))
+        candidates = []
+        for q in raw:
+            v = _validate_question(q, valid_pages)
+            if v:
+                candidates.append(v)
+        # verification مخالف‌خوان
+        verified = await verify_questions(
+            candidates, source, user_id,
+            topic_title=topic['title']) if candidates else []
+        # قیف: raw → validated → verified (تله‌متری تک‌ردیفی)
+        await db.quiz_log_generation(
+            user_id, 'questions', cfg.get('provider', ''),
+            cfg.get('model', ''), 0, True,
+            items_in=len(raw), items_out=len(verified))
+        added = 0
+        for qd in verified:
+            qd = _finalize_question(qd, topic)
+            if qd['content_hash'] in seen_hashes:
+                continue
+            seen_hashes.add(qd['content_hash'])
+            out.append(qd)
+            added += 1
+            if len(out) >= want:
+                break
+        return added
+
+    # ── دورهای تولید: سهم با بزرگ‌ترین باقیمانده + پرکردن کمبود
+    round_no, no_progress = 0, 0
+    while len(out) < want and round_no < 4 and no_progress < 2:
+        round_no += 1
+        added_round = 0
+        deficit = want - len(out)
+        shares = _largest_remainder_shares(deficit, chunk_vols)
+        for ci in sorted(shares, key=lambda i: -shares[i]):
+            if len(out) >= want:
+                break
+            ask = min(shares[ci], batch + 2)
+            added_round += await _gen_from_chunk(ci, ask)
+        no_progress = no_progress + 1 if added_round == 0 else 0
+    return out
 
 
 VERIFY_SCHEMA = {
@@ -1090,6 +1121,12 @@ async def _begin_session(update, context, doc_id, mode, count, range_spec):
     if used >= daily:
         await q.answer('سهمیه‌ی سؤال امروزت پر شده — فردا دوباره 🌙', show_alert=True)
         return
+    if used > 0 and count > daily - used:
+        # شفاف: سهمیه‌ی باقی‌مانده را همان لحظه بگو، نه اینکه بی‌صدا
+        # تعداد را کم کنی («۳۰ خواستم ۱۶ شد» مبهم نباشد)
+        await q.answer(
+            f'امروز فقط {daily - used} سؤال از سهمیه‌ات مانده — همین '
+            f'قدر ساخته می‌شود 🌙', show_alert=False)
     count = min(count, daily - used)
 
     topics = _range_topics(doc, range_spec)
@@ -1159,14 +1196,45 @@ async def _build_and_start(chat_id: int, message_id: int, sid: str, uid: int):
                 per_topic[t['id']] = n
                 rem -= n
 
+        # 🔑 ضدتکرارِ کلِ نشست: هشِ سؤال‌های موجود + هر چه ساخته می‌شود
+        seen = {q.get('content_hash') for q in existing if q.get('content_hash')}
+
+        async def _gen_topic(t, want):
+            qs = await generate_questions_for_topic(
+                doc, t, want, uid, seen_hashes=seen)
+            if not qs:
+                return 0
+            n = await db.quiz_add_questions(sid, uid, session['doc_id'], qs)
+            for q in qs:
+                seen.add(q['content_hash'])
+            return n
+
         made = 0
         for t in live:
             need = per_topic.get(t['id'], 0)
             if need <= 0:
                 continue
-            qs = await generate_questions_for_topic(doc, t, need, uid)
-            if qs:
-                made += await db.quiz_add_questions(sid, uid, session['doc_id'], qs)
+            made += await _gen_topic(t, need)
+
+        # 🩹 دورِ پرکردن: اگر تعدادِ خواسته‌شده پر نشد، کمبود را دوباره
+        # بین مباحث (به نسبتِ بازدهیِ دورِ اول) توزیع کن — تا وقتی پیشرفت
+        # هست ادامه بده؛ حداکثر ۳ دور.
+        target = planned - have
+        for refill in range(3):
+            if made >= target:
+                break
+            deficit = target - made
+            # مباحثی که دورِ اول چیزی دادند اولویت دارند (بازدهی بالا)
+            donors = [t for t in live if per_topic.get(t['id'], 0) > 0] or live
+            got_before = made
+            for t in donors:
+                if deficit <= 0:
+                    break
+                ask = min(deficit, 5)
+                made += await _gen_topic(t, ask)
+                deficit = target - made
+            if made == got_before:      # پیشرفتی نبود ⇒ تسلیم
+                break
         await db.quiz_inc_usage(uid, made)
         session = await db.quiz_get_session(sid)
         total_now = len(await db.quiz_session_questions(sid))
@@ -1199,9 +1267,22 @@ async def _build_and_start(chat_id: int, message_id: int, sid: str, uid: int):
             except Exception:
                 logger.debug('admin diag failed', exc_info=True)
             return
-        # کمتر از پلان هم قبول است — پلان را به واقعی می‌چسبانیم
-        if total_now < session['total_planned']:
+        # اگر کمتر از درخواستِ کاربر شد، پلان را به واقعی می‌چسبانیم
+        # ولی این بار «روشن» می‌گوییم — بی‌صدا کم نمی‌کنیم.
+        requested = int((session.get('settings') or {}).get('count')
+                        or session['total_planned'])
+        if total_now < requested:
             await db.quiz_update_session(sid, {'total_planned': total_now})
+            session = await db.quiz_get_session(sid)
+            await _bot_send_edit(
+                chat_id, message_id,
+                f"✅ آزمون آماده شد — {_fa(total_now)} سؤال "
+                f"(کمی کمتر از {_fa(requested)} درخواستی؛ متنِ جزوه برای "
+                f"بیشتر از این کافی نبود).\nموفق باشی 🍀",
+                bot=_get_bot())
+            await _activate(session, chat_id, message_id, total_now,
+                            quiet=True)
+            return
         await _activate(session, chat_id, message_id, total_now)
     except Exception:
         logger.exception('_build_and_start failed sid=%s', sid)
@@ -1229,16 +1310,20 @@ async def _bot_send_edit(chat_id, message_id, text, keyboard=None, bot=None):
             pass
 
 
-async def _activate(session, chat_id, message_id, total_now=None):
-    """building → active + ارسال اولین سؤال/دسته."""
+async def _activate(session, chat_id, message_id, total_now=None,
+                    quiet: bool = False):
+    """building → active + ارسال اولین سؤال/دسته.
+
+    quiet=True یعنی پیامِ «آماده شد» قبلاً با شرحِ کامل فرستاده شده."""
     await db.quiz_update_session(session['_id'],
                                  {'status': 'active',
                                   'started_at': utc_now_iso()})
     session = await db.quiz_get_session(session['_id'])
-    await _bot_send_edit(
-        chat_id, message_id,
-        f"✅ آزمون آماده شد — {_fa(session['total_planned'])} سؤال!\nموفق باشی 🍀",
-        bot=_get_bot())
+    if not quiet:
+        await _bot_send_edit(
+            chat_id, message_id,
+            f"✅ آزمون آماده شد — {_fa(session['total_planned'])} سؤال!\nموفق باشی 🍀",
+            bot=_get_bot())
     if session['mode'] == 'exam':
         await _send_batch(session, chat_id, batch=5)
     else:

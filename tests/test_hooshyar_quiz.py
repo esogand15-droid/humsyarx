@@ -784,6 +784,100 @@ class QuizReportAndFeedback(unittest.TestCase):
         self.assertIn("<b>ب</b>", sent[1][1])
 
 
+@unittest.skipUnless(_HAS_MONGO_URI, "import hooshyar_quiz به MONGODB_URI نیاز دارد")
+class QuizCountGuarantee(unittest.TestCase):
+    """🩹 «۳۰ خواستم، ۱۶ ساخت» — توزیع سهم و ضدتکرارِ کلِ نشست."""
+
+    def test_largest_remainder_nothing_lost(self):
+        import hooshyar_quiz as hq
+        # سهم هیچ چانکی گم نمی‌شود و جمع دقیقاً deficit است
+        vols = [(0, 3000), (1, 2000), (2, 1000), (3, 500)]
+        for deficit in (1, 5, 7, 30):
+            shares = hq._largest_remainder_shares(deficit, vols)
+            self.assertEqual(sum(shares.values()), deficit,
+                             f'deficit={deficit}: {shares}')
+            self.assertTrue(all(n >= 1 for n in shares.values()))
+        # چانک بزرگ‌تر سهم بزرگ‌تر یا مساوی دارد
+        s = hq._largest_remainder_shares(10, vols)
+        self.assertGreaterEqual(s[0], s[2])
+        # لبه‌ها
+        self.assertEqual(hq._largest_remainder_shares(0, vols), {})
+        self.assertEqual(hq._largest_remainder_shares(5, []), {})
+
+    def test_cross_call_dedup(self):
+        """seen_hashes مشترک ⇒ فراخوان دوم همان سؤال را نمی‌پذیرد."""
+        import hooshyar_quiz as hq
+        import ai_solver
+        topic = {"id": 0, "title": "کلیه", "page_start": 1, "page_end": 1}
+        doc = {"_id": None, "pages": [
+            {"no": 1, "text": "نفرون واحد کلیه است و فیلتراسیون در "
+                              "گلومرول انجام می‌شود.", "chars": 70,
+             "topic_id": 0}]}
+        the_q = {"stem": "واحد ساختاری و عملکردی کلیه چیست؟",
+                 "options": ["نفرون", "نورون", "هپاتوسیت", "گلبول"],
+                 "correct_index": 0,
+                 "explanation_short": "نفرون واحد کلیه است.",
+                 "explanation_long": "نفرون واحد ساختاری کلیه است.",
+                 "page_ref": 1}
+
+        async def fake_gen(prompt, schema, purpose, **kw):
+            if purpose == "تولید سؤال":
+                return {"questions": [dict(the_q)]}
+            return {"results": [{"index": 0, "verdict": "ok"}]}
+
+        async def fake_cfg():
+            return {"enabled": True, "provider": "gemini", "model": "t"}
+
+        shared = set()
+        with mock.patch.object(ai_solver, "generate_structured_json",
+                               fake_gen), \
+             mock.patch.object(ai_solver, "get_ai_config", fake_cfg):
+            qs1 = _rtloop.run(hq.generate_questions_for_topic(
+                doc, topic, want=1, user_id=_STUDENT, seen_hashes=shared))
+            qs2 = _rtloop.run(hq.generate_questions_for_topic(
+                doc, topic, want=1, user_id=_STUDENT, seen_hashes=shared))
+        self.assertEqual(len(qs1), 1)
+        self.assertEqual(qs2, [])          # تکرار ⇒ هیچ
+
+    def test_rounds_fill_shortfall(self):
+        """دور اول ۱ سؤال می‌دهد؛ کمبود با دوریِ بعد پر می‌شود (تا want)."""
+        import hooshyar_quiz as hq
+        import ai_solver
+        topic = {"id": 0, "title": "کلیه", "page_start": 1, "page_end": 1}
+        doc = {"_id": None, "pages": [
+            {"no": 1, "text": "نفرون واحد کلیه است و فیلتراسیون در گلومرول "
+                              "انجام می‌شود و ADH بازجذب آب را تنظیم "
+                              "می‌کند.", "chars": 90, "topic_id": 0}]}
+        counter = {"n": 0}
+
+        def _q(i):
+            return {"stem": f"سؤال شماره {i} درباره‌ی نفرون چیست؟ " + "پ" * (i * 3),
+                    "options": ["نفرون", "نورون", "هپاتوسیت", "گلبول"],
+                    "correct_index": 0,
+                    "explanation_short": "نفرون واحد کلیه است.",
+                    "explanation_long": "نفرون واحد ساختاری کلیه است.",
+                    "page_ref": 1}
+
+        async def fake_gen(prompt, schema, purpose, **kw):
+            if purpose == "تولید سؤال":
+                # هر فراخوان فقط ۱ سؤالِ جدید می‌دهد (کم‌بازده)
+                counter["n"] += 1
+                return {"questions": [_q(counter["n"])]}
+            return {"results": [{"index": 0, "verdict": "ok"}]}
+
+        async def fake_cfg():
+            return {"enabled": True, "provider": "gemini", "model": "t"}
+
+        with mock.patch.object(ai_solver, "generate_structured_json",
+                               fake_gen), \
+             mock.patch.object(ai_solver, "get_ai_config", fake_cfg):
+            qs = _rtloop.run(hq.generate_questions_for_topic(
+                doc, topic, want=3, user_id=_STUDENT))
+        self.assertEqual(len(qs), 3)      # کمبود با دورهای بعد پر شد
+        # بدون تکرار
+        self.assertEqual(len({q["content_hash"] for q in qs}), 3)
+
+
 @unittest.skipUnless(_mongo_available(), "Mongo در دسترس نیست")
 @unittest.skipUnless(_HAS_MONGO_URI, "env")
 class QuizPdfEndToEnd(unittest.TestCase):
