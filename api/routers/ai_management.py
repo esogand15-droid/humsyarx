@@ -82,15 +82,15 @@ class ConfigUpdate(BaseModel):
         le=1000,
     )
 
-    image_enabled: bool = True
+    image_enabled: bool | None = None
 
     image_provider: str | None = Field(
         default=None,
         max_length=50,
     )
 
-    image_model: str = Field(
-        default="",
+    image_model: str | None = Field(
+        default=None,
         min_length=0,
         max_length=150,
     )
@@ -108,8 +108,8 @@ class ConfigUpdate(BaseModel):
 
     image_size: str | None = Field(default=None, max_length=4)
 
-    image_daily_limit: int = Field(
-        default=10,
+    image_daily_limit: int | None = Field(
+        default=None,
         ge=0,
         le=1000,
     )
@@ -282,6 +282,13 @@ async def update_config(
             # image_provider may be None/empty meaning auto-detect
             if key == "image_provider" and not val:
                 continue
+            # ⭐ م8.4 — اگر image_model خالی فرستاده شده، مقدار فعلی دیتابیس را پاک نکن
+            if key == "image_model":
+                val = str(val).strip()
+                if not val:
+                    continue
+                if val.startswith(("gemini", "imagen")):
+                    await set_ai_setting("image_provider", "gemini")
             await set_ai_setting(
                 key,
                 val,

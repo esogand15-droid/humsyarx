@@ -91,11 +91,12 @@ export default function AiAdmin({ me }) {
 }
 
 /* ── 🚩 گزارش‌های کاربران از پاسخ هوشیار ── */
-/* ⭐ م8 — استودیوی تولید تصویر: مدل‌های زنده (auto-detect از API) با
-   نشانِ سلامت/رایگان + تستِ زنده‌بودن + اجرای تولید از خود پنل. */
+/* ⭐ م8 / م8.4 — استودیوی تولید تصویر گوگل + پیکربندی مستقیم مدل تصویر هوشیار:
+   فقط مدل‌های رایگان/رسمی گوگل (Gemini) + تستِ واقعیِ ساخت تصویر +
+   تنظیم مستقیم مدل ساخت عکس برای ربات و مینی‌اپ هوشیار. */
 function AiImageStudio({ cfg, me, onSaved }) {
   const [models, setModels] = useState(null);
-  const [meta, setMeta] = useState(null);   // aspect_ratios / image_sizes / error
+  const [meta, setMeta] = useState(null);   // aspect_ratios / image_sizes / current_model / ...
   const [probing, setProbing] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState('');
@@ -105,24 +106,62 @@ function AiImageStudio({ cfg, me, onSaved }) {
   const [result, setResult] = useState(null);   // {image_b64, mime, elapsed_ms, model}
   const [err, setErr] = useState('');
 
-  const loadModels = async () => {
+  // تنظیمات فعال هوشیار (ربات + مینی‌اپ)
+  const [botEnabled, setBotEnabled] = useState(true);
+  const [botModel, setBotModel] = useState('gemini-3.1-flash-lite-image');
+  const [botLimit, setBotLimit] = useState(5);
+  const [botSize, setBotSize] = useState('1K');
+  const [savingCfg, setSavingCfg] = useState(false);
+
+  const loadModels = async (refresh = false) => {
     setErr('');
     try {
-      const r = await api.aiImageModels();
-      setModels(r.models || []);
+      const r = await api.aiImageModels(refresh);
+      const list = r.models || [];
+      setModels(list);
       setMeta(r);
-      if (!model && r.models?.length) setModel(r.models[0].id);
+      const activeMod = r.current_model || cfg?.image_model || 'gemini-3.1-flash-lite-image';
+      setBotModel(activeMod);
+      setBotEnabled(r.image_enabled !== undefined ? !!r.image_enabled : (cfg?.image_enabled !== false));
+      setBotLimit(r.image_daily_limit ?? cfg?.image_daily_limit ?? 5);
+      setBotSize(r.image_size || cfg?.image_size || '1K');
+      if (!model) {
+        const hasActive = list.some(x => x.id === activeMod);
+        setModel(hasActive ? activeMod : (list[0]?.id || activeMod));
+      }
     } catch (e) { setErr(errText(e)); }
   };
-  useEffect(() => { loadModels(); }, []);
+  useEffect(() => { loadModels(false); }, []);
+
+  const saveBotImageConfig = async (overrideModel) => {
+    const targetModel = typeof overrideModel === 'string' && overrideModel ? overrideModel : botModel;
+    setSavingCfg(true);
+    try {
+      const r = await api.aiImageConfigSave({
+        image_enabled: !!botEnabled,
+        image_model: targetModel,
+        image_daily_limit: Number(botLimit) || 0,
+        image_size: botSize || '1K',
+      });
+      setBotModel(r.image_model);
+      setModel(r.image_model);
+      setMeta(x => ({ ...(x || {}), current_model: r.image_model, image_enabled: r.image_enabled, image_daily_limit: r.image_daily_limit, image_size: r.image_size }));
+      toast(`مدل تصویر هوشیار روی «${r.image_model}» ذخیره شد ✅`);
+      onSaved && onSaved();
+    } catch (e) { toast(errText(e), 'err'); }
+    setSavingCfg(false);
+  };
 
   const probe = async () => {
     setProbing(true);
     try {
-      const r = await api.aiModelsProbe(meta?.provider || 'gemini', { kind: 'image' });
+      const r = await api.aiModelsProbe('gemini', {
+        kind: 'image',
+        models: (models || []).map(m => m.id),
+      });
       const okN = Number(r.ok_count || 0), total = Number(r.count || 0);
-      toast(`تست سلامت: ${okN} از ${total} مدلِ تصویر زنده است ${okN === total && total ? '✅' : ''}`);
-      await loadModels();
+      toast(`تست واقعی ساخت تصویر: ${okN} از ${total} مدل گوگل سالم و فعال است ${okN > 0 ? '✅' : '⚠️'}`);
+      await loadModels(false);
     } catch (e) { toast(errText(e), 'err'); }
     setProbing(false);
   };
@@ -138,49 +177,120 @@ function AiImageStudio({ cfg, me, onSaved }) {
   };
 
   const HBadge = ({ m }) => (
-    m.health_ok === true ? <span style={{ color: 'var(--c-ok, #2a2)', fontSize: 'var(--fs-caption)' }}>🟢 {Number(m.health_ms || 0).toLocaleString('fa')}ms</span>
-    : m.health_ok === false ? <span style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }}>🔴 مرده</span>
-    : <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>⚪ تست‌نشده</span>
+    m.health_ok === true ? (
+      <span style={{ color: 'var(--c-ok, #2a2)', fontSize: 'var(--fs-caption)', fontWeight: 600 }}>
+        🟢 سالم ({Number(m.health_ms || 1).toLocaleString('fa')}ms)
+      </span>
+    ) : m.health_ok === false ? (
+      <span style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }} title={m.health_error || ''}>
+        🔴 خطا{m.health_error ? `: ${m.health_error.slice(0, 55)}` : ''}
+      </span>
+    ) : (
+      <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>⚪ تست‌نشده</span>
+    )
   );
+
+  const activeBotModel = meta?.current_model || cfg?.image_model || botModel;
 
   return (
     <>
+      <div className="panel panel-pad" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <b>⚙️ پیکربندی ساخت تصویر در هوشیار (ربات تلگرام و مینی‌اپ)</b>
+          <B kind={botEnabled ? 'ok' : 'warn'}>
+            {botEnabled ? `فعال · مدل فعلی: ${activeBotModel}` : 'ساخت تصویر غیرفعال است'}
+          </B>
+        </div>
+        <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+          مدل انتخاب‌شده در این بخش، مدلِ پیش‌فرض هوشیار برای ساخت تصویر کاربران در ربات و مینی‌اپ است (با استفاده از کلیدهای گوگل Gemini ثبت‌شده در بخش پیکربندی).
+        </div>
+        <div className="grid g2" style={{ gap: 10, marginTop: 12 }}>
+          <label className="fld">
+            <span>وضعیت ساخت تصویر برای کاربران</span>
+            <div className="row" style={{ marginTop: 6 }}>
+              <Switch on={!!botEnabled} onChange={setBotEnabled} />
+              <span>{botEnabled ? 'فعال — کاربران می‌توانند تصویر بسازند' : 'غیرفعال'}</span>
+            </div>
+          </label>
+          <label className="fld">
+            <span>مدل ساخت تصویر هوشیار (گوگل Gemini)</span>
+            <select className="inp" style={{ direction: 'ltr' }} value={botModel} onChange={e => setBotModel(e.target.value)}>
+              {(models || [{ id: 'gemini-3.1-flash-lite-image', label: '⚡ gemini-3.1-flash-lite-image' }]).map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.health_ok === true ? '🟢 ' : m.health_ok === false ? '🔴 ' : ''}{m.id}{m.free ? ' [رایگان]' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="fld">
+            <span>سهمیه روزانه هر کاربر (تصویر در روز)</span>
+            <input className="inp" type="number" min="0" max="500" value={botLimit} onChange={e => setBotLimit(e.target.value)} />
+          </label>
+          <label className="fld">
+            <span>رزولوشن پیش‌فرض هوشیار</span>
+            <select className="inp" value={botSize} onChange={e => setBotSize(e.target.value)}>
+              {(meta?.image_sizes || ['1K', '2K', '4K']).map(s => (
+                <option key={s} value={s}>{s === '1K' ? '1K (پیش‌فرض؛ سازگار با همه مدل‌های رایگان گوگل)' : s}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn primary" disabled={savingCfg || !botModel} onClick={() => saveBotImageConfig()}>
+            {savingCfg ? '⏳ در حال ذخیره…' : '💾 ذخیره تنظیمات تصویر هوشیار'}
+          </button>
+        </div>
+      </div>
+
       <div className="panel panel-pad">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <b>🎨 مدل‌های تولید تصویر — از API (خودکار، بدون لیست ثابت)</b>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <b>🎨 مدل‌های تولید تصویر گوگل (Gemini) — تست واقعی و انتخاب</b>
           <span className="row">
-            <button className="btn sm" onClick={loadModels}>🔄 تازه‌سازی</button>
-            <button className="btn sm" disabled={probing} onClick={probe}>{probing ? '⏳ در حال تست…' : '🧪 تست زنده‌بودن'}</button>
+            <button className="btn sm" onClick={() => loadModels(true)}>🔄 تازه‌سازی</button>
+            <button className="btn sm" disabled={probing} onClick={probe}>{probing ? '⏳ در حال تست واقعی ساخت عکس…' : '🧪 تست زنده‌بودن (واقعی)'}</button>
           </span>
         </div>
         <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
-          ترتیب: زنده‌ترین و رایگان‌ترین مدل‌ها اول (پس از تستِ سلامت). «رایگان» یعنی سهمیه‌ی رایگانِ محدود — معیارِ نهایی، پاسخِ واقعیِ مدل در تست است.
+          فقط مدل‌های تصویر گوگل نمایش داده می‌شوند. دکمه «🧪 تست زنده‌بودن» یک تصویر واقعی آزمایشی با هر مدل می‌سازد تا دقیقاً مشخص شود کدام مدل روی کلید شما فعال و رایگان است.
         </div>
         {err && <div className="muted" style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{err}</div>}
-        <div style={{ marginTop: 10, maxHeight: 260, overflowY: 'auto' }}>
+        <div style={{ marginTop: 10, maxHeight: 300, overflowY: 'auto' }}>
           {models === null ? <span className="muted">…</span> : !models.length ? (
-            <div className="muted">مدلی یافت نشد — ابتدا کلید API ثبت کن و «تازه‌سازی» را بزن.</div>
+            <div className="muted">مدلی یافت نشد — ابتدا کلید API گوگل ثبت کن و «تازه‌سازی» را بزن.</div>
           ) : models.map(m => (
-            <label key={m.id} className="row" style={{ justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--c-line, #eee)', cursor: 'pointer', gap: 8 }}>
-              <span className="row" style={{ gap: 8 }}>
+            <div key={m.id} className="row" style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--c-line, #eee)', gap: 8, flexWrap: 'wrap' }}>
+              <label className="row" style={{ gap: 8, cursor: 'pointer', flex: 1, minWidth: 220 }}>
                 <input type="radio" name="img-model" checked={model === m.id} onChange={() => setModel(m.id)} />
-                <span className="code" style={{ direction: 'ltr' }}>{m.id}</span>
+                <span className="code" style={{ direction: 'ltr', fontWeight: 600 }}>{m.id}</span>
+                {m.label && m.label !== m.id && <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>{m.label.replace(m.id, '').trim()}</span>}
                 {m.free && <B kind="ok">رایگان</B>}
+                {activeBotModel === m.id && <B kind="info">⭐ فعال در هوشیار</B>}
+              </label>
+              <span className="row" style={{ gap: 8 }}>
+                <HBadge m={m} />
+                {activeBotModel !== m.id && (
+                  <button className="btn sm" disabled={savingCfg} onClick={() => saveBotImageConfig(m.id)} title="تنظیم این مدل به عنوان مدل ساخت تصویر هوشیار">
+                    تنظیم برای هوشیار
+                  </button>
+                )}
               </span>
-              <HBadge m={m} />
-            </label>
+            </div>
           ))}
         </div>
       </div>
 
       <div className="panel panel-pad" style={{ marginTop: 14 }}>
-        <b>🖌 ساخت تصویر</b>
+        <b>🖌 تست و ساخت تصویر در پنل (Playground)</b>
         <div className="grid" style={{ gap: 10, marginTop: 12 }}>
           <label className="fld"><span>توضیح تصویر (پرامپت)</span>
             <textarea className="inp" rows={3} style={{ resize: 'vertical' }} value={prompt}
                       placeholder="مثلاً: نمودار آموزشی رنگی از چرخه‌ی خون با برچسب فارسی"
                       onChange={e => setPrompt(e.target.value)} /></label>
           <div className="row">
+            <label className="fld" style={{ flex: 1 }}><span>مدل تست در پنل</span>
+              <select className="inp" style={{ direction: 'ltr' }} value={model} onChange={e => setModel(e.target.value)}>
+                {(models || []).map(m => <option key={m.id} value={m.id}>{m.id}</option>)}
+              </select></label>
             <label className="fld" style={{ flex: 1 }}><span>نسبت تصویر</span>
               <select className="inp" value={aspect} onChange={e => setAspect(e.target.value)}>
                 {(meta?.aspect_ratios || ['1:1']).map(a => <option key={a} value={a}>{a}</option>)}
@@ -193,7 +303,7 @@ function AiImageStudio({ cfg, me, onSaved }) {
           <div className="row">
             <button className="btn primary" disabled={busy || prompt.trim().length < 3 || !model}
                     onClick={generate}>{busy ? '⏳ در حال ساخت… (تا ~۶۰ ثانیه)' : '🎨 تولید تصویر'}</button>
-            <span className="muted">با کلیدهای فال‌بک (م7) — اگر یکی لیمیت خورد، خودکار کلید بعدی</span>
+            <span className="muted">با کلیدهای فال‌بک گوگل (م7) — اگر یکی لیمیت خورد، خودکار کلید بعدی</span>
           </div>
         </div>
         {result && (
@@ -442,10 +552,14 @@ function AiConfig({ cfg, me, onSaved }) {
      کلید ذخیره‌شده) + دکمه‌ی تازه‌سازی. بدون provider → کاتالوگ ثابت. */
   const [live, setLive] = useState(null);       // {models:[], cached, fallback, error, fetched_at}
   const [liveBusy, setLiveBusy] = useState(false);
-  /* ⭐ م8 — صداهای TTS + تستِ سلامتِ مدل‌های گفتگو */
+  /* ⭐ م8 — صداهای TTS + تستِ سلامتِ مدل‌های گفتگو + کاتالوگ تصویر گوگل */
   const [tts, setTts] = useState(null);         // {voices, models, modes}
+  const [imgMeta, setImgMeta] = useState(null); // {models, current_model, ...}
   const [probeBusy, setProbeBusy] = useState(false);
-  useEffect(() => { api.aiTtsVoices().then(setTts).catch(() => {}); }, []);
+  useEffect(() => {
+    api.aiTtsVoices().then(setTts).catch(() => {});
+    api.aiImageModels().then(setImgMeta).catch(() => {});
+  }, []);
   const probeChatModels = async () => {
     if (!f?.provider) return;
     setProbeBusy(true);
@@ -494,6 +608,10 @@ function AiConfig({ cfg, me, onSaved }) {
         enabled: !!f.enabled, provider: f.provider, model: f.model.trim(),
         daily_limit: Number(f.daily_limit) || 0, thinking: f.thinking,
         system_prompt: f.system_prompt, disabled_message: f.disabled_message || '',
+        image_enabled: f.image_enabled !== false,
+        image_provider: 'gemini',
+        image_model: (f.image_model || 'gemini-3.1-flash-lite-image').trim(),
+        image_daily_limit: Number(f.image_daily_limit ?? 5),
         voice_reply: f.voice_reply || 'voice', tts_voice: f.tts_voice || '',
         tts_model: f.tts_model || '', voice_reply_max_chars: Number(f.voice_reply_max_chars) || 500,
         voice_with_text: f.voice_with_text || 'off',
@@ -615,9 +733,33 @@ function AiConfig({ cfg, me, onSaved }) {
           <label className="fld"><span>حداکثر طول پاسخِ صوتی (نویسه)</span>
             <input className="inp" type="number" min="100" max="4000" value={f.voice_reply_max_chars ?? 500}
                    onChange={e => set('voice_reply_max_chars', e.target.value)} /></label>
+          {/* ⭐ م8.4 — پیکربندی ساخت تصویر هوشیار (مدل‌های گوگل Gemini) */}
+          <label className="fld"><span>🎨 ساخت تصویر در هوشیار</span>
+            <div className="row" style={{ marginTop: 4 }}>
+              <Switch on={f.image_enabled !== false} onChange={v => set('image_enabled', v)} />
+              <span>{f.image_enabled !== false ? 'فعال برای کاربران' : 'غیرفعال'}</span>
+            </div>
+          </label>
+          <label className="fld"><span>🤖 مدل ساخت تصویر هوشیار (گوگل Gemini)</span>
+            <select className="inp" style={{ direction: 'ltr' }}
+                    value={f.image_model || 'gemini-3.1-flash-lite-image'}
+                    onChange={e => set('image_model', e.target.value)}>
+              {(imgMeta?.models || [
+                { id: 'gemini-3.1-flash-lite-image', label: '⚡ gemini-3.1-flash-lite-image', free: true },
+                { id: 'gemini-2.5-flash-image', label: '🍌 gemini-2.5-flash-image', free: true },
+                { id: 'gemini-nano-banana-2.1', label: '🍌 gemini-nano-banana-2.1', free: true },
+              ]).map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.health_ok === true ? '🟢 ' : m.health_ok === false ? '🔴 ' : ''}{m.id}{m.free ? ' [رایگان]' : ''}
+                </option>
+              ))}
+            </select></label>
+          <label className="fld"><span>🎯 سهمیه روزانه ساخت تصویر (هر کاربر)</span>
+            <input className="inp" type="number" min="0" max="500" value={f.image_daily_limit ?? 5}
+                   onChange={e => set('image_daily_limit', e.target.value)} /></label>
           <label className="fld"><span>🖼 رزولوشن پیش‌فرض تصویر</span>
             <select className="inp" value={f.image_size || '1K'} onChange={e => set('image_size', e.target.value)}>
-              <option value="1K">1K (سریع/ارزان)</option>
+              <option value="1K">1K (سریع/ارزان — سازگار با همه مدل‌های رایگان گوگل)</option>
               <option value="2K">2K</option>
               <option value="4K">4K (فقط نانوبانانا 2.1)</option>
             </select></label>

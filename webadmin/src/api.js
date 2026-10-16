@@ -1192,8 +1192,17 @@ export const api = {
       method: "POST",
       body: { api_key: apiKey },
     }),
-  /* ⭐ م8 — تولید تصویر + سلامت مدل‌ها + TTS */
-  aiImageModels: () => req("/api/web-admin/ai/image/models"),
+  /* ⭐ م8 / م8.4 — تولید تصویر + پیکربندی مدل تصویر هوشیار + سلامت مدل‌ها + TTS */
+  aiImageModels: (refresh = false) =>
+    req(
+      "/api/web-admin/ai/image/models" +
+        (refresh ? "?refresh=true" : ""),
+    ),
+  aiImageConfigSave: (body) =>
+    req("/api/web-admin/ai/image/config", {
+      method: "POST",
+      body,
+    }),
   aiImageGenerate: (body) =>
     req("/api/web-admin/ai/image/generate", {
       method: "POST",

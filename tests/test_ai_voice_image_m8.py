@@ -215,13 +215,21 @@ class ProbeTests(unittest.TestCase):
         got = _rtloop.run(get_models_health('gemini'))
         self.assertEqual(got['kind'], 'chat')
 
-    def test_probe_image_uses_cheap_get(self):
-        _ClientCtx.responses = [(200, {'name': 'models/x'}), (404, {})]
+    def test_probe_image_uses_real_generate_content(self):
+        import base64
+        png = base64.b64encode(b'\x89PNGxxxx').decode()
+        _ClientCtx.responses = [
+            (200, {'candidates': [{'content': {'parts': [
+                {'inlineData': {'data': png, 'mimeType': 'image/png'}}]}}]}),
+            (404, {'error': {'message': 'not found'}}),
+        ]
         with mock.patch.object(ai_solver.httpx, 'AsyncClient', _ClientCtx):
             out = _rtloop.run(probe_models('gemini',
-                                           ['gemini-nano-banana-2.1', 'imagen-4.0-generate-001'],
+                                           ['gemini-3.1-flash-lite-image', 'imagen-4.0-generate-001'],
                                            kind='image'))
-        self.assertTrue(out['results']['gemini-nano-banana-2.1']['ok'])
+        self.assertTrue(out['results']['gemini-3.1-flash-lite-image']['ok'])
+        self.assertGreaterEqual(out['results']['gemini-3.1-flash-lite-image']['ms'], 1)
+        self.assertEqual(out['results']['gemini-3.1-flash-lite-image']['mode'], 'real_image_gen')
         self.assertFalse(out['results']['imagen-4.0-generate-001']['ok'])
 
 
@@ -662,3 +670,80 @@ class RealKeyTestTests(unittest.TestCase):
         self.assertIn('aistudio.google.com', err)
         # کلیدِ مرده cooldown می‌شود تا فال‌بکِ چت از آن رد شود
         self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
+
+
+class M84GoogleImageFixTests(unittest.TestCase):
+    """⭐ م8.4 — فقط مدل‌های رایگان/رسمی گوگل، حذف imageSize برای flash-lite/2.5-flash،
+    بازتلاش خودکار با ['TEXT', 'IMAGE']، حذف نتایج جعلی 0ms و مهاجرت مدل‌های قدیمی."""
+
+    def setUp(self):
+        _rtloop.adopt()
+        ai_solver._KEY_STATE.clear()
+        self.fake = _FakeSettingsDB()
+        self.fake.settings['ai_enabled'] = '1'
+        self.fake.settings['ai_api_keys'] = '{"gemini": ["%s"], "openrouter": ["sk-or-test-123456"]}' % K1
+        self._p = mock.patch.object(ai_solver, 'db', self.fake)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+        ai_solver._KEY_STATE.clear()
+
+    def test_catalog_contains_only_google_models(self):
+        self.assertEqual(ai_solver.DEFAULT_IMAGE_MODEL, 'gemini-3.1-flash-lite-image')
+        ids = [mid for mid, _lbl, _free in ai_solver.IMAGE_MODEL_CATALOG]
+        self.assertIn('gemini-3.1-flash-lite-image', ids)
+        self.assertIn('gemini-2.5-flash-image', ids)
+        self.assertIn('gemini-nano-banana-2.1', ids)
+        for mid in ids:
+            self.assertTrue(mid.startswith('gemini'), f'Non-Google model in catalog: {mid}')
+            self.assertNotIn('/', mid)
+
+    def test_legacy_non_google_model_migrated_to_google_and_gemini_key(self):
+        self.fake.settings['ai_provider'] = 'openrouter'
+        self.fake.settings['ai_image_model'] = 'black-forest-labs/FLUX.1-schnell'
+        cfg = _rtloop.run(get_ai_config())
+        self.assertEqual(cfg['image_model'], 'gemini-3.1-flash-lite-image')
+        self.assertEqual(cfg['image_provider'], 'gemini')
+        self.assertEqual(cfg['image_api_key'], K1)
+
+    def test_flash_lite_omits_image_size_and_retries_400_with_text_image(self):
+        import base64
+        png = base64.b64encode(b'\x89PNGxxxx').decode()
+        _ClientCtx.responses = [
+            (400, {'error': {'message': 'INVALID_ARGUMENT: responseModalities must include TEXT'}},
+             '{"error":{"message":"INVALID_ARGUMENT: responseModalities must include TEXT"}}'),
+            (200, {'candidates': [{'content': {'parts': [
+                {'inlineData': {'data': png, 'mimeType': 'image/png'}}]}}]}),
+        ]
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _ClientCtx):
+            res = _rtloop.run(ai_solver._generate_image_gemini(
+                K1, 'gemini-3.1-flash-lite-image', 'یک دایره آبی', '1:1', 5, 0, '2K'))
+        self.assertEqual(res['mime'], 'image/png')
+        _url, _h, last_payload = _ClientCtx.last_post
+        self.assertEqual(last_payload['generationConfig']['responseModalities'], ['TEXT', 'IMAGE'])
+
+    def test_merge_models_strips_fake_0ms_catalog_entries(self):
+        models = [{'id': 'gemini-3.1-flash-lite-image', 'label': 'Lite', 'free': True}]
+        stale_health = {
+            'models': {
+                'gemini-3.1-flash-lite-image': {
+                    'ok': True, 'ms': 0, 'mode': 'catalog', 'tested_at': '2026-10-16T00:00:00Z'
+                }
+            }
+        }
+        merged = merge_models_with_health('gemini', models, stale_health)
+        self.assertIsNone(merged[0]['health_ok'])
+        self.assertIsNone(merged[0]['health_ms'])
+
+        real_health = {
+            'models': {
+                'gemini-3.1-flash-lite-image': {
+                    'ok': True, 'ms': 840, 'mode': 'real_image_gen', 'tested_at': '2026-10-16T00:00:00Z'
+                }
+            }
+        }
+        merged_real = merge_models_with_health('gemini', models, real_health)
+        self.assertTrue(merged_real[0]['health_ok'])
+        self.assertEqual(merged_real[0]['health_ms'], 840)
+

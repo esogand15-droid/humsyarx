@@ -1786,8 +1786,8 @@ async def generate_image_ep(body: ImageGenBody,
         raise HTTPException(
             status_code=503, detail="تولید تصویر فعلاً غیرفعال است")
     effective_key = config.get("image_api_key") or config.get("api_key") or ""
-    effective_model = config.get("image_model") or config.get("model") or "gemini-2.5-flash-image"
-    effective_provider = config.get("image_provider") or config.get("provider") or "gemini"
+    effective_model = config.get("image_model") or "gemini-3.1-flash-lite-image"
+    effective_provider = config.get("image_provider") or "gemini"
     if not effective_key:
         raise HTTPException(status_code=503, detail="کلید API برای ساخت تصویر تنظیم نشده — از پنل مدیریت کلید مربوطه را وارد کن")
 

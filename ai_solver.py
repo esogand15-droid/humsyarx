@@ -250,25 +250,28 @@ MODEL_CATALOG = {
     ],
 }
 
-# مدل‌های تصویر — universal: Gemini native + OpenAI-compatible (OpenRouter/HF/Together) — freellm.net verified image-capable
-# ⭐ م8 — کاتالوگ روزآمد طبق چنج‌لاگ اکتبر ۲۰۲۶:
-#   • nano-banana-2.1 (GA 2026-10-06) — پرچمدارِ کارایی؛ 1K/2K/4K + پانوراما
-#   • 3.1-flash-lite-image — حداقل تأخیر/هزینه (فقط 1K) — بهترین انتخاب رایگان
-#   • 3.1-flash-image منسوخ اعلام شده؛ 3-pro-image برای کیفیت حرفه‌ای
-#   • imagen-4.0-* در 2026-08-17 کاملاً خاموش شده ← حذف
-#   (این فقط fallback است؛ فهرستِ زنده از ListModels می‌آید — list_image_models)
+# ⭐ م8.4 — فقط مدل‌های تصویرِ رسمیِ گوگل (Gemini / Nano Banana در AI Studio).
+#   مدل‌های غیرگوگل (FLUX/SDXL/OpenRouter) به خواستِ صریح کاربر حذف شدند؛
+#   در Google AI Studio مدلِ gemini-3.1-flash-lite-image و gemini-2.5-flash-image
+#   بهترین گزینه‌های رایگان، سریع و باکیفیت هستند.
 IMAGE_MODEL_CATALOG = [
-    ('gemini-3.1-flash-lite-image', '⚡ Nano Banana 2 Lite — سریع و کم‌هزینه (1K)', True),
-    ('gemini-nano-banana-2.1',      '🍌 Nano Banana 2.1 — پرچمدار کارایی (1K/2K/4K)', True),
-    ('gemini-3.1-flash-image',      '🍌 Nano Banana 2 (منسوخ — مهاجرت به 2.1)', True),
-    ('gemini-3-pro-image',          '🖼 Gemini 3 Pro Image — کیفیت حرفه‌ای', False),
-    ('google/gemini-2.5-flash-image:free', '🍌 Gemini Image Free (OpenRouter)', True),
-    ('black-forest-labs/FLUX.1-schnell:free', '⚡ Flux Schnell (رایگان، سریع)', True),
-    ('black-forest-labs/FLUX.1-dev:free', '🎨 Flux 1 Dev (رایگان)', True),
-    ('stabilityai/stable-diffusion-3.5-large:free', '🖼 SD 3.5 Large (رایگان)', True),
-    ('stabilityai/stable-diffusion-xl:free', '🖼 SDXL (رایگان)', True),
-    ('thinkingmachines/inkling-small:free', '💡 Inkling Small Image (رایگان)', True),
+    ('gemini-3.1-flash-lite-image', '⚡ Gemini 3.1 Flash-Lite Image — سریع، رایگان و کم‌هزینه (پیشنهادی)', True),
+    ('gemini-2.5-flash-image',      '🍌 Gemini 2.5 Flash Image — پایدار و رایگان در AI Studio', True),
+    ('gemini-nano-banana-2.1',      '🍌 Gemini Nano Banana 2.1 — پرچمدار کارایی (1K/2K/4K)', True),
+    ('gemini-3.1-flash-image',      '🍌 Gemini 3.1 Flash Image (Nano Banana 2)', True),
+    ('gemini-3-pro-image',          '🖼 Gemini 3 Pro Image — کیفیت حرفه‌ای (نیازمند Billing)', False),
 ]
+
+_LEGACY_NON_GOOGLE_IMAGE_MODELS = {
+    'black-forest-labs/FLUX.1-schnell:free',
+    'black-forest-labs/FLUX.1-dev:free',
+    'google/gemini-2.5-flash-image:free',
+    'stabilityai/stable-diffusion-3.5-large:free',
+    'stabilityai/stable-diffusion-xl:free',
+    'thinkingmachines/inkling-small:free',
+    'black-forest-labs/FLUX.1-schnell',
+    'stabilityai/stable-diffusion-3.5-large',
+}
 
 # ⭐ م8 — نسبت‌های تصویرِ مجاز (نانوبانانا 2.1 پانوراما هم دارد)
 IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
@@ -542,12 +545,17 @@ async def _generate_image_gemini(api_key: str, model: str, prompt: str,
                                   aspect_ratio: str, timeout: int, max_retries: int,
                                   image_size: str = '1K') -> dict:
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/" f"{model}:generateContent")
-    # ⭐ م8 — imageConfig روزآمد: aspectRatio + imageSize (1K/2K/4K؛
-    # نانوبانانا 2.1 همه را دارد؛ flash-lite فقط 1K)
-    payload = {'contents': [{'parts': [{'text': prompt}]}],
+    # ⭐ م8.4 — سازگاری کامل با gemini-3.1-flash-lite-image و gemini-2.5-flash-image:
+    # این دو مدل فقط 1K دارند و ارسال imageSize (به‌خصوص 2K/4K یا روی 2.5-flash)
+    # در API گوگل 400 INVALID_ARGUMENT برمی‌گرداند. برای نانوبانانا 2.1 و 3-pro
+    # همان imageSize ارسال می‌شود.
+    _ml = (model or '').lower()
+    image_cfg = {'aspectRatio': aspect_ratio}
+    if 'flash-lite' not in _ml and '2.5-flash' not in _ml:
+        image_cfg['imageSize'] = image_size
+    payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                'generationConfig': {'responseModalities': ['IMAGE'],
-                                    'imageConfig': {'aspectRatio': aspect_ratio,
-                                                    'imageSize': image_size}}}
+                                    'imageConfig': image_cfg}}
     headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
     last_err = None
     retry_after = None
@@ -564,6 +572,20 @@ async def _generate_image_gemini(api_key: str, model: str, prompt: str,
         try:
             async with _image_http_client(timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
+                # ⭐ م8.4 — اگر مدل در حالت ['IMAGE'] یا با imageConfig خطای
+                # 400 INVALID_ARGUMENT داد (تفاوت نسخه‌های v1beta در AI Studio)،
+                # بلافاصله با قالب استاندارد Playground (['TEXT', 'IMAGE']) تلاش کن.
+                if resp.status_code == 400:
+                    _b400 = (resp.text or '').lower()
+                    if any(k in _b400 for k in (
+                            'invalid_argument', 'modality', 'modalities',
+                            'image_config', 'imageconfig', 'image_size',
+                            'imagesize', 'aspect_ratio', 'aspectratio')):
+                        fb_payload = {
+                            'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+                            'generationConfig': {'responseModalities': ['TEXT', 'IMAGE']},
+                        }
+                        resp = await client.post(url, headers=headers, json=fb_payload)
         except httpx.TimeoutException as e:
             last_err = AiImageError('GEMINI_TIMEOUT', 'ساخت تصویر طول کشید؛ دوباره تلاش کن.')
             logger.warning("imggen timeout attempt=%s err=%s", attempt, type(e).__name__)
@@ -578,7 +600,13 @@ async def _generate_image_gemini(api_key: str, model: str, prompt: str,
             except Exception:
                 body_snip = ''
             if resp.status_code == 429:
-                last_err = AiImageError('GEMINI_RATE_LIMIT', 'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه بعد دوباره تلاش کن.')
+                if 'limit: 0' in body_snip.lower() or 'billing' in body_snip.lower():
+                    last_err = AiImageError(
+                        'GEMINI_RATE_LIMIT',
+                        f'سهمیه‌ی رایگان مدل «{model}» در گوگل فعال نیست (نیازمند Billing) — '
+                        'از پنل مدیریت مدل رایگان «gemini-3.1-flash-lite-image» را انتخاب کنید.')
+                else:
+                    last_err = AiImageError('GEMINI_RATE_LIMIT', 'سرویس تصویر محدود شده (سهمیه یا ترافیک)؛ چند دقیقه بعد دوباره تلاش کن.')
                 ra = resp.headers.get('Retry-After') or resp.headers.get('retry-after')
                 try:
                     retry_after = float(ra) if ra else None
@@ -590,8 +618,30 @@ async def _generate_image_gemini(api_key: str, model: str, prompt: str,
             continue
         if resp.status_code in (401, 403):
             raise AiImageError('GEMINI_AUTH_ERROR', 'سرویس تصویر توسط مدیریت آماده نشده است.')
+        if resp.status_code == 404:
+            raise AiImageError(
+                'IMAGE_NOT_SUPPORTED',
+                f'مدل تصویر «{model}» در API گوگل یافت نشد یا بازنشسته شده — '
+                'مدل «gemini-3.1-flash-lite-image» را انتخاب کنید.')
         if resp.status_code == 400:
-            raise AiImageError('GEMINI_INVALID_REQUEST', 'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.')
+            raw_400 = ''
+            try:
+                raw_400 = resp.text[:500]
+            except Exception:
+                pass
+            low_400 = raw_400.lower()
+            # کلید نامعتبر در گوگل 400 (API_KEY_INVALID) برمی‌گرداند ← باید
+            # GEMINI_AUTH_ERROR شود تا فال‌بک کلید بعدی (م7) فعال شود.
+            if any(w in low_400 for w in (
+                    'api_key_invalid', 'api key not valid', 'key expired',
+                    'service account', 'unauthenticated', 'permission_denied')):
+                raise AiImageError('GEMINI_AUTH_ERROR', 'سرویس تصویر توسط مدیریت آماده نشده است.')
+            detail_400 = _provider_error_detail(raw_400)
+            logger.warning("imggen 400 model=%s detail=%s", model, detail_400)
+            raise AiImageError(
+                'GEMINI_INVALID_REQUEST',
+                'این درخواست قابل پردازش نیست؛ توضیح تصویر را تغییر بده.',
+                detail=detail_400)
         if resp.status_code != 200:
             raise AiImageError('GEMINI_UNAVAILABLE', 'سرویس تصویر پاسخ نامعتبر داد؛ دوباره تلاش کن.')
         try:
@@ -1159,14 +1209,22 @@ async def get_ai_config() -> dict:
         if _legacy_key:
             keys = [_legacy_key]
     api_key = keys[0] if keys else ''
-    image_model = raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL
+    raw_img_model = (raw.get('ai_image_model') or '').strip()
+    if raw_img_model in _LEGACY_NON_GOOGLE_IMAGE_MODELS:
+        raw_img_model = ''
+    image_model = raw_img_model or DEFAULT_IMAGE_MODEL
     image_enabled = str(raw.get('ai_image_enabled', '1')) not in ('0', 'false', 'False', '')
     image_daily_limit = int(raw.get('ai_image_daily_limit', DEFAULT_IMAGE_LIMIT) or 0)
     image_provider_raw = (raw.get('ai_image_provider') or '').strip()
-    if image_provider_raw and image_provider_raw in PROVIDERS:
+    d2 = _detect_provider_for_model(image_model)
+    # ⭐ م8.4 — اگر مدل تصویر متعلق به گوگل (gemini-*) است، همیشه با
+    # provider='gemini' و کلیدهای Gemini اجرا شود (مقدار قدیمیِ
+    # ai_image_provider مثل openrouter باعث ارسال کلید اشتباه به گوگل نشود).
+    if d2 == 'gemini' and (raw_img_model or not image_provider_raw or image_provider_raw == 'openrouter'):
+        image_provider = 'gemini'
+    elif image_provider_raw and image_provider_raw in PROVIDERS:
         image_provider = image_provider_raw
     else:
-        d2 = _detect_provider_for_model(image_model)
         image_provider = d2 or provider
         if image_provider not in PROVIDERS:
             image_provider = provider
@@ -3633,10 +3691,16 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
     try:
         try:
             _cfg_img = cfg if isinstance(cfg, dict) else {}
-            res = await generate_image(
-                effective_key, effective_model, text, '1:1',
-                provider=effective_provider,
-                image_size=_cfg_img.get('image_size') or '1K')
+            _img_keys = (_cfg_img.get('image_api_key_list')
+                         or _cfg_img.get('api_key_list')
+                         or [effective_key])
+            async def _bot_gen_once(_k: str) -> dict:
+                return await generate_image(
+                    _k, effective_model, text, '1:1',
+                    provider=effective_provider,
+                    image_size=_cfg_img.get('image_size') or '1K')
+            res = await run_with_key_failover(
+                effective_provider, _img_keys, _bot_gen_once, label='bot-image')
         except AiImageError as e:
             logger.warning("bot image generation failed uid=%s code=%s",
                            uid, e.code)
@@ -3944,58 +4008,63 @@ async def _list_image_models_gemini(api_key: str) -> list:
         raw_name = (m.get('name') or '').replace('models/', '').strip()
         if not raw_name or not _looks_like_image_model(raw_name):
             continue
+        # ⭐ م8.4 — فقط مدل‌های Gemini که از generateContent پشتیبانی می‌کنند
+        methods = m.get('supportedGenerationMethods')
+        if methods and 'generateContent' not in methods:
+            continue
+        if raw_name.startswith('imagen'):
+            continue
         label = raw_name
         if 'nano-banana' in raw_name:
             label = f'🍌 {raw_name} (نانوبانانا)'
         elif 'flash-lite' in raw_name:
-            label = f'⚡ {raw_name} (سریع/کم‌هزینه)'
+            label = f'⚡ {raw_name} (سریع/کم‌هزینه — پیشنهادی)'
+        elif '2.5-flash' in raw_name:
+            label = f'🍌 {raw_name} (پایدار و رایگان در AI Studio)'
         out.append({'id': raw_name, 'label': label})
     return out
 
 
-async def list_image_models(provider: str, api_key: str = None,
+async def list_image_models(provider: str = 'gemini', api_key: str = None,
                             refresh: bool = False) -> dict:
-    """⭐ م8 — فهرست مدل‌های تصویر: زنده از API (gemini) + کش ۱۲ ساعته؛
-    در خطا/بی‌کلید → کاتالوگ ثابتِ روزآمد. خروجی هم‌شکل list_provider_models."""
-    provider = (provider or 'gemini').strip() or 'gemini'
-    cache_key = f'ai_image_models_cache_{provider}'
+    """⭐ م8.4 — فهرست مدل‌های تصویر گوگل (Gemini): زنده از API + کش ۱۲ ساعته؛
+    در خطا/بی‌کلید → کاتالوگ ثابت مدل‌های گوگل. مدل‌های غیرگوگل حذف شدند."""
+    provider = 'gemini'
+    cache_key = 'ai_image_models_cache_gemini'
     if not refresh:
         cached = await db.get_setting(cache_key, None)
         if isinstance(cached, dict) and cached.get('models'):
-            return cached
+            cmodels = cached.get('models') or []
+            # اگر کش قدیمی شامل مدل‌های غیرگوگل (OpenRouter با '/') بود، باطل شود
+            if cmodels and all('/' not in (m.get('id') or '') for m in cmodels):
+                return cached
     models = []
     error = None
     try:
-        if provider == 'gemini':
-            keys = []
-            if api_key:
-                keys = [sanitize_api_key(api_key)]
-            else:
-                cfg = await get_ai_config()
-                keys = ordered_keys('gemini',
-                                    (cfg.get('vault_multi') or {}).get('gemini') or [])
-            if keys:
-                async def _fetch(_k):
-                    return await _list_image_models_gemini(_k)
-                raw = await run_with_key_failover('gemini', keys, _fetch,
-                                                  label='list_image_models')
-                models = [{'id': m['id'], 'label': m['label'],
-                           'free': model_is_free('gemini', m['id'])}
-                          for m in raw]
+        keys = []
+        if api_key:
+            keys = [sanitize_api_key(api_key)]
         else:
-            models = [{'id': mid, 'label': label, 'free': is_free}
-                      for mid, label, is_free in IMAGE_MODEL_CATALOG
-                      if provider != 'gemini' or _looks_like_image_model(mid)]
+            cfg = await get_ai_config()
+            keys = ordered_keys('gemini',
+                                (cfg.get('vault_multi') or {}).get('gemini') or [])
+        if keys:
+            async def _fetch(_k):
+                return await _list_image_models_gemini(_k)
+            raw = await run_with_key_failover('gemini', keys, _fetch,
+                                              label='list_image_models')
+            models = [{'id': m['id'], 'label': m['label'],
+                       'free': model_is_free('gemini', m['id'])}
+                      for m in raw]
     except Exception as e:                      # noqa: BLE001
         error = _sanitize_provider_text(str(e))[:200] or type(e).__name__
     if not models:
-        # fallback کاتالوگ ثابت
+        # fallback کاتالوگ ثابت (فقط مدل‌های گوگل)
         models = [{'id': mid, 'label': label, 'free': is_free}
                   for mid, label, is_free in IMAGE_MODEL_CATALOG
-                  if provider == 'gemini' and _looks_like_image_model(mid)
-                  or provider != 'gemini']
+                  if mid.startswith('gemini')]
         if error is None:
-            error = 'فهرست زنده در دسترس نبود — کاتالوگ ثابت.'
+            error = 'فهرست زنده در دسترس نبود — کاتالوگ ثابت گوگل.'
         return {'models': models, 'cached': False, 'fetched_at': None,
                 'fallback': True, 'error': error}
     payload = {'models': models, 'cached': False,
@@ -4048,31 +4117,79 @@ async def probe_chat_model(provider: str, api_key: str, model: str) -> dict:
 
 
 async def probe_image_model(provider: str, api_key: str, model: str) -> dict:
-    """بررسیِ ارزانِ مدلِ تصویر: GET مدل (بدون سوزاندن سهمیه‌ی تولید)."""
+    """⭐ م8.4 — تستِ واقعیِ ساخت تصویر روی مدل گوگل (generateContent واقعی).
+
+    قبلاً برای غیر-gemini عددِ جعلیِ 0ms برمی‌گشت و برای gemini هم فقط GET
+    کاتالوگ زده می‌شد که مدل‌های نیازمندِ Billing یا ازکارافتاده را هم
+    «سالم» نشان می‌داد. اکنون واقعاً یک درخواستِ generateContent سبک زده
+    می‌شود و زمانِ پاسخِ واقعی (ms > 0) ثبت می‌گردد."""
     import time as _t
     started = _t.monotonic()
+    mid = (model or '').strip()
+    if not mid.startswith('gemini') and not mid.startswith('imagen'):
+        return {'ok': False, 'ms': 0,
+                'error': 'فقط مدل‌های تصویر گوگل (Gemini) پشتیبانی می‌شوند.',
+                'mode': 'real_image_gen'}
     try:
-        if provider != 'gemini':
-            return {'ok': True, 'ms': 0, 'error': '', 'mode': 'catalog'}
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}",
-                headers={'x-goog-api-key': api_key})
-        ms = int((_t.monotonic() - started) * 1000)
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{mid}:generateContent")
+        _ml = mid.lower()
+        img_cfg = {'aspectRatio': '1:1'}
+        if 'flash-lite' not in _ml and '2.5-flash' not in _ml:
+            img_cfg['imageSize'] = '1K'
+        payload = {
+            'contents': [{'role': 'user', 'parts': [{'text': 'A simple blue circle icon'}]}],
+            'generationConfig': {
+                'responseModalities': ['IMAGE'],
+                'imageConfig': img_cfg,
+            },
+        }
+        headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
+        async with httpx.AsyncClient(timeout=35) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code == 400:
+                _b400 = (getattr(resp, 'text', '') or '').lower()
+                if any(k in _b400 for k in (
+                        'invalid_argument', 'modality', 'modalities',
+                        'image_config', 'imageconfig', 'image_size',
+                        'imagesize', 'aspect_ratio', 'aspectratio')):
+                    fb_payload = {
+                        'contents': [{'role': 'user', 'parts': [{'text': 'Generate an image: A simple blue circle icon'}]}],
+                        'generationConfig': {'responseModalities': ['TEXT', 'IMAGE']},
+                    }
+                    resp = await client.post(url, headers=headers, json=fb_payload)
+        ms = max(1, int((_t.monotonic() - started) * 1000))
         if resp.status_code == 200:
-            return {'ok': True, 'ms': ms, 'error': ''}
-        return {'ok': False, 'ms': ms, 'error': f'HTTP {resp.status_code}'}
+            data = resp.json() if hasattr(resp, 'json') else {}
+            if isinstance(data, dict) and 'candidates' in data:
+                try:
+                    _parse_image_response(data)
+                except AiImageError as pe:
+                    return {'ok': False, 'ms': ms, 'error': pe.user_message,
+                            'mode': 'real_image_gen'}
+            return {'ok': True, 'ms': ms, 'error': '', 'mode': 'real_image_gen'}
+        raw_txt = getattr(resp, 'text', '') or ''
+        detail = _provider_error_detail(raw_txt)[:140]
+        low = raw_txt.lower()
+        if resp.status_code == 429 and ('limit: 0' in low or 'billing' in low):
+            err = 'HTTP 429: سهمیه رایگان ندارد (نیازمند Billing)'
+        elif resp.status_code == 404:
+            err = 'HTTP 404: مدل در دسترس نیست یا بازنشسته شده'
+        else:
+            err = f'HTTP {resp.status_code}' + (f': {detail}' if detail else '')
+        return {'ok': False, 'ms': ms, 'error': err, 'mode': 'real_image_gen'}
     except Exception as e:                      # noqa: BLE001
-        return {'ok': False, 'ms': int((_t.monotonic() - started) * 1000),
-                'error': _sanitize_provider_text(str(e))[:160] or type(e).__name__}
+        return {'ok': False, 'ms': max(1, int((_t.monotonic() - started) * 1000)),
+                'error': _sanitize_provider_text(str(e))[:160] or type(e).__name__,
+                'mode': 'real_image_gen'}
 
 
 async def probe_models(provider: str, models: list = None,
                        kind: str = 'chat') -> dict:
     """⭐ م8 — تستِ همزمانِ مدل‌ها (سقفِ ۳۰ تا) و ذخیره‌ی نتیجه در تنظیمات.
 
-    kind='chat' → تستِ توکنِ واقعی؛ kind='image' → بررسیِ ارزانِ موجودی."""
-    provider = (provider or 'gemini').strip() or 'gemini'
+    kind='chat' → تستِ توکنِ واقعی؛ kind='image' → تستِ واقعیِ ساخت تصویر گوگل."""
+    provider = 'gemini' if kind == 'image' else ((provider or 'gemini').strip() or 'gemini')
     cfg = await get_ai_config()
     keys = ordered_keys(provider,
                         (cfg.get('vault_multi') or {}).get(provider) or [])
@@ -4088,12 +4205,21 @@ async def probe_models(provider: str, models: list = None,
             models = [m.get('id') for m in
                       (await list_provider_models(provider)).get('models', [])]
     models = [m for m in (models or []) if m][:PROBE_MAX_MODELS]
-    sem = asyncio.Semaphore(PROBE_CONCURRENCY)
+    sem = asyncio.Semaphore(2 if kind == 'image' else PROBE_CONCURRENCY)
 
     async def _one(mid: str) -> tuple:
         async with sem:
             if kind == 'image':
+                # امتحان با کلید اول؛ اگر خطای کلید/401/403 داد و کلید بعدی هست، چرخش
                 r = await probe_image_model(provider, key, mid)
+                if not r.get('ok') and len(keys) > 1 and any(
+                        c in (r.get('error') or '').lower()
+                        for c in ('401', '403', 'api_key_invalid', 'service account')):
+                    for k_alt in keys[1:]:
+                        r_alt = await probe_image_model(provider, k_alt, mid)
+                        if r_alt.get('ok'):
+                            r = r_alt
+                            break
             else:
                 r = await probe_chat_model(provider, key, mid)
             return mid, r
@@ -4103,8 +4229,14 @@ async def probe_models(provider: str, models: list = None,
     results = {mid: {**r, 'tested_at': now_iso} for mid, r in pairs}
     health = {mid: {**r, 'tested_at': now_iso} for mid, r in pairs}
     try:
+        existing = await get_models_health(provider)
+        merged_models = {
+            k: v for k, v in ((existing or {}).get('models') or {}).items()
+            if isinstance(v, dict) and v.get('mode') != 'catalog'
+        }
+        merged_models.update(health)
         await db.set_setting(f'ai_models_health_{provider}', {
-            'kind': kind, 'tested_at': now_iso, 'models': health})
+            'kind': kind, 'tested_at': now_iso, 'models': merged_models})
     except Exception:
         logger.exception("ذخیره‌ی سلامتِ مدل‌ها ناموفق بود")
     ok_count = sum(1 for r in results.values() if r.get('ok'))
@@ -4132,6 +4264,13 @@ def merge_models_with_health(provider: str, models: list,
     for m in (models or []):
         mid = m.get('id') or m.get('model_id') or ''
         h = hmodels.get(mid) or {}
+        # ⭐ م8.4 — حذف نتایج جعلی 0ms / کاتالوگیِ قبلی که بدون تستِ واقعیِ
+        # تولید تصویر ثبت شده بودند.
+        if h.get('mode') == 'catalog' or (
+                _looks_like_image_model(mid)
+                and 'tested_at' in h
+                and h.get('mode') != 'real_image_gen'):
+            h = {}
         item = dict(m)
         item['health_ok'] = h.get('ok') if h else None
         item['health_ms'] = h.get('ms')

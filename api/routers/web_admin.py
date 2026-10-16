@@ -62,6 +62,7 @@ from ai_solver import (save_persona, delete_persona, generate_broadcast_ai,
                        get_models_health, merge_models_with_health,
                        generate_image, AiImageError, IMAGE_ASPECT_RATIOS,
                        IMAGE_SIZES, IMAGE_PROMPT_MAX, IMAGE_PROMPT_MIN,
+                       IMAGE_MODEL_CATALOG, DEFAULT_IMAGE_MODEL,
                        PREBUILT_TTS_VOICES, TTS_MODEL_DEFAULT,
                        TTS_MODEL_QUALITY, VOICE_REPLY_MODES)
 from request_context import current_request_id
@@ -6801,12 +6802,32 @@ class WaAiConfigUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
     provider: str = Field(
-        pattern="^(gemini|openrouter|groq|cerebras|mistral|deepseek)$")
+        pattern="^(gemini|openrouter|groq|cerebras|mistral|deepseek|nvidia|huggingface|together)$")
     model: str = Field(min_length=2, max_length=150)
     daily_limit: int = Field(ge=0, le=1000)
     thinking: str = Field(pattern="^(auto|high)$")
     system_prompt: str = Field(min_length=20, max_length=20000)
     disabled_message: str = Field(default="", max_length=1000)
+    # ⭐ م8 / م8.4 — فیلدهای ساخت تصویر و پاسخ صوتی هوشیار در پنل وب
+    image_enabled: Optional[bool] = None
+    image_provider: Optional[str] = None
+    image_model: Optional[str] = Field(default=None, max_length=150)
+    image_daily_limit: Optional[int] = Field(default=None, ge=0, le=500)
+    image_size: Optional[str] = None
+    voice_reply: Optional[str] = None
+    voice_with_text: Optional[str] = None
+    tts_voice: Optional[str] = None
+    tts_model: Optional[str] = None
+    voice_reply_max_chars: Optional[int] = Field(default=None, ge=100, le=2000)
+
+
+class WaAiImageConfigUpdate(BaseModel):
+    """⭐ م8.4 — ذخیره مستقیم تنظیمات ساخت تصویر هوشیار از تب تولید تصویر."""
+    model_config = ConfigDict(extra="forbid")
+    image_enabled: Optional[bool] = None
+    image_model: Optional[str] = Field(default=None, max_length=150)
+    image_daily_limit: Optional[int] = Field(default=None, ge=0, le=500)
+    image_size: Optional[str] = None
 
 
 class WaAiKeyAdd(BaseModel):
@@ -6873,17 +6894,35 @@ async def wa_ai_config_update(
     safe_body = ai_admin_api.ConfigUpdate(**body.model_dump(), api_key=None)
     result = await ai_admin_api.update_config(body=safe_body, admin=user)
     after = await ai_admin_api.config(admin=user)
+    _audit_keys = (
+        "enabled", "provider", "model", "daily_limit", "thinking",
+        "system_prompt", "disabled_message", "image_enabled",
+        "image_provider", "image_model", "image_daily_limit", "image_size",
+        "voice_reply", "voice_with_text", "tts_voice", "tts_model",
+        "voice_reply_max_chars",
+    )
     try:
         await _audit(user["id"], "به‌روزرسانی تنظیمات هوشیار", severity="HIGH",
-                     before={k: before.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking", "system_prompt", "disabled_message")},
-                     after={k: after.get(k) for k in ("enabled", "provider", "model", "daily_limit", "thinking", "system_prompt", "disabled_message")},
+                     before={k: before.get(k) for k in _audit_keys},
+                     after={k: after.get(k) for k in _audit_keys},
                      tags=["هوشیار", "پیکربندی", "پنل_وب"])
     except Exception:
         rollback = ai_admin_api.ConfigUpdate(
             enabled=before["enabled"], provider=before["provider"], model=before["model"],
             daily_limit=before["daily_limit"], thinking=before["thinking"],
             system_prompt=before["system_prompt"],
-            disabled_message=before.get("disabled_message") or "", api_key=None)
+            disabled_message=before.get("disabled_message") or "",
+            image_enabled=before.get("image_enabled"),
+            image_provider=before.get("image_provider"),
+            image_model=before.get("image_model"),
+            image_daily_limit=before.get("image_daily_limit"),
+            image_size=before.get("image_size"),
+            voice_reply=before.get("voice_reply"),
+            voice_with_text=before.get("voice_with_text"),
+            tts_voice=before.get("tts_voice"),
+            tts_model=before.get("tts_model"),
+            voice_reply_max_chars=before.get("voice_reply_max_chars"),
+            api_key=None)
         await ai_admin_api.update_config(body=rollback, admin=user)
         raise HTTPException(503, "ثبت حسابرسی ناموفق بود؛ پیکربندی قبلی بازگردانده شد")
     return result
@@ -7006,26 +7045,92 @@ async def wa_ai_keys_test(provider: str, user=Depends(_perm("ai.manage"))):
 
 
 # ══════════════════════════════════════════════════
-# ⭐ م8 — تولید تصویر در پنل + فهرست زنده/سلامت مدل‌ها + TTS
+# ⭐ م8 / م8.4 — تولید تصویر در پنل + فهرست زنده/سلامت مدل‌ها + تنظیم مدل تصویر هوشیار + TTS
 # ══════════════════════════════════════════════════
 @router.get("/ai/image/models")
-async def wa_ai_image_models(user=Depends(_perm("ai.manage"))):
-    """مدل‌های تصویر: زنده از ListModels (نه hardcode) + سلامت + نشان رایگان."""
+async def wa_ai_image_models(refresh: bool = Query(False),
+                             user=Depends(_perm("ai.manage"))):
+    """مدل‌های تصویر گوگل: زنده از ListModels + تضمین حضور مدل‌های اصلی کاتالوگ + سلامت + نشان رایگان."""
     cfg = await ai_admin_api.get_ai_config()
-    provider = cfg.get("image_provider") or cfg.get("provider") or "gemini"
-    listing = await list_image_models(provider)
+    provider = "gemini"
+    listing = await list_image_models(provider, refresh=refresh)
+    raw_models = list(listing.get("models") or [])
+    by_id = {m.get("id"): dict(m) for m in raw_models if m.get("id") and "/" not in m.get("id", "")}
+    # تضمین حضور مدل‌های اصلی کاتالوگ گوگل (مثل gemini-3.1-flash-lite-image) با برچسب فارسی کامل
+    ordered_raw = []
+    for mid, label, is_free in IMAGE_MODEL_CATALOG:
+        if not mid.startswith("gemini"):
+            continue
+        existing = by_id.pop(mid, None)
+        ordered_raw.append({
+            "id": mid,
+            "label": label,
+            "free": bool(is_free or (existing and existing.get("free"))),
+        })
+    for mid, m in by_id.items():
+        if mid.startswith("gemini"):
+            ordered_raw.append(m)
     health = await get_models_health(provider)
-    models = merge_models_with_health(provider, listing.get("models") or [], health)
-    return {"provider": provider, "models": models,
-            "fallback": listing.get("fallback"), "error": listing.get("error"),
-            "aspect_ratios": list(IMAGE_ASPECT_RATIOS),
-            "image_sizes": list(IMAGE_SIZES)}
+    models = merge_models_with_health(provider, ordered_raw, health)
+    return {
+        "provider": provider,
+        "models": models,
+        "fallback": listing.get("fallback"),
+        "error": listing.get("error"),
+        "aspect_ratios": list(IMAGE_ASPECT_RATIOS),
+        "image_sizes": list(IMAGE_SIZES),
+        "current_model": cfg.get("image_model") or DEFAULT_IMAGE_MODEL,
+        "image_enabled": bool(cfg.get("image_enabled", True)),
+        "image_daily_limit": int(cfg.get("image_daily_limit") if cfg.get("image_daily_limit") is not None else 5),
+        "image_size": cfg.get("image_size") or "1K",
+    }
+
+
+@router.post("/ai/image/config")
+async def wa_ai_image_config_update(body: WaAiImageConfigUpdate,
+                                    user=Depends(_perm("ai.manage"))):
+    """⭐ م8.4 — ذخیره مستقیم پیکربندی ساخت تصویر هوشیار (مدل، وضعیت، سقف روزانه، اندازه)."""
+    if body.image_enabled is not None:
+        await ai_admin_api.set_ai_setting("image_enabled", "1" if body.image_enabled else "0")
+    if body.image_model is not None and body.image_model.strip():
+        mid = body.image_model.strip()
+        if "/" in mid or not (mid.startswith("gemini") or mid.startswith("imagen")):
+            raise HTTPException(422, "فقط مدل‌های تصویر گوگل (Gemini) مجاز هستند")
+        await ai_admin_api.set_ai_setting("image_model", mid)
+        await ai_admin_api.set_ai_setting("image_provider", "gemini")
+    if body.image_daily_limit is not None:
+        await ai_admin_api.set_ai_setting("image_daily_limit", str(max(0, min(500, int(body.image_daily_limit)))))
+    if body.image_size is not None and body.image_size in IMAGE_SIZES:
+        await ai_admin_api.set_ai_setting("image_size", body.image_size)
+    cfg = await ai_admin_api.get_ai_config()
+    try:
+        await _audit(
+            user["id"], "تغییر تنظیمات تصویر هوشیار", severity="INFO",
+            target_type="ai_image_config", target_label=cfg.get("image_model") or DEFAULT_IMAGE_MODEL,
+            after={
+                "image_enabled": cfg.get("image_enabled"),
+                "image_model": cfg.get("image_model"),
+                "image_daily_limit": cfg.get("image_daily_limit"),
+                "image_size": cfg.get("image_size"),
+            },
+            tags=["هوشیار", "image", "پیکربندی", "پنل_وب"],
+        )
+    except Exception:
+        logger.warning("ثبت حسابرسی تغییر تنظیمات تصویر ناموفق بود")
+    return {
+        "ok": True,
+        "image_enabled": bool(cfg.get("image_enabled", True)),
+        "image_provider": "gemini",
+        "image_model": cfg.get("image_model") or DEFAULT_IMAGE_MODEL,
+        "image_daily_limit": int(cfg.get("image_daily_limit") if cfg.get("image_daily_limit") is not None else 5),
+        "image_size": cfg.get("image_size") or "1K",
+    }
 
 
 @router.post("/ai/image/generate")
 async def wa_ai_image_generate(body: WaAiImageGenerate,
                                user=Depends(_perm("ai.manage"))):
-    """🎨 اجرای تولید تصویر از خود پنل (playground) — با فال‌بک کلیدها (م7)."""
+    """🎨 اجرای تولید تصویر از خود پنل (playground) — با فال‌بک کلیدهای گوگل (م7/م8.4)."""
     prompt = (body.prompt or "").strip()
     if not (IMAGE_PROMPT_MIN <= len(prompt) <= IMAGE_PROMPT_MAX):
         raise HTTPException(422, f"متن تصویر باید بین {IMAGE_PROMPT_MIN} تا {IMAGE_PROMPT_MAX} نویسه باشد")
@@ -7034,13 +7139,18 @@ async def wa_ai_image_generate(body: WaAiImageGenerate,
     if size not in IMAGE_SIZES:
         size = "1K"
     cfg = await ai_admin_api.get_ai_config()
-    provider = cfg.get("image_provider") or cfg.get("provider") or "gemini"
-    model = (body.model or "").strip() or cfg.get("image_model") or ""
-    keys = cfg.get("image_api_key_list") or ([cfg.get("image_api_key")] if cfg.get("image_api_key") else [])
+    provider = "gemini"
+    model = (body.model or "").strip() or cfg.get("image_model") or DEFAULT_IMAGE_MODEL
+    if "/" in model or not (model.startswith("gemini") or model.startswith("imagen")):
+        model = DEFAULT_IMAGE_MODEL
+    vault_multi = cfg.get("vault_multi") or {}
+    keys = (vault_multi.get("gemini")
+            or cfg.get("image_api_key_list")
+            or ([cfg.get("image_api_key")] if cfg.get("image_api_key") else []))
     if not model:
         raise HTTPException(422, "مدل تصویر انتخاب نشده است")
     if not keys:
-        raise HTTPException(503, "کلید API برای ساخت تصویر تنظیم نشده است")
+        raise HTTPException(503, "کلید API گوگل (Gemini) برای ساخت تصویر تنظیم نشده است")
     started = time.perf_counter()
 
     async def _gen_once(api_key: str) -> dict:
