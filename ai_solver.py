@@ -1329,8 +1329,47 @@ async def remove_api_key_for_provider(provider: str, index: int) -> str:
     return masked_key(removed)
 
 
+async def _chat_ping_gemini(api_key: str, model: str = None) -> None:
+    """⭐ م8.3 — پینگِ واقعیِ چت: همان generateContent که چتِ کاربر می‌رود.
+
+    چرا نه ListModels؟ کلیدهایی که به سرویس‌اکانتِ (حذف/غیرفعال‌شده)
+    مقید شده‌اند به ListModels پاسخِ 200 می‌دهند ولی generateContent همان
+    401ِ «The bound service account is deleted or disabled» را می‌گیرد که
+    چتِ واقعی می‌گیرد — یعنی تستِ پنل درباره‌ی سلامتِ چت دروغ می‌گفت.
+    اینجا تولیدِ واقعیِ ۱ توکن (maxOutputTokens=1، هزینه≈۰) با همان
+    مسیر/مدلِ چت زده می‌شود."""
+    if not model:
+        try:
+            raw = await db.get_settings_by_prefix('ai_')
+        except Exception:
+            raw = {}
+        model = (raw.get('ai_model') or DEFAULT_MODELS.get('gemini')
+                 or DEFAULT_MODEL)
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent")
+    payload = {'contents': [{'role': 'user', 'parts': [{'text': '۱'}]}],
+               'generationConfig': {'maxOutputTokens': 1}}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, headers={
+            'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+            json=payload)
+    if resp.status_code == 200:
+        return
+    if resp.status_code == 429:
+        raise AIQuotaError("سهمیه‌ی این کلید فعلاً پر است (429).")
+    detail = _provider_error_detail(resp.text)
+    if 'service account' in detail.lower():
+        raise AIConfigError(
+            "کلید به سرویس‌اکانتِ حذف/غیرفعال‌شده‌ی گوگل وصل است — برای چتِ "
+            "واقعی مرده است؛ در aistudio.google.com/apikey کلیدِ تازه بسازید "
+            "و در Vault جایگزین کنید.", detail=detail)
+    _raise_gemini_status_error(resp.status_code, detail)
+
+
 async def test_api_key(provider: str, api_key: str) -> tuple:
-    """⭐ م7 — تستِ سبکِ یک کلید با همان provider (فهرست مدل‌ها).
+    """⭐ م8.3 — تستِ واقعیِ یک کلید: برای gemini تولیدِ واقعیِ ۱ توکن با
+    همان مسیر چت (نه ListModels که برای کلیدهای خراب هم 200 می‌دهد)؛
+    برای بقیه همان فهرست مدل‌ها.
     خروجی: (ok, error). وضعیتِ فال‌بکِ کلید هم به‌روز می‌شود."""
     provider = (provider or 'gemini').strip() or 'gemini'
     key = sanitize_api_key(api_key or '')
@@ -1339,7 +1378,7 @@ async def test_api_key(provider: str, api_key: str) -> tuple:
         if _kp:
             return False, _kp
         if provider == 'gemini':
-            await _list_models_gemini(key)
+            await _chat_ping_gemini(key)
         elif provider in PROVIDERS and PROVIDERS[provider].get('url'):
             await _list_models_openai_compat(
                 PROVIDERS[provider]['url'], key, PROVIDERS[provider]['label'])
@@ -1957,9 +1996,18 @@ def _raise_gemini_status_error(status_code: int, detail: str = '') -> None:
         if detail:
             logger.warning("gemini provider error status=%s detail=%s",
                            status_code, detail)
+        # 🔴 م8.3 — ۴۰۱/۴۰۳ِ «سرویس‌اکانتِ مقید»: کلید گوگل به سرویس‌اکانتِ
+        # حذف/غیرفعال‌شده وصل است — ربطی به مدل یا پیکربندی ندارد؛ کلید
+        # باید عوض شود. بدون این، ادمین پشتِ پیامِ عمومی گمراه می‌شد.
+        _d = (detail or '').lower()
+        if 'service account' in _d:
+            raise AIConfigError(
+                "کلید API به سرویس‌اکانتِ حذف/غیرفعال‌شده‌ی گوگل وصل است — "
+                "در aistudio.google.com/apikey کلیدِ تازه بسازید و در Vaultِ "
+                f"هوشیار جایگزین کنید. (کد خطا: {status_code})",
+                detail=detail)
         # 🔴 م8.1 — ۴۰۰ِ نوعِ فایل (mime) ربطی به کلید/مدل ندارد؛ پیامِ
         # روشن بده تا ادمین پشتِ «کلید API نامعتبره» گمراه نشود.
-        _d = (detail or '').lower()
         if 'mime type' in _d or 'not supported for' in _d:
             raise AIError(
                 "این نوع فایل توسط مدلِ انتخابی پشتیبانی نمی‌شود — فایل را "
@@ -2423,6 +2471,18 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
         if full_answer is not None:
             _guard_against_meta_leak(full_answer, cfg)
         return
+    # ⭐ م8.3 — همه‌ی کلیدها شکست خوردند؛ ادمین باید بداند که فال‌بک
+    # امتحان شد و چیزی نمانده، نه اینکه فکر کند اصلاً فال‌بک کار نکرد.
+    if _last_exc is not None and len(_keys) > 1:
+        _fa_n = str(len(_keys)).translate(
+            str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
+        _wrap = (f"همه‌ی {_fa_n} کلیدِ فال‌بک امتحان شد و همه شکست "
+                 f"خوردند. آخرین خطا: {_last_exc}")
+        if isinstance(_last_exc, AIConfigError):
+            raise AIConfigError(
+                _wrap, detail=getattr(_last_exc, 'detail', '') or '')
+        if isinstance(_last_exc, AIError):
+            raise type(_last_exc)(_wrap)
     raise _last_exc
 
 

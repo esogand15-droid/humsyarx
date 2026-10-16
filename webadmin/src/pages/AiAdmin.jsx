@@ -399,7 +399,7 @@ function KeysPanel({ provider, me, onSaved }) {
         <button className="btn sm" disabled={testing || !keys || !keys.count} onClick={test}>{testing ? '⏳ …' : '🧪 تست همه'}</button>
       </div>
       <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
-        به تعداد دلخواه کلید ذخیره کن؛ اگر یکی سهمیه گرفت (429) یا خطا خورد، همان درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد. ترتیب = اولویت.
+        به تعداد دلخواه کلید ذخیره کن؛ اگر یکی سهمیه گرفت (429) یا خطا خورد، همان درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد. ترتیب = اولویت. 🧪 «تست همه» تولیدِ واقعیِ ۱ توکن با همان مسیر چت است — «سالم» یعنی واقعاً می‌تواند جواب بدهد.
       </div>
       {err && <div className="muted" style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{err}</div>}
       <div style={{ marginTop: 10 }}>

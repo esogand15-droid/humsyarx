@@ -487,3 +487,178 @@ class VoiceReplyPlanTests(unittest.TestCase):
         with mock.patch.object(ai_solver, 'db', fake):
             cfg2 = _rtloop.run(get_ai_config())
         self.assertEqual(cfg2['voice_with_text'], 'off')
+
+
+class _Ctx401:
+    """CM استریم با کد وضعیت قابل‌تنظیم."""
+    def __init__(self, resp):
+        self._r = resp
+
+    async def __aenter__(self):
+        return self._r
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _Resp401:
+    def __init__(self, status, body=b''):
+        self.status_code = status
+        self._body = body
+
+    async def aiter_lines(self):
+        import json as _json
+        yield 'data: ' + _json.dumps({
+            'candidates': [{'content': {'parts': [{'text': 'جواب با کلید دوم'}]},
+                             'finishReason': 'STOP'}],
+            'usageMetadata': {'totalTokenCount': 9}})
+
+    async def aread(self):
+        return self._body
+
+
+class _Client401:
+    """streamGenerateContent: کلید اول 401 سرویس‌اکانت، کلید دوم 200."""
+    def __init__(self, *a, **kw):
+        pass
+
+    def stream(self, method, url, headers=None, json=None, **kw):
+        key = (headers or {}).get('x-goog-api-key')
+        if key == K1:
+            return _Ctx401(_Resp401(
+                401, b'{"error":{"message":"The bound service account is '
+                     b'deleted or disabled. The service account bound to the '
+                     b'API key must be active"}}'))
+        return _Ctx401(_Resp401(200))
+
+    async def aclose(self):
+        pass
+
+
+class _ClientAll401:
+    """همه‌ی کلیدها 401 می‌گیرند."""
+    def __init__(self, *a, **kw):
+        pass
+
+    def stream(self, method, url, headers=None, json=None, **kw):
+        return _Ctx401(_Resp401(
+            401, b'{"error":{"message":"The bound service account is deleted '
+                 b'or disabled"}}'))
+
+    async def aclose(self):
+        pass
+
+
+class KeyFailover401Tests(unittest.TestCase):
+    """⭐ م8.3 — فال‌بک روی 401 (سرویس‌اکانتِ حذف‌شده) باید کلید بعدی را
+    امتحان کند؛ اگر همه شکست خوردند، پیام باید بگوید همه امتحان شدند."""
+
+    def setUp(self):
+        _rtloop.adopt()
+        ai_solver._KEY_STATE.clear()
+        self.fake = _FakeSettingsDB()
+        self.fake.settings['ai_enabled'] = '1'
+        self.fake.settings['ai_provider'] = 'gemini'
+        self.fake.settings['ai_model'] = 'gemini-3.6-flash'
+        self.fake.settings['ai_api_keys'] = '{"gemini": ["%s", "%s"]}' % (K1, K2)
+        self._p = mock.patch.object(ai_solver, 'db', self.fake)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+        ai_solver._KEY_STATE.clear()
+
+    def _collect(self):
+        async def _go():
+            out = []
+            async for ev in ai_solver.ask_ai_stream(text='سلام', uid=None):
+                out.append(ev)
+            return out
+        return _rtloop.run(_go())
+
+    def test_401_rotates_to_next_key(self):
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _Client401):
+            events = self._collect()
+        done = [e for e in events if e['type'] == 'done']
+        self.assertEqual(len(done), 1)
+        self.assertEqual(done[0]['answer'], 'جواب با کلید دوم')
+        # کلیدِ خراب cooldown شد؛ کلیدِ سالم علامتِ ok خورد
+        self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
+        self.assertEqual(ai_solver.key_cooldown_remaining('gemini', K2), 0)
+
+    def test_all_keys_401_says_all_tried(self):
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _ClientAll401):
+            with self.assertRaises(ai_solver.AIConfigError) as cm:
+                self._collect()
+        msg = str(cm.exception)
+        self.assertIn('همه‌ی ۲ کلید', msg)
+        self.assertIn('سرویس‌اکانت', msg)
+        # هر دو کلید cooldown شدند
+        self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
+        self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K2), 0)
+
+
+class _PingClient:
+    """httpx فیک برای _chat_ping_gemini — POST را ضبط می‌کند."""
+    responses = []          # [(status, body)]
+    last = None
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, headers=None, json=None, **kw):
+        _PingClient.last = {'url': url, 'headers': headers, 'payload': json}
+        st, body = _PingClient.responses.pop(0) if _PingClient.responses else (200, b'')
+        class _R:
+            status_code = st
+            text = body.decode('utf-8', 'replace')
+        return _R()
+
+
+class RealKeyTestTests(unittest.TestCase):
+    """⭐ م8.3 — تستِ کلیدِ پنل باید تولیدِ واقعی بزند، نه ListModels."""
+
+    def setUp(self):
+        _rtloop.adopt()
+        ai_solver._KEY_STATE.clear()
+        self.fake = _FakeSettingsDB()
+        self.fake.settings['ai_enabled'] = '1'
+        self.fake.settings['ai_model'] = 'gemini-3.6-flash'
+        self._p = mock.patch.object(ai_solver, 'db', self.fake)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+        ai_solver._KEY_STATE.clear()
+
+    def test_ping_is_real_generate_content(self):
+        _PingClient.responses = [(200, b'{}')]
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _PingClient):
+            ok, err = _rtloop.run(ai_solver.test_api_key('gemini', K1))
+        self.assertTrue(ok)
+        self.assertEqual(err, '')
+        # همان مسیر چت: generateContent + maxOutputTokens=1 + هدر کلید
+        self.assertIn(':generateContent', _PingClient.last['url'])
+        self.assertIn('gemini-3.6-flash', _PingClient.last['url'])
+        self.assertEqual(
+            _PingClient.last['payload']['generationConfig']['maxOutputTokens'], 1)
+        self.assertEqual(_PingClient.last['headers'].get('x-goog-api-key'), K1)
+
+    def test_dead_service_account_key_reported_clearly(self):
+        _PingClient.responses = [(
+            401, b'{"error":{"message":"The bound service account is deleted '
+                 b'or disabled. The service account bound to the API key must '
+                 b'be active"}}')]
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _PingClient):
+            ok, err = _rtloop.run(ai_solver.test_api_key('gemini', K1))
+        self.assertFalse(ok)
+        self.assertIn('سرویس‌اکانت', err)
+        self.assertIn('aistudio.google.com', err)
+        # کلیدِ مرده cooldown می‌شود تا فال‌بکِ چت از آن رد شود
+        self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
