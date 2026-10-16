@@ -66,11 +66,11 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
     this.duckGain = 1.0;
     this.speakerMuted = false;
 
-    // وضعیت ضبط میکروفون (High-Pass 85Hz + Decimator 16kHz)
+    // وضعیت ضبط میکروفون (DC-Blocker 25Hz + Decimator 16kHz + سپر ضد اکوی اسپیکر م9.7)
     this.micMuted = false;
     this.hpPrevX = 0;
     this.hpPrevY = 0;
-    this.hpAlpha = Math.exp((-2 * Math.PI * 85) / sr);
+    this.hpAlpha = Math.exp((-2 * Math.PI * 25) / sr);
     this.decimRatio = sr / 16000;
     this.decimAcc = 0;
     this.decimSum = 0;
@@ -78,6 +78,7 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
     this.micOut = new Int16Array(640); // 40ms @ 16kHz = 640 samples
     this.micIdx = 0;
     this.micVoiceFrames = 0;
+    this.echoTailSamples = 0;
 
     // تله‌متری سطح صدا برای انیمیشن گوی زنده
     this.telemetrySamples = 0;
@@ -90,7 +91,7 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
       const d = ev.data;
       if (!d) return;
       if (d.type === 'pcm24k' && d.buffer) {
-        this._ pushPcm24k(new Int16Array(d.buffer));
+        this._pushPcm24k(new Int16Array(d.buffer));
       } else if (d.type === 'clear') {
         this.readPos = 0;
         this.writePos = 0;
@@ -99,6 +100,7 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
         this.prebuffering = true;
         this.turnComplete = false;
         this.hasHist = false;
+        this.echoTailSamples = 0;
         this.fadeStartSample = this.lastOut;
         this.clearFadeRem = this.clearFadeTotal;
       } else if (d.type === 'turn_complete') {
@@ -128,6 +130,7 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
       this.firstBufTime = currentTime;
     }
     this.turnComplete = false;
+    this.echoTailSamples = Math.floor(this.sr * 0.85);
 
     if (!this.hasHist) {
       const f0 = i16[0] / 32768.0;
@@ -203,71 +206,83 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
     const inChan = inputs[0] && inputs[0][0];
     const len = outChan ? outChan.length : 128;
 
-    // ۱) پردازش میکروفون (High-Pass 85Hz + Soft Noise Gate + Anti-Aliasing 16kHz + تشخیص Barge-in محلی)
+    // م9.7 — سپر سخت‌افزاری ضد اکوی اسپیکر: تا وقتی صدای هوشیار در حال پخش است (+ 850ms دنباله آکوستیک اتاق)،
+    // میکروفون سکوت دیجیتال خالص (0) ارسال می‌کند تا صدای اسپیکر گوشی وارد میکروفون نشود و لوپ ۳ بار «سلام» رخ ندهد.
+    if (this.playing || this.avail > 0) {
+      this.echoTailSamples = Math.floor(this.sr * 0.85);
+    } else if (this.echoTailSamples > 0) {
+      this.echoTailSamples = Math.max(0, this.echoTailSamples - len);
+    }
+    const echoGuardActive = this.playing || this.avail > 0 || this.echoTailSamples > 0;
+
+    // ۱) پردازش میکروفون (بدون Noise Gate مخرب تا صامت‌های ابتدای کلمات فارسی مثل «س» در «سلام» کامل حفظ شوند)
     if (inChan && inChan.length && !this.micMuted) {
-      let prevX = this.hpPrevX;
-      let prevY = this.hpPrevY;
-      const alpha = this.hpAlpha;
-      let frameSq = 0;
-      for (let i = 0; i < inChan.length; i += 1) {
-        const dx = inChan[i];
-        frameSq += dx * dx;
-      }
-      const rawRms = Math.sqrt(frameSq / inChan.length);
-      if (rawRms >= 0.0055) {
-        this.gateHangover = 225; // ~600ms hangover
-        this.gateGain = 1.0;
-      } else if ((this.gateHangover || 0) > 0) {
-        this.gateHangover -= 1;
-        this.gateGain = 1.0;
-      } else {
-        this.gateGain = ((this.gateGain ?? 1.0) * 0.94) + (0.06 * 0.06);
-      }
-      const gGain = this.gateGain ?? 1.0;
-      frameSq = 0;
-
-      for (let i = 0; i < inChan.length; i += 1) {
-        const x = inChan[i];
-        const y = alpha * (prevY + x - prevX) * gGain;
-        prevX = x;
-        prevY = y;
-        frameSq += y * y;
-        this.micSqSum += y * y;
-        this.micSqCnt += 1;
-
-        this.decimSum += y;
-        this.decimCount += 1;
-        this.decimAcc += 1;
-        if (this.decimAcc >= this.decimRatio) {
-          this.decimAcc -= this.decimRatio;
-          const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
-          this.decimSum = 0;
-          this.decimCount = 0;
-          const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
-          this.micOut[this.micIdx] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
-          this.micIdx += 1;
-          if (this.micIdx >= 640) {
-            const copy = new Int16Array(this.micOut);
-            this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
-            this.micIdx = 0;
+      if (echoGuardActive) {
+        this.hpPrevX = 0;
+        this.hpPrevY = 0;
+        this.decimSum = 0;
+        this.decimCount = 0;
+        this.micVoiceFrames = 0;
+        for (let i = 0; i < inChan.length; i += 1) {
+          this.decimAcc += 1;
+          if (this.decimAcc >= this.decimRatio) {
+            this.decimAcc -= this.decimRatio;
+            this.micOut[this.micIdx] = 0;
+            this.micIdx += 1;
+            if (this.micIdx >= 640) {
+              const copy = new Int16Array(this.micOut);
+              this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+              this.micIdx = 0;
+            }
           }
         }
-      }
-      this.hpPrevX = prevX;
-      this.hpPrevY = prevY;
-      const fRms = Math.sqrt(frameSq / inChan.length);
-      if (fRms > 0.045) {
-        this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
       } else {
-        this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
+        let prevX = this.hpPrevX;
+        let prevY = this.hpPrevY;
+        const alpha = this.hpAlpha;
+        let frameSq = 0;
+
+        for (let i = 0; i < inChan.length; i += 1) {
+          const x = inChan[i];
+          const y = alpha * (prevY + x - prevX);
+          prevX = x;
+          prevY = y;
+          frameSq += y * y;
+          this.micSqSum += y * y;
+          this.micSqCnt += 1;
+
+          this.decimSum += y;
+          this.decimCount += 1;
+          this.decimAcc += 1;
+          if (this.decimAcc >= this.decimRatio) {
+            this.decimAcc -= this.decimRatio;
+            const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
+            this.decimSum = 0;
+            this.decimCount = 0;
+            const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
+            this.micOut[this.micIdx] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
+            this.micIdx += 1;
+            if (this.micIdx >= 640) {
+              const copy = new Int16Array(this.micOut);
+              this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+              this.micIdx = 0;
+            }
+          }
+        }
+        this.hpPrevX = prevX;
+        this.hpPrevY = prevY;
+        const fRms = Math.sqrt(frameSq / inChan.length);
+        if (fRms > 0.045) {
+          this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
+        } else {
+          this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
+        }
       }
     } else {
       this.micVoiceFrames = 0;
     }
 
-    // تنظیم نرم بهره Local Barge-in Ducking هنگام صحبت کاربر وسط حرف هوشیار
-    const targetDuck = this.micVoiceFrames >= 5 ? 0.25 : 1.0;
-    this.duckGain += (targetDuck - this.duckGain) * 0.08;
+    this.duckGain = 1.0;
 
     // ۲) پخش پیوسته‌ی صدای هوشیار از Ring Buffer با Adaptive Jitter Buffer
     if (outChan) {
@@ -574,6 +589,9 @@ export default function AiLive() {
   const lastLevelValRef = useRef(0);
   const micMutedRef = useRef(false);
   const speakerMutedRef = useRef(false);
+  const aiTurnActiveRef = useRef(false);
+  const workletPlayingRef = useRef(false);
+  const echoCooldownUntilRef = useRef(0);
   const userBufRef = useRef('');
   const aiBufRef = useRef('');
 
@@ -613,6 +631,9 @@ export default function AiLive() {
   }, [speakerMuted]);
 
   const stopAllPlayback = useCallback(() => {
+    aiTurnActiveRef.current = false;
+    workletPlayingRef.current = false;
+    echoCooldownUntilRef.current = 0;
     if (workletNodeRef.current) {
       try {
         workletNodeRef.current.port.postMessage({ type: 'clear' });
@@ -792,6 +813,8 @@ export default function AiLive() {
         ? now + 0.045
         : Math.max(now + 0.008, nextPlayTimeRef.current);
       nextPlayTimeRef.current = startAt + audioBuf.duration;
+      const remMs = Math.max(0, (nextPlayTimeRef.current - now) * 1000);
+      echoCooldownUntilRef.current = Math.max(echoCooldownUntilRef.current, performance.now() + remMs + 850);
 
       activeSourcesRef.current.push(src);
       setStatus((prev) => (prev === 'speaking' ? prev : 'speaking'));
@@ -816,6 +839,12 @@ export default function AiLive() {
         ? rawOrB64
         : pcm16Base64ToArrayBuffer(rawOrB64);
       if (!ab || ab.byteLength < 2) return;
+
+      // م9.7 — ثبت وضعیت پخش فعال و قفل ضد اکوی اسپیکر تا پایان پخش + 850ms
+      const chunkMs = (ab.byteLength / 48000.0) * 1000;
+      const nowPerf = performance.now();
+      aiTurnActiveRef.current = true;
+      echoCooldownUntilRef.current = Math.max(echoCooldownUntilRef.current, nowPerf) + chunkMs + 850;
 
       // م9.5 — مسیر اصلی: انتقال Zero-Copy مستقیم ArrayBuffer به AudioWorkletProcessor روی ترد بلادرنگ صدا
       if (workletNodeRef.current) {
@@ -1011,12 +1040,22 @@ export default function AiLive() {
                 if (!d) return;
                 if (d.type === 'mic_pcm16' && d.buffer) {
                   if (!micMutedRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                    wsRef.current.send(d.buffer);
+                    if (
+                      aiTurnActiveRef.current
+                      || workletPlayingRef.current
+                      || performance.now() < echoCooldownUntilRef.current
+                    ) {
+                      wsRef.current.send(new ArrayBuffer(d.buffer.byteLength));
+                    } else {
+                      wsRef.current.send(d.buffer);
+                    }
                   }
                 } else if (d.type === 'telemetry') {
                   setMicLevel(d.micRms || 0);
                   setAiLevel(d.aiRms || 0);
+                  workletPlayingRef.current = !!d.playing;
                   if (d.playing) {
+                    echoCooldownUntilRef.current = Math.max(echoCooldownUntilRef.current, performance.now() + 850);
                     setStatus((prev) => (prev === 'speaking' ? prev : 'speaking'));
                   } else {
                     setStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
@@ -1032,7 +1071,7 @@ export default function AiLive() {
             }
           }
 
-          // مسیر Fallback برای مرورگرهای قدیمی: ScriptProcessorNode با ارسال فریم باینری مستقیم
+          // مسیر Fallback برای مرورگرهای قدیمی: ScriptProcessorNode با ارسال فریم باینری مستقیم و سپر ضد اکوی اسپیکر
           const proc = capCtx.createScriptProcessor(2048, 1, 1);
           const silentGain = capCtx.createGain();
           silentGain.gain.value = 0;
@@ -1048,6 +1087,21 @@ export default function AiLive() {
             }
             const raw = audioEv.inputBuffer.getChannelData(0);
             const nowMs = performance.now();
+            const echoBusy = (
+              aiTurnActiveRef.current
+              || activeSourcesRef.current.length > 0
+              || pendingSamplesCountRef.current > 0
+              || nowMs < echoCooldownUntilRef.current
+            );
+            if (echoBusy) {
+              if (lastLevelValRef.current !== 0) {
+                lastLevelValRef.current = 0;
+                setMicLevel(0);
+              }
+              const outLen = Math.round(raw.length / ((capCtx.sampleRate || 48000) / 16000));
+              wsRef.current.send(new ArrayBuffer(outLen * 2));
+              return;
+            }
             if (nowMs - lastLevelTsRef.current >= 80) {
               let sumSq = 0;
               for (let i = 0; i < raw.length; i += 8) {
@@ -1092,13 +1146,34 @@ export default function AiLive() {
         return;
       }
 
+      if (msg.type === 'user_transcript_override' && msg.text) {
+        setHistoryTurns((prev) => {
+          if (!prev.length) {
+            return [{ role: 'user', text: msg.text }];
+          }
+          const copy = [...prev];
+          for (let i = copy.length - 1; i >= 0; i -= 1) {
+            if (copy[i].role === 'user') {
+              copy[i] = { ...copy[i], text: msg.text };
+              return copy;
+            }
+          }
+          const lastIdx = copy.length - 1;
+          copy.splice(lastIdx, 0, { role: 'user', text: msg.text });
+          return copy.slice(-14);
+        });
+        return;
+      }
+
       if (msg.type === 'output_transcript' && msg.text) {
+        aiTurnActiveRef.current = true;
         aiBufRef.current = `${aiBufRef.current} ${msg.text}`.trim();
         setAiLiveText(aiBufRef.current);
         return;
       }
 
       if (msg.type === 'text' && msg.text) {
+        aiTurnActiveRef.current = true;
         aiBufRef.current = `${aiBufRef.current} ${msg.text}`.trim();
         setAiLiveText(aiBufRef.current);
         return;
@@ -1115,6 +1190,8 @@ export default function AiLive() {
         if (msg.interaction_status === 'IN_PROGRESS') {
           setStatus('thinking');
         } else if (msg.interaction_status === 'IDLE' || msg.turn_complete) {
+          aiTurnActiveRef.current = false;
+          echoCooldownUntilRef.current = Math.max(echoCooldownUntilRef.current, performance.now() + 850);
           if (workletNodeRef.current) {
             try {
               workletNodeRef.current.port.postMessage({ type: 'turn_complete' });
@@ -1171,6 +1248,17 @@ export default function AiLive() {
     };
   };
 
+  const interruptAiSpeech = useCallback(() => {
+    haptic('light');
+    stopAllPlayback();
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({ type: 'barge_in' }));
+      } catch (_) {}
+    }
+    setStatus('listening');
+  }, [stopAllPlayback]);
+
   const endCall = () => {
     haptic('light');
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -1210,7 +1298,7 @@ export default function AiLive() {
     connecting: { label: 'در حال اتصال به Gemini Live…', color: '#F59E0B', icon: '⏳' },
     listening: { label: micMuted ? 'میکروفون بی‌صداست' : 'در حال گوش دادن به شما… صحبت کنید', color: '#10B981', icon: '🟢' },
     thinking: { label: 'هوشیار در حال استدلال و بررسی…', color: '#8B5CF6', icon: '🧠' },
-    speaking: { label: 'هوشیار در حال صحبت… (هر لحظه صحبت کنید قطع می‌شود)', color: '#3B82F6', icon: '🔊' },
+    speaking: { label: 'هوشیار در حال صحبت… (برای نوبت صحبت روی گوی یا دکمه توقف بزنید)', color: '#3B82F6', icon: '🔊' },
     error: { label: 'خطا در تماس زنده', color: '#EF4444', icon: '⚠️' },
   }[status] || { label: '', color: '#64748B', icon: '🎙' };
 
@@ -1268,6 +1356,7 @@ export default function AiLive() {
 
           {/* گوی انیمیشنی تماس زنده */}
           <div
+            onClick={status === 'speaking' ? interruptAiSpeech : undefined}
             style={{
               width: cameraOn ? 84 : 128,
               height: cameraOn ? 84 : 128,
@@ -1277,6 +1366,7 @@ export default function AiLive() {
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: cameraOn ? 32 : 46,
+              cursor: status === 'speaking' ? 'pointer' : 'default',
               transform: `scale(${orbScale.toFixed(3)})`,
               transition: 'transform 120ms ease-out, box-shadow 250ms ease',
               background: `radial-gradient(circle at 35% 35%, ${statusMeta.color}55, ${statusMeta.color}18 70%)`,
@@ -1290,6 +1380,26 @@ export default function AiLive() {
           <div style={{ fontWeight: 700, fontSize: 15, color: '#F8FAFC' }}>
             {statusMeta.label}
           </div>
+
+          {status === 'speaking' && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={interruptAiSpeech}
+                style={{
+                  borderRadius: 999,
+                  background: 'rgba(59,130,246,0.22)',
+                  border: '1px solid rgba(59,130,246,0.55)',
+                  color: '#93C5FD',
+                  padding: '6px 14px',
+                  fontSize: 12,
+                }}
+              >
+                ✋ قطع صحبت هوشیار و شروع صحبت من
+              </button>
+            </div>
+          )}
 
           {toolNotice && (
             <div style={{ marginTop: 8, fontSize: 12, color: '#C4B5FD' }}>

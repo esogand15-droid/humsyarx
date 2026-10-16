@@ -4460,22 +4460,29 @@ async def list_live_models(refresh: bool = False) -> dict:
 
 
 LIVE_PERSIAN_LANGUAGE_LOCK_HEADER = (
-    "[MANDATORY LANGUAGE LOCK — CRITICAL SYSTEM RULE]:\n"
-    "RESPOND IN PERSIAN (FARSI / فارسی). YOU MUST RESPOND UNMISTAKABLY AND EXCLUSIVELY IN PERSIAN (fa-IR) AT ALL TIMES.\n"
-    "NEVER SWITCH TO ANY OTHER LANGUAGE (SUCH AS ENGLISH, ARABIC, TURKISH, HINDI, SPANISH, RUSSIAN, KOREAN, CHINESE, FRENCH, OR GERMAN) UNDER ANY CIRCUMSTANCES.\n"
-    "IF THE USER'S AUDIO IS UNCLEAR, MUFFLED, NOISY, DISTORTED, OR SOUNDS LIKE ANOTHER LANGUAGE DUE TO MICROPHONE NOISE, DO NOT SWITCH LANGUAGES; "
+    "[MANDATORY LANGUAGE & AUDIO RECOGNITION LOCK — CRITICAL SYSTEM RULE]:\n"
+    "1. INPUT AUDIO LANGUAGE IS EXCLUSIVELY PERSIAN (FARSI / fa-IR): The user is an Iranian student speaking EXCLUSIVELY in Persian (Farsi / زبان فارسی). "
+    "Always recognize, interpret, and understand the user's spoken audio as Persian (Farsi). "
+    "NEVER misinterpret Persian speech or short Persian words (such as 'سلام' / 'Salam', 'خوبی' / 'Khoobi', 'چطوری' / 'Chetori', 'بله' / 'Bale') as Hindi, Urdu, German, English, Arabic, Turkish, or Russian.\n"
+    "2. OUTPUT LANGUAGE IS EXCLUSIVELY PERSIAN (FARSI / fa-IR): RESPOND IN PERSIAN (FARSI / فارسی). YOU MUST RESPOND UNMISTAKABLY AND EXCLUSIVELY IN PERSIAN (fa-IR) AT ALL TIMES. "
+    "NEVER SWITCH TO ANY OTHER LANGUAGE (SUCH AS HINDI, GERMAN, ENGLISH, ARABIC, TURKISH, SPANISH, RUSSIAN, KOREAN, CHINESE, OR FRENCH) UNDER ANY CIRCUMSTANCES.\n"
+    "3. NO GREETING LOOPS: When the user greets you ('سلام'), greet them back ONCE warmly and concisely in Persian, and wait for their question. "
+    "NEVER repeat 'سلام' or repeat your greeting multiple times in a row. If you hear faint echo, background noise, or silence after greeting the user, do NOT repeat your greeting.\n"
+    "4. UNCLEAR AUDIO RULE: IF THE USER'S AUDIO IS UNCLEAR, MUFFLED, NOISY, DISTORTED, OR SOUNDS LIKE ANOTHER LANGUAGE DUE TO MICROPHONE NOISE, DO NOT SWITCH LANGUAGES; "
     "ALWAYS ASSUME THE STUDENT IS SPEAKING PERSIAN AND POLITELY ASK THEM IN PERSIAN TO REPEAT WHAT THEY SAID.\n\n"
     "[قانون قطعی و تغییرناپذیر زبان مکالمه زنده]:\n"
-    "زبان پیش‌فرض و انحصاری شما در تمام طول این تماس صوتی زنده **فقط و فقط زبان فارسی (Persian / Farsi)** است.\n"
-    "۱) شما تحت هیچ شرایطی مجاز نیستید زبان مکالمه را به زبان دیگری (انگلیسی، عربی، ترکی، هندی، روسی، اسپانیایی، کره‌ای و غیره) تغییر دهید.\n"
-    "۲) اگر صدای کاربر یا دانشجو ضعیف، نامفهوم، بریده‌بریده، گنگ یا همراه با نویز محیط بود و متوجه نشدید چه گفت، **هرگز زبان خود را عوض نکنید** و هرگز تصور نکنید به زبان خارجی صحبت کرده است؛ در این حالت حتماً فقط به زبان فارسی صمیمی بگویید: «ببخشید صدات واضح نیومد، می‌شه دوباره بگی؟» یا «متوجه نشدم چی گفتی عزیزم، یه بار دیگه تکرار می‌کنی؟».\n\n"
+    "زبان گفتار دانشجو و زبان پیش‌فرض و انحصاری شما در تمام طول این تماس صوتی زنده **فقط و فقط زبان فارسی (Persian / Farsi)** است.\n"
+    "۱) شما تحت هیچ شرایطی مجاز نیستید زبان مکالمه را به زبان دیگری (هندی، آلمانی، انگلیسی، عربی، ترکی، روسی و غیره) تغییر دهید یا گفتار فارسی دانشجو را به زبان دیگری برداشت کنید.\n"
+    "۲) وقتی دانشجو «سلام» می‌گوید، فقط **یک بار** صمیمی و کوتاه پاسخ دهید و منتظر سوالش بمانید؛ هرگز سلام و احوال‌پرسی را چند بار پشت سر هم تکرار نکنید.\n"
+    "۳) اگر صدای کاربر یا دانشجو ضعیف، نامفهوم، بریده‌بریده، گنگ یا همراه با نویز محیط بود و متوجه نشدید چه گفت، **هرگز زبان خود را عوض نکنید** و هرگز تصور نکنید به زبان خارجی صحبت کرده است؛ در این حالت حتماً فقط به زبان فارسی صمیمی بگویید: «ببخشید صدات واضح نیومد، می‌شه دوباره بگی؟» یا «متوجه نشدم چی گفتی عزیزم، یه بار دیگه تکرار می‌کنی؟».\n\n"
 )
 
 LIVE_PERSIAN_LANGUAGE_LOCK_FOOTER = (
     "\n\n[دستورالعمل تماس صوتی زنده (Live Voice Call) و قفل زبان فارسی]:\n"
     "- شما در حال مکالمه‌ی صوتی زنده و مستقیم با دانشجوی ایرانی هستید.\n"
     "- پاسخ‌ها را همیشه ۱۰۰٪ به **زبان فارسی معیار گفتاری**، روان، صمیمی، طبیعی و بدون علائم نگارشیِ بلند یا کدهای Markdown بیان کن تا در گفتار صوتی کاملاً طبیعی شنیده شود.\n"
-    "- تذکر نهایی و قطعی (UNMISTAKABLY RESPOND IN PERSIAN): حتی اگر صدای ورودی میکروفون نامفهوم یا شبیه زبان‌های دیگر شنیده شد، هرگز به زبان غیرفارسی پاسخ نده و همیشه به فارسی صحبت کن."
+    "- هرگز در ابتدای مکالمه چند بار پشت سر هم سلام نکن؛ یک بار سلام و احوال‌پرسی کوتاه کافی است.\n"
+    "- تذکر نهایی و قطعی (UNMISTAKABLY RESPOND IN PERSIAN): حتی اگر صدای ورودی میکروفون نامفهوم یا شبیه زبان‌های دیگر (مثل هندی یا آلمانی) شنیده شد، هرگز به زبان غیرفارسی پاسخ نده و همیشه به فارسی صحبت کن."
 )
 
 
@@ -4521,6 +4528,252 @@ def is_non_persian_output_drift(text: str) -> bool:
     if total_alpha >= 30 and (persian_chars / float(total_alpha)) < 0.20:
         return True
     return False
+
+
+# م9.7 — نگاشت فوری آوایی برای کلمات و احوال‌پرسی‌های فارسی که STT جمینی به خط هندی (دواناگری) یا آلمانی/لاتین می‌نویسد
+_FOREIGN_STT_EXACT_PHRASE_MAP: dict[str, str] = {
+    'सलाम': 'سلام',
+    'अलाम': 'سلام',
+    'अस्सलामु अलैकुम': 'سلام علیکم',
+    'सलाम अलैकुम': 'سلام علیکم',
+    'नमस्ते': 'سلام',
+    'नमस्कार': 'سلام',
+    'हेलो': 'سلام',
+    'हाय': 'سلام',
+    'हालो': 'سلام',
+    'सलाम खूबी': 'سلام خوبی',
+    'सलाम चतोरी': 'سلام چطوری',
+    'सलाम चेतोरी': 'سلام چطوری',
+    'खूबी': 'خوبی',
+    'चतोरी': 'چطوری',
+    'चेतोरी': 'چطوری',
+    'चेटोरी': 'چطوری',
+    'ममनून': 'ممنون',
+    'मेर्सी': 'مرسی',
+    'बले': 'بله',
+    'भले': 'بله',
+    'ना': 'نه',
+    'नहीं': 'نه',
+    'खोदा हाफिज': 'خداحافظ',
+    'हुशयार': 'هوشیار',
+    'होशियार': 'هوشیار',
+    'salam': 'سلام',
+    'salaam': 'سلام',
+    'selam': 'سلام',
+    'salom': 'سلام',
+    'salam aleykum': 'سلام علیکم',
+    'salam aleikum': 'سلام علیکم',
+    'alam': 'سلام',
+    'alarm': 'سلام',
+    'hallo': 'سلام',
+    'hello': 'سلام',
+    'hi': 'سلام',
+    'hey': 'سلام',
+    'salut': 'سلام',
+    'guten tag': 'سلام',
+    'servus': 'سلام',
+    'moin': 'سلام',
+    'salam khoobi': 'سلام خوبی',
+    'salam khubi': 'سلام خوبی',
+    'salam chetori': 'سلام چطوری',
+    'khoobi': 'خوبی',
+    'khubi': 'خوبی',
+    'khoubi': 'خوبی',
+    'chetori': 'چطوری',
+    'chetoori': 'چطوری',
+    'chetor': 'چطور',
+    'halet chetore': 'حالت چطوره',
+    'mamnoon': 'ممنون',
+    'mamnun': 'ممنون',
+    'mersi': 'مرسی',
+    'merci': 'مرسی',
+    'danke': 'مرسی',
+    'bale': 'بله',
+    'baleh': 'بله',
+    'are': 'آره',
+    'areh': 'آره',
+    'ja': 'بله',
+    'na': 'نه',
+    'nah': 'نه',
+    'nein': 'نه',
+    'khodahafez': 'خداحافظ',
+    'khoda hafez': 'خداحافظ',
+    'houshyar': 'هوشیار',
+    'hoshyar': 'هوشیار',
+    'hushyar': 'هوشیار',
+}
+
+_FOREIGN_STT_TOKEN_MAP: dict[str, str] = {
+    **_FOREIGN_STT_EXACT_PHRASE_MAP,
+    'मन': 'من',
+    'तो': 'تو',
+    'मा': 'ما',
+    'शमा': 'شما',
+    'शुमा': 'شما',
+    'ये': 'یه',
+    'यक': 'یک',
+    'सवाल': 'سوال',
+    'दारम': 'دارم',
+    'दर्स': 'درس',
+    'उस्ताद': 'استاد',
+    'इम्तिहान': 'امتحان',
+    'किताब': 'کتاب',
+    'बर्नामे': 'برنامه',
+    'क्लास': 'کلاس',
+    'ची': 'چی',
+    'चे': 'چه',
+    'कजा': 'کجا',
+    'कुजा': 'کجا',
+    'के': 'که',
+    'अज़': 'از',
+    'बा': 'با',
+    'बे': 'به',
+    'दर': 'در',
+    'अस्त': 'است',
+    'हस्त': 'هست',
+    'नीस्त': 'نیست',
+    'जान': 'جان',
+    'अजीजम': 'عزیزم',
+    'खूब': 'خوب',
+    'خوبम': 'خوبم',
+    'खूबम': 'خوبم',
+    'man': 'من',
+    'to': 'تو',
+    'shoma': 'شما',
+    'ye': 'یه',
+    'yek': 'یک',
+    'soal': 'سوال',
+    'daram': 'دارم',
+    'dars': 'درس',
+    'ostad': 'استاد',
+    'emtehan': 'امتحان',
+    'ketab': 'کتاب',
+    'barname': 'برنامه',
+    'barnameh': 'برنامه',
+    'kelas': 'کلاس',
+    'chi': 'چی',
+    'che': 'چه',
+    'koja': 'کجا',
+    'ke': 'که',
+    'az': 'از',
+    'ba': 'با',
+    'be': 'به',
+    'dar': 'در',
+    'ast': 'است',
+    'hast': 'هست',
+    'nist': 'نیست',
+    'khoobam': 'خوبم',
+    'khubam': 'خوبم',
+}
+
+
+def sanitize_live_persian_transcript(text: str, is_input: bool = True) -> str:
+    """م9.7 — پالایش زیرنویس زنده (input_transcript / output_transcript) در حالت زبان فارسی.
+
+    چرا لازم است؟
+    مدل STT مجزای inputAudioTranscription در Gemini Live API فیلد languageCode ندارد و گاهی
+    واژه‌های کوتاه فارسی (مثل «سلام» / «خوبی») را به خط هندی (دواناگری: सलाम) یا آلمانی/لاتین
+    (Hallo / Alarm / Salam) آوانگاری می‌کند. این تابع:
+    ۱) اگر متن حاوی حروف فارسی باشد، کاراکترهای خطوط بیگانه (دواناگری، سیریلیک، شرق آسیا) را پاک کرده و متن فارسی را برمی‌گرداند.
+    ۲) اگر متن فاقد حروف فارسی باشد و در جدول آوانگاری فارسی (مثل सलाम / Salam / Hallo / Alarm -> سلام) باشد، معادل دقیق فارسی را برمی‌گرداند.
+    ۳) اگر متن تماماً به زبان/خط بیگانه‌ی نامرتبط (هندی، آلمانی، روسی و...) باشد، رشته‌ی خالی برمی‌گرداند تا هرگز زیرنویس غیرفارسی به کاربر نمایش داده نشود.
+    """
+    if not text:
+        return ''
+    raw = str(text).strip()
+    if not raw:
+        return ''
+
+    persian_chars = len(re.findall(r'[\u0600-\u06FF]', raw))
+    if persian_chars > 0:
+        # حذف کاراکترهای خطوط غیرمرتبط (دواناگری/هندی، سیریلیک، چینی/ژاپنی/کره‌ای، تایلندی، عبری)
+        cleaned = re.sub(
+            r'[\u0400-\u04FF\u0900-\u097F\uAC00-\uD7AF\u4E00-\u9FFF\u3040-\u30FF\u0E00-\u0E7F\u0590-\u05FF]+',
+            ' ',
+            raw,
+        )
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned
+
+    # متن هیچ حرف فارسی ندارد — بررسی جدول آوانگاری فوری (برای ورودی کاربر)
+    if is_input:
+        norm = re.sub(r'[.,!?;:،؛؟।"«»()\[\]{}\-_]+', ' ', raw.lower())
+        norm = re.sub(r'\s+', ' ', norm).strip()
+        if not norm:
+            return ''
+        if norm in _FOREIGN_STT_EXACT_PHRASE_MAP:
+            return _FOREIGN_STT_EXACT_PHRASE_MAP[norm]
+
+        tokens = [t for t in norm.split(' ') if t]
+        if tokens:
+            mapped = [_FOREIGN_STT_TOKEN_MAP.get(t) for t in tokens]
+            hit_count = sum(1 for m in mapped if m)
+            if hit_count > 0 and hit_count >= max(1, int(len(tokens) * 0.6)):
+                return ' '.join(m for m in mapped if m)
+
+    # متن تماماً غیرفارسی است (هندی/آلمانی/لاتین ناشناخته) -> مسدودسازی نمایش خام در زیرنویس
+    return ''
+
+
+async def repair_foreign_stt_to_persian(
+    foreign_text: str,
+    reply_context: str = '',
+    api_key: str = '',
+) -> str:
+    """م9.7 — بازگردانی جملات فارسی که STT جمینی به اشتباه با حروف هندی/آلمانی آوانگاری کرده است."""
+    ft = (foreign_text or '').strip()
+    if not ft:
+        return ''
+    instant = sanitize_live_persian_transcript(ft, is_input=True)
+    if instant:
+        return instant
+    if not api_key:
+        try:
+            cfg = await get_ai_config()
+            api_key = cfg.get('api_key') or ''
+        except Exception:
+            api_key = ''
+    if not api_key:
+        return ''
+
+    ctx_hint = ''
+    if reply_context and len(reply_context.strip()) >= 4:
+        ctx_hint = f"\nپاسخی که دستیار به این جمله‌ی دانشجو داده این بوده است: «{reply_context.strip()[:300]}»"
+
+    prompt = (
+        "یک دانشجوی ایرانی در تماس صوتی به **زبان فارسی** صحبت کرده است، اما موتور تشخیص گفتار (STT) "
+        f"به‌شتباه صدای فارسی او را با حروف هندی/آلمانی/لاتین به این شکل آوانگاری کرده است:\n«{ft[:400]}»"
+        f"{ctx_hint}\n\n"
+        "فقط و فقط جمله‌ی اصلی فارسی گفتاری که دانشجو گفته است را به خط فارسی بنویس "
+        "(بدون هیچ توضیحی، بدون گیومه، حداکثر یک خط کوتاه فارسی؛ اگر صرفاً نویز بی‌معنی بوده فقط بنویس: «...»):"
+    )
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    payload = {
+        'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+        'generationConfig': {
+            'maxOutputTokens': 80,
+            'temperature': 0.1,
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.post(
+                url,
+                headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+                json=payload,
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            cands = data.get('candidates') or []
+            if cands:
+                parts = ((cands[0].get('content') or {}).get('parts')) or []
+                out = ''.join(p.get('text', '') for p in parts if isinstance(p, dict)).strip()
+                out = out.strip('«»"\' \n\t')
+                if out and out != '...' and len(re.findall(r'[\u0600-\u06FF]', out)) >= 2:
+                    return sanitize_live_persian_transcript(out, is_input=True)
+    except Exception:
+        pass
+    return ''
 
 
 def build_live_setup_message(
@@ -4608,15 +4861,16 @@ def build_live_setup_message(
         },
         'inputAudioTranscription': {},
         'outputAudioTranscription': {},
-        # م9.5 — تنظیم حرفه‌ای تشخیص فعالیت صوتی (VAD) برای کاهش تأخیر پاسخ به ~520ms،
-        # حفظ ۱۲۰ میلی‌ثانیه ابتدای کلمات (Prefix Padding)، Barge-in آنی و حذف نویز محیطی بین نوبت‌ها
+        # م9.7 — تنظیم کالیبره‌شده تشخیص فعالیت صوتی (VAD):
+        # • prefixPaddingMs=300: حفظ کامل ۳۰۰ میلی‌ثانیه ابتدای کلمات فارسی (مثل «س» در «سلام»)
+        # • START_SENSITIVITY_LOW / END_SENSITIVITY_LOW + silenceDurationMs=900: جلوگیری از تکه شدن یک جمله به ۲-۳ نوبت و حذف تریگر کاذب روی نویز/اکو
         'realtimeInputConfig': {
             'automaticActivityDetection': {
                 'disabled': False,
-                'startOfSpeechSensitivity': 'START_SENSITIVITY_HIGH',
-                'endOfSpeechSensitivity': 'END_SENSITIVITY_HIGH',
-                'prefixPaddingMs': 120,
-                'silenceDurationMs': 520,
+                'startOfSpeechSensitivity': 'START_SENSITIVITY_LOW',
+                'endOfSpeechSensitivity': 'END_SENSITIVITY_LOW',
+                'prefixPaddingMs': 300,
+                'silenceDurationMs': 900,
             },
             'activityHandling': 'START_OF_ACTIVITY_INTERRUPTS',
             'turnCoverage': 'TURN_INCLUDES_ONLY_ACTIVITY',

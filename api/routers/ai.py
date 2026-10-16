@@ -40,7 +40,9 @@ from ai_solver import (
     execute_live_tool_calls,
     is_non_persian_output_drift,
     parse_live_server_message,
+    repair_foreign_stt_to_persian,
     run_with_key_failover,
+    sanitize_live_persian_transcript,
     ai_claim_inflight,
     ai_is_inflight,
     ai_release_inflight,
@@ -1979,9 +1981,29 @@ async def live_voice_ws_ep(websocket: WebSocket):
       • {"type": "tool_call", "calls": [...]}
       • {"type": "error", "message": "..."}
     """
+    import array as _array
     import base64 as _b64
     import json as _json
     import time as _time
+
+    def _pcm16_rms(pcm_bytes: bytes) -> float:
+        if not pcm_bytes or len(pcm_bytes) < 2:
+            return 0.0
+        n_bytes = len(pcm_bytes) - (len(pcm_bytes) % 2)
+        if n_bytes <= 0:
+            return 0.0
+        arr = _array.array("h")
+        arr.frombytes(pcm_bytes[:n_bytes])
+        if not arr:
+            return 0.0
+        step = max(1, len(arr) // 160)
+        sq = 0
+        cnt = 0
+        for i in range(0, len(arr), step):
+            v = int(arr[i])
+            sq += v * v
+            cnt += 1
+        return (sq / float(cnt)) ** 0.5 if cnt else 0.0
 
     await websocket.accept()
     user = await _authenticate_live_ws(websocket)
@@ -2065,7 +2087,16 @@ async def live_voice_ws_ep(websocket: WebSocket):
     google_ws = None
     started_at = _time.monotonic()
     user_transcript_buf: list[str] = []
+    raw_user_stt_buf: list[str] = []
     model_transcript_buf: list[str] = []
+    model_turn_active: bool = False
+    tool_call_pending: bool = False
+    completed_model_turns: int = 0
+    voiced_frames_since_last_turn: int = 0
+    user_spoke_since_last_turn: bool = False
+    server_speaker_busy_until: float = 0.0
+    server_echo_guard_until: float = 0.0
+    dropping_unsolicited_turn: bool = False
 
     try:
         try:
@@ -2078,12 +2109,7 @@ async def live_voice_ws_ep(websocket: WebSocket):
             return
 
         connected_model = getattr(google_ws, "live_model", None) or effective_model
-        # م9.6 — قفل اولیه کانتکست مکالمه روی زبان فارسی (fa-IR) پیش از ارسال اولین فریم میکروفون
-        if "translate" not in connected_model.lower():
-            try:
-                await google_ws.send(_json.dumps(build_live_language_lock_turn(turn_complete=False)))
-            except Exception:
-                pass
+        is_persian_lock = ("translate" not in connected_model.lower()) and (effective_lang == "fa")
         await websocket.send_json({
             "type": "ready",
             "model": connected_model,
@@ -2098,6 +2124,9 @@ async def live_voice_ws_ep(websocket: WebSocket):
                 await websocket.send_json(ev)
 
         async def _client_to_google():
+            nonlocal model_turn_active, dropping_unsolicited_turn
+            nonlocal voiced_frames_since_last_turn, user_spoke_since_last_turn
+            nonlocal server_speaker_busy_until, server_echo_guard_until
             while True:
                 if _time.monotonic() - started_at > max_session_sec:
                     await websocket.send_json({
@@ -2111,8 +2140,17 @@ async def live_voice_ws_ep(websocket: WebSocket):
                         break
                     raw_bytes = ws_frame.get("bytes")
                     if raw_bytes:
-                        # م9.5 — فریم باینری مستقیم PCM16 16kHz از AudioWorklet مرورگر (حذف کامل سربار Base64/JSON روی ترد UI)
-                        b64_data = _b64.b64encode(raw_bytes).decode("ascii")
+                        now_m = _time.monotonic()
+                        # م9.7 — سپر ضد اکوی اسپیکر: تا زمانی که صدای هوشیار در حال پخش است (+ دنباله اکو)،
+                        # سکوت دیجیتال خالص ارسال می‌شود تا صدای اسپیکر گوشی وارد میکروفون نشود و لوپ «سلام» ایجاد نکند
+                        if model_turn_active or now_m < server_echo_guard_until:
+                            silent_bytes = b"\x00" * len(raw_bytes)
+                            b64_data = _b64.b64encode(silent_bytes).decode("ascii")
+                        else:
+                            if _pcm16_rms(raw_bytes) >= 65.0:
+                                voiced_frames_since_last_turn += 1
+                                user_spoke_since_last_turn = True
+                            b64_data = _b64.b64encode(raw_bytes).decode("ascii")
                         await google_ws.send(_json.dumps({
                             "realtimeInput": {
                                 "audio": {
@@ -2139,6 +2177,17 @@ async def live_voice_ws_ep(websocket: WebSocket):
                     b64_data = msg.get("data") or ""
                     mime = msg.get("mimeType") or "audio/pcm;rate=16000"
                     if b64_data:
+                        now_m = _time.monotonic()
+                        try:
+                            pcm_in = _b64.b64decode(b64_data)
+                        except Exception:
+                            pcm_in = b""
+                        if model_turn_active or now_m < server_echo_guard_until:
+                            silent_bytes = b"\x00" * (len(pcm_in) or 1280)
+                            b64_data = _b64.b64encode(silent_bytes).decode("ascii")
+                        elif pcm_in and _pcm16_rms(pcm_in) >= 65.0:
+                            voiced_frames_since_last_turn += 1
+                            user_spoke_since_last_turn = True
                         await google_ws.send(_json.dumps({
                             "realtimeInput": {
                                 "audio": {
@@ -2147,6 +2196,13 @@ async def live_voice_ws_ep(websocket: WebSocket):
                                 }
                             }
                         }))
+                elif mtype == "barge_in":
+                    # م9.7 — کاربر دکمه «قطع صحبت هوشیار» را زد: باز کردن فوری قفل نوبت و میکروفون
+                    model_turn_active = False
+                    dropping_unsolicited_turn = False
+                    server_speaker_busy_until = 0.0
+                    server_echo_guard_until = 0.0
+                    user_spoke_since_last_turn = True
                 elif mtype == "audio_stream_end":
                     # م9.5 — اعلام پایان استریم میکروفون (هنگام Mute کردن توسط کاربر) برای پاسخ فوری جمینی
                     try:
@@ -2172,6 +2228,11 @@ async def live_voice_ws_ep(websocket: WebSocket):
                 elif mtype == "text":
                     txt = (msg.get("text") or "").strip()
                     if txt and "translate" not in connected_model.lower():
+                        model_turn_active = False
+                        dropping_unsolicited_turn = False
+                        server_speaker_busy_until = 0.0
+                        server_echo_guard_until = 0.0
+                        user_spoke_since_last_turn = True
                         user_transcript_buf.append(txt)
                         await google_ws.send(_json.dumps({
                             "clientContent": {
@@ -2189,50 +2250,138 @@ async def live_voice_ws_ep(websocket: WebSocket):
                 elif mtype == "stop":
                     break
 
+        async def _restore_and_push_persian_user_transcript(raw_foreign: str, reply_ctx: str):
+            try:
+                fixed = await repair_foreign_stt_to_persian(
+                    raw_foreign,
+                    reply_context=reply_ctx,
+                    api_key=_active_key or "",
+                )
+                if fixed:
+                    await websocket.send_json({
+                        "type": "user_transcript_override",
+                        "text": fixed,
+                    })
+                    try:
+                        await _remember(uid, "user", f"[🎙 تماس زنده] {fixed[:1000]}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         async def _google_to_client():
+            nonlocal model_turn_active, tool_call_pending, completed_model_turns
+            nonlocal voiced_frames_since_last_turn, user_spoke_since_last_turn
+            nonlocal server_speaker_busy_until, server_echo_guard_until
+            nonlocal dropping_unsolicited_turn
             async for raw_srv in google_ws:
                 evs = parse_live_server_message(raw_srv)
                 for ev in evs:
                     etype = ev.get("type")
+                    if etype == "interrupted":
+                        model_turn_active = False
+                        dropping_unsolicited_turn = False
+                        server_speaker_busy_until = 0.0
+                        server_echo_guard_until = 0.0
+                        await websocket.send_json(ev)
+                        continue
+
                     if etype == "input_transcript" and ev.get("text"):
+                        now_m = _time.monotonic()
+                        # م9.7 — حذف کامل زیرنویس‌های کاذب ناشی از اکوی اسپیکر یا نویز سکوت بین دو نوبت
+                        if (
+                            model_turn_active
+                            or now_m < server_echo_guard_until
+                            or (completed_model_turns > 0 and not user_spoke_since_last_turn)
+                        ):
+                            continue
+                        if is_persian_lock:
+                            raw_user_stt_buf.append(ev["text"])
+                            clean_in = sanitize_live_persian_transcript(ev["text"], is_input=True)
+                            if not clean_in:
+                                # اگر STT جمینی به خط هندی/آلمانی/لاتین نوشت، نمایش خام آن مسدود می‌شود
+                                continue
+                            ev["text"] = clean_in
                         user_transcript_buf.append(ev["text"])
-                    elif etype == "output_transcript" and ev.get("text"):
-                        model_transcript_buf.append(ev["text"])
-                    elif etype == "tool_call":
+                        await websocket.send_json(ev)
+                        continue
+
+                    if etype == "tool_call":
+                        tool_call_pending = True
+                        dropping_unsolicited_turn = False
                         await websocket.send_json(ev)
                         tool_resp = await execute_live_tool_calls(ev.get("calls") or [], uid)
                         await google_ws.send(_json.dumps(tool_resp))
                         continue
 
-                    # م9.5 — ارسال فریم صوتی باینری مستقیم (ArrayBuffer) در صورت فعال بودن binary=1
-                    if etype == "audio" and use_binary_out and ev.get("data") and hasattr(websocket, "send_bytes"):
+                    if etype in ("audio", "output_transcript", "text"):
+                        # م9.7 — اگر پس از پایان نوبت اول، کاربر هنوز هیچ صحبتی نکرده باشد، از شروع نوبت تکراری ناخواسته (لوپ ۳ بار سلام) جلوگیری کن
+                        if (
+                            completed_model_turns > 0
+                            and not user_spoke_since_last_turn
+                            and not tool_call_pending
+                            and not model_turn_active
+                        ):
+                            dropping_unsolicited_turn = True
+                            continue
+                        if dropping_unsolicited_turn:
+                            continue
+                        model_turn_active = True
+
+                    if etype == "output_transcript" and ev.get("text"):
+                        if is_persian_lock:
+                            clean_out = sanitize_live_persian_transcript(ev["text"], is_input=False)
+                            if not clean_out:
+                                continue
+                            ev["text"] = clean_out
+                        model_transcript_buf.append(ev["text"])
+
+                    # م9.5 / م9.7 — محاسبه زمان دقیق پخش صدای هوشیار روی اسپیکر گوشی و ارسال فریم باینری
+                    if etype == "audio" and ev.get("data"):
+                        pcm_raw = b""
                         try:
                             pcm_raw = _b64.b64decode(ev["data"])
-                            if pcm_raw:
-                                await websocket.send_bytes(pcm_raw)
-                                continue
                         except Exception:
-                            pass
+                            pcm_raw = b""
+                        if pcm_raw:
+                            now_m = _time.monotonic()
+                            dur_sec = len(pcm_raw) / 48000.0
+                            server_speaker_busy_until = max(server_speaker_busy_until, now_m) + dur_sec
+                            server_echo_guard_until = server_speaker_busy_until + 0.85
+                            if use_binary_out and hasattr(websocket, "send_bytes"):
+                                try:
+                                    await websocket.send_bytes(pcm_raw)
+                                    continue
+                                except Exception:
+                                    pass
 
                     # ارسال فوری رویداد صوتی/وضعیت به مرورگر پیش از هرگونه عملیات دیسک/دیتابیس
+                    if etype == "turn_state" and ev.get("turn_complete") and dropping_unsolicited_turn:
+                        dropping_unsolicited_turn = False
+                        continue
+
                     await websocket.send_json(ev)
 
                     if etype == "turn_state" and ev.get("turn_complete"):
                         u_txt = " ".join(user_transcript_buf).strip()
+                        raw_u_txt = " ".join(raw_user_stt_buf).strip()
                         m_txt = " ".join(model_transcript_buf).strip()
                         user_transcript_buf.clear()
+                        raw_user_stt_buf.clear()
                         model_transcript_buf.clear()
-                        # م9.6 — اگر مدل به دلیل نویز محیط ناخواسته به زبان غیرفارسی منحرف شد، بلافاصله قفل زبان فارسی را تزریق کن
-                        if (
-                            "translate" not in connected_model.lower()
-                            and m_txt
-                            and is_non_persian_output_drift(m_txt)
-                        ):
-                            try:
-                                await google_ws.send(_json.dumps(build_live_language_lock_turn(turn_complete=False)))
-                            except Exception:
-                                pass
-                        if u_txt:
+                        if m_txt or model_turn_active:
+                            model_turn_active = False
+                            tool_call_pending = False
+                            completed_model_turns += 1
+                            user_spoke_since_last_turn = False
+                            voiced_frames_since_last_turn = 0
+                            server_echo_guard_until = max(server_speaker_busy_until, _time.monotonic()) + 0.85
+                        # م9.7 — اگر STT جمینی کل جمله فارسی کاربر را با الفبای هندی/آلمانی نوشته بود، معادل دقیق فارسی را بازسازی و به زیرنویس ارسال کن
+                        if is_persian_lock and raw_u_txt and not u_txt:
+                            asyncio.create_task(
+                                _restore_and_push_persian_user_transcript(raw_u_txt, m_txt)
+                            )
+                        elif u_txt:
                             try:
                                 await _remember(uid, "user", f"[🎙 تماس زنده] {u_txt[:1000]}")
                             except Exception:

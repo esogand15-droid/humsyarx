@@ -1027,25 +1027,22 @@ class _GroupLiveSession:
             raw_chunk = bytes(self.in_buf[:take])
             del self.in_buf[:take]
 
-            # م9.5 / م9.6 — فیلتر High-Pass، Noise Gate نرم در سکوت، و محافظ اکو هنگام صحبت خود هوشیار
-            filtered_chunk, rms, self._hp_state = _filter_and_measure_pcm16_16k(
-                raw_chunk, self._hp_state, attenuate_factor=1.0
-            )
-            voice_thresh = 240 if self._playout_active else 65
-            if rms >= voice_thresh:
-                self._voice_hangover_until = now + 0.55
-                chunk = filtered_chunk
-            elif now < self._voice_hangover_until:
-                chunk = filtered_chunk
-            elif self._playout_active:
-                # تضعیف شدید نویز/اکوی ضعیف اسپیکر شرکت‌کنندگان هنگام صحبت هوشیار تا Barge-in کاذب رخ ندهد
-                chunk, _, _ = _filter_and_measure_pcm16_16k(
-                    raw_chunk, self._hp_state, attenuate_factor=0.08
+            # م9.7 — سپر ضد اکو در ویس‌چت گروه و حفظ ۱۰۰٪ صامت‌های ابتدای کلمات فارسی در زمان گوش دادن
+            if self._playout_active or (now - self.last_audio_out_at) < 0.75:
+                _, rms, self._hp_state = _filter_and_measure_pcm16_16k(
+                    raw_chunk, self._hp_state, attenuate_factor=1.0
                 )
+                if rms >= 3200:
+                    # Barge-in واقعی با صدای بلند یکی از اعضای گروه
+                    self.clear_playback_buffer()
+                    chunk, _, self._hp_state = _filter_and_measure_pcm16_16k(
+                        raw_chunk, self._hp_state, attenuate_factor=1.0
+                    )
+                else:
+                    chunk = b"\x00" * len(raw_chunk)
             else:
-                # م9.6 — تضعیف نویز محیطی ضعیف در زمان سکوت (Soft Noise Gate) تا جمینی نویز میکروفون را زبان خارجی تشخیص ندهد
-                chunk, _, _ = _filter_and_measure_pcm16_16k(
-                    raw_chunk, self._hp_state, attenuate_factor=0.06
+                chunk, _, self._hp_state = _filter_and_measure_pcm16_16k(
+                    raw_chunk, self._hp_state, attenuate_factor=1.0
                 )
 
             b64 = base64.b64encode(chunk).decode("ascii")
@@ -1094,17 +1091,7 @@ class _GroupLiveSession:
                     elif etype == "turn_state":
                         if ev.get("turn_complete") or ev.get("interaction_status") == "IDLE":
                             self._turn_complete = True
-                            m_txt = " ".join(out_tr_buf).strip()
                             out_tr_buf.clear()
-                            if (
-                                "translate" not in (self.model or "").lower()
-                                and m_txt
-                                and is_non_persian_output_drift(m_txt)
-                            ):
-                                try:
-                                    await self.google_ws.send(json.dumps(build_live_language_lock_turn(turn_complete=False)))
-                                except Exception:
-                                    pass
                     elif etype == "tool_call":
                         tool_resp = await execute_live_tool_calls(ev.get("calls") or [], 0)
                         await self.google_ws.send(json.dumps(tool_resp))

@@ -357,7 +357,7 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
 
     this.hpPrevX = 0;
     this.hpPrevY = 0;
-    this.hpAlpha = Math.exp((-2 * Math.PI * 85) / sr);
+    this.hpAlpha = Math.exp((-2 * Math.PI * 25) / sr);
     this.decimRatio = sr / 16000;
     this.decimAcc = 0;
     this.decimSum = 0;
@@ -365,6 +365,7 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
     this.micOut = new Int16Array(640);
     this.micIdx = 0;
     this.micVoiceFrames = 0;
+    this.echoTailSamples = 0;
     this.telemetrySamples = 0;
 
     this.port.onmessage = (ev) => {
@@ -380,6 +381,7 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
         this.prebuffering = true;
         this.turnComplete = false;
         this.hasHist = false;
+        this.echoTailSamples = 0;
         this.fadeStartSample = this.lastOut;
         this.clearFadeRem = this.clearFadeTotal;
       } else if (d.type === 'turn_complete') {
@@ -403,6 +405,7 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
     if (!n) return;
     if (this.avail === 0) this.firstBufTime = currentTime;
     this.turnComplete = false;
+    this.echoTailSamples = Math.floor(this.sr * 0.85);
     if (!this.hasHist) {
       const f0 = i16[0] / 32768.0;
       this.sm2 = f0; this.sm1 = f0; this.s0 = f0;
@@ -451,56 +454,64 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
     const inChan = inputs[0] && inputs[0][0];
     const len = outChan ? outChan.length : 128;
 
-    if (inChan && inChan.length) {
-      let prevX = this.hpPrevX, prevY = this.hpPrevY;
-      const alpha = this.hpAlpha;
-      let frameSq = 0;
-      for (let i = 0; i < inChan.length; i++) {
-        const dx = inChan[i];
-        frameSq += dx * dx;
-      }
-      const rawRms = Math.sqrt(frameSq / inChan.length);
-      if (rawRms >= 0.0055) {
-        this.gateHangover = 225;
-        this.gateGain = 1.0;
-      } else if ((this.gateHangover || 0) > 0) {
-        this.gateHangover -= 1;
-        this.gateGain = 1.0;
-      } else {
-        this.gateGain = ((this.gateGain ?? 1.0) * 0.94) + (0.06 * 0.06);
-      }
-      const gGain = this.gateGain ?? 1.0;
-      frameSq = 0;
+    if (this.playing || this.avail > 0) {
+      this.echoTailSamples = Math.floor(this.sr * 0.85);
+    } else if (this.echoTailSamples > 0) {
+      this.echoTailSamples = Math.max(0, this.echoTailSamples - len);
+    }
+    const echoGuardActive = this.playing || this.avail > 0 || this.echoTailSamples > 0;
 
-      for (let i = 0; i < inChan.length; i++) {
-        const x = inChan[i];
-        const y = alpha * (prevY + x - prevX) * gGain;
-        prevX = x; prevY = y;
-        frameSq += y * y;
-        this.decimSum += y;
-        this.decimCount += 1;
-        this.decimAcc += 1;
-        if (this.decimAcc >= this.decimRatio) {
-          this.decimAcc -= this.decimRatio;
-          const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
-          this.decimSum = 0; this.decimCount = 0;
-          const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
-          this.micOut[this.micIdx++] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
-          if (this.micIdx >= 640) {
-            const copy = new Int16Array(this.micOut);
-            this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
-            this.micIdx = 0;
+    if (inChan && inChan.length) {
+      if (echoGuardActive) {
+        this.hpPrevX = 0; this.hpPrevY = 0;
+        this.decimSum = 0; this.decimCount = 0;
+        this.micVoiceFrames = 0;
+        for (let i = 0; i < inChan.length; i++) {
+          this.decimAcc += 1;
+          if (this.decimAcc >= this.decimRatio) {
+            this.decimAcc -= this.decimRatio;
+            this.micOut[this.micIdx++] = 0;
+            if (this.micIdx >= 640) {
+              const copy = new Int16Array(this.micOut);
+              this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+              this.micIdx = 0;
+            }
           }
         }
+      } else {
+        let prevX = this.hpPrevX, prevY = this.hpPrevY;
+        const alpha = this.hpAlpha;
+        let frameSq = 0;
+
+        for (let i = 0; i < inChan.length; i++) {
+          const x = inChan[i];
+          const y = alpha * (prevY + x - prevX);
+          prevX = x; prevY = y;
+          frameSq += y * y;
+          this.decimSum += y;
+          this.decimCount += 1;
+          this.decimAcc += 1;
+          if (this.decimAcc >= this.decimRatio) {
+            this.decimAcc -= this.decimRatio;
+            const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
+            this.decimSum = 0; this.decimCount = 0;
+            const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
+            this.micOut[this.micIdx++] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
+            if (this.micIdx >= 640) {
+              const copy = new Int16Array(this.micOut);
+              this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+              this.micIdx = 0;
+            }
+          }
+        }
+        this.hpPrevX = prevX; this.hpPrevY = prevY;
+        const fRms = Math.sqrt(frameSq / inChan.length);
+        if (fRms > 0.045) this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
+        else this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
       }
-      this.hpPrevX = prevX; this.hpPrevY = prevY;
-      const fRms = Math.sqrt(frameSq / inChan.length);
-      if (fRms > 0.045) this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
-      else this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
     }
 
-    const targetDuck = this.micVoiceFrames >= 5 ? 0.25 : 1.0;
-    this.duckGain += (targetDuck - this.duckGain) * 0.08;
+    this.duckGain = 1.0;
 
     if (outChan) {
       if (this.clearFadeRem > 0) {
@@ -1063,6 +1074,16 @@ function AiLiveStudio({ cfg, me, onSaved }) {
         setCallState('listening');
       } else if (msg.type === 'input_transcript' && msg.text) {
         setUserSub(p => `${p} ${msg.text}`.trim());
+      } else if (msg.type === 'user_transcript_override' && msg.text) {
+        setTurns(prev => {
+          if (!prev.length) return [{ r: 'شما', t: msg.text }];
+          const copy = [...prev];
+          for (let i = copy.length - 1; i >= 0; i--) {
+            if (copy[i].r === 'شما') { copy[i] = { ...copy[i], t: msg.text }; return copy; }
+          }
+          copy.splice(copy.length - 1, 0, { r: 'شما', t: msg.text });
+          return copy.slice(-10);
+        });
       } else if ((msg.type === 'output_transcript' || msg.type === 'text') && msg.text) {
         setAiSub(p => `${p} ${msg.text}`.trim());
       } else if (msg.type === 'turn_state' && (msg.turn_complete || msg.interaction_status === 'IDLE')) {

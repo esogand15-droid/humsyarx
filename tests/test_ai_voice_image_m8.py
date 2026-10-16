@@ -1113,10 +1113,10 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         )['setup']
         self.assertIn('realtimeInputConfig', s38)
         aad = s38['realtimeInputConfig']['automaticActivityDetection']
-        self.assertEqual(aad['startOfSpeechSensitivity'], 'START_SENSITIVITY_HIGH')
-        self.assertEqual(aad['endOfSpeechSensitivity'], 'END_SENSITIVITY_HIGH')
-        self.assertEqual(aad['prefixPaddingMs'], 120)
-        self.assertEqual(aad['silenceDurationMs'], 520)
+        self.assertEqual(aad['startOfSpeechSensitivity'], 'START_SENSITIVITY_LOW')
+        self.assertEqual(aad['endOfSpeechSensitivity'], 'END_SENSITIVITY_LOW')
+        self.assertEqual(aad['prefixPaddingMs'], 300)
+        self.assertEqual(aad['silenceDurationMs'], 900)
         self.assertEqual(s38['realtimeInputConfig']['activityHandling'], 'START_OF_ACTIVITY_INTERRUPTS')
         self.assertEqual(s38['realtimeInputConfig']['turnCoverage'], 'TURN_INCLUDES_ONLY_ACTIVITY')
         self.assertEqual(s38['contextWindowCompression'], {'slidingWindow': {}})
@@ -1175,6 +1175,18 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertEqual(ai_solver.THINKING_PHRASES, ["💭 در حال فکر کردن..."])
         self.assertEqual(ai_solver.STALL_PHRASES, ["💭 در حال فکر کردن..."])
         self.assertEqual(ai_solver._pick_unused(ai_solver.THINKING_PHRASES, set()), "💭 در حال فکر کردن...")
+
+        # ۶) م9.7 — پالایش زیرنویس زنده (تبدیل آوانگاری هندی/آلمانی «سلام» به فارسی و مسدودسازی متون بیگانه در زیرنویس)
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("सलाम", is_input=True), "سلام")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("सलाम खूबी", is_input=True), "سلام خوبی")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("Hallo!", is_input=True), "سلام")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("Alarm", is_input=True), "سلام")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("Salam chetori", is_input=True), "سلام چطوری")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("سلام सलाम خوبی", is_input=True), "سلام خوبی")
+        # جملات نامرتبط آلمانی یا هندی نباید در زیرنویس خام نمایش داده شوند
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("Wie geht es dir heute?", is_input=True), "")
+        self.assertEqual(ai_solver.sanitize_live_persian_transcript("मैं आपकी कैसे मदद कर सकता हूँ", is_input=True), "")
+
 
 
 
