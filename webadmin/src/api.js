@@ -1402,8 +1402,8 @@ export function errText(e) {
     content_admin_only: "این بخش فقط برای مدیر محتواست.",
     request_timeout: "پاسخ سرویس بیش از حد طول کشید؛ دوباره تلاش کنید.",
   };
-  // 🌊 range fix — برای 422 جزئیات اعتبارسنجی را نشان بده تا «بعضی ورودی‌ها...» مبهم نماند
-  if (e.status === 422 && e.technical) {
+  // 🌊 range fix — برای 400/404/409/422/502/503 جزئیات اعتبارسنجی/خطای بک‌اند را نشان بده تا پیام مبهم نماند
+  if ([400, 404, 409, 422, 502, 503].includes(e.status) && e.technical) {
     let detail = e.technical;
     try {
       const parsed = JSON.parse(e.technical);
@@ -1415,10 +1415,16 @@ export function errText(e) {
     } catch {}
     // truncate
     if (detail.length > 500) detail = detail.slice(0, 500) + "…";
-    const base = e.friendly || map[raw] || friendlyStatus(422);
-    // اگر فقط HTTP 422 بود، همان friendly کافیست، ولی اگر detail واقعی دارد نمایش بده
-    if (detail && detail !== "HTTP 422" && !detail.includes("HTTP 422")) {
-      const combined = `${base} — ${detail}`;
+    const base = e.friendly || map[raw] || friendlyStatus(e.status);
+    // اگر فقط HTTP status بود، همان friendly کافیست، ولی اگر detail واقعی دارد نمایش بده
+    if (
+      detail &&
+      detail !== `HTTP ${e.status}` &&
+      !detail.includes(`HTTP ${e.status}`) &&
+      detail !== "internal_error" &&
+      !map[detail]
+    ) {
+      const combined = detail.includes(base) ? detail : `${base} — ${detail}`;
       return e.errorId ? `${combined} · شناسه پیگیری: ${e.errorId}` : combined;
     }
   }

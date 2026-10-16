@@ -7300,13 +7300,13 @@ class WaVcAssistantSaveBody(BaseModel):
 
 
 class WaVcAssistantSendCodeBody(BaseModel):
-    api_id: int
-    api_hash: str
+    api_id: int | str | None = None
+    api_hash: str = ""
     phone: str
 
 
 class WaVcAssistantVerifyBody(BaseModel):
-    code: str
+    code: str = ""
     password: str = ""
 
 
@@ -7363,11 +7363,10 @@ async def wa_ai_vc_assistant_verify_code(body: WaVcAssistantVerifyBody,
 @router.post("/ai/live/vc-assistant/join")
 async def wa_ai_vc_assistant_join(body: WaVcGroupActionBody,
                                   user=Depends(_perm("ai.manage"))):
-    """📞 م9.2 — ورود دستی دستیار هوشیار به ویس‌چت یک گروه تلگرام با آیدی عددی گروه."""
+    """📞 م9.2 — ورود دستی دستیار هوشیار به ویس‌چت یک گروه تلگرام با آیدی عددی یا @username گروه."""
     from tg_group_voice_call import join_group_voice_chat
     try:
-        cid = int(str(body.chat_id).strip())
-        return await join_group_voice_chat(chat_id=cid, title=body.title)
+        return await join_group_voice_chat(chat_id=body.chat_id, title=body.title)
     except Exception as e:
         raise HTTPException(400, str(e))
 
@@ -7378,8 +7377,7 @@ async def wa_ai_vc_assistant_leave(body: WaVcGroupActionBody,
     """📞 م9.2 — خروج دستیار هوشیار از ویس‌چت گروه تلگرام."""
     from tg_group_voice_call import leave_group_voice_chat
     try:
-        cid = int(str(body.chat_id).strip())
-        return await leave_group_voice_chat(cid)
+        return await leave_group_voice_chat(body.chat_id)
     except Exception as e:
         raise HTTPException(400, str(e))
 

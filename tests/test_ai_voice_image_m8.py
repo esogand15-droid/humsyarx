@@ -960,6 +960,79 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
             self.assertEqual(creds['api_hash'], 'abcdef0123456789abcdef0123456789')
             self.assertEqual(creds['session_string'], 'test_pyrogram_session_str')
 
+    def test_tg_group_voice_call_m93_pyrogram_compat_and_2fa(self):
+        import types
+        import tg_group_voice_call as tvc
+
+        # ۱) تست نرمال‌سازی ارقام فارسی و شماره موبایل
+        self.assertEqual(tvc._normalize_phone('۰۹۱۲۳۴۵۶۷۸۹'), '+989123456789')
+        self.assertEqual(tvc._normalize_phone('09123456789'), '+989123456789')
+        self.assertEqual(tvc._normalize_digits('-۱۰۰۱۲۳۴۵۶۷۸۹۰'), '-1001234567890')
+
+        # ۲) تست شیم سازگاری GroupcallForbidden برای جلوگیری از ImportError در PyTgCalls
+        tvc._ensure_pyrogram_compat()
+        try:
+            import pyrogram.errors as pe
+            if hasattr(pe, 'GroupcallForbidden'):
+                delattr(pe, 'GroupcallForbidden')
+            tvc._ensure_pyrogram_compat()
+            self.assertTrue(hasattr(pe, 'GroupcallForbidden'))
+            self.assertTrue(hasattr(pe, 'GroupcallInvalid'))
+        except ImportError:
+            pass
+
+        # ۳) تست حفظ کلاینت در مرحله‌ی اول 2FA (SessionPasswordNeeded) و تکمیل در مرحله‌ی دوم
+        from pyrogram.errors import SessionPasswordNeeded
+
+        class _FakeCli:
+            is_connected = True
+            disconnected = False
+            checked_pw = None
+
+            async def sign_in(self, phone_number, phone_code_hash, phone_code):
+                raise SessionPasswordNeeded()
+
+            async def check_password(self, pw):
+                self.checked_pw = pw
+
+            async def export_session_string(self):
+                return 'exported_2fa_session_string'
+
+            async def get_me(self):
+                return types.SimpleNamespace(id=777, first_name='HumsyarVC', username='humsyar_vc', phone_number='+989120000000')
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        fake_cli = _FakeCli()
+        tvc._login_state.update({
+            'client': fake_cli,
+            'api_id': 123456,
+            'api_hash': 'abcdef0123456789abcdef0123456789',
+            'phone': '+989120000000',
+            'phone_code_hash': 'hash123',
+            'awaiting_2fa': False,
+        })
+
+        with mock.patch.object(tvc, 'db', self.fake):
+            # گام اول: ارسال کد بدون رمز 2FA ← باید needs_2fa=True برگرداند و کلاینت را نبندد
+            r1 = _rtloop.run(tvc.verify_assistant_login(code='۱۲۳۴۵', password=''))
+            self.assertTrue(r1['needs_2fa'])
+            self.assertFalse(fake_cli.disconnected)
+            self.assertIsNotNone(tvc._login_state['client'])
+            self.assertTrue(tvc._login_state['awaiting_2fa'])
+
+            # گام دوم: ارسال رمز 2FA روی همان نشست ← باید موفق شود و session_string را ذخیره کند
+            r2 = _rtloop.run(tvc.verify_assistant_login(code='۱۲۳۴۵', password='my_secret_2fa'))
+            self.assertTrue(r2['ok'])
+            self.assertFalse(r2['needs_2fa'])
+            self.assertEqual(fake_cli.checked_pw, 'my_secret_2fa')
+            self.assertTrue(fake_cli.disconnected)
+            self.assertIsNone(tvc._login_state['client'])
+            creds = _rtloop.run(tvc.get_vc_credentials())
+            self.assertEqual(creds['session_string'], 'exported_2fa_session_string')
+
+
 
 
 

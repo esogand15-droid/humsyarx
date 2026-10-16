@@ -18,7 +18,7 @@ websockets>=12.0  # ⭐ م9 — Gemini Live API (BidiGenerateContent)
 pydantic==2.9.2
 python-multipart==0.0.20
 qrcode[pil]==8.2  # 👑 P2 — QR اشتراک HeroCard (SVG سروری)
-pyrogram==2.0.106
+kurigram==2.2.26  # 📞 م9.3 — فورک به‌روز Pyrogram با TL Layer جدید موردنیاز py-tgcalls 3.0
 tgcrypto==1.2.5
 py-tgcalls==3.0.0  # 📞 م9.2 — ورود دستیار هوشیار به ویس‌چت گروه‌های تلگرام (Group Voice Chat)
 # 🛡 W1 — at-rest encryption for secrets (Fernet)

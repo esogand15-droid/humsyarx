@@ -831,7 +831,16 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   );
 }
 
-/* 📞 م9.2 — پنل مدیریت و ویزارد اتصال «اکانت دستیار ویس‌چت گروه تلگرام» (Pyrogram + PyTgCalls) */
+function _toAsciiDigits(s) {
+  return String(s || '').replace(/[۰-۹٠-٩]/g, d => {
+    const code = d.charCodeAt(0);
+    if (code >= 0x06F0 && code <= 0x06F9) return String(code - 0x06F0);
+    if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+    return d;
+  });
+}
+
+/* 📞 م9.2 / م9.3 — پنل مدیریت و ویزارد اتصال «اکانت دستیار ویس‌چت گروه تلگرام» (Pyrogram + PyTgCalls) */
 function VcAssistantPanel() {
   const [st, setSt] = useState(null);
   const [apiId, setApiId] = useState('');
@@ -845,6 +854,7 @@ function VcAssistantPanel() {
   const [showManual, setShowManual] = useState(false);
   const [groupChatId, setGroupChatId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [panelErr, setPanelErr] = useState('');
 
   const load = async () => {
     try {
@@ -857,65 +867,102 @@ function VcAssistantPanel() {
 
   const sendCode = async () => {
     setBusy(true);
+    setPanelErr('');
     try {
-      const r = await api.aiVcAssistantSendCode({ api_id: Number(apiId), api_hash: apiHash.trim(), phone: phone.trim() });
+      const r = await api.aiVcAssistantSendCode({
+        api_id: apiId ? Number(_toAsciiDigits(apiId)) : (st?.api_id ? Number(st.api_id) : null),
+        api_hash: apiHash.trim(),
+        phone: _toAsciiDigits(phone).trim(),
+      });
       setOtpSent(true);
+      setNeeds2Fa(false);
       toast(r.message || 'کد تایید به تلگرام ارسال شد ✅');
-    } catch (e) { toast(errText(e), 'err'); }
+      await load();
+    } catch (e) {
+      const msg = errText(e);
+      setPanelErr(msg);
+      toast(msg, 'err');
+    }
     setBusy(false);
   };
 
   const verifyCode = async () => {
     setBusy(true);
+    setPanelErr('');
     try {
-      const r = await api.aiVcAssistantVerifyCode({ code: otpCode.trim(), password: twoFaPass });
+      const r = await api.aiVcAssistantVerifyCode({
+        code: _toAsciiDigits(otpCode).trim(),
+        password: twoFaPass,
+      });
       if (r.needs_2fa) {
         setNeeds2Fa(true);
+        setPanelErr(r.message || 'رمز تایید دو مرحله‌ای (2FA) را وارد کنید.');
         toast(r.message, 'err');
       } else {
         toast(r.message || 'اکانت دستیار متصل شد ✅');
         setOtpSent(false); setNeeds2Fa(false); setOtpCode(''); setTwoFaPass('');
         await load();
       }
-    } catch (e) { toast(errText(e), 'err'); }
+    } catch (e) {
+      const msg = errText(e);
+      setPanelErr(msg);
+      toast(msg, 'err');
+    }
     setBusy(false);
   };
 
   const saveManual = async () => {
     setBusy(true);
+    setPanelErr('');
     try {
       await api.aiVcAssistantSave({
-        api_id: apiId ? Number(apiId) : undefined,
+        api_id: apiId ? Number(_toAsciiDigits(apiId)) : undefined,
         api_hash: apiHash.trim() || undefined,
         session_string: manualSession.trim() || undefined,
       });
       setManualSession('');
       toast('مشخصات دستیار ویس‌چت گروه ذخیره شد ✅');
       await load();
-    } catch (e) { toast(errText(e), 'err'); }
+    } catch (e) {
+      const msg = errText(e);
+      setPanelErr(msg);
+      toast(msg, 'err');
+    }
     setBusy(false);
   };
 
   const joinGroup = async () => {
     if (!groupChatId.trim()) return;
     setBusy(true);
+    setPanelErr('');
     try {
-      const r = await api.aiVcAssistantJoin({ chat_id: groupChatId.trim() });
-      toast(`هوشیار وارد ویس‌چت گروه ${r.chat_id} شد 🎙`);
+      const r = await api.aiVcAssistantJoin({ chat_id: _toAsciiDigits(groupChatId).trim() });
+      toast(`هوشیار وارد ویس‌چت گروه ${r.title || r.chat_id} شد 🎙`);
       await load();
-    } catch (e) { toast(errText(e), 'err'); }
+    } catch (e) {
+      const msg = errText(e);
+      setPanelErr(msg);
+      toast(msg, 'err');
+    }
     setBusy(false);
   };
 
   const leaveGroup = async (cid) => {
     setBusy(true);
+    setPanelErr('');
     try {
       await api.aiVcAssistantLeave({ chat_id: cid });
       toast('هوشیار از ویس‌چت گروه خارج شد 📴');
       await load();
-    } catch (e) { toast(errText(e), 'err'); }
+    } catch (e) {
+      const msg = errText(e);
+      setPanelErr(msg);
+      toast(msg, 'err');
+    }
     setBusy(false);
   };
+
+  const canSendCode = !busy && Boolean(apiId || st?.api_id) && Boolean(apiHash.trim() || st?.has_api_hash) && Boolean(phone.trim());
 
   return (
     <div className="panel panel-pad" style={{ marginTop: 14 }}>
@@ -923,7 +970,7 @@ function VcAssistantPanel() {
         <b>📞 دستیار ویس‌چت گروه تلگرام (ورود مستقیم هوشیار به Group Voice Chat)</b>
         <B kind={st?.configured ? 'ok' : 'warn'}>
           {st?.configured
-            ? `متصل${st?.assistant?.username ? ` (@${st.assistant.username})` : ''}`
+            ? `متصل${st?.assistant?.username ? ` (@${st.assistant.username})` : (st?.assistant?.first_name ? ` (${st.assistant.first_name})` : '')}`
             : 'نیازمند تنظیم اکانت دستیار'}
         </B>
       </div>
@@ -931,24 +978,30 @@ function VcAssistantPanel() {
         چون تلگرام به ربات‌های عادی اجازه ورود مستقیم به ویس‌چت گروهی (<code>phone.JoinGroupCall</code>) را نمی‌دهد، یک اکانت تلگرام دستیار با <code>API_ID</code> و <code>API_HASH</code> (از <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>) متصل کنید تا وقتی در گروه ویس‌چت باز می‌شود یا دستور <code>/joinlive</code> زده می‌شود، هوشیار مستقیم وارد ویس‌چت گروه شود و با بچه‌ها زنده صحبت کند.
       </div>
 
+      {panelErr && (
+        <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(220,38,38,0.08)', border: '1px solid var(--c-bad, #d24)', color: 'var(--c-bad, #d24)', fontSize: 13 }}>
+          ⚠️ {panelErr}
+        </div>
+      )}
+
       {/* گام ۱ و ۲: ویزارد لاگین مستقیم با کد تلگرام */}
       <div className="grid g3" style={{ gap: 10, marginTop: 12 }}>
         <label className="fld">
           <span>۱. Telegram API_ID (از my.telegram.org)</span>
-          <input className="inp" dir="ltr" placeholder="مثلاً 12345678" value={apiId} onChange={e => setApiId(e.target.value.replace(/\D/g, ''))} />
+          <input className="inp" dir="ltr" placeholder="مثلاً 12345678" value={apiId} onChange={e => setApiId(_toAsciiDigits(e.target.value).replace(/\D/g, ''))} />
         </label>
         <label className="fld">
           <span>۲. Telegram API_HASH {st?.has_api_hash && <B kind="ok">ذخیره شده</B>}</span>
-          <input className="inp" type="password" dir="ltr" placeholder="32 کاراکتر هگزادسیمال…" value={apiHash} onChange={e => setApiHash(e.target.value)} />
+          <input className="inp" type="password" dir="ltr" placeholder={st?.has_api_hash ? 'ذخیره شده (فقط در صورت تغییر پر کنید)…' : '32 کاراکتر هگزادسیمال…'} value={apiHash} onChange={e => setApiHash(e.target.value)} />
         </label>
         <label className="fld">
-          <span>۳. شماره موبایل اکانت دستیار (با پیش‌شماره)</span>
-          <input className="inp" dir="ltr" placeholder="+98912..." value={phone} onChange={e => setPhone(e.target.value)} />
+          <span>۳. شماره موبایل اکانت دستیار (با پیش‌شماره یا 09)</span>
+          <input className="inp" dir="ltr" placeholder="+98912... یا 0912..." value={phone} onChange={e => setPhone(_toAsciiDigits(e.target.value))} />
         </label>
       </div>
 
       <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn primary sm" disabled={busy || !apiId || !apiHash.trim() || !phone.trim()} onClick={sendCode}>
+        <button className="btn primary sm" disabled={!canSendCode} onClick={sendCode}>
           📲 ارسال کد تایید تلگرام (ساخت خودکار Session)
         </button>
         <button className="btn sm" onClick={() => setShowManual(v => !v)}>
@@ -959,11 +1012,12 @@ function VcAssistantPanel() {
       {otpSent && (
         <div style={{ marginTop: 12, padding: 12, borderRadius: 10, border: '1px solid var(--acc)', background: 'rgba(59,130,246,0.06)' }}>
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <input className="inp" dir="ltr" placeholder="کد ۵ رقمی تلگرام…" value={otpCode} onChange={e => setOtpCode(e.target.value)} />
-            {needs2Fa && (
-              <input className="inp" type="password" dir="ltr" placeholder="رمز تایید دو مرحله‌ای (2FA)…" value={twoFaPass} onChange={e => setTwoFaPass(e.target.value)} />
-            )}
-            <button className="btn primary sm" disabled={busy || !otpCode.trim()} onClick={verifyCode}>
+            <input className="inp" dir="ltr" placeholder="کد ۵ رقمی تلگرام…" value={otpCode} onChange={e => setOtpCode(_toAsciiDigits(e.target.value))} />
+            <input className="inp" type="password" dir="ltr"
+                   style={needs2Fa ? { borderColor: 'var(--c-bad, #d24)' } : undefined}
+                   placeholder={needs2Fa ? '⚠️ رمز تایید دو مرحله‌ای (2FA) الزامی…' : 'رمز دو مرحله‌ای (2FA) — در صورت فعال بودن'}
+                   value={twoFaPass} onChange={e => setTwoFaPass(e.target.value)} />
+            <button className="btn primary sm" disabled={busy || (!otpCode.trim() && !needs2Fa)} onClick={verifyCode}>
               ✅ تایید و اتصال اکانت دستیار
             </button>
           </div>
