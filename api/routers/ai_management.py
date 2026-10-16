@@ -114,6 +114,15 @@ class ConfigUpdate(BaseModel):
         le=1000,
     )
 
+    # ⭐ م9 — تماس صوتی زنده (Gemini Live API)
+    live_enabled: bool | None = None
+    live_model: str | None = Field(default=None, max_length=150)
+    live_voice: str | None = Field(default=None, max_length=40)
+    live_thinking_level: str | None = Field(default=None, max_length=20)
+    live_daily_minutes: int | None = Field(default=None, ge=0, le=600)
+    live_max_session_sec: int | None = Field(default=None, ge=60, le=1800)
+    live_target_language: str | None = Field(default=None, max_length=10)
+
     thinking: str = Field(
         pattern="^(auto|high)$"
     )
@@ -246,6 +255,28 @@ async def config(
 
         "image_size":
             value.get("image_size", "1K"),
+
+        # ⭐ م9 — تماس صوتی زنده (Gemini Live API)
+        "live_enabled":
+            value.get("live_enabled", True),
+
+        "live_model":
+            value.get("live_model", "gemini-3.8-live"),
+
+        "live_voice":
+            value.get("live_voice", value.get("tts_voice", "Sulafat")),
+
+        "live_thinking_level":
+            value.get("live_thinking_level", "low"),
+
+        "live_daily_minutes":
+            value.get("live_daily_minutes", 15),
+
+        "live_max_session_sec":
+            value.get("live_max_session_sec", 300),
+
+        "live_target_language":
+            value.get("live_target_language", "fa"),
     }
 
 
@@ -274,6 +305,14 @@ async def update_config(
         "tts_model",
         "voice_reply_max_chars",
         "image_size",
+        # ⭐ م9 — تماس صوتی زنده (Gemini Live API)
+        "live_enabled",
+        "live_model",
+        "live_voice",
+        "live_thinking_level",
+        "live_daily_minutes",
+        "live_max_session_sec",
+        "live_target_language",
     )
 
     for key in editable_fields:

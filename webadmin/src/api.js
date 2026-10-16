@@ -1208,6 +1208,17 @@ export const api = {
       method: "POST",
       body,
     }),
+  /* ⭐ م9 — تماس صوتی زنده (Gemini Live API / BidiGenerateContent) */
+  aiLiveModels: (refresh = false) =>
+    req(
+      "/api/web-admin/ai/live/models" +
+        (refresh ? "?refresh=true" : ""),
+    ),
+  aiLiveConfigSave: (body) =>
+    req("/api/web-admin/ai/live/config", {
+      method: "POST",
+      body,
+    }),
   aiModelsHealth: (pid) => req(`/api/web-admin/ai/models/health/${pid}`),
   aiModelsProbe: (pid, body = {}) =>
     req(`/api/web-admin/ai/models/${pid}/probe`, {

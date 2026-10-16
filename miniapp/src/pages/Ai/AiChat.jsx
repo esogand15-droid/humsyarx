@@ -2208,6 +2208,24 @@ export default function AiChat() {
         }}
         onClick={() => {
           haptic('light');
+          navigate('/ai/live');
+        }}
+        aria-label="تماس صوتی زنده با هوشیار"
+        title="تماس صوتی زنده (Gemini Live)"
+      >
+        🎙 زنده
+      </button>
+
+      <button
+        type="button"
+        className="btn btn-dark"
+        style={{
+          minHeight: 32,
+          padding: '5px 9px',
+          fontSize: 'var(--fs-meta)',
+        }}
+        onClick={() => {
+          haptic('light');
 
           setShowHistory(true);
         }}

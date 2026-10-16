@@ -103,6 +103,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML',
         reply_markup=kb
     )
+    # 🎙 م9 — دیپ‌لینک شروع تماس صوتی زنده از گروه (?start=ai_live)
+    _sargs = getattr(context, 'args', None) or []
+    if _sargs and str(_sargs[0]).strip().lower() in ('ai_live', 'live', 'voicechat'):
+        from ai_solver import show_ai_live_card
+        await show_ai_live_card(update, context)
+        return ConversationHandler.END
     await _show_dashboard(update, context)
     return ConversationHandler.END
 

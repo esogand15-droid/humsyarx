@@ -747,3 +747,130 @@ class M84GoogleImageFixTests(unittest.TestCase):
         self.assertTrue(merged_real[0]['health_ok'])
         self.assertEqual(merged_real[0]['health_ms'], 840)
 
+
+class M9GeminiLiveVoiceTests(unittest.TestCase):
+    """⭐ م9 — تماس صوتی زنده با هوشیار (Gemini Live API / BidiGenerateContent)."""
+
+    def setUp(self):
+        _rtloop.adopt()
+        ai_solver._KEY_STATE.clear()
+        self.fake = _FakeSettingsDB()
+        self.fake.settings['ai_enabled'] = '1'
+        self.fake.settings['ai_api_keys'] = '{"gemini": ["%s"]}' % K1
+        self._p = mock.patch.object(ai_solver, 'db', self.fake)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+        ai_solver._KEY_STATE.clear()
+
+    def test_live_catalog_has_all_four_google_models_and_default_3_8_live(self):
+        self.assertEqual(ai_solver.DEFAULT_LIVE_MODEL, 'gemini-3.8-live')
+        ids = [mid for mid, _lbl, _free in ai_solver.LIVE_MODEL_CATALOG]
+        self.assertEqual(ids, [
+            'gemini-3.8-live',
+            'gemini-3.8-live-extended-thinking',
+            'gemini-3.1-flash-live-preview',
+            'gemini-3.5-live-translate-preview',
+        ])
+        cfg = _rtloop.run(get_ai_config())
+        self.assertEqual(cfg['live_model'], 'gemini-3.8-live')
+        self.assertTrue(cfg['live_enabled'])
+
+    def test_build_live_setup_message_for_each_google_live_model(self):
+        # 1) gemini-3.8-live: NON_BLOCKING tools, systemInstruction, NO thinkingConfig
+        s38 = ai_solver.build_live_setup_message(
+            model='gemini-3.8-live',
+            system_prompt='تو هوشیار هستی',
+            voice='Sulafat',
+            thinking_level='high',
+            uid=12345,
+        )['setup']
+        self.assertEqual(s38['model'], 'models/gemini-3.8-live')
+        self.assertNotIn('thinkingConfig', s38['generationConfig'])
+        self.assertIn('systemInstruction', s38)
+        self.assertIn('tools', s38)
+        decls38 = s38['tools'][0]['functionDeclarations']
+        self.assertTrue(all(d.get('behavior') == 'NON_BLOCKING' for d in decls38))
+
+        # 2) gemini-3.8-live-extended-thinking: uppercase LOW/MEDIUM/HIGH thinkingLevel + NON_BLOCKING
+        s38_ext = ai_solver.build_live_setup_message(
+            model='gemini-3.8-live-extended-thinking',
+            system_prompt='تو هوشیار هستی',
+            voice='Kore',
+            thinking_level='minimal',  # minimal must map to LOW on 3.8-extended-thinking
+            uid=12345,
+        )['setup']
+        self.assertEqual(
+            s38_ext['generationConfig']['thinkingConfig'],
+            {'thinkingLevel': 'LOW'},
+        )
+        decls_ext = s38_ext['tools'][0]['functionDeclarations']
+        self.assertTrue(all(d.get('behavior') == 'NON_BLOCKING' for d in decls_ext))
+
+        # 3) gemini-3.1-flash-live-preview: lowercase thinkingLevel, sequential tools (no NON_BLOCKING)
+        s31 = ai_solver.build_live_setup_message(
+            model='gemini-3.1-flash-live-preview',
+            system_prompt='تو هوشیار هستی',
+            voice='Puck',
+            thinking_level='minimal',
+            uid=12345,
+        )['setup']
+        self.assertEqual(
+            s31['generationConfig']['thinkingConfig'],
+            {'thinkingLevel': 'minimal'},
+        )
+        decls31 = s31['tools'][0]['functionDeclarations']
+        self.assertTrue(all('behavior' not in d for d in decls31))
+
+        # 4) gemini-3.5-live-translate-preview: translationConfig, NO tools, NO systemInstruction
+        s35_tr = ai_solver.build_live_setup_message(
+            model='gemini-3.5-live-translate-preview',
+            system_prompt='نباید فرستاده شود',
+            voice='Sulafat',
+            target_language='en',
+            uid=12345,
+        )['setup']
+        self.assertEqual(
+            s35_tr['generationConfig']['translationConfig'],
+            {'targetLanguageCode': 'en', 'echoTargetLanguage': True},
+        )
+        self.assertNotIn('systemInstruction', s35_tr)
+        self.assertNotIn('tools', s35_tr)
+
+    def test_parse_live_server_message_events(self):
+        import json
+        # setupComplete
+        evs = ai_solver.parse_live_server_message(json.dumps({'setupComplete': {}}))
+        self.assertEqual(evs, [{'type': 'ready'}])
+
+        # audio + transcripts + interrupted + turnComplete + interactionStatus
+        srv_msg = {
+            'serverContent': {
+                'modelTurn': {
+                    'parts': [
+                        {'inlineData': {'data': 'UENNMTY=', 'mimeType': 'audio/pcm;rate=24000'}},
+                    ]
+                },
+                'inputTranscription': {'text': 'سلام هوشیار'},
+                'outputTranscription': {'text': 'سلام عزیز، چطور کمکت کنم؟'},
+                'interrupted': True,
+                'turnComplete': True,
+                'interactionStatus': 'IDLE',
+            },
+            'toolCall': {
+                'functionCalls': [
+                    {'id': 'call_1', 'name': 'get_student_schedule', 'args': {}}
+                ]
+            },
+        }
+        parsed = ai_solver.parse_live_server_message(json.dumps(srv_msg))
+        types = [e['type'] for e in parsed]
+        self.assertIn('interrupted', types)
+        self.assertIn('input_transcript', types)
+        self.assertIn('output_transcript', types)
+        self.assertIn('audio', types)
+        self.assertIn('turn_state', types)
+        self.assertIn('tool_call', types)
+
+

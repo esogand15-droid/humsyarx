@@ -63,6 +63,9 @@ from ai_solver import (save_persona, delete_persona, generate_broadcast_ai,
                        generate_image, AiImageError, IMAGE_ASPECT_RATIOS,
                        IMAGE_SIZES, IMAGE_PROMPT_MAX, IMAGE_PROMPT_MIN,
                        IMAGE_MODEL_CATALOG, DEFAULT_IMAGE_MODEL,
+                       LIVE_MODEL_CATALOG, DEFAULT_LIVE_MODEL,
+                       LIVE_THINKING_LEVELS, LIVE_TRANSLATE_LANGUAGES,
+                       list_live_models,
                        PREBUILT_TTS_VOICES, TTS_MODEL_DEFAULT,
                        TTS_MODEL_QUALITY, VOICE_REPLY_MODES)
 from request_context import current_request_id
@@ -6819,6 +6822,14 @@ class WaAiConfigUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_model: Optional[str] = None
     voice_reply_max_chars: Optional[int] = Field(default=None, ge=100, le=2000)
+    # ⭐ م9 — فیلدهای تماس صوتی زنده (Gemini Live API)
+    live_enabled: Optional[bool] = None
+    live_model: Optional[str] = Field(default=None, max_length=150)
+    live_voice: Optional[str] = Field(default=None, max_length=40)
+    live_thinking_level: Optional[str] = Field(default=None, max_length=20)
+    live_daily_minutes: Optional[int] = Field(default=None, ge=0, le=600)
+    live_max_session_sec: Optional[int] = Field(default=None, ge=60, le=1800)
+    live_target_language: Optional[str] = Field(default=None, max_length=10)
 
 
 class WaAiImageConfigUpdate(BaseModel):
@@ -6828,6 +6839,18 @@ class WaAiImageConfigUpdate(BaseModel):
     image_model: Optional[str] = Field(default=None, max_length=150)
     image_daily_limit: Optional[int] = Field(default=None, ge=0, le=500)
     image_size: Optional[str] = None
+
+
+class WaAiLiveConfigUpdate(BaseModel):
+    """⭐ م9 — ذخیره مستقیم تنظیمات تماس صوتی زنده هوشیار از تب ویس‌چت زنده."""
+    model_config = ConfigDict(extra="forbid")
+    live_enabled: Optional[bool] = None
+    live_model: Optional[str] = Field(default=None, max_length=150)
+    live_voice: Optional[str] = Field(default=None, max_length=40)
+    live_thinking_level: Optional[str] = Field(default=None, max_length=20)
+    live_daily_minutes: Optional[int] = Field(default=None, ge=0, le=600)
+    live_max_session_sec: Optional[int] = Field(default=None, ge=60, le=1800)
+    live_target_language: Optional[str] = Field(default=None, max_length=10)
 
 
 class WaAiKeyAdd(BaseModel):
@@ -7182,7 +7205,7 @@ async def wa_ai_models_probe(provider: str, body: WaAiModelProbe,
                              user=Depends(_perm("ai.manage"))):
     """🧪 تستِ زنده‌بودن مدل‌ها: یک ورودی کوچک → یک خروجی. زنده‌ها از
     مرده‌ها جدا و رایگان‌هایِ زنده صدر فهرست می‌روند."""
-    kind = body.kind if body.kind in ("chat", "image") else "chat"
+    kind = body.kind if body.kind in ("chat", "image", "live") else "chat"
     result = await probe_models(provider, body.models, kind=kind)
     await _audit(user["id"], "تست سلامت مدل‌های هوشیار", severity="INFO",
                  target_type="ai_models", target_label=f"{provider}:{kind}",
@@ -7190,6 +7213,83 @@ async def wa_ai_models_probe(provider: str, body: WaAiModelProbe,
                         "count": result.get("count")},
                  tags=["هوشیار", "model_health", "پنل_وب"])
     return result
+
+
+@router.get("/ai/live/models")
+async def wa_ai_live_models(refresh: bool = Query(False),
+                            user=Depends(_perm("ai.manage"))):
+    """⭐ م9 — فهرست مدل‌های تماس صوتی زنده گوگل (Gemini Live API) + سلامت + تنظیمات فعلی."""
+    cfg = await ai_admin_api.get_ai_config()
+    listing = await list_live_models(refresh=refresh)
+    raw_models = list(listing.get("models") or [])
+    health = await get_models_health("gemini")
+    models = merge_models_with_health("gemini", raw_models, health)
+    return {
+        "provider": "gemini",
+        "models": models,
+        "fallback": listing.get("fallback"),
+        "error": listing.get("error"),
+        "voices": [{"id": v, "label": f"{v} — {d}"} for v, d in PREBUILT_TTS_VOICES.items()],
+        "thinking_levels": list(LIVE_THINKING_LEVELS),
+        "translate_languages": [{"code": c, "label": lbl} for c, lbl in LIVE_TRANSLATE_LANGUAGES],
+        "current_model": cfg.get("live_model") or DEFAULT_LIVE_MODEL,
+        "live_enabled": bool(cfg.get("live_enabled", True)),
+        "live_voice": cfg.get("live_voice") or cfg.get("tts_voice") or "Sulafat",
+        "live_thinking_level": cfg.get("live_thinking_level") or "low",
+        "live_daily_minutes": int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15),
+        "live_max_session_sec": int(cfg.get("live_max_session_sec") or 300),
+        "live_target_language": cfg.get("live_target_language") or "fa",
+    }
+
+
+@router.post("/ai/live/config")
+async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
+                                   user=Depends(_perm("ai.manage"))):
+    """⭐ م9 — ذخیره مستقیم پیکربندی تماس صوتی زنده هوشیار (مدل، صدا، سطح تفکر، سهمیه و وضعیت)."""
+    if body.live_enabled is not None:
+        await ai_admin_api.set_ai_setting("live_enabled", "1" if body.live_enabled else "0")
+    if body.live_model is not None and body.live_model.strip():
+        mid = body.live_model.strip()
+        if "/" in mid or not mid.startswith("gemini"):
+            raise HTTPException(422, "فقط مدل‌های صوتی زنده‌ی گوگل (Gemini Live) مجاز هستند")
+        await ai_admin_api.set_ai_setting("live_model", mid)
+    if body.live_voice is not None and body.live_voice.strip() in PREBUILT_TTS_VOICES:
+        await ai_admin_api.set_ai_setting("live_voice", body.live_voice.strip())
+    if body.live_thinking_level is not None and body.live_thinking_level.strip().lower() in LIVE_THINKING_LEVELS:
+        await ai_admin_api.set_ai_setting("live_thinking_level", body.live_thinking_level.strip().lower())
+    if body.live_daily_minutes is not None:
+        await ai_admin_api.set_ai_setting("live_daily_minutes", str(max(0, min(600, int(body.live_daily_minutes)))))
+    if body.live_max_session_sec is not None:
+        await ai_admin_api.set_ai_setting("live_max_session_sec", str(max(60, min(1800, int(body.live_max_session_sec)))))
+    if body.live_target_language is not None and body.live_target_language.strip():
+        await ai_admin_api.set_ai_setting("live_target_language", body.live_target_language.strip().lower()[:10])
+    cfg = await ai_admin_api.get_ai_config()
+    try:
+        await _audit(
+            user["id"], "تغییر تنظیمات تماس صوتی زنده هوشیار", severity="INFO",
+            target_type="ai_live_config", target_label=cfg.get("live_model") or DEFAULT_LIVE_MODEL,
+            after={
+                "live_enabled": cfg.get("live_enabled"),
+                "live_model": cfg.get("live_model"),
+                "live_voice": cfg.get("live_voice"),
+                "live_thinking_level": cfg.get("live_thinking_level"),
+                "live_daily_minutes": cfg.get("live_daily_minutes"),
+                "live_max_session_sec": cfg.get("live_max_session_sec"),
+            },
+            tags=["هوشیار", "live_voice", "پیکربندی", "پنل_وب"],
+        )
+    except Exception:
+        logger.warning("ثبت حسابرسی تغییر تنظیمات تماس صوتی زنده ناموفق بود")
+    return {
+        "ok": True,
+        "live_enabled": bool(cfg.get("live_enabled", True)),
+        "live_model": cfg.get("live_model") or DEFAULT_LIVE_MODEL,
+        "live_voice": cfg.get("live_voice") or "Sulafat",
+        "live_thinking_level": cfg.get("live_thinking_level") or "low",
+        "live_daily_minutes": int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15),
+        "live_max_session_sec": int(cfg.get("live_max_session_sec") or 300),
+        "live_target_language": cfg.get("live_target_language") or "fa",
+    }
 
 
 @router.get("/ai/tts/voices")

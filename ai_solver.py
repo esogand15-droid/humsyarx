@@ -298,6 +298,59 @@ PREBUILT_TTS_VOICES = {
 }
 VOICE_REPLY_MODES = ('off', 'voice', 'all')   # خاموش / فقط جوابِ ویس / همیشه
 
+# ══════════════════════════════════════════════════
+#  ⭐ م9 — تماس صوتی زنده با هوشیار (Gemini Live API / BidiGenerateContent)
+#  مستندات رسمی گوگل (سپتامبر/اکتبر ۲۰۲۶):
+#  - gemini-3.8-live: مکالمه دوطرفه با کمترین تأخیر + ابزار غیرمسدودکننده (NON_BLOCKING)
+#  - gemini-3.8-live-extended-thinking: استدلال عمیق پس‌زمینه + فیلر کلامی + interactionStatus
+#  - gemini-3.1-flash-live-preview: مدل سریع پیش‌نمایش با تنظیم سطح تفکر (minimal..high)
+#  - gemini-3.5-live-translate-preview: مترجم هم‌زمان صوت‌به‌صوت برای ۷۰+ زبان
+# ══════════════════════════════════════════════════
+LIVE_MODEL_CATALOG = [
+    (
+        'gemini-3.8-live',
+        '🎙 gemini-3.8-live — مکالمه زنده با کمترین تأخیر (پیشنهادی گوگل)',
+        True,
+    ),
+    (
+        'gemini-3.8-live-extended-thinking',
+        '🧠 gemini-3.8-live-extended-thinking — استدلال عمیق در پس‌زمینه حین مکالمه',
+        True,
+    ),
+    (
+        'gemini-3.1-flash-live-preview',
+        '⚡ gemini-3.1-flash-live-preview — سریع و اقتصادی با تنظیم سطح تفکر',
+        True,
+    ),
+    (
+        'gemini-3.5-live-translate-preview',
+        '🌐 gemini-3.5-live-translate-preview — مترجم هم‌زمان صوت‌به‌صوت (۷۰+ زبان)',
+        True,
+    ),
+]
+DEFAULT_LIVE_MODEL = 'gemini-3.8-live'
+LIVE_THINKING_LEVELS = ('minimal', 'low', 'medium', 'high')
+LIVE_TRANSLATE_LANGUAGES = (
+    ('fa', 'فارسی (Persian)'),
+    ('en', 'انگلیسی (English)'),
+    ('ar', 'عربی (Arabic)'),
+    ('tr', 'ترکی (Turkish)'),
+    ('de', 'آلمانی (German)'),
+    ('fr', 'فرانسوی (French)'),
+    ('es', 'اسپانیایی (Spanish)'),
+    ('ru', 'روسی (Russian)'),
+)
+LIVE_WS_URL_V1BETA = (
+    'wss://generativelanguage.googleapis.com/ws/'
+    'google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent'
+)
+LIVE_WS_URL_V1ALPHA = (
+    'wss://generativelanguage.googleapis.com/ws/'
+    'google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent'
+)
+DEFAULT_LIVE_DAILY_MINUTES = 15
+DEFAULT_LIVE_MAX_SESSION_SEC = 300
+
 
 def ai_catalog_payload() -> dict:
     """خروجی JSON کاتالوگ برای هر سه UI (بات/وب/مینی‌اپ)."""
@@ -321,6 +374,11 @@ def ai_catalog_payload() -> dict:
             for mid, label, free in IMAGE_MODEL_CATALOG
         ],
         'default_image_model': DEFAULT_IMAGE_MODEL,
+        'live_models': [
+            {'id': mid, 'label': label, 'free': free}
+            for mid, label, free in LIVE_MODEL_CATALOG
+        ],
+        'default_live_model': DEFAULT_LIVE_MODEL,
     }
 
 
@@ -1252,6 +1310,27 @@ async def get_ai_config() -> dict:
     image_size = (raw.get('ai_image_size', '1K') or '1K').strip().upper()
     if image_size not in IMAGE_SIZES:
         image_size = '1K'
+    # ⭐ م9 — تنظیمات تماس صوتی زنده (Gemini Live API)
+    live_enabled = str(raw.get('ai_live_enabled', '1')) not in ('0', 'false', 'False', '')
+    live_model_raw = (raw.get('ai_live_model') or '').strip()
+    _valid_live_ids = {m[0] for m in LIVE_MODEL_CATALOG}
+    live_model = live_model_raw if (live_model_raw in _valid_live_ids or 'live' in live_model_raw.lower()) else DEFAULT_LIVE_MODEL
+    live_voice_raw = (raw.get('ai_live_voice') or '').strip()
+    live_voice = live_voice_raw if live_voice_raw in PREBUILT_TTS_VOICES else tts_voice
+    live_thinking_raw = (raw.get('ai_live_thinking_level', 'low') or 'low').strip().lower()
+    live_thinking_level = live_thinking_raw if live_thinking_raw in LIVE_THINKING_LEVELS else 'low'
+    try:
+        live_daily_minutes = max(0, min(600, int(raw.get('ai_live_daily_minutes', DEFAULT_LIVE_DAILY_MINUTES))))
+    except (TypeError, ValueError):
+        live_daily_minutes = DEFAULT_LIVE_DAILY_MINUTES
+    try:
+        live_max_session_sec = max(60, min(1800, int(raw.get('ai_live_max_session_sec', DEFAULT_LIVE_MAX_SESSION_SEC))))
+    except (TypeError, ValueError):
+        live_max_session_sec = DEFAULT_LIVE_MAX_SESSION_SEC
+    live_target_language = (raw.get('ai_live_target_language', 'fa') or 'fa').strip().lower()[:10] or 'fa'
+    live_keys = list(vault.get('gemini') or [])
+    if not live_keys and api_key and provider == 'gemini':
+        live_keys = [api_key]
     # 🔴 FIX-R1 (مورد ۶) — مشکل کلید به‌صورت صریح در config می‌آید تا
     # «تست اتصال» پنل و پیام خطای ربات دقیقاً یک چیز بگویند، نه
     # «خطای غیرمنتظره» مبهم.
@@ -1266,6 +1345,7 @@ async def get_ai_config() -> dict:
         # ⭐ م7 — لیست کامل کلیدها (به‌ترتیبِ فال‌بک) + شمارش
         'api_key_list':     keys,
         'image_api_key_list': image_keys,
+        'live_api_key_list': live_keys,
         'vault_multi':      {pid: list(lst) for pid, lst in vault.items()},
         'vault_counts':     {pid: len(lst) for pid, lst in vault.items()},
         'api_key_error':    api_key_error,
@@ -1287,6 +1367,14 @@ async def get_ai_config() -> dict:
         'tts_model':        tts_model,
         'voice_reply_max_chars': voice_max,
         'image_size':       image_size,
+        # ⭐ م9 — تماس صوتی زنده (Gemini Live)
+        'live_enabled':         live_enabled,
+        'live_model':           live_model,
+        'live_voice':           live_voice,
+        'live_thinking_level':  live_thinking_level,
+        'live_daily_minutes':   live_daily_minutes,
+        'live_max_session_sec': live_max_session_sec,
+        'live_target_language': live_target_language,
     }
 
 
@@ -3202,6 +3290,26 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         used  = user.get('ai_usage_count', 0) if user.get('ai_usage_date') == today else 0
         quota_line = f"📊 تا الان {used} از {limit} سوالِ امروزتو استفاده کردی"
 
+    from utils import webapp_url as _wa_url
+    _live_url = _wa_url('/ai/live')
+    _kb_rows = [[
+        InlineKeyboardButton("📚 آزمون‌ساز از PDF", callback_data='quiz:main'),
+    ]]
+    if cfg.get('image_enabled'):
+        _kb_rows.append([InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart')])
+    if cfg.get('live_enabled', True):
+        if _live_url and getattr(update.effective_chat, 'type', 'private') == 'private':
+            from telegram import WebAppInfo
+            _kb_rows.append([InlineKeyboardButton(
+                "🎙 تماس صوتی زنده با هوشیار (Live)",
+                web_app=WebAppInfo(url=_live_url),
+            )])
+        else:
+            _kb_rows.append([InlineKeyboardButton(
+                "🎙 تماس صوتی زنده با هوشیار (Live)",
+                callback_data='aiu:live',
+            )])
+
     await update.message.reply_text(
         "⚡️ <b>سلام، هوشیارم!</b>\n"
         "همون هم‌کلاسیِ باهوش‌تر که همیشه حاضر به کمکه 😎\n"
@@ -3210,17 +3318,75 @@ async def show_ai_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 تایپ کن، ساده و مستقیم\n"
         "📷 عکسِ سوال رو بفرست (می‌تونی زیرش توضیح هم بنویسی)\n"
         "📄 یا جزوه/برگه‌ت رو به‌صورت PDF بفرست\n"
-        "🎙️ یا اصلاً برام ویس بفرست و سوالتو بگو، حوصله‌ی تایپ نداری بی‌خیال\n\n"
+        "🎙️ ویس بفرست یا با دکمه‌ی زیر <b>تماس صوتی زنده (Live)</b> برقرار کن و مستقیم باهام حرف بزن!\n\n"
         f"{quota_line}\n\n"
         "💡 فقط یه نکته: من هوش مصنوعی‌ام، نه پیغمبر! ممکنه یه‌جا اشتباه کنم — "
         "برای چیزای مهم حتماً با منبع درسی یا استاد هم یه چک بزن.\n\n"
         "هر وقت خواستی بری سراغ کارِ دیگه، کافیه یه دکمه‌ی دیگه از منو رو بزنی — "
         "من همیشه همینجام 👋",
         parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📚 آزمون‌ساز از PDF", callback_data='quiz:main'),
-        ]] + ([[InlineKeyboardButton("🎨 ساخت تصویر", callback_data='aiu:imgstart')]]
-              if cfg.get('image_enabled') else [])),
+        reply_markup=InlineKeyboardMarkup(_kb_rows),
+    )
+
+
+async def show_ai_live_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🎙 م9 — کارت شروع تماس صوتی زنده با هوشیار (در چت خصوصی و گروه‌های تلگرام).
+
+    در چت خصوصی دکمه‌ی مستقیم WebAppInfo('/ai/live') باز می‌شود؛ در گروه‌های
+    تلگرام (که تلگرام دکمه‌ی web_app را روی کیبورد پیام گروه نمی‌پذیرد) دکمه‌ی
+    لینک مستقیم ورود به اتاق ویس‌چت زنده (`?start=ai_live`) قرار می‌گیرد تا
+    هر عضو گروه با یک کلیک وارد مکالمه‌ی صوتی زنده با هوشیار شود."""
+    msg = update.effective_message
+    if not msg:
+        return
+    cfg = await get_ai_config()
+    if not cfg.get('enabled') or not cfg.get('live_enabled', True):
+        await msg.reply_text("🎙 تماس صوتی زنده‌ی هوشیار فعلاً توسط مدیریت غیرفعال است.")
+        return
+
+    from utils import webapp_url as _wa_url
+    live_url = _wa_url('/ai/live')
+    chat_type = getattr(update.effective_chat, 'type', 'private')
+    model_name = cfg.get('live_model') or DEFAULT_LIVE_MODEL
+    voice_name = cfg.get('live_voice') or TTS_VOICE_DEFAULT
+
+    rows = []
+    if chat_type == 'private' and live_url:
+        from telegram import WebAppInfo
+        rows.append([InlineKeyboardButton(
+            "🎙 شروع تماس صوتی زنده با هوشیار",
+            web_app=WebAppInfo(url=live_url),
+        )])
+    else:
+        bot_username = getattr(context.bot, 'username', None) or ''
+        if not bot_username:
+            try:
+                me = await context.bot.get_me()
+                bot_username = me.username or ''
+            except Exception:
+                bot_username = ''
+        if bot_username:
+            rows.append([InlineKeyboardButton(
+                "🎙 ورود به اتاق ویس‌چت زنده هوشیار",
+                url=f"https://t.me/{bot_username}?start=ai_live",
+            )])
+        elif live_url:
+            rows.append([InlineKeyboardButton(
+                "🎙 باز کردن ویس‌چت زنده هوشیار",
+                url=live_url,
+            )])
+
+    await msg.reply_text(
+        "🎙 <b>تماس صوتی زنده با هوشیار (Google Gemini Live)</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "بدون نیاز به تایپ یا ضبط ویس، میکروفون رو باز کن و <b>به‌صورت زنده و آنلاین</b> "
+        "با هوشیار صحبت کن!\n\n"
+        f"🤖 مدل فعال: <code>{_esc(model_name)}</code>\n"
+        f"🗣 صدای هوشیار: <code>{_esc(voice_name)}</code>\n"
+        "⚡️ قابلیت پریدن وسط حرف (Barge-in)، زیرنویس زنده و دسترسی به برنامه‌ی کلاسی و نمراتت!\n\n"
+        "👇 روی دکمه‌ی زیر بزن تا مکالمه‌ی صوتی زنده شروع بشه:",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(rows) if rows else None,
     )
 
 
@@ -4184,12 +4350,432 @@ async def probe_image_model(provider: str, api_key: str, model: str) -> dict:
                 'mode': 'real_image_gen'}
 
 
+def _looks_like_live_model(model_id: str) -> bool:
+    """⭐ م9 — تشخیص مدل‌های صوتی زنده‌ی گوگل (Gemini Live API)."""
+    m = (model_id or '').lower().strip()
+    if not m or '/' in m:
+        return False
+    return 'live' in m or 'native-audio' in m
+
+
+async def list_live_models(refresh: bool = False) -> dict:
+    """⭐ م9 — فهرست مدل‌های Gemini Live API: کاتالوگ رسمی ۲۰۲۶ گوگل + کشف از ListModels."""
+    cache_key = 'ai_live_models_cache_gemini'
+    if not refresh:
+        cached = await db.get_setting(cache_key, None)
+        if isinstance(cached, dict) and cached.get('models'):
+            return cached
+    by_id = {
+        mid: {'id': mid, 'label': label, 'free': is_free}
+        for mid, label, is_free in LIVE_MODEL_CATALOG
+    }
+    error = None
+    try:
+        cfg = await get_ai_config()
+        keys = ordered_keys('gemini',
+                            (cfg.get('vault_multi') or {}).get('gemini') or [])
+        if keys:
+            async def _fetch_live(_k: str) -> list:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(
+                        "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                        headers={'x-goog-api-key': _k})
+                if resp.status_code != 200:
+                    return []
+                found = []
+                for m in (resp.json() or {}).get('models', []):
+                    raw_name = (m.get('name') or '').replace('models/', '').strip()
+                    methods = m.get('supportedGenerationMethods') or []
+                    if not raw_name:
+                        continue
+                    if 'bidiGenerateContent' in methods or _looks_like_live_model(raw_name):
+                        found.append(raw_name)
+                return found
+            extra = await run_with_key_failover('gemini', keys, _fetch_live,
+                                                label='list_live_models')
+            for mid in (extra or []):
+                if mid not in by_id and mid.startswith('gemini'):
+                    by_id[mid] = {'id': mid, 'label': f'🎙 {mid}', 'free': True}
+    except Exception as e:
+        error = _sanitize_provider_text(str(e))[:200] or type(e).__name__
+    models = list(by_id.values())
+    payload = {'models': models, 'cached': False,
+               'fetched_at': utc_now_iso(), 'fallback': bool(error), 'error': error}
+    try:
+        await db.set_setting(cache_key, payload)
+    except Exception:
+        logger.exception("کشِ مدل‌های Live ذخیره نشد")
+    return payload
+
+
+def build_live_setup_message(
+    model: str = DEFAULT_LIVE_MODEL,
+    system_prompt: str = '',
+    voice: str = TTS_VOICE_DEFAULT,
+    thinking_level: str = 'low',
+    target_language: str = 'fa',
+    uid: int = 0,
+    include_tools: bool = True,
+) -> dict:
+    """⭐ م9 — ساخت پیام اولیه‌ی BidiGenerateContentSetup طبق مستندات رسمی گوگل (سپتامبر/اکتبر ۲۰۲۶).
+
+    قواعد اختصاصی هر مدل در مستندات گوگل:
+    1) gemini-3.5-live-translate-preview:
+       - فقط مترجم صوت‌به‌صوت است؛ systemInstruction و tools ندارد.
+       - دارای translationConfig: {targetLanguageCode, echoTargetLanguage: True}
+    2) gemini-3.8-live:
+       - مدل پیش‌فرض مکالمه زنده با تأخیر کم؛ thinkingConfig پشتیبانی نمی‌شود (باید حذف شود).
+       - از ابزارهای NON_BLOCKING پشتیبانی می‌کند.
+    3) gemini-3.8-live-extended-thinking:
+       - نیازمند thinkingConfig.thinkingLevel در {'LOW', 'MEDIUM', 'HIGH'} (MINIMAL مجاز نیست).
+       - تمام functionDeclarations باید behavior='NON_BLOCKING' داشته باشند.
+    4) gemini-3.1-flash-live-preview:
+       - دارای thinkingConfig.thinkingLevel در {'minimal', 'low', 'medium', 'high'}.
+       - فراخوانی ابزار ترتیبی (sequential) است (بدون فیلد behavior).
+    """
+    mid = (model or DEFAULT_LIVE_MODEL).replace('models/', '').strip() or DEFAULT_LIVE_MODEL
+    ml = mid.lower()
+    full_model = f"models/{mid}"
+
+    # ۱) مدل مترجم هم‌زمان صوت‌به‌صوت (gemini-3.5-live-translate-preview)
+    if 'translate' in ml:
+        t_lang = (target_language or 'fa').strip().lower()[:10] or 'fa'
+        return {
+            'setup': {
+                'model': full_model,
+                'generationConfig': {
+                    'responseModalities': ['AUDIO'],
+                    'inputAudioTranscription': {},
+                    'outputAudioTranscription': {},
+                    'translationConfig': {
+                        'targetLanguageCode': t_lang,
+                        'echoTargetLanguage': True,
+                    },
+                },
+            }
+        }
+
+    # ۲) مدل‌های مکالمه صوتی زنده (3.8-live / 3.8-live-extended-thinking / 3.1-flash-live-preview)
+    v_name = (voice or TTS_VOICE_DEFAULT).strip()
+    if v_name not in PREBUILT_TTS_VOICES:
+        v_name = TTS_VOICE_DEFAULT
+
+    gen_cfg: dict = {
+        'responseModalities': ['AUDIO'],
+        'speechConfig': {
+            'voiceConfig': {
+                'prebuiltVoiceConfig': {
+                    'voiceName': v_name,
+                }
+            }
+        },
+    }
+
+    lvl = (thinking_level or 'low').strip().lower()
+    if 'extended-thinking' in ml:
+        # طبق مستندات گوگل: در 3.8-live-extended-thinking مقدار minimal مجاز نیست
+        if lvl not in ('low', 'medium', 'high'):
+            lvl = 'low'
+        gen_cfg['thinkingConfig'] = {'thinkingLevel': lvl.upper()}
+    elif '3.1-flash-live' in ml:
+        if lvl not in ('minimal', 'low', 'medium', 'high'):
+            lvl = 'minimal'
+        gen_cfg['thinkingConfig'] = {'thinkingLevel': lvl}
+    # برای gemini-3.8-live طبق مستندات thinkingConfig نباید ارسال شود
+
+    live_sys = (system_prompt or DEFAULT_PROMPT).strip()
+    live_voice_hint = (
+        "\n\n[دستورالعمل تماس صوتی زنده (Live Voice Call): "
+        "شما در حال مکالمه‌ی صوتی زنده و مستقیم با دانشجو هستید. "
+        "پاسخ‌ها را روان، صمیمی، طبیعی، به زبان فارسی معیار گفتاری و بدون علائم نگارشیِ "
+        "بلند یا کدهای Markdown بیان کن تا در گفتار صوتی کاملاً طبیعی شنیده شود.]"
+    )
+    setup_obj: dict = {
+        'model': full_model,
+        'generationConfig': gen_cfg,
+        'systemInstruction': {
+            'parts': [{'text': (live_sys + live_voice_hint)[:16000]}],
+        },
+        'inputAudioTranscription': {},
+        'outputAudioTranscription': {},
+    }
+
+    if include_tools:
+        raw_funcs = list(AI_FUNCTIONS)
+        if uid and int(uid) == ADMIN_ID:
+            raw_funcs.extend(ADMIN_AI_FUNCTIONS)
+        use_non_blocking = ('3.8-live' in ml)
+        decls = []
+        for fn in raw_funcs:
+            d = {
+                'name': fn['name'],
+                'description': fn['description'],
+                'parameters': fn.get('parameters') or {'type': 'object', 'properties': {}},
+            }
+            if use_non_blocking:
+                d['behavior'] = 'NON_BLOCKING'
+            decls.append(d)
+        if decls:
+            setup_obj['tools'] = [{'functionDeclarations': decls}]
+
+    return {'setup': setup_obj}
+
+
+def parse_live_server_message(raw_msg) -> list:
+    """⭐ م9 — پارس پیام‌های دریافتی از WebSocket گوگل (BidiGenerateContentServerMessage)
+    و تبدیل به رویدادهای یکدست برای کلاینت مینی‌اپ/وب‌ادمین."""
+    if isinstance(raw_msg, (bytes, bytearray)):
+        try:
+            data = json.loads(raw_msg.decode('utf-8', 'replace'))
+        except Exception:
+            return []
+    elif isinstance(raw_msg, str):
+        try:
+            data = json.loads(raw_msg)
+        except Exception:
+            return []
+    elif isinstance(raw_msg, dict):
+        data = raw_msg
+    else:
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    events = []
+    if 'setupComplete' in data or 'setup_complete' in data:
+        events.append({'type': 'ready'})
+
+    if 'error' in data and isinstance(data['error'], dict):
+        msg = data['error'].get('message') or str(data['error'])
+        events.append({'type': 'error', 'message': _sanitize_provider_text(msg)[:220]})
+
+    sc = data.get('serverContent') or data.get('server_content') or {}
+    if isinstance(sc, dict) and sc:
+        if sc.get('interrupted'):
+            events.append({'type': 'interrupted'})
+
+        in_tr = sc.get('inputTranscription') or sc.get('input_transcription')
+        if isinstance(in_tr, dict) and in_tr.get('text'):
+            events.append({
+                'type': 'input_transcript',
+                'text': in_tr.get('text') or '',
+                'language': in_tr.get('languageCode') or in_tr.get('language_code') or '',
+            })
+
+        out_tr = sc.get('outputTranscription') or sc.get('output_transcription')
+        if isinstance(out_tr, dict) and out_tr.get('text'):
+            events.append({
+                'type': 'output_transcript',
+                'text': out_tr.get('text') or '',
+                'language': out_tr.get('languageCode') or out_tr.get('language_code') or '',
+            })
+
+        mt = sc.get('modelTurn') or sc.get('model_turn') or {}
+        for part in (mt.get('parts') or []):
+            if not isinstance(part, dict):
+                continue
+            inl = part.get('inlineData') or part.get('inline_data')
+            if isinstance(inl, dict) and inl.get('data'):
+                events.append({
+                    'type': 'audio',
+                    'data': inl['data'],
+                    'mimeType': inl.get('mimeType') or inl.get('mime_type') or 'audio/pcm;rate=24000',
+                })
+            if part.get('text') and not part.get('thought'):
+                events.append({
+                    'type': 'text',
+                    'text': part['text'],
+                })
+
+        turn_complete = bool(sc.get('turnComplete') or sc.get('turn_complete'))
+        interaction_status = (
+            sc.get('interactionStatus')
+            or sc.get('interaction_status')
+            or data.get('interactionStatus')
+            or data.get('interaction_status')
+            or ''
+        )
+        if turn_complete or interaction_status:
+            events.append({
+                'type': 'turn_state',
+                'turn_complete': turn_complete,
+                'interaction_status': interaction_status,
+            })
+
+    tc = data.get('toolCall') or data.get('tool_call')
+    if isinstance(tc, dict) and (tc.get('functionCalls') or tc.get('function_calls')):
+        calls = tc.get('functionCalls') or tc.get('function_calls') or []
+        events.append({
+            'type': 'tool_call',
+            'calls': [
+                {
+                    'id': c.get('id') or '',
+                    'name': c.get('name') or '',
+                    'args': c.get('args') or {},
+                }
+                for c in calls if isinstance(c, dict) and c.get('name')
+            ],
+            'interaction_status': (
+                data.get('interactionStatus') or data.get('interaction_status') or ''
+            ),
+        })
+
+    tcc = data.get('toolCallCancellation') or data.get('tool_call_cancellation')
+    if isinstance(tcc, dict) and tcc.get('ids'):
+        events.append({
+            'type': 'tool_call_cancellation',
+            'ids': list(tcc.get('ids') or []),
+        })
+
+    return events
+
+
+async def probe_live_model(provider: str, api_key: str, model: str) -> dict:
+    """⭐ م9 — تست واقعی اتصال WebSocket مدل Gemini Live (BidiGenerateContent).
+
+    یک اتصال WebSocket واقعی به BidiGenerateContent باز می‌کند، پیام setup
+    همان مدل را می‌فرستد و منتظر دریافت setupComplete می‌ماند."""
+    import time as _t
+    started = _t.monotonic()
+    mid = (model or '').replace('models/', '').strip()
+    if not mid.startswith('gemini'):
+        return {'ok': False, 'ms': 0,
+                'error': 'فقط مدل‌های Live گوگل (Gemini) پشتیبانی می‌شوند.',
+                'mode': 'real_live_ws'}
+    try:
+        import websockets
+        ws_url = f"{LIVE_WS_URL_V1BETA}?key={api_key}"
+        setup_msg = build_live_setup_message(mid, include_tools=False)
+        async with websockets.connect(ws_url, open_timeout=12, close_timeout=3) as ws:
+            await ws.send(json.dumps(setup_msg))
+            raw = await asyncio.wait_for(ws.recv(), timeout=12)
+        ms = max(1, int((_t.monotonic() - started) * 1000))
+        evs = parse_live_server_message(raw)
+        if any(e.get('type') == 'ready' for e in evs):
+            return {'ok': True, 'ms': ms, 'error': '', 'mode': 'real_live_ws'}
+        err_ev = next((e for e in evs if e.get('type') == 'error'), None)
+        return {
+            'ok': False,
+            'ms': ms,
+            'error': (err_ev or {}).get('message') or 'پاسخ setupComplete دریافت نشد',
+            'mode': 'real_live_ws',
+        }
+    except Exception as e:
+        ms = max(1, int((_t.monotonic() - started) * 1000))
+        err_str = _sanitize_provider_text(str(e))[:160] or type(e).__name__
+        return {'ok': False, 'ms': ms, 'error': err_str, 'mode': 'real_live_ws'}
+
+
+async def connect_gemini_live_with_failover(
+    model: str,
+    setup_msg: dict,
+    keys: list = None,
+) -> tuple:
+    """⭐ م9 — باز کردن اتصال WebSocket به Gemini Live (BidiGenerateContent)
+    با فال‌بک خودکار کلیدهای گوگل و ارسال پیام setup تا دریافت setupComplete.
+
+    خروجی: (ws, initial_events, active_key). در صورت شکست همه‌ی کلیدها AIConfigError/AIError."""
+    import websockets
+    if not keys:
+        cfg = await get_ai_config()
+        keys = (cfg.get('vault_multi') or {}).get('gemini') or cfg.get('live_api_key_list') or []
+    ordered = ordered_keys('gemini', keys or [])
+    if not ordered:
+        raise AIConfigError("کلید API گوگل (Gemini) برای تماس صوتی زنده تنظیم نشده است.")
+
+    last_err = None
+    for idx, api_key in enumerate(ordered):
+        _kp = api_key_problem(api_key)
+        if _kp:
+            record_key_failure('gemini', api_key, _kp, cooldown_sec=KEY_COOLDOWN_AUTH_SEC)
+            last_err = AIConfigError(_kp)
+            continue
+        for base_ws in (LIVE_WS_URL_V1BETA, LIVE_WS_URL_V1ALPHA):
+            ws = None
+            try:
+                ws_url = f"{base_ws}?key={api_key}"
+                ws = await websockets.connect(
+                    ws_url,
+                    open_timeout=15,
+                    close_timeout=5,
+                    max_size=16 * 1024 * 1024,
+                    ping_interval=20,
+                    ping_timeout=20,
+                )
+                await ws.send(json.dumps(setup_msg))
+                raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                evs = parse_live_server_message(raw)
+                err_ev = next((e for e in evs if e.get('type') == 'error'), None)
+                if err_ev:
+                    await ws.close()
+                    raise AIError(err_ev.get('message') or 'خطای راه‌اندازی نشست Live')
+                record_key_success('gemini', api_key)
+                return ws, evs, api_key
+            except Exception as e:
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                err_txt = _sanitize_provider_text(str(e))[:200] or type(e).__name__
+                low = err_txt.lower()
+                # اگر خطا مربوط به نسخه v1beta روی مدل خاصی نبود (مثلاً خطای کلید/سهمیه)،
+                # نیازی به تست v1alpha با همان کلید خراب نیست
+                if any(c in low for c in ('401', '403', 'api_key', 'unauthenticated', 'permission', 'service account')):
+                    record_key_failure('gemini', api_key, err_txt, cooldown_sec=KEY_COOLDOWN_AUTH_SEC)
+                    last_err = AIConfigError(f"کلید گوگل نامعتبر یا غیرفعال است ({err_txt})")
+                    break
+                if '429' in low or 'quota' in low or 'resource_exhausted' in low:
+                    record_key_failure('gemini', api_key, err_txt, cooldown_sec=KEY_COOLDOWN_QUOTA_SEC)
+                    last_err = AIQuotaError(f"سهمیه‌ی کلید گوگل برای Live پر شده ({err_txt})")
+                    break
+                last_err = AIError(f"خطا در اتصال به Gemini Live: {err_txt}")
+                # اگر v1beta خطای مدل داد، یک بار هم v1alpha امتحان می‌شود
+
+    if len(ordered) > 1 and last_err is not None:
+        raise type(last_err)(
+            f"همه‌ی {len(ordered)} کلید گوگل برای اتصال Live امتحان شد — آخرین خطا: {last_err}"
+        )
+    raise (last_err or AIError("اتصال به سرویس صوتی زنده‌ی گوگل برقرار نشد."))
+
+
+async def execute_live_tool_calls(calls: list, uid: int) -> dict:
+    """⭐ م9 — اجرای توابع هوشیار حین تماس صوتی زنده و ساخت پیام BidiGenerateContentToolResponse."""
+    func_responses = []
+    for fc in (calls or []):
+        if not isinstance(fc, dict):
+            continue
+        fn_name = (fc.get('name') or '').strip()
+        fn_id = fc.get('id') or fn_name
+        fn_args = fc.get('args') if isinstance(fc.get('args'), dict) else {}
+        if not fn_name:
+            continue
+        try:
+            res_text = await _execute_ai_function(fn_name, fn_args, int(uid or 0))
+            resp_payload = {'result': res_text}
+        except Exception as e:
+            logger.exception("خطا در اجرای ابزار Live (%s)", fn_name)
+            resp_payload = {'error': _sanitize_provider_text(str(e))[:160]}
+        func_responses.append({
+            'id': fn_id,
+            'name': fn_name,
+            'response': resp_payload,
+        })
+    return {
+        'toolResponse': {
+            'functionResponses': func_responses,
+        }
+    }
+
+
 async def probe_models(provider: str, models: list = None,
                        kind: str = 'chat') -> dict:
-    """⭐ م8 — تستِ همزمانِ مدل‌ها (سقفِ ۳۰ تا) و ذخیره‌ی نتیجه در تنظیمات.
+    """⭐ م8 / م9 — تستِ همزمانِ مدل‌ها (سقفِ ۳۰ تا) و ذخیره‌ی نتیجه در تنظیمات.
 
-    kind='chat' → تستِ توکنِ واقعی؛ kind='image' → تستِ واقعیِ ساخت تصویر گوگل."""
-    provider = 'gemini' if kind == 'image' else ((provider or 'gemini').strip() or 'gemini')
+    kind='chat' → تستِ توکنِ واقعی؛ kind='image' → تستِ واقعیِ ساخت تصویر گوگل؛
+    kind='live' → تستِ واقعیِ هندشیک WebSocket روی BidiGenerateContent."""
+    provider = 'gemini' if kind in ('image', 'live') else ((provider or 'gemini').strip() or 'gemini')
     cfg = await get_ai_config()
     keys = ordered_keys(provider,
                         (cfg.get('vault_multi') or {}).get(provider) or [])
@@ -4201,11 +4787,14 @@ async def probe_models(provider: str, models: list = None,
         if kind == 'image':
             models = [m.get('id') for m in
                       (await list_image_models(provider)).get('models', [])]
+        elif kind == 'live':
+            models = [m.get('id') for m in
+                      (await list_live_models()).get('models', [])]
         else:
             models = [m.get('id') for m in
                       (await list_provider_models(provider)).get('models', [])]
     models = [m for m in (models or []) if m][:PROBE_MAX_MODELS]
-    sem = asyncio.Semaphore(2 if kind == 'image' else PROBE_CONCURRENCY)
+    sem = asyncio.Semaphore(2 if kind in ('image', 'live') else PROBE_CONCURRENCY)
 
     async def _one(mid: str) -> tuple:
         async with sem:
@@ -4217,6 +4806,16 @@ async def probe_models(provider: str, models: list = None,
                         for c in ('401', '403', 'api_key_invalid', 'service account')):
                     for k_alt in keys[1:]:
                         r_alt = await probe_image_model(provider, k_alt, mid)
+                        if r_alt.get('ok'):
+                            r = r_alt
+                            break
+            elif kind == 'live':
+                r = await probe_live_model(provider, key, mid)
+                if not r.get('ok') and len(keys) > 1 and any(
+                        c in (r.get('error') or '').lower()
+                        for c in ('401', '403', 'api_key_invalid', 'service account', '429', 'http')):
+                    for k_alt in keys[1:]:
+                        r_alt = await probe_live_model(provider, k_alt, mid)
                         if r_alt.get('ok'):
                             r = r_alt
                             break
@@ -4549,6 +5148,11 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             "💬 هر سوالی داری بفرست؛ برای ساخت تصویر دوباره از منو یا "
             "دکمه‌ی 🎨 استفاده کن.")
+        return
+
+    if action == 'live':
+        await query.answer()
+        await show_ai_live_card(update, context)
         return
 
     if action == 'fu':

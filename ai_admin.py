@@ -21,7 +21,7 @@ from time_utils import format_datetime_fa, today_tehran
 from ai_solver import (
     get_ai_config, set_ai_setting, ask_ai, save_persona, delete_persona,
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
-    MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG,
+    MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG, LIVE_MODEL_CATALOG,
     set_api_key_for_provider, delete_api_key_for_provider,
     add_api_key_for_provider, remove_api_key_for_provider,
     key_status_summary,
@@ -137,30 +137,35 @@ async def _show_vault_screen(query):
 
 
 async def ai_voice_screen(query):
-    """⭐ م8 — رندر صفحه‌ی تنظیمات پاسخ صوتی (مشترک بین چند اکشن)."""
+    """⭐ م8 / م9 — رندر صفحه‌ی تنظیمات پاسخ صوتی (TTS) و تماس صوتی زنده (Live)."""
     cfg = await get_ai_config()
     mode = cfg.get('voice_reply') or 'voice'
     mode_lbl = {'off': '🔴 خاموش', 'voice': '🎙 ویس ⇒ فقط ویس (پیش‌فرض)',
                 'all': '🔊 همه‌ی پاسخ‌ها + ویس'}[mode]
     with_text = 'روشن (ویس + متن)' if (cfg.get('voice_with_text') or 'off') == 'on' else 'خاموش (فقط ویس)'
+    live_on = bool(cfg.get('live_enabled', True))
+    live_model = cfg.get('live_model') or 'gemini-3.8-live'
     kb = [
-        [InlineKeyboardButton(f"حالت: {mode_lbl} — تغییر", callback_data='ai:voice_mode')],
+        [InlineKeyboardButton(f"حالت ویس: {mode_lbl} — تغییر", callback_data='ai:voice_mode')],
         [InlineKeyboardButton(f"🎧 متنِ همراه ویس: {with_text} — تغییر", callback_data='ai:voice_with_text')],
         [InlineKeyboardButton(f"🗣 صدا: {cfg.get('tts_voice')} — تغییر", callback_data='ai:pick_tts_voice')],
+        [InlineKeyboardButton(f"🎙 تماس صوتی زنده (Live): {'🟢 فعال' if live_on else '🔴 غیرفعال'}", callback_data='ai:toggle_live')],
+        [InlineKeyboardButton(f"🤖 مدل Live: {live_model} — تغییر", callback_data='ai:pick_live_model')],
         [InlineKeyboardButton("▶️ تست صدای هوشیار", callback_data='ai:test_tts')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')],
     ]
     await query.edit_message_text(
-        "🎤 <b>پاسخ صوتی هوشیار</b>\n\n"
+        "🎤 <b>پاسخ صوتی و تماس زنده (Live) هوشیار</b>\n\n"
         "وقتی کاربر ویس بفرستد، جواب فقط با ویسِ طبیعیِ فارسی داده می‌شود "
-        "(مدل gemini-3.8-flash-lite-tts — سریع و کم‌هزینه). اگر «متنِ همراه» "
-        "روشن باشد، متنِ جواب هم قبل از ویس ارسال می‌شود.\n\n"
-        f"حالت: <b>{mode_lbl}</b>\n"
+        "(مدل gemini-3.8-flash-lite-tts — سریع و کم‌هزینه). همچنین با <b>تماس صوتی زنده (Gemini Live API)</b> "
+        "کاربر می‌تواند در مینی‌اپ/گروه به‌صورت زنده با هوشیار مکالمه کند.\n\n"
+        f"حالت ویس: <b>{mode_lbl}</b>\n"
         f"متنِ همراه ویس: <b>{with_text}</b>\n"
         f"صدا: <b>{cfg.get('tts_voice')}</b>\n"
-        f"مدل: <code>{cfg.get('tts_model')}</code>\n"
-        f"حداکثر طول پاسخ صوتی: <b>{cfg.get('voice_reply_max_chars')}</b> نویسه\n\n"
-        "<i>جواب‌های بلندتر از این حد فقط متنی می‌مانند تا سریع بمانند.</i>",
+        f"مدل TTS: <code>{cfg.get('tts_model')}</code>\n"
+        f"🎙 تماس صوتی زنده (Live): <b>{'فعال ✅' if live_on else 'غیرفعال ⬜'}</b>\n"
+        f"🤖 مدل Live: <code>{live_model}</code>\n"
+        f"حداکثر طول پاسخ صوتی: <b>{cfg.get('voice_reply_max_chars')}</b> نویسه",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -402,6 +407,40 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = cfg.get('voice_reply') or 'voice'
         nxt = {'off': 'voice', 'voice': 'all', 'all': 'off'}[cur]
         await set_ai_setting('voice_reply', nxt)
+        await ai_voice_screen(query)
+        return
+
+    if action == 'toggle_live':
+        cfg = await get_ai_config()
+        cur = bool(cfg.get('live_enabled', True))
+        await set_ai_setting('live_enabled', '0' if cur else '1')
+        await ai_voice_screen(query)
+        return
+
+    if action == 'pick_live_model':
+        cfg = await get_ai_config()
+        cur = cfg.get('live_model') or 'gemini-3.8-live'
+        kb = []
+        for mid, lbl, _free in LIVE_MODEL_CATALOG:
+            mark = '✅ ' if mid == cur else ''
+            kb.append([InlineKeyboardButton(f"{mark}{lbl}", callback_data=f'ai:set_live_model:{mid}')])
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:voice')])
+        await query.edit_message_text(
+            f"🎙 <b>انتخاب مدل تماس صوتی زنده (Gemini Live) — فعلی: <code>{cur}</code></b>\n\n"
+            "• <b>gemini-3.8-live:</b> پیشنهادی گوگل برای مکالمه زنده با کمترین تأخیر\n"
+            "• <b>gemini-3.8-live-extended-thinking:</b> استدلال عمیق در پس‌زمینه حین مکالمه\n"
+            "• <b>gemini-3.1-flash-live-preview:</b> سریع و اقتصادی با تنظیم سطح تفکر\n"
+            "• <b>gemini-3.5-live-translate-preview:</b> مترجم صوت‌به‌صوت هم‌زمان ۷۰+ زبان",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    if action == 'set_live_model':
+        mid = parts[2] if len(parts) > 2 else ''
+        valid_ids = {m[0] for m in LIVE_MODEL_CATALOG}
+        if mid in valid_ids:
+            await set_ai_setting('live_model', mid)
+            await query.answer(f"✅ مدل Live روی {mid} تنظیم شد", show_alert=True)
         await ai_voice_screen(query)
         return
 

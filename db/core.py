@@ -3991,6 +3991,37 @@ class DBCore:
                                       {'ai_image_count': 1})
         return int((u or {}).get('ai_image_count') or 0)
 
+    async def ai_live_seconds_used_today(self, uid: int, today: str) -> int:
+        """🎙 م9 — مصرف امروزِ تماس صوتی زنده (به ثانیه) برای کاربر."""
+        u = await self.users.find_one({'user_id': int(uid)},
+                                      {'ai_live_seconds': 1,
+                                       'ai_live_date': 1})
+        if not u:
+            return 0
+        if u.get('ai_live_date') != today:
+            return 0
+        return int(u.get('ai_live_seconds') or 0)
+
+    async def ai_live_inc_seconds(self, uid: int, today: str,
+                                  seconds: int) -> int:
+        """🎙 م9 — ثبت زمان مصرف‌شده‌ی تماس صوتی زنده (به ثانیه) پس از پایان نشست."""
+        sec = max(0, int(seconds or 0))
+        if sec <= 0:
+            return await self.ai_live_seconds_used_today(uid, today)
+        await self.users.update_one(
+            {'user_id': int(uid)},
+            [{'$set': {
+                'ai_live_seconds': {'$cond': [
+                    {'$eq': ['$ai_live_date', today]},
+                    {'$add': [{'$ifNull': ['$ai_live_seconds', 0]}, sec]}, sec]},
+                'ai_live_date': today,
+                'ai_live_total_seconds': {
+                    '$add': [{'$ifNull': ['$ai_live_total_seconds', 0]}, sec]},
+            }}])
+        u = await self.users.find_one({'user_id': int(uid)},
+                                      {'ai_live_seconds': 1})
+        return int((u or {}).get('ai_live_seconds') or 0)
+
     async def plan_for_sub(self, sub: dict | None) -> dict | None:
         """🌊 W7 — پلنِ یک اشتراک (تک‌منبع: اول plan_id، بعد تطبیق نام فعال).
 

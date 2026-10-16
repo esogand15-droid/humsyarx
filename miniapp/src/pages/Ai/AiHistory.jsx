@@ -274,6 +274,18 @@ export default function AiHistory() {
           ساخت تصویر با هوشیار
         </button>
 
+        <button
+          type="button"
+          className="conv-new aiimg-entry"
+          onClick={() => {
+            haptic('light');
+            navigate('/ai/live');
+          }}
+        >
+          🎙
+          تماس صوتی زنده با هوشیار (Live)
+        </button>
+
         <SearchField
           value={query}
           onChange={(event) =>

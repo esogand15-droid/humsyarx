@@ -145,6 +145,11 @@ const AiImageScreen = lazyScreen(
   () => <SkRowList n={3} />
 );
 
+const AiLiveScreen = lazyScreen(
+  () => import('./pages/Ai/AiLive'),
+  () => <SkRowList n={3} />
+);
+
 const GlobalSearchScreen = lazyScreen(
   () => import('./pages/Search/GlobalSearch'),
   SearchResultsSkeleton
@@ -792,6 +797,12 @@ export default function App() {
 
     try {
       if (
+        startParam === 'live' ||
+        startParam === 'ai_live' ||
+        startParam === 'voicechat'
+      ) {
+        navigate('/ai/live');
+      } else if (
         /^rank_[0-9a-zA-Z]+$/.test(
           startParam
         )
@@ -1004,6 +1015,13 @@ export default function App() {
           path="/ai/image"
           element={
             <AiImageScreen />
+          }
+        />
+
+        <Route
+          path="/ai/live"
+          element={
+            <AiLiveScreen />
           }
         />
 

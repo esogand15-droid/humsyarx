@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api, errText } from '../api.js';
 import { Loading, ErrorState, Empty, Stat, B, FaDateTime, PageHeader, Tabs, Switch, toast, NoPerm, Confirm, Modal, DiffViewer } from '../ui.jsx';
 import { PersianDatePicker } from '../PersianDatePicker.jsx';
 
 // 🤖🌊 W-Admin — مرکز فرماندهی هوشیار: KPI ساخت‌یافته + برترین‌ها + گزارش‌ها + دسترسی + پیکربندی
 // (رفع نقص قبلی: داده‌ی خام tuple/comma دیگر به UI تخلیه نمی‌شود — سریالایزر سمت API)
-const AI_TABS = [['overview', '📊 نمای کلی'], ['reports', '🚩 گزارش‌ها'], ['access', '🔐 دسترسی و سهمیه'], ['image', '🎨 تولید تصویر'], ['personas', '🎭 Personaها'], ['config', '⚙️ پیکربندی']];
+const AI_TABS = [['overview', '📊 نمای کلی'], ['reports', '🚩 گزارش‌ها'], ['access', '🔐 دسترسی و سهمیه'], ['image', '🎨 تولید تصویر'], ['live', '🎙 تماس صوتی زنده'], ['personas', '🎭 Personaها'], ['config', '⚙️ پیکربندی']];
 
 export default function AiAdmin({ me }) {
   const [tab, setTab] = useState('overview');
@@ -82,6 +82,7 @@ export default function AiAdmin({ me }) {
       )}
 
       {tab === 'image' && <AiImageStudio cfg={cfg} me={me} onSaved={load} />}
+      {tab === 'live' && <AiLiveStudio cfg={cfg} me={me} onSaved={load} />}
       {tab === 'reports' && <AiReports />}
       {tab === 'access' && <AiAccess me={me} />}
       {tab === 'personas' && me?.is_owner && <AiPersonas />}
@@ -315,6 +316,410 @@ function AiImageStudio({ cfg, me, onSaved }) {
                  download={`houshyar-${Date.now()}.png`}>📥 دانلود</a>
               <span className="muted">{result.model} · {result.aspect_ratio} · {result.image_size} · {Number(result.elapsed_ms || 0).toLocaleString('fa')} ms</span>
             </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ⭐ م9 — استودیوی تماس صوتی زنده با هوشیار (Google Gemini Live API / BidiGenerateContent):
+   مدیریت هر ۴ مدل رسمی Live گوگل + تست زنده‌بودن WebSocket + اتاق تست تماس صوتی زنده در پنل وب */
+function AiLiveStudio({ cfg, me, onSaved }) {
+  const [models, setModels] = useState(null);
+  const [meta, setMeta] = useState(null);
+  const [probing, setProbing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  // تنظیمات فعال ربات/مینی‌اپ
+  const [liveEnabled, setLiveEnabled] = useState(true);
+  const [liveModel, setLiveModel] = useState('gemini-3.8-live');
+  const [liveVoice, setLiveVoice] = useState('Sulafat');
+  const [liveThinking, setLiveThinking] = useState('low');
+  const [liveDailyMin, setLiveDailyMin] = useState(15);
+  const [liveMaxSec, setLiveMaxSec] = useState(300);
+  const [liveTargetLang, setLiveTargetLang] = useState('fa');
+
+  // اتاق تست زنده در مرورگر ادمین
+  const [callState, setCallState] = useState('idle'); // idle | connecting | listening | speaking | error
+  const [callErr, setCallErr] = useState('');
+  const [userSub, setUserSub] = useState('');
+  const [aiSub, setAiSub] = useState('');
+  const [turns, setTurns] = useState([]);
+  const [testText, setTestText] = useState('');
+  const wsRef = useRef(null);
+  const streamRef = useRef(null);
+  const capCtxRef = useRef(null);
+  const procRef = useRef(null);
+  const playCtxRef = useRef(null);
+  const nextTimeRef = useRef(0);
+  const sourcesRef = useRef([]);
+
+  const loadLiveMeta = async (refresh = false) => {
+    setErr('');
+    try {
+      const r = await api.aiLiveModels(refresh);
+      setModels(r.models || []);
+      setMeta(r);
+      setLiveEnabled(r.live_enabled !== undefined ? !!r.live_enabled : (cfg?.live_enabled !== false));
+      setLiveModel(r.current_model || cfg?.live_model || 'gemini-3.8-live');
+      setLiveVoice(r.live_voice || cfg?.live_voice || 'Sulafat');
+      setLiveThinking(r.live_thinking_level || cfg?.live_thinking_level || 'low');
+      setLiveDailyMin(r.live_daily_minutes ?? cfg?.live_daily_minutes ?? 15);
+      setLiveMaxSec(r.live_max_session_sec ?? cfg?.live_max_session_sec ?? 300);
+      setLiveTargetLang(r.live_target_language || cfg?.live_target_language || 'fa');
+    } catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { loadLiveMeta(false); }, []);
+
+  const saveLiveCfg = async (overrideModel) => {
+    const targetMod = typeof overrideModel === 'string' && overrideModel ? overrideModel : liveModel;
+    setSaving(true);
+    try {
+      const r = await api.aiLiveConfigSave({
+        live_enabled: !!liveEnabled,
+        live_model: targetMod,
+        live_voice: liveVoice || 'Sulafat',
+        live_thinking_level: liveThinking || 'low',
+        live_daily_minutes: Number(liveDailyMin) || 0,
+        live_max_session_sec: Number(liveMaxSec) || 300,
+        live_target_language: liveTargetLang || 'fa',
+      });
+      setLiveModel(r.live_model);
+      setMeta(x => ({ ...(x || {}), current_model: r.live_model, live_enabled: r.live_enabled }));
+      toast(`پیکربندی تماس صوتی زنده روی «${r.live_model}» ذخیره شد ✅`);
+      onSaved && onSaved();
+    } catch (e) { toast(errText(e), 'err'); }
+    setSaving(false);
+  };
+
+  const probeLive = async () => {
+    setProbing(true);
+    try {
+      const r = await api.aiModelsProbe('gemini', {
+        kind: 'live',
+        models: (models || []).map(m => m.id),
+      });
+      const okN = Number(r.ok_count || 0), total = Number(r.count || 0);
+      toast(`تست WebSocket Gemini Live: ${okN} از ${total} مدل آماده و فعال است ${okN > 0 ? '✅' : '⚠️'}`);
+      await loadLiveMeta(false);
+    } catch (e) { toast(errText(e), 'err'); }
+    setProbing(false);
+  };
+
+  const stopPlayback = () => {
+    for (const s of sourcesRef.current) { try { s.stop(); } catch (_) {} }
+    sourcesRef.current = [];
+    nextTimeRef.current = 0;
+  };
+
+  const stopTestCall = () => {
+    stopPlayback();
+    if (procRef.current) { try { procRef.current.disconnect(); } catch (_) {} procRef.current = null; }
+    if (capCtxRef.current) { try { capCtxRef.current.close(); } catch (_) {} capCtxRef.current = null; }
+    if (streamRef.current) { for (const t of streamRef.current.getTracks()) { try { t.stop(); } catch (_) {} } streamRef.current = null; }
+    if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} wsRef.current = null; }
+    setCallState('idle');
+  };
+  useEffect(() => () => stopTestCall(), []);
+
+  const playPcm24k = (b64) => {
+    try {
+      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        playCtxRef.current = new AC({ sampleRate: 24000 });
+      }
+      const ctx = playCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const i16 = new Int16Array(bytes.buffer);
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+      const buf = ctx.createBuffer(1, f32.length, 24000);
+      buf.getChannelData(0).set(f32);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      const startAt = Math.max(ctx.currentTime + 0.015, nextTimeRef.current || ctx.currentTime + 0.015);
+      nextTimeRef.current = startAt + buf.duration;
+      sourcesRef.current.push(src);
+      setCallState('speaking');
+      src.onended = () => {
+        sourcesRef.current = sourcesRef.current.filter(x => x !== src);
+        if (!sourcesRef.current.length) setCallState(prev => prev === 'speaking' ? 'listening' : prev);
+      };
+      src.start(startAt);
+    } catch (_) {}
+  };
+
+  const startTestCall = async () => {
+    setCallErr(''); setUserSub(''); setAiSub(''); setTurns([]);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true },
+      });
+    } catch (_) {
+      setCallState('error');
+      setCallErr('دسترسی به میکروفون در مرورگر داده نشد.');
+      return;
+    }
+    streamRef.current = stream;
+    setCallState('connecting');
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const qs = new URLSearchParams({
+      model: liveModel,
+      voice: liveVoice,
+      thinking_level: liveThinking,
+      target_language: liveTargetLang,
+    });
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/ai/live/ws?${qs.toString()}`);
+    wsRef.current = ws;
+
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === 'ready') {
+        setCallState('listening');
+        toast(`اتصال زنده به ${msg.model} برقرار شد — صحبت کنید 🎙`);
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const capCtx = new AC({ sampleRate: 16000 });
+        capCtxRef.current = capCtx;
+        const src = capCtx.createMediaStreamSource(stream);
+        const proc = capCtx.createScriptProcessor(2048, 1, 1);
+        procRef.current = proc;
+        proc.onaudioprocess = (ae) => {
+          if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+          const raw = ae.inputBuffer.getChannelData(0);
+          const ratio = capCtx.sampleRate / 16000;
+          const outLen = Math.round(raw.length / ratio);
+          const pcm = new Int16Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const s = Math.max(-1, Math.min(1, raw[Math.min(raw.length - 1, Math.floor(i * ratio))]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          const bytes = new Uint8Array(pcm.buffer);
+          let bin = '';
+          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+          wsRef.current.send(JSON.stringify({ type: 'audio', data: btoa(bin), mimeType: 'audio/pcm;rate=16000' }));
+        };
+        src.connect(proc);
+        proc.connect(capCtx.destination);
+      } else if (msg.type === 'audio' && msg.data) {
+        playPcm24k(msg.data);
+      } else if (msg.type === 'interrupted') {
+        stopPlayback();
+        setCallState('listening');
+      } else if (msg.type === 'input_transcript' && msg.text) {
+        setUserSub(p => `${p} ${msg.text}`.trim());
+      } else if ((msg.type === 'output_transcript' || msg.type === 'text') && msg.text) {
+        setAiSub(p => `${p} ${msg.text}`.trim());
+      } else if (msg.type === 'turn_state' && (msg.turn_complete || msg.interaction_status === 'IDLE')) {
+        setUserSub(u => {
+          setAiSub(a => {
+            if (u || a) {
+              setTurns(prev => [...prev.slice(-10), ...(u ? [{ r: 'شما', t: u }] : []), ...(a ? [{ r: 'هوشیار', t: a }] : [])]);
+            }
+            return '';
+          });
+          return '';
+        });
+      } else if (msg.type === 'error') {
+        setCallErr(msg.message || 'خطا در نشست زنده');
+        stopTestCall();
+        setCallState('error');
+      }
+    };
+    ws.onerror = () => { setCallErr('خطا در اتصال WebSocket'); stopTestCall(); setCallState('error'); };
+    ws.onclose = () => { stopTestCall(); };
+  };
+
+  const HBadge = ({ m }) => (
+    m.health_ok === true ? (
+      <span style={{ color: 'var(--c-ok, #2a2)', fontSize: 'var(--fs-caption)', fontWeight: 600 }}>
+        🟢 سالم ({Number(m.health_ms || 1).toLocaleString('fa')}ms)
+      </span>
+    ) : m.health_ok === false ? (
+      <span style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }} title={m.health_error || ''}>
+        🔴 خطا{m.health_error ? `: ${m.health_error.slice(0, 55)}` : ''}
+      </span>
+    ) : (
+      <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>⚪ تست‌نشده</span>
+    )
+  );
+
+  const activeBotModel = meta?.current_model || cfg?.live_model || liveModel;
+
+  return (
+    <>
+      <div className="panel panel-pad" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <b>🎙 پیکربندی تماس صوتی زنده با هوشیار (Google Gemini Live API)</b>
+          <B kind={liveEnabled ? 'ok' : 'warn'}>
+            {liveEnabled ? `فعال · مدل فعلی: ${activeBotModel}` : 'تماس صوتی زنده غیرفعال است'}
+          </B>
+        </div>
+        <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+          پشتیبانی کامل از پروتکل WebSocket دوطرفه <code>BidiGenerateContent</code> گوگل با صدای زنده فارسی، پریدن وسط حرف (Barge-in) و دسترسی زنده به ابزارهای دانشجویی هامزیار.
+        </div>
+
+        <div className="grid g2" style={{ gap: 10, marginTop: 12 }}>
+          <label className="fld">
+            <span>وضعیت تماس صوتی زنده برای کاربران (مینی‌اپ و ربات/گروه)</span>
+            <div className="row" style={{ marginTop: 6 }}>
+              <Switch on={!!liveEnabled} onChange={setLiveEnabled} />
+              <span>{liveEnabled ? 'فعال — کاربران می‌توانند تماس صوتی زنده برقرار کنند' : 'غیرفعال'}</span>
+            </div>
+          </label>
+
+          <label className="fld">
+            <span>مدل تماس صوتی زنده (Gemini Live)</span>
+            <select className="inp" style={{ direction: 'ltr' }} value={liveModel} onChange={e => setLiveModel(e.target.value)}>
+              {(models || [
+                { id: 'gemini-3.8-live', label: '⚡ gemini-3.8-live (پیش‌فرض کم‌تأخیر)' },
+                { id: 'gemini-3.8-live-extended-thinking', label: '🧠 gemini-3.8-live-extended-thinking (استدلال عمیق)' },
+                { id: 'gemini-3.1-flash-live-preview', label: '🚀 gemini-3.1-flash-live-preview (سریع و اقتصادی)' },
+                { id: 'gemini-3.5-live-translate-preview', label: '🌐 gemini-3.5-live-translate-preview (مترجم صوت‌به‌صوت)' },
+              ]).map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.health_ok === true ? '🟢 ' : m.health_ok === false ? '🔴 ' : ''}{m.id} — {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="fld">
+            <span>🗣 صدای هوشیار در تماس زنده</span>
+            <select className="inp" value={liveVoice} onChange={e => setLiveVoice(e.target.value)}>
+              {(meta?.voices || [{ id: 'Sulafat', label: 'Sulafat — گرم (پیشنهادی)' }]).map(v => (
+                <option key={v.id} value={v.id}>{v.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="fld">
+            <span>🧠 سطح تفکر (مخصوص مدل‌های Extended Thinking / 3.1 Flash Live)</span>
+            <select className="inp" value={liveThinking} onChange={e => setLiveThinking(e.target.value)}>
+              <option value="minimal">minimal (کمترین تأخیر — فقط ۳.۱)</option>
+              <option value="low">low (پیشنهادی برای مکالمه روان)</option>
+              <option value="medium">medium (متعادل)</option>
+              <option value="high">high (تحلیل عمیق علمی و بالینی)</option>
+            </select>
+          </label>
+
+          <label className="fld">
+            <span>⏱ سهمیه روزانه هر کاربر (دقیقه در روز؛ ۰ = نامحدود)</span>
+            <input className="inp" type="number" min="0" max="600" value={liveDailyMin} onChange={e => setLiveDailyMin(e.target.value)} />
+          </label>
+
+          <label className="fld">
+            <span>⏳ حداکثر زمان هر نشست تماس (ثانیه)</span>
+            <input className="inp" type="number" min="30" max="3600" value={liveMaxSec} onChange={e => setLiveMaxSec(e.target.value)} />
+          </label>
+
+          <label className="fld">
+            <span>🌐 زبان مقصد ترجمه پیش‌فرض (برای مدل gemini-3.5-live-translate-preview)</span>
+            <select className="inp" value={liveTargetLang} onChange={e => setLiveTargetLang(e.target.value)}>
+              {(meta?.translate_languages || [{ code: 'fa', label: 'فارسی (fa)' }]).map(l => (
+                <option key={l.code} value={l.code}>{l.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn primary" disabled={saving || !liveModel} onClick={() => saveLiveCfg()}>
+            {saving ? '⏳ در حال ذخیره…' : '💾 ذخیره تنظیمات تماس صوتی زنده هوشیار'}
+          </button>
+        </div>
+      </div>
+
+      {/* جدول مدل‌های Live گوگل + تست WebSocket */}
+      <div className="panel panel-pad" style={{ marginBottom: 14 }}>
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <b>📋 مدل‌های رسمی تماس صوتی زنده گوگل (Gemini Live API)</b>
+          <div className="row" style={{ gap: 6 }}>
+            <button className="btn sm" onClick={() => loadLiveMeta(true)}>🔄 تازه‌سازی</button>
+            <button className="btn sm primary" disabled={probing || !models?.length} onClick={probeLive}>
+              {probing ? '⏳ تست اتصال WebSocket…' : '🧪 تست زنده‌بودن مدل‌های Live'}
+            </button>
+          </div>
+        </div>
+        {err && <div style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{err}</div>}
+        {models === null ? <Loading rows={2} /> : (
+          <div style={{ marginTop: 10 }}>
+            {models.map(m => {
+              const isCurrent = m.id === activeBotModel;
+              return (
+                <div key={m.id} className="row" style={{
+                  justifyContent: 'space-between', padding: '7px 8px',
+                  borderBottom: '1px solid var(--c-line, #eee)',
+                  background: isCurrent ? 'rgba(59,130,246,0.08)' : (m.id === liveModel ? 'var(--c-bg2, #f6f8fa)' : 'transparent'),
+                  borderRadius: 6, flexWrap: 'wrap', gap: 8,
+                }}>
+                  <span className="row" style={{ gap: 8 }}>
+                    <input type="radio" name="live_model" checked={m.id === liveModel} onChange={() => setLiveModel(m.id)} />
+                    <span className="code" style={{ direction: 'ltr', fontWeight: isCurrent ? 700 : 400 }}>{m.id}</span>
+                    {isCurrent && <B kind="acc">🤖 فعال در هوشیار</B>}
+                    <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>{m.label}</span>
+                  </span>
+                  <span className="row" style={{ gap: 8 }}>
+                    <HBadge m={m} />
+                    {!isCurrent && (
+                      <button className="btn sm" disabled={saving} onClick={() => saveLiveCfg(m.id)}>
+                        🤖 تنظیم برای هوشیار
+                      </button>
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* اتاق تست تماس صوتی زنده برای ادمین */}
+      <div className="panel panel-pad">
+        <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+          <b>🎧 اتاق تست تماس صوتی زنده (مستقیم از مرورگر ادمین)</b>
+          <B kind={callState === 'listening' || callState === 'speaking' ? 'ok' : callState === 'error' ? 'bad' : ''}>
+            {callState === 'idle' ? 'آماده تست' : callState === 'connecting' ? 'در حال اتصال…' : callState === 'speaking' ? '🔊 هوشیار در حال صحبت…' : callState === 'listening' ? '🟢 در حال گوش دادن…' : 'خطا'}
+          </B>
+        </div>
+        <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+          با زدن دکمه زیر، اتصال WebSocket به مدل انتخابی (<code>{liveModel}</code>) با صدای <code>{liveVoice}</code> برقرار می‌شود و می‌توانید زنده با هوشیار صحبت کنید.
+        </div>
+        {callErr && <div style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{callErr}</div>}
+        <div className="row" style={{ marginTop: 12, gap: 10 }}>
+          {callState === 'idle' || callState === 'error' ? (
+            <button className="btn primary" onClick={startTestCall}>🎙 شروع تست تماس زنده با هوشیار</button>
+          ) : (
+            <button className="btn danger" onClick={stopTestCall}>📴 پایان تماس آزمایشی</button>
+          )}
+          {(callState === 'listening' || callState === 'speaking') && !liveModel.includes('translate') && (
+            <>
+              <input className="inp" style={{ flex: 1 }} placeholder="ارسال پیام متنی در نشست زنده…"
+                     value={testText} onChange={e => setTestText(e.target.value)}
+                     onKeyDown={e => {
+                       if (e.key === 'Enter' && testText.trim() && wsRef.current?.readyState === WebSocket.OPEN) {
+                         wsRef.current.send(JSON.stringify({ type: 'text', text: testText.trim() }));
+                         setTurns(p => [...p, { r: 'شما', t: testText.trim() }]);
+                         setTestText('');
+                       }
+                     }} />
+            </>
+          )}
+        </div>
+        {(userSub || aiSub || turns.length > 0) && (
+          <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: 'var(--c-bg2, #f6f8fa)', display: 'grid', gap: 6 }}>
+            {turns.map((x, idx) => (
+              <div key={idx} style={{ fontSize: 13 }}><b>{x.r}: </b><span>{x.t}</span></div>
+            ))}
+            {userSub && <div style={{ fontSize: 13, color: 'var(--acc)' }}><b>شما (زنده…): </b>{userSub}</div>}
+            {aiSub && <div style={{ fontSize: 13, color: 'var(--ok)' }}><b>هوشیار (زنده…): </b>{aiSub}</div>}
           </div>
         )}
       </div>

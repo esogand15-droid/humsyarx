@@ -117,7 +117,7 @@ from hooshyar_quiz import (                                     # 📚 آزمو�
 )
 from ai_solver import (                                          # 🤖 هوشیار
     handle_ai_text, handle_ai_media, handle_ai_image_prompt,
-    ai_user_callback,
+    ai_user_callback, show_ai_live_card,
 )
 from database import db
 
@@ -2209,6 +2209,8 @@ def build_application() -> Application:
     # تا همچنان بتواند ca_mode/ticket_mode/profile_edit/creating_question
     # را با همان تابع قبلی (cancel_handler) پاک کند.
     app.add_handler(CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE))
+    # 🎙 م9 — دستور /live و /voicechat برای شروع ویس‌چت زنده با هوشیار (در گروه و چت خصوصی)
+    app.add_handler(CommandHandler(['live', 'voicechat'], show_ai_live_card))
 
     # 💍 Ring Street — ثبت *قبل* از هندلرهای یکپارچه، چون در PTB
     # «ترتیب ثبت = اولویت» است. فیلتر این هندلرها «کاربر در flow/چت
@@ -2277,6 +2279,7 @@ async def post_init(application: Application):
         from telegram import BotCommand
         cmds = [
             BotCommand("start", "شروع / ثبت‌نام"),
+            BotCommand("live", "تماس صوتی زنده با هوشیار (Live)"),
             BotCommand("help", "راهنما"),
             BotCommand("cancel", "لغو عملیات"),
             BotCommand("profile", "پروفایل"),

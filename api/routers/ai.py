@@ -15,7 +15,10 @@ from datetime import datetime, timedelta
 from pathlib import PurePath
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import (
+    APIRouter, Depends, File, Form, HTTPException,
+    UploadFile, WebSocket, WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
 from ai_solver import (
@@ -26,6 +29,15 @@ from ai_solver import (
     IMAGE_ASPECT_RATIOS,
     IMAGE_PROMPT_MAX,
     IMAGE_PROMPT_MIN,
+    LIVE_MODEL_CATALOG,
+    DEFAULT_LIVE_MODEL,
+    LIVE_THINKING_LEVELS,
+    LIVE_TRANSLATE_LANGUAGES,
+    PREBUILT_TTS_VOICES,
+    build_live_setup_message,
+    connect_gemini_live_with_failover,
+    execute_live_tool_calls,
+    parse_live_server_message,
     run_with_key_failover,
     ai_claim_inflight,
     ai_is_inflight,
@@ -41,7 +53,10 @@ from ai_solver import (
     get_ai_config,
     record_token_usage,
 )
-from api.auth import get_current_user, require_feature  # 🌊 W7
+from api.auth import (
+    ADMIN_ID, WA_SESSION_COOKIE, get_current_user,
+    require_feature, resolve_web_session, verify_telegram_init_data,
+)
 from api.rate_limit import rate_limit_dependency, rate_limit_user
 from database import db
 from time_utils import now_utc, parse_machine_datetime, today_tehran, utc_now_iso
@@ -1857,3 +1872,323 @@ async def generate_image_ep(body: ImageGenBody,
         }
     finally:
         await ai_release_inflight(uid)
+
+
+# ══════════════════════════════════════════════════
+# ⭐ م9 — تماس صوتی زنده با هوشیار (Gemini Live API / BidiGenerateContent)
+# ══════════════════════════════════════════════════
+
+async def _authenticate_live_ws(websocket: WebSocket) -> dict | None:
+    """احراز هویت اتصال WebSocket تماس صوتی زنده (از MiniApp یا WebAdmin)."""
+    init_data = (
+        websocket.query_params.get("init_data")
+        or websocket.headers.get("x-init-data")
+        or ""
+    ).strip()
+    if init_data:
+        try:
+            tg_user = verify_telegram_init_data(init_data)
+            uid = int(tg_user["id"])
+            db_user = await db.get_user(uid)
+            if not db_user and uid == ADMIN_ID:
+                db_user = {"user_id": uid, "name": tg_user.get("first_name", "ادمین"), "approved": True}
+            if not db_user or (not db_user.get("approved") and uid != ADMIN_ID) or db_user.get("suspended"):
+                return None
+            return {"id": uid, "name": db_user.get("name") or tg_user.get("first_name") or "", "_db": db_user}
+        except Exception:
+            return None
+
+    cookie_tok = websocket.cookies.get(WA_SESSION_COOKIE, "")
+    if cookie_tok:
+        try:
+            sess = await resolve_web_session(cookie_tok)
+            if sess:
+                uid = int(sess["uid"])
+                db_user = await db.get_user(uid)
+                if not db_user and uid == ADMIN_ID:
+                    db_user = {"user_id": uid, "name": "ادمین ارشد", "approved": True}
+                if not db_user or (not db_user.get("approved") and uid != ADMIN_ID) or db_user.get("suspended"):
+                    return None
+                return {"id": uid, "name": db_user.get("name", ""), "_db": db_user, "_wa_session": sess}
+        except Exception:
+            return None
+    return None
+
+
+@router.get("/live/config")
+async def get_live_config_ep(user=Depends(get_current_user)):
+    """🎙 م9 — وضعیت، مدل‌ها، صداها و سهمیه‌ی تماس صوتی زنده برای مینی‌اپ/وب."""
+    uid = int(user["id"])
+    cfg = await get_ai_config()
+    today = today_tehran().isoformat()
+    used_sec = await db.ai_live_seconds_used_today(uid, today)
+    daily_min = int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15)
+    daily_limit_sec = max(0, daily_min * 60)
+    is_vip = (uid == ADMIN_ID)
+    unlimited = is_vip or daily_limit_sec == 0
+    rem_sec = None if unlimited else max(0, daily_limit_sec - used_sec)
+    return {
+        "enabled": bool(cfg.get("enabled") and cfg.get("live_enabled", True)),
+        "live_enabled": bool(cfg.get("live_enabled", True)),
+        "model": cfg.get("live_model") or DEFAULT_LIVE_MODEL,
+        "voice": cfg.get("live_voice") or cfg.get("tts_voice") or "Sulafat",
+        "thinking_level": cfg.get("live_thinking_level") or "low",
+        "target_language": cfg.get("live_target_language") or "fa",
+        "max_session_sec": int(cfg.get("live_max_session_sec") or 300),
+        "models": [
+            {"id": mid, "label": label, "free": free}
+            for mid, label, free in LIVE_MODEL_CATALOG
+        ],
+        "voices": [
+            {"id": v, "label": f"{v} — {d}"}
+            for v, d in PREBUILT_TTS_VOICES.items()
+        ],
+        "thinking_levels": list(LIVE_THINKING_LEVELS),
+        "translate_languages": [
+            {"code": c, "label": lbl}
+            for c, lbl in LIVE_TRANSLATE_LANGUAGES
+        ],
+        "usage": {
+            "used_today_sec": used_sec,
+            "daily_limit_sec": daily_limit_sec,
+            "remaining_sec": rem_sec,
+            "unlimited": unlimited,
+        },
+    }
+
+
+@router.websocket("/live/ws")
+async def live_voice_ws_ep(websocket: WebSocket):
+    """🎙 م9 — بریج دوطرفه‌ی WebSocket تماس صوتی زنده با Google Gemini Live API.
+
+    پروتکل کلاینت → سرور:
+      • {"type": "audio", "data": "<base64 PCM16 16kHz>", "mimeType": "audio/pcm;rate=16000"}
+      • {"type": "text", "text": "..."}
+      • {"type": "ping"}
+      • {"type": "stop"}
+
+    پروتکل سرور → کلاینت:
+      • {"type": "ready", "model": "...", "voice": "...", "max_session_sec": 300}
+      • {"type": "audio", "data": "<base64 PCM16 24kHz>", "mimeType": "audio/pcm;rate=24000"}
+      • {"type": "input_transcript", "text": "..."}
+      • {"type": "output_transcript", "text": "..."}
+      • {"type": "interrupted"}
+      • {"type": "turn_state", "turn_complete": true, "interaction_status": "IDLE"}
+      • {"type": "tool_call", "calls": [...]}
+      • {"type": "error", "message": "..."}
+    """
+    import json as _json
+    import time as _time
+
+    await websocket.accept()
+    user = await _authenticate_live_ws(websocket)
+    if not user:
+        await websocket.send_json({"type": "error", "message": "احراز هویت نامعتبر است؛ لطفاً صفحه را دوباره باز کنید."})
+        await websocket.close(code=4401)
+        return
+
+    uid = int(user["id"])
+    is_admin = (uid == ADMIN_ID) or bool(user.get("_wa_session"))
+    if await db.ai_is_banned(uid) and not is_admin:
+        await websocket.send_json({"type": "error", "message": "دسترسی شما به هوشیار محدود شده است."})
+        await websocket.close(code=4403)
+        return
+
+    cfg = await get_ai_config()
+    if (not cfg.get("enabled") or not cfg.get("live_enabled", True)) and not is_admin:
+        await websocket.send_json({"type": "error", "message": "تماس صوتی زنده‌ی هوشیار فعلاً غیرفعال است."})
+        await websocket.close(code=4403)
+        return
+
+    today = today_tehran().isoformat()
+    used_sec = await db.ai_live_seconds_used_today(uid, today)
+    daily_min = int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15)
+    daily_limit_sec = max(0, daily_min * 60)
+    if daily_limit_sec > 0 and not is_admin and used_sec >= daily_limit_sec:
+        await websocket.send_json({
+            "type": "error",
+            "message": f"سهمیه روزانه تماس صوتی زنده شما ({daily_min} دقیقه) تمام شده است.",
+        })
+        await websocket.close(code=4429)
+        return
+
+    req_model = (websocket.query_params.get("model") or "").strip()
+    req_voice = (websocket.query_params.get("voice") or "").strip()
+    req_lang = (websocket.query_params.get("target_language") or "").strip()
+    req_thinking = (websocket.query_params.get("thinking_level") or "").strip().lower()
+
+    valid_live_models = {m[0] for m in LIVE_MODEL_CATALOG}
+    effective_model = (
+        req_model if (req_model in valid_live_models or (is_admin and req_model.startswith("gemini")))
+        else (cfg.get("live_model") or DEFAULT_LIVE_MODEL)
+    )
+    effective_voice = (
+        req_voice if req_voice in PREBUILT_TTS_VOICES
+        else (cfg.get("live_voice") or cfg.get("tts_voice") or "Sulafat")
+    )
+    effective_thinking = (
+        req_thinking if req_thinking in LIVE_THINKING_LEVELS
+        else (cfg.get("live_thinking_level") or "low")
+    )
+    effective_lang = req_lang or cfg.get("live_target_language") or "fa"
+    max_session_sec = int(cfg.get("live_max_session_sec") or 300)
+    if daily_limit_sec > 0 and not is_admin:
+        max_session_sec = min(max_session_sec, max(30, daily_limit_sec - used_sec))
+
+    # ساخت پرامپت سیستمی شخصی‌سازی‌شده با مشخصات دانشجو
+    db_u = user.get("_db") or {}
+    student_ctx = ""
+    if db_u.get("name"):
+        student_ctx = (
+            f"\n\n[مشخصات دانشجوی مخاطب: نام: {db_u.get('name')} | "
+            f"گروه: {db_u.get('group', '—')} | ورودی: {db_u.get('intake', '—')}]"
+        )
+    notes = db_u.get("ai_profile_notes") or []
+    if notes and isinstance(notes, list):
+        student_ctx += "\n[نکات ذخیره‌شده از دانشجو: " + " ؛ ".join(str(x) for x in notes[:10]) + "]"
+
+    setup_msg = build_live_setup_message(
+        model=effective_model,
+        system_prompt=(cfg.get("system_prompt") or "") + student_ctx,
+        voice=effective_voice,
+        thinking_level=effective_thinking,
+        target_language=effective_lang,
+        uid=uid,
+        include_tools=('translate' not in effective_model.lower()),
+    )
+
+    keys = (cfg.get("vault_multi") or {}).get("gemini") or cfg.get("live_api_key_list") or []
+    google_ws = None
+    started_at = _time.monotonic()
+    user_transcript_buf: list[str] = []
+    model_transcript_buf: list[str] = []
+
+    try:
+        try:
+            google_ws, init_evs, _active_key = await connect_gemini_live_with_failover(
+                effective_model, setup_msg, keys
+            )
+        except Exception as e:
+            await websocket.send_json({"type": "error", "message": str(e)[:240]})
+            await websocket.close(code=4502)
+            return
+
+        await websocket.send_json({
+            "type": "ready",
+            "model": effective_model,
+            "voice": effective_voice,
+            "thinking_level": effective_thinking,
+            "target_language": effective_lang,
+            "max_session_sec": max_session_sec,
+        })
+        for ev in init_evs:
+            if ev.get("type") != "ready":
+                await websocket.send_json(ev)
+
+        async def _client_to_google():
+            while True:
+                if _time.monotonic() - started_at > max_session_sec:
+                    await websocket.send_json({
+                        "type": "session_limit",
+                        "message": "مدت زمان مجاز این تماس به پایان رسید.",
+                    })
+                    break
+                raw_client = await websocket.receive_text()
+                try:
+                    msg = _json.loads(raw_client)
+                except Exception:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                mtype = msg.get("type")
+                if mtype == "audio":
+                    b64_data = msg.get("data") or ""
+                    mime = msg.get("mimeType") or "audio/pcm;rate=16000"
+                    if b64_data:
+                        await google_ws.send(_json.dumps({
+                            "realtimeInput": {
+                                "audio": {
+                                    "data": b64_data,
+                                    "mimeType": mime,
+                                }
+                            }
+                        }))
+                elif mtype == "text":
+                    txt = (msg.get("text") or "").strip()
+                    if txt and "translate" not in effective_model.lower():
+                        user_transcript_buf.append(txt)
+                        await google_ws.send(_json.dumps({
+                            "realtimeInput": {
+                                "text": txt[:2000],
+                            }
+                        }))
+                elif mtype == "ping":
+                    await websocket.send_json({"type": "pong"})
+                elif mtype == "stop":
+                    break
+
+        async def _google_to_client():
+            async for raw_srv in google_ws:
+                evs = parse_live_server_message(raw_srv)
+                for ev in evs:
+                    etype = ev.get("type")
+                    if etype == "input_transcript" and ev.get("text"):
+                        user_transcript_buf.append(ev["text"])
+                    elif etype == "output_transcript" and ev.get("text"):
+                        model_transcript_buf.append(ev["text"])
+                    elif etype == "turn_state" and ev.get("turn_complete"):
+                        u_txt = " ".join(user_transcript_buf).strip()
+                        m_txt = " ".join(model_transcript_buf).strip()
+                        user_transcript_buf.clear()
+                        model_transcript_buf.clear()
+                        if u_txt:
+                            try:
+                                await _remember(uid, "user", f"[🎙 تماس زنده] {u_txt[:1000]}")
+                            except Exception:
+                                pass
+                        if m_txt:
+                            try:
+                                await _remember(uid, "assistant", m_txt[:2000])
+                            except Exception:
+                                pass
+                    elif etype == "tool_call":
+                        await websocket.send_json(ev)
+                        tool_resp = await execute_live_tool_calls(ev.get("calls") or [], uid)
+                        await google_ws.send(_json.dumps(tool_resp))
+                        continue
+                    await websocket.send_json(ev)
+
+        t1 = asyncio.create_task(_client_to_google())
+        t2 = asyncio.create_task(_google_to_client())
+        done, pending = await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
+        for p in pending:
+            p.cancel()
+            try:
+                await p
+            except (asyncio.CancelledError, Exception):
+                pass
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning("live_voice_ws closed with error uid=%s err=%s", uid, e)
+        try:
+            await websocket.send_json({"type": "error", "message": "ارتباط صوتی زنده قطع شد."})
+        except Exception:
+            pass
+    finally:
+        if google_ws is not None:
+            try:
+                await google_ws.close()
+            except Exception:
+                pass
+        elapsed = max(0, int(_time.monotonic() - started_at))
+        if elapsed >= 3:
+            try:
+                await db.ai_live_inc_seconds(uid, today, elapsed)
+            except Exception:
+                logger.exception("ثبت زمان تماس صوتی زنده ناموفق بود uid=%s", uid)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
