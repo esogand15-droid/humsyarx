@@ -98,6 +98,8 @@ class ConfigUpdate(BaseModel):
     # ⭐ م8 — پاسخ صوتی (TTS) + رزولوشن تصویر
     voice_reply: str | None = Field(default=None, max_length=8)
 
+    voice_with_text: str | None = Field(default=None, max_length=4)
+
     tts_voice: str | None = Field(default=None, max_length=40)
 
     tts_model: str | None = Field(default=None, max_length=80)
@@ -230,6 +232,9 @@ async def config(
         "voice_reply":
             value.get("voice_reply", "voice"),
 
+        "voice_with_text":
+            value.get("voice_with_text", "off"),
+
         "tts_voice":
             value.get("tts_voice", ""),
 
@@ -264,6 +269,7 @@ async def update_config(
         "image_provider",
         # ⭐ م8 — پاسخ صوتی + رزولوشن تصویر + مدل TTS
         "voice_reply",
+        "voice_with_text",
         "tts_voice",
         "tts_model",
         "voice_reply_max_chars",

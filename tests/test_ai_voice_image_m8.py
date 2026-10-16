@@ -14,7 +14,7 @@ os.environ.setdefault('MONGODB_URI', 'mongodb://127.0.0.1:27017')
 import _rtloop
 import ai_solver
 from ai_solver import (
-    _looks_like_image_model, model_free_rank, model_is_free,
+    _looks_like_image_model, model_free_rank, model_is_free, _voice_reply_plan,
     merge_models_with_health, list_image_models, probe_models,
     get_models_health, generate_speech_gemini, get_ai_config,
     set_api_key_for_provider, add_api_key_for_provider,
@@ -432,3 +432,58 @@ class VoiceToolsFixTests(unittest.TestCase):
         except ai_solver.AIError as e:
             self.assertNotIsInstance(e, ai_solver.AIConfigError)
             self.assertIn('پشتیبانی نمی‌شود', str(e))
+
+
+class VoiceReplyPlanTests(unittest.TestCase):
+    """⭐ م8.2 — ماتریس تصمیمِ پاسخ صوتی (پیش‌فرض: ویس ⇒ فقط ویس)."""
+
+    def _cfg(self, **kw):
+        base = {'voice_reply': 'voice', 'voice_with_text': 'off',
+                'voice_reply_max_chars': 500}
+        base.update(kw)
+        return base
+
+    def test_default_voice_input_is_voice_only(self):
+        # خواسته‌ی صریح کاربر: ویس فرستادی ⇒ فقط ویس، بدون تکرار متن
+        self.assertEqual(_voice_reply_plan(self._cfg(), True, 200), 'voice_only')
+
+    def test_voice_with_text_on_sends_both(self):
+        self.assertEqual(
+            _voice_reply_plan(self._cfg(voice_with_text='on'), True, 200),
+            'text_and_voice')
+
+    def test_long_answer_falls_back_to_text(self):
+        self.assertEqual(
+            _voice_reply_plan(self._cfg(), True, 800), 'text_only')
+
+    def test_text_input_no_voice_in_voice_mode(self):
+        self.assertEqual(_voice_reply_plan(self._cfg(), False, 200), 'off')
+
+    def test_all_mode_text_input_gets_extra_voice(self):
+        self.assertEqual(
+            _voice_reply_plan(self._cfg(voice_reply='all'), False, 200),
+            'text_and_voice')
+
+    def test_all_mode_voice_input_voice_only_by_default(self):
+        # دوباره‌کاری در همه‌ی حالت‌ها ممنوع — حتی حالتِ all با ورودی ویس
+        self.assertEqual(
+            _voice_reply_plan(self._cfg(voice_reply='all'), True, 200),
+            'voice_only')
+
+    def test_off_mode_never_voice(self):
+        self.assertEqual(
+            _voice_reply_plan(self._cfg(voice_reply='off'), True, 200), 'off')
+
+    def test_config_parses_voice_with_text(self):
+        _rtloop.adopt()
+        fake = _FakeSettingsDB()
+        fake.settings['ai_enabled'] = '1'
+        fake.settings['ai_voice_with_text'] = 'on'
+        with mock.patch.object(ai_solver, 'db', fake):
+            cfg = _rtloop.run(get_ai_config())
+        self.assertEqual(cfg['voice_with_text'], 'on')
+        # مقدار نامعتبر → پیش‌فرضِ امن (خاموش = فقط ویس)
+        fake.settings['ai_voice_with_text'] = 'bogus'
+        with mock.patch.object(ai_solver, 'db', fake):
+            cfg2 = _rtloop.run(get_ai_config())
+        self.assertEqual(cfg2['voice_with_text'], 'off')

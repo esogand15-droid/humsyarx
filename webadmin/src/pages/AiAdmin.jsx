@@ -496,6 +496,7 @@ function AiConfig({ cfg, me, onSaved }) {
         system_prompt: f.system_prompt, disabled_message: f.disabled_message || '',
         voice_reply: f.voice_reply || 'voice', tts_voice: f.tts_voice || '',
         tts_model: f.tts_model || '', voice_reply_max_chars: Number(f.voice_reply_max_chars) || 500,
+        voice_with_text: f.voice_with_text || 'off',
         image_size: f.image_size || '1K',
       });
       // 🔴 FIX-R1 (مورد ۷) — هشدار مدل: مدل انتخابی در فهرست واقعی
@@ -592,9 +593,14 @@ function AiConfig({ cfg, me, onSaved }) {
           {/* ⭐ م8 — پاسخ صوتی (TTS فارسی — gemini-3.8-flash-lite-tts) */}
           <label className="fld"><span>🎤 پاسخ صوتی هوشیار (فارسی)</span>
             <select className="inp" value={f.voice_reply || 'voice'} onChange={e => set('voice_reply', e.target.value)}>
-              <option value="voice">فقط وقتی کاربر ویس فرستاد (پیش‌فرض)</option>
-              <option value="all">همیشه — همه‌ی پاسخ‌ها صوتی هم باشند</option>
+              <option value="voice">جوابِ ویس فقط با ویس — بدون تکرارِ متن (پیش‌فرض)</option>
+              <option value="all">همه‌ی پاسخ‌ها صوتی هم باشند (متن می‌ماند)</option>
               <option value="off">خاموش</option>
+            </select></label>
+          <label className="fld"><span>🎧 همراهِ ویس، متنِ جواب هم ارسال شود؟</span>
+            <select className="inp" value={f.voice_with_text || 'off'} onChange={e => set('voice_with_text', e.target.value)}>
+              <option value="off">خاموش — فقط ویس (پیش‌فرض؛ بدون دوباره‌کاری)</option>
+              <option value="on">روشن — ویس + متن (متن قبل از ویس تحویل می‌شود)</option>
             </select></label>
           <label className="fld"><span>🗣 صدای هوشیار</span>
             <select className="inp" value={f.tts_voice || 'Sulafat'} onChange={e => set('tts_voice', e.target.value)}>

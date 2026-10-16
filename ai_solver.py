@@ -1180,6 +1180,9 @@ async def get_ai_config() -> dict:
     # ⭐ م8 — پاسخ صوتی (TTS) و رزولوشن تصویر
     voice_reply_raw = (raw.get('ai_voice_reply', 'voice') or 'voice').strip()
     voice_reply = voice_reply_raw if voice_reply_raw in VOICE_REPLY_MODES else 'voice'
+    # ⭐ م8.2 — «متنِ همراه ویس»: پیش‌فرض خاموش = ویس‌فرستاد ⇒ فقط ویس
+    voice_with_text = 'on' if str(
+        raw.get('ai_voice_with_text', 'off') or 'off').strip() == 'on' else 'off'
     tts_voice = (raw.get('ai_tts_voice', TTS_VOICE_DEFAULT) or TTS_VOICE_DEFAULT).strip()
     if tts_voice not in PREBUILT_TTS_VOICES:
         tts_voice = TTS_VOICE_DEFAULT
@@ -1221,6 +1224,7 @@ async def get_ai_config() -> dict:
         'image_daily_limit': image_daily_limit,
         # ⭐ م8
         'voice_reply':      voice_reply,
+        'voice_with_text':  voice_with_text,
         'tts_voice':        tts_voice,
         'tts_model':        tts_model,
         'voice_reply_max_chars': voice_max,
@@ -3213,7 +3217,7 @@ async def _typing_pinger(context: ContextTypes.DEFAULT_TYPE, chat_id: int, stop_
 async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                   stream_gen, footer_suffix: str,
                                   uid: int, question_label: str,
-                                  voice_reply: bool = False) -> None:
+                                  voice_input: bool = False) -> None:
     """
     ⚠️ قابلیتِ جدید: پاسخِ استریمینگِ واقعی — به‌جای اینکه یک‌جا منتظرِ
     کلِ جواب بمونیم و بعد نشونش بدیم، همون‌طور که متن از Gemini می‌رسه،
@@ -3224,6 +3228,20 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
     """
     chat_id = update.effective_chat.id
     thinking_msg = await context.bot.send_message(chat_id, random.choice(THINKING_PHRASES))
+
+    # ⭐ م8.2 — «فقط ویس» (پیش‌فرضِ voice): ورودیِ ویس + «متنِ همراه»
+    # خاموش → متنِ جواب استریم نمی‌شود؛ بعد از اتمام فقط ویس می‌رود
+    # (اگر TTS شکست خورد یا جواب بلند بود، متن تحویل می‌شود — کاربر
+    # هرگز بی‌جواب نمی‌ماند).
+    _vcfg = None
+    if voice_input:
+        try:
+            _vcfg = await get_ai_config()
+        except Exception:
+            _vcfg = None
+    _voice_only = bool(_vcfg) and (
+        (_vcfg.get('voice_reply') or 'voice') != 'off'
+        and (_vcfg.get('voice_with_text') or 'off') != 'on')
 
     stop_event = asyncio.Event()
     pinger = asyncio.ensure_future(_typing_pinger(context, chat_id, stop_event))
@@ -3239,6 +3257,8 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
         async for event in stream_gen:
             if event['type'] == 'delta':
                 buffer.append(event['text'])
+                if _voice_only:
+                    continue   # ⭐ م8.2 — جواب فقط ویس می‌شود؛ متن نشان نده
                 now = time.time()
                 raw_partial = ''.join(buffer)
                 # ⚠️ فیکس باگِ «فقط یه خط | میاد بعد یهو کل پیام»: قبلاً
@@ -3319,9 +3339,8 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
     if len(final_text) > 4000:  # محافظِ نهایی (به‌ندرت لازم می‌شه)
         final_text = final_text[:3990] + "…"
 
-    reply_markup = None
-    if answer_text:
-        reply_markup = InlineKeyboardMarkup([
+    def _buttons_markup(msg_id: int):
+        return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("🔬 مثال بزن", callback_data="aiu:fu:example"),
                 InlineKeyboardButton("📝 خلاصه‌ترش کن", callback_data="aiu:fu:summary"),
@@ -3329,22 +3348,74 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
             ],
             [
                 InlineKeyboardButton("🆕 گفتگوی جدید", callback_data="aiu:newchat"),
-                InlineKeyboardButton("🚩 گزارش این جواب", callback_data=f"aiu:report:{chat_id}:{thinking_msg.message_id}"),
+                InlineKeyboardButton("🚩 گزارش این جواب", callback_data=f"aiu:report:{chat_id}:{msg_id}"),
             ],
         ])
 
-    try:
-        await thinking_msg.edit_text(final_text, reply_markup=reply_markup, parse_mode='HTML')
-    except Exception:
-        try:
-            await thinking_msg.edit_text(final_text, reply_markup=reply_markup)
-        except Exception:
-            await context.bot.send_message(chat_id, final_text, reply_markup=reply_markup)
+    reply_markup = _buttons_markup(thinking_msg.message_id) if answer_text else None
 
-    # ⭐ م8 — پاسخ صوتیِ بهترین‌تلاش (TTS فارسی) بعد از تحویلِ متن
-    if voice_reply and answer_text:
-        asyncio.create_task(maybe_send_voice_reply(
-            update, context, answer_text, voice_input=True))
+    # ⭐ م8.2 — طرحِ نهاییِ پاسخ صوتی از تنظیماتِ پنل (تست‌پذیر)
+    _vplan = 'off'
+    if answer_text:
+        try:
+            if _vcfg is None:
+                _vcfg = await get_ai_config()
+            _vplan = _voice_reply_plan(_vcfg, voice_input, len(answer_text))
+        except Exception:
+            _vplan = 'off'
+
+    # 🎤 حالتِ «فقط ویس»: ویس فرستادی ⇒ فقط ویس بگیر (بدون تکرارِ متن)
+    _voice_msg = None
+    if _vplan == 'voice_only' and answer_text:
+        try:
+            try:
+                await thinking_msg.edit_text("🎤 جواب صوتی در حال ضبط…")
+            except Exception:
+                pass
+            _wav, _vmime = await generate_speech_gemini(
+                answer_text, voice=_vcfg.get('tts_voice'),
+                model=_vcfg.get('tts_model'))
+            _cap = (footer_suffix or '').strip() or None
+            _ogg = await _transcode_wav_to_ogg_opus(_wav)
+            if _ogg:
+                _voice_msg = await context.bot.send_voice(
+                    chat_id, voice=_ogg, caption=_cap)
+            else:
+                # ffmpeg نیست — فایل صوتی WAV قابل‌پخش
+                _voice_msg = await context.bot.send_audio(
+                    chat_id, audio=_wav, filename='houshyar.wav',
+                    title='پاسخ صوتی هوشیار', caption=_cap)
+        except Exception:
+            logger.exception("حالتِ ویس‌تنها ناموفق — تحویلِ متن به‌عنوان fallback")
+            _voice_msg = None
+
+    if _voice_msg is not None:
+        # دکمه‌ها و کشِ گزارش روی خودِ پیامِ صوتی
+        try:
+            await _voice_msg.edit_reply_markup(
+                reply_markup=_buttons_markup(_voice_msg.message_id))
+        except Exception:
+            pass
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+        _cache_for_report(chat_id, _voice_msg.message_id, uid,
+                          update.effective_user.full_name, question_label,
+                          answer_text)
+    else:
+        try:
+            await thinking_msg.edit_text(final_text, reply_markup=reply_markup, parse_mode='HTML')
+        except Exception:
+            try:
+                await thinking_msg.edit_text(final_text, reply_markup=reply_markup)
+            except Exception:
+                await context.bot.send_message(chat_id, final_text, reply_markup=reply_markup)
+
+        # ⭐ م8 — ویسِ اضافه بعد از متن (حالتِ all، یا voice با «متنِ همراه»)
+        if answer_text and _vplan == 'text_and_voice':
+            asyncio.create_task(maybe_send_voice_reply(
+                update, context, answer_text, voice_input=voice_input))
 
     if tokens:
         await record_token_usage(uid, tokens)
@@ -3352,10 +3423,11 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
     if answer_text:
         await _remember(uid, 'user', question_label)
         await _remember(uid, 'assistant', answer_text)
-        _cache_for_report(
-            chat_id, thinking_msg.message_id, uid,
-            update.effective_user.full_name, question_label, answer_text,
-        )
+        if _voice_msg is None:
+            _cache_for_report(
+                chat_id, thinking_msg.message_id, uid,
+                update.effective_user.full_name, question_label, answer_text,
+            )
 
 
 # ══════════════════════════════════════════════════
@@ -3696,12 +3768,40 @@ async def _transcode_wav_to_ogg_opus(wav_bytes: bytes) -> bytes | None:
         return None
 
 
+def _voice_reply_plan(cfg: dict, voice_input: bool, answer_len: int) -> str:
+    """⭐ م8.2 — تصمیمِ پاسخ صوتی، یکجا و قابل‌تست (قابل تنظیم از پنل).
+
+    خروجی:
+      'off'            — ویس ارسال نمی‌شود
+      'voice_only'     — فقط ویس (متن استریم/تحویل نمی‌شود؛ fallback متن)
+      'text_and_voice' — متن تحویل می‌شود + ویس بعدش (حالت all یا voice+متن)
+      'text_only'      — ویس خواسته شده ولی جواب بلندتر از سقف است → فقط متن
+    """
+    mode = (cfg or {}).get('voice_reply') or 'voice'
+    if mode == 'off':
+        return 'off'
+    wants = (mode == 'all') or (mode == 'voice' and voice_input)
+    if not wants:
+        return 'off'
+    try:
+        max_chars = int((cfg or {}).get('voice_reply_max_chars') or 500)
+    except (TypeError, ValueError):
+        max_chars = 500
+    if answer_len > max_chars:
+        return 'text_only'
+    with_text = ((cfg or {}).get('voice_with_text') or 'off') == 'on'
+    if voice_input and not with_text:
+        return 'voice_only'
+    return 'text_and_voice'
+
+
 async def maybe_send_voice_reply(update, context, answer: str,
                                  voice_input: bool = False) -> None:
-    """⭐ م8 — پاسخ صوتیِ بهترین‌تلاش: بعد از تحویلِ متن، اگر فعال بود و
-    پاسخ کوتاه بود، همان جواب را با TTS فارسی به‌صورت ویس هم می‌فرستد.
+    """⭐ م8 — ویسِ اضافه: بعد از تحویلِ متن (حالت all یا voice+متن)،
+    همان جواب را با TTS فارسی به‌صورت ویس هم می‌فرستد.
 
-    حالت‌ها: off=هرگز · voice=فقط وقتی کاربر ویس فرستاده · all=همیشه.
+    حالتِ «فقط ویس» (پیش‌فرضِ voice بدون متنِ همراه) از این تابع رد
+    می‌شود و مستقیم در _answer_with_live_edit مدیریت می‌شود.
     هر خطایی بی‌صدا لاگ می‌شود — متنِ جواب از قبل به دست کاربر رسیده."""
     try:
         text = (answer or '').strip()
@@ -4186,7 +4286,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ask_ai_stream(text=caption, image_bytes=media_bytes, image_mime=mime,
                           history=history, uid=uid, skip_doc=_skip_doc_this_time),
             _footer(limit, used), uid, question_label,
-            voice_reply=(kind == 'audio'),   # ⭐ م8 — ویس فرستادی؟ جوابِ صوتی بگیر
+            voice_input=(kind == 'audio'),   # ⭐ م8 — ویس فرستادی؟ جوابِ صوتی بگیر
         )
     finally:
         await ai_release_inflight(uid)

@@ -140,19 +140,23 @@ async def ai_voice_screen(query):
     """⭐ م8 — رندر صفحه‌ی تنظیمات پاسخ صوتی (مشترک بین چند اکشن)."""
     cfg = await get_ai_config()
     mode = cfg.get('voice_reply') or 'voice'
-    mode_lbl = {'off': '🔴 خاموش', 'voice': '🎙 فقط جوابِ ویس',
-                'all': '🔊 همه‌ی پاسخ‌ها'}[mode]
+    mode_lbl = {'off': '🔴 خاموش', 'voice': '🎙 ویس ⇒ فقط ویس (پیش‌فرض)',
+                'all': '🔊 همه‌ی پاسخ‌ها + ویس'}[mode]
+    with_text = 'روشن (ویس + متن)' if (cfg.get('voice_with_text') or 'off') == 'on' else 'خاموش (فقط ویس)'
     kb = [
         [InlineKeyboardButton(f"حالت: {mode_lbl} — تغییر", callback_data='ai:voice_mode')],
+        [InlineKeyboardButton(f"🎧 متنِ همراه ویس: {with_text} — تغییر", callback_data='ai:voice_with_text')],
         [InlineKeyboardButton(f"🗣 صدا: {cfg.get('tts_voice')} — تغییر", callback_data='ai:pick_tts_voice')],
         [InlineKeyboardButton("▶️ تست صدای هوشیار", callback_data='ai:test_tts')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')],
     ]
     await query.edit_message_text(
         "🎤 <b>پاسخ صوتی هوشیار</b>\n\n"
-        "وقتی فعال باشد، جوابِ هوشیار علاوه بر متن، با صدای طبیعیِ فارسی هم "
-        "به‌صورت ویس ارسال می‌شود (مدل gemini-3.8-flash-lite-tts — سریع و کم‌هزینه).\n\n"
+        "وقتی کاربر ویس بفرستد، جواب فقط با ویسِ طبیعیِ فارسی داده می‌شود "
+        "(مدل gemini-3.8-flash-lite-tts — سریع و کم‌هزینه). اگر «متنِ همراه» "
+        "روشن باشد، متنِ جواب هم قبل از ویس ارسال می‌شود.\n\n"
         f"حالت: <b>{mode_lbl}</b>\n"
+        f"متنِ همراه ویس: <b>{with_text}</b>\n"
         f"صدا: <b>{cfg.get('tts_voice')}</b>\n"
         f"مدل: <code>{cfg.get('tts_model')}</code>\n"
         f"حداکثر طول پاسخ صوتی: <b>{cfg.get('voice_reply_max_chars')}</b> نویسه\n\n"
@@ -381,6 +385,15 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == 'voice':
         # ⭐ م8 — تنظیمات پاسخ صوتی (TTS فارسی)
+        await ai_voice_screen(query)
+        return
+
+    if action == 'voice_with_text':
+        # ⭐ م8.2 — سوییچِ «متنِ همراه ویس» (پیش‌فرض: خاموش = فقط ویس)
+        cfg = await get_ai_config()
+        cur = (cfg.get('voice_with_text') or 'off')
+        await set_ai_setting('voice_with_text',
+                             'off' if cur == 'on' else 'on')
         await ai_voice_screen(query)
         return
 
