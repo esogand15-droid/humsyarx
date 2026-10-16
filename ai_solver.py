@@ -114,7 +114,9 @@ def api_key_problem(key: str) -> str | None:
 #  پیش‌فرض‌ها — فقط وقتی استفاده می‌شن که ادمین هنوز چیزی ست نکرده
 # ══════════════════════════════════════════════════
 DEFAULT_MODELS = {
-    'gemini':     'gemini-2.5-flash',
+    # ⭐ م8 (چنج‌لاگ ۲۰۲۶-۰۹-۱۸): دسترسیِ مدل‌های 2.5 برای پروژه‌های جدید
+    # محدود شده؛ توصیه‌ی گوگل: 3.5-flash-lite (سریع/ارزان) یا 3.8-flash.
+    'gemini':     'gemini-3.6-flash',
     'openrouter': 'google/gemma-4-31b-it:free',
     'groq':       'llama-3.3-70b-versatile',
     'cerebras':   'llama-3.3-70b',
@@ -249,9 +251,17 @@ MODEL_CATALOG = {
 }
 
 # مدل‌های تصویر — universal: Gemini native + OpenAI-compatible (OpenRouter/HF/Together) — freellm.net verified image-capable
+# ⭐ م8 — کاتالوگ روزآمد طبق چنج‌لاگ اکتبر ۲۰۲۶:
+#   • nano-banana-2.1 (GA 2026-10-06) — پرچمدارِ کارایی؛ 1K/2K/4K + پانوراما
+#   • 3.1-flash-lite-image — حداقل تأخیر/هزینه (فقط 1K) — بهترین انتخاب رایگان
+#   • 3.1-flash-image منسوخ اعلام شده؛ 3-pro-image برای کیفیت حرفه‌ای
+#   • imagen-4.0-* در 2026-08-17 کاملاً خاموش شده ← حذف
+#   (این فقط fallback است؛ فهرستِ زنده از ListModels می‌آید — list_image_models)
 IMAGE_MODEL_CATALOG = [
-    ('gemini-2.5-flash-image',    '🍌 Gemini 2.5 Flash Image (نانوبانانا)', False),
-    ('gemini-3-pro-image-preview', '🖼 Gemini 3 Pro Image (پیش‌نمایش)', False),
+    ('gemini-3.1-flash-lite-image', '⚡ Nano Banana 2 Lite — سریع و کم‌هزینه (1K)', True),
+    ('gemini-nano-banana-2.1',      '🍌 Nano Banana 2.1 — پرچمدار کارایی (1K/2K/4K)', True),
+    ('gemini-3.1-flash-image',      '🍌 Nano Banana 2 (منسوخ — مهاجرت به 2.1)', True),
+    ('gemini-3-pro-image',          '🖼 Gemini 3 Pro Image — کیفیت حرفه‌ای', False),
     ('google/gemini-2.5-flash-image:free', '🍌 Gemini Image Free (OpenRouter)', True),
     ('black-forest-labs/FLUX.1-schnell:free', '⚡ Flux Schnell (رایگان، سریع)', True),
     ('black-forest-labs/FLUX.1-dev:free', '🎨 Flux 1 Dev (رایگان)', True),
@@ -259,6 +269,31 @@ IMAGE_MODEL_CATALOG = [
     ('stabilityai/stable-diffusion-xl:free', '🖼 SDXL (رایگان)', True),
     ('thinkingmachines/inkling-small:free', '💡 Inkling Small Image (رایگان)', True),
 ]
+
+# ⭐ م8 — نسبت‌های تصویرِ مجاز (نانوبانانا 2.1 پانوراما هم دارد)
+IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
+                       '3:2', '2:3', '21:9', '5:4', '4:5',
+                       '1:4', '4:1', '1:8', '8:1')
+IMAGE_SIZES = ('1K', '2K', '4K')
+
+# ⭐ م8 — گفتار (TTS): gemini-3.8-flash-lite-tts = اسبِ کارِ سریع/ارزان؛
+# فارسی (Iranian Persian) توسط هر دو مدل 3.8 پشتیبانی می‌شود.
+TTS_MODEL_DEFAULT = 'gemini-3.8-flash-lite-tts'
+TTS_MODEL_QUALITY = 'gemini-3.8-flash-tts'
+TTS_VOICE_DEFAULT = 'Sulafat'          # گرم — مناسب پاسخِ دوستانه‌ی فارسی
+PREBUILT_TTS_VOICES = {
+    'Zephyr': 'روشن', 'Puck': 'شیاد و شاد', 'Charon': 'خبری/اطلاعاتی',
+    'Kore': 'محکم', 'Fenrir': 'هیجان‌زده', 'Leda': 'جوان',
+    'Orus': 'محکم', 'Aoede': 'نسیم‌وار', 'Callirrhoe': 'آرام',
+    'Autonoe': 'درخشان', 'Enceladus': 'نفس‌کش', 'Iapetus': 'شفاف',
+    'Umbriel': 'آسوده', 'Algieba': 'نرم', 'Despina': 'نرم',
+    'Erinome': 'شفاف', 'Algenib': 'زبر', 'Rasalgethi': 'اطلاعاتی',
+    'Laomedeia': 'شاد', 'Achernar': 'آرام/نرم', 'Alnilam': 'محکم',
+    'Schedar': 'یکنواخت', 'Gacrux': 'بالغ', 'Pulcherrima': 'پیش‌رو',
+    'Achird': 'دوستانه', 'Zubenelgenubi': 'خودمانی', 'Vindemiatrix': 'ملایم',
+    'Sadachbia': 'زنده', 'Sadaltager': 'دانشمند', 'Sulafat': 'گرم',
+}
+VOICE_REPLY_MODES = ('off', 'voice', 'all')   # خاموش / فقط جوابِ ویس / همیشه
 
 
 def ai_catalog_payload() -> dict:
@@ -474,12 +509,10 @@ MAX_INPUT_CHARS = 2000  # سقف طول متن ورودی کاربر (جلوگی
 # 🎨 تولید تصویر — مدل/کرانه‌ها از settings قابل تغییرند (ai_image_model و
 # ai_image_daily_limit)؛ اینها فقط پیش‌فرض‌اند. aspect ratioها همان فهرست
 # رسمی gemini-2.5-flash-image (نانوبانانا) است.
-DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image'
+DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-lite-image'   # ⭐ م8 — حداقل تأخیر/هزینه
 DEFAULT_IMAGE_LIMIT = 10          # سقف روزانه‌ی تصویر؛ 0 = نامحدود
 IMG_RETRY_BASE_DELAY = 0.8        # ثانیه — backoff: 0.8s سپس 1.6s
 IMG_RETRY_AFTER_CAP = 25.0        # سقف پذیرش Retry-After (ثانیه)
-IMAGE_ASPECT_RATIOS = ('1:1', '4:3', '3:4', '16:9', '9:16',
-                       '3:2', '2:3', '21:9', '5:4', '4:5')
 IMAGE_PROMPT_MIN = 3
 IMAGE_PROMPT_MAX = 1000
 
@@ -506,9 +539,15 @@ _ASPECT_TO_SIZE = {
 }
 
 async def _generate_image_gemini(api_key: str, model: str, prompt: str,
-                                  aspect_ratio: str, timeout: int, max_retries: int) -> dict:
+                                  aspect_ratio: str, timeout: int, max_retries: int,
+                                  image_size: str = '1K') -> dict:
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/" f"{model}:generateContent")
-    payload = {'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'responseModalities': ['IMAGE'], 'imageConfig': {'aspectRatio': aspect_ratio}}}
+    # ⭐ م8 — imageConfig روزآمد: aspectRatio + imageSize (1K/2K/4K؛
+    # نانوبانانا 2.1 همه را دارد؛ flash-lite فقط 1K)
+    payload = {'contents': [{'parts': [{'text': prompt}]}],
+               'generationConfig': {'responseModalities': ['IMAGE'],
+                                    'imageConfig': {'aspectRatio': aspect_ratio,
+                                                    'imageSize': image_size}}}
     headers = {'Content-Type': 'application/json', 'x-goog-api-key': api_key}
     last_err = None
     retry_after = None
@@ -656,14 +695,19 @@ async def _generate_image_openai(api_key: str, model: str, prompt: str,
 async def generate_image(api_key: str, model: str, prompt: str,
                          aspect_ratio: str = '1:1',
                          timeout: int = 90, max_retries: int = 2,
-                         provider: str | None = None) -> dict:
+                         provider: str | None = None,
+                         image_size: str | None = None) -> dict:
     aspect_ratio = aspect_ratio if aspect_ratio in IMAGE_ASPECT_RATIOS else '1:1'
+    image_size = (image_size or '1K').upper()
+    if image_size not in IMAGE_SIZES:
+        image_size = '1K'
     if not api_key:
         raise AiImageError('IMAGE_AUTH_ERROR', 'کلید API برای ساخت تصویر تنظیم نشده.')
     if not provider:
         provider = _detect_provider_for_model(model) or 'gemini'
     if model.startswith('gemini') or provider == 'gemini':
-        return await _generate_image_gemini(api_key, model, prompt, aspect_ratio, timeout, max_retries)
+        return await _generate_image_gemini(api_key, model, prompt, aspect_ratio,
+                                            timeout, max_retries, image_size)
     if provider in PROVIDERS and PROVIDERS[provider].get('url'):
         try:
             return await _generate_image_openai(api_key, model, prompt, aspect_ratio, provider, timeout, max_retries)
@@ -1133,6 +1177,20 @@ async def get_ai_config() -> dict:
         if _legacy_img:
             image_keys = [_legacy_img]
     image_api_key = image_keys[0] if image_keys else ''
+    # ⭐ م8 — پاسخ صوتی (TTS) و رزولوشن تصویر
+    voice_reply_raw = (raw.get('ai_voice_reply', 'voice') or 'voice').strip()
+    voice_reply = voice_reply_raw if voice_reply_raw in VOICE_REPLY_MODES else 'voice'
+    tts_voice = (raw.get('ai_tts_voice', TTS_VOICE_DEFAULT) or TTS_VOICE_DEFAULT).strip()
+    if tts_voice not in PREBUILT_TTS_VOICES:
+        tts_voice = TTS_VOICE_DEFAULT
+    tts_model = (raw.get('ai_tts_model', TTS_MODEL_DEFAULT) or TTS_MODEL_DEFAULT).strip()
+    try:
+        voice_max = int(raw.get('ai_voice_reply_max_chars', 500) or 500)
+    except (TypeError, ValueError):
+        voice_max = 500
+    image_size = (raw.get('ai_image_size', '1K') or '1K').strip().upper()
+    if image_size not in IMAGE_SIZES:
+        image_size = '1K'
     # 🔴 FIX-R1 (مورد ۶) — مشکل کلید به‌صورت صریح در config می‌آید تا
     # «تست اتصال» پنل و پیام خطای ربات دقیقاً یک چیز بگویند، نه
     # «خطای غیرمنتظره» مبهم.
@@ -1161,6 +1219,12 @@ async def get_ai_config() -> dict:
         'image_provider':   image_provider,
         'image_api_key':    image_api_key,
         'image_daily_limit': image_daily_limit,
+        # ⭐ م8
+        'voice_reply':      voice_reply,
+        'tts_voice':        tts_voice,
+        'tts_model':        tts_model,
+        'voice_reply_max_chars': voice_max,
+        'image_size':       image_size,
     }
 
 
@@ -1944,7 +2008,11 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
     # ⚠️ طبق مستندات رسمیِ گوگل، برای خانواده‌ی مدل‌های Gemini 3.x توصیه
     # شده temperature از پیش‌فرض تغییر داده نشه.
     generation_config = {'maxOutputTokens': 3072}
-    if not model.startswith('gemini-3'):
+    # ⭐ م8 — temperature/top_p/top_k برای gemini-3+ و 4 و نانوبانانا
+    # deprecate شده (چنج‌لاگ 2026-07-21) → فقط مدل‌های قدیمی 2.x
+    _modern = (model.startswith('gemini-3') or model.startswith('gemini-4')
+               or 'nano-banana' in model or 'tts' in model.lower())
+    if not _modern:
         generation_config['temperature'] = 0.3
     if thinking == 'high':
         if model.startswith('gemini-3'):
@@ -3120,7 +3188,8 @@ async def _typing_pinger(context: ContextTypes.DEFAULT_TYPE, chat_id: int, stop_
 
 async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                   stream_gen, footer_suffix: str,
-                                  uid: int, question_label: str) -> None:
+                                  uid: int, question_label: str,
+                                  voice_reply: bool = False) -> None:
     """
     ⚠️ قابلیتِ جدید: پاسخِ استریمینگِ واقعی — به‌جای اینکه یک‌جا منتظرِ
     کلِ جواب بمونیم و بعد نشونش بدیم، همون‌طور که متن از Gemini می‌رسه،
@@ -3247,6 +3316,11 @@ async def _answer_with_live_edit(update: Update, context: ContextTypes.DEFAULT_T
             await thinking_msg.edit_text(final_text, reply_markup=reply_markup)
         except Exception:
             await context.bot.send_message(chat_id, final_text, reply_markup=reply_markup)
+
+    # ⭐ م8 — پاسخ صوتیِ بهترین‌تلاش (TTS فارسی) بعد از تحویلِ متن
+    if voice_reply and answer_text:
+        asyncio.create_task(maybe_send_voice_reply(
+            update, context, answer_text, voice_input=True))
 
     if tokens:
         await record_token_usage(uid, tokens)
@@ -3402,8 +3476,11 @@ async def handle_ai_image_prompt(update: Update, context: ContextTypes.DEFAULT_T
         "(ممکنه تا یک دقیقه طول بکشه)")
     try:
         try:
-            res = await generate_image(effective_key, effective_model,
-                                       text, '1:1', provider=effective_provider)
+            _cfg_img = cfg if isinstance(cfg, dict) else {}
+            res = await generate_image(
+                effective_key, effective_model, text, '1:1',
+                provider=effective_provider,
+                image_size=_cfg_img.get('image_size') or '1K')
         except AiImageError as e:
             logger.warning("bot image generation failed uid=%s code=%s",
                            uid, e.code)
@@ -3509,6 +3586,385 @@ def _find_ffmpeg() -> str | None:
 
 
 _FFMPEG_PATH = _find_ffmpeg()  # فقط یک بار موقعِ import چک می‌شه
+
+
+# ══════════════════════════════════════════════════
+#  ⭐ م8 — گفتار (TTS) + فهرست زنده‌ی مدل‌های تصویر + سلامت‌سنجی مدل‌ها
+#
+#  منبع: مستندات Google AI Studio (اکتبر ۲۰۲۶):
+#   • TTS: gemini-3.8-flash-lite-tts (سریع/ارزان — مناسب پاسخِ زنده) و
+#     gemini-3.8-flash-tts (کیفیت استودیویی). خروجی unary = WAV با هدر
+#     (24kHz mono 16-bit). فارسی توسط هر دو پشتیبانی می‌شود.
+#   • تصویر: gemini-nano-banana-2.1 (GA 2026-10-06)، 3.1-flash-lite-image
+#     (حداقل تأخیر/هزینه)، 3.1-flash-image (منسوخ)، 3-pro-image.
+#   • سلامت‌سنجی: هیچ چیز جای «آزمایشِ واقعیِ توکن» را نمی‌گیرد — یک
+#     درخواستِ سبک می‌فرستیم و پاسخ می‌گیریم؛ مدلِ مرده/بی‌سهمیه جدا
+#     می‌شود و مدل‌های زنده‌ی رایگان صدرِ فهرست می‌روند.
+# ══════════════════════════════════════════════════
+async def generate_speech_gemini(text: str, voice: str = None, style: str = None,
+                                 model: str = None, timeout: int = 45) -> tuple:
+    """⭐ م8 — تبدیل متن فارسی به گفتار با Gemini 3.8 TTS.
+
+    خروجی: (wav_bytes, mime). با فال‌بکِ کلیدهای gemini (م7)."""
+    cfg = await get_ai_config()
+    model = (model or cfg.get('tts_model') or TTS_MODEL_DEFAULT).strip()
+    voice = (voice or cfg.get('tts_voice') or TTS_VOICE_DEFAULT).strip()
+    if voice not in PREBUILT_TTS_VOICES:
+        voice = TTS_VOICE_DEFAULT
+    keys = (cfg.get('vault_multi') or {}).get('gemini') or cfg.get('api_key_list') or []
+
+    async def _tts_once(api_key: str) -> tuple:
+        _kp = api_key_problem(api_key)
+        if _kp:
+            raise AIConfigError(_kp)
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{model}:generateContent")
+        payload = {
+            'contents': [{'role': 'user', 'parts': [{
+                'text': (text or '')[:4000],
+                'speech_metadata': {'style': style or
+                                    'گرم، دوستانه و طبیعی؛ ریتمِ گفتاریِ روان به فارسی'},
+            }]}],
+            'generationConfig': {
+                'responseModalities': ['AUDIO'],
+                'speechConfig': {'voiceConfig': {'voice': voice}},
+            },
+        }
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers={
+                'Content-Type': 'application/json', 'x-goog-api-key': api_key},
+                json=payload)
+        if resp.status_code != 200:
+            _raise_gemini_status_error(resp.status_code,
+                                       _provider_error_detail(resp.text))
+        data = resp.json()
+        for cand in (data.get('candidates') or []):
+            for part in ((cand.get('content') or {}).get('parts') or []):
+                inline = part.get('inlineData') or part.get('inline_data')
+                if inline and inline.get('data'):
+                    return (base64.b64decode(inline['data']),
+                            inline.get('mimeType') or 'audio/wav')
+        raise AIError("تولید صدای پاسخ ممکن نشد — دوباره امتحان کن.")
+
+    return await run_with_key_failover('gemini', keys, _tts_once, label='tts')
+
+
+async def _transcode_wav_to_ogg_opus(wav_bytes: bytes) -> bytes | None:
+    """⭐ م8 — WAV→OGG/Opus برای «ویس» تلگرام (فرمتِ اجباری voice note)."""
+    if not _FFMPEG_PATH or not wav_bytes:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG_PATH, '-y', '-i', 'pipe:0',
+            '-c:a', 'libopus', '-b:a', '48k', '-application', 'audio',
+            '-f', 'ogg', 'pipe:1',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        ogg, stderr = await asyncio.wait_for(proc.communicate(input=wav_bytes), timeout=60)
+        if proc.returncode != 0 or not ogg:
+            logger.warning("ffmpeg wav→ogg شکست خورد: %s", (stderr or b'')[:300])
+            return None
+        return ogg
+    except Exception:
+        logger.exception("تبدیل WAV به OGG با ffmpeg ناموفق بود")
+        return None
+
+
+async def maybe_send_voice_reply(update, context, answer: str,
+                                 voice_input: bool = False) -> None:
+    """⭐ م8 — پاسخ صوتیِ بهترین‌تلاش: بعد از تحویلِ متن، اگر فعال بود و
+    پاسخ کوتاه بود، همان جواب را با TTS فارسی به‌صورت ویس هم می‌فرستد.
+
+    حالت‌ها: off=هرگز · voice=فقط وقتی کاربر ویس فرستاده · all=همیشه.
+    هر خطایی بی‌صدا لاگ می‌شود — متنِ جواب از قبل به دست کاربر رسیده."""
+    try:
+        text = (answer or '').strip()
+        if not text:
+            return
+        cfg = await get_ai_config()
+        mode = cfg.get('voice_reply') or 'voice'
+        if mode == 'off' or (mode == 'voice' and not voice_input):
+            return
+        # TTS فقط با کلید gemini ممکن است
+        if not ((cfg.get('vault_multi') or {}).get('gemini')
+                or (cfg.get('provider') == 'gemini' and cfg.get('api_key'))):
+            return
+        try:
+            max_chars = int(cfg.get('voice_reply_max_chars') or 500)
+        except (TypeError, ValueError):
+            max_chars = 500
+        if len(text) > max_chars:
+            return   # جواب بلند است — متن کافی است
+        wav, _mime = await generate_speech_gemini(
+            text, voice=cfg.get('tts_voice'), model=cfg.get('tts_model'))
+        ogg = await _transcode_wav_to_ogg_opus(wav)
+        if ogg:
+            await update.effective_chat.send_voice(voice=ogg)
+        else:
+            # ffmpeg نیست — به‌صورت فایل صوتی WAV قابل‌پخش بفرست
+            await update.effective_chat.send_audio(
+                audio=wav, filename='houshyar.wav', title='پاسخ صوتی هوشیار')
+    except Exception:
+        logger.exception("ارسال پاسخ صوتی ناموفق بود (بی‌اثر بر متنِ جواب)")
+
+
+# ─── فهرست زنده‌ی مدل‌های تصویر ───
+_IMAGE_MODEL_MARKERS = ('image', 'nano-banana', 'imagen', 'banana')
+
+
+def _looks_like_image_model(model_id: str) -> bool:
+    mid = (model_id or '').lower()
+    return (any(m in mid for m in _IMAGE_MODEL_MARKERS)
+            and 'embedding' not in mid)
+
+
+def model_free_rank(provider: str, model_id: str) -> int:
+    """⭐ م8 — رتبه‌ی «رایگان‌بودن» برای مرتب‌سازی (بیشتر = رایگان‌تر).
+
+    معیارِ نهایی «رایگان بودن» نیست — سلامتِ واقعی (تستِ توکن) مقدم است؛
+    این فقط tie-breaker بینِ مدل‌های زنده است.
+    OpenRouter: پسوند :free = قطعاً رایگان. Gemini: خانواده‌ی
+    flash-lite/flash/nano-banana سهمیه‌ی رایگانِ بیشتری دارند."""
+    mid = (model_id or '').lower()
+    if (provider or '') == 'openrouter':
+        return 4 if mid.endswith(':free') else 0
+    if (provider or '') == 'gemini':
+        if 'flash-lite' in mid:
+            return 3
+        if 'flash' in mid or 'nano-banana' in mid:
+            return 2
+        if 'pro' in mid:
+            return 1
+    return 0
+
+
+def model_is_free(provider: str, model_id: str) -> bool:
+    """نشانِ «رایگان» برای UI (سهمیه‌ی رایگانِ محدود هم رایگان حساب می‌شود)."""
+    return model_free_rank(provider, model_id) >= 2
+
+
+async def _list_image_models_gemini(api_key: str) -> list:
+    """مدل‌های تصویرِ زنده از ListModels (به‌جای کاتالوگ ثابت)."""
+    resp = None
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+            headers={'x-goog-api-key': api_key})
+    if resp.status_code != 200:
+        _raise_gemini_status_error(resp.status_code,
+                                   _provider_error_detail(resp.text))
+    out = []
+    for m in (resp.json() or {}).get('models', []):
+        raw_name = (m.get('name') or '').replace('models/', '').strip()
+        if not raw_name or not _looks_like_image_model(raw_name):
+            continue
+        label = raw_name
+        if 'nano-banana' in raw_name:
+            label = f'🍌 {raw_name} (نانوبانانا)'
+        elif 'flash-lite' in raw_name:
+            label = f'⚡ {raw_name} (سریع/کم‌هزینه)'
+        out.append({'id': raw_name, 'label': label})
+    return out
+
+
+async def list_image_models(provider: str, api_key: str = None,
+                            refresh: bool = False) -> dict:
+    """⭐ م8 — فهرست مدل‌های تصویر: زنده از API (gemini) + کش ۱۲ ساعته؛
+    در خطا/بی‌کلید → کاتالوگ ثابتِ روزآمد. خروجی هم‌شکل list_provider_models."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    cache_key = f'ai_image_models_cache_{provider}'
+    if not refresh:
+        cached = await db.get_setting(cache_key, None)
+        if isinstance(cached, dict) and cached.get('models'):
+            return cached
+    models = []
+    error = None
+    try:
+        if provider == 'gemini':
+            keys = []
+            if api_key:
+                keys = [sanitize_api_key(api_key)]
+            else:
+                cfg = await get_ai_config()
+                keys = ordered_keys('gemini',
+                                    (cfg.get('vault_multi') or {}).get('gemini') or [])
+            if keys:
+                async def _fetch(_k):
+                    return await _list_image_models_gemini(_k)
+                raw = await run_with_key_failover('gemini', keys, _fetch,
+                                                  label='list_image_models')
+                models = [{'id': m['id'], 'label': m['label'],
+                           'free': model_is_free('gemini', m['id'])}
+                          for m in raw]
+        else:
+            models = [{'id': mid, 'label': label, 'free': is_free}
+                      for mid, label, is_free in IMAGE_MODEL_CATALOG
+                      if provider != 'gemini' or _looks_like_image_model(mid)]
+    except Exception as e:                      # noqa: BLE001
+        error = _sanitize_provider_text(str(e))[:200] or type(e).__name__
+    if not models:
+        # fallback کاتالوگ ثابت
+        models = [{'id': mid, 'label': label, 'free': is_free}
+                  for mid, label, is_free in IMAGE_MODEL_CATALOG
+                  if provider == 'gemini' and _looks_like_image_model(mid)
+                  or provider != 'gemini']
+        if error is None:
+            error = 'فهرست زنده در دسترس نبود — کاتالوگ ثابت.'
+        return {'models': models, 'cached': False, 'fetched_at': None,
+                'fallback': True, 'error': error}
+    payload = {'models': models, 'cached': False,
+               'fetched_at': utc_now_iso(), 'fallback': False, 'error': None}
+    try:
+        await db.set_setting(cache_key, payload)
+    except Exception:
+        logger.exception("کشِ مدل‌های تصویر ذخیره نشد")
+    return payload
+
+
+# ─── سلامت‌سنجی (liveness) مدل‌ها با تستِ واقعیِ توکن ───
+PROBE_MAX_MODELS = 30
+PROBE_CONCURRENCY = 6
+
+
+async def probe_chat_model(provider: str, api_key: str, model: str) -> dict:
+    """تستِ سبکِ واقعی: یک ورودی کوچک → یک خروجی. 200 = زنده."""
+    import time as _t
+    started = _t.monotonic()
+    try:
+        if provider == 'gemini':
+            url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                   f"{model}:generateContent")
+            payload = {'contents': [{'role': 'user', 'parts': [{'text': '۱'}]}],
+                       'generationConfig': {'maxOutputTokens': 16}}
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(url, headers={
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': api_key}, json=payload)
+        else:
+            meta = PROVIDERS.get(provider) or {}
+            if not meta.get('url'):
+                return {'ok': False, 'ms': 0, 'error': 'provider پشتیبانی نمی‌شود'}
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.post(
+                    meta['url'] + '/chat/completions',
+                    headers={'Authorization': f'Bearer {api_key}'},
+                    json={'model': model, 'messages': [
+                        {'role': 'user', 'content': 'hi'}], 'max_tokens': 4})
+        ms = int((_t.monotonic() - started) * 1000)
+        if resp.status_code == 200:
+            return {'ok': True, 'ms': ms, 'error': ''}
+        detail = _provider_error_detail(resp.text)[:160]
+        return {'ok': False, 'ms': ms,
+                'error': f'HTTP {resp.status_code}' + (f': {detail}' if detail else '')}
+    except Exception as e:                      # noqa: BLE001
+        return {'ok': False, 'ms': int((_t.monotonic() - started) * 1000),
+                'error': _sanitize_provider_text(str(e))[:160] or type(e).__name__}
+
+
+async def probe_image_model(provider: str, api_key: str, model: str) -> dict:
+    """بررسیِ ارزانِ مدلِ تصویر: GET مدل (بدون سوزاندن سهمیه‌ی تولید)."""
+    import time as _t
+    started = _t.monotonic()
+    try:
+        if provider != 'gemini':
+            return {'ok': True, 'ms': 0, 'error': '', 'mode': 'catalog'}
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}",
+                headers={'x-goog-api-key': api_key})
+        ms = int((_t.monotonic() - started) * 1000)
+        if resp.status_code == 200:
+            return {'ok': True, 'ms': ms, 'error': ''}
+        return {'ok': False, 'ms': ms, 'error': f'HTTP {resp.status_code}'}
+    except Exception as e:                      # noqa: BLE001
+        return {'ok': False, 'ms': int((_t.monotonic() - started) * 1000),
+                'error': _sanitize_provider_text(str(e))[:160] or type(e).__name__}
+
+
+async def probe_models(provider: str, models: list = None,
+                       kind: str = 'chat') -> dict:
+    """⭐ م8 — تستِ همزمانِ مدل‌ها (سقفِ ۳۰ تا) و ذخیره‌ی نتیجه در تنظیمات.
+
+    kind='chat' → تستِ توکنِ واقعی؛ kind='image' → بررسیِ ارزانِ موجودی."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    cfg = await get_ai_config()
+    keys = ordered_keys(provider,
+                        (cfg.get('vault_multi') or {}).get(provider) or [])
+    if not keys:
+        return {'provider': provider, 'results': {},
+                'error': 'کلید API این ارائه‌دهنده ثبت نشده است.'}
+    key = keys[0]
+    if models is None:
+        if kind == 'image':
+            models = [m.get('id') for m in
+                      (await list_image_models(provider)).get('models', [])]
+        else:
+            models = [m.get('id') for m in
+                      (await list_provider_models(provider)).get('models', [])]
+    models = [m for m in (models or []) if m][:PROBE_MAX_MODELS]
+    sem = asyncio.Semaphore(PROBE_CONCURRENCY)
+
+    async def _one(mid: str) -> tuple:
+        async with sem:
+            if kind == 'image':
+                r = await probe_image_model(provider, key, mid)
+            else:
+                r = await probe_chat_model(provider, key, mid)
+            return mid, r
+
+    pairs = await asyncio.gather(*[_one(m) for m in models])
+    now_iso = utc_now_iso()
+    results = {mid: {**r, 'tested_at': now_iso} for mid, r in pairs}
+    health = {mid: {**r, 'tested_at': now_iso} for mid, r in pairs}
+    try:
+        await db.set_setting(f'ai_models_health_{provider}', {
+            'kind': kind, 'tested_at': now_iso, 'models': health})
+    except Exception:
+        logger.exception("ذخیره‌ی سلامتِ مدل‌ها ناموفق بود")
+    ok_count = sum(1 for r in results.values() if r.get('ok'))
+    return {'provider': provider, 'kind': kind, 'count': len(results),
+            'ok_count': ok_count, 'results': results, 'tested_at': now_iso}
+
+
+async def get_models_health(provider: str) -> dict:
+    """آخرین نتیجه‌ی ذخیره‌شده‌ی سلامت‌سنجی (اگر باشد)."""
+    try:
+        data = await db.get_setting(f"ai_models_health_{(provider or 'gemini').strip()}", None)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def merge_models_with_health(provider: str, models: list,
+                             health: dict) -> list:
+    """⭐ م8 — مرتب‌سازیِ نهایی: اول مدل‌های زنده، بعد رایگان‌تر، بعد سریع‌تر.
+
+    مدلِ زنده = در آخرین تستِ توکن، پاسخِ ۲۰۰ گرفته‌ایم. مدلِ تست‌نشده
+    وسط می‌ماند (نه جریمه می‌شود نه پاداش)."""
+    hmodels = (health or {}).get('models') or {}
+    out = []
+    for m in (models or []):
+        mid = m.get('id') or m.get('model_id') or ''
+        h = hmodels.get(mid) or {}
+        item = dict(m)
+        item['health_ok'] = h.get('ok') if h else None
+        item['health_ms'] = h.get('ms')
+        item['health_error'] = h.get('error') or ''
+        item['free'] = bool(m.get('free')) or model_is_free(provider, mid)
+        item['free_rank'] = model_free_rank(provider, mid)
+        out.append(item)
+
+    def sort_key(item):
+        ok = item['health_ok']
+        # زنده=0 · تست‌نشده=1 · مرده=2
+        alive_rank = 0 if ok is True else (2 if ok is False else 1)
+        return (alive_rank, -item['free_rank'],
+                item['health_ms'] if item['health_ms'] else 10**9,
+                item['id'])
+    out.sort(key=sort_key)
+    return out
 
 
 async def _transcode_ogg_opus_to_wav(ogg_bytes: bytes) -> bytes | None:
@@ -3706,6 +4162,7 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ask_ai_stream(text=caption, image_bytes=media_bytes, image_mime=mime,
                           history=history, uid=uid, skip_doc=_skip_doc_this_time),
             _footer(limit, used), uid, question_label,
+            voice_reply=(kind == 'audio'),   # ⭐ م8 — ویس فرستادی؟ جوابِ صوتی بگیر
         )
     finally:
         await ai_release_inflight(uid)

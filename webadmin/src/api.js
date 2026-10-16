@@ -1192,6 +1192,20 @@ export const api = {
       method: "POST",
       body: { api_key: apiKey },
     }),
+  /* ⭐ م8 — تولید تصویر + سلامت مدل‌ها + TTS */
+  aiImageModels: () => req("/api/web-admin/ai/image/models"),
+  aiImageGenerate: (body) =>
+    req("/api/web-admin/ai/image/generate", {
+      method: "POST",
+      body,
+    }),
+  aiModelsHealth: (pid) => req(`/api/web-admin/ai/models/health/${pid}`),
+  aiModelsProbe: (pid, body = {}) =>
+    req(`/api/web-admin/ai/models/${pid}/probe`, {
+      method: "POST",
+      body,
+    }),
+  aiTtsVoices: () => req("/api/web-admin/ai/tts/voices"),
   /* ⭐ م7 — کلیدهای فال‌بک (چند کلید برای هر provider) */
   aiKeys: (pid) => req(`/api/web-admin/ai/keys/${pid}`),
   aiKeyAdd: (pid, apiKey) =>

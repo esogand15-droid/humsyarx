@@ -5,7 +5,7 @@ import { PersianDatePicker } from '../PersianDatePicker.jsx';
 
 // 🤖🌊 W-Admin — مرکز فرماندهی هوشیار: KPI ساخت‌یافته + برترین‌ها + گزارش‌ها + دسترسی + پیکربندی
 // (رفع نقص قبلی: داده‌ی خام tuple/comma دیگر به UI تخلیه نمی‌شود — سریالایزر سمت API)
-const AI_TABS = [['overview', '📊 نمای کلی'], ['reports', '🚩 گزارش‌ها'], ['access', '🔐 دسترسی و سهمیه'], ['personas', '🎭 Personaها'], ['config', '⚙️ پیکربندی']];
+const AI_TABS = [['overview', '📊 نمای کلی'], ['reports', '🚩 گزارش‌ها'], ['access', '🔐 دسترسی و سهمیه'], ['image', '🎨 تولید تصویر'], ['personas', '🎭 Personaها'], ['config', '⚙️ پیکربندی']];
 
 export default function AiAdmin({ me }) {
   const [tab, setTab] = useState('overview');
@@ -81,6 +81,7 @@ export default function AiAdmin({ me }) {
         </>
       )}
 
+      {tab === 'image' && <AiImageStudio cfg={cfg} me={me} onSaved={load} />}
       {tab === 'reports' && <AiReports />}
       {tab === 'access' && <AiAccess me={me} />}
       {tab === 'personas' && me?.is_owner && <AiPersonas />}
@@ -90,6 +91,127 @@ export default function AiAdmin({ me }) {
 }
 
 /* ── 🚩 گزارش‌های کاربران از پاسخ هوشیار ── */
+/* ⭐ م8 — استودیوی تولید تصویر: مدل‌های زنده (auto-detect از API) با
+   نشانِ سلامت/رایگان + تستِ زنده‌بودن + اجرای تولید از خود پنل. */
+function AiImageStudio({ cfg, me, onSaved }) {
+  const [models, setModels] = useState(null);
+  const [meta, setMeta] = useState(null);   // aspect_ratios / image_sizes / error
+  const [probing, setProbing] = useState(false);
+  const [prompt, setPrompt] = useState('');
+  const [model, setModel] = useState('');
+  const [aspect, setAspect] = useState('1:1');
+  const [size, setSize] = useState('1K');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);   // {image_b64, mime, elapsed_ms, model}
+  const [err, setErr] = useState('');
+
+  const loadModels = async () => {
+    setErr('');
+    try {
+      const r = await api.aiImageModels();
+      setModels(r.models || []);
+      setMeta(r);
+      if (!model && r.models?.length) setModel(r.models[0].id);
+    } catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { loadModels(); }, []);
+
+  const probe = async () => {
+    setProbing(true);
+    try {
+      const r = await api.aiModelsProbe(meta?.provider || 'gemini', { kind: 'image' });
+      const okN = Number(r.ok_count || 0), total = Number(r.count || 0);
+      toast(`تست سلامت: ${okN} از ${total} مدلِ تصویر زنده است ${okN === total && total ? '✅' : ''}`);
+      await loadModels();
+    } catch (e) { toast(errText(e), 'err'); }
+    setProbing(false);
+  };
+
+  const generate = async () => {
+    setBusy(true); setErr(''); setResult(null);
+    try {
+      const r = await api.aiImageGenerate({ prompt, model, aspect_ratio: aspect, image_size: size });
+      setResult(r);
+      toast(`تصویر ساخته شد ✅ (${Number(r.elapsed_ms || 0).toLocaleString('fa')} ms)`);
+    } catch (e) { setErr(errText(e)); toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const HBadge = ({ m }) => (
+    m.health_ok === true ? <span style={{ color: 'var(--c-ok, #2a2)', fontSize: 'var(--fs-caption)' }}>🟢 {Number(m.health_ms || 0).toLocaleString('fa')}ms</span>
+    : m.health_ok === false ? <span style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }}>🔴 مرده</span>
+    : <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}>⚪ تست‌نشده</span>
+  );
+
+  return (
+    <>
+      <div className="panel panel-pad">
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <b>🎨 مدل‌های تولید تصویر — از API (خودکار، بدون لیست ثابت)</b>
+          <span className="row">
+            <button className="btn sm" onClick={loadModels}>🔄 تازه‌سازی</button>
+            <button className="btn sm" disabled={probing} onClick={probe}>{probing ? '⏳ در حال تست…' : '🧪 تست زنده‌بودن'}</button>
+          </span>
+        </div>
+        <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+          ترتیب: زنده‌ترین و رایگان‌ترین مدل‌ها اول (پس از تستِ سلامت). «رایگان» یعنی سهمیه‌ی رایگانِ محدود — معیارِ نهایی، پاسخِ واقعیِ مدل در تست است.
+        </div>
+        {err && <div className="muted" style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{err}</div>}
+        <div style={{ marginTop: 10, maxHeight: 260, overflowY: 'auto' }}>
+          {models === null ? <span className="muted">…</span> : !models.length ? (
+            <div className="muted">مدلی یافت نشد — ابتدا کلید API ثبت کن و «تازه‌سازی» را بزن.</div>
+          ) : models.map(m => (
+            <label key={m.id} className="row" style={{ justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--c-line, #eee)', cursor: 'pointer', gap: 8 }}>
+              <span className="row" style={{ gap: 8 }}>
+                <input type="radio" name="img-model" checked={model === m.id} onChange={() => setModel(m.id)} />
+                <span className="code" style={{ direction: 'ltr' }}>{m.id}</span>
+                {m.free && <B kind="ok">رایگان</B>}
+              </span>
+              <HBadge m={m} />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel panel-pad" style={{ marginTop: 14 }}>
+        <b>🖌 ساخت تصویر</b>
+        <div className="grid" style={{ gap: 10, marginTop: 12 }}>
+          <label className="fld"><span>توضیح تصویر (پرامپت)</span>
+            <textarea className="inp" rows={3} style={{ resize: 'vertical' }} value={prompt}
+                      placeholder="مثلاً: نمودار آموزشی رنگی از چرخه‌ی خون با برچسب فارسی"
+                      onChange={e => setPrompt(e.target.value)} /></label>
+          <div className="row">
+            <label className="fld" style={{ flex: 1 }}><span>نسبت تصویر</span>
+              <select className="inp" value={aspect} onChange={e => setAspect(e.target.value)}>
+                {(meta?.aspect_ratios || ['1:1']).map(a => <option key={a} value={a}>{a}</option>)}
+              </select></label>
+            <label className="fld" style={{ flex: 1 }}><span>رزولوشن</span>
+              <select className="inp" value={size} onChange={e => setSize(e.target.value)}>
+                {(meta?.image_sizes || ['1K']).map(s => <option key={s} value={s}>{s}</option>)}
+              </select></label>
+          </div>
+          <div className="row">
+            <button className="btn primary" disabled={busy || prompt.trim().length < 3 || !model}
+                    onClick={generate}>{busy ? '⏳ در حال ساخت… (تا ~۶۰ ثانیه)' : '🎨 تولید تصویر'}</button>
+            <span className="muted">با کلیدهای فال‌بک (م7) — اگر یکی لیمیت خورد، خودکار کلید بعدی</span>
+          </div>
+        </div>
+        {result && (
+          <div style={{ marginTop: 14 }}>
+            <img src={`data:${result.mime};base64,${result.image_b64}`} alt="تصویر تولیدشده"
+                 style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid var(--c-line, #eee)' }} />
+            <div className="row" style={{ marginTop: 8 }}>
+              <a className="btn sm" href={`data:${result.mime};base64,${result.image_b64}`}
+                 download={`houshyar-${Date.now()}.png`}>📥 دانلود</a>
+              <span className="muted">{result.model} · {result.aspect_ratio} · {result.image_size} · {Number(result.elapsed_ms || 0).toLocaleString('fa')} ms</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function AiReports() {
   const [data, setData] = useState(null); const [err, setErr] = useState('');
   const [q, setQ] = useState(''); const [userId, setUserId] = useState('');
@@ -320,6 +442,21 @@ function AiConfig({ cfg, me, onSaved }) {
      کلید ذخیره‌شده) + دکمه‌ی تازه‌سازی. بدون provider → کاتالوگ ثابت. */
   const [live, setLive] = useState(null);       // {models:[], cached, fallback, error, fetched_at}
   const [liveBusy, setLiveBusy] = useState(false);
+  /* ⭐ م8 — صداهای TTS + تستِ سلامتِ مدل‌های گفتگو */
+  const [tts, setTts] = useState(null);         // {voices, models, modes}
+  const [probeBusy, setProbeBusy] = useState(false);
+  useEffect(() => { api.aiTtsVoices().then(setTts).catch(() => {}); }, []);
+  const probeChatModels = async () => {
+    if (!f?.provider) return;
+    setProbeBusy(true);
+    try {
+      const r = await api.aiModelsProbe(f.provider, { kind: 'chat' });
+      const okN = Number(r.ok_count || 0), total = Number(r.count || 0);
+      toast(`تست واقعی توکن: ${okN} از ${total} مدل زنده است — فهرست مرتب شد ${okN ? '✅' : '⚠️'}`);
+      await loadLive(f.provider, true);
+    } catch (e) { toast(errText(e), 'err'); }
+    setProbeBusy(false);
+  };
   const loadLive = async (provider, refresh = false) => {
     if (!provider) return;
     setLiveBusy(true);
@@ -357,6 +494,9 @@ function AiConfig({ cfg, me, onSaved }) {
         enabled: !!f.enabled, provider: f.provider, model: f.model.trim(),
         daily_limit: Number(f.daily_limit) || 0, thinking: f.thinking,
         system_prompt: f.system_prompt, disabled_message: f.disabled_message || '',
+        voice_reply: f.voice_reply || 'voice', tts_voice: f.tts_voice || '',
+        tts_model: f.tts_model || '', voice_reply_max_chars: Number(f.voice_reply_max_chars) || 500,
+        image_size: f.image_size || '1K',
       });
       // 🔴 FIX-R1 (مورد ۷) — هشدار مدل: مدل انتخابی در فهرست واقعی
       // ارائه‌دهنده نیست (ممکن است حذف/غیرفعال شده باشد).
@@ -404,13 +544,23 @@ function AiConfig({ cfg, me, onSaved }) {
                     onClick={() => loadLive(f.provider, true)}>
               {liveBusy ? '⏳ …' : '🔄 تازه‌سازی'}
             </button>
+            {/* ⭐ م8 — تستِ واقعیِ زنده‌بودن همه‌ی مدل‌ها (یک ورودی کوچک → یک خروجی) */}
+            <button className="btn sm" style={{ marginInlineStart: 4 }} disabled={probeBusy}
+                    title="ارسال درخواست آزمایشی به تک‌تک مدل‌ها؛ زنده‌ها از مرده‌ها جدا و رایگان‌هایِ زنده صدر فهرست می‌روند"
+                    onClick={probeChatModels}>
+              {probeBusy ? '⏳ تست…' : '🧪 تست زنده‌بودن'}
+            </button>
             {live?.cached && <span className="muted" style={{ fontSize: 'var(--fs-caption)' }}> (کش سرور)</span>}
           </span>
             <select className="inp" style={{ direction: 'ltr' }}
                     value={f.model && liveIds.includes(f.model) ? f.model : (f.model ? '__custom' : (modelOptions[0]?.id || ''))}
                     onChange={e => set('model', e.target.value === '__custom' ? '' : e.target.value)}>
-              {modelOptions.map(m => (
-                <option key={m.id} value={m.id}>{m.label}</option>))}
+              {modelOptions.map(m => {
+                const badge = m.health_ok === true ? '🟢 ' : (m.health_ok === false ? '🔴 ' : '');
+                const free = m.free ? ' [رایگان]' : '';
+                const ms = m.health_ms ? ` (${Number(m.health_ms).toLocaleString('fa')}ms)` : '';
+                return <option key={m.id} value={m.id}>{badge}{m.label}{free}{ms}</option>;
+              })}
               <option value="__custom">✏️ سفارشی (تایپ دستی)</option>
             </select>
             {f.model && !liveIds.includes(f.model) && (
@@ -438,6 +588,32 @@ function AiConfig({ cfg, me, onSaved }) {
             <select className="inp" value={f.thinking} onChange={e => set('thinking', e.target.value)}>
               <option value="auto">auto</option>
               <option value="high">high</option>
+            </select></label>
+          {/* ⭐ م8 — پاسخ صوتی (TTS فارسی — gemini-3.8-flash-lite-tts) */}
+          <label className="fld"><span>🎤 پاسخ صوتی هوشیار (فارسی)</span>
+            <select className="inp" value={f.voice_reply || 'voice'} onChange={e => set('voice_reply', e.target.value)}>
+              <option value="voice">فقط وقتی کاربر ویس فرستاد (پیش‌فرض)</option>
+              <option value="all">همیشه — همه‌ی پاسخ‌ها صوتی هم باشند</option>
+              <option value="off">خاموش</option>
+            </select></label>
+          <label className="fld"><span>🗣 صدای هوشیار</span>
+            <select className="inp" value={f.tts_voice || 'Sulafat'} onChange={e => set('tts_voice', e.target.value)}>
+              {(tts?.voices || [{ id: 'Sulafat', label: 'Sulafat — گرم' }]).map(v =>
+                <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select></label>
+          <label className="fld"><span>مدل گفتار (TTS)</span>
+            <select className="inp" value={f.tts_model || 'gemini-3.8-flash-lite-tts'} onChange={e => set('tts_model', e.target.value)}>
+              {(tts?.models || ['gemini-3.8-flash-lite-tts']).map(m =>
+                <option key={m} value={m}>{m.includes('lite') ? '⚡ ' + m + ' (سریع/ارزان — پیشنهادی)' : '🎼 ' + m + ' (کیفیت استودیویی)'}</option>)}
+            </select></label>
+          <label className="fld"><span>حداکثر طول پاسخِ صوتی (نویسه)</span>
+            <input className="inp" type="number" min="100" max="4000" value={f.voice_reply_max_chars ?? 500}
+                   onChange={e => set('voice_reply_max_chars', e.target.value)} /></label>
+          <label className="fld"><span>🖼 رزولوشن پیش‌فرض تصویر</span>
+            <select className="inp" value={f.image_size || '1K'} onChange={e => set('image_size', e.target.value)}>
+              <option value="1K">1K (سریع/ارزان)</option>
+              <option value="2K">2K</option>
+              <option value="4K">4K (فقط نانوبانانا 2.1)</option>
             </select></label>
           <div className="row">
             <B kind={cfg.has_api_key ? 'ok' : 'warn'}>{cfg.has_api_key ? '🔑 ●●●●●●●● · تنظیم شده' : '⚠️ کلید API ندارد'}</B>

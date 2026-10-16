@@ -57,7 +57,13 @@ import broadcast_service
 from ai_solver import (save_persona, delete_persona, generate_broadcast_ai,
                        list_provider_models, sanitize_api_key, api_key_problem,
                        add_api_key_for_provider, remove_api_key_for_provider,
-                       list_api_keys_for_provider, test_all_keys_for_provider)
+                       list_api_keys_for_provider, test_all_keys_for_provider,
+                       run_with_key_failover, list_image_models, probe_models,
+                       get_models_health, merge_models_with_health,
+                       generate_image, AiImageError, IMAGE_ASPECT_RATIOS,
+                       IMAGE_SIZES, IMAGE_PROMPT_MAX, IMAGE_PROMPT_MIN,
+                       PREBUILT_TTS_VOICES, TTS_MODEL_DEFAULT,
+                       TTS_MODEL_QUALITY, VOICE_REPLY_MODES)
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
 from question_bank.images import (MAX_IMAGE_BYTES, QuestionImageService,
@@ -6807,6 +6813,18 @@ class WaAiKeyAdd(BaseModel):
     api_key: str
 
 
+class WaAiImageGenerate(BaseModel):
+    prompt: str
+    model: str | None = None
+    aspect_ratio: str = "1:1"
+    image_size: str = "1K"
+
+
+class WaAiModelProbe(BaseModel):
+    models: list | None = None
+    kind: str = "chat"          # chat | image
+
+
 class WaAiKeyRotate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     api_key: str = Field(min_length=8, max_length=500)
@@ -6985,6 +7003,91 @@ async def wa_ai_keys_test(provider: str, user=Depends(_perm("ai.manage"))):
                  after={"ok_count": result.get("ok_count"), "count": result.get("count")},
                  tags=["هوشیار", "key_failover", "connection_test", "پنل_وب"])
     return result
+
+
+# ══════════════════════════════════════════════════
+# ⭐ م8 — تولید تصویر در پنل + فهرست زنده/سلامت مدل‌ها + TTS
+# ══════════════════════════════════════════════════
+@router.get("/ai/image/models")
+async def wa_ai_image_models(user=Depends(_perm("ai.manage"))):
+    """مدل‌های تصویر: زنده از ListModels (نه hardcode) + سلامت + نشان رایگان."""
+    cfg = await ai_admin_api.get_ai_config()
+    provider = cfg.get("image_provider") or cfg.get("provider") or "gemini"
+    listing = await list_image_models(provider)
+    health = await get_models_health(provider)
+    models = merge_models_with_health(provider, listing.get("models") or [], health)
+    return {"provider": provider, "models": models,
+            "fallback": listing.get("fallback"), "error": listing.get("error"),
+            "aspect_ratios": list(IMAGE_ASPECT_RATIOS),
+            "image_sizes": list(IMAGE_SIZES)}
+
+
+@router.post("/ai/image/generate")
+async def wa_ai_image_generate(body: WaAiImageGenerate,
+                               user=Depends(_perm("ai.manage"))):
+    """🎨 اجرای تولید تصویر از خود پنل (playground) — با فال‌بک کلیدها (م7)."""
+    prompt = (body.prompt or "").strip()
+    if not (IMAGE_PROMPT_MIN <= len(prompt) <= IMAGE_PROMPT_MAX):
+        raise HTTPException(422, f"متن تصویر باید بین {IMAGE_PROMPT_MIN} تا {IMAGE_PROMPT_MAX} نویسه باشد")
+    aspect = body.aspect_ratio if body.aspect_ratio in IMAGE_ASPECT_RATIOS else "1:1"
+    size = (body.image_size or "1K").upper()
+    if size not in IMAGE_SIZES:
+        size = "1K"
+    cfg = await ai_admin_api.get_ai_config()
+    provider = cfg.get("image_provider") or cfg.get("provider") or "gemini"
+    model = (body.model or "").strip() or cfg.get("image_model") or ""
+    keys = cfg.get("image_api_key_list") or ([cfg.get("image_api_key")] if cfg.get("image_api_key") else [])
+    if not model:
+        raise HTTPException(422, "مدل تصویر انتخاب نشده است")
+    if not keys:
+        raise HTTPException(503, "کلید API برای ساخت تصویر تنظیم نشده است")
+    started = time.perf_counter()
+
+    async def _gen_once(api_key: str) -> dict:
+        return await generate_image(api_key, model, prompt, aspect,
+                                    provider=provider, image_size=size)
+
+    try:
+        res = await run_with_key_failover(provider, keys, _gen_once, label="panel-image")
+    except AiImageError as e:
+        raise HTTPException(502, e.user_message)
+    await _audit(user["id"], "تولید تصویر در پنل", severity="INFO",
+                 target_type="ai_image", target_label=model,
+                 after={"ok": True, "model": model, "aspect": aspect, "size": size},
+                 tags=["هوشیار", "image", "پنل_وب"])
+    return {"ok": True, "model": model, "aspect_ratio": aspect,
+            "image_size": size, "mime": res.get("mime") or "image/png",
+            "image_b64": res.get("data_b64") or res.get("data") or "",
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 1)}
+
+
+@router.get("/ai/models/health/{provider}")
+async def wa_ai_models_health(provider: str, user=Depends(_perm("ai.manage"))):
+    """آخرین نتیجه‌ی ذخیره‌شده‌ی سلامت‌سنجی مدل‌ها (تستِ واقعیِ توکن)."""
+    return await get_models_health(provider)
+
+
+@router.post("/ai/models/{provider}/probe")
+async def wa_ai_models_probe(provider: str, body: WaAiModelProbe,
+                             user=Depends(_perm("ai.manage"))):
+    """🧪 تستِ زنده‌بودن مدل‌ها: یک ورودی کوچک → یک خروجی. زنده‌ها از
+    مرده‌ها جدا و رایگان‌هایِ زنده صدر فهرست می‌روند."""
+    kind = body.kind if body.kind in ("chat", "image") else "chat"
+    result = await probe_models(provider, body.models, kind=kind)
+    await _audit(user["id"], "تست سلامت مدل‌های هوشیار", severity="INFO",
+                 target_type="ai_models", target_label=f"{provider}:{kind}",
+                 after={"ok_count": result.get("ok_count"),
+                        "count": result.get("count")},
+                 tags=["هوشیار", "model_health", "پنل_وب"])
+    return result
+
+
+@router.get("/ai/tts/voices")
+async def wa_ai_tts_voices(user=Depends(_perm("ai.manage"))):
+    """صداهای پیش‌ساخته‌ی TTS فارسی + مدل‌های گفتار (چنج‌لاگ ۲۰۲۶)."""
+    return {"voices": [{"id": v, "label": f"{v} — {d}"} for v, d in PREBUILT_TTS_VOICES.items()],
+            "models": [TTS_MODEL_DEFAULT, TTS_MODEL_QUALITY],
+            "modes": list(VOICE_REPLY_MODES)}
 
 
 @router.get("/ai/users/{user_id}/profile")

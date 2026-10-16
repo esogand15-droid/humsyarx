@@ -1805,11 +1805,13 @@ async def generate_image_ep(body: ImageGenBody,
     started = _time.monotonic()
     try:
         try:
-            # ⭐ م7 — ساخت تصویر با فال‌بکِ کلید بعدی
+            # ⭐ م7 — ساخت تصویر با فال‌بکِ کلید بعدی (+ رزولوشن م8)
+            _img_size = config.get("image_size") or "1K"
             async def _gen_image_once(api_key: str) -> dict:
                 return await generate_image(
                     api_key, effective_model, prompt,
-                    aspect_ratio, provider=effective_provider)
+                    aspect_ratio, provider=effective_provider,
+                    image_size=_img_size)
             res = await run_with_key_failover(
                 effective_provider,
                 config.get("image_api_key_list") or [effective_key],

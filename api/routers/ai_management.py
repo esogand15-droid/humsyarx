@@ -29,6 +29,8 @@ from ai_solver import (
     remove_api_key_for_provider,
     list_api_keys_for_provider,
     test_all_keys_for_provider,
+    get_models_health,
+    merge_models_with_health,
     sanitize_api_key,
     api_key_problem,
 )
@@ -93,6 +95,17 @@ class ConfigUpdate(BaseModel):
         max_length=150,
     )
 
+    # ⭐ م8 — پاسخ صوتی (TTS) + رزولوشن تصویر
+    voice_reply: str | None = Field(default=None, max_length=8)
+
+    tts_voice: str | None = Field(default=None, max_length=40)
+
+    tts_model: str | None = Field(default=None, max_length=80)
+
+    voice_reply_max_chars: int | None = Field(default=None, ge=100, le=4000)
+
+    image_size: str | None = Field(default=None, max_length=4)
+
     image_daily_limit: int = Field(
         default=10,
         ge=0,
@@ -143,7 +156,14 @@ async def models_catalog(
     if provider:
         cfg = await get_ai_config()
         api_key = (cfg.get("api_keys") or {}).get(provider, "")
-        return await list_provider_models(provider, api_key, refresh=refresh)
+        listing = await list_provider_models(provider, api_key, refresh=refresh)
+        # ⭐ م8 — ادغامِ سلامتِ ذخیره‌شده: زنده‌ها و رایگان‌ها صدر فهرست
+        health = await get_models_health(provider)
+        if health:
+            listing = dict(listing)
+            listing["models"] = merge_models_with_health(
+                provider, listing.get("models") or [], health)
+        return listing
     return ai_catalog_payload()
 
 
@@ -205,6 +225,22 @@ async def config(
 
         "vault":
             {k: bool(v) for k, v in (vault or {}).items()},
+
+        # ⭐ م8 — پاسخ صوتی (TTS) + رزولوشن تصویر
+        "voice_reply":
+            value.get("voice_reply", "voice"),
+
+        "tts_voice":
+            value.get("tts_voice", ""),
+
+        "tts_model":
+            value.get("tts_model", ""),
+
+        "voice_reply_max_chars":
+            value.get("voice_reply_max_chars", 500),
+
+        "image_size":
+            value.get("image_size", "1K"),
     }
 
 
@@ -226,6 +262,12 @@ async def update_config(
         "image_model",
         "image_daily_limit",
         "image_provider",
+        # ⭐ م8 — پاسخ صوتی + رزولوشن تصویر + مدل TTS
+        "voice_reply",
+        "tts_voice",
+        "tts_model",
+        "voice_reply_max_chars",
+        "image_size",
     )
 
     for key in editable_fields:

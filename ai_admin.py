@@ -25,6 +25,8 @@ from ai_solver import (
     set_api_key_for_provider, delete_api_key_for_provider,
     add_api_key_for_provider, remove_api_key_for_provider,
     key_status_summary,
+    list_image_models, generate_speech_gemini, PREBUILT_TTS_VOICES,
+    VOICE_REPLY_MODES, TTS_MODEL_DEFAULT,
     _detect_provider_for_model, list_provider_models,
 )
 
@@ -134,6 +136,31 @@ async def _show_vault_screen(query):
                                   reply_markup=InlineKeyboardMarkup(kb))
 
 
+async def ai_voice_screen(query):
+    """⭐ م8 — رندر صفحه‌ی تنظیمات پاسخ صوتی (مشترک بین چند اکشن)."""
+    cfg = await get_ai_config()
+    mode = cfg.get('voice_reply') or 'voice'
+    mode_lbl = {'off': '🔴 خاموش', 'voice': '🎙 فقط جوابِ ویس',
+                'all': '🔊 همه‌ی پاسخ‌ها'}[mode]
+    kb = [
+        [InlineKeyboardButton(f"حالت: {mode_lbl} — تغییر", callback_data='ai:voice_mode')],
+        [InlineKeyboardButton(f"🗣 صدا: {cfg.get('tts_voice')} — تغییر", callback_data='ai:pick_tts_voice')],
+        [InlineKeyboardButton("▶️ تست صدای هوشیار", callback_data='ai:test_tts')],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')],
+    ]
+    await query.edit_message_text(
+        "🎤 <b>پاسخ صوتی هوشیار</b>\n\n"
+        "وقتی فعال باشد، جوابِ هوشیار علاوه بر متن، با صدای طبیعیِ فارسی هم "
+        "به‌صورت ویس ارسال می‌شود (مدل gemini-3.8-flash-lite-tts — سریع و کم‌هزینه).\n\n"
+        f"حالت: <b>{mode_lbl}</b>\n"
+        f"صدا: <b>{cfg.get('tts_voice')}</b>\n"
+        f"مدل: <code>{cfg.get('tts_model')}</code>\n"
+        f"حداکثر طول پاسخ صوتی: <b>{cfg.get('voice_reply_max_chars')}</b> نویسه\n\n"
+        "<i>جواب‌های بلندتر از این حد فقط متنی می‌مانند تا سریع بمانند.</i>",
+        parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
+    )
+
+
 async def show_ai_main(query):
     cfg = await get_ai_config()
     status_txt = "✅ فعال" if cfg['enabled'] else "⬜ غیرفعال"
@@ -176,6 +203,7 @@ async def show_ai_main(query):
         [InlineKeyboardButton("🔑 تنظیم کلید برای ارائه‌دهنده فعلی", callback_data='ai:set_key')],
         [InlineKeyboardButton("🧩 انتخاب مدل", callback_data='ai:pick_model')],
         [InlineKeyboardButton("🎨 انتخاب مدل تصویر", callback_data='ai:pick_image_model')],
+        [InlineKeyboardButton("🎤 پاسخ صوتی هوشیار (TTS فارسی)", callback_data='ai:voice')],
         [InlineKeyboardButton("👥 محدودیت روزانه هر کاربر", callback_data='ai:set_limit')],
         [InlineKeyboardButton("🧠 عمقِ استدلال (Thinking)", callback_data='ai:toggle_thinking')],
         [InlineKeyboardButton("💬 ویرایش دستور سیستمی", callback_data='ai:set_prompt')],
@@ -351,14 +379,85 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_ai_main(query)
         return
 
+    if action == 'voice':
+        # ⭐ م8 — تنظیمات پاسخ صوتی (TTS فارسی)
+        await ai_voice_screen(query)
+        return
+
+    if action == 'voice_mode':
+        cfg = await get_ai_config()
+        cur = cfg.get('voice_reply') or 'voice'
+        nxt = {'off': 'voice', 'voice': 'all', 'all': 'off'}[cur]
+        await set_ai_setting('voice_reply', nxt)
+        await ai_voice_screen(query)
+        return
+
+    if action == 'pick_tts_voice':
+        cfg = await get_ai_config()
+        cur = cfg.get('tts_voice')
+        kb = []
+        for v, d in list(PREBUILT_TTS_VOICES.items()):
+            mark = '✅ ' if v == cur else ''
+            kb.append([InlineKeyboardButton(f"{mark}{v} — {d}",
+                                            callback_data=f'ai:set_tts_voice:{v}')])
+        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:voice')])
+        await query.edit_message_text(
+            f"🗣 <b>انتخاب صدای هوشیار — فعلی: {cur}</b>\n\n۳۰ صدای پیش‌ساخته؛ همه فارسی را با کیفیت طبیعی می‌گویند.",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    if action == 'set_tts_voice':
+        v = parts[2] if len(parts) > 2 else ''
+        if v in PREBUILT_TTS_VOICES:
+            await set_ai_setting('tts_voice', v)
+            await query.answer(f"✅ صدا روی {v} تنظیم شد", show_alert=True)
+        await ai_voice_screen(query)
+        return
+
+    if action == 'test_tts':
+        await query.answer("⏳ در حال ساخت نمونه‌ی صوتی…")
+        try:
+            wav, _m = await generate_speech_gemini(
+                "سلام! من هوشیار هستم، دستیارِ هامزیار. با همین صدای طبیعی به سوالاتت جواب می‌دهم.")
+            from ai_solver import _transcode_wav_to_ogg_opus
+            ogg = await _transcode_wav_to_ogg_opus(wav)
+            if ogg:
+                await query.message.reply_voice(voice=ogg)
+            else:
+                await query.message.reply_audio(audio=wav, filename='tts-test.wav',
+                                                title='نمونه‌ی صدای هوشیار')
+            await query.message.reply_text("✅ این نمونه‌ی صدای فعلی هوشیار است.")
+        except Exception as e:
+            await query.message.reply_text(f"❌ ساخت نمونه‌ی صوتی ناموفق بود:\n<code>{_esc(str(e)[:300])}</code>",
+                                           parse_mode='HTML')
+        return
+
     if action == 'pick_image_model':
         cfg = await get_ai_config()
+        # ⭐ م8 — فهرستِ زنده از API (خودکار)، نه لیست ثابت؛ در خطا → کاتالوگ
+        provider = cfg.get('image_provider') or cfg.get('provider') or 'gemini'
+        try:
+            live = await list_image_models(provider)
+            img_models = [(m['id'], m['label'], m.get('free', False))
+                          for m in (live.get('models') or [])]
+        except Exception:
+            img_models = list(IMAGE_MODEL_CATALOG)
+        if not img_models:
+            img_models = list(IMAGE_MODEL_CATALOG)
         kb = []
-        for mid, label, free in IMAGE_MODEL_CATALOG:
-            kb.append([InlineKeyboardButton(label, callback_data=f'ai:set_image_model:{mid}')])
+        cur = cfg.get('image_model')
+        for mid, label, free in img_models[:20]:
+            mark = '✅ ' if mid == cur else ('🆓 ' if free else '')
+            kb.append([InlineKeyboardButton(f"{mark}{label}",
+                                            callback_data=f'ai:set_image_model:{mid}')])
+        kb.append([InlineKeyboardButton("🔄 تازه‌سازی از API", callback_data='ai:pick_image_model:r')])
         kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
         await query.edit_message_text(
-            f"🎨 <b>انتخاب مدل تصویر — فعلی: {cfg.get('image_model')}</b>\n\nبرای همه‌ی providerها باز است؛ اگر مدلی تصویر نسازد خطای دوستانه می‌بینی. مدل‌های freellm.net رایگان با OpenRouter کار می‌کنند.",
+            f"🎨 <b>انتخاب مدل تصویر — فعلی: <code>{cur}</code></b>\n\n"
+            "⭐ م8 — این فهرست زنده از API همان ارائه‌دهنده خوانده شده (نه لیست ثابت). "
+            "🆓 = مدل با سهمیه‌ی رایگان. نانوبانانا 2.1 جدیدترین است؛ Lite سریع‌ترین.\n"
+            "برای همه‌ی providerها باز است؛ اگر مدلی تصویر نسازد خطای دوستانه می‌بینی.",
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb)
         )
         return
