@@ -1170,6 +1170,13 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertTrue(ai_solver.is_non_persian_output_drift('Привет, я тебя плохо слышу'))
         self.assertTrue(ai_solver.is_non_persian_output_drift('नमस्ते मैं आपकी कैसे मदद कर सकता हूँ'))
 
+        # ۵) پیام وضعیت فکر کردن باید ثابت و فقط «💭 در حال فکر کردن...» باشد (بدون عبارات رندوم)
+        self.assertEqual(ai_solver.THINKING_MESSAGE, "💭 در حال فکر کردن...")
+        self.assertEqual(ai_solver.THINKING_PHRASES, ["💭 در حال فکر کردن..."])
+        self.assertEqual(ai_solver.STALL_PHRASES, ["💭 در حال فکر کردن..."])
+        self.assertEqual(ai_solver._pick_unused(ai_solver.THINKING_PHRASES, set()), "💭 در حال فکر کردن...")
+
+
 
 
 
