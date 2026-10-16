@@ -477,18 +477,28 @@ export const api = {
       method: "POST",
       form,
     }),
-  caDelContent: (cid) =>
-    req(`/api/content/basic-science/content/${cid}`, { method: "DELETE" }),
+  caDelContent: (cid, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.edit_scope) q.set("edit_scope", opts.edit_scope);
+    if (opts.intake) q.set("intake", opts.intake);
+    const qs = q.toString();
+    return req(`/api/content/basic-science/content/${cid}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
   caAddSession: (lid, body) =>
     req(`/api/content/basic-science/lessons/${lid}/sessions`, {
       method: "POST",
       body,
     }),
-  caEditSession: (sid, body) =>
-    req(`/api/content/basic-science/sessions/${sid}`, {
+  caEditSession: (sid, body, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.edit_scope) q.set("edit_scope", opts.edit_scope);
+    if (opts.intake) q.set("intake", opts.intake);
+    const qs = q.toString();
+    return req(`/api/content/basic-science/sessions/${sid}${qs ? `?${qs}` : ""}`, {
       method: "PATCH",
       body,
-    }),
+    });
+  },
   caDelSession: (sid) =>
     req(`/api/content/basic-science/sessions/${sid}`, { method: "DELETE" }),
   caForkSession: (sid, intake) =>

@@ -1570,7 +1570,9 @@ def _quality_simple_query(kind: str):
         # به‌جایش فیلد ناموجود «name» را ناقص گزارش می‌کرد.
         # نوع نامعتبر/غایب: $nin خودش غایب/None/خالی را هم می‌گیرد.
         # نام: وقتی «هیچ‌کدام» از فیلدهای نام مقدار غیرخالی ندارند.
-        "files_missing_metadata": (db.bs_content, {"$or": [
+        # ⭐ م6 (R6): کپی‌های fork (fork_of دارد) همان فایل منطقی‌اند؛
+        # در شمارش سراسری کیفیت داده دوبار شمرده نمی‌شوند.
+        "files_missing_metadata": (db.bs_content, {"fork_of": {"$exists": False}, "$or": [
             {"type": {"$nin": CONTENT_TYPES}},
             {"$nor": [
                 {"display_name": {"$gt": ""}},
@@ -4014,22 +4016,26 @@ async def content_tree(intake: Optional[str] = Query(None),
             return str(session.get("intake") or "")
         return lesson_intake_of.get(str(session.get("lesson_id") or ""), "")
 
+    # ⭐ م6 (R5-یکسان‌سازی): قاعده‌ی سایه‌اندازی از DAL مشترک
+    # (db.bs_effective_view) — نه پیاده‌سازی محلی تکراری.
     if iv:
-        # سراسری + همین ورودی. جلسه‌ای که برای این ورودی fork شده، پایه‌اش پنهان است.
-        allowed = {"", iv}
-        forked_bases = {
-            str(s.get("fork_of")) for s in sessions
-            if s.get("fork_of") and _session_bucket(s) in allowed and _session_bucket(s)
-        }
-        sessions = [
-            s for s in sessions
-            if _session_bucket(s) in allowed and str(s.get("_id")) not in forked_bases
-        ]
+        # سراسری + همین ورودی؛ جلسه‌ای که برای این ورودی fork شده، پایه‌اش سایه است
+        sessions = db.bs_effective_view(sessions, ["", iv],
+                                        {str(l.get("_id")): str(l.get("intake") or "") for l in lessons})
     else:
+        # سطل سراسری: فقط جلسات سراسری (forkها زیر base جمع می‌شوند)
         sessions = [
             s for s in sessions
             if _session_bucket(s) == "" and not s.get("fork_of")
         ]
+    # ⭐ م6 (R2): شمارش overrideهای فعال هر base برای نشان «⭐n»
+    _ovr_counts = {}
+    _raw_sessions = await db.bs_sessions.find(
+        {"lesson_id": {"$in": lesson_refs}, "fork_of": {"$type": "string"},
+         "archived": {"$ne": True}}, {"fork_of": 1}).to_list(1000) if lesson_refs else []
+    for _f in _raw_sessions:
+        _b = str(_f.get("fork_of") or "")
+        _ovr_counts[_b] = _ovr_counts.get(_b, 0) + 1
     sess_ids = [str(s.get("_id")) for s in sessions]
     session_refs = list(sess_ids)
     session_refs.extend(oid for oid in (_oid(v) for v in sess_ids) if oid is not None)
@@ -4098,9 +4104,16 @@ async def content_tree(intake: Optional[str] = Query(None),
                     "kind": ("fork" if fork_of else
                              ("exclusive" if s_intake_effective else "global")),
                     "fork_of": fork_of,
+                    # ⭐ م6 (R2): تعداد ورودی‌های دارای override برای نشان ⭐n
+                    "override_count": _ovr_counts.get(sid, 0),
+                    "logical_id": fork_of or sid,
                     # 🛡 C3.1 — اگر scope کاربر تنظیم نشده (iv='') هیچ سطلی
-                    # برای او نوشتنی نیست، حتی سراسری
-                    "readonly": bool(scoped_view and (not iv or s_intake_effective != iv)),
+                    # برای او نوشتنی نیست، حتی سراسری.
+                    # ⭐ م6: جلسه‌ی «سراسری» برای scopedِ دارای ورودی، از طریق
+                    # CoW قابل ویرایش است (ذخیره → override خودش)؛ فقط ورودیِ
+                    # دیگر فقط‌خواندنی است.
+                    "readonly": bool(scoped_view and (
+                        not iv or (s_intake_effective != iv and s_intake_effective != ""))),
                     "content_count": counts.get(sid, {}).get("n", 0),
                     "types": counts.get(sid, {}).get("types", {}),
                 })
@@ -4301,10 +4314,17 @@ async def content_sessions_bulk(body: SessionsBulk,
         raise HTTPException(400, "لیست جلسات خالی است")
     done = 0
     if body.action == "delete":
+        # ⭐ م6 (R7): هم‌تراز با ربات/API — حذف base دارای fork مسدود است
+        # (قبلاً وب، forkهای وابسته را بی‌سؤال پاک می‌کرد = حذف داده).
+        _blocked = []
         for sid in ids:
-            # پاک‌سازی forkهای وابسته هم (جلوگیری از یتیم‌شدن)
-            for f in await db.bs_sessions.find({"fork_of": sid}).to_list(50):
-                await db.bs_delete_session(str(f.get("_id")))
+            if await db.bs_session_has_forks(sid):
+                _blocked.append(sid)
+        if _blocked:
+            raise HTTPException(409,
+                f"{len(_blocked)} جلسه انتخاب‌شده نسخه‌ی اختصاصی (fork) دارد؛ "
+                "ابتدا overrideهای آن ورودی‌ها را بازگردانید (↩️)")
+        for sid in ids:
             await db.bs_delete_session(sid)
             done += 1
     elif body.action == "duplicate":

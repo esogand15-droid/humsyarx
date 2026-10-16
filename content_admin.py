@@ -36,7 +36,10 @@ GLOBAL_INTAKE_LABEL = '🌐 سراسری'
 def _clear(context):
     for k in ['ca_mode','ca_pending_file','ca_pending_file_info','ca_pending_display',
               'ca_pending_original','ca_content_type',
-              'ca_edit_target','ca_edit_field','ca_ref_lang','ca_ref_volume']:
+              'ca_edit_target','ca_edit_field','ca_ref_lang','ca_ref_volume',
+              # ⭐ ماموریت ۶ — وضعیت CoW
+              'ca_edit_scope','ca_pending_content','ca_pending_ref_upload',
+              'ca_ref_upload_kind']:
         context.user_data.pop(k, None)
 
 
@@ -94,6 +97,9 @@ ITEM_INTAKE_CHECKS = {
     'confirm_del_ref_book': 'ref_book', 'ref_book': 'ref_book',
     'upload_ref_volume_prompt': 'ref_book', 'upload_ref': 'ref_book',
     'del_ref_file': 'ref_file',
+    # ⭐ ماموریت ۶
+    'confirm_unfork_session': 'session', 'confirm_unfork_book': 'ref_book',
+    'merge_new': 'session',
 }
 
 
@@ -108,6 +114,184 @@ ITEM_VIEW_ACTIONS = {'lesson', 'session', 'ref_subject', 'ref_book'}
 # تغییر نمی‌کند؛ تصمیم نهایی و نوشتن در db.scoped_child_intake گرفته می‌شود
 # و در لحظه‌ی ثبت هم یک بار دیگر سنجیده می‌شود (دفاع لایه‌ای).
 ITEM_CHILD_ACTIONS = {'add_session_prompt': 'lesson', 'add_ref_book_prompt': 'ref_subject'}
+
+
+# ⭐ ماموریت ۶ (R1/R4) — اکشن‌های CoW: نوشتن روی آیتمِ سراسری (intake='')
+# مجاز است چون در «لحظه‌ی ذخیره» به override ورودیِ سرور-تعیین‌شده هدایت
+# می‌شود؛ هیچ ساخت داده‌ای در لحظه‌ی کلیک/بازکردن اتفاق نمی‌افتد.
+ITEM_COW_ACTIONS = {
+    'edit_session_menu', 'edit_session_prompt',
+    'upload_content', 'sel_ctype',
+    'content_up', 'content_down', 'del_content', 'confirm_del_content',
+    'edit_ref_book_prompt',
+    'upload_ref_volume_prompt', 'upload_ref', 'del_ref_file',
+}
+
+
+async def _cow_scope(context, uid):
+    """(kind, intake) تصمیم‌گیر CoW — همیشه از سرور؛ ('', '') = CoW ممکن نیست.
+    scoped → intake خودِ scope؛ ارشد → intake انتخاب‌شده (یا '' = سطل سراسری)."""
+    try:
+        scope = await db.get_content_scope(uid)
+    except Exception:
+        return '', ''
+    if not scope:
+        return '', ''
+    if scope.get('kind') == 'scoped' and (scope.get('intake') or ''):
+        return 'scoped', scope['intake']
+    if scope.get('kind') == 'global':
+        return 'global', ((context.user_data or {}).get('ca_intake') or '')
+    return '', ''
+
+
+async def _cow_session_target(context, uid, sid):
+    """هدف نوشتن جلسه — Copy-on-Write در لحظه‌ی ذخیره (ماموریت ۶).
+    خروجی: (sid, '')            → همان‌جا بنویس (دسترسی کامل)
+            (fork_sid, note)    → روی override بنویس (ساخت در همین لحظه)
+            (None, 'deny')      → دسترسی ندارد
+            (None, 'choose')    → ارشد با ورودی انتخاب‌شده: صفحه‌ی انتخاب scope"""
+    s_iv = await db.session_intake(sid)
+    if s_iv:
+        return (sid, '') if await db.can_access_intake(uid, s_iv) else (None, 'deny')
+    kind, tgt = await _cow_scope(context, uid)
+    if kind == 'scoped':
+        fork_sid, created = await db.bs_ensure_override(sid, tgt)
+        if not fork_sid:
+            return None, 'deny'
+        lbl = await _intake_label(tgt)
+        return fork_sid, (f"⭐ برای ورودی «{lbl}» شخصی‌سازی شد؛ تغییرات فقط برای همین ورودی است."
+                          if created else f"⭐ ویرایش نسخه‌ی اختصاصی ورودی «{lbl}».")
+    if kind == 'global':
+        if not tgt:
+            return sid, ''                      # ارشد در سطل سراسری → درجا
+        mode = (context.user_data or {}).get('ca_edit_scope') or ''
+        if mode == 'global':
+            return sid, ''
+        if mode == 'intake':
+            fork_sid, created = await db.bs_ensure_override(sid, tgt)
+            if not fork_sid:
+                return None, 'deny'
+            lbl = await _intake_label(tgt)
+            return fork_sid, (f"⭐ برای ورودی «{lbl}» شخصی‌سازی شد؛ تغییرات فقط برای همین ورودی است."
+                              if created else f"⭐ ویرایش نسخه‌ی اختصاصی ورودی «{lbl}».")
+        return None, 'choose'
+    return None, 'deny'
+
+
+async def _cow_book_target(context, uid, bid):
+    """همان CoW برای کتاب رفرنس."""
+    b_iv = await db.ref_book_intake(bid)
+    if b_iv:
+        return (bid, '') if await db.can_access_intake(uid, b_iv) else (None, 'deny')
+    kind, tgt = await _cow_scope(context, uid)
+    if kind == 'scoped':
+        fork_bid, created = await db.ref_ensure_override(bid, tgt)
+        if not fork_bid:
+            return None, 'deny'
+        lbl = await _intake_label(tgt)
+        return fork_bid, (f"⭐ برای ورودی «{lbl}» شخصی‌سازی شد؛ تغییرات فقط برای همین ورودی است."
+                          if created else f"⭐ ویرایش نسخه‌ی اختصاصی ورودی «{lbl}».")
+    if kind == 'global':
+        if not tgt:
+            return bid, ''
+        mode = (context.user_data or {}).get('ca_edit_scope') or ''
+        if mode == 'global':
+            return bid, ''
+        if mode == 'intake':
+            fork_bid, created = await db.ref_ensure_override(bid, tgt)
+            if not fork_bid:
+                return None, 'deny'
+            lbl = await _intake_label(tgt)
+            return fork_bid, (f"⭐ برای ورودی «{lbl}» شخصی‌سازی شد؛ تغییرات فقط برای همین ورودی است."
+                              if created else f"⭐ ویرایش نسخه‌ی اختصاصی ورودی «{lbl}».")
+        return None, 'choose'
+    return None, 'deny'
+
+
+async def _cow_content_target(context, uid, cid):
+    """CoW در سطح فایل: cid → cid معادل روی هدف نوشتن جلسه.
+    فایلِ فقط-در-سراسری (واگرایی R5) به‌صورت افزودنی به fork کپی می‌شود."""
+    item = await db.bs_get_content_item(cid)
+    if not item:
+        return None, 'deny'
+    sid = str(item.get('session_id', ''))
+    tgt, note = await _cow_session_target(context, uid, sid)
+    if tgt is None:
+        return None, note
+    if tgt == sid:
+        return cid, note
+    twin = await db.bs_content.find_one({'session_id': tgt, 'fork_of': cid})
+    if twin:
+        return str(twin['_id']), note
+    return await db.bs_copy_content_item(cid, tgt), note
+
+
+async def _cow_ref_file_target(context, uid, fid):
+    """CoW در سطح فایل رفرنس: fid → معادل روی هدف نوشتن کتاب."""
+    f = await db.ref_get_file(fid) if hasattr(db, 'ref_get_file') else None
+    if not f:
+        return None, 'deny'
+    bid = str(f.get('book_id', ''))
+    tgt, note = await _cow_book_target(context, uid, bid)
+    if tgt is None:
+        return None, note
+    if tgt == bid:
+        return fid, note
+    twin = await db.ref_files.find_one({'book_id': tgt, 'fork_of': fid})
+    if twin:
+        return str(twin['_id']), note
+    # کپی افزودنی تک‌فایل (همان فیلدهای ref_ensure_override)
+    from time_utils import utc_now_iso as _uni
+    r = await db.ref_files.insert_one({
+        'book_id': tgt, 'lang': f.get('lang', 'fa'), 'volume': f.get('volume', 1),
+        'description': f.get('description', ''), 'file_id': f.get('file_id', ''),
+        'order': f.get('order', 0), 'uploaded_at': _uni(),
+        'downloads': 0, 'notif_sent': True, 'fork_of': fid,
+        'original_file_name': f.get('original_file_name', ''),
+        'display_file_name': f.get('display_file_name', ''),
+        'display_name': f.get('display_name', f.get('display_file_name', '')),
+        'file_extension': f.get('file_extension', ''), 'mime_type': f.get('mime_type', ''),
+        'file_size': f.get('file_size', 0), 'branding_enabled': f.get('branding_enabled', False),
+    })
+    return str(r.inserted_id), note
+
+
+async def _scope_header(context, uid=None) -> str:
+    """⭐ ماموریت ۶ — سربرگ محدوده‌ی یکدست روی همه‌ی صفحه‌های مدیریتی."""
+    try:
+        ctx = (context.user_data or {}).get('ca_intake') or ''
+        if ctx:
+            return f"📍 محدوده: {await _intake_label(ctx)} — تغییرات پیش‌فرض فقط همین ورودی\n\n"
+        if uid is not None:
+            kind, _ = await _cow_scope(context, uid)
+            if kind == 'scoped':
+                return "📍 محدوده: سراسری (فقط‌مشاهده — ورودی شما تنظیم نشده)\n\n"
+        return "📍 محدوده: 🌐 سراسری (همه‌ی ورودی‌ها)\n\n"
+    except Exception:
+        return ''
+
+
+async def _scope_choice_screen(query, context, item_id, kind, step):
+    """صفحه‌ی انتخاب روشن برای ارشدی که ورودی‌ای انتخاب کرده و می‌خواهد
+    آیتم «سراسری» را تغییر دهد (R4): 🌐 همه / ⭐ فقط همین ورودی."""
+    ctx = (context.user_data or {}).get('ca_intake') or ''
+    if not ctx:
+        return False
+    lbl = await _intake_label(ctx)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 ویرایش سراسری (همه‌ی ورودی‌ها)",
+                              callback_data=f'ca:escope:{item_id}:g:{step}')],
+        [InlineKeyboardButton(f"⭐ فقط برای ورودی {lbl}",
+                              callback_data=f'ca:escope:{item_id}:i:{step}')],
+        [InlineKeyboardButton("❌ لغو", callback_data=f'ca:{kind}:{item_id}')],
+    ])
+    await query.edit_message_text(
+        "⚖️ <b>این مورد سراسری است (🌐)</b>\n\n"
+        "تغییر را برای کدام محدوده اعمال کنید؟\n"
+        "• 🌐 سراسری: روی <b>همه‌ی ورودی‌ها</b> اعمال می‌شود\n"
+        f"• ⭐ فقط ورودی {lbl}: نسخه‌ی اختصاصی همین ورودی ساخته/ویرایش می‌شود؛ بقیه سراسری می‌مانند",
+        parse_mode='HTML', reply_markup=kb)
+    return True
 
 
 async def _resolve_item_intake(kind: str, item_id: str) -> str:
@@ -147,12 +331,98 @@ async def _enforce_item_scope(query, uid: int, action: str, parts) -> bool:
     if action in ITEM_CHILD_ACTIONS and item_intake == '':
         if await db.scoped_child_intake(uid, item_intake) is not None:
             return True
+    # ⭐ ماموریت ۶ — CoW: نوشتن روی آیتم سراسری مجاز است چون در لحظه‌ی
+    # ذخیره به override ورودیِ سرور-تعیین‌شده هدایت می‌شود؛ intake هدف
+    # هرگز از callback/کلاینت نمی‌آید.
+    if action in ITEM_COW_ACTIONS and item_intake == '':
+        _scope = await db.get_content_scope(uid)
+        if _scope and _scope.get('kind') == 'global':
+            return True   # ارشد: همیشه می‌تواند سراسری را بنویسد (انتخاب scope بعداً)
+        if _scope and _scope.get('kind') == 'scoped' and (_scope.get('intake') or ''):
+            return True   # ورودی‌خاص: نوشتن به override خودش هدایت می‌شود
     await _deny_scope(query, uid)
     return False
 
 
 def _back_btn(label, cb):
     return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=cb)]])
+
+
+async def _exec_content_action(query, context, uid, action, cid):
+    """⭐ ماموریت ۶ — اجرای عملیات فایل (⬆️/⬇️/🗑) با Copy-on-Write:
+    هدف نوشتن از سرور تعیین می‌شود؛ در صورت نیاز override ساخته می‌شود."""
+    tgt_cid, note = await _cow_content_target(context, uid, cid)
+    if not tgt_cid:
+        if note == 'choose':
+            _item = await db.bs_get_content_item(cid) or {}
+            _sid = str(_item.get('session_id', ''))
+            context.user_data['ca_pending_content'] = (action, cid)
+            await _scope_choice_screen(query, context, _sid, 'session', 'c')
+        else:
+            await _deny_scope(query, uid)
+        return
+    item = await db.bs_get_content_item(tgt_cid) or {}
+    sid = str(item.get('session_id', ''))
+    if sid:
+        context.user_data['ca_session_id'] = sid
+    if action == 'content_up':
+        await db.reorder_content_up(tgt_cid, sid)
+    elif action == 'content_down':
+        await db.reorder_content_down(tgt_cid, sid)
+    elif action == 'confirm_del_content':
+        item_before = await db.bs_get_content_item(tgt_cid)
+        await db.bs_delete_content(tgt_cid)
+        if item_before:
+            type_fa = dict(CONTENT_TYPES).get(item_before.get('type', ''), 'فایل')
+            try:
+                await _audit(context, uid, f"حذف {type_fa}",
+                    severity='HIGH', target_id=tgt_cid, target_type='content',
+                    target_label=item_before.get('description', '')[:60] or type_fa,
+                    tags=['حذف_محتوا'])
+            except Exception as _e:
+                logger.warning(f"del_content audit failed: {_e}")
+    if note:
+        try:
+            await query.answer(note[:190])
+        except Exception:
+            pass
+    await _show_session_content(query, context, sid)
+
+
+async def _exec_ref_file_action(query, context, uid, action, fid):
+    """⭐ ماموریت ۶ — حذف فایل رفرنس با CoW."""
+    tgt_fid, note = await _cow_ref_file_target(context, uid, fid)
+    if not tgt_fid:
+        if note == 'choose':
+            _f = (await db.ref_get_file(fid) if hasattr(db, 'ref_get_file') else None) or {}
+            _bid = str(_f.get('book_id', ''))
+            context.user_data['ca_pending_ref_upload'] = (action, fid)
+            await _scope_choice_screen(query, context, _bid, 'ref_book', 'bf')
+        else:
+            await _deny_scope(query, uid)
+        return
+    if action == 'del_ref_file':
+        _reffile = await db.ref_get_file(tgt_fid) if hasattr(db, 'ref_get_file') else None
+        _ref_label = f"جلد {_reffile.get('volume','')}" if _reffile else tgt_fid
+        await db.ref_delete_file(tgt_fid)
+        try:
+            await _audit(context, uid, "حذف فایل رفرنس",
+                severity='HIGH', target_id=tgt_fid, target_type='ref_file',
+                target_label=_ref_label, tags=['حذف_رفرنس'])
+        except Exception as _e:
+            logger.warning(f"del_ref_file audit failed: {_e}")
+        bid = context.user_data.get('ca_ref_book_id', '')
+        _tgt_bid, _ = await _cow_book_target(context, uid, bid) if bid else (None, '')
+        if _tgt_bid:
+            context.user_data['ca_ref_book_id'] = _tgt_bid
+            bid = _tgt_bid
+        if note:
+            try:
+                await query.answer(note[:190])
+            except Exception:
+                pass
+        await query.edit_message_text("✅ فایل حذف شد.",
+            reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_book:{bid}'))
 
 
 # ══════════════════════════════════════════════════════════
@@ -219,8 +489,30 @@ async def _h_fork_session(query, context, uid: int, _cscope, is_scoped: bool, pa
 
 
 async def _h_unfork_session(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
-    """شاخه‌ی unfork_session — بازگردانی جلسه‌ی فورک‌شده به سراسری."""
+    """شاخه‌ی unfork_session — تأییدِ بازگردانی جلسه‌ی فورک‌شده به سراسری."""
     fork_id = parts[2]
+    _fi = await db.session_intake(fork_id)
+    if not await db.can_access_intake(uid, _fi):
+        await _deny_scope(query, uid)
+        return ConversationHandler.END
+    fork = await db.bs_get_session(fork_id) or {}
+    # ⭐ م6: حذف override = از دست رفتن ویرایش‌های همین ورودی → تأیید صریح
+    await query.edit_message_text(
+        "↩️ <b>بازگشت به نسخه‌ی سراسری؟</b>\n\n"
+        f"نسخه‌ی اختصاصی جلسه {fork.get('number','')} — «{fork.get('topic','')}» "
+        f"برای ورودی «{await _intake_label(_fi)}» و همه‌ی تغییراتش حذف می‌شود؛ "
+        "نسخه‌ی سراسری دست‌نخورده می‌ماند.",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ بله، بازگشت به سراسری",
+                                  callback_data=f'ca:confirm_unfork_session:{fork_id}')],
+            [InlineKeyboardButton("❌ لغو", callback_data=f'ca:session:{fork_id}')],
+        ]))
+    return ConversationHandler.END
+
+
+async def _do_unfork_session(query, context, uid: int, fork_id: str):
+    """اجرای بازگردانی (پس از تأیید)."""
     _fi = await db.session_intake(fork_id)
     if not await db.can_access_intake(uid, _fi):
         await _deny_scope(query, uid)
@@ -274,12 +566,30 @@ async def _h_fork_book(query, context, uid: int, _cscope, is_scoped: bool, parts
 
 
 async def _h_unfork_book(query, context, uid: int, _cscope, is_scoped: bool, parts: list):
-    """شاخه‌ی unfork_book — بازگردانی کتاب فورک‌شده به سراسری."""
+    """شاخه‌ی unfork_book — تأییدِ بازگردانی کتاب فورک‌شده به سراسری."""
     fork_bid = parts[2]
     _fi = await db.ref_book_intake(fork_bid)
     if not await db.can_access_intake(uid, _fi):
         await _deny_scope(query, uid)
         return ConversationHandler.END
+    fork = await db.ref_get_book(fork_bid) or {}
+    await query.edit_message_text(
+        "↩️ <b>بازگشت به نسخه‌ی سراسری؟</b>\n\n"
+        f"نسخه‌ی اختصاصی کتاب «{fork.get('name','')}» برای ورودی "
+        f"«{await _intake_label(_fi)}» و همه‌ی تغییراتش حذف می‌شود؛ "
+        "نسخه‌ی سراسری دست‌نخورده می‌ماند.",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ بله، بازگشت به سراسری",
+                                  callback_data=f'ca:confirm_unfork_book:{fork_bid}')],
+            [InlineKeyboardButton("❌ لغو", callback_data=f'ca:ref_book:{fork_bid}')],
+        ]))
+    return ConversationHandler.END
+
+
+async def _do_unfork_book(query, context, uid: int, fork_bid: str):
+    """اجرای بازگردانی کتاب (پس از تأیید)."""
+    _fi = await db.ref_book_intake(fork_bid)
     base_bid = await db.ref_unfork_book(fork_bid)
     if not base_bid:
         await query.answer("❌ این کتاب نسخه‌ی اختصاصی نیست.",
@@ -488,7 +798,7 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     elif action in ('terms','terms_admin'):
         context.user_data['ca_from_admin'] = from_admin
-        await _show_terms(query, back=back_main)
+        await _show_terms(query, back=back_main, context=context)
 
     elif action == 'term':
         idx = int(parts[2])
@@ -611,6 +921,19 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     elif action == 'edit_session_menu':
         sid = parts[2]; session = await db.bs_get_session(sid)
         if not session: return
+        context.user_data.pop('ca_edit_scope', None)   # ⭐ م6: انتخاب تازه در هر ورود
+        hdr = ''
+        if not await db.session_intake(sid):
+            _kind, _tgt = await _cow_scope(context, uid)
+            if _kind == 'scoped' and _tgt:
+                hdr = (f"🌐 سراسری — تغییر در <b>نسخه‌ی اختصاصی ورودی "
+                       f"{await _intake_label(_tgt)}</b> ذخیره می‌شود (⭐).\n\n")
+            elif _kind == 'global' and _tgt:
+                # ⭐ م6 (R4): ارشدِ در محدوده‌ی یک ورودی — انتخاب روشن قبل از ویرایش
+                if await _scope_choice_screen(query, context, sid, 'session', 'e'):
+                    return ConversationHandler.END
+            else:
+                hdr = "🌐 سراسری — تغییر برای <b>همه‌ی ورودی‌ها</b> اعمال می‌شود.\n\n"
         kb = [
             [InlineKeyboardButton("✏️ موضوع",      callback_data=f'ca:edit_session_prompt:{sid}:topic')],
             [InlineKeyboardButton("✏️ نام استاد",  callback_data=f'ca:edit_session_prompt:{sid}:teacher')],
@@ -618,8 +941,76 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton("🔙 بازگشت",     callback_data=f'ca:session:{sid}')],
         ]
         await query.edit_message_text(
-            f"✏️ <b>ویرایش جلسه {session.get('number','')} — {session.get('topic','')}</b>",
+            f"{hdr}✏️ <b>ویرایش جلسه {session.get('number','')} — {session.get('topic','')}</b>",
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif action == 'escope':
+        # ⭐ ماموریت ۶ — نتیجه‌ی صفحه‌ی انتخاب (فقط ارشد؛ دفاع لایه‌ای زیر)
+        item_id = parts[2]; choice = parts[3]
+        step = parts[4] if len(parts) > 4 else 'e'
+        _sc = await db.get_content_scope(uid)
+        if not (_sc and _sc.get('kind') == 'global'):
+            await _deny_scope(query, uid)
+            return ConversationHandler.END
+        context.user_data['ca_edit_scope'] = 'global' if choice == 'g' else 'intake'
+        _lbl = await _intake_label(context.user_data.get('ca_intake', ''))
+        if step == 'e':
+            session = await db.bs_get_session(item_id)
+            if not session: return
+            hdr = ("🌐 <b>ویرایش سراسری</b> — تغییر برای همه‌ی ورودی‌ها اعمال می‌شود.\n\n"
+                   if choice == 'g' else
+                   f"⭐ <b>فقط ورودی {_lbl}</b> — در اولین ذخیره، نسخه‌ی اختصاصی ساخته می‌شود.\n\n")
+            kb = [
+                [InlineKeyboardButton("✏️ موضوع",      callback_data=f'ca:edit_session_prompt:{item_id}:topic')],
+                [InlineKeyboardButton("✏️ نام استاد",  callback_data=f'ca:edit_session_prompt:{item_id}:teacher')],
+                [InlineKeyboardButton("✏️ شماره جلسه", callback_data=f'ca:edit_session_prompt:{item_id}:number')],
+                [InlineKeyboardButton("🔙 بازگشت",     callback_data=f'ca:session:{item_id}')],
+            ]
+            await query.edit_message_text(
+                f"{hdr}✏️ <b>ویرایش جلسه {session.get('number','')} — {session.get('topic','')}</b>",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+        elif step == 'u':
+            kb = [[InlineKeyboardButton(label, callback_data=f'ca:sel_ctype:{item_id}:{ct}')]
+                  for ct, label in CONTENT_TYPES]
+            kb.append([InlineKeyboardButton("❌ لغو", callback_data=f'ca:session:{item_id}')])
+            hdr = ("🌐 <b>آپلود سراسری</b> — فایل برای همه‌ی ورودی‌ها قابل‌مشاهده می‌شود.\n\n"
+                   if choice == 'g' else
+                   f"⭐ <b>فقط ورودی {_lbl}</b> — در لحظه‌ی ثبت، نسخه‌ی اختصاصی ساخته می‌شود.\n\n")
+            await query.edit_message_text(f"{hdr}📤 <b>نوع محتوا:</b>",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+        elif step == 'c':
+            pend = context.user_data.pop('ca_pending_content', None)
+            if pend and len(pend) == 2:
+                await _exec_content_action(query, context, uid, pend[0], pend[1])
+        elif step == 'be':
+            book = await db.ref_get_book(item_id)
+            if not book: return
+            context.user_data.update({'ca_mode':'edit_ref_book','ca_edit_target':item_id})
+            hdr = ("🌐 <b>ویرایش سراسری</b> — برای همه‌ی ورودی‌ها.\n\n" if choice == 'g' else
+                   f"⭐ <b>فقط ورودی {_lbl}</b> — در اولین ذخیره، نسخه‌ی اختصاصی ساخته می‌شود.\n\n")
+            await query.edit_message_text(
+                f"{hdr}✏️ <b>ویرایش نام کتاب</b>\n\nفعلی: <b>{book['name']}</b>\n\nجدید:\n⌨️ /cancel",
+                parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{item_id}'))
+        elif step == 'bu':
+            lang = context.user_data.get('ca_ref_lang', 'fa')
+            vol  = context.user_data.get('ca_ref_volume', 1)
+            kind_u = context.user_data.get('ca_ref_upload_kind', 'volume')
+            # ⭐ م6: مسیر ذخیره‌ی فایل را تضمین می‌کنیم (دفاع در برابر state گم‌شده)
+            context.user_data.update({'ca_ref_book_id': item_id,
+                                      'ca_mode': 'waiting_ref_file'})
+            ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+            title = (f"📤 <b>آپلود {ll} — جلد {vol}</b>" if kind_u == 'volume'
+                     else f"🔄 <b>جایگزین {ll} جلد {vol}</b>")
+            hdr = ("🌐 <b>سراسری</b> — برای همه‌ی ورودی‌ها.\n\n" if choice == 'g' else
+                   f"⭐ <b>فقط ورودی {_lbl}</b> — در لحظه‌ی ثبت، نسخه‌ی اختصاصی ساخته می‌شود.\n\n")
+            await query.edit_message_text(
+                f"{hdr}{title}\n\nفایل PDF را ارسال کنید:\n⌨️ /cancel",
+                parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{item_id}'))
+        elif step == 'bf':
+            pend = context.user_data.pop('ca_pending_ref_upload', None)
+            if pend and len(pend) == 2:
+                await _exec_ref_file_action(query, context, uid, pend[0], pend[1])
+        return ConversationHandler.END
 
     elif action == 'edit_session_prompt':
         sid = parts[2]; field = parts[3]; session = await db.bs_get_session(sid)
@@ -673,11 +1064,22 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # ── 🍴 موج C2 — سفارشی‌سازی جلسه‌ی سراسری برای یک ورودی ──
     elif action == 'fork_session':
+        # ⭐ م6: مسیر legacy — دکمه‌ای به اینجا اشاره نمی‌کند؛ callbackهای
+        # قدیمی همچنان کار می‌کنند (به ensure_override اتمیک هدایت شده‌اند)
         return await _h_fork_session(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'unfork_session':
         return await _h_unfork_session(query, context, uid, _cscope, is_scoped, parts)
+    elif action == 'confirm_unfork_session':
+        return await _do_unfork_session(query, context, uid, parts[2])
     elif action == 'upload_content':
         sid = parts[2]; context.user_data['ca_session_id'] = sid
+        context.user_data.pop('ca_edit_scope', None)   # ⭐ م6: انتخاب تازه
+        if not await db.session_intake(sid):
+            _kind, _tgt = await _cow_scope(context, uid)
+            if _kind == 'global' and _tgt:
+                # ⭐ م6 (R4): ارشد در محدوده‌ی ورودی → انتخاب روشن قبل از آپلود
+                if await _scope_choice_screen(query, context, sid, 'session', 'u'):
+                    return ConversationHandler.END
         kb = [[InlineKeyboardButton(label, callback_data=f'ca:sel_ctype:{sid}:{ct}')]
               for ct, label in CONTENT_TYPES]
         kb.append([InlineKeyboardButton("❌ لغو", callback_data=f'ca:session:{sid}')])
@@ -695,14 +1097,22 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # ─ ترتیب فایل‌های جلسه ─
     elif action == 'content_up':
-        cid = parts[2]; sid = context.user_data.get('ca_session_id','')
-        await db.reorder_content_up(cid, sid)
-        await _show_session_content(query, context, sid)
+        # ⭐ م6 — CoW: تغییر ترتیب هم «ذخیره» است؛ هدف از سرور تعیین می‌شود
+        await _exec_content_action(query, context, uid, 'content_up', parts[2])
+        return ConversationHandler.END
 
     elif action == 'content_down':
-        cid = parts[2]; sid = context.user_data.get('ca_session_id','')
-        await db.reorder_content_down(cid, sid)
-        await _show_session_content(query, context, sid)
+        await _exec_content_action(query, context, uid, 'content_down', parts[2])
+        return ConversationHandler.END
+
+    elif action == 'merge_new':
+        # ⭐ م6 (R5) — افزودن فایل‌های جدیدِ سراسری به fork (فقط افزودنی)
+        fork_sid = parts[2]
+        added = await db.bs_merge_base_new_content(fork_sid)
+        await query.answer(f"📥 {added} فایل جدید از نسخه‌ی سراسری افزوده شد"
+                           if added else "ℹ️ فایل جدیدی در نسخه‌ی سراسری نیست")
+        await _show_session_content(query, context, fork_sid)
+        return ConversationHandler.END
 
     # ─ حذف محتوا ─
     elif action == 'del_content':
@@ -719,21 +1129,9 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
             ]))
 
     elif action == 'confirm_del_content':
-        cid = parts[2]
-        # FIX طبق سند: حذف منابع/جزوات قبلاً اصلاً لاگ نمی‌شد
-        item_before = await db.bs_get_content_item(cid)
-        await db.bs_delete_content(cid)
-        sid = context.user_data.get('ca_session_id','')
-        if item_before:
-            type_fa = dict(CONTENT_TYPES).get(item_before.get('type', ''), 'فایل')
-            await _audit(context, uid, f"حذف {type_fa}",
-                severity='HIGH',
-                target_id=cid,
-                target_type='content',
-                target_label=item_before.get('description', '')[:60] or type_fa,
-                tags=['حذف_محتوا'])
-        await query.edit_message_text("✅ محتوا حذف شد.",
-            reply_markup=_back_btn("🔙 بازگشت", f'ca:session:{sid}'))
+        # ⭐ م6 — حذف هم «ذخیره» است: هدف از سرور (CoW در صورت نیاز)
+        await _exec_content_action(query, context, uid, 'confirm_del_content', parts[2])
+        return ConversationHandler.END
 
     # ══════════ رفرنس‌ها ══════════
 
@@ -856,9 +1254,21 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
     elif action == 'edit_ref_book_prompt':
         bid = parts[2]; book = await db.ref_get_book(bid)
         if not book: return
+        context.user_data.pop('ca_edit_scope', None)   # ⭐ م6
+        hdr = ''
+        if not await db.ref_book_intake(bid):
+            _kind, _tgt = await _cow_scope(context, uid)
+            if _kind == 'scoped' and _tgt:
+                hdr = (f"🌐 سراسری — تغییر در <b>نسخه‌ی اختصاصی ورودی "
+                       f"{await _intake_label(_tgt)}</b> ذخیره می‌شود (⭐).\n\n")
+            elif _kind == 'global' and _tgt:
+                if await _scope_choice_screen(query, context, bid, 'ref_book', 'be'):
+                    return ConversationHandler.END
+            else:
+                hdr = "🌐 سراسری — تغییر برای <b>همه‌ی ورودی‌ها</b> اعمال می‌شود.\n\n"
         context.user_data.update({'ca_mode':'edit_ref_book','ca_edit_target':bid})
         await query.edit_message_text(
-            f"✏️ <b>ویرایش نام کتاب</b>\n\nفعلی: <b>{book['name']}</b>\n\nجدید:\n⌨️ /cancel",
+            f"{hdr}✏️ <b>ویرایش نام کتاب</b>\n\nفعلی: <b>{book['name']}</b>\n\nجدید:\n⌨️ /cancel",
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
 
     elif action == 'del_ref_book':
@@ -905,21 +1315,33 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     # ── 🍴 موج C2 — سفارشی‌سازی کتاب سراسری برای یک ورودی ──
     elif action == 'fork_book':
+        # ⭐ م6: مسیر legacy (مثل fork_session)
         return await _h_fork_book(query, context, uid, _cscope, is_scoped, parts)
     elif action == 'unfork_book':
         return await _h_unfork_book(query, context, uid, _cscope, is_scoped, parts)
+    elif action == 'confirm_unfork_book':
+        return await _do_unfork_book(query, context, uid, parts[2])
     elif action == 'upload_ref_volume_prompt':
         bid  = parts[2]; lang = parts[3]
+        context.user_data.pop('ca_edit_scope', None)   # ⭐ م6
         files = await db.ref_get_files(bid)
         existing_vols = [f.get('volume', 1) for f in files if f.get('lang') == lang]
         next_vol = max(existing_vols, default=0) + 1
-        ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+        # ⭐ م6: state باید *قبل* از صفحه‌ی انتخاب scope ساخته شود تا پس از
+        # انتخاب، مسیر ذخیره‌ی فایل (message_router: waiting_ref_file) سالم باشد
         context.user_data.update({
             'ca_ref_book_id': bid,
             'ca_ref_lang':    lang,
             'ca_ref_volume':  next_vol,
             'ca_mode':        'waiting_ref_file',
+            'ca_ref_upload_kind': 'volume',
         })
+        if not await db.ref_book_intake(bid):
+            _kind, _tgt = await _cow_scope(context, uid)
+            if _kind == 'global' and _tgt:
+                if await _scope_choice_screen(query, context, bid, 'ref_book', 'bu'):
+                    return ConversationHandler.END
+        ll = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
         await query.edit_message_text(
             f"📤 <b>آپلود {ll} — جلد {next_vol}</b>\n\n"
             f"فایل PDF را ارسال کنید:\n⌨️ /cancel",
@@ -931,33 +1353,32 @@ async def content_admin_callback(update: Update, context: ContextTypes.DEFAULT_T
         # جایگزین کردن یک جلد موجود
         bid = parts[2]; lang = parts[3]; vol = int(parts[4])
         ll  = "🇮🇷 فارسی" if lang == 'fa' else "🌐 لاتین"
+        context.user_data.pop('ca_edit_scope', None)   # ⭐ م6
+        if not await db.ref_book_intake(bid):
+            _kind, _tgt = await _cow_scope(context, uid)
+            if _kind == 'global' and _tgt:
+                context.user_data.update({
+                    'ca_ref_book_id': bid, 'ca_ref_lang': lang,
+                    'ca_ref_volume': vol, 'ca_ref_upload_kind': 'replace',
+                    'ca_mode': 'waiting_ref_file',   # ⭐ م6: قبل از صفحه‌ی انتخاب scope
+                })
+                if await _scope_choice_screen(query, context, bid, 'ref_book', 'bu'):
+                    return ConversationHandler.END
         context.user_data.update({
             'ca_ref_book_id': bid,
             'ca_ref_lang':    lang,
             'ca_ref_volume':  vol,
             'ca_mode':        'waiting_ref_file',
+            'ca_ref_upload_kind': 'replace',   # ⭐ م6
         })
         await query.edit_message_text(
             f"🔄 <b>جایگزین {ll} جلد {vol}</b>\n\nفایل جدید ارسال کنید:\n⌨️ /cancel",
             parse_mode='HTML', reply_markup=_back_btn("❌ لغو", f'ca:ref_book:{bid}'))
 
     elif action == 'del_ref_file':
-        fid = parts[2]
-        _reffile = await db.ref_get_file(fid) if hasattr(db, 'ref_get_file') else None
-        _ref_label = f"جلد {_reffile.get('volume','')}" if _reffile else fid
-        await db.ref_delete_file(fid)
-        try:
-            await _audit(context, uid, "حذف فایل رفرنس",
-                severity='HIGH',
-                target_id=fid,
-                target_type='ref_file',
-                target_label=_ref_label,
-                tags=['حذف_رفرنس'])
-        except Exception as _e:
-            logger.warning(f"del_ref_file audit failed: {_e}")
-        bid = context.user_data.get('ca_ref_book_id','')
-        await query.edit_message_text("✅ فایل حذف شد.",
-            reply_markup=_back_btn("🔙 بازگشت", f'ca:ref_book:{bid}'))
+        # ⭐ م6 — حذف فایل هم «ذخیره» است: CoW از سرور
+        await _exec_ref_file_action(query, context, uid, 'del_ref_file', parts[2])
+        return ConversationHandler.END
 
     # ══════════ FAQ ══════════
 
@@ -1259,7 +1680,7 @@ async def _show_overview(query, uid: int = None, context=None):
     ]
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
-async def _show_terms(query, back='ca:main'):
+async def _show_terms(query, back='ca:main', context=None):
     kb = []
     for i in range(0, len(TERMS), 2):
         row = [InlineKeyboardButton(f"📘 {TERMS[i]}", callback_data=f'ca:term:{i}')]
@@ -1267,7 +1688,9 @@ async def _show_terms(query, back='ca:main'):
             row.append(InlineKeyboardButton(f"📘 {TERMS[i+1]}", callback_data=f'ca:term:{i+1}'))
         kb.append(row)
     kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data=back)])
-    await query.edit_message_text("📘 <b>انتخاب ترم — علوم پایه</b>",
+    # ⭐ م6: سربرگ محدوده
+    hdr = (await _scope_header(context, query.from_user.id)) if context else ''
+    await query.edit_message_text(f"{hdr}📘 <b>انتخاب ترم — علوم پایه</b>",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1288,31 +1711,6 @@ def _global_delete_hint(resolved_intake, context) -> str:
         return ''
     return ("\n\n🌐 این مورد سراسری است. حذف، آن را برای همه برمی‌دارد. "
             "اگر فقط همین ورودی را می‌خواهید، حذف نکنید و ✂️ بزنید.")
-
-
-async def _specialize_row(context, item_id, kind):
-    """✂️/⭐ وقتی پنل روی یک ورودی است و آیتم سراسری است.
-    ادمین ارشد و ورودی‌خاص هر دو همین ورودی انتخاب‌شده را هدف می‌گیرند."""
-    ctx = (context.user_data or {}).get('ca_intake') or ''
-    if not ctx:
-        return None
-    if kind == 'session':
-        fk = await db.session_superseded_by_fork(item_id, ctx)
-        if fk:
-            return InlineKeyboardButton(
-                "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
-                callback_data=f'ca:session:{str(fk["_id"])}')
-        return InlineKeyboardButton(
-            "✂️ اختصاصی‌کردن این جلسه برای ورودی انتخاب‌شده",
-            callback_data=f'ca:fork_session:{item_id}')
-    fk = await db.book_superseded_by_fork(item_id, ctx)
-    if fk:
-        return InlineKeyboardButton(
-            "⭐ ویرایش نسخه‌ی اختصاصی این ورودی",
-            callback_data=f'ca:ref_book:{str(fk["_id"])}')
-    return InlineKeyboardButton(
-        "✂️ اختصاصی‌کردن این کتاب برای ورودی انتخاب‌شده",
-        callback_data=f'ca:fork_book:{item_id}')
 
 
 async def _show_lessons(query, context, term, back='ca:terms'):
@@ -1392,14 +1790,15 @@ async def _show_lessons(query, context, term, back='ca:terms'):
     if glob_items and is_scoped:
         ro_line = "\n🔒 🌐=سراسری — فقط‌خواندنی (مدیریت: 🎓 ادمین ارشد)"
     elif glob_items:
-        ro_line = ("\n🌐 سراسری هم اینجاست. ✏️ همان نسخه‌ی مشترک را عوض می‌کند؛ "
-                   "برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و ✂️ بزنید.")
+        ro_line = ("\n🌐 سراسری هم اینجاست — با اولین تغییر روی جلسه‌ی سراسری، "
+                   "انتخاب می‌دهید: 🌐 همه یا ⭐ فقط همین ورودی.")
     else:
         ro_line = ''
     if is_scoped and not ctx:
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
     await query.edit_message_text(
+        f"{await _scope_header(context, query.from_user.id)}"
         f"📘 <b>{term}</b> — {len(lessons)} درس\n"
         f"<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب</i>{ro_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
@@ -1413,15 +1812,21 @@ async def _show_sessions(query, context, lid):
     # 🌊 C1.5 — درس سراسری برای ادمین ورودی خاص: فقط‌خواندنی
     _li      = (lesson or {}).get('intake') or ''
     writable = await db.can_access_intake(uid, _li)
-    # 🍴 C2 — نمای مؤثر برای scoped روی درس سراسری: fork خودش جایگزین base
     _cscope    = await db.get_content_scope(uid)
     is_scoped  = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx        = context.user_data.get('ca_intake', '')
     # 🌊 C3 — نماینده روی درس 🌐: «جلسه‌ی فقط‌ورودی‌خودم» ساختنی است (والد قفل)
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, _li) not in (None, ''))
-    # داخل ورودی انتخاب‌شده: سراسری + همان ورودی، حتی اگر ادمین ارشد بتواند بنویسد.
-    if ctx or (not writable and is_scoped):
+    # ⭐ م6 (R2) — سطل سراسریِ ارشد: forkها زیر base جمع می‌شوند؛ یک ردیف
+    # برای هر جلسه‌ی منطقی + نشان «⭐n» (تعداد ورودی‌های دارای override).
+    _ovr = await db.bs_override_counts(lid)
+    if writable and not is_scoped and not ctx:
+        _bases = {str(s['_id']) for s in sessions}
+        sessions = [s for s in sessions
+                    if not (s.get('fork_of') and str(s.get('fork_of')) in _bases)]
+    elif ctx or (not writable and is_scoped):
+        # داخل ورودی انتخاب‌شده: سراسری + همان ورودی (نمای مؤثر/سایه)
         sessions = await db.bs_get_sessions_effective(lid, [ctx, ''])
     kb = []
     for s in sessions:
@@ -1432,25 +1837,25 @@ async def _show_sessions(query, context, lid):
                          and (s.get('intake') or '') == ctx)
         own_fork  = is_scoped and is_fork and (s.get('intake') or '') == ctx
         if writable:
-            badge = ''
             resolved = _ca_bucket(s, _li)
-            if is_fork:  # ادمین ارشد: forkهای هر ورودی با نشان دیده می‌شوند
-                badge = f" ⭐({await _intake_label(s.get('intake') or '')})"
-            elif resolved:  # 🌊 C3 — فرزند اختصاصی یک ورودی
-                badge = f" 📅({await _intake_label(resolved)})"
-            elif ctx:
-                badge = " 🌐"
+            # ⭐ م6 (R7): نشان در ابتدای دکمه؛ برچسب ورودی کنار نشان
+            if is_fork:
+                mk = f"⭐({await _intake_label(s.get('intake') or '')})"
+            elif resolved:
+                mk = f"📅({await _intake_label(resolved)})"
+            else:
+                mk = "🌐"
+                if _ovr.get(sid):
+                    mk = f"🌐 ⭐{_ovr[sid]}"
             row = [
                 InlineKeyboardButton(
-                    f"📌 {s['number']} — {s.get('topic','')[:20]}{badge}",
+                    f"{mk} {s['number']} — {s.get('topic','')[:20]}",
                     callback_data=f'ca:session:{sid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_session_menu:{sid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_session:{sid}'),
             ]
-            # ✂️ مخصوص همین ورودی است؛ ✏️ همان نسخه‌ی سراسری را عوض می‌کند.
-            if ctx and not is_fork and not resolved:
-                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_session:{sid}'))
-            elif ctx and is_fork and (s.get('intake') or '') == ctx:
+            # ⭐ م6 (R1): ✂️ حذف شد — شخصی‌سازی در لحظه‌ی ذخیره (CoW) انجام می‌شود.
+            if is_fork and ctx and (s.get('intake') or '') == ctx:
                 row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_session:{sid}'))
             kb.append(row)
         elif own_fork:
@@ -1469,13 +1874,11 @@ async def _show_sessions(query, context, lid):
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_session:{sid}'),
             ])
         else:
-            row = [InlineKeyboardButton(
+            # ⭐ م6: برای ادمین ورودی، بازکردن 🌐 فقط نمایش است؛ با اولین
+            # ویرایش/آپلود، نسخه‌ی اختصاصی خودش ساخته می‌شود (CoW).
+            kb.append([InlineKeyboardButton(
                 f"🌐 {s['number']} — {s.get('topic','')[:20]}",
-                callback_data=f'ca:session:{sid}')]
-            if ctx and not is_fork and not _ca_bucket(s, _li):
-                row.append(InlineKeyboardButton(
-                    "✂️", callback_data=f'ca:fork_session:{sid}'))
-            kb.append(row)
+                callback_data=f'ca:session:{sid}')])
     if writable:
         kb.append([InlineKeyboardButton("➕ جلسه جدید", callback_data=f'ca:add_session_prompt:{lid}')])
     elif can_child:
@@ -1485,20 +1888,20 @@ async def _show_sessions(query, context, lid):
             callback_data=f'ca:add_session_prompt:{lid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=f'ca:term:{idx}')])
     lname = lesson.get('name','') if lesson else ''
+    # ⭐ م6: سربرگ محدوده + legend یکدست
+    hdr = await _scope_header(context, uid)
     if writable:
-        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
-                   if ctx else
-                   "<i>✏️=ویرایش  🗑=حذف  ⭐=نسخه‌ی اختصاصی ورودی</i>")
+        ro_line = ("<i>🌐=سراسری (همه)  ⭐=نسخه‌ی اختصاصی ورودی  📅=بومی ورودی  "
+                   "↩️=بازگشت به سراسری</i>")
     elif is_scoped:
-        ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
-                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
-                   "📅=کتاب اختصاصی ورودی خودم</i>")
+        ro_line = ("🌐 سراسری — با اولین ویرایش/آپلود، نسخه‌ی اختصاصی ورودی شما ساخته می‌شود\n"
+                   "<i>⭐=نسخه‌ی من  ↩️=بازگشت به سراسری  📅=بومی ورودی خودم</i>")
         if can_child:
             ro_line += "\n<i>📅=جلسه‌ی اختصاصی ورودی خودم (قابل ویرایش خودتان)</i>"
     else:
         ro_line = "🔒 🌐 سراسری — فقط‌خواندنی"
     await query.edit_message_text(
-        f"📖 <b>{lname}</b> — {len(sessions)} جلسه\n{ro_line}",
+        f"{hdr}📖 <b>{lname}</b> — {len(sessions)} جلسه\n{ro_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1507,16 +1910,19 @@ async def _show_session_content(query, context, sid):
     contents = await db.bs_get_content(sid)
     lid      = context.user_data.get('ca_lesson_id','')
     ICONS    = dict(CONTENT_TYPES)
-    # 🌊 C1.5 — جلسه‌ی سراسری برای ادمین ورودی خاص: فقط‌خواندنی
+    uid      = query.from_user.id
     session_iv = await db.session_intake(sid)
-    writable = await db.can_access_intake(
-        query.from_user.id, session_iv)
+    writable = await db.can_access_intake(uid, session_iv)
+    # ⭐ م6 — CoW: ادمین ورودی هم می‌تواند 🌐 را ویرایش/آپلود کند؛
+    # تغییرات در لحظه‌ی ذخیره به override خودش هدایت می‌شود.
+    _ck, _ct = await _cow_scope(context, uid)
+    cow = writable or bool(_ck == 'scoped' and _ct and not session_iv)
     kb = []
     for i, c in enumerate(contents):
         cid  = str(c['_id'])
         ctype = c.get('type','pdf')
         desc  = c.get('description','')[:18] or f'فایل {i+1}'
-        if writable:
+        if cow:
             # ردیف فایل
             kb.append([
                 InlineKeyboardButton(f"{ICONS.get(ctype,'📎')} {desc}", callback_data=f'ca:session:{sid}'),
@@ -1535,17 +1941,26 @@ async def _show_session_content(query, context, sid):
                 f"{ICONS.get(ctype,'📎')} {desc}",
                 callback_data=f'ca:session:{sid}')])
 
-    if writable:
+    if cow:
         if not contents:
             kb.append([InlineKeyboardButton("📤 آپلود اولین فایل", callback_data=f'ca:upload_content:{sid}')])
         else:
             kb.append([InlineKeyboardButton("📤 ➕ افزودن فایل جدید", callback_data=f'ca:upload_content:{sid}')])
         kb.append([InlineKeyboardButton("✏️ ویرایش اطلاعات جلسه", callback_data=f'ca:edit_session_menu:{sid}')])
-    # ✂️ برای ارشد و ورودی‌خاص یکی است: پنل روی یک ورودی است و جلسه سراسری است.
-    if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
-        _spec = await _specialize_row(context, sid, 'session')
-        if _spec:
-            kb.append([_spec])
+    # ⭐ م6 (R5) — واگرایی: فایل‌های جدیدِ سراسری که این fork ندارد
+    _new_from_base = 0
+    if (session or {}).get('fork_of'):
+        _new_from_base = await db.bs_base_new_content_count(sid)
+        if _new_from_base:
+            kb.append([InlineKeyboardButton(
+                f"📥 افزودن {_new_from_base} فایل جدید از نسخه‌ی سراسری",
+                callback_data=f'ca:merge_new:{sid}')])
+    # ⭐ م6 — ↩️ با برچسب روشن برای fork خودِ محدوده‌ی جاری
+    _own_scope_iv = (_ct if _ck == 'scoped' else context.user_data.get('ca_intake', ''))
+    if (session or {}).get('fork_of') and _own_scope_iv == (session.get('intake') or ''):
+        kb.append([InlineKeyboardButton(
+            "↩️ بازگشت به نسخه‌ی سراسری (حذف شخصی‌سازی)",
+            callback_data=f'ca:unfork_session:{sid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",              callback_data=f'ca:lesson:{lid}')])
 
     by_type = {}
@@ -1553,12 +1968,21 @@ async def _show_session_content(query, context, sid):
         by_type.setdefault(c.get('type','pdf'), []).append(c)
     summary = '  '.join(f"{ICONS.get(t,'📎')}×{len(v)}" for t,v in by_type.items()) if by_type else '❌ بدون فایل'
 
+    # ⭐ م6: سربرگ محدوده + نشان هویت رکورد
     if session:
-        footer = "<i>⬆️⬇️=ترتیب  🗑=حذف</i>" if writable \
-            else "🔒 🌐 سراسری — فقط‌خواندنی"
-        if context.user_data.get('ca_intake') and not (session or {}).get('fork_of') and not session_iv:
-            footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
-        header = (f"📌 <b>جلسه {session.get('number','')}</b>\n"
+        _mk = "⭐" if session.get('fork_of') else ("📅" if session_iv else "🌐")
+        _mk_note = ""
+        if session.get('fork_of'):
+            _mk_note = f" (نسخه‌ی اختصاصی ورودی {await _intake_label(session.get('intake') or '')})"
+        elif session_iv:
+            _mk_note = f" (بومی ورودی {await _intake_label(session_iv)})"
+        footer = "<i>⬆️⬇️=ترتیب  🗑=حذف</i>" if cow else "🔒 🌐 سراسری — فقط‌خواندنی"
+        if not writable and cow:
+            footer = ("🌐 سراسری — با اولین تغییر، نسخه‌ی اختصاصی ورودی شما ساخته می‌شود (⭐)\n" + footer)
+        if _new_from_base:
+            footer += f"\n📥 نسخه‌ی سراسری {_new_from_base} فایل جدید دارد که این نسخه ندارد."
+        hdr = await _scope_header(context, uid)
+        header = (f"{hdr}{_mk} <b>جلسه {session.get('number','')}</b>{_mk_note}\n"
                   f"📚 {session.get('topic','')}\n"
                   f"👨‍🏫 {session.get('teacher','') or 'ثبت نشده'}\n"
                   f"━━━━━━━━━━━━━━━━\n"
@@ -1644,6 +2068,7 @@ async def _show_ref_subjects(query, back='ca:main', context=None):
         ro_line += ("\n⚠️ برای نقش شما هنوز ورودی‌ای تنظیم نشده؛ فعلاً فقط "
                     "مشاهده‌ی سراسری دارید. از ادمین ارشد بخواهید ورودی‌تان را تعیین کند.")
     await query.edit_message_text(
+        f"{await _scope_header(context, query.from_user.id)}"
         f"📚 <b>رفرنس‌ها</b> — {len(subjects)} درس\n<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب</i>{ro_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
@@ -1655,7 +2080,6 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     # 🌊 C1.5 — موضوع سراسری برای ادمین ورودی خاص: فقط‌خواندنی
     writable = await db.can_access_intake(
         uid, (subj or {}).get('intake') or '')
-    # 🍴 C2 — نمای مؤثر برای scoped روی موضوع سراسری: fork جایگزین base
     _cscope   = await db.get_content_scope(uid)
     is_scoped = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx       = context.user_data.get('ca_intake', '')
@@ -1663,7 +2087,13 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, (subj or {}).get('intake') or '')
                   not in (None, ''))
-    if ctx or (not writable and is_scoped):
+    # ⭐ م6 (R2) — سطل سراسریِ ارشد: forkها زیر base جمع می‌شوند (⭐n)
+    _ovr = await db.ref_override_counts(sid)
+    if writable and not is_scoped and not ctx:
+        _bases = {str(b['_id']) for b in books}
+        books = [b for b in books
+                 if not (b.get('fork_of') and str(b.get('fork_of')) in _bases)]
+    elif ctx or (not writable and is_scoped):
         books = await db.ref_get_books_effective(sid, [ctx, ''])
     kb = []
     for i, b in enumerate(books):
@@ -1674,22 +2104,23 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
         own_child = bool(is_scoped and ctx and not is_fork
                          and (b.get('intake') or '') == ctx)
         if writable:
-            badge = ''
             resolved = _ca_bucket(b, (subj or {}).get('intake') or '')
+            # ⭐ م6 (R7): نشان در ابتدای دکمه
             if is_fork:
-                badge = f" ⭐({await _intake_label(b.get('intake') or '')})"
+                mk = f"⭐({await _intake_label(b.get('intake') or '')})"
             elif resolved:
-                badge = f" 📅({await _intake_label(resolved)})"
-            elif ctx:
-                badge = " 🌐"
+                mk = f"📅({await _intake_label(resolved)})"
+            else:
+                mk = "🌐"
+                if _ovr.get(bid):
+                    mk = f"🌐 ⭐{_ovr[bid]}"
             row = [
-                InlineKeyboardButton(f"📘 {b['name']}{badge}", callback_data=f'ca:ref_book:{bid}'),
+                InlineKeyboardButton(f"{mk} {b['name']}", callback_data=f'ca:ref_book:{bid}'),
                 InlineKeyboardButton("✏️", callback_data=f'ca:edit_ref_book_prompt:{bid}'),
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_ref_book:{bid}'),
             ]
-            if ctx and not is_fork and not resolved:
-                row.append(InlineKeyboardButton("✂️", callback_data=f'ca:fork_book:{bid}'))
-            elif ctx and is_fork and (b.get('intake') or '') == ctx:
+            # ⭐ م6 (R1): ✂️ حذف شد — شخصی‌سازی در لحظه‌ی ذخیره (CoW)
+            if is_fork and ctx and (b.get('intake') or '') == ctx:
                 row.append(InlineKeyboardButton("↩️", callback_data=f'ca:unfork_book:{bid}'))
             kb.append(row)
             nav = []
@@ -1714,12 +2145,9 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
                 InlineKeyboardButton("🗑",  callback_data=f'ca:del_ref_book:{bid}'),
             ])
         else:
-            row = [InlineKeyboardButton(
-                f"🌐 {b['name']}", callback_data=f'ca:ref_book:{bid}')]
-            if ctx and not is_fork and not _ca_bucket(b, (subj or {}).get('intake') or ''):
-                row.append(InlineKeyboardButton(
-                    "✂️", callback_data=f'ca:fork_book:{bid}'))
-            kb.append(row)
+            # ⭐ م6: بازکردن 🌐 برای ورودی‌خاص فقط نمایش است؛ CoW در ذخیره
+            kb.append([InlineKeyboardButton(
+                f"🌐 {b['name']}", callback_data=f'ca:ref_book:{bid}')])
     if writable:
         kb.append([InlineKeyboardButton("➕ کتاب جدید", callback_data=f'ca:add_ref_book_prompt:{sid}')])
     elif can_child:
@@ -1729,18 +2157,18 @@ async def _show_ref_books(query, context, sid, back='ca:refs'):
             callback_data=f'ca:add_ref_book_prompt:{sid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",    callback_data=back)])
     name = subj.get('name','') if subj else ''
+    # ⭐ م6: سربرگ محدوده + legend یکدست (بدون ✂️)
+    hdr = await _scope_header(context, uid)
     if writable:
-        ro_line = ("<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی  ✂️=مخصوص این ورودی</i>"
-                   if ctx else
-                   "<i>✏️=ویرایش  🗑=حذف  ⬆️⬇️=ترتیب  ⭐=نسخه‌ی اختصاصی ورودی</i>")
+        ro_line = ("<i>🌐=سراسری (همه)  ⭐=نسخه‌ی اختصاصی ورودی  📅=بومی ورودی  "
+                   "↩️=بازگشت به سراسری</i>")
     elif is_scoped:
-        ro_line = ("🔒 🌐 سراسری — فقط‌خواندنی\n"
-                   "<i>✂️=سفارشی‌سازی برای ورودی من  ⭐=نسخه‌ی من  ↩️=حذف نسخه  "
-                   "📅=کتاب اختصاصی ورودی خودم</i>")
+        ro_line = ("🌐 سراسری — با اولین ویرایش/آپلود، نسخه‌ی اختصاصی ورودی شما ساخته می‌شود\n"
+                   "<i>⭐=نسخه‌ی من  ↩️=بازگشت به سراسری  📅=بومی ورودی خودم</i>")
     else:
         ro_line = "🔒 🌐 سراسری — فقط‌خواندنی"
     await query.edit_message_text(
-        f"📖 <b>{name}</b> — {len(books)} رفرنس\n{ro_line}",
+        f"{hdr}📖 <b>{name}</b> — {len(books)} رفرنس\n{ro_line}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 
@@ -1748,9 +2176,12 @@ async def _show_ref_book_files(query, context, bid):
     book    = await db.ref_get_book(bid)
     files   = await db.ref_get_files(bid)
     sid     = context.user_data.get('ca_ref_subject_id','')
-    # 🌊 C1.5 — کتاب سراسری برای ادمین ورودی خاص: فقط‌خواندنی
-    writable = await db.can_access_intake(
-        query.from_user.id, await db.ref_book_intake(bid))
+    uid     = query.from_user.id
+    book_iv = await db.ref_book_intake(bid)
+    writable = await db.can_access_intake(uid, book_iv)
+    # ⭐ م6 — CoW: ادمین ورودی می‌تواند 🌐 را ویرایش/آپلود کند؛ ذخیره→override
+    _ck, _ct = await _cow_scope(context, uid)
+    cow = writable or bool(_ck == 'scoped' and _ct and not book_iv)
     kb      = []
 
     # گروه‌بندی بر اساس زبان
@@ -1762,7 +2193,7 @@ async def _show_ref_book_files(query, context, bid):
             fid = str(f['_id']); vol = f.get('volume',1); dl = f.get('downloads',0)
             desc = f.get('description','')
             row_label = f"✅ {label_prefix} جلد {vol}" + (f" — {desc[:15]}" if desc else '') + f"  ⬇️{dl}"
-            if writable:
+            if cow:
                 kb.append([
                     InlineKeyboardButton(row_label, callback_data=f'ca:ref_book:{bid}'),
                     InlineKeyboardButton("🔄", callback_data=f'ca:upload_ref:{bid}:{lang}:{vol}'),
@@ -1772,27 +2203,30 @@ async def _show_ref_book_files(query, context, bid):
                 kb.append([InlineKeyboardButton(
                     row_label, callback_data=f'ca:ref_book:{bid}')])
         # دکمه افزودن جلد جدید
-        if writable:
+        if cow:
             kb.append([InlineKeyboardButton(
                 f"📤 ➕ جلد جدید {label_prefix}",
                 callback_data=f'ca:upload_ref_volume_prompt:{bid}:{lang}'
             )])
 
-    if writable:
+    if cow:
         kb.append([InlineKeyboardButton("✏️ ویرایش نام کتاب", callback_data=f'ca:edit_ref_book_prompt:{bid}')])
-    book_iv = await db.ref_book_intake(bid)
-    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
-        _spec = await _specialize_row(context, bid, 'book')
-        if _spec:
-            kb.append([_spec])
+    # ⭐ م6 — ↩️ با برچسب روشن برای fork خودِ محدوده‌ی جاری
+    _own_scope_iv = (_ct if _ck == 'scoped' else context.user_data.get('ca_intake', ''))
+    if (book or {}).get('fork_of') and _own_scope_iv == ((book or {}).get('intake') or ''):
+        kb.append([InlineKeyboardButton(
+            "↩️ بازگشت به نسخه‌ی سراسری (حذف شخصی‌سازی)",
+            callback_data=f'ca:unfork_book:{bid}')])
     kb.append([InlineKeyboardButton("🔙 بازگشت",           callback_data=f'ca:ref_subject:{sid}')])
     name = book.get('name','') if book else ''
-    footer = "🔄=جایگزین  🗑=حذف  ➕=جلد جدید" if writable \
-        else "🔒 🌐 سراسری — فقط‌خواندنی"
-    if context.user_data.get('ca_intake') and not (book or {}).get('fork_of') and not book_iv:
-        footer += "\n✂️ نسخه‌ی اختصاصی فقط برای ورودی انتخاب‌شده است؛ سراسری برای بقیه می‌ماند."
+    footer = "🔄=جایگزین  🗑=حذف  ➕=جلد جدید" if cow else "🔒 🌐 سراسری — فقط‌خواندنی"
+    if not writable and cow:
+        footer = ("🌐 سراسری — با اولین تغییر، نسخه‌ی اختصاصی ورودی شما ساخته می‌شود (⭐)\n" + footer)
+    # ⭐ م6: سربرگ محدوده + نشان هویت رکورد
+    _mk = "⭐" if (book or {}).get('fork_of') else ("📅" if book_iv else "🌐")
+    hdr = await _scope_header(context, uid)
     await query.edit_message_text(
-        f"📘 <b>{name}</b>\n"
+        f"{hdr}{_mk} <b>{name}</b>\n"
         f"📁 {len(files)} فایل\n\n"
         f"{footer}",
         parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
@@ -2262,10 +2696,16 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif ca_mode == 'edit_session':
         sid = context.user_data.get('ca_edit_target',''); field = context.user_data.get('ca_edit_field','')
-        if not await db.can_access_intake(uid, await db.session_intake(sid)):
+        # ⭐ م6 — CoW در لحظه‌ی ذخیره: هدف از سرور؛ override در صورت نیاز
+        _tgt, _note = await _cow_session_target(context, uid, sid)
+        if _tgt is None:
             _clear(context)
-            await update.message.reply_text("⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست.")
+            await update.message.reply_text(
+                "⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست."
+                if _note == 'deny' else
+                "⚖️ ابتدا محدوده‌ی تغییر را انتخاب کنید (🌐 سراسری / ⭐ فقط ورودی).")
             return ConversationHandler.END
+        sid = _tgt
         val = int(text) if field == 'number' and text.isdigit() else text
         old_session = await db.bs_get_session(sid)
         old_value   = old_session.get(field, '') if old_session else ''
@@ -2281,7 +2721,8 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 before={field: old_value},
                 after={field: val},
                 tags=['ویرایش_جلسه'])
-        await update.message.reply_text("✅ جلسه ویرایش شد." if ok else "❌ خطا.",
+        await update.message.reply_text(
+            ("✅ جلسه ویرایش شد." if ok else "❌ خطا.") + (f"\n{_note}" if _note else ""),
             reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
     elif ca_mode == 'waiting_description':
@@ -2289,10 +2730,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fid  = context.user_data.get('ca_pending_file','')
         sid  = context.user_data.get('ca_session_id','')
         ct   = context.user_data.get('ca_content_type','pdf')
-        if not await db.can_access_intake(uid, await db.session_intake(sid)):
+        # ⭐ م6 — CoW در لحظه‌ی ثبت: هدف از سرور؛ override در صورت نیاز
+        _tgt, _note = await _cow_session_target(context, uid, sid)
+        if _tgt is None:
             _clear(context)
-            await update.message.reply_text("⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست.")
+            await update.message.reply_text(
+                "⛔ دسترسی غیرمجاز — این جلسه در scope شما نیست."
+                if _note == 'deny' else
+                "⚖️ ابتدا محدوده‌ی تغییر را انتخاب کنید (🌐 سراسری / ⭐ فقط ورودی).")
             return ConversationHandler.END
+        sid = _tgt
+        context.user_data['ca_session_id'] = sid
         # ── 📄 Resolve final filename with re-upload if needed ──
         pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
         orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
@@ -2358,7 +2806,8 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # سایلنت: حتی اگر نام تلگرامی به دلیل محدودیت موقت عوض نشد، نمایش لیست و کپشن همین نام است
         if final_fid != fid:
             msg_extra += " — ✅"
-        await update.message.reply_text(f"✅ {tl} اضافه شد!{msg_extra}",
+        await update.message.reply_text(
+            f"✅ {tl} اضافه شد!{msg_extra}" + (f"\n{_note}" if _note else ""),
             parse_mode='HTML', reply_markup=_back_btn("🔙 برگشت", f'ca:session:{sid}'))
 
     elif ca_mode == 'waiting_ref_description':
@@ -2367,10 +2816,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bid   = context.user_data.get('ca_ref_book_id','')
         lang  = context.user_data.get('ca_ref_lang','fa')
         vol   = context.user_data.get('ca_ref_volume', 1)
-        if not await db.can_access_intake(uid, await db.ref_book_intake(bid)):
+        # ⭐ م6 — CoW در لحظه‌ی ثبت
+        _tgt, _note = await _cow_book_target(context, uid, bid)
+        if _tgt is None:
             _clear(context)
-            await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
+            await update.message.reply_text(
+                "⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست."
+                if _note == 'deny' else
+                "⚖️ ابتدا محدوده‌ی تغییر را انتخاب کنید (🌐 سراسری / ⭐ فقط ورودی).")
             return ConversationHandler.END
+        bid = _tgt
+        context.user_data['ca_ref_book_id'] = bid
         pending_info = context.user_data.get('ca_pending_file_info', {}) or {}
         orig_name = context.user_data.get('ca_pending_original') or pending_info.get('original_name','') or 'file.pdf'
         disp_name = context.user_data.get('ca_pending_display') or orig_name
@@ -2423,7 +2879,8 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if final_fid != fid:
             msg_extra_ref += " — ✅"
         await update.message.reply_text(
-            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else '') + msg_extra_ref,
+            f"✅ {ll} جلد {vol} آپلود شد!" + (f"\n📝 {desc}" if desc else '') + msg_extra_ref
+            + (f"\n{_note}" if _note else ""),
             parse_mode='HTML',
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
 
@@ -2508,10 +2965,17 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif ca_mode == 'edit_ref_book':
         bid = context.user_data.get('ca_edit_target','')
-        if not await db.can_access_intake(uid, await db.ref_book_intake(bid)):
+        # ⭐ م6 — CoW در لحظه‌ی ذخیره
+        _tgt, _note = await _cow_book_target(context, uid, bid)
+        if _tgt is None:
             _clear(context)
-            await update.message.reply_text("⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست.")
+            await update.message.reply_text(
+                "⛔ دسترسی غیرمجاز — این رفرنس در scope شما نیست."
+                if _note == 'deny' else
+                "⚖️ ابتدا محدوده‌ی تغییر را انتخاب کنید (🌐 سراسری / ⭐ فقط ورودی).")
             return ConversationHandler.END
+        bid = _tgt
+        context.user_data['ca_edit_target'] = bid
         _old_book = await db.ref_get_book(bid) or {}
         _old_bname = _old_book.get('name','')
         ok  = await db.ref_update_book(bid, {'name': text})
@@ -2528,7 +2992,9 @@ async def ca_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as _e:
                 logger.warning(f"edit_ref_book audit failed: {_e}")
         _clear(context)
-        await update.message.reply_text(f"✅ نام کتاب به «{text}» تغییر یافت." if ok else "❌ خطا.",
+        await update.message.reply_text(
+            (f"✅ نام کتاب به «{text}» تغییر یافت." if ok else "❌ خطا.")
+            + (f"\n{_note}" if _note else ""),
             reply_markup=_back_btn("🔙 برگشت", f'ca:ref_book:{bid}'))
 
     elif ca_mode == 'add_faq':

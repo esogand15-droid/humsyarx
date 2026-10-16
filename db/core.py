@@ -277,9 +277,20 @@ class DBCore:
                     [('migration', 1), ('progress_id', 1)], unique=True,
                     partialFilterExpression={'progress_id': {'$type': 'string'}},
                     name='uq_qbank_migration_progress', background=True),
-                # 🍴 موج C2 — Fork/Override: یافتن fork یک base برای یک ورودی
-                self._index(self.bs_sessions, [('fork_of', 1), ('intake', 1)], background=True),
-                self._index(self.ref_books, [('fork_of', 1), ('intake', 1)], background=True),
+                # 🍴 موج C2 — Fork/Override: یافتن fork یک base برای یک ورودی.
+                # ⭐ ماموریت ۶ (R3): یکتای جزئی — فقط روی خود forkها (دارای
+                # fork_of رشته‌ای) قید یکتایی می‌گذارد؛ baseها (بدون fork_of)
+                # اصلاً وارد ایندکس نمی‌شوند. اگر داده‌ی legacy کلون تکراری
+                # داشته باشد، ساخت ایندکس خطا می‌خورد → fallback غیر یکتا با
+                # هشدار؛ رفع واقعی با tools/migration/content_forks.py است.
+                self._index(self.bs_sessions, [('fork_of', 1), ('intake', 1)],
+                    unique=True, background=True,
+                    partialFilterExpression={'fork_of': {'$type': 'string'}},
+                    name='uq_bs_session_fork'),
+                self._index(self.ref_books, [('fork_of', 1), ('intake', 1)],
+                    unique=True, background=True,
+                    partialFilterExpression={'fork_of': {'$type': 'string'}},
+                    name='uq_ref_book_fork'),
                 self._index(self.bs_lessons, [('intake', 1), ('term', 1), ('order', 1)], background=True),
                 self._index(self.ref_subjects, [('intake', 1), ('order', 1)], background=True),
                 self._index(self.bs_lessons, [('term', 1), ('order', 1)], background=True),
@@ -1423,7 +1434,8 @@ class DBCore:
             self.bs_sessions.count_documents({}),
             self.bs_content.count_documents({}),
             self.ref_subjects.count_documents({}),
-            self.ref_books.count_documents({}),
+            self.ref_books.count_documents(
+                {'$or': [{'fork_of': {'$exists': False}}, {'fork_of': None}, {'fork_of': ''}]}),
             self.tickets.count_documents({'status': 'open'}),
             self.users.count_documents({'role': 'content_admin'}),
             self.count_active_users(30),
@@ -1686,7 +1698,10 @@ class DBCore:
          bs_dl_agg, ref_dl_agg, qbank_attempts,
          new_bs_week, new_ref_week, new_questions_week) = await asyncio.gather(
             self.bs_lessons.count_documents({}),
-            self.bs_sessions.count_documents({}),
+            # ⭐ م6 (R6): شمارش «منطقی» — forkها (override ورودی) جلسه‌ی
+            # جدید نیستند و در شمارش سراسری دوبار‌شمرده نمی‌شوند.
+            self.bs_sessions.count_documents(
+                {'$or': [{'fork_of': {'$exists': False}}, {'fork_of': None}, {'fork_of': ''}]}),
             self.bs_content.aggregate(
                 [{'$group': {'_id': '$type', 'count': {'$sum': 1}}}]).to_list(20),
             self.ref_subjects.count_documents({}),
@@ -1705,8 +1720,11 @@ class DBCore:
             self.ref_files.aggregate(
                 [{'$group': {'_id': None, 'total': {'$sum': '$downloads'}}}]).to_list(1),
             self.answers.count_documents({}),
-            self.bs_content.count_documents({'uploaded_at': {'$gt': week_ago}}),
-            self.ref_files.count_documents({'uploaded_at': {'$gt': week_ago}}),
+            # ⭐ م6 (R6): «جدید این هفته» فقط آپلود واقعی — نه کپی‌های CoW
+            self.bs_content.count_documents({'uploaded_at': {'$gt': week_ago},
+                                             'fork_of': {'$exists': False}}),
+            self.ref_files.count_documents({'uploaded_at': {'$gt': week_ago},
+                                            'fork_of': {'$exists': False}}),
             self.questions.count_documents({'created_at': {'$gt': week_ago}}),
         )
         type_labels = {

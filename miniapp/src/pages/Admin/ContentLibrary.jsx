@@ -446,8 +446,27 @@ export function BasicScienceAdmin() {
       if (
         type === 'content-delete'
       ) {
+        // ⭐ م6 — CoW: حذف از جلسه‌ی سراسری در حالتِ ورودی ⇒ فقط از
+        // نسخه‌ی اختصاصی همان ورودی (سرور مسیر را resolve می‌کند)
+        const cowGlobal =
+          iv &&
+          session &&
+          !session.is_fork &&
+          !session.intake;
+
         return api.delete(
-          `/api/content/basic-science/content/${id}`
+          `/api/content/basic-science/content/${id}`,
+
+          {
+            params: cowGlobal
+              ? {
+                  edit_scope:
+                    'intake',
+
+                  intake: iv,
+                }
+              : undefined,
+          }
         );
       }
 
@@ -473,6 +492,25 @@ export function BasicScienceAdmin() {
         'file',
         upload.file
       );
+
+      // ⭐ م6 — CoW: جلسه‌ی سراسری + ورودی انتخاب‌شده ⇒ ذخیره در نسخه‌ی
+      // اختصاصی همان ورودی (انتخاب در لحظه‌ی ثبت، نه با کلیک قبلی)
+      if (
+        iv &&
+        session &&
+        !session.is_fork &&
+        !session.intake
+      ) {
+        body.append(
+          'edit_scope',
+          'intake'
+        );
+
+        body.append(
+          'intake',
+          iv
+        );
+      }
 
       // 🐛 FIX آپلود ویدیو — تایم‌اوت سراسری ۱۵ ثانیه است؛ آپلود فایل
       // (به‌ویژه ویدیو) دو هاپ دارد (مرورگر→سرور→تلگرام) و عملاً همیشه
@@ -1141,56 +1179,14 @@ export function BasicScienceAdmin() {
                               ' • 📅 فقط ورودی من'}
 
                             {iv && !item.is_fork && !item.intake &&
-                              ' • 🌐 سراسری'}
+                              ' • 🌐 سراسری (با آپلود، ⭐ نسخه‌ی ورودی شما ساخته می‌شود)'}
                           </span>
                         </button>
 
-                        {/* 🍴 C2 — روی درس سراسری (فقط‌خواندنی برای
-                             ادمین ورودی‌خاص): ✂️ ساخت نسخه‌ی اختصاصی
-                             برای ورودی خودش؛ ↩️ حذف نسخه‌ی من
-                             🌊 C3 — روی «فرزند ورودی من» فورک معنا ندارد
-                             (مستقیماً ویرایش می‌شود) ⇒ دکمه مخفی */}
-                        {iv &&
-                          !item.is_fork &&
-                          !item.own &&
-                          !item.intake && (
-                            <button
-                              type="button"
-                              title="سفارشی‌سازی برای ورودی من"
-                              onClick={async () => {
-                                const accepted =
-                                  await confirmAction(
-                                    'نسخه‌ی اختصاصی این جلسه برای ورودی شما ساخته و جایگزین نسخه‌ی سراسری شود؟'
-                                  );
-
-                                if (
-                                  accepted
-                                ) {
-                                  mutation.mutate(
-                                    {
-                                      type: 'session-fork',
-
-                                      id: item.id,
-                                    }
-                                  );
-                                }
-                              }}
-                              style={{
-                                background:
-                                  'none',
-
-                                border: 0,
-
-                                cursor:
-                                  'pointer',
-
-                                fontSize:
-                                  17,
-                              }}
-                            >
-                              ✂️
-                            </button>
-                          )}
+                        {/* ⭐ م6 — دکمه‌ی ✂️ حذف شد: شخصی‌سازی دیگر اکشنِ
+                             مستقل نیست؛ با اولین ویرایش/آپلود روی جلسه‌ی
+                             سراسری، نسخه‌ی اختصاصی ورودی به‌صورت خودکار
+                             (CoW در لحظه‌ی ذخیره) ساخته می‌شود */}
 
                         {iv &&
                           item.is_fork && (
@@ -2307,52 +2303,12 @@ export function ReferencesAdmin() {
                           ' • 📅 فقط ورودی من'}
 
                         {iv && !item.is_fork && !item.intake &&
-                          ' • 🌐 سراسری'}
+                          ' • 🌐 سراسری (با تغییر، ⭐ نسخه‌ی ورودی شما ساخته می‌شود)'}
                       </b>
                     </button>
 
-                    {/* 🍴 C2 — روی موضوع سراسری (فقط‌خواندنی برای
-                         ادمین ورودی‌خاص): ✂️ fork / ↩️ unfork */}
-                    {iv &&
-                      !item.is_fork &&
-                      !item.own &&
-                      !item.intake && (
-                        <button
-                          type="button"
-                          title="سفارشی‌سازی برای ورودی من"
-                          onClick={async () => {
-                            const accepted =
-                              await confirmAction(
-                                'نسخه‌ی اختصاصی این کتاب برای ورودی شما ساخته و جایگزین نسخه‌ی سراسری شود؟'
-                              );
-
-                            if (
-                              accepted
-                            ) {
-                              mutation.mutate(
-                                {
-                                  type: 'book-fork',
-
-                                  id: item.id,
-                                }
-                              );
-                            }
-                          }}
-                          style={{
-                            background:
-                              'none',
-
-                            border: 0,
-
-                            cursor:
-                              'pointer',
-
-                            fontSize: 17,
-                          }}
-                        >
-                          ✂️
-                        </button>
-                      )}
+                    {/* ⭐ م6 — دکمه‌ی ✂️ حذف شد: شخصی‌سازی کتاب با اولین
+                         تغییر (CoW در ذخیره) انجام می‌شود */}
 
                     {iv &&
                       item.is_fork && (

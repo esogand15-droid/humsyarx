@@ -8,8 +8,8 @@ import SavedViews from '../SavedViews.jsx';
 const TERM_ICON = '📚';
 const KIND = {
   global:    { icon: '🌐', label: 'سراسری', kind: 'acc' },
-  fork:      { icon: '⭐', label: 'Override', kind: 'warn' },
-  exclusive: { icon: '🏷', label: 'اختصاصی', kind: 'purple' },
+  fork:      { icon: '⭐', label: 'نسخه‌ی اختصاصی ورودی', kind: 'warn' },
+  exclusive: { icon: '🏷', label: 'بومی ورودی', kind: 'purple' },
 };
 const CTYPE = { video: '🎬', ppt: '📽', pdf: '📕', note: '📝', test: '🧪', voice: '🎙' };
 const EXT_MAP = { pdf: 'pdf', ppt: 'ppt', pptx: 'ppt', mp4: 'video', mov: 'video', mkv: 'video', webm: 'video', mp3: 'voice', ogg: 'voice', wav: 'voice', m4a: 'voice' };
@@ -371,12 +371,14 @@ function BsTab({ initial = {} }) {
                   title={s.topic || 'موضوع ثبت نشده'} meta={s.teacher || 'استاد ثبت نشده'}
                   active={sesId === s.id} selected={sel.includes(s.id)} readonly={s.readonly}
                   scope={s.kind === 'fork' ? 'override' : (s.kind === 'global' ? 'global' : 'intake')}
-                  scopeLabel={s.kind === 'global' ? 'سراسری' : (s.intake_label || s.intake)}
+                  scopeLabel={s.kind === 'global'
+                    ? (s.override_count ? `سراسری · ⭐${fa(s.override_count)} نسخه` : 'سراسری')
+                    : (s.intake_label || s.intake)}
                   onClick={() => setSesId(s.id)}
                   metrics={<span className="content-type-summary">{Object.entries(s.types || {}).map(([k, v]) => `${CTYPE[k] || '📎'} ${fa(v)}`).join(' · ') || 'بدون فایل'}</span>}
                   actions={<>
-                    {s.kind === 'global' && intake && <ContentIconButton icon="🍴" label="ساخت نسخه اختصاصی برای این ورودی" kind="primary"
-                      onClick={() => act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐')} />}
+                    {/* ⭐ م6: دکمه‌ی 🍴 حذف شد — با اولین ویرایش/آپلود در حالتِ
+                        ورودی، نسخه‌ی اختصاصی به‌صورت خودکار (CoW) ساخته می‌شود */}
                     {!s.readonly && <>
                       <ContentReorderControls noun="جلسه" canUp={idx > 0} canDown={idx < selLesson.sessions.length - 1}
                         onUp={() => reorder(() => api.waReorderSession(s.id, 'up'), 'مرتب شد ↑')}
@@ -428,8 +430,7 @@ function BsTab({ initial = {} }) {
             ) : (
               <SessionInspector lesson={selLesson} session={selSession} intake={intake}
                 onTreeChanged={load}
-                onEdit={(s) => setEditSes({ lesson_id: selLesson.id, s })}
-                onFork={(s) => act(() => api.caForkSession(s.id, intake), 'نسخه‌ی اختصاصی ساخته شد ⭐')}
+                onEdit={(s) => setEditSes({ lesson_id: selLesson.id, s, intake, intakeLabel: (intakes.find(i => i.code === intake) || {}).label || intake })}
                 onUnfork={(s) => act(() => api.caUnforkSession(s.id), 'به نسخه‌ی سراسری برگشت ↩️')}
                 onClone={(s) => act(() => api.dupSession(s.id), 'کلون ساخته شد 📄')}
                 onMove={(s) => setMoveTo({ ids: [s.id] })}
@@ -474,9 +475,11 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
       <ContentKV label="استاد" value={session.teacher || lesson.teacher || '—'} />
       <ContentKV label="وضعیت" value={<ScopeBadge scope={scope} label={session.kind === 'global' ? 'سراسری' : (session.intake_label || session.intake)} />} />
       <ContentKV label="مالکیت و ویرایش" value={`${session.kind === 'global' ? 'مالک سراسری محتوا' : `ورودی ${session.intake_label || session.intake}`} · ${session.readonly ? 'فقط مشاهده' : 'قابل ویرایش در scope فعلی'}`} />
+      {session.kind === 'global' && !!intake && !session.readonly && (
+        <p className="muted content-help">⭐ در حالتِ انتخاب ورودی، با اولین ویرایش/آپلود می‌توانید محدوده را انتخاب کنید: 🌐 سراسری (همه) یا فقط همین ورودی (نسخه‌ی اختصاصی).</p>
+      )}
       <ContentActionGroup>
         {session.readonly && <B>🔒 فقط‌خواندنی</B>}
-        {session.kind === 'global' && intake && <button className="btn sm primary" onClick={() => onFork(session)}>🍴 نسخه‌ی اختصاصی</button>}
         {!session.readonly && <>
           <button className="btn sm primary" onClick={() => onEdit(session)}>✏️ ویرایش</button>
           <ContentMoreActions>
@@ -489,7 +492,7 @@ function SessionInspector({ lesson, session, intake, onTreeChanged, onEdit, onFo
       </ContentActionGroup>
       <ImpactPanel targetType="session" targetId={session.id} />
       <ContentHistory targetType="session" targetId={session.id} />
-      <SessionFiles session={session} onTreeChanged={onTreeChanged} />
+      <SessionFiles session={session} intake={intake} onTreeChanged={onTreeChanged} />
     </>
   );
 }
@@ -570,7 +573,7 @@ function ContentHistory({ targetType, targetId }) {
 }
 
 /* ── 📁 فایل‌های جلسه (داخل بازرس): لیست + آپلود + گروهی ── */
-function SessionFiles({ session, onTreeChanged }) {
+function SessionFiles({ session, intake, onTreeChanged }) {
   const [items, setItems] = useState(null);
   const [readonly, setReadonly] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -595,6 +598,9 @@ function SessionFiles({ session, onTreeChanged }) {
   useEffect(() => { setItems(null); setSel([]); setShowUp(false); load(); }, [session.id]);
 
   const changed = () => { load(); onTreeChanged(); };
+  // ⭐ م6 — CoW: جلسه‌ی سراسری در حالتِ انتخاب ورودی → انتخاب محدوده‌ی ذخیره
+  const cowGlobal = session.kind === 'global' && !!intake && !session.readonly;
+  const [editScope, setEditScope] = useState('intake');
   const upload = async () => {
     if (!file) return toast('ابتدا فایل را انتخاب کنید', 'err');
     setBusy(true);
@@ -604,6 +610,7 @@ function SessionFiles({ session, onTreeChanged }) {
       fd.append('description', form.description || file.name);
       fd.append('extra_info', form.extra_info);
       fd.append('file', file);
+      if (cowGlobal) { fd.append('edit_scope', editScope); fd.append('intake', intake); }
       await api.caAddContent(session.id, fd);
       toast('آپلود شد ✅'); setFile(null); setForm({ ctype: 'pdf', description: '', extra_info: '' });
       if (fileRef.current) fileRef.current.value = '';
@@ -614,9 +621,10 @@ function SessionFiles({ session, onTreeChanged }) {
   const del = (cid) => {
     const item = (items || []).find(entry => entry.id === cid);
     setConfirm({
-      text: `فایل «${item?.description || cid}» حذف شود؟ این عملیات قابل بازگشت نیست.`,
+      text: `فایل «${item?.description || cid}» حذف شود؟ این عملیات قابل بازگشت نیست.` +
+        (cowGlobal ? '\n⭐ فقط از نسخه‌ی اختصاصی ورودی انتخاب‌شده حذف می‌شود؛ نسخه‌ی سراسری دست‌نخورده می‌ماند.' : ''),
       run: async () => {
-        try { await api.caDelContent(cid); toast('حذف شد'); changed(); }
+        try { await api.caDelContent(cid, cowGlobal ? { edit_scope: 'intake', intake } : {}); toast('حذف شد'); changed(); }
         catch (e) { toast(errText(e), 'err'); }
       },
     });
@@ -652,6 +660,17 @@ function SessionFiles({ session, onTreeChanged }) {
             </div>
             <label className="fld"><span>اطلاعات تکمیلی</span><input className="inp" placeholder="اختیاری…"
               value={form.extra_info} onChange={e => setForm({ ...form, extra_info: e.target.value })} /></label>
+            {cowGlobal && <>
+              <label className="fld"><span>محدوده‌ی ذخیره</span>
+                <select className="inp" value={editScope} onChange={e => setEditScope(e.target.value)}>
+                  <option value="intake">⭐ فقط ورودی انتخاب‌شده (نسخه‌ی اختصاصی)</option>
+                  <option value="global">🌐 سراسری — همه‌ی ورودی‌ها</option>
+                </select>
+              </label>
+              <p className="muted">{editScope === 'global'
+                ? '⚠️ فایل برای همه‌ی ورودی‌ها قابل‌مشاهده می‌شود.'
+                : '⭐ در لحظه‌ی ثبت، نسخه‌ی اختصاصی این ورودی ساخته می‌شود؛ بقیه سراسری می‌مانند.'}</p>
+            </>}
             <button className="btn primary" disabled={busy || !file} onClick={upload}>
               {busy ? '⏳ در حال آپلود…' : '⬆️ آپلود (از مسیر تلگرام)'}</button>
           </div>
@@ -762,14 +781,27 @@ function EditLesson({ lesson, onClose }) {
 }
 
 
-function EditSession({ s, onClose }) {
+function EditSession({ s, intake, intakeLabel, onClose }) {
   const [number, setNumber] = useState(s.number || 1);
   const [topic, setTopic] = useState(s.topic || '');
   const [teacher, setTeacher] = useState(s.teacher || '');
   const [busy, setBusy] = useState(false);
+  // ⭐ م6: جلسه‌ی سراسری در حالتِ انتخاب ورودی → انتخاب روشنِ محدوده‌ی ذخیره
+  const needsScope = s.kind === 'global' && !!intake;
+  const [editScope, setEditScope] = useState('intake');
   return (
     <Modal title={`✏️ ویرایش جلسه ${fa(s.number)}`} onClose={() => onClose(false)}>
       <div className="grid content-modal-grid">
+        {needsScope && <>
+          <label className="fld"><span>محدوده‌ی ذخیره</span>
+            <select className="inp" value={editScope} onChange={e => setEditScope(e.target.value)}>
+              <option value="intake">⭐ فقط ورودی {intakeLabel || intake} (نسخه‌ی اختصاصی)</option>
+              <option value="global">🌐 سراسری — همه‌ی ورودی‌ها</option>
+            </select>
+          </label>
+          {editScope === 'global' && <p className="muted">⚠️ تغییر روی <b>همه‌ی ورودی‌ها</b> اعمال می‌شود (نسخه‌های اختصاصی دست‌نخورده می‌مانند).</p>}
+          {editScope === 'intake' && <p className="muted">⭐ در اولین ذخیره، نسخه‌ی اختصاصی این ورودی ساخته می‌شود؛ بقیه سراسری می‌مانند.</p>}
+        </>}
         <label className="fld"><span>شماره جلسه</span><input className="inp" type="number" min="1" value={number} onChange={e => setNumber(e.target.value)} /></label>
         <input className="inp" placeholder="موضوع جلسه…" value={topic} onChange={e => setTopic(e.target.value)} />
         <input className="inp" placeholder="استاد…" value={teacher} onChange={e => setTeacher(e.target.value)} />
@@ -777,7 +809,8 @@ function EditSession({ s, onClose }) {
           <button className="btn primary" disabled={busy || Number(number) < 1 || !topic.trim()} onClick={async () => {
             setBusy(true);
             try {
-              await api.caEditSession(s.id, { number: Number(number), topic: topic.trim(), teacher: teacher.trim() });
+              await api.caEditSession(s.id, { number: Number(number), topic: topic.trim(), teacher: teacher.trim() },
+                needsScope ? { edit_scope: editScope, intake } : {});
               toast('شماره و اطلاعات جلسه ذخیره شد ✅'); onClose(true);
             } catch (e) { toast(errText(e), 'err'); setBusy(false); }
           }}>ذخیره</button>

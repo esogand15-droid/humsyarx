@@ -163,10 +163,14 @@ async def lessons(
     )
 
     # 🌊 Q2-W10 — شمارش گروهی جلسات با یک کوئری به‌جای N+1 count_documents
+    # ⭐ م6 (R6): فقط درس‌های همین لیست (نه full-scan کل bs_sessions)؛
+    # نمای مؤثر ⇒ fork جایگزین base می‌شود و دوبار شمرده نمی‌شود.
+    _lids = [str(it.get('_id') or '') for it in (items if isinstance(items, list) else []) if it.get('_id')]
+    _vi = await _viewer_intake(user)
     _scounts = {}
-    async for _s in db.bs_sessions.find({}):
-        _lid = _s.get('lesson_id')
-        _scounts[_lid] = _scounts.get(_lid, 0) + 1
+    for _lid in _lids:
+        _sess = await db.bs_get_sessions_effective(_lid, intake=_vi)
+        _scounts[_lid] = len(_sess)
 
     result = []
 
@@ -230,10 +234,10 @@ async def sessions(
     )
 
     # 🌊 Q2-W10 — شمارش گروهی فایل‌ها با یک کوئری به‌جای N+1 count_documents
-    _fcounts = {}
-    async for _f in db.bs_content.find({}):
-        _sid = _f.get('session_id')
-        _fcounts[_sid] = _fcounts.get(_sid, 0) + 1
+    # ⭐ م6 (R6): حذف full-scan کل bs_content؛ شمارش فقط برای جلسات همین لیست
+    _sids = [str(it.get('_id') or '') for it in (items if isinstance(items, list) else []) if it.get('_id')]
+    _fcounts = {sid: await db.bs_content.count_documents({'session_id': sid})
+                for sid in _sids}
 
     result = []
 
@@ -273,6 +277,8 @@ async def sessions(
                         file_count
                     ),
                 ),
+                # ⭐ م6: هویت پایدار منطقی برای cache/کلید بیرونی
+                "logical_id": str(item.get("fork_of") or item.get("_id", "")),
             }
         )
 

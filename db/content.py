@@ -1943,30 +1943,144 @@ class DBContent:
             return None
         try:
             return await self.ref_books.find_one(
-                {'fork_of': str(book_id), 'intake': intake})
+                {'fork_of': str(book_id), 'intake': intake,
+                 'archived': {'$ne': True}})
         except Exception:
             return None
+
+
+    @staticmethod
+    def bs_effective_view(sessions, allowed, lesson_intake_of):
+        """⭐ ماموریت ۶ — قاعده‌ی واحد «نمای مؤثر» (برای همه‌ی لایه‌ها):
+        sessions با allowed intakeها فیلتر می‌شوند؛ baseای که برای همان
+        ورودی fork (غیرآرشیو) دارد سایه‌اندازی می‌شود. lesson_intake_of:
+        {lesson_id: intake} برای ارث والد."""
+        allowed = set(allowed if isinstance(allowed, (list, tuple, set)) else [allowed])
+
+        def _si(s):
+            if 'intake' in s and s.get('intake') is not None:
+                return str(s.get('intake') or '')
+            return lesson_intake_of.get(str(s.get('lesson_id') or ''), '') or ''
+
+        forked_bases = {str(s.get('fork_of')) for s in sessions
+                        if s.get('fork_of') and not s.get('archived')
+                        and _si(s) in allowed and _si(s) != ''}
+        return [s for s in sessions
+                if _si(s) in allowed and str(s['_id']) not in forked_bases
+                and not s.get('archived')]
 
 
     async def bs_get_sessions_effective(self, lesson_id: str, intake=None):
         """نمای مؤثر جلسات یک درس. intake=None ⇒ همه (پیش‌نمایش ادمین،
         رفتار قدیمی)؛ لیست/رشته ⇒ دید آن scope: آیتم‌های در scope، با
-        این تفاوت که base‌ای که برای آن ورودی fork دارد حذف و fork
-        جایگزین می‌شود."""
+        این تفاوت که baseای که برای آن ورودی fork دارد حذف و fork
+        جایگزین می‌شود. ⭐ م6: قاعده در bs_effective_view (مشترک با پنل)."""
         sessions = await self.bs_get_sessions(lesson_id)
         if intake is None:
             return sessions
-        allowed = set(intake if isinstance(intake, (list, tuple, set)) else [intake])
         lesson = await self.bs_get_lesson(lesson_id) or {}
-        li = lesson.get('intake') or ''
+        li_map = {str(lesson_id): (lesson.get('intake') or '')}
+        return self.bs_effective_view(sessions, intake, li_map)
 
-        def _si(s):
-            return (s.get('intake') if 'intake' in s else li) or ''
 
-        forked_bases = {str(s.get('fork_of')) for s in sessions
-                        if s.get('fork_of') and _si(s) in allowed and _si(s) != ''}
-        return [s for s in sessions
-                if _si(s) in allowed and str(s['_id']) not in forked_bases]
+    @staticmethod
+    def bs_logical_id(session_doc) -> str:
+        """⭐ ماموریت ۶ — هویت پایدار منطقی: fork همان هویت base را دارد
+        (fork_of یا _id). برای cache/کلید بیرونی لایه‌ها."""
+        if not session_doc:
+            return ''
+        return str(session_doc.get('fork_of') or session_doc.get('_id', ''))
+
+
+    async def bs_override_counts(self, lesson_id: str) -> dict:
+        """⭐ ماموریت ۶ (R2) — شمارش overrideهای فعال هر جلسه‌ی سراسریِ
+        این درس: {base_id: n}. برای نشان «⭐n» در سطل سراسری."""
+        out = {}
+        try:
+            cursor = self.bs_sessions.find(
+                {'lesson_id': str(lesson_id), 'fork_of': {'$type': 'string'},
+                 'archived': {'$ne': True}},
+                {'fork_of': 1})
+            async for s in cursor:
+                k = str(s.get('fork_of'))
+                out[k] = out.get(k, 0) + 1
+        except Exception:
+            return {}
+        return out
+
+
+    async def bs_copy_content_item(self, content_id: str, to_session: str) -> str:
+        """⭐ ماموریت ۶ — کپی افزودنیِ یک فایل سراسری به fork (واگرایی R5):
+        وقتی فایلی فقط در base هست و عملیات روی fork انجام می‌شود."""
+        c = await self.bs_get_content_item(content_id)
+        if not c or not to_session:
+            return ''
+        r = await self.bs_content.insert_one({
+            'session_id': to_session,
+            'type': c.get('type', 'pdf'),
+            'file_id': c.get('file_id', ''),
+            'description': c.get('description', ''),
+            'extra_info': c.get('extra_info', ''),
+            'order': c.get('order', 0),
+            'uploaded_at': utc_now_iso(),
+            'downloads': 0,
+            'notif_sent': True,
+            'fork_of': str(c['_id']),
+            'original_file_name': c.get('original_file_name', ''),
+            'display_file_name': c.get('display_file_name', ''),
+            'display_name': c.get('display_name', c.get('display_file_name', '')),
+            'file_extension': c.get('file_extension', ''),
+            'mime_type': c.get('mime_type', ''),
+            'file_size': c.get('file_size', 0),
+            'branding_enabled': c.get('branding_enabled', False),
+        })
+        return str(r.inserted_id)
+
+
+    async def bs_merge_base_new_content(self, fork_id: str) -> int:
+        """⭐ ماموریت ۶ (R5) — افزودن فایل‌های جدیدِ base به fork (فقط
+        افزودنی؛ هیچ فایلی بازنویسی/حذف نمی‌شود). خروجی = تعداد افزوده‌شده."""
+        fork = await self.bs_get_session(fork_id)
+        if not fork or not fork.get('fork_of'):
+            return 0
+        base_id = fork['fork_of']
+        have = {str(c.get('fork_of')) async for c in
+                self.bs_content.find({'session_id': fork_id}, {'fork_of': 1})}
+        added = 0
+        for c in (await self.bs_get_content(base_id)):
+            if str(c['_id']) not in have:
+                await self.bs_copy_content_item(str(c['_id']), fork_id)
+                added += 1
+        return added
+
+
+    async def ref_override_counts(self, subject_id: str) -> dict:
+        """⭐ ماموریت ۶ (R2) — قرینه‌ی bs_override_counts برای کتاب‌ها."""
+        out = {}
+        try:
+            cursor = self.ref_books.find(
+                {'subject_id': str(subject_id), 'fork_of': {'$type': 'string'},
+                 'archived': {'$ne': True}},
+                {'fork_of': 1})
+            async for b in cursor:
+                k = str(b.get('fork_of'))
+                out[k] = out.get(k, 0) + 1
+        except Exception:
+            return {}
+        return out
+
+
+    async def bs_base_new_content_count(self, fork_id: str) -> int:
+        """⭐ ماموریت ۶ (R5) — چند فایلِ جدید سراسریِ base هست که این fork
+        هنوز ندارد (واگرایی افزودنی). 0 = همگام/ fork نیست."""
+        fork = await self.bs_get_session(fork_id)
+        if not fork or not fork.get('fork_of'):
+            return 0
+        base_ids = {str(c['_id']) async for c in
+                    self.bs_content.find({'session_id': fork['fork_of']}, {'_id': 1})}
+        have = {str(c.get('fork_of')) async for c in
+                self.bs_content.find({'session_id': fork_id}, {'fork_of': 1})}
+        return len(base_ids - have)
 
 
     async def ref_get_books_effective(self, subject_id: str, intake=None):
@@ -1982,56 +2096,89 @@ class DBContent:
             return (b.get('intake') if 'intake' in b else si_root) or ''
 
         forked_bases = {str(b.get('fork_of')) for b in books
-                        if b.get('fork_of') and _bi(b) in allowed and _bi(b) != ''}
+                        if b.get('fork_of') and not b.get('archived')
+                        and _bi(b) in allowed and _bi(b) != ''}
         return [b for b in books
-                if _bi(b) in allowed and str(b['_id']) not in forked_bases]
+                if _bi(b) in allowed and str(b['_id']) not in forked_bases
+                and not b.get('archived')]
+
+
+    async def bs_ensure_override(self, session_id: str, intake: str):
+        """⭐ ماموریت ۶ — Copy-on-Write: ساخت/بازیابی اتمیک override یک
+        جلسه‌ی «سراسری» برای یک ورودی. برخلاف bs_fork_session قدیمی،
+        ساخت سند fork با find_one_and_update(upsert) اتمیک است (R3) و
+        کپی فایل‌ها فقط وقتی انجام می‌شود که fork هنوز محتوا ندارد
+        (ایدمپوتنت — رقابتِ دو فراخوانی ⇒ فقط یک برنده محتوا را کپی
+        می‌کند؛ بازنده سند موجود را می‌گیرد). فایل‌ها file_id تلگرام را
+        «ارجاع» می‌کنند (بدون آپلود مجدد)، notif_sent=True تا اعلان
+        تکراری نرود، downloads=0.
+        خروجی: (fork_id, created) یا (None, False) اگر ورودی نامعتبر/
+        جلسه سراسری نباشد. forkهای archived نادیده گرفته می‌شوند."""
+        base = await self.bs_get_session(session_id)
+        if not base or not intake:
+            return None, False
+        if (await self.session_intake(session_id)) != '':
+            return None, False
+        # fast-path بدون نوشتن: fork موجود را برگردان (بدون created)
+        existing = await self.bs_sessions.find_one({
+            'fork_of': session_id, 'intake': intake,
+            'archived': {'$ne': True}})
+        if existing:
+            return str(existing['_id']), False
+        # اتمیک: در رقابت فقط یک درج موفق است؛ بازنده سند موجود را می‌گیرد
+        fork = await self.bs_sessions.find_one_and_update(
+            {'fork_of': session_id, 'intake': intake},
+            {'$setOnInsert': {
+                'lesson_id': base.get('lesson_id', ''),
+                'number': base.get('number', 0),
+                'topic': base.get('topic', ''),
+                'teacher': base.get('teacher', ''),
+                'intake': intake, 'fork_of': session_id,
+                'created_at': utc_now_iso(),
+            }},
+            upsert=True, return_document=True)
+        new_sid = str(fork['_id'])
+        # fork آرشیوشده (A/C قدیمی) کلید یکتای (fork_of,intake) را در اختیار
+        # دارد ⇒ به‌جای درجِ ممنوع، همان احیا می‌شود (بدون حذف داده)
+        if fork.get('archived'):
+            await self.bs_sessions.update_one(
+                {'_id': fork['_id']},
+                {'$set': {'archived': False, 'resurrected_at': utc_now_iso()}})
+            fork['archived'] = False
+        # کپی محتوا فقط برای برنده‌ی واقعی (fork بدون فایل) — ایدمپوتنت
+        have = await self.bs_content.count_documents({'session_id': new_sid})
+        created = True
+        if have == 0:
+            for c in (await self.bs_get_content(session_id)):
+                await self.bs_content.insert_one({
+                    'session_id': new_sid,
+                    'type': c.get('type', 'pdf'),
+                    'file_id': c.get('file_id', ''),
+                    'description': c.get('description', ''),
+                    'extra_info': c.get('extra_info', ''),
+                    'order': c.get('order', 0),
+                    'uploaded_at': utc_now_iso(),
+                    'downloads': 0,
+                    'notif_sent': True,
+                    'fork_of': str(c['_id']),
+                    # carry file naming fields
+                    'original_file_name': c.get('original_file_name', ''),
+                    'display_file_name': c.get('display_file_name', ''),
+                    'display_name': c.get('display_name', c.get('display_file_name', '')),
+                    'file_extension': c.get('file_extension', ''),
+                    'mime_type': c.get('mime_type', ''),
+                    'file_size': c.get('file_size', 0),
+                    'branding_enabled': c.get('branding_enabled', False),
+                })
+        else:
+            created = False
+        return new_sid, created
 
 
     async def bs_fork_session(self, session_id: str, intake: str):
-        """ساخت/بازیابی fork ورودی‌خاص از یک جلسه‌ی «سراسری»:
-        کپی جلسه + کپی همه‌ی محتوایش (با notif_sent=True تا دوباره‌اعلان
-        نشود) و downloads=0. ایدمپوتنت: fork موجود = همان برمی‌گردد.
-        فقط base سراسری fork می‌شود؛ خروجی None یعنی نامعتبر."""
-        base = await self.bs_get_session(session_id)
-        if not base or not intake:
-            return None
-        if (await self.session_intake(session_id)) != '':
-            return None
-        existing = await self.bs_sessions.find_one(
-            {'fork_of': session_id, 'intake': intake})
-        if existing:
-            return str(existing['_id'])
-        r = await self.bs_sessions.insert_one({
-            'lesson_id': base.get('lesson_id', ''),
-            'number': base.get('number', 0),
-            'topic': base.get('topic', ''),
-            'teacher': base.get('teacher', ''),
-            'intake': intake, 'fork_of': session_id,
-            'created_at': utc_now_iso(),
-        })
-        new_sid = str(r.inserted_id)
-        for c in (await self.bs_get_content(session_id)):
-            await self.bs_content.insert_one({
-                'session_id': new_sid,
-                'type': c.get('type', 'pdf'),
-                'file_id': c.get('file_id', ''),
-                'description': c.get('description', ''),
-                'extra_info': c.get('extra_info', ''),
-                'order': c.get('order', 0),
-                'uploaded_at': utc_now_iso(),
-                'downloads': 0,
-                'notif_sent': True,
-                'fork_of': str(c['_id']),
-                # carry file naming fields
-                'original_file_name': c.get('original_file_name', ''),
-                'display_file_name': c.get('display_file_name', ''),
-                'display_name': c.get('display_name', c.get('display_file_name', '')),
-                'file_extension': c.get('file_extension', ''),
-                'mime_type': c.get('mime_type', ''),
-                'file_size': c.get('file_size', 0),
-                'branding_enabled': c.get('branding_enabled', False),
-            })
-        return new_sid
+        """سازگاری قدیمی (ماموریت ۶): فقط شناسه‌ی fork (None = نامعتبر)."""
+        fork_id, _ = await self.bs_ensure_override(session_id, intake)
+        return fork_id
 
 
     async def bs_unfork_session(self, fork_id: str):
@@ -2045,49 +2192,70 @@ class DBContent:
         return base_id
 
 
-    async def ref_fork_book(self, book_id: str, intake: str):
-        """ساخت/بازیابی fork ورودی‌خاص از یک کتاب «سراسری» (کپی کتاب+فایل‌ها)."""
+    async def ref_ensure_override(self, book_id: str, intake: str):
+        """⭐ ماموریت ۶ — همان CoW اتمیک برای کتاب رفرنس (قرینه‌ی
+        bs_ensure_override). خروجی: (fork_id, created)."""
         base = await self.ref_get_book(book_id)
         if not base or not intake:
-            return None
+            return None, False
         if (await self.ref_book_intake(book_id)) != '':
-            return None
-        existing = await self.ref_books.find_one(
-            {'fork_of': book_id, 'intake': intake})
+            return None, False
+        existing = await self.ref_books.find_one({
+            'fork_of': book_id, 'intake': intake,
+            'archived': {'$ne': True}})
         if existing:
-            return str(existing['_id'])
+            return str(existing['_id']), False
         count = await self.ref_books.count_documents(
             {'subject_id': base.get('subject_id', '')})
-        r = await self.ref_books.insert_one({
-            'subject_id': base.get('subject_id', ''),
-            'name': base.get('name', ''),
-            'order': count,
-            'intake': intake, 'fork_of': book_id,
-            'created_at': utc_now_iso(),
-        })
-        new_bid = str(r.inserted_id)
-        for f in (await self.ref_get_files(book_id)):
-            await self.ref_files.insert_one({
-                'book_id': new_bid,
-                'lang': f.get('lang', 'fa'),
-                'volume': f.get('volume', 1),
-                'description': f.get('description', ''),
-                'file_id': f.get('file_id', ''),
-                'order': f.get('order', 0),
-                'uploaded_at': utc_now_iso(),
-                'downloads': 0,
-                'notif_sent': True,
-                'fork_of': str(f['_id']),
-                # carry file naming fields
-                'original_file_name': f.get('original_file_name', ''),
-                'display_file_name': f.get('display_file_name', ''),
-                'display_name': f.get('display_name', f.get('display_file_name', '')),
-                'file_extension': f.get('file_extension', ''),
-                'mime_type': f.get('mime_type', ''),
-                'file_size': f.get('file_size', 0),
-                'branding_enabled': f.get('branding_enabled', False),
-            })
-        return new_bid
+        fork = await self.ref_books.find_one_and_update(
+            {'fork_of': book_id, 'intake': intake},
+            {'$setOnInsert': {
+                'subject_id': base.get('subject_id', ''),
+                'name': base.get('name', ''),
+                'order': count,
+                'intake': intake, 'fork_of': book_id,
+                'created_at': utc_now_iso(),
+            }},
+            upsert=True, return_document=True)
+        new_bid = str(fork['_id'])
+        if fork.get('archived'):
+            await self.ref_books.update_one(
+                {'_id': fork['_id']},
+                {'$set': {'archived': False, 'resurrected_at': utc_now_iso()}})
+            fork['archived'] = False
+        have = await self.ref_files.count_documents({'book_id': new_bid})
+        created = True
+        if have == 0:
+            for f in (await self.ref_get_files(book_id)):
+                await self.ref_files.insert_one({
+                    'book_id': new_bid,
+                    'lang': f.get('lang', 'fa'),
+                    'volume': f.get('volume', 1),
+                    'description': f.get('description', ''),
+                    'file_id': f.get('file_id', ''),
+                    'order': f.get('order', 0),
+                    'uploaded_at': utc_now_iso(),
+                    'downloads': 0,
+                    'notif_sent': True,
+                    'fork_of': str(f['_id']),
+                    # carry file naming fields
+                    'original_file_name': f.get('original_file_name', ''),
+                    'display_file_name': f.get('display_file_name', ''),
+                    'display_name': f.get('display_name', f.get('display_file_name', '')),
+                    'file_extension': f.get('file_extension', ''),
+                    'mime_type': f.get('mime_type', ''),
+                    'file_size': f.get('file_size', 0),
+                    'branding_enabled': f.get('branding_enabled', False),
+                })
+        else:
+            created = False
+        return new_bid, created
+
+
+    async def ref_fork_book(self, book_id: str, intake: str):
+        """سازگاری قدیمی (ماموریت ۶): فقط شناسه‌ی fork (None = نامعتبر)."""
+        fork_id, _ = await self.ref_ensure_override(book_id, intake)
+        return fork_id
 
 
     async def ref_unfork_book(self, fork_id: str):
@@ -2105,7 +2273,7 @@ class DBContent:
         """آیا این جلسه نسخه‌ی اختصاصی (fork) دارد؟ — گارد حذف base (Q1)."""
         try:
             return bool(await self.bs_sessions.find_one(
-                {'fork_of': str(session_id)}))
+                {'fork_of': str(session_id), 'archived': {'$ne': True}}))
         except Exception:
             return False
 
@@ -2114,7 +2282,7 @@ class DBContent:
         """همان گارد برای کتاب‌های رفرنس."""
         try:
             return bool(await self.ref_books.find_one(
-                {'fork_of': str(book_id)}))
+                {'fork_of': str(book_id), 'archived': {'$ne': True}}))
         except Exception:
             return False
 

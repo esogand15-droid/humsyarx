@@ -977,11 +977,17 @@ async def bs_add_session_ep(lid: str, body: BsSessionCreate, admin=Depends(get_c
 
 @router.patch("/basic-science/sessions/{sid}")
 async def bs_edit_session_ep(sid: str, body: BsSessionUpdate,
-                             admin=Depends(get_content_admin_user)):
+                             admin=Depends(get_content_admin_user),
+                             edit_scope: str = Query("auto"),
+                             intake: Optional[str] = Query(None)):
     old = await db.bs_get_session(sid)
     if not old:
         raise HTTPException(404, "جلسه پیدا نشد")
-    await _deny_intake(await db.session_intake(sid), admin)
+    # ⭐ م6 — CoW در لحظه‌ی ذخیره؛ هدف از سرور
+    target_sid, override_created, note = await _cow_session_write(
+        sid, admin, edit_scope, intake)
+    if target_sid != sid:
+        old = await db.bs_get_session(target_sid) or old
     updates = {}
     if body.number is not None:
         updates["number"] = body.number
@@ -991,17 +997,19 @@ async def bs_edit_session_ep(sid: str, body: BsSessionUpdate,
         updates["teacher"] = body.teacher.strip()
     if not updates:
         raise HTTPException(422, "چیزی برای ویرایش نیست")
-    ok = await db.bs_update_session(sid, updates)
+    ok = await db.bs_update_session(target_sid, updates)
     if not ok:
         raise HTTPException(500, "ویرایش جلسه انجام نشد")
     await _audit(
         admin, "ویرایش جلسه علوم پایه", "Content", severity="WARNING",
-        target_id=sid, target_type="session",
+        target_id=target_sid, target_type="session",
         target_label=f"جلسه {updates.get('number', old.get('number',''))} — {updates.get('topic', old.get('topic',''))}",
         before={k: old.get(k, "") for k in updates}, after=updates,
         tags=["محتوا", "ویرایش_جلسه", "پنل_وب"],
     )
-    return {"ok": True, "changed": list(updates)}
+    return {"ok": True, "changed": list(updates), "session_id": target_sid,
+            "override_created": override_created, "logical_id": str(old.get("fork_of") or target_sid),
+            **({"note": note} if note else {})}
 
 
 @router.delete("/basic-science/sessions/{sid}")
@@ -1024,13 +1032,21 @@ async def bs_del_session_ep(sid: str, admin=Depends(get_content_admin_user)):
 @router.get("/basic-science/sessions/{sid}/content")
 async def bs_content_ep(sid: str, admin=Depends(get_content_admin_user)):
     # 🌊 C1.5 — مشاهده‌ی فقط‌خواندنیِ محتوای جلسه‌ی سراسری برای scoped
-    ro = await _read_intake(await db.session_intake(sid), admin)
+    # ⭐ م6 — CoW: جلسه‌ی سراسری برای scopedِ دارای ورودی، «نوشتنی از طریق
+    # override» است؛ ذخیره به نسخه‌ی اختصاصی خودش هدایت می‌شود.
+    _s_iv = await db.session_intake(sid)
+    _scope = admin.get("_scope") or {}
+    if (_s_iv == "" and _scope.get("kind") == "scoped" and (_scope.get("intake") or "")):
+        ro = False
+    else:
+        ro = await _read_intake(_s_iv, admin)
     items = await db.bs_get_content(sid)
     # 🍴 C2 — نشان نسخه‌ی اختصاصی برای سربرگ مینی‌اپ
     sdoc = await db.bs_get_session(sid) or {}
     def _display(c):
         return c.get("display_file_name") or c.get("display_name") or c.get("original_file_name") or c.get("description") or ""
     return {"readonly": ro, "is_fork": bool(sdoc.get("fork_of")),
+        "logical_id": str(sdoc.get("fork_of") or sdoc.get("_id", "")),
         "content":[{"id":str(c["_id"]),"type":c.get("type",""),"description":c.get("description",""),
         "display_name": _display(c), "original_name": c.get("original_file_name",""),
         "file_extension": c.get("file_extension",""), "file_size": c.get("file_size",0),
@@ -1042,9 +1058,12 @@ async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str =
                              extra_info: str = Form(""), display_name: str = Form(""),
                              branding_enabled: bool = Form(False),
                              file: UploadFile = File(...),
-                             admin=Depends(get_content_admin_user)):
+                             admin=Depends(get_content_admin_user),
+                             edit_scope: str = Form("auto"),
+                             intake: Optional[str] = Form(None)):
     if ctype not in CONTENT_TYPES: raise HTTPException(422, "نوع محتوا نامعتبر")
-    await _deny_intake(await db.session_intake(sid), admin)
+    # ⭐ م6 — CoW: آپلود یعنی ذخیره؛ هدف از سرور (override در صورت نیاز)
+    sid, override_created, note = await _cow_session_write(sid, admin, edit_scope, intake)
     # File naming pipeline — sanitize + preserve extension
     orig_fname = (file.filename or "file").strip() or "file"
     # Use utility for final name; caller may send display_name empty -> fallback to original
@@ -1097,13 +1116,20 @@ async def bs_add_content_ep(sid: str, ctype: str = Form(...), description: str =
         after={"session_id": sid, "type": ctype, "display_name": upload_fname,
                "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["محتوا", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":str(cid), "display_name": upload_fname}
+    return {"ok":True, "id":str(cid), "display_name": upload_fname,
+            "session_id": sid, "override_created": override_created,
+            **({"note": note} if note else {})}
 
 @router.delete("/basic-science/content/{cid}")
-async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
+async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user),
+                            edit_scope: str = Query("auto"),
+                            intake: Optional[str] = Query(None)):
     old = await db.bs_get_content_item(cid)
     if not old: raise HTTPException(404, "فایل پیدا نشد")
-    await _deny_intake(await db.content_intake(cid), admin)
+    # ⭐ م6 — حذف هم ذخیره است: CoW (twin در fork)
+    cid, _tsid, override_created, note = await _cow_content_write(
+        cid, admin, edit_scope, intake)
+    old = await db.bs_get_content_item(cid) or old
     _res = await db.bs_delete_content(cid)
     if _res is None:              # 🛡 AUDIT-R6 — خطای دیتابیس، نه حذف موفق
         raise HTTPException(status_code=500, detail="حذف انجام نشد — دوباره تلاش کنید")
@@ -1111,18 +1137,23 @@ async def bs_del_content_ep(cid: str, admin=Depends(get_content_admin_user)):
         target_id=cid, target_type="content_item", target_label=old.get("description", ""),
         before={"session_id": old.get("session_id"), "type": old.get("type")},
         after={"deleted": True}, tags=["محتوا", "حذف_فایل", "پنل_وب"])
-    return {"ok":True}
+    return {"ok":True, "override_created": override_created,
+            **({"note": note} if note else {})}
 
 class RenameBody(BaseModel):
     new_name: str = Field(min_length=1, max_length=220)
 
 @router.patch("/basic-science/content/{cid}/rename")
-async def bs_rename_content_ep(cid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+async def bs_rename_content_ep(cid: str, body: RenameBody, admin=Depends(get_content_admin_user),
+                               edit_scope: str = Query("auto"),
+                               intake: Optional[str] = Query(None)):
     old = await db.bs_get_content_item(cid)
     if not old:
         raise HTTPException(404, "فایل پیدا نشد")
-    await _deny_intake(await db.content_intake(cid), admin)
-    sess_id = old.get("session_id", "")
+    # ⭐ م6 — تغییر نام هم ذخیره است: CoW (twin در fork)
+    cid, sess_id, override_created, note = await _cow_content_write(
+        cid, admin, edit_scope, intake)
+    old = await db.bs_get_content_item(cid) or old
     # Build sanitized new display via utility (dedup)
     from utils_file_naming import prepare_rename, get_extension
     orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
@@ -1163,7 +1194,8 @@ async def bs_rename_content_ep(cid: str, body: RenameBody, admin=Depends(get_con
         target_label=old.get("display_file_name", "") or old.get("description",""),
         before={"display_name": old.get("display_file_name","")}, after={"display_name": new_display, "reuploaded": reuploaded},
         tags=["محتوا", "تغییر_نام", "پنل_وب"])
-    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded}
+    return {"ok": True, "display_name": new_display, "reuploaded": reuploaded,
+            "override_created": override_created, **({"note": note} if note else {})}
 
 # ══════════════════════════════════════════════
 # 📖 رفرنس‌ها — موضوع‌ها / کتاب‌ها / فایل‌ها
@@ -1324,11 +1356,14 @@ async def ref_add_book_ep(sid: str, body: RefBookCreate, admin=Depends(get_conte
 
 @router.patch("/references/books/{bid}")
 async def ref_edit_book_ep(bid: str, body: RefNameUpdate,
-                           admin=Depends(get_content_admin_user)):
+                           admin=Depends(get_content_admin_user),
+                           edit_scope: str = Query("auto"),
+                           intake: Optional[str] = Query(None)):
     old = await db.ref_get_book(bid)
     if not old:
         raise HTTPException(404, "کتاب رفرنس پیدا نشد")
-    await _deny_intake(await db.ref_book_intake(bid), admin)
+    # ⭐ م6 — CoW در لحظه‌ی ذخیره
+    bid, override_created, note = await _cow_book_write(bid, admin, edit_scope, intake)
     name = body.name.strip()
     ok = await db.ref_update_book(bid, {"name": name})
     if not ok:
@@ -1339,7 +1374,8 @@ async def ref_edit_book_ep(bid: str, body: RefNameUpdate,
         before={"name": old.get("name", "")}, after={"name": name},
         tags=["رفرنس", "ویرایش", "پنل_وب"],
     )
-    return {"ok": True}
+    return {"ok": True, "book_id": bid, "override_created": override_created,
+            **({"note": note} if note else {})}
 
 
 @router.post("/references/books/{bid}/reorder")
@@ -1402,9 +1438,12 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
                            description: str = Form(""), display_name: str = Form(""),
                            branding_enabled: bool = Form(False),
                            file: UploadFile = File(...),
-                           admin=Depends(get_content_admin_user)):
+                           admin=Depends(get_content_admin_user),
+                           edit_scope: str = Form("auto"),
+                           intake: Optional[str] = Form(None)):
     if lang not in ("fa","en"): raise HTTPException(422, "زبان نامعتبر")
-    await _deny_intake(await db.ref_book_intake(bid), admin)
+    # ⭐ م6 — CoW: آپلود یعنی ذخیره
+    bid, override_created, note = await _cow_book_write(bid, admin, edit_scope, intake)
     orig_fname = (file.filename or "file").strip() or "file"
     from utils_file_naming import prepare_rename, get_extension
     desired = (display_name or "").strip() or orig_fname
@@ -1446,28 +1485,39 @@ async def ref_add_file_ep(bid: str, lang: str = Form("fa"), volume: int = Form(1
         after={"book_id": bid, "lang": lang, "volume": volume, "display_name": upload_fname,
                "original_name": orig_fname, "branding": bool(branding_enabled)},
         tags=["رفرنس", "افزودن_فایل", "پنل_وب"])
-    return {"ok":True, "id":fid, "display_name": upload_fname}
+    return {"ok":True, "id":fid, "display_name": upload_fname, "book_id": bid,
+            "override_created": override_created, **({"note": note} if note else {})}
 
 @router.delete("/references/files/{fid}")
-async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user)):
+async def ref_del_file_ep(fid: str, admin=Depends(get_content_admin_user),
+                          edit_scope: str = Query("auto"),
+                          intake: Optional[str] = Query(None)):
     old = await db.ref_get_file(fid)
     if not old: raise HTTPException(404, "فایل رفرنس پیدا نشد")
-    await _deny_intake(await db.ref_file_intake(fid), admin)
+    # ⭐ م6 — حذف هم ذخیره است: CoW
+    fid, _tbid, override_created, note = await _cow_ref_file_write(
+        fid, admin, edit_scope, intake)
+    old = await db.ref_get_file(fid) or old
     await db.ref_delete_file(fid)
     await _audit(admin, "حذف فایل رفرنس", "Content", severity="HIGH",
         target_id=fid, target_type="reference_file", target_label=old.get("description", ""),
         before={"book_id": old.get("book_id"), "lang": old.get("lang"),
                 "volume": old.get("volume")}, after={"deleted": True},
         tags=["رفرنس", "حذف_فایل", "پنل_وب"])
-    return {"ok":True}
+    return {"ok":True, "override_created": override_created,
+            **({"note": note} if note else {})}
 
 @router.patch("/references/files/{fid}/rename")
-async def ref_rename_file_ep(fid: str, body: RenameBody, admin=Depends(get_content_admin_user)):
+async def ref_rename_file_ep(fid: str, body: RenameBody, admin=Depends(get_content_admin_user),
+                             edit_scope: str = Query("auto"),
+                             intake: Optional[str] = Query(None)):
     old = await db.ref_get_file(fid)
     if not old:
         raise HTTPException(404, "فایل رفرنس پیدا نشد")
-    await _deny_intake(await db.ref_file_intake(fid), admin)
-    book_id = old.get("book_id", "")
+    # ⭐ م6 — تغییر نام هم ذخیره است: CoW
+    fid, book_id, override_created, note = await _cow_ref_file_write(
+        fid, admin, edit_scope, intake)
+    old = await db.ref_get_file(fid) or old
     from utils_file_naming import prepare_rename, get_extension
     orig = old.get("original_file_name", "") or old.get("display_file_name", "") or "file.pdf"
     existing = set()
@@ -1523,6 +1573,111 @@ async def _fork_target(admin, requested):
         requested = None
     return resolve_content_intake(admin, requested) or ''
 
+# ⭐ ماموریت ۶ — CoW در API: «هدف نوشتن» همیشه از سرور تعیین می‌شود.
+# پارامتر edit_scope ('global'|'intake'|'auto') فقط برای ادمین ارشد معنا
+# دارد؛ ادمین ورودی‌خاص در هر حالتی به scope خودش هدایت می‌شود و هیچ
+# پارامتری از کلاینت intake او را عوض نمی‌کند.
+async def _cow_session_write(sid, admin, edit_scope='auto', requested_intake=None):
+    """خروجی: (target_sid, created, note) — در صورت عدم دسترسی HTTPException."""
+    s_iv = await db.session_intake(sid)
+    if s_iv:
+        await _deny_intake(s_iv, admin)          # جلسه‌ی ورودی دیگر/خود → 403 در صورت عدم دسترسی
+        return sid, False, ''
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        tgt = scope.get("intake") or ''
+        if not tgt:
+            raise HTTPException(403, "برای نقش شما ورودی تنظیم نشده است")
+        fork_sid, created = await db.bs_ensure_override(sid, tgt)
+        if not fork_sid:
+            raise HTTPException(409, "این جلسه نسخه‌ی سراسری نیست")
+        return fork_sid, created, (f"⭐ نسخه‌ی اختصاصی ورودی {tgt} ساخته شد" if created else "")
+    es = (edit_scope or 'auto')
+    if es == 'global':
+        return sid, False, ''                    # ارشد: درجا روی سراسری
+    if es == 'intake':
+        tgt = resolve_content_intake(admin, requested_intake) or ''
+        if not tgt:
+            raise HTTPException(422, "ورودی هدف را مشخص کنید (intake)")
+        fork_sid, created = await db.bs_ensure_override(sid, tgt)
+        if not fork_sid:
+            raise HTTPException(409, "این جلسه نسخه‌ی سراسری نیست")
+        return fork_sid, created, (f"⭐ نسخه‌ی اختصاصی ورودی {tgt} ساخته شد" if created else "")
+    return sid, False, ''                        # auto: رفتار قبلی (درجا)
+
+
+async def _cow_book_write(bid, admin, edit_scope='auto', requested_intake=None):
+    """همان CoW برای کتاب رفرنس."""
+    b_iv = await db.ref_book_intake(bid)
+    if b_iv:
+        await _deny_intake(b_iv, admin)
+        return bid, False, ''
+    scope = admin.get("_scope") or {}
+    if scope.get("kind") == "scoped":
+        tgt = scope.get("intake") or ''
+        if not tgt:
+            raise HTTPException(403, "برای نقش شما ورودی تنظیم نشده است")
+        fork_bid, created = await db.ref_ensure_override(bid, tgt)
+        if not fork_bid:
+            raise HTTPException(409, "این کتاب نسخه‌ی سراسری نیست")
+        return fork_bid, created, (f"⭐ نسخه‌ی اختصاصی ورودی {tgt} ساخته شد" if created else "")
+    es = (edit_scope or 'auto')
+    if es == 'global':
+        return bid, False, ''
+    if es == 'intake':
+        tgt = resolve_content_intake(admin, requested_intake) or ''
+        if not tgt:
+            raise HTTPException(422, "ورودی هدف را مشخص کنید (intake)")
+        fork_bid, created = await db.ref_ensure_override(bid, tgt)
+        if not fork_bid:
+            raise HTTPException(409, "این کتاب نسخه‌ی سراسری نیست")
+        return fork_bid, created, (f"⭐ نسخه‌ی اختصاصی ورودی {tgt} ساخته شد" if created else "")
+    return bid, False, ''
+
+
+async def _cow_content_write(cid, admin, edit_scope='auto', requested_intake=None):
+    """نقشه‌ی فایل به هدف نوشتن (twin در fork؛ واگرایی → کپی افزودنی)."""
+    item = await db.bs_get_content_item(cid)
+    if not item:
+        raise HTTPException(404, "فایل پیدا نشد")
+    sid = str(item.get("session_id", ""))
+    tgt, created, note = await _cow_session_write(sid, admin, edit_scope, requested_intake)
+    if tgt == sid:
+        return cid, tgt, created, note
+    twin = await db.bs_content.find_one({'session_id': tgt, 'fork_of': cid})
+    if twin:
+        return str(twin['_id']), tgt, created, note
+    new_cid = await db.bs_copy_content_item(cid, tgt)
+    return new_cid, tgt, created, note
+
+
+async def _cow_ref_file_write(fid, admin, edit_scope='auto', requested_intake=None):
+    """نقشه‌ی فایل رفرنس به هدف نوشتن."""
+    f = await db.ref_get_file(fid)
+    if not f:
+        raise HTTPException(404, "فایل رفرنس پیدا نشد")
+    bid = str(f.get("book_id", ""))
+    tgt, created, note = await _cow_book_write(bid, admin, edit_scope, requested_intake)
+    if tgt == bid:
+        return fid, tgt, created, note
+    twin = await db.ref_files.find_one({'book_id': tgt, 'fork_of': fid})
+    if twin:
+        return str(twin['_id']), tgt, created, note
+    from time_utils import utc_now_iso as _uni
+    r = await db.ref_files.insert_one({
+        'book_id': tgt, 'lang': f.get('lang', 'fa'), 'volume': f.get('volume', 1),
+        'description': f.get('description', ''), 'file_id': f.get('file_id', ''),
+        'order': f.get('order', 0), 'uploaded_at': _uni(),
+        'downloads': 0, 'notif_sent': True, 'fork_of': fid,
+        'original_file_name': f.get('original_file_name', ''),
+        'display_file_name': f.get('display_file_name', ''),
+        'display_name': f.get('display_name', f.get('display_file_name', '')),
+        'file_extension': f.get('file_extension', ''), 'mime_type': f.get('mime_type', ''),
+        'file_size': f.get('file_size', 0), 'branding_enabled': f.get('branding_enabled', False),
+    })
+    return str(r.inserted_id), tgt, created, note
+
+
 async def _intakes_active_codes() -> list:
     items = await db.get_all_intakes()
     return [i["code"] for i in items if i.get("active", True)]
@@ -1540,7 +1695,9 @@ async def bs_fork_session_ep(sid: str, admin=Depends(get_content_admin_user),
     if await db.session_intake(sid) != '':
         raise HTTPException(409,
             "این جلسه نسخه‌ی سراسری نیست؛ همان را مستقیماً ویرایش کنید")
-    new_sid = await db.bs_fork_session(sid, target)
+    # ⭐ م6 — ساخت اتمیک/ایدمپوتنت (race-safe)؛ این endpoint «اقدام صریح»
+    # است — در UI جدید دیگر دکمه‌ای به آن اشاره نمی‌کند (CoW جایگزین شده)
+    new_sid, created = await db.bs_ensure_override(sid, target)
     if not new_sid:
         raise HTTPException(422, "فقط جلسه‌ی سراسری قابل سفارشی‌سازی است")
     try:
@@ -1554,7 +1711,8 @@ async def bs_fork_session_ep(sid: str, admin=Depends(get_content_admin_user),
             details=f"🍴 Fork Session\n🏷 ورودی: {_lbl}", tags=["فورک_محتوا"])
     except Exception:
         pass
-    return {"ok":True, "fork_id":new_sid}
+    return {"ok":True, "fork_id":new_sid, "created": bool(created),
+            "logical_id": str(sid)}
 
 @router.delete("/basic-science/sessions/{sid}/fork")
 async def bs_unfork_session_ep(sid: str, admin=Depends(get_content_admin_user)):
@@ -1585,7 +1743,7 @@ async def ref_fork_book_ep(bid: str, admin=Depends(get_content_admin_user),
     if await db.ref_book_intake(bid) != '':
         raise HTTPException(409,
             "این کتاب نسخه‌ی سراسری نیست؛ همان را مستقیماً ویرایش کنید")
-    new_bid = await db.ref_fork_book(bid, target)
+    new_bid, created = await db.ref_ensure_override(bid, target)
     if not new_bid:
         raise HTTPException(422, "فقط کتاب سراسری قابل سفارشی‌سازی است")
     try:

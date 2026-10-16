@@ -156,10 +156,9 @@ async def _show_sessions(query, lesson_id: str, back_cb: str):
     keyboard = []
     for s in sessions:
         sid = str(s['_id'])
-        # forkهای خود ورودی با وبج ⭐ نمایش داده می‌شوند
-        marker = "⭐ " if s.get('fork_of') else ""
+        # ⭐ م6: دانشجو نشان fork نمی‌بیند — برای او فقط «جلسه‌ی خودش» است
         keyboard.append([InlineKeyboardButton(
-            f"{marker}📌 جلسه {s['number']} — {s.get('topic', '')[:30]}",
+            f"📌 جلسه {s['number']} — {s.get('topic', '')[:30]}",
             callback_data=f'bs:session:{sid}'
         )])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data=back_cb)])
