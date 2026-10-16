@@ -1953,6 +1953,13 @@ def _raise_gemini_status_error(status_code: int, detail: str = '') -> None:
         if detail:
             logger.warning("gemini provider error status=%s detail=%s",
                            status_code, detail)
+        # 🔴 م8.1 — ۴۰۰ِ نوعِ فایل (mime) ربطی به کلید/مدل ندارد؛ پیامِ
+        # روشن بده تا ادمین پشتِ «کلید API نامعتبره» گمراه نشود.
+        _d = (detail or '').lower()
+        if 'mime type' in _d or 'not supported for' in _d:
+            raise AIError(
+                "این نوع فایل توسط مدلِ انتخابی پشتیبانی نمی‌شود — فایل را "
+                "به متن/عکس تبدیل کن یا مدل دیگری از پنل هوشیار انتخاب کن.")
         raise AIConfigError(
             "کلید API نامعتبره، مدل اشتباهه یا دسترسی لازم رو نداره — ادمین باید از پنل "
             f"هوشیار تنظیماتش رو چک کنه. (کد خطا: {status_code})",
@@ -2020,7 +2027,19 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
         else:
             generation_config['thinkingConfig'] = {'thinkingBudget': -1}
 
-    tools = [{'code_execution': {}}, {'url_context': {}}]
+    # 🔴 م8.1 — فیکسِ باگِ ویس: ابزارِ توکارِ code_execution ورودیِ صوتی
+    # را نمی‌پذیرد و Gemini با خطای ۴۰۰
+    # «The mime type: audio/wav is not supported for code execution»
+    # کل درخواست را رد می‌کند (این باگ باعث می‌شد هر ویس کاربر به‌جای
+    # جواب، «کلید API نامعتبره» به ادمین گزارش شود). video/* هم همین‌طور.
+    # راه‌حل: با ورودیِ صوت/ویدیو، ابزارهای توکارِ سرور
+    # (code_execution/url_context) حذف می‌شوند؛ function declarations
+    # (برنامه/نمره) با صوت سازگارند و می‌مانند.
+    _av_input = bool(image_bytes) and (image_mime or '').lower().startswith(
+        ('audio/', 'video/'))
+    tools = []
+    if not _av_input:
+        tools += [{'code_execution': {}}, {'url_context': {}}]
     tool_config = None
     if uid is not None:
         # ⚠️ قابلیتِ جدید: ابزارهای «فقط ادمین ارشد» فقط وقتی uid دقیقاً
@@ -2037,7 +2056,12 @@ async def _stream_gemini(api_key: str, model: str, system_prompt: str,
         # invocations…» ارور ۴۰۰ می‌ده. تستِ اتصالِ ادمین چون uid نداره
         # (پس تابعی هم اضافه نمی‌شه) هیچ‌وقت این مشکل رو نشون نمی‌داد —
         # برای همین «تست» موفق بود ولی چتِ واقعی خطا می‌داد.
-        tool_config = {'function_calling_config': {'mode': 'AUTO'}, 'include_server_side_tool_invocations': True}
+        # (م8.1: فلگ فقط وقتی ست می‌شود که ابزارِ توکارِ سرور واقعاً
+        # در درخواست باشد — با ورودیِ صوتی که ابزار توکار ندارد، لازم
+        # نیست و ممکن است خودش ۴۰۰ بدهد.)
+        tool_config = {'function_calling_config': {'mode': 'AUTO'}}
+        if not _av_input:
+            tool_config['include_server_side_tool_invocations'] = True
 
     total_tokens = 0
     full_answer_parts = []

@@ -80,6 +80,17 @@
 
 **رگرسیون:** `pytest tests/ -q` → ۴۹۹ passed / ۱۸ failed / ۱۲۸ skipped — همان ۱۸ شکستِ محیطیِ مبنا (HEAD تمیز هم ۱۸ failed دارد؛ نصب fastapi در sandbox لازم است). صفر رگرسیون.
 
+## 🔴 م8.1 — فیکس باگ ویس (پس از گزارش کاربر)
+**علامت:** کاربر ویس می‌فرستاد → خطای ۴۰۰ `[INVALID_ARGUMENT] The mime type: audio/wav is not supported for code execution` که به ادمین به شکل گمراه‌کننده‌ی «کلید API نامعتبره…» گزارش می‌شد.
+
+**ریشه:** `_stream_gemini` برای همه‌ی درخواست‌ها ابزارهای توکار `code_execution` و `url_context` را می‌چسباند؛ ابزار code execution گوگل ورودی صوتی (inline `audio/wav`) را نمی‌پذیرد و کل درخواست را ۴۰۰ می‌کند. (متن/عکس مشکلی نداشتند — فقط ویس/صوت.)
+
+**فیکس (دو لایه):**
+1. با ورودی صوت/ویدیو (`image_mime` با `audio/` یا `video/`)، ابزارهای توکار از `tools` حذف می‌شوند؛ `function_declarations` (برنامه/نمره) با صوت سازگارند و می‌مانند. `include_server_side_tool_invocations` هم فقط وقتی ست می‌شود که ابزار توکار واقعاً در درخواست باشد.
+2. تور ایمنی در `_raise_gemini_status_error`: ۴۰۰ِ «mime type/not supported for» دیگر «کلید API نامعتبره» نمی‌گوید؛ پیام روشنِ «این نوع فایل توسط مدل انتخابی پشتیبانی نمی‌شود» می‌دهد.
+
+**تست:** ۵ تست جدید (`VoiceToolsFixTests`) — ویس: بدون code_execution/url_context ولی با function_declarations و بدون فلگ server-side؛ ویدیونوت هم همین‌طور؛ عکس/متن: ابزارها سرِ جایشان؛ پیام خطای mime ≠ مشکل کلید.
+
 ## فایل‌های تغییرکرده
 - `ai_solver.py` — TTS + تبدیل OGG + maybe_send_voice_reply + وایرینگ در `_answer_with_live_edit`/`handle_ai_media`؛ `generate_image(image_size=…)` + payload؛ کاتالوگ/نسبت‌ها/رزولوشن‌ها؛ ListModels زنده؛ probeها؛ مرتب‌سازی سلامت.
 - `api/routers/ai.py` — پاس‌دادن image_size در endpoint تصویر (فال‌بک م۷).

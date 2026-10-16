@@ -313,3 +313,122 @@ class ImagePayloadTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class _StreamResp:
+    """پاسخ SSE فیک برای _stream_gemini."""
+    status_code = 200
+
+    async def aiter_lines(self):
+        import json as _json
+        yield 'data: ' + _json.dumps({
+            'candidates': [{'content': {'parts': [{'text': 'سلام، جواب ویس'}]},
+                             'finishReason': 'STOP'}],
+            'usageMetadata': {'totalTokenCount': 12}})
+
+    async def aread(self):
+        return b''
+
+
+class _StreamClient:
+    """httpx.AsyncClient فیک — payload آخرین درخواست را روی کلاس ضبط می‌کند."""
+    payloads = []
+
+    def __init__(self, *a, **kw):
+        pass
+
+    def stream(self, method, url, headers=None, json=None, **kw):
+        _StreamClient.payloads.append({'url': url, 'payload': json})
+        return self
+
+    async def __aenter__(self):
+        return _StreamResp()
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def aclose(self):
+        pass
+
+
+class VoiceToolsFixTests(unittest.TestCase):
+    """🔴 م8.1 — باگِ ویس: code_execution با audio/wav خطای ۴۰۰ می‌داد.
+
+    ریشه: ابزارهای توکار (code_execution/url_context) بی‌قید به همه‌ی
+    درخواست‌ها چسبیده بودند؛ Gemini ورودیِ صوتی را با این ابزارها رد
+    می‌کند. باید با ورودی صوت/ویدیو حذف شوند ولی function declarations
+    بمانند."""
+
+    def setUp(self):
+        _rtloop.adopt()
+        _StreamClient.payloads = []
+        self.fake = _FakeSettingsDB()
+        self.fake.settings['ai_enabled'] = '1'
+        self._p = mock.patch.object(ai_solver, 'db', self.fake)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+
+    def _run(self, **kw):
+        with mock.patch.object(ai_solver.httpx, 'AsyncClient', _StreamClient):
+            async def _collect():
+                out = []
+                async for ev in ai_solver._stream_gemini(
+                        K1, 'gemini-3.6-flash', 'شما هوشیار هستید', **kw):
+                    out.append(ev)
+                return out
+            return _rtloop.run(_collect())
+
+    def test_voice_audio_drops_builtin_tools(self):
+        events = self._run(text='سوال ویس', image_bytes=b'RIFFwav',
+                           image_mime='audio/wav', uid=111)
+        self.assertTrue(any(e['type'] == 'done' for e in events))
+        self.assertEqual(len(_StreamClient.payloads), 1)
+        tools = _StreamClient.payloads[0]['payload']['tools']
+        names = [list(t.keys())[0] for t in tools]
+        # ابزار توکار حذف شد؛ تابع‌های سفارشی ماندند
+        self.assertNotIn('code_execution', names)
+        self.assertNotIn('url_context', names)
+        self.assertIn('function_declarations', names)
+        # فلگِ server-side فقط با ابزار توکار معنا دارد — نباید باشد
+        tc = _StreamClient.payloads[0]['payload'].get('tool_config') or {}
+        self.assertNotIn('include_server_side_tool_invocations', tc)
+        # صوت واقعاً با mime درست رفته
+        part0 = _StreamClient.payloads[0]['payload']['contents'][-1]['parts'][0]
+        self.assertEqual(part0['inline_data']['mime_type'], 'audio/wav')
+
+    def test_video_note_also_drops(self):
+        self._run(text='ویدیونوت', image_bytes=b'\x00\x00\x00\x18ftyp',
+                  image_mime='video/mp4', uid=111)
+        names = [list(t.keys())[0]
+                 for t in _StreamClient.payloads[0]['payload']['tools']]
+        self.assertNotIn('code_execution', names)
+
+    def test_image_keeps_builtin_tools(self):
+        self._run(text='این عکس چیه؟', image_bytes=b'\x89PNGxyz',
+                  image_mime='image/png', uid=111)
+        names = [list(t.keys())[0]
+                 for t in _StreamClient.payloads[0]['payload']['tools']]
+        self.assertIn('code_execution', names)
+        self.assertIn('url_context', names)
+        self.assertIn('function_declarations', names)
+        tc = _StreamClient.payloads[0]['payload'].get('tool_config') or {}
+        self.assertTrue(tc.get('include_server_side_tool_invocations'))
+
+    def test_text_keeps_builtin_tools(self):
+        self._run(text='سلام', uid=111)
+        names = [list(t.keys())[0]
+                 for t in _StreamClient.payloads[0]['payload']['tools']]
+        self.assertIn('code_execution', names)
+
+    def test_mime_400_error_is_not_apikey_error(self):
+        # تور ایمنی: ۴۰۰ِ «mime type» پیام روشن می‌دهد، نه «کلید نامعتبره»
+        try:
+            ai_solver._raise_gemini_status_error(
+                400, '[INVALID_ARGUMENT] The mime type: audio/wav is not '
+                     'supported for code execution.')
+            self.fail('must raise')
+        except ai_solver.AIError as e:
+            self.assertNotIsInstance(e, ai_solver.AIConfigError)
+            self.assertIn('پشتیبانی نمی‌شود', str(e))
