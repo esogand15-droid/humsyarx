@@ -34,9 +34,11 @@ from ai_solver import (
     LIVE_THINKING_LEVELS,
     LIVE_TRANSLATE_LANGUAGES,
     PREBUILT_TTS_VOICES,
+    build_live_language_lock_turn,
     build_live_setup_message,
     connect_gemini_live_with_failover,
     execute_live_tool_calls,
+    is_non_persian_output_drift,
     parse_live_server_message,
     run_with_key_failover,
     ai_claim_inflight,
@@ -2076,6 +2078,12 @@ async def live_voice_ws_ep(websocket: WebSocket):
             return
 
         connected_model = getattr(google_ws, "live_model", None) or effective_model
+        # م9.6 — قفل اولیه کانتکست مکالمه روی زبان فارسی (fa-IR) پیش از ارسال اولین فریم میکروفون
+        if "translate" not in connected_model.lower():
+            try:
+                await google_ws.send(_json.dumps(build_live_language_lock_turn(turn_complete=False)))
+            except Exception:
+                pass
         await websocket.send_json({
             "type": "ready",
             "model": connected_model,
@@ -2214,6 +2222,16 @@ async def live_voice_ws_ep(websocket: WebSocket):
                         m_txt = " ".join(model_transcript_buf).strip()
                         user_transcript_buf.clear()
                         model_transcript_buf.clear()
+                        # م9.6 — اگر مدل به دلیل نویز محیط ناخواسته به زبان غیرفارسی منحرف شد، بلافاصله قفل زبان فارسی را تزریق کن
+                        if (
+                            "translate" not in connected_model.lower()
+                            and m_txt
+                            and is_non_persian_output_drift(m_txt)
+                        ):
+                            try:
+                                await google_ws.send(_json.dumps(build_live_language_lock_turn(turn_complete=False)))
+                            except Exception:
+                                pass
                         if u_txt:
                             try:
                                 await _remember(uid, "user", f"[🎙 تماس زنده] {u_txt[:1000]}")

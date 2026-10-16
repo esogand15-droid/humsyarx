@@ -4506,6 +4506,70 @@ async def list_live_models(refresh: bool = False) -> dict:
     return payload
 
 
+LIVE_PERSIAN_LANGUAGE_LOCK_HEADER = (
+    "[MANDATORY LANGUAGE LOCK — CRITICAL SYSTEM RULE]:\n"
+    "RESPOND IN PERSIAN (FARSI / فارسی). YOU MUST RESPOND UNMISTAKABLY AND EXCLUSIVELY IN PERSIAN (fa-IR) AT ALL TIMES.\n"
+    "NEVER SWITCH TO ANY OTHER LANGUAGE (SUCH AS ENGLISH, ARABIC, TURKISH, HINDI, SPANISH, RUSSIAN, KOREAN, CHINESE, FRENCH, OR GERMAN) UNDER ANY CIRCUMSTANCES.\n"
+    "IF THE USER'S AUDIO IS UNCLEAR, MUFFLED, NOISY, DISTORTED, OR SOUNDS LIKE ANOTHER LANGUAGE DUE TO MICROPHONE NOISE, DO NOT SWITCH LANGUAGES; "
+    "ALWAYS ASSUME THE STUDENT IS SPEAKING PERSIAN AND POLITELY ASK THEM IN PERSIAN TO REPEAT WHAT THEY SAID.\n\n"
+    "[قانون قطعی و تغییرناپذیر زبان مکالمه زنده]:\n"
+    "زبان پیش‌فرض و انحصاری شما در تمام طول این تماس صوتی زنده **فقط و فقط زبان فارسی (Persian / Farsi)** است.\n"
+    "۱) شما تحت هیچ شرایطی مجاز نیستید زبان مکالمه را به زبان دیگری (انگلیسی، عربی، ترکی، هندی، روسی، اسپانیایی، کره‌ای و غیره) تغییر دهید.\n"
+    "۲) اگر صدای کاربر یا دانشجو ضعیف، نامفهوم، بریده‌بریده، گنگ یا همراه با نویز محیط بود و متوجه نشدید چه گفت، **هرگز زبان خود را عوض نکنید** و هرگز تصور نکنید به زبان خارجی صحبت کرده است؛ در این حالت حتماً فقط به زبان فارسی صمیمی بگویید: «ببخشید صدات واضح نیومد، می‌شه دوباره بگی؟» یا «متوجه نشدم چی گفتی عزیزم، یه بار دیگه تکرار می‌کنی؟».\n\n"
+)
+
+LIVE_PERSIAN_LANGUAGE_LOCK_FOOTER = (
+    "\n\n[دستورالعمل تماس صوتی زنده (Live Voice Call) و قفل زبان فارسی]:\n"
+    "- شما در حال مکالمه‌ی صوتی زنده و مستقیم با دانشجوی ایرانی هستید.\n"
+    "- پاسخ‌ها را همیشه ۱۰۰٪ به **زبان فارسی معیار گفتاری**، روان، صمیمی، طبیعی و بدون علائم نگارشیِ بلند یا کدهای Markdown بیان کن تا در گفتار صوتی کاملاً طبیعی شنیده شود.\n"
+    "- تذکر نهایی و قطعی (UNMISTAKABLY RESPOND IN PERSIAN): حتی اگر صدای ورودی میکروفون نامفهوم یا شبیه زبان‌های دیگر شنیده شد، هرگز به زبان غیرفارسی پاسخ نده و همیشه به فارسی صحبت کن."
+)
+
+
+def build_live_language_lock_turn(turn_complete: bool = False) -> dict:
+    """م9.6 — ساخت نوبت کانتکست پنهان (turnComplete=False) برای قفل کردن توزیع احتمال زبان مدل روی فارسی (fa-IR)."""
+    return {
+        'clientContent': {
+            'turns': [
+                {
+                    'role': 'user',
+                    'parts': [
+                        {
+                            'text': (
+                                "[یادآوری سیستمی قفل زبان: در تمام طول این تماس صوتی، فقط و فقط به زبان فارسی (Persian / Farsi) "
+                                "صحبت کن. اگر صدای من واضح نبود یا نویز داشت، هرگز زبان خودت را به انگلیسی، عربی یا هیچ زبان دیگری "
+                                "تغییر نده و فقط به فارسی بگو که صدا واضح نبود.]"
+                            ),
+                        }
+                    ],
+                }
+            ],
+            'turnComplete': bool(turn_complete),
+        }
+    }
+
+
+def is_non_persian_output_drift(text: str) -> bool:
+    """م9.6 — تشخیص انحراف ناخواسته‌ی خروجی صوتی مدل به زبان غیرفارسی (مثلاً در اثر نویز میکروفون)."""
+    if not text:
+        return False
+    s = str(text).strip()
+    if len(s) < 6:
+        return False
+    # ۱) اگر حتی یک کاراکتر از خطوط غیرمرتبط (سیریلیک، هندی/دواناگری، کره‌ای، چینی/ژاپنی، تایلندی، عبری) در خروجی باشد
+    if re.search(r'[\u0400-\u04FF\u0900-\u097F\uAC00-\uD7AF\u4E00-\u9FFF\u3040-\u30FF\u0E00-\u0E7F\u0590-\u05FF]', s):
+        return True
+    # ۲) شمارش حروف فارسی/عربی در برابر حروف لاتین
+    persian_chars = len(re.findall(r'[\u0600-\u06FF]', s))
+    latin_chars = len(re.findall(r'[A-Za-z\u00C0-\u024F]', s))
+    total_alpha = persian_chars + latin_chars
+    if total_alpha >= 18 and persian_chars == 0:
+        return True
+    if total_alpha >= 30 and (persian_chars / float(total_alpha)) < 0.20:
+        return True
+    return False
+
+
 def build_live_setup_message(
     model: str = DEFAULT_LIVE_MODEL,
     system_prompt: str = '',
@@ -4582,17 +4646,12 @@ def build_live_setup_message(
     # برای gemini-3.8-live طبق مستندات thinkingConfig نباید ارسال شود
 
     live_sys = (system_prompt or DEFAULT_PROMPT).strip()
-    live_voice_hint = (
-        "\n\n[دستورالعمل تماس صوتی زنده (Live Voice Call): "
-        "شما در حال مکالمه‌ی صوتی زنده و مستقیم با دانشجو هستید. "
-        "پاسخ‌ها را روان، صمیمی، طبیعی، به زبان فارسی معیار گفتاری و بدون علائم نگارشیِ "
-        "بلند یا کدهای Markdown بیان کن تا در گفتار صوتی کاملاً طبیعی شنیده شود.]"
-    )
+    full_sys_text = f"{LIVE_PERSIAN_LANGUAGE_LOCK_HEADER}{live_sys}{LIVE_PERSIAN_LANGUAGE_LOCK_FOOTER}"
     setup_obj: dict = {
         'model': full_model,
         'generationConfig': gen_cfg,
         'systemInstruction': {
-            'parts': [{'text': (live_sys + live_voice_hint)[:16000]}],
+            'parts': [{'text': full_sys_text[:16000]}],
         },
         'inputAudioTranscription': {},
         'outputAudioTranscription': {},

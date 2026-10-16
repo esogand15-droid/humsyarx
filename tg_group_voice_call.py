@@ -1027,23 +1027,26 @@ class _GroupLiveSession:
             raw_chunk = bytes(self.in_buf[:take])
             del self.in_buf[:take]
 
-            # م9.5 — فیلتر High-Pass و محافظ اکو هنگام صحبت خود هوشیار
+            # م9.5 / م9.6 — فیلتر High-Pass، Noise Gate نرم در سکوت، و محافظ اکو هنگام صحبت خود هوشیار
             filtered_chunk, rms, self._hp_state = _filter_and_measure_pcm16_16k(
                 raw_chunk, self._hp_state, attenuate_factor=1.0
             )
             voice_thresh = 240 if self._playout_active else 65
             if rms >= voice_thresh:
-                self._voice_hangover_until = now + 0.50
+                self._voice_hangover_until = now + 0.55
                 chunk = filtered_chunk
             elif now < self._voice_hangover_until:
                 chunk = filtered_chunk
             elif self._playout_active:
                 # تضعیف شدید نویز/اکوی ضعیف اسپیکر شرکت‌کنندگان هنگام صحبت هوشیار تا Barge-in کاذب رخ ندهد
                 chunk, _, _ = _filter_and_measure_pcm16_16k(
-                    raw_chunk, self._hp_state, attenuate_factor=0.12
+                    raw_chunk, self._hp_state, attenuate_factor=0.08
                 )
             else:
-                chunk = filtered_chunk
+                # م9.6 — تضعیف نویز محیطی ضعیف در زمان سکوت (Soft Noise Gate) تا جمینی نویز میکروفون را زبان خارجی تشخیص ندهد
+                chunk, _, _ = _filter_and_measure_pcm16_16k(
+                    raw_chunk, self._hp_state, attenuate_factor=0.06
+                )
 
             b64 = base64.b64encode(chunk).decode("ascii")
             try:
@@ -1061,8 +1064,14 @@ class _GroupLiveSession:
 
     async def _gemini_to_outgoing_loop(self) -> None:
         """دریافت پاسخ صوتی 24kHz PCM16 و رویدادهای ابزار/Barge-in از Gemini Live."""
-        from ai_solver import execute_live_tool_calls, parse_live_server_message
+        from ai_solver import (
+            build_live_language_lock_turn,
+            execute_live_tool_calls,
+            is_non_persian_output_drift,
+            parse_live_server_message,
+        )
 
+        out_tr_buf: list[str] = []
         try:
             async for raw in self.google_ws:
                 if self.closed:
@@ -1076,12 +1085,26 @@ class _GroupLiveSession:
                             self.enqueue_gemini_pcm24k(pcm24k)
                         except Exception:
                             pass
+                    elif etype == "output_transcript" and ev.get("text"):
+                        out_tr_buf.append(ev["text"])
                     elif etype == "interrupted":
                         # وقتی یکی از اعضای گروه وسط صحبت هوشیار حرف بزند، صف پخش بلافاصله خالی می‌شود
+                        out_tr_buf.clear()
                         self.clear_playback_buffer()
                     elif etype == "turn_state":
                         if ev.get("turn_complete") or ev.get("interaction_status") == "IDLE":
                             self._turn_complete = True
+                            m_txt = " ".join(out_tr_buf).strip()
+                            out_tr_buf.clear()
+                            if (
+                                "translate" not in (self.model or "").lower()
+                                and m_txt
+                                and is_non_persian_output_drift(m_txt)
+                            ):
+                                try:
+                                    await self.google_ws.send(json.dumps(build_live_language_lock_turn(turn_complete=False)))
+                                except Exception:
+                                    pass
                     elif etype == "tool_call":
                         tool_resp = await execute_live_tool_calls(ev.get("calls") or [], 0)
                         await self.google_ws.send(json.dumps(tool_resp))
@@ -1262,7 +1285,11 @@ async def join_group_voice_chat(
                     "turns": [{
                         "role": "user",
                         "parts": [{
-                            "text": "الان وارد ویس‌چت گروه شدی؛ یک سلام کوتاه و گرم به بچه‌های گروه بگو و اعلام آمادگی کن."
+                            "text": (
+                                "الان وارد ویس‌چت گروه شدی؛ یک سلام کوتاه و گرم به زبان فارسی به بچه‌های گروه بگو و اعلام آمادگی کن. "
+                                "(یادت باشد در تمام طول این ویس‌چت گروهی، فقط و فقط به زبان فارسی صحبت کنی و اگر صدای کسی نامفهوم یا نویزی بود، "
+                                "هرگز به زبان دیگری سوییچ نکنی و به فارسی بگویی صدا واضح نبود.)"
+                            )
                         }],
                     }],
                     "turnComplete": True,

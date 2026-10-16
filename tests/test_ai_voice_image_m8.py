@@ -1152,6 +1152,25 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertGreater(rms_dc, 0)
         self.assertIsInstance(hp_st, tuple)
 
+        # ۴) م9.6 — تست قفل زبان فارسی در ابتدا و انتهای systemInstruction و تشخیص انحراف زبان
+        sys_txt = s38['systemInstruction']['parts'][0]['text']
+        self.assertIn('RESPOND IN PERSIAN', sys_txt)
+        self.assertIn('UNMISTAKABLY', sys_txt)
+        self.assertIn('فقط و فقط زبان فارسی', sys_txt)
+        self.assertIn('هرگز زبان خود را عوض نکنید', sys_txt)
+
+        lock_turn = ai_solver.build_live_language_lock_turn(turn_complete=False)
+        self.assertFalse(lock_turn['clientContent']['turnComplete'])
+        self.assertIn('فارسی', lock_turn['clientContent']['turns'][0]['parts'][0]['text'])
+
+        # متن فارسی (حتی همراه با اصطلاح علمی انگلیسی) نباید انحراف تشخیص داده شود
+        self.assertFalse(ai_solver.is_non_persian_output_drift('سلام عزیزم! برون‌ده قلبی یا Cardiac Output برابر با حجم ضربه‌ای در ضربان قلب است.'))
+        # متن کاملاً انگلیسی، روسی یا هندی باید انحراف تشخیص داده شود
+        self.assertTrue(ai_solver.is_non_persian_output_drift('Hello there! I could not hear you clearly, could you please repeat that?'))
+        self.assertTrue(ai_solver.is_non_persian_output_drift('Привет, я тебя плохо слышу'))
+        self.assertTrue(ai_solver.is_non_persian_output_drift('नमस्ते मैं आपकी कैसे मदद कर सकता हूँ'))
+
+
 
 
 

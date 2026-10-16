@@ -203,15 +203,32 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
     const inChan = inputs[0] && inputs[0][0];
     const len = outChan ? outChan.length : 128;
 
-    // ۱) پردازش میکروفون (High-Pass 85Hz + Anti-Aliasing 16kHz + تشخیص Barge-in محلی)
+    // ۱) پردازش میکروفون (High-Pass 85Hz + Soft Noise Gate + Anti-Aliasing 16kHz + تشخیص Barge-in محلی)
     if (inChan && inChan.length && !this.micMuted) {
       let prevX = this.hpPrevX;
       let prevY = this.hpPrevY;
       const alpha = this.hpAlpha;
       let frameSq = 0;
       for (let i = 0; i < inChan.length; i += 1) {
+        const dx = inChan[i];
+        frameSq += dx * dx;
+      }
+      const rawRms = Math.sqrt(frameSq / inChan.length);
+      if (rawRms >= 0.0055) {
+        this.gateHangover = 225; // ~600ms hangover
+        this.gateGain = 1.0;
+      } else if ((this.gateHangover || 0) > 0) {
+        this.gateHangover -= 1;
+        this.gateGain = 1.0;
+      } else {
+        this.gateGain = ((this.gateGain ?? 1.0) * 0.94) + (0.06 * 0.06);
+      }
+      const gGain = this.gateGain ?? 1.0;
+      frameSq = 0;
+
+      for (let i = 0; i < inChan.length; i += 1) {
         const x = inChan[i];
-        const y = alpha * (prevY + x - prevX);
+        const y = alpha * (prevY + x - prevX) * gGain;
         prevX = x;
         prevY = y;
         frameSq += y * y;

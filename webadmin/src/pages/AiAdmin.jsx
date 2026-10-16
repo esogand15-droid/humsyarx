@@ -456,8 +456,25 @@ class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
       const alpha = this.hpAlpha;
       let frameSq = 0;
       for (let i = 0; i < inChan.length; i++) {
+        const dx = inChan[i];
+        frameSq += dx * dx;
+      }
+      const rawRms = Math.sqrt(frameSq / inChan.length);
+      if (rawRms >= 0.0055) {
+        this.gateHangover = 225;
+        this.gateGain = 1.0;
+      } else if ((this.gateHangover || 0) > 0) {
+        this.gateHangover -= 1;
+        this.gateGain = 1.0;
+      } else {
+        this.gateGain = ((this.gateGain ?? 1.0) * 0.94) + (0.06 * 0.06);
+      }
+      const gGain = this.gateGain ?? 1.0;
+      frameSq = 0;
+
+      for (let i = 0; i < inChan.length; i++) {
         const x = inChan[i];
-        const y = alpha * (prevY + x - prevX);
+        const y = alpha * (prevY + x - prevX) * gGain;
         prevX = x; prevY = y;
         frameSq += y * y;
         this.decimSum += y;
