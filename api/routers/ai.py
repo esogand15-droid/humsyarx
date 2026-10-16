@@ -26,6 +26,7 @@ from ai_solver import (
     IMAGE_ASPECT_RATIOS,
     IMAGE_PROMPT_MAX,
     IMAGE_PROMPT_MIN,
+    run_with_key_failover,
     ai_claim_inflight,
     ai_is_inflight,
     ai_release_inflight,
@@ -787,16 +788,24 @@ async def _store_pdf_reference(
         user_id
     )
 
-    uploaded = await _gemini_upload_file(
-        config["api_key"],
-        data,
-        "application/pdf",
-        filename,
-    )
+    # ⭐ م7 — آپلود + فعال‌سازی با فال‌بکِ کلید بعدی (سهمیه/خطای کلید)
+    async def _upload_pdf_once(api_key: str) -> dict:
+        fi = await _gemini_upload_file(
+            api_key,
+            data,
+            "application/pdf",
+            filename,
+        )
+        return await _wait_for_gemini_file(
+            api_key,
+            fi,
+        )
 
-    uploaded = await _wait_for_gemini_file(
-        config["api_key"],
-        uploaded,
+    uploaded = await run_with_key_failover(
+        config.get("provider") or "gemini",
+        config.get("api_key_list") or [config.get("api_key") or ""],
+        _upload_pdf_once,
+        label="pdf-upload",
     )
 
     uri = uploaded.get("uri")
@@ -1796,9 +1805,17 @@ async def generate_image_ep(body: ImageGenBody,
     started = _time.monotonic()
     try:
         try:
-            res = await generate_image(
-                effective_key, effective_model, prompt,
-                aspect_ratio, provider=effective_provider)
+            # ⭐ م7 — ساخت تصویر با فال‌بکِ کلید بعدی
+            async def _gen_image_once(api_key: str) -> dict:
+                return await generate_image(
+                    api_key, effective_model, prompt,
+                    aspect_ratio, provider=effective_provider)
+            res = await run_with_key_failover(
+                effective_provider,
+                config.get("image_api_key_list") or [effective_key],
+                _gen_image_once,
+                label="image",
+            )
         except AiImageError as e:
             logger.warning(
                 "IMAGE_GENERATION_FAILED rid=%s uid=%s model=%s code=%s "

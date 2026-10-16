@@ -228,6 +228,87 @@ function AiPersonas() {
 }
 
 /* ── ⚙️ پیکربندی مدل (PUT /config — همان guard و منطق مینی‌اپ) ── */
+/* ⭐ م7 — کلیدهای فال‌بک: چند کلید برای هر provider؛ اگر یکی سهمیه/خطا
+   بخورد، درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد. */
+function KeysPanel({ provider, me, onSaved }) {
+  const [keys, setKeys] = useState(null);
+  const [err, setErr] = useState('');
+  const [newKey, setNewKey] = useState('');
+  const [testing, setTesting] = useState(false);
+
+  const load = async () => {
+    setErr('');
+    try { setKeys(await api.aiKeys(provider)); }
+    catch (e) { setErr(errText(e)); }
+  };
+  useEffect(() => { setKeys(null); load(); }, [provider]);
+
+  const add = async () => {
+    const secret = newKey.trim();
+    setNewKey('');
+    try {
+      const r = await api.aiKeyAdd(provider, secret);
+      toast(`کلید فال‌بک اضافه شد — ${Number(r.count || 0).toLocaleString('fa')} کلید در صف ✅`);
+      load(); onSaved && onSaved();
+    } catch (e) { toast(errText(e), 'err'); }
+  };
+  const del = async (index) => {
+    try { await api.aiKeyDel(provider, index); toast('کلید حذف شد'); load(); onSaved && onSaved(); }
+    catch (e) { toast(errText(e), 'err'); }
+  };
+  const test = async () => {
+    setTesting(true);
+    try {
+      const r = await api.aiKeysTest(provider);
+      const ok = Number(r.ok_count || 0), total = Number(r.count || 0);
+      if (total > 0 && ok === total) toast(`همه‌ی ${total} کلید سالم‌اند ✅`);
+      else if (ok === 0) toast('هیچ کلیدی جواب نداد ❌', 'err');
+      else toast(`${ok} از ${total} کلید سالم — بقیه در صف فال‌بک نمی‌مانند`, 'err');
+      load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setTesting(false);
+  };
+
+  const st = { active: ['🟢', 'var(--c-ok, #2a2)'], cooldown: ['🟡', 'var(--c-warn, #b80)'], failed: ['🔴', 'var(--c-bad, #d24)'] };
+  return (
+    <div className="panel panel-pad" style={{ marginTop: 14 }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <b>🔑 کلیدهای فال‌بک ({provider})</b>
+        <button className="btn sm" disabled={testing || !keys || !keys.count} onClick={test}>{testing ? '⏳ …' : '🧪 تست همه'}</button>
+      </div>
+      <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+        به تعداد دلخواه کلید ذخیره کن؛ اگر یکی سهمیه گرفت (429) یا خطا خورد، همان درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد. ترتیب = اولویت.
+      </div>
+      {err && <div className="muted" style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{err}</div>}
+      <div style={{ marginTop: 10 }}>
+        {keys === null ? <span className="muted">…</span> : !keys.count ? (
+          <div className="muted">هنوز کلیدی برای این ارائه‌دهنده ثبت نشده — با «چرخش کلید» یا فرم زیر اضافه کن.</div>
+        ) : (
+          (keys.keys || []).map(k => (
+            <div key={k.index} className="row" style={{ justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--c-line, #eee)' }}>
+              <span className="code" style={{ direction: 'ltr' }}>{k.index}. {k.masked}</span>
+              <span className="row" style={{ gap: 8 }}>
+                <span style={{ color: (st[k.status] || ['⚪', ''])[1], fontSize: 'var(--fs-caption)' }}>
+                  {(st[k.status] || ['⚪', ''])[0]} {k.status === 'cooldown' ? `استراحت ${Math.ceil(k.cooldown_remaining)}ث` : k.status === 'failed' ? 'شکست خورده' : 'سالم'}
+                  {k.last_error ? ` — ${k.last_error.slice(0, 60)}` : ''}
+                </span>
+                {me?.is_owner && <button className="btn sm danger" onClick={() => del(k.index)}>🗑</button>}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+      {me?.is_owner && (
+        <div className="row" style={{ marginTop: 12 }}>
+          <input className="inp" type="password" autoComplete="new-password" style={{ direction: 'ltr', flex: 1 }}
+                 placeholder="کلید فال‌بک جدید…" value={newKey} onChange={e => setNewKey(e.target.value)} />
+          <button className="btn" disabled={newKey.trim().length < 8} onClick={add}>➕ افزودن</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AiConfig({ cfg, me, onSaved }) {
   const [f, setF] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -365,6 +446,8 @@ function AiConfig({ cfg, me, onSaved }) {
             {me?.is_owner && <button className="btn sm" onClick={async () => { try { setTestResult(await api.aiTest()); toast('اتصال هوشیار موفق بود ✅'); } catch (e) { toast(errText(e), 'err'); } }}>🧪 تست اتصال</button>}
           </div>
           {testResult && <div className="muted">پاسخ: {testResult.answer} · {Number(testResult.tokens || 0).toLocaleString('fa')} توکن · {Number(testResult.response_time_ms || 0).toLocaleString('fa')} ms · Request ID: <span className="code">{testResult.request_id}</span></div>}
+          {/* ⭐ م7 — مدیریت کلیدهای فال‌بک برای provider فعلی */}
+          <KeysPanel provider={f.provider || cfg.provider} me={me} onSaved={onSaved} />
           {/* 🔴 FIX-R1 (مورد ۷) — هشدار ذخیره‌شده‌ی مدل (پاسخ سرور) */}
           {modelWarning && <div style={{ color: 'var(--c-bad, #d24)', fontSize: 'var(--fs-caption)' }}>⚠️ {modelWarning}</div>}
         </div>

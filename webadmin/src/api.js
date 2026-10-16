@@ -1192,6 +1192,17 @@ export const api = {
       method: "POST",
       body: { api_key: apiKey },
     }),
+  /* ⭐ م7 — کلیدهای فال‌بک (چند کلید برای هر provider) */
+  aiKeys: (pid) => req(`/api/web-admin/ai/keys/${pid}`),
+  aiKeyAdd: (pid, apiKey) =>
+    req(`/api/web-admin/ai/keys/${pid}`, {
+      method: "POST",
+      body: { api_key: apiKey },
+    }),
+  aiKeyDel: (pid, index) =>
+    req(`/api/web-admin/ai/keys/${pid}/${index}`, { method: "DELETE" }),
+  aiKeysTest: (pid) =>
+    req(`/api/web-admin/ai/keys/${pid}/test`, { method: "POST" }),
   aiTest: () => req("/api/web-admin/ai/test", { method: "POST" }),
   aiProfile: (uid) => req(`/api/web-admin/ai/users/${uid}/profile`),
   aiProfileClear: (uid) =>

@@ -393,6 +393,14 @@ async def list_provider_models(provider: str, api_key: str = None,
                 'fallback': True, 'error': 'ارائه‌دهنده نامعتبر است.'}
     # 🔴 FIX-R1 (مورد ۶) — کلید قبل از هر درخواست پاکسازی می‌شود
     api_key = sanitize_api_key(api_key or '')
+    # ⭐ م7 — کلیدِ صریحِ داده‌شده همان می‌ماند؛ در غیر این صورت از صفِ
+    # فال‌بکِ همین provider (بدونِ کلیدهای cooldownشده) استفاده می‌شود.
+    if api_key:
+        _model_keys = [api_key]
+    else:
+        _mcfg = await get_ai_config()
+        _model_keys = ordered_keys(provider, _mcfg.get('vault_multi', {}).get(provider) or [])
+        api_key = _model_keys[0] if _model_keys else ''
     cache_key = f'ai_models_cache_{provider}'
 
     if not refresh:
@@ -425,11 +433,14 @@ async def list_provider_models(provider: str, api_key: str = None,
         prev_ids = {m.get('id') for m in old_cache['models'] if m.get('id')}
 
     try:
-        if provider == 'gemini':
-            models = await _list_models_gemini(api_key)
-        else:
-            models = await _list_models_openai_compat(
-                PROVIDERS[provider]['url'], api_key, PROVIDERS[provider]['label'])
+        # ⭐ م7 — fetch با فال‌بکِ کلید بعدی (سهمیه‌ی listModels هم بس است!)
+        async def _fetch_models_once(_k: str) -> list:
+            if provider == 'gemini':
+                return await _list_models_gemini(_k)
+            return await _list_models_openai_compat(
+                PROVIDERS[provider]['url'], _k, PROVIDERS[provider]['label'])
+        models = await run_with_key_failover(
+            provider, _model_keys, _fetch_models_once, label='list_models')
         # فقط مدل‌های چت + مرتب‌سازی الفبایی
         models = [m for m in models if _is_chat_model(m['id'])]
         models.sort(key=lambda m: m['id'])
@@ -791,6 +802,148 @@ class AIConfigError(AIError):
 
 
 # ══════════════════════════════════════════════════
+#  ⭐ م7 — فال‌بک چند-کلیدی (Key Failover)
+#
+#  هر provider می‌تواند چند کلید داشته باشد (Vault لیستی). وقتی کلیدی
+#  429/سهمیه خورد یا نامعتبر بود، همان درخواست *بی‌درنگ* با کلید بعدیِ
+#  سالم تکرار می‌شود؛ اگر آن هم لیمیت خورد، کلید بعدی — تا آخرین کلید.
+#  وضعیتِ هر کلید (cooldown/آخرین خطا) فقط در حافظه‌ی همین پروسه است؛
+#  ری‌استارت یعنی شروعِ تمیز (هیچ داده‌ی پایداری تغییر نمی‌کند).
+# ══════════════════════════════════════════════════
+KEY_COOLDOWN_QUOTA = 120      # 429/سهمیه — ۲ دقیقه
+KEY_COOLDOWN_AUTH = 3600      # 400/401/403 — کلید نامعتبر — ۱ ساعت
+KEY_COOLDOWN_SERVER = 30      # 5xx/شبکه — نیم‌دقیقه
+MAX_KEYS_PER_PROVIDER = 20
+_KEY_STATE: dict = {}         # 'provider::key' -> {'cooldown_until','kind','last_error','fails'}
+
+# کدهای تصویر که چرخش به کلید دیگر منطقی است (سهمیه/کلید/سرویس)
+_IMAGE_ROTATE_CODES = {
+    'GEMINI_RATE_LIMIT', 'IMAGE_RATE_LIMIT',
+    'GEMINI_AUTH_ERROR', 'IMAGE_AUTH_ERROR',
+    'GEMINI_UNAVAILABLE', 'IMAGE_UNAVAILABLE',
+    'GEMINI_TIMEOUT', 'IMAGE_TIMEOUT',
+}
+
+
+def _key_state_id(provider: str, key: str) -> str:
+    return f"{(provider or '').strip()}::{(key or '').strip()}"
+
+
+def masked_key(key: str) -> str:
+    """نمایش امن کلید در لاگ/پیام ادمین — هرگز کلِ کلید."""
+    k = (key or '').strip()
+    if not k:
+        return ''
+    if len(k) <= 8:
+        return '•' * len(k)
+    return k[:4] + '••••••' + k[-4:]
+
+
+def classify_key_error(exc: BaseException) -> str | None:
+    """نگاشت خطا به نوعِ cooldown. None یعنی چرخش بی‌معناست
+    (مثلاً بلاکِ ایمنی — با هر کلیدی همین می‌شود)."""
+    if isinstance(exc, AIQuotaError):
+        return 'quota'
+    if isinstance(exc, AIConfigError):
+        return 'auth'
+    if isinstance(exc, AiImageError):
+        return 'server' if getattr(exc, 'code', '') in _IMAGE_ROTATE_CODES else None
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return 'server'
+    if isinstance(exc, AIError):
+        return 'server'
+    return None
+
+
+def mark_key_failed(provider: str, key: str, exc: BaseException) -> str | None:
+    kind = classify_key_error(exc)
+    if kind is None:
+        return None
+    cd = {'quota': KEY_COOLDOWN_QUOTA, 'auth': KEY_COOLDOWN_AUTH,
+          'server': KEY_COOLDOWN_SERVER}[kind]
+    st = _KEY_STATE.setdefault(_key_state_id(provider, key), {})
+    st['cooldown_until'] = time.monotonic() + cd
+    st['kind'] = kind
+    st['last_error'] = _sanitize_provider_text(f"{type(exc).__name__}: {exc}")[:200] or str(exc)[:200]
+    st['fails'] = int(st.get('fails', 0)) + 1
+    return kind
+
+
+def mark_key_ok(provider: str, key: str) -> None:
+    st = _KEY_STATE.get(_key_state_id(provider, key))
+    if st:
+        st['cooldown_until'] = 0.0
+        st['fails'] = 0
+        st['last_error'] = ''
+
+
+def key_cooldown_remaining(provider: str, key: str) -> float:
+    st = _KEY_STATE.get(_key_state_id(provider, key)) or {}
+    try:
+        return max(0.0, float(st.get('cooldown_until', 0.0)) - time.monotonic())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def ordered_keys(provider: str, keys) -> list:
+    """کلیدها به ترتیبِ ذخیره، بدونِ آنهایی که cooldown دارند؛ اگر
+    *همه* در cooldown بودند، به‌ترتیبِ نزدیک‌ترینِ انقضا — تا هیچ‌وقت
+    بدونِ تلاش، به کاربر «سرویس خاموش» نگوییم."""
+    keys = [k for k in (keys or []) if k]
+    ready = [k for k in keys if key_cooldown_remaining(provider, k) <= 0]
+    if ready:
+        return ready
+    return sorted(keys, key=lambda k: key_cooldown_remaining(provider, k))
+
+
+def key_status_summary(provider: str, keys) -> list:
+    """خلاصه‌ی وضعیت کلیدها برای پنل/ربات — فقط ماسک‌شده."""
+    out = []
+    for i, k in enumerate([x for x in (keys or []) if x], start=1):
+        st = _KEY_STATE.get(_key_state_id(provider, k)) or {}
+        cd = key_cooldown_remaining(provider, k)
+        status = 'cooldown' if cd > 0 else ('failed' if st.get('fails') else 'active')
+        out.append({
+            'index': i, 'masked': masked_key(k), 'status': status,
+            'cooldown_remaining': round(cd, 1),
+            'kind': st.get('kind') or '',
+            'last_error': st.get('last_error') or '',
+        })
+    return out
+
+
+async def run_with_key_failover(provider: str, keys, factory, label: str = ''):
+    """⭐ م7 — اجرای factory(api_key) با فال‌بک خودکار روی کلید بعدی.
+
+    فقط خطاهایِ «چرخش‌پذیر» (سهمیه/کلید/شبکه) باعث رفتن به کلید بعدی
+    می‌شوند؛ خطای منطقی (مثل بلاکِ ایمنی) همان‌جا برمی‌گردد چون با هر
+    کلیدی تکرار می‌شود. خطای کلیدِ آخر هم عیناً raise می‌شود تا پیامِ
+    کاربرپسندِ همان لایه حفظ شود."""
+    provider = (provider or '').strip()
+    _keys = ordered_keys(provider, keys)
+    if not _keys:
+        return await factory('')
+    for i, key in enumerate(_keys):
+        try:
+            res = await factory(key)
+            mark_key_ok(provider, key)
+            if i:
+                logger.info('AI key fallback settled: provider=%s attempt=%d/%d %s',
+                            provider, i + 1, len(_keys), label)
+            return res
+        except Exception as e:                      # noqa: BLE001 — طبقه‌بندی می‌شود
+            if classify_key_error(e) is None:
+                raise
+            mark_key_failed(provider, key, e)
+            if i == len(_keys) - 1:
+                raise
+            logger.warning(
+                'کلید #%d هوشیار (%s) شکست خورد → کلید بعدی امتحان می‌شود '
+                '[%s] %s :: %s', i + 1, masked_key(key), label,
+                type(e).__name__, _sanitize_provider_text(str(e))[:160])
+
+
+# ══════════════════════════════════════════════════
 #  حافظه‌ی مکالمه (پایدار، روی دیتابیس — نه RAM؛ توضیح در بالا)
 # ══════════════════════════════════════════════════
 
@@ -920,7 +1073,17 @@ def _load_vault(raw: dict) -> dict:
         k = (kv or "").strip()
         if k and pid not in vault:
             vault[pid] = k
-    return vault
+    # ⭐ م7 — نرمال‌سازی چند-کلیدی: مقدار هر provider می‌تواند رشته‌ی
+    # قدیمی یا لیستِ کلیدها باشد؛ خروجی همیشه {provider: [keys]} است
+    # (پاک‌سازی + حذف تکراری‌ها با حفظ ترتیب).
+    normalized: dict = {}
+    for pid, v in vault.items():
+        raw_list = v if isinstance(v, list) else ([v] if isinstance(v, str) else [])
+        for k in raw_list:
+            k = sanitize_api_key(k) if isinstance(k, str) else ''
+            if k and k not in normalized.get(pid, []):
+                normalized.setdefault(pid, []).append(k)
+    return normalized
 
 
 async def get_ai_config() -> dict:
@@ -937,12 +1100,21 @@ async def get_ai_config() -> dict:
     # 🔴 FIX-R1 (مورد ۶) — پاکسازی همه‌ی کلیدها هنگام خواندن: کلیدِ
     # کثیفِ قدیمی (کاراکتر نامرئی/رقم فارسی) همین‌جا سالم می‌شود تا
     # هر دو مسیر ربات و پنل با یک مقدار واحد کار کنند.
-    vault = {pid: sanitize_api_key(k) for pid, k in vault.items() if sanitize_api_key(k)}
+    # ⭐ م7 — vault اکنون {provider: [keys]} است؛ پاکسازی هر کلید
+    vault = {pid: [k for k in (sanitize_api_key(x) for x in lst) if k]
+             for pid, lst in vault.items()}
+    vault = {pid: lst for pid, lst in vault.items() if lst}
     model = raw.get('ai_model') or DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
     detected = _detect_provider_for_model(model)
     if detected and detected != provider and detected in vault and vault.get(detected):
         provider = detected
-    api_key = vault.get(provider) or sanitize_api_key(raw.get('ai_api_key', '') or '') or ''
+    # ⭐ م7 — کلیدها به‌ترتیب؛ primary = اولین (compat با کل کد قدیمی)
+    keys = list(vault.get(provider) or [])
+    if not keys:
+        _legacy_key = sanitize_api_key(raw.get('ai_api_key', '') or '')
+        if _legacy_key:
+            keys = [_legacy_key]
+    api_key = keys[0] if keys else ''
     image_model = raw.get('ai_image_model') or DEFAULT_IMAGE_MODEL
     image_enabled = str(raw.get('ai_image_enabled', '1')) not in ('0', 'false', 'False', '')
     image_daily_limit = int(raw.get('ai_image_daily_limit', DEFAULT_IMAGE_LIMIT) or 0)
@@ -954,7 +1126,13 @@ async def get_ai_config() -> dict:
         image_provider = d2 or provider
         if image_provider not in PROVIDERS:
             image_provider = provider
-    image_api_key = vault.get(image_provider) or vault.get(provider) or sanitize_api_key(raw.get('ai_api_key', '') or '') or ''
+    # ⭐ م7 — صفِ فال‌بکِ تصویر هم لیستی است
+    image_keys = list(vault.get(image_provider) or []) or list(vault.get(provider) or [])
+    if not image_keys:
+        _legacy_img = sanitize_api_key(raw.get('ai_api_key', '') or '')
+        if _legacy_img:
+            image_keys = [_legacy_img]
+    image_api_key = image_keys[0] if image_keys else ''
     # 🔴 FIX-R1 (مورد ۶) — مشکل کلید به‌صورت صریح در config می‌آید تا
     # «تست اتصال» پنل و پیام خطای ربات دقیقاً یک چیز بگویند، نه
     # «خطای غیرمنتظره» مبهم.
@@ -963,8 +1141,14 @@ async def get_ai_config() -> dict:
         'enabled':          bool(raw.get('ai_enabled', False)),
         'provider':         provider,
         'api_key':          api_key,
-        'api_keys':         vault,
-        'vault':            vault,
+        # ⭐ م7 — compat: مصرف‌کننده‌های قدیمی هنوز رشته انتظار دارند
+        'api_keys':         {pid: lst[0] for pid, lst in vault.items()},
+        'vault':            {pid: lst[0] for pid, lst in vault.items()},
+        # ⭐ م7 — لیست کامل کلیدها (به‌ترتیبِ فال‌بک) + شمارش
+        'api_key_list':     keys,
+        'image_api_key_list': image_keys,
+        'vault_multi':      {pid: list(lst) for pid, lst in vault.items()},
+        'vault_counts':     {pid: len(lst) for pid, lst in vault.items()},
         'api_key_error':    api_key_error,
         'model':            model,
         'daily_limit':      int(raw.get('ai_daily_limit', DEFAULT_LIMIT) or 0),
@@ -994,26 +1178,140 @@ async def set_api_key_for_provider(provider: str, key: str) -> None:
             raise ValueError(problem)
     raw = await db.get_settings_by_prefix('ai_')
     vault = _load_vault(raw)
+    # ⭐ م7 — «تنظیم» = جایگزینیِ همه‌ی کلیدهای این provider با همین یکی
+    # (برای افزودنِ کلیدِ فال‌بک از add_api_key_for_provider استفاده شود).
     if key:
-        vault[provider] = key
+        vault[provider] = [key]
     else:
         vault.pop(provider, None)
-    # W1: encrypt vault JSON if FERNET_KEY enabled
+    await _save_vault(vault)
+    await _sync_legacy_key_mirrors(provider, key, raw)
+
+
+async def _save_vault(vault: dict) -> None:
+    """ذخیره‌ی vault (اکنون {provider: [keys]}) با رمزنگاری اختیاری."""
     vault_json = json.dumps(vault, ensure_ascii=False)
     if is_encryption_enabled():
         await db.set_setting('ai_api_keys', encrypt_value(vault_json))
     else:
         await db.set_setting('ai_api_keys', vault_json)
-    enc_key = encrypt_value(key) if is_encryption_enabled() and key else (key or "")
-    if key:
-        await db.set_setting(f'ai_api_key_{provider}', enc_key)
-    else:
-        await db.set_setting(f'ai_api_key_{provider}', '')
+
+
+async def _sync_legacy_key_mirrors(provider: str, primary_key: str,
+                                   raw: dict = None) -> None:
+    """آینه‌های legacy (ai_api_key_{pid} و ai_api_key) فقط کلیدِ اصلی را
+    نگه می‌دارند — برای سازگاری مسیرهای قدیمی."""
+    enc = encrypt_value(primary_key) if is_encryption_enabled() and primary_key else (primary_key or "")
+    await db.set_setting(f'ai_api_key_{provider}', enc)
+    if raw is None:
+        raw = await db.get_settings_by_prefix('ai_')
     cur = (raw.get('ai_provider') or 'gemini').strip() or 'gemini'
-    if provider == cur and key:
-        await db.set_setting('ai_api_key', enc_key if is_encryption_enabled() else key)
-    elif provider == cur and not key:
-        await db.set_setting('ai_api_key', '')
+    if provider == cur:
+        await db.set_setting('ai_api_key', enc)
+
+
+async def add_api_key_for_provider(provider: str, key: str) -> int:
+    """⭐ م7 — افزودن کلیدِ فال‌بک به انتهای صفِ provider (بدون حذف قبلی‌ها).
+
+    خروجی: تعداد کل کلیدهای این provider پس از افزودن."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    key = sanitize_api_key(key or '')
+    if not key:
+        raise ValueError("کلید خالی است.")
+    problem = api_key_problem(key)
+    if problem:
+        raise ValueError(problem)
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    keys = list(vault.get(provider) or [])
+    if key in keys:
+        raise ValueError("این کلید قبلاً برای همین ارائه‌دهنده ذخیره شده است.")
+    if len(keys) >= MAX_KEYS_PER_PROVIDER:
+        raise ValueError(f"حداکثر {MAX_KEYS_PER_PROVIDER} کلید برای هر ارائه‌دهنده مجاز است.")
+    keys.append(key)
+    vault[provider] = keys
+    await _save_vault(vault)
+    # primary عوض نشده (کلید جدید انتهای صف است) → آینه‌ها فقط در صورت خالی‌بودن
+    if len(keys) == 1:
+        await _sync_legacy_key_mirrors(provider, key, raw)
+    return len(keys)
+
+
+async def remove_api_key_for_provider(provider: str, index: int) -> str:
+    """⭐ م7 — حذف کلید شماره‌ی index (۱-مبنا) از صفِ provider.
+
+    خروجی: کلیدِ ماسک‌شده‌ی حذف‌شده."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        raise ValueError("شماره‌ی کلید معتبر نیست.")
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    keys = list(vault.get(provider) or [])
+    if index < 1 or index > len(keys):
+        raise ValueError("شماره‌ی کلید معتبر نیست.")
+    removed = keys.pop(index - 1)
+    if keys:
+        vault[provider] = keys
+    else:
+        vault.pop(provider, None)
+    await _save_vault(vault)
+    await _sync_legacy_key_mirrors(provider, keys[0] if keys else '', raw)
+    return masked_key(removed)
+
+
+async def test_api_key(provider: str, api_key: str) -> tuple:
+    """⭐ م7 — تستِ سبکِ یک کلید با همان provider (فهرست مدل‌ها).
+    خروجی: (ok, error). وضعیتِ فال‌بکِ کلید هم به‌روز می‌شود."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    key = sanitize_api_key(api_key or '')
+    try:
+        _kp = api_key_problem(key)
+        if _kp:
+            return False, _kp
+        if provider == 'gemini':
+            await _list_models_gemini(key)
+        elif provider in PROVIDERS and PROVIDERS[provider].get('url'):
+            await _list_models_openai_compat(
+                PROVIDERS[provider]['url'], key, PROVIDERS[provider]['label'])
+        else:
+            return False, 'ارائه‌دهنده پشتیبانی نمی‌شود.'
+        mark_key_ok(provider, key)
+        return True, ''
+    except Exception as e:                      # noqa: BLE001
+        mark_key_failed(provider, key, e)
+        return False, (_sanitize_provider_text(str(e))[:200]
+                       or type(e).__name__)
+
+
+async def test_all_keys_for_provider(provider: str) -> dict:
+    """⭐ م7 — تستِ همه‌ی کلیدهای provider؛ نتیجه per-key + شمارش سالم‌ها."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    keys = [k for k in (sanitize_api_key(x) for x in (vault.get(provider) or [])) if k]
+    results = []
+    for i, k in enumerate(keys, start=1):
+        ok, err = await test_api_key(provider, k)
+        results.append({'index': i, 'masked': masked_key(k), 'ok': ok,
+                        'error': err,
+                        'status': 'active' if ok else 'failed'})
+    return {'provider': provider, 'count': len(keys), 'results': results,
+            'ok_count': sum(1 for r in results if r['ok'])}
+
+
+async def list_api_keys_for_provider(provider: str) -> dict:
+    """⭐ م7 — فهرستِ کلیدهای provider به‌همراه وضعیتِ فال‌بک (ماسک‌شده)."""
+    provider = (provider or 'gemini').strip() or 'gemini'
+    raw = await db.get_settings_by_prefix('ai_')
+    vault = _load_vault(raw)
+    keys = [k for k in (sanitize_api_key(x) for x in (vault.get(provider) or [])) if k]
+    return {
+        'provider': provider,
+        'count': len(keys),
+        'keys': key_status_summary(provider, keys),
+    }
 
 
 async def delete_api_key_for_provider(provider: str) -> None:
@@ -1967,42 +2265,69 @@ async def ask_ai_stream(text: str = None, image_bytes: bytes = None,
         kwargs['uid'] = uid
         kwargs['doc'] = doc
 
-    # 🩹 خودترمیمی: اگر سندِ مرجعِ الصاق‌شده (file_uri) باعث خطای 4xx شد —
-    # فایلِ منقضی/حذف‌شده روی سرور گوگل یا state غیر ACTIVE — سند خودکار
-    # جدا می‌شود و همان سوال یک‌بار *بدونِ سند* دوباره پرسیده می‌شود.
-    # بدون این، یک PDFِ خراب چتِ هوشیارِ کاربر را تا ۴۸ ساعت قفل می‌کرد.
-    # فقط وقتی retry می‌کنیم که هنوز هیچ پاسخی به کاربر جاری نشده است.
-    full_answer = None
-    _yielded = False
-    try:
-        async for event in fn(**kwargs):
-            if event['type'] == 'done':
-                full_answer = event['answer']
-            _yielded = True
-            yield event
-    except AIConfigError as e:
-        _why = f"{getattr(e, 'detail', '') or ''} {e}".lower()
-        _doc_broken = doc and not _yielded and (
-            'file' in _why or 'state' in _why or 'precondition' in _why
-            or '(کد خطا: 400)' in str(e) or '(کد خطا: 404)' in str(e))
-        if not _doc_broken:
-            raise
-        logger.warning(
-            'سند مرجع Gemini برای uid=%s معتبر نبود — جدا شد و بدونِ سند '
-            'دوباره پرسیده می‌شود. علت: %s', uid,
-            _sanitize_provider_text(_why[:200]))
+    # ⭐ م7 — فال‌بک چند-کلیدی: درخواست با کلیدهایِ سالمِ provider به‌ترتیب
+    # امتحان می‌شود؛ کلیدی که سهمیه/خطا بخورد cooldown می‌شود و همین
+    # درخواست بی‌درنگ با کلید بعدی تکرار می‌شود. فقط تا وقتی هیچ پاسخی
+    # به کاربر جاری نشده امکان تعویض کلید هست (استریمِ نیمه‌جاری برگشت
+    # ندارد).
+    _keys = ordered_keys(cfg['provider'],
+                         cfg.get('api_key_list') or ([cfg['api_key']] if cfg['api_key'] else []))
+    if not _keys:
+        raise AIConfigError("هنوز کلید API توسط ادمین تنظیم نشده.")
+    _last_exc = None
+    for _ki, _key in enumerate(_keys):
+        kwargs['api_key'] = _key
+        # 🩹 خودترمیمی: اگر سندِ مرجعِ الصاق‌شده (file_uri) باعث خطای 4xx شد —
+        # فایلِ منقضی/حذف‌شده روی سرور گوگل یا state غیر ACTIVE — سند خودکار
+        # جدا می‌شود و همان سوال یک‌بار *بدونِ سند* دوباره پرسیده می‌شود.
+        # بدون این، یک PDFِ خراب چتِ هوشیارِ کاربر را تا ۴۸ ساعت قفل می‌کرد.
+        # فقط وقتی retry می‌کنیم که هنوز هیچ پاسخی به کاربر جاری نشده است.
+        full_answer = None
+        _yielded = False
+        # لایه‌ی بیرونی: فال‌بکِ کلید (م7) — لایه‌ی درونی: خودترمیمیِ سند.
+        # خطای برخاسته از خودِ except درونی هم اینجا می‌رسد تا با کلیدِ
+        # بعدی ادامه دهیم.
         try:
-            await db.ai_clear_doc(uid)
-        except Exception:
-            logger.exception('ai_clear_doc ناموفق بود')
-        kwargs['doc'] = None
-        async for event in fn(**kwargs):
-            if event['type'] == 'done':
-                full_answer = event['answer']
-            yield event
-
-    if full_answer is not None:
-        _guard_against_meta_leak(full_answer, cfg)
+            try:
+                async for event in fn(**kwargs):
+                    if event['type'] == 'done':
+                        full_answer = event['answer']
+                    _yielded = True
+                    yield event
+            except AIConfigError as e:
+                _why = f"{getattr(e, 'detail', '') or ''} {e}".lower()
+                _doc_broken = doc and not _yielded and (
+                    'file' in _why or 'state' in _why or 'precondition' in _why
+                    or '(کد خطا: 400)' in str(e) or '(کد خطا: 404)' in str(e))
+                if not _doc_broken:
+                    raise
+                logger.warning(
+                    'سند مرجع Gemini برای uid=%s معتبر نبود — جدا شد و بدونِ سند '
+                    'دوباره پرسیده می‌شود. علت: %s', uid,
+                    _sanitize_provider_text(_why[:200]))
+                try:
+                    await db.ai_clear_doc(uid)
+                except Exception:
+                    logger.exception('ai_clear_doc ناموفق بود')
+                kwargs['doc'] = None
+                async for event in fn(**kwargs):
+                    if event['type'] == 'done':
+                        full_answer = event['answer']
+                    yield event
+        except Exception as e:                     # ⭐ م7 — خطای چرخش‌پذیر → کلید بعدی
+            if _yielded or classify_key_error(e) is None:
+                raise
+            mark_key_failed(cfg['provider'], _key, e)
+            _last_exc = e
+            logger.warning(
+                'کلید #%d هوشیار (%s) در چت شکست خورد → کلید بعدی [%s]',
+                _ki + 1, masked_key(_key), type(e).__name__)
+            continue
+        mark_key_ok(cfg['provider'], _key)
+        if full_answer is not None:
+            _guard_against_meta_leak(full_answer, cfg)
+        return
+    raise _last_exc
 
 
 async def ask_ai(text: str = None, image_bytes: bytes = None,
@@ -2197,7 +2522,6 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
     )
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg['model']}:generateContent"
-    headers = {'Content-Type': 'application/json', 'x-goog-api-key': cfg['api_key']}
     payload = {
         'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
         'generationConfig': _no_thinking({
@@ -2207,9 +2531,22 @@ async def generate_question_ai(lesson: str, topic: str, difficulty: str = None,
         }, cfg['model']),
     }
 
-    try:
+    # ⭐ م7 — POST با فال‌بکِ کلید بعدی در صورتِ سهمیه/خطای کلید
+    async def _post_once(api_key: str):
+        _kp = api_key_problem(api_key)
+        if _kp:
+            raise AIConfigError(_kp)
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+            return await client.post(
+                url,
+                headers={'Content-Type': 'application/json',
+                         'x-goog-api-key': api_key},
+                json=payload)
+
+    try:
+        resp = await run_with_key_failover(
+            cfg['provider'], cfg.get('api_key_list'), _post_once,
+            label='generate_question')
     except httpx.TimeoutException:
         raise AIError("سرویس هوش مصنوعی دیر جواب داد — دوباره امتحان کن.")
     except UnicodeEncodeError:
@@ -2373,11 +2710,11 @@ async def generate_structured_json(prompt: str, schema: dict, purpose: str,
     if _key_problem:
         raise AIConfigError(_key_problem)
 
-    async def _gemini_once(repair_note: str = '') -> tuple:
+    async def _gemini_once(api_key: str, repair_note: str = '') -> tuple:
         url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                f"{cfg['model']}:generateContent")
         headers = {'Content-Type': 'application/json',
-                   'x-goog-api-key': cfg['api_key']}
+                   'x-goog-api-key': api_key}
         payload = {
             'contents': [{'role': 'user',
                           'parts': [{'text': prompt + repair_note}]}],
@@ -2395,12 +2732,12 @@ async def generate_structured_json(prompt: str, schema: dict, purpose: str,
             _raise_gemini_status_error(resp.status_code)
         return _extract_gemini_text(resp.json(), purpose)
 
-    async def _compat_once(repair_note: str = '') -> tuple:
+    async def _compat_once(api_key: str, repair_note: str = '') -> tuple:
         sys_txt = (system_prompt or '') + (
             "\nخروجی را «فقط و فقط» به‌صورت JSON معتبر (بدون متن اضافه، "
             "بدون code fence، بدون توضیح) با دقیقاً همین ساختارِ خواسته‌شده بده.")
         raw = await _call_openai_compat(
-            cfg['api_key'], cfg['model'], sys_txt,
+            api_key, cfg['model'], sys_txt,
             text=prompt + repair_note, provider=cfg['provider'])
         # _call_openai_compat برای استریم خروجی میدهد؟ نه — tuple متن نهایی
         if isinstance(raw, tuple):
@@ -2408,20 +2745,28 @@ async def generate_structured_json(prompt: str, schema: dict, purpose: str,
         return raw
 
     provider = cfg.get('provider') or 'gemini'
+    # ⭐ م7 — هر دو شاخه با فال‌بکِ کلید بعدی (م7) اجرا می‌شوند
+    _fail_keys = cfg.get('api_key_list')
     try:
         if provider == 'gemini':
-            text = await _gemini_once()
+            text = await run_with_key_failover(
+                'gemini', _fail_keys, lambda _k: _gemini_once(_k),
+                label=f'json:{purpose}')
             parsed = _extract_json_block(text)
             if parsed is None:
                 raise ValueError('json_parse_failed')
             return parsed
         # OpenAI-compatible
-        text = await _compat_once()
+        text = await run_with_key_failover(
+            provider, _fail_keys, lambda _k: _compat_once(_k),
+            label=f'json:{purpose}')
         parsed = _extract_json_block(text)
         if parsed is None:
             # یک بار تعمیر بخواه (بدون هزینه‌ی ساخت پرامپت تازه)
-            text = await _compat_once(
-                "\n[توجه] پاسخ قبلی JSON معتبر نبود. فقط JSON بساز.")
+            text = await run_with_key_failover(
+                provider, _fail_keys,
+                lambda _k: _compat_once(_k, "\n[توجه] پاسخ قبلی JSON معتبر نبود. فقط JSON بساز."),
+                label=f'json-repair:{purpose}')
             parsed = _extract_json_block(text)
             if parsed is None:
                 raise ValueError('json_parse_failed')
@@ -2452,19 +2797,28 @@ async def generate_broadcast_ai(notes: str) -> str:
         raise AIConfigError("این قابلیت فعلاً فقط با ارائه‌دهنده‌ی Gemini در دسترسه.")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg['model']}:generateContent"
-    headers = {'Content-Type': 'application/json', 'x-goog-api-key': cfg['api_key']}
-    # 🔴 FIX-R1 (مورد ۶) — گارد ascii روی کلید (شرح در _stream_gemini)
-    _key_problem = api_key_problem(cfg['api_key'])
-    if _key_problem:
-        raise AIConfigError(_key_problem)
     payload = {
         'system_instruction': {'parts': [{'text': BROADCAST_STYLE_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': f"این نکته‌ها رو به یه اطلاعیه تبدیل کن:\n\n{notes}"}]}],
         'generationConfig': _no_thinking({'maxOutputTokens': 2048}, cfg['model']),
     }
-    try:
+
+    # ⭐ م7 — POST با فال‌بکِ کلید بعدی (گارد ascii داخل factory برای هر کلید)
+    async def _post_once(api_key: str):
+        _kp = api_key_problem(api_key)
+        if _kp:
+            raise AIConfigError(_kp)
         async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+            return await client.post(
+                url,
+                headers={'Content-Type': 'application/json',
+                         'x-goog-api-key': api_key},
+                json=payload)
+
+    try:
+        resp = await run_with_key_failover(
+            cfg['provider'], cfg.get('api_key_list'), _post_once,
+            label='broadcast')
     except httpx.TimeoutException:
         raise AIError("سرویس هوش مصنوعی دیر جواب داد — دوباره امتحان کن.")
     except httpx.HTTPError as e:
@@ -2511,15 +2865,28 @@ async def generate_ticket_reply_ai(subject: str, ticket_text: str, previous_repl
         convo += "\nپاسخ‌های قبلی:\n" + "\n".join(f"- {r}" for r in previous_replies[-5:])
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cfg['model']}:generateContent"
-    headers = {'Content-Type': 'application/json', 'x-goog-api-key': cfg['api_key']}
     payload = {
         'system_instruction': {'parts': [{'text': TICKET_REPLY_INSTRUCTION}]},
         'contents': [{'role': 'user', 'parts': [{'text': convo}]}],
         'generationConfig': _no_thinking({'maxOutputTokens': 1024}, cfg['model']),
     }
-    try:
+
+    # ⭐ م7 — POST با فال‌بکِ کلید بعدی
+    async def _post_once(api_key: str):
+        _kp = api_key_problem(api_key)
+        if _kp:
+            raise AIConfigError(_kp)
         async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+            return await client.post(
+                url,
+                headers={'Content-Type': 'application/json',
+                         'x-goog-api-key': api_key},
+                json=payload)
+
+    try:
+        resp = await run_with_key_failover(
+            cfg['provider'], cfg.get('api_key_list'), _post_once,
+            label='ticket_reply')
     except httpx.TimeoutException:
         raise AIError("سرویس هوش مصنوعی دیر جواب داد — دوباره امتحان کن.")
     except httpx.HTTPError as e:
@@ -3288,10 +3655,16 @@ async def handle_ai_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _skip_doc_this_time = False
         if kind == 'pdf':
             try:
-                file_info = await _gemini_upload_file(cfg['api_key'], media_bytes, mime, display_name or 'جزوه.pdf')
-                # 🔴 فایل باید روی سرور گوگل ACTIVE شود وگرنه ارجاعِ بعدی
-                # همان 400 معروف را می‌دهد.
-                file_info = await _gemini_wait_file_active(cfg['api_key'], file_info)
+                # ⭐ م7 — آپلود + فعال‌سازی با فال‌بکِ کلید بعدی
+                async def _upload_pdf_once(api_key: str) -> dict:
+                    fi = await _gemini_upload_file(api_key, media_bytes, mime,
+                                                   display_name or 'جزوه.pdf')
+                    # 🔴 فایل باید روی سرور گوگل ACTIVE شود وگرنه ارجاعِ بعدی
+                    # همان 400 معروف را می‌دهد.
+                    return await _gemini_wait_file_active(api_key, fi)
+                file_info = await run_with_key_failover(
+                    'gemini', cfg.get('api_key_list') or [cfg['api_key']],
+                    _upload_pdf_once, label='pdf-upload')
                 _state = (file_info.get('state') or 'ACTIVE').upper()
                 if _state == 'FAILED':
                     await update.message.reply_text(

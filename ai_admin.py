@@ -23,6 +23,8 @@ from ai_solver import (
     DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
     MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG,
     set_api_key_for_provider, delete_api_key_for_provider,
+    add_api_key_for_provider, remove_api_key_for_provider,
+    key_status_summary,
     _detect_provider_for_model, list_provider_models,
 )
 
@@ -95,6 +97,43 @@ def _mask_key(key: str) -> str:
     return key[:4] + "•" * 6 + key[-4:]
 
 
+_KEY_STATUS_EMOJI = {'active': '🟢', 'cooldown': '🟡', 'failed': '🔴'}
+
+
+async def _show_vault_screen(query):
+    """⭐ م7 — صفحه‌ی Vault چند-کلیدی: هر provider می‌تواند چند کلید با
+    فال‌بک خودکار داشته باشد؛ اگر یکی سهمیه/خطا بخورد، درخواست با کلید
+    بعدیِ سالم ادامه می‌یابد."""
+    cfg = await get_ai_config()
+    multi = cfg.get('vault_multi') or {}
+    kb = []
+    txt = "🗝️ <b>Vault کلیدها — چند-کلیدی با فال‌بک</b>\n\n"
+    txt += ("هر ارائه‌دهنده می‌تواند چند کلید داشته باشد؛ کلیدها به‌ترتیب امتحان می‌شوند و "
+            "اگر یکی سهمیه (429) یا خطا بخورد، همان درخواست خودکار با کلید بعدی ادامه می‌یابد.\n\n")
+    for pid, label in PROVIDER_LABELS.items():
+        keys = multi.get(pid) or []
+        if not keys:
+            txt += f"⬜ {label}: تنظیم نشده\n"
+            kb.append([InlineKeyboardButton(f"⬜ {label} — افزودن کلید", callback_data=f'ai:set_key:{pid}')])
+            continue
+        info = key_status_summary(pid, keys)
+        lines = "\n".join(
+            f"  {_KEY_STATUS_EMOJI.get(st['status'], '⚪')} {st['index']}. <code>{st['masked']}</code>"
+            + (f" (استراحت {int(st['cooldown_remaining'])}ث)" if st['status'] == 'cooldown' else "")
+            for st in info)
+        txt += f"✅ {label} — {len(keys)} کلید:\n{lines}\n"
+        kb.append([InlineKeyboardButton(f"✅ {label} — جایگزینی همه", callback_data=f'ai:set_key:{pid}')])
+        kb.append([InlineKeyboardButton(f"➕ افزودن کلید فال‌بک {label}", callback_data=f'ai:set_key:{pid}:add')])
+        for st in info:
+            kb.append([InlineKeyboardButton(
+                f"🗑 {st['masked']} — حذف", callback_data=f'ai:del_key_idx:{pid}:{st["index"]}')])
+    txt += ("\n🟢 سالم · 🟡 در استراحت (سهمیه/خطا — تا پایان cooldown) · 🔴 شکست‌خورده\n"
+            "<i>مدل‌های رایگان freellm.net (OpenRouter) با یک کلید OpenRouter کار می‌کنند.</i>")
+    kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
+    await query.edit_message_text(txt, parse_mode='HTML',
+                                  reply_markup=InlineKeyboardMarkup(kb))
+
+
 async def show_ai_main(query):
     cfg = await get_ai_config()
     status_txt = "✅ فعال" if cfg['enabled'] else "⬜ غیرفعال"
@@ -102,11 +141,15 @@ async def show_ai_main(query):
     limit      = cfg['daily_limit']
     limit_txt  = "بدون محدودیت" if not limit else f"{limit} سوال در روز / هر کاربر"
     vault = cfg.get('vault') or cfg.get('api_keys') or {}
+    counts = cfg.get('vault_counts') or {}
     vault_lines = []
     for pid in PROVIDERS:
         masked = _mask_key(vault.get(pid, ''))
         has = "✅" if vault.get(pid) else "⬜"
-        vault_lines.append(f"{has} {PROVIDER_LABELS.get(pid,pid)}: <code>{masked}</code>")
+        # ⭐ م7 — تعداد کلیدهای فال‌بک
+        n = counts.get(pid) or 0
+        n_txt = f" ({n} کلید با فال‌بک)" if n > 1 else ""
+        vault_lines.append(f"{has} {PROVIDER_LABELS.get(pid,pid)}: <code>{masked}</code>{n_txt}")
     vault_txt = "\n".join(vault_lines) if vault_lines else "—"
     img_provider = cfg.get('image_provider') or cfg.get('provider')
     img_model = cfg.get('image_model') or ''
@@ -258,13 +301,24 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == 'set_key':
         cfg = await get_ai_config()
         target_provider = parts[2] if len(parts) > 2 and parts[2] in PROVIDER_LABELS else cfg['provider']
+        # ⭐ م7 — دو حالت: add (افزودن کلید فال‌بک) / replace (جایگزینی همه)
+        key_mode = 'add' if (len(parts) > 3 and parts[3] == 'add') else 'replace'
         context.user_data['mode'] = 'ai_set_key'
         context.user_data['ai_set_key_provider'] = target_provider
+        context.user_data['ai_key_mode'] = key_mode
         hint = PROVIDER_KEY_HINTS.get(target_provider, "پنل مدیریت همان ارائه‌دهنده")
+        if key_mode == 'add':
+            title = "➕ <b>افزودن کلید فال‌بک</b>"
+            note = ("کلید جدید در <b>انتهای صف</b> ذخیره می‌شود و کلیدهای فعلی حفظ می‌شوند. "
+                    "اگر کلیدی سهمیه بگیرد یا خطا بخورد، درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد.")
+        else:
+            title = "🔑 <b>تنظیم / جایگزینی API Key</b>"
+            note = ("⚠️ همه‌ی کلیدهای قبلی این ارائه‌دهنده حذف و همین کلید جایگزین می‌شود. "
+                    "برای افزودنِ کلید بدون حذف قبلی‌ها، از دکمه‌ی «➕ افزودن کلید فال‌بک» استفاده کن.")
         await query.edit_message_text(
-            "🔑 <b>تنظیم API Key</b>\n\n"
+            f"{title}\n\n"
             f"کلید API مربوط به «{PROVIDER_LABELS.get(target_provider, target_provider)}» رو بفرست "
-            f"(از {hint}).\n\n"
+            f"(از {hint}).\n\n{note}\n\n"
             "<i>بلافاصله بعد از ذخیره، پیامت حذف می‌شه که جایی نمونه. کلید در Vault ذخیره می‌شود و با سوییچ مدل خودکار انتخاب می‌شود.</i>",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='ai:main')]])
@@ -272,20 +326,21 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == 'vault':
-        cfg = await get_ai_config()
-        vault = cfg.get('vault') or {}
-        kb = []
-        for pid, label in PROVIDER_LABELS.items():
-            has = "✅" if vault.get(pid) else "⬜"
-            kb.append([InlineKeyboardButton(f"{has} {label} — {'تغییر' if vault.get(pid) else 'افزودن'} کلید", callback_data=f'ai:set_key:{pid}')])
-            if vault.get(pid):
-                kb.append([InlineKeyboardButton(f"🗑 حذف کلید {label}", callback_data=f'ai:del_key:{pid}')])
-        kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')])
-        txt = "🗝️ <b>Vault کلیدها</b>\n\nهر ارائه‌دهنده کلید جداگانه دارد. با انتخاب مدل از هر provider، کلید مربوطه خودکار استفاده می‌شود.\n\n"
-        for pid in PROVIDER_LABELS:
-            txt += f"{'✅' if vault.get(pid) else '⬜'} {PROVIDER_LABELS[pid]}: <code>{_mask_key(vault.get(pid,''))}</code>\n"
-        txt += "\n<i>مدل‌های رایگان freellm.net (OpenRouter) با یک کلید OpenRouter کار می‌کنند.</i>"
-        await query.edit_message_text(txt, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+        # ⭐ م7 — رندر چند-کلیدی (هلپر مشترک با del_key_idx)
+        await _show_vault_screen(query)
+        return
+
+    if action == 'del_key_idx':
+        # ⭐ م7 — حذف یک کلید مشخص از صف فال‌بک
+        provider = parts[2] if len(parts) > 2 else ''
+        idx = parts[3] if len(parts) > 3 else ''
+        if provider in PROVIDER_LABELS:
+            try:
+                removed = await remove_api_key_for_provider(provider, int(idx))
+                await query.answer(f"🗑 کلید {removed} حذف شد", show_alert=True)
+            except (ValueError, TypeError):
+                await query.answer("شماره‌ی کلید معتبر نیست", show_alert=True)
+        await _show_vault_screen(query)
         return
 
     if action == 'del_key':
@@ -701,8 +756,12 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         # 🔴 FIX-R1 (مورد ۶) — کلید کثیف (کاراکتر فارسی/فاصله/نامرئی) با
         # پیام فارسی رد می‌شود، نه اینکه وارد vault شود و بعداً خطای
         # 'ascii codec' بدهد. پیامِ ادمین در هر حالت حذف می‌شود.
+        key_mode = context.user_data.pop('ai_key_mode', 'replace')
         try:
-            await set_api_key_for_provider(provider, text)
+            if key_mode == 'add':
+                count = await add_api_key_for_provider(provider, text)
+            else:
+                await set_api_key_for_provider(provider, text)
         except ValueError as e:
             try:
                 await update.message.delete()
@@ -727,10 +786,17 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.delete()
         except Exception:
             pass
-        await update.message.reply_text(
-            f"✅ API Key برای {PROVIDER_LABELS.get(provider, provider)} ذخیره شد (پیامت هم حذف شد که جایی نمونه).\n\n"
-            "کلید در Vault ذخیره شد — با سوییچ مدل/ارائه‌دهنده خودکار انتخاب می‌شود."
-        )
+        if key_mode == 'add':
+            await update.message.reply_text(
+                f"✅ کلید فال‌بک برای {PROVIDER_LABELS.get(provider, provider)} ذخیره شد — "
+                f"اکنون {count} کلید در صف این ارائه‌دهنده است (پیامت هم حذف شد).\n\n"
+                "اگر کلیدی سهمیه بگیرد یا خطا بخورد، درخواست خودکار با کلید بعدیِ سالم ادامه می‌یابد."
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ API Key برای {PROVIDER_LABELS.get(provider, provider)} ذخیره شد (پیامت هم حذف شد که جایی نمونه).\n\n"
+                "کلید در Vault ذخیره شد — با سوییچ مدل/ارائه‌دهنده خودکار انتخاب می‌شود."
+            )
         return
 
     if mode == 'ai_set_model':

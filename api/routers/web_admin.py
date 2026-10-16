@@ -55,7 +55,9 @@ from api.routers import resources as resources_api
 import backup as backup_service
 import broadcast_service
 from ai_solver import (save_persona, delete_persona, generate_broadcast_ai,
-                       list_provider_models, sanitize_api_key, api_key_problem)
+                       list_provider_models, sanitize_api_key, api_key_problem,
+                       add_api_key_for_provider, remove_api_key_for_provider,
+                       list_api_keys_for_provider, test_all_keys_for_provider)
 from request_context import current_request_id
 from question_bank import QuestionImportService, QuestionBankService, QuestionDomainError
 from question_bank.images import (MAX_IMAGE_BYTES, QuestionImageService,
@@ -6801,6 +6803,10 @@ class WaAiConfigUpdate(BaseModel):
     disabled_message: str = Field(default="", max_length=1000)
 
 
+class WaAiKeyAdd(BaseModel):
+    api_key: str
+
+
 class WaAiKeyRotate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     api_key: str = Field(min_length=8, max_length=500)
@@ -6908,6 +6914,76 @@ async def wa_ai_test(user=Depends(_perm("ai.manage"))):
                  target_type="ai_provider", target_label="connection test",
                  after={"ok": bool(result.get("ok")), "tokens": int(result.get("tokens") or 0)},
                  tags=["هوشیار", "connection_test", "owner_only", "پنل_وب"])
+    return result
+
+
+# ══════════════════════════════════════════════════
+# ⭐ م7 — کلیدهای فال‌بک (چند کلید برای هر provider)
+# ══════════════════════════════════════════════════
+_WA_VAULT_PROVIDERS = ("gemini", "openrouter", "groq", "cerebras", "mistral",
+                       "deepseek", "nvidia", "huggingface", "together")
+
+
+@router.get("/ai/keys/{provider}")
+async def wa_ai_keys_list(provider: str, user=Depends(_perm("ai.manage"))):
+    """فهرست کلیدهای provider به‌همراه وضعیت فال‌بک — فقط ماسک‌شده."""
+    if provider.strip() not in _WA_VAULT_PROVIDERS:
+        raise HTTPException(400, "provider نامعتبر")
+    return await list_api_keys_for_provider(provider.strip())
+
+
+@router.post("/ai/keys/{provider}")
+async def wa_ai_key_add(provider: str, body: WaAiKeyAdd,
+                        user=Depends(_perm("ai.manage"))):
+    """افزودن کلید فال‌بک به انتهای صف provider (کلیدهای فعلی حفظ می‌شوند)."""
+    provider = provider.strip()
+    if provider not in _WA_VAULT_PROVIDERS:
+        raise HTTPException(400, "provider نامعتبر")
+    secret = sanitize_api_key(body.api_key or "")
+    if not secret:
+        raise HTTPException(400, "کلید نمی‌تواند خالی باشد")
+    problem = api_key_problem(secret)
+    if problem:
+        raise HTTPException(422, problem)
+    try:
+        count = await add_api_key_for_provider(provider, secret)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await _audit(user["id"], "افزودن کلید فال‌بک هوشیار", severity="CRITICAL",
+                 target_type="ai_secret", target_label=f"Houshyar fallback key ({provider})",
+                 after={"provider": provider, "count": count},
+                 tags=["هوشیار", "key_failover", "پنل_وب"])
+    return {"ok": True, "provider": provider, "count": count}
+
+
+@router.delete("/ai/keys/{provider}/{index}")
+async def wa_ai_key_delete(provider: str, index: int,
+                           user=Depends(_perm("ai.manage"))):
+    """حذف کلید شماره‌ی index (۱-مبنا) از صف فال‌بک provider."""
+    provider = provider.strip()
+    if provider not in _WA_VAULT_PROVIDERS:
+        raise HTTPException(400, "provider نامعتبر")
+    try:
+        removed = await remove_api_key_for_provider(provider, index)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    await _audit(user["id"], "حذف کلید فال‌بک هوشیار", severity="CRITICAL",
+                 target_type="ai_secret", target_label=f"Houshyar fallback key ({provider})",
+                 before={"provider": provider, "index": index},
+                 tags=["هوشیار", "key_failover", "پنل_وب"])
+    return {"ok": True, "provider": provider, "removed": removed}
+
+
+@router.post("/ai/keys/{provider}/test")
+async def wa_ai_keys_test(provider: str, user=Depends(_perm("ai.manage"))):
+    """تست همه‌ی کلیدهای provider (درخواست سبک فهرست مدل‌ها) — per-key."""
+    if provider.strip() not in _WA_VAULT_PROVIDERS:
+        raise HTTPException(400, "provider نامعتبر")
+    result = await test_all_keys_for_provider(provider.strip())
+    await _audit(user["id"], "تست کلیدهای فال‌بک هوشیار", severity="INFO",
+                 target_type="ai_secret", target_label=f"Houshyar fallback keys ({provider})",
+                 after={"ok_count": result.get("ok_count"), "count": result.get("count")},
+                 tags=["هوشیار", "key_failover", "connection_test", "پنل_وب"])
     return result
 
 

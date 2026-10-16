@@ -25,9 +25,17 @@ from ai_solver import (
     set_ai_setting,
     set_api_key_for_provider,
     delete_api_key_for_provider,
+    add_api_key_for_provider,
+    remove_api_key_for_provider,
+    list_api_keys_for_provider,
+    test_all_keys_for_provider,
     sanitize_api_key,
     api_key_problem,
 )
+
+# ⭐ م7 — providerهای مجازِ Vault (برای endpointهای چند-کلیدی)
+_VAULT_PROVIDERS = ("gemini", "openrouter", "groq", "cerebras", "mistral",
+                    "deepseek", "nvidia", "huggingface", "together")
 
 from database import db
 from request_context import current_request_id
@@ -285,6 +293,10 @@ async def update_config(
     }
 
 
+class KeyAdd(BaseModel):
+    api_key: str = Field(min_length=8, max_length=400)
+
+
 class VaultUpdate(BaseModel):
     api_key: str = Field(max_length=500)
 
@@ -339,6 +351,76 @@ async def vault_delete(
     await _ai_audit(admin["id"], "حذف کلید API هوشیار",
                     target_id=provider, target_label=provider)
     return {"ok": True, "provider": provider}
+
+
+# ══════════════════════════════════════════════════
+# ⭐ م7 — مدیریت چند-کلیدی با فال‌بک خودکار
+# هر provider می‌تواند چند کلید داشته باشد؛ در صورتِ سهمیه/خطا،
+# درخواست به‌صورت خودکار با کلید بعدیِ سالم ادامه می‌یابد.
+# ══════════════════════════════════════════════════
+@router.get("/vault/{provider}/keys")
+async def vault_keys_list(
+    provider: str,
+    admin=Depends(require_perm("ai.manage")),
+):
+    if provider.strip() not in _VAULT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider نامعتبر")
+    return await list_api_keys_for_provider(provider.strip())
+
+
+@router.post("/vault/{provider}/keys")
+async def vault_key_add(
+    provider: str,
+    body: KeyAdd,
+    admin=Depends(require_perm("ai.manage")),
+):
+    provider = provider.strip()
+    if provider not in _VAULT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider نامعتبر")
+    key = (body.api_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="کلید نمی‌تواند خالی باشد")
+    problem = api_key_problem(key)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+    try:
+        count = await add_api_key_for_provider(provider, key)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await _ai_audit(admin["id"], "افزودن کلید فال‌بک هوشیار",
+                    target_id=provider, target_label=provider)
+    return {"ok": True, "provider": provider, "count": count}
+
+
+@router.delete("/vault/{provider}/keys/{index}")
+async def vault_key_delete(
+    provider: str,
+    index: int,
+    admin=Depends(require_perm("ai.manage")),
+):
+    provider = provider.strip()
+    if provider not in _VAULT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider نامعتبر")
+    try:
+        removed = await remove_api_key_for_provider(provider, index)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    await _ai_audit(admin["id"], "حذف کلید فال‌بک هوشیار",
+                    target_id=provider, target_label=provider)
+    return {"ok": True, "provider": provider, "removed": removed}
+
+
+@router.post("/vault/{provider}/keys/test")
+async def vault_keys_test(
+    provider: str,
+    admin=Depends(require_perm("ai.manage")),
+):
+    if provider.strip() not in _VAULT_PROVIDERS:
+        raise HTTPException(status_code=400, detail="provider نامعتبر")
+    result = await test_all_keys_for_provider(provider.strip())
+    await _ai_audit(admin["id"], "تست کلیدهای فال‌بک هوشیار",
+                    target_id=provider, target_label=provider)
+    return result
 
 
 @router.get("/stats")
