@@ -824,7 +824,187 @@ function AiLiveStudio({ cfg, me, onSaved }) {
           </div>
         )}
       </div>
+
+      {/* 📞 م9.2 — دستیار ویس‌چت گروه تلگرام (Userbot / MTProto) */}
+      <VcAssistantPanel />
     </>
+  );
+}
+
+/* 📞 م9.2 — پنل مدیریت و ویزارد اتصال «اکانت دستیار ویس‌چت گروه تلگرام» (Pyrogram + PyTgCalls) */
+function VcAssistantPanel() {
+  const [st, setSt] = useState(null);
+  const [apiId, setApiId] = useState('');
+  const [apiHash, setApiHash] = useState('');
+  const [phone, setPhone] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [twoFaPass, setTwoFaPass] = useState('');
+  const [needs2Fa, setNeeds2Fa] = useState(false);
+  const [manualSession, setManualSession] = useState('');
+  const [showManual, setShowManual] = useState(false);
+  const [groupChatId, setGroupChatId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await api.aiVcAssistantStatus();
+      setSt(r);
+      if (r.api_id && !apiId) setApiId(String(r.api_id));
+    } catch (_) {}
+  };
+  useEffect(() => { load(); }, []);
+
+  const sendCode = async () => {
+    setBusy(true);
+    try {
+      const r = await api.aiVcAssistantSendCode({ api_id: Number(apiId), api_hash: apiHash.trim(), phone: phone.trim() });
+      setOtpSent(true);
+      toast(r.message || 'کد تایید به تلگرام ارسال شد ✅');
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const verifyCode = async () => {
+    setBusy(true);
+    try {
+      const r = await api.aiVcAssistantVerifyCode({ code: otpCode.trim(), password: twoFaPass });
+      if (r.needs_2fa) {
+        setNeeds2Fa(true);
+        toast(r.message, 'err');
+      } else {
+        toast(r.message || 'اکانت دستیار متصل شد ✅');
+        setOtpSent(false); setNeeds2Fa(false); setOtpCode(''); setTwoFaPass('');
+        await load();
+      }
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const saveManual = async () => {
+    setBusy(true);
+    try {
+      await api.aiVcAssistantSave({
+        api_id: apiId ? Number(apiId) : undefined,
+        api_hash: apiHash.trim() || undefined,
+        session_string: manualSession.trim() || undefined,
+      });
+      setManualSession('');
+      toast('مشخصات دستیار ویس‌چت گروه ذخیره شد ✅');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const joinGroup = async () => {
+    if (!groupChatId.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.aiVcAssistantJoin({ chat_id: groupChatId.trim() });
+      toast(`هوشیار وارد ویس‌چت گروه ${r.chat_id} شد 🎙`);
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  const leaveGroup = async (cid) => {
+    setBusy(true);
+    try {
+      await api.aiVcAssistantLeave({ chat_id: cid });
+      toast('هوشیار از ویس‌چت گروه خارج شد 📴');
+      await load();
+    } catch (e) { toast(errText(e), 'err'); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="panel panel-pad" style={{ marginTop: 14 }}>
+      <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <b>📞 دستیار ویس‌چت گروه تلگرام (ورود مستقیم هوشیار به Group Voice Chat)</b>
+        <B kind={st?.configured ? 'ok' : 'warn'}>
+          {st?.configured
+            ? `متصل${st?.assistant?.username ? ` (@${st.assistant.username})` : ''}`
+            : 'نیازمند تنظیم اکانت دستیار'}
+        </B>
+      </div>
+      <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
+        چون تلگرام به ربات‌های عادی اجازه ورود مستقیم به ویس‌چت گروهی (<code>phone.JoinGroupCall</code>) را نمی‌دهد، یک اکانت تلگرام دستیار با <code>API_ID</code> و <code>API_HASH</code> (از <a href="https://my.telegram.org" target="_blank" rel="noreferrer">my.telegram.org</a>) متصل کنید تا وقتی در گروه ویس‌چت باز می‌شود یا دستور <code>/joinlive</code> زده می‌شود، هوشیار مستقیم وارد ویس‌چت گروه شود و با بچه‌ها زنده صحبت کند.
+      </div>
+
+      {/* گام ۱ و ۲: ویزارد لاگین مستقیم با کد تلگرام */}
+      <div className="grid g3" style={{ gap: 10, marginTop: 12 }}>
+        <label className="fld">
+          <span>۱. Telegram API_ID (از my.telegram.org)</span>
+          <input className="inp" dir="ltr" placeholder="مثلاً 12345678" value={apiId} onChange={e => setApiId(e.target.value.replace(/\D/g, ''))} />
+        </label>
+        <label className="fld">
+          <span>۲. Telegram API_HASH {st?.has_api_hash && <B kind="ok">ذخیره شده</B>}</span>
+          <input className="inp" type="password" dir="ltr" placeholder="32 کاراکتر هگزادسیمال…" value={apiHash} onChange={e => setApiHash(e.target.value)} />
+        </label>
+        <label className="fld">
+          <span>۳. شماره موبایل اکانت دستیار (با پیش‌شماره)</span>
+          <input className="inp" dir="ltr" placeholder="+98912..." value={phone} onChange={e => setPhone(e.target.value)} />
+        </label>
+      </div>
+
+      <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn primary sm" disabled={busy || !apiId || !apiHash.trim() || !phone.trim()} onClick={sendCode}>
+          📲 ارسال کد تایید تلگرام (ساخت خودکار Session)
+        </button>
+        <button className="btn sm" onClick={() => setShowManual(v => !v)}>
+          {showManual ? '▲ بستن ورود دستی Session' : '🔑 وارد کردن دستی Session String پایروگرام'}
+        </button>
+      </div>
+
+      {otpSent && (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 10, border: '1px solid var(--acc)', background: 'rgba(59,130,246,0.06)' }}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <input className="inp" dir="ltr" placeholder="کد ۵ رقمی تلگرام…" value={otpCode} onChange={e => setOtpCode(e.target.value)} />
+            {needs2Fa && (
+              <input className="inp" type="password" dir="ltr" placeholder="رمز تایید دو مرحله‌ای (2FA)…" value={twoFaPass} onChange={e => setTwoFaPass(e.target.value)} />
+            )}
+            <button className="btn primary sm" disabled={busy || !otpCode.trim()} onClick={verifyCode}>
+              ✅ تایید و اتصال اکانت دستیار
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showManual && (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 10, border: '1px solid var(--c-line, #ddd)' }}>
+          <div className="muted" style={{ marginBottom: 6, fontSize: 'var(--fs-caption)' }}>
+            اگر از قبل <code>session_string</code> پایروگرام دارید، اینجا وارد کنید (به‌صورت رمزنگاری‌شده با Fernet در دیتابیس ذخیره می‌شود):
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <input className="inp" style={{ flex: 1, direction: 'ltr' }} placeholder="Pyrogram Session String..." value={manualSession} onChange={e => setManualSession(e.target.value)} />
+            <button className="btn primary sm" disabled={busy} onClick={saveManual}>💾 ذخیره مشخصات</button>
+          </div>
+        </div>
+      )}
+
+      {/* ورود دستی به ویس‌چت یک گروه از پنل وب + لیست ویس‌چت‌های فعال */}
+      {st?.configured && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--c-line, #eee)' }}>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <input className="inp" dir="ltr" style={{ minWidth: 220 }} placeholder="Chat ID گروه (مثلاً -1001234567890)"
+                   value={groupChatId} onChange={e => setGroupChatId(e.target.value)} />
+            <button className="btn primary sm" disabled={busy || !groupChatId.trim()} onClick={joinGroup}>
+              📞 ورود هوشیار به ویس‌چت این گروه
+            </button>
+          </div>
+          {(st.active_calls || []).length > 0 && (
+            <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
+              {st.active_calls.map(c => (
+                <div key={c.chat_id} className="row" style={{ justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, background: 'var(--c-bg2, #f6f8fa)' }}>
+                  <span>🎙 <b>{c.title}</b> (<code dir="ltr">{c.chat_id}</code>) · مدل: <code>{c.model}</code> · ⏱ {c.elapsed_sec}s</span>
+                  <button className="btn danger sm" disabled={busy} onClick={() => leaveGroup(c.chat_id)}>📴 خروج</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

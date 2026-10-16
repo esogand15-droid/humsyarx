@@ -118,6 +118,7 @@ from hooshyar_quiz import (                                     # 📚 آزمو�
 from ai_solver import (                                          # 🤖 هوشیار
     handle_ai_text, handle_ai_media, handle_ai_image_prompt,
     ai_user_callback, show_ai_live_card,
+    join_live_vc_cmd, leave_live_vc_cmd, on_video_chat_started,
 )
 from database import db
 
@@ -2211,6 +2212,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler('cancel', cancel_handler, filters=filters.ChatType.PRIVATE))
     # 🎙 م9 — دستور /live و /voicechat برای شروع ویس‌چت زنده با هوشیار (در گروه و چت خصوصی)
     app.add_handler(CommandHandler(['live', 'voicechat'], show_ai_live_card))
+    # 📞 م9.2 — ورود و خروج مستقیم هوشیار به ویس‌چت گروه تلگرام (Group Voice Chat)
+    app.add_handler(CommandHandler(['joinlive', 'vcjoin'], join_live_vc_cmd))
+    app.add_handler(CommandHandler(['leavelive', 'vcleave'], leave_live_vc_cmd))
+    app.add_handler(MessageHandler(filters.StatusUpdate.VIDEO_CHAT_STARTED, on_video_chat_started))
 
     # 💍 Ring Street — ثبت *قبل* از هندلرهای یکپارچه، چون در PTB
     # «ترتیب ثبت = اولویت» است. فیلتر این هندلرها «کاربر در flow/چت

@@ -3376,6 +3376,16 @@ async def show_ai_live_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
             web_app=WebAppInfo(url=live_url),
         )])
     else:
+        rows.append([
+            InlineKeyboardButton(
+                "📞 ورود هوشیار به ویس‌چت همین گروه",
+                callback_data="aiu:vc_join",
+            ),
+            InlineKeyboardButton(
+                "📴 خروج از ویس‌چت",
+                callback_data="aiu:vc_leave",
+            ),
+        ])
         bot_username = getattr(context.bot, 'username', None) or ''
         if not bot_username:
             try:
@@ -3385,7 +3395,7 @@ async def show_ai_live_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bot_username = ''
         if bot_username:
             rows.append([InlineKeyboardButton(
-                "🎙 ورود به اتاق ویس‌چت زنده هوشیار",
+                "🎙 اتاق تماس صوتی/ویدیویی زنده (مینی‌اپ)",
                 url=f"https://t.me/{bot_username}?start=ai_live",
             )])
         elif live_url:
@@ -3401,10 +3411,80 @@ async def show_ai_live_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "با هوشیار صحبت کن!\n\n"
         f"🤖 مدل فعال: <code>{_esc(model_name)}</code>\n"
         f"🗣 صدای هوشیار: <code>{_esc(voice_name)}</code>\n"
-        "⚡️ قابلیت پریدن وسط حرف (Barge-in)، زیرنویس زنده و دسترسی به برنامه‌ی کلاسی و نمراتت!\n\n"
-        "👇 روی دکمه‌ی زیر بزن تا مکالمه‌ی صوتی زنده شروع بشه:",
+        "📞 در گروه‌های تلگرام می‌تونی ویس‌چت گروه (Video Chat) رو باز کنی و دکمه‌ی "
+        "<b>«ورود هوشیار به ویس‌چت همین گروه»</b> رو بزنی (یا دستور /joinlive بفرستی) "
+        "تا هوشیار مستقیم بیاد داخل ویس‌چت گروه و با بچه‌ها صحبت کنه!\n\n"
+        "👇 یکی از گزینه‌های زیر رو انتخاب کن:",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(rows) if rows else None,
+    )
+
+
+async def join_live_vc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📞 م9.2 — دستور /joinlive در گروه تلگرام برای ورود مستقیم هوشیار به ویس‌چت گروه."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    if getattr(chat, 'type', 'private') == 'private':
+        await show_ai_live_card(update, context)
+        return
+    wait_msg = await msg.reply_text("⏳ در حال اتصال دستیار هوشیار به ویس‌چت گروه و Gemini Live…")
+    try:
+        from tg_group_voice_call import join_group_voice_chat
+        info = await join_group_voice_chat(
+            chat_id=chat.id,
+            bot=context.bot,
+            title=getattr(chat, 'title', '') or str(chat.id),
+        )
+        asst = info.get('assistant') or {}
+        asst_lbl = f"@{asst['username']}" if asst.get('username') else (asst.get('first_name') or 'دستیار هوشیار')
+        await wait_msg.edit_text(
+            f"🎙 <b>هوشیار وارد ویس‌چت گروه شد!</b>\n\n"
+            f"👤 اکانت حاضر در ویس‌چت: <b>{_esc(asst_lbl)}</b>\n"
+            f"🤖 مدل Live: <code>{_esc(info.get('model') or '')}</code>\n"
+            f"🗣 صدا: <code>{_esc(info.get('voice') or '')}</code>\n\n"
+            "هم‌اکنون داخل ویس‌چت گروه صحبت کنید تا هوشیار زنده پاسخ دهد.\n"
+            "برای خروج هوشیار از ویس‌چت: /leavelive",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📴 خروج هوشیار از ویس‌چت گروه", callback_data="aiu:vc_leave"),
+            ]]),
+        )
+    except Exception as e:
+        await wait_msg.edit_text(f"⚠️ <b>خطا در ورود به ویس‌چت گروه:</b>\n{_esc(str(e))}", parse_mode='HTML')
+
+
+async def leave_live_vc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📴 م9.2 — دستور /leavelive در گروه تلگرام برای خروج هوشیار از ویس‌چت گروه."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    try:
+        from tg_group_voice_call import leave_group_voice_chat
+        await leave_group_voice_chat(chat.id)
+        await msg.reply_text("📴 هوشیار از ویس‌چت گروه خارج شد.")
+    except Exception as e:
+        await msg.reply_text(f"⚠️ خطا در خروج از ویس‌چت: {e}")
+
+
+async def on_video_chat_started(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📞 م9.2 — وقتی در گروه تلگرام ویس‌چت (Video Chat) شروع می‌شود، کارت دعوت هوشیار به ویس‌چت را نمایش می‌دهد."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    cfg = await get_ai_config()
+    if not cfg.get('enabled') or not cfg.get('live_enabled', True):
+        return
+    await msg.reply_text(
+        "🎙 <b>ویس‌چت گروه شروع شد!</b>\n"
+        "می‌خوای <b>هوشیار</b> هم بیاد داخل همین ویس‌چت و به‌صورت صوتی زنده با بچه‌ها صحبت کنه؟",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📞 دعوت هوشیار به ویس‌چت گروه", callback_data="aiu:vc_join"),
+        ]]),
     )
 
 
@@ -5279,6 +5359,52 @@ async def ai_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == 'live':
         await query.answer()
         await show_ai_live_card(update, context)
+        return
+
+    if action == 'vc_join':
+        chat = update.effective_chat
+        if not chat or getattr(chat, 'type', 'private') == 'private':
+            await query.answer("این دکمه مخصوص گروه‌های تلگرام است.", show_alert=True)
+            return
+        await query.answer("⏳ در حال ورود هوشیار به ویس‌چت گروه…", show_alert=False)
+        try:
+            from tg_group_voice_call import join_group_voice_chat
+            info = await join_group_voice_chat(
+                chat_id=chat.id,
+                bot=context.bot,
+                title=getattr(chat, 'title', '') or str(chat.id),
+            )
+            asst = info.get('assistant') or {}
+            asst_lbl = f"@{asst['username']}" if asst.get('username') else (asst.get('first_name') or 'دستیار هوشیار')
+            await query.message.reply_text(
+                f"🎙 <b>هوشیار وارد ویس‌چت گروه شد!</b>\n"
+                f"👤 اکانت دستیار: <b>{_esc(asst_lbl)}</b>\n"
+                f"🤖 مدل: <code>{_esc(info.get('model') or '')}</code> · صدا: <code>{_esc(info.get('voice') or '')}</code>\n\n"
+                "الان می‌تونید داخل ویس‌چت گروه زنده با هوشیار صحبت کنید!",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📴 خروج هوشیار از ویس‌چت", callback_data="aiu:vc_leave"),
+                ]]),
+            )
+        except Exception as e:
+            await query.message.reply_text(
+                f"⚠️ <b>خطا در ورود هوشیار به ویس‌چت گروه:</b>\n{_esc(str(e))}",
+                parse_mode='HTML',
+            )
+        return
+
+    if action == 'vc_leave':
+        chat = update.effective_chat
+        if not chat:
+            await query.answer()
+            return
+        try:
+            from tg_group_voice_call import leave_group_voice_chat
+            await leave_group_voice_chat(chat.id)
+            await query.answer("📴 هوشیار از ویس‌چت گروه خارج شد.", show_alert=False)
+            await query.message.reply_text("📴 هوشیار از ویس‌چت گروه خارج شد.")
+        except Exception as e:
+            await query.answer(f"خطا: {str(e)[:120]}", show_alert=True)
         return
 
     if action == 'fu':

@@ -7292,6 +7292,98 @@ async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
     }
 
 
+class WaVcAssistantSaveBody(BaseModel):
+    api_id: int | str | None = None
+    api_hash: str | None = None
+    session_string: str | None = None
+    auto_join: bool | None = None
+
+
+class WaVcAssistantSendCodeBody(BaseModel):
+    api_id: int
+    api_hash: str
+    phone: str
+
+
+class WaVcAssistantVerifyBody(BaseModel):
+    code: str
+    password: str = ""
+
+
+class WaVcGroupActionBody(BaseModel):
+    chat_id: int | str
+    title: str = ""
+
+
+@router.get("/ai/live/vc-assistant")
+async def wa_ai_vc_assistant_status(user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — وضعیت اکانت دستیار ویس‌چت گروه تلگرام (Userbot / MTProto) و تماس‌های فعال."""
+    from tg_group_voice_call import get_assistant_status
+    return await get_assistant_status()
+
+
+@router.post("/ai/live/vc-assistant/save")
+async def wa_ai_vc_assistant_save(body: WaVcAssistantSaveBody,
+                                  user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — ذخیره مستقیم API_ID، API_HASH و SESSION_STRING اکانت دستیار ویس‌چت گروه."""
+    from tg_group_voice_call import save_vc_credentials
+    try:
+        return await save_vc_credentials(
+            api_id=body.api_id,
+            api_hash=body.api_hash,
+            session_string=body.session_string,
+            auto_join=body.auto_join,
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/ai/live/vc-assistant/send-code")
+async def wa_ai_vc_assistant_send_code(body: WaVcAssistantSendCodeBody,
+                                       user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — ارسال کد تایید تلگرام (OTP) به شماره موبایل اکانت دستیار برای ساخت خودکار session_string."""
+    from tg_group_voice_call import start_assistant_login
+    try:
+        return await start_assistant_login(body.api_id, body.api_hash, body.phone)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/ai/live/vc-assistant/verify-code")
+async def wa_ai_vc_assistant_verify_code(body: WaVcAssistantVerifyBody,
+                                         user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — تایید کد ۵ رقمی تلگرام (و رمز دو مرحله‌ای در صورت نیاز) و ذخیره session_string دستیار."""
+    from tg_group_voice_call import verify_assistant_login
+    try:
+        return await verify_assistant_login(body.code, body.password)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/ai/live/vc-assistant/join")
+async def wa_ai_vc_assistant_join(body: WaVcGroupActionBody,
+                                  user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — ورود دستی دستیار هوشیار به ویس‌چت یک گروه تلگرام با آیدی عددی گروه."""
+    from tg_group_voice_call import join_group_voice_chat
+    try:
+        cid = int(str(body.chat_id).strip())
+        return await join_group_voice_chat(chat_id=cid, title=body.title)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/ai/live/vc-assistant/leave")
+async def wa_ai_vc_assistant_leave(body: WaVcGroupActionBody,
+                                   user=Depends(_perm("ai.manage"))):
+    """📞 م9.2 — خروج دستیار هوشیار از ویس‌چت گروه تلگرام."""
+    from tg_group_voice_call import leave_group_voice_chat
+    try:
+        cid = int(str(body.chat_id).strip())
+        return await leave_group_voice_chat(cid)
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/ai/tts/voices")
 async def wa_ai_tts_voices(user=Depends(_perm("ai.manage"))):
     """صداهای پیش‌ساخته‌ی TTS فارسی + مدل‌های گفتار (چنج‌لاگ ۲۰۲۶)."""

@@ -1219,6 +1219,33 @@ export const api = {
       method: "POST",
       body,
     }),
+  /* 📞 م9.2 — دستیار ویس‌چت گروه تلگرام (Userbot / MTProto) */
+  aiVcAssistantStatus: () => req("/api/web-admin/ai/live/vc-assistant"),
+  aiVcAssistantSave: (body) =>
+    req("/api/web-admin/ai/live/vc-assistant/save", {
+      method: "POST",
+      body,
+    }),
+  aiVcAssistantSendCode: (body) =>
+    req("/api/web-admin/ai/live/vc-assistant/send-code", {
+      method: "POST",
+      body,
+    }),
+  aiVcAssistantVerifyCode: (body) =>
+    req("/api/web-admin/ai/live/vc-assistant/verify-code", {
+      method: "POST",
+      body,
+    }),
+  aiVcAssistantJoin: (body) =>
+    req("/api/web-admin/ai/live/vc-assistant/join", {
+      method: "POST",
+      body,
+    }),
+  aiVcAssistantLeave: (body) =>
+    req("/api/web-admin/ai/live/vc-assistant/leave", {
+      method: "POST",
+      body,
+    }),
   aiModelsHealth: (pid) => req(`/api/web-admin/ai/models/health/${pid}`),
   aiModelsProbe: (pid, body = {}) =>
     req(`/api/web-admin/ai/models/${pid}/probe`, {

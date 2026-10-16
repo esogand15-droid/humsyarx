@@ -20,6 +20,7 @@ python-multipart==0.0.20
 qrcode[pil]==8.2  # 👑 P2 — QR اشتراک HeroCard (SVG سروری)
 pyrogram==2.0.106
 tgcrypto==1.2.5
+py-tgcalls==3.0.0  # 📞 م9.2 — ورود دستیار هوشیار به ویس‌چت گروه‌های تلگرام (Group Voice Chat)
 # 🛡 W1 — at-rest encryption for secrets (Fernet)
 cryptography==50.0.1  # 🌊 W10/PIN-01 (py>=3.9; Fernet API stable)
 pypdf>=4.0.0

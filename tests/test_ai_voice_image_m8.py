@@ -933,5 +933,33 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertEqual(evs, [{'type': 'ready'}])
         self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
 
+    def test_tg_group_voice_call_pcm_mixer_and_credentials(self):
+        import struct
+        import tg_group_voice_call as tvc
+
+        # تست میکس دو فریم PCM16 بدون سرریز (Clipping protection)
+        f1 = struct.pack('<hh', 20000, -20000)
+        f2 = struct.pack('<hh', 20000, -20000)
+        mixed = tvc._mix_pcm16_frames([f1, f2])
+        s1, s2 = struct.unpack('<hh', mixed)
+        self.assertEqual(s1, 32767)
+        self.assertEqual(s2, -32768)
+
+        with mock.patch.object(tvc, 'db', self.fake):
+            st = _rtloop.run(tvc.save_vc_credentials(
+                api_id=123456,
+                api_hash='abcdef0123456789abcdef0123456789',
+                session_string='test_pyrogram_session_str',
+                auto_join=True,
+            ))
+            self.assertTrue(st['configured'])
+            self.assertEqual(st['api_id'], 123456)
+            self.assertTrue(st['has_api_hash'])
+            self.assertTrue(st['has_session'])
+            creds = _rtloop.run(tvc.get_vc_credentials())
+            self.assertEqual(creds['api_hash'], 'abcdef0123456789abcdef0123456789')
+            self.assertEqual(creds['session_string'], 'test_pyrogram_session_str')
+
+
 
 
