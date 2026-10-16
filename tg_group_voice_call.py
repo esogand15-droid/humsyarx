@@ -170,6 +170,10 @@ def _ensure_pyrogram_compat() -> None:
             pass
 
 
+# اجرای شیم سازگاری در همان لحظه‌ی import ماژول
+_ensure_pyrogram_compat()
+
+
 def _friendly_tg_error(e: Exception) -> str:
     """تبدیل خطاهای فنی Pyrogram / PyTgCalls به پیام فارسی دقیق و راهنما."""
     raw = str(e or "")
@@ -496,14 +500,17 @@ def _mix_pcm16_frames(frames_bytes: list[bytes]) -> bytes:
     if not valid:
         return b""
     if len(valid) == 1:
-        return valid[0]
+        v0 = valid[0]
+        return v0 if (len(v0) % 2 == 0) else v0[:-1]
     min_len = min(len(f) for f in valid)
     min_len -= (min_len % 2)
     if min_len <= 0:
         return b""
-    acc = array.array("h", valid[0][:min_len])
+    acc = array.array("h")
+    acc.frombytes(valid[0][:min_len])
     for extra in valid[1:]:
-        arr = array.array("h", extra[:min_len])
+        arr = array.array("h")
+        arr.frombytes(extra[:min_len])
         for i in range(len(acc)):
             s = int(acc[i]) + int(arr[i])
             if s > 32767:
@@ -512,6 +519,79 @@ def _mix_pcm16_frames(frames_bytes: list[bytes]) -> bytes:
                 s = -32768
             acc[i] = s
     return acc.tobytes()
+
+
+# ── ثوابت موتور صوتی WebRTC / ntgcalls (م9.4) ──
+# در ntgcalls::media::AudioSink نرخ فریم ثابت 100Hz (هر فریم دقیقاً 10ms) است و
+# AudioStreamer::send_data همیشه فقط به اندازه frame_size = (sample_rate * 2 / 100) * channels
+# به WebRTC AudioTrackSinkInterface::OnData تحویل می‌دهد.
+# نرخ بومی Opus در WebRTC تلگرام 48000Hz است (هر 10ms دقیقاً 480 نمونه = 960 بایت mono).
+VC_OUT_SAMPLE_RATE = 48000
+VC_OUT_CHANNELS = 1
+VC_FRAME_DURATION_SEC = 0.010  # 10ms (100 fps — الزام سخت ntgcalls::media::AudioSink::frame_rate)
+VC_FRAME_SAMPLES = VC_OUT_SAMPLE_RATE // 100  # 480 samples per 10ms
+VC_FRAME_BYTES = VC_FRAME_SAMPLES * 2 * VC_OUT_CHANNELS  # 960 bytes per 10ms
+VC_PREBUFFER_FRAMES = 14  # 140ms پیش‌بافرینگ (Jitter Buffer) قبل از شروع هر نوبت صحبت
+VC_PREBUFFER_BYTES = VC_FRAME_BYTES * VC_PREBUFFER_FRAMES  # 13,440 bytes
+VC_PREBUFFER_MAX_WAIT_SEC = 0.16  # حداکثر انتظار برای پر شدن Jitter Buffer
+_SILENCE_FRAME_48K_10MS = b"\x00" * VC_FRAME_BYTES
+
+
+def _upsample_pcm16_24k_to_48k(pcm24k: bytes, prev_sample: int = 0) -> tuple[bytes, int]:
+    """تبدیل نرخ نمونه‌برداری باکیفیت و بدون پرش مرز چانک از 24000Hz به 48000Hz (PCM16 mono).
+
+    از درونیابی خطی نقطه‌میانی (فیلتر مثلثی بدون اعوجاج فاز) با حفظ آخرین نمونه‌ی چانک قبلی
+    استفاده می‌کند تا بین چانک‌های متوالی هیچ پرش پله‌ای (Click / Crackle) ایجاد نشود.
+    """
+    if not pcm24k or len(pcm24k) < 2:
+        return b"", prev_sample
+    if len(pcm24k) % 2 != 0:
+        pcm24k = pcm24k[:-1]
+    src = array.array("h")
+    src.frombytes(pcm24k)
+    n = len(src)
+    if n == 0:
+        return b"", prev_sample
+    dst = array.array("h", [0]) * (n * 2)
+    p = int(prev_sample)
+    for i in range(n):
+        c = int(src[i])
+        dst[2 * i] = (p + c) >> 1
+        dst[2 * i + 1] = c
+        p = c
+    return dst.tobytes(), p
+
+
+def _apply_fade_in_pcm16(frame_bytes: bytes, start_sample: int = 0, ramp_samples: int = 96) -> bytes:
+    """نرم‌سازی لبه‌ی شروع صحبت (2ms = 96 نمونه در 48kHz) برای حذف کامل صدای تق/خش‌خش ابتدای جمله."""
+    if not frame_bytes or len(frame_bytes) < 4:
+        return frame_bytes
+    arr = array.array("h")
+    arr.frombytes(frame_bytes)
+    n = min(len(arr), max(1, ramp_samples))
+    s0 = int(start_sample)
+    for i in range(n):
+        w = (i + 1) / float(n)
+        val = int(round(s0 * (1.0 - w) + int(arr[i]) * w))
+        if val > 32767:
+            val = 32767
+        elif val < -32768:
+            val = -32768
+        arr[i] = val
+    return arr.tobytes()
+
+
+def _make_fadeout_frame_pcm16(last_sample: int, num_samples: int = VC_FRAME_SAMPLES) -> bytes:
+    """ساخت یک فریم 10ms با شیب ملایم به صفر (Fade-Out) هنگام اتمام صحبت یا Barge-in برای حذف صدای تق."""
+    s0 = int(last_sample)
+    if abs(s0) <= 4:
+        return _SILENCE_FRAME_48K_10MS
+    arr = array.array("h", [0]) * num_samples
+    ramp = min(num_samples, 192)  # 4ms نرم‌سازی به صفر
+    for i in range(ramp):
+        w = 1.0 - ((i + 1) / float(ramp))
+        arr[i] = int(round(s0 * w * w))
+    return arr.tobytes()
 
 
 async def _ensure_assistant_started() -> tuple[Any, Any, dict]:
@@ -708,7 +788,7 @@ async def _ensure_assistant_in_group(
 
 
 class _GroupLiveSession:
-    """نشست زنده‌ی اتصال یک ویس‌چت گروه تلگرام به Google Gemini Live API."""
+    """نشست زنده‌ی اتصال یک ویس‌چت گروه تلگرام به Google Gemini Live API (م9.4 — بهینه‌سازی 48kHz 10ms)."""
 
     def __init__(self, chat_id: int, title: str, model: str, voice: str, google_ws: Any, call_py: Any):
         self.chat_id = int(chat_id)
@@ -718,16 +798,120 @@ class _GroupLiveSession:
         self.google_ws = google_ws
         self.call_py = call_py
         self.started_at = time.monotonic()
+        self.last_audio_in_at = 0.0
         self.last_audio_out_at = 0.0
+        self.first_buffered_at = 0.0
         self.in_buf = bytearray()
-        self.out_buf = bytearray()
+        self.out_buf = bytearray()  # 48000Hz 16-bit mono PCM (960 bytes = 10ms)
+        self._upsample_prev_sample = 0
+        self._last_out_sample = 0
+        self._playout_active = False
+        self._needs_fade_in = True
+        self._turn_complete = False
         self.closed = False
         self.tasks: list[asyncio.Task] = []
 
     def on_incoming_pcm16_16k(self, pcm_bytes: bytes) -> None:
-        if self.closed:
+        if self.closed or not pcm_bytes:
             return
+        # جلوگیری از انباشته شدن تاخیر بیش از ۲ ثانیه در صورت کندی موقت شبکه
+        if len(self.in_buf) > 64000:
+            del self.in_buf[:-32000]
         self.in_buf.extend(pcm_bytes)
+        self.last_audio_in_at = time.monotonic()
+
+    def enqueue_gemini_pcm24k(self, pcm24k: bytes) -> None:
+        """تبدیل بی‌درنگ چانک صوتی 24kHz جمینی به 48kHz بومی WebRTC و افزودن به Jitter Buffer."""
+        if self.closed or not pcm24k:
+            return
+        pcm48k, self._upsample_prev_sample = _upsample_pcm16_24k_to_48k(
+            pcm24k, self._upsample_prev_sample
+        )
+        if not pcm48k:
+            return
+        now = time.monotonic()
+        if not self.out_buf:
+            self.first_buffered_at = now
+        self.out_buf.extend(pcm48k)
+        self.last_audio_out_at = now
+        self._turn_complete = False
+
+    def clear_playback_buffer(self) -> None:
+        """پاک‌سازی فوری صف پخش هنگام پریدن وسط حرف (Barge-in / interrupted)."""
+        self.out_buf.clear()
+        self._upsample_prev_sample = 0
+        self._playout_active = False
+        self._needs_fade_in = True
+        self._turn_complete = False
+        self.first_buffered_at = 0.0
+
+    def pop_next_10ms_frame(self, now: float | None = None) -> bytes:
+        """استخراج دقیق یک فریم 10ms (۹۶۰ بایت در 48kHz mono) با Jitter Buffer و حذف کامل خش‌خش/کلیک."""
+        if now is None:
+            now = time.monotonic()
+
+        buf_len = len(self.out_buf)
+
+        # ۱) حالت پیش‌بافرینگ (Jitter Buffer) در ابتدای هر نوبت صحبت هوشیار
+        if not self._playout_active:
+            if buf_len == 0:
+                if abs(self._last_out_sample) > 4:
+                    fade = _make_fadeout_frame_pcm16(self._last_out_sample)
+                    self._last_out_sample = 0
+                    return fade
+                return _SILENCE_FRAME_48K_10MS
+
+            waited = max(0.0, now - (self.first_buffered_at or now))
+            ready = (
+                buf_len >= VC_PREBUFFER_BYTES
+                or self._turn_complete
+                or waited >= VC_PREBUFFER_MAX_WAIT_SEC
+            )
+            if not ready:
+                return _SILENCE_FRAME_48K_10MS
+
+            self._playout_active = True
+            self._needs_fade_in = True
+
+        # ۲) حالت پخش پیوسته فریم‌های ۱۰ میلی‌ثانیه‌ای
+        if buf_len >= VC_FRAME_BYTES:
+            chunk = bytes(self.out_buf[:VC_FRAME_BYTES])
+            del self.out_buf[:VC_FRAME_BYTES]
+            if self._needs_fade_in:
+                chunk = _apply_fade_in_pcm16(chunk, self._last_out_sample, ramp_samples=96)
+                self._needs_fade_in = False
+            self._last_out_sample = int.from_bytes(chunk[-2:], "little", signed=True)
+            return chunk
+
+        # ۳) انتهای جمله (چانک ناقص کمتر از 10ms که نوبت تمام شده یا بیش از 90ms داده جدید نیامده)
+        if 0 < buf_len < VC_FRAME_BYTES and (
+            self._turn_complete or (now - self.last_audio_out_at) > 0.09
+        ):
+            rem = bytes(self.out_buf)
+            self.out_buf.clear()
+            if len(rem) % 2 != 0:
+                rem = rem[:-1]
+            last_s = int.from_bytes(rem[-2:], "little", signed=True) if len(rem) >= 2 else self._last_out_sample
+            missing_samples = (VC_FRAME_BYTES - len(rem)) // 2
+            tail = _make_fadeout_frame_pcm16(last_s, num_samples=missing_samples) if missing_samples > 0 else b""
+            chunk = rem + tail
+            if self._needs_fade_in:
+                chunk = _apply_fade_in_pcm16(chunk, self._last_out_sample, ramp_samples=48)
+                self._needs_fade_in = False
+            self._last_out_sample = 0
+            self._playout_active = False
+            self._needs_fade_in = True
+            return chunk
+
+        # ۴) خلا موقت شبکه در میانه صحبت (Underrun): بازگشت به پیش‌بافرینگ با شیب ملایم بدون صدای تق
+        self._playout_active = False
+        self._needs_fade_in = True
+        self.first_buffered_at = now
+        if abs(self._last_out_sample) > 4:
+            fade = _make_fadeout_frame_pcm16(self._last_out_sample)
+            self._last_out_sample = 0
+            return fade
+        return _SILENCE_FRAME_48K_10MS
 
     def start_loops(self) -> None:
         self.tasks = [
@@ -737,13 +921,22 @@ class _GroupLiveSession:
         ]
 
     async def _flush_incoming_to_gemini_loop(self) -> None:
-        """ارسال چانک‌های ~100ms (۳۲۰۰ بایت در 16kHz 16-bit mono) از ویس‌چت گروه به Gemini Live."""
+        """ارسال کم‌تاخیر چانک‌های ~40-80ms (در 16kHz 16-bit mono) از ویس‌چت گروه به Gemini Live."""
         while not self.closed:
-            await asyncio.sleep(0.08)
-            if len(self.in_buf) < 3200:
+            await asyncio.sleep(0.04)
+            buf_len = len(self.in_buf)
+            if buf_len < 2:
                 continue
-            chunk = bytes(self.in_buf[:6400])
-            del self.in_buf[:len(chunk)]
+            now = time.monotonic()
+            # ارسال فوری وقتی حداقل 40ms (۱۲۸۰ بایت) جمع شده یا انتهای صحبت کاربر است (>100ms مکث)
+            if buf_len < 1280 and (now - self.last_audio_in_at) < 0.10:
+                continue
+            take = min(buf_len, 6400)
+            take -= (take % 2)
+            if take <= 0:
+                continue
+            chunk = bytes(self.in_buf[:take])
+            del self.in_buf[:take]
             b64 = base64.b64encode(chunk).decode("ascii")
             try:
                 await self.google_ws.send(json.dumps({
@@ -772,13 +965,15 @@ class _GroupLiveSession:
                     if etype == "audio" and ev.get("data"):
                         try:
                             pcm24k = base64.b64decode(ev["data"])
-                            self.out_buf.extend(pcm24k)
-                            self.last_audio_out_at = time.monotonic()
+                            self.enqueue_gemini_pcm24k(pcm24k)
                         except Exception:
                             pass
                     elif etype == "interrupted":
                         # وقتی یکی از اعضای گروه وسط صحبت هوشیار حرف بزند، صف پخش بلافاصله خالی می‌شود
-                        self.out_buf.clear()
+                        self.clear_playback_buffer()
+                    elif etype == "turn_state":
+                        if ev.get("turn_complete") or ev.get("interaction_status") == "IDLE":
+                            self._turn_complete = True
                     elif etype == "tool_call":
                         tool_resp = await execute_live_tool_calls(ev.get("calls") or [], 0)
                         await self.google_ws.send(json.dumps(tool_resp))
@@ -787,37 +982,54 @@ class _GroupLiveSession:
                 logger.warning("TG_VC_GEMINI_RECV_CLOSED chat=%s err=%s", self.chat_id, e)
 
     async def _outgoing_pacer_loop(self) -> None:
-        """تزریق فریم‌های ۲۰ میلی‌ثانیه‌ای (۹۶۰ بایت در 24kHz 16-bit mono) به میکروفون ویس‌چت تلگرام."""
+        """تزریق دقیق فریم‌های ۱۰ میلی‌ثانیه‌ای (۹۶۰ بایت در 48kHz 16-bit mono = 100fps) به WebRTC تلگرام.
+
+        نکته‌ی حیاتی معماری ntgcalls:
+        در باینری ntgcalls، متد AudioSink::frame_rate() مقدار ثابت 100 (فریم‌های 10ms) دارد و
+        AudioStreamer::send_data در هر فراخوانی دقیقاً 10ms (در 48kHz معادل 480 نمونه = 960 بایت)
+        به WebRTC AudioTrackSinkInterface::OnData تحویل می‌دهد. ارسال مستمر هر 10ms با ساعت
+        یکنواخت (Monotonic) هرگونه خش‌خش، پرش و Underrun کدک Opus را به‌طور کامل حذف می‌کند.
+        """
         from pytgcalls.types import Device
 
-        frame_bytes = 960  # 24000 Hz * 2 bytes * 0.020 sec = 960 bytes
+        # مسیر سریع مستقیم به C++ binding برای حذف سربار دکوراتورهای PyTgCalls در ۱۰۰ فریم بر ثانیه
+        binding = getattr(self.call_py, "_binding", None)
+        fast_send = None
+        if binding is not None and hasattr(binding, "send_external_frame"):
+            try:
+                from ntgcalls import FrameData
+                raw_dev = Device.to_raw(Device.MICROPHONE)
+                raw_fd = FrameData(0, False, 0, 0)
+                fast_send = (binding.send_external_frame, raw_dev, raw_fd)
+            except Exception:
+                fast_send = None
+
         next_tick = time.monotonic()
         err_streak = 0
         while not self.closed:
             now = time.monotonic()
             if now < next_tick:
                 await asyncio.sleep(next_tick - now)
-            next_tick = max(time.monotonic(), next_tick + 0.020)
+                now = time.monotonic()
 
-            chunk: bytes | None = None
-            if len(self.out_buf) >= frame_bytes:
-                chunk = bytes(self.out_buf[:frame_bytes])
-                del self.out_buf[:frame_bytes]
-            elif 0 < len(self.out_buf) < frame_bytes and (time.monotonic() - self.last_audio_out_at) > 0.12:
-                # پد کردن انتهای جمله‌ی صوتی با سکوت تا کلمه‌ی آخر ناقص نشود
-                rem = bytes(self.out_buf)
-                self.out_buf.clear()
-                chunk = rem + (b"\x00" * (frame_bytes - len(rem)))
+            # حفظ ساعت دقیق 10ms بدون تجمیع خطای زمانی (جلوگیری از شتاب ناگهانی پس از توقف‌های کوتاه)
+            next_tick += VC_FRAME_DURATION_SEC
+            if now - next_tick > 0.050:
+                next_tick = now + VC_FRAME_DURATION_SEC
 
-            if chunk is not None:
-                try:
+            chunk = self.pop_next_10ms_frame(now)
+            try:
+                if fast_send is not None:
+                    fn, r_dev, r_fd = fast_send
+                    await fn(self.chat_id, r_dev, chunk, r_fd)
+                else:
                     await self.call_py.send_frame(self.chat_id, Device.MICROPHONE, chunk)
-                    err_streak = 0
-                except Exception as e:
-                    err_streak += 1
-                    if err_streak >= 25:
-                        logger.warning("TG_VC_SEND_FRAME_ERR chat=%s err=%s", self.chat_id, e)
-                        break
+                err_streak = 0
+            except Exception as e:
+                err_streak += 1
+                if err_streak >= 40:
+                    logger.warning("TG_VC_SEND_FRAME_ERR chat=%s err=%s", self.chat_id, e)
+                    break
 
     async def close(self) -> None:
         self.closed = True
@@ -894,12 +1106,12 @@ async def join_group_voice_chat(
     connected_model = getattr(google_ws, "live_model", None) or effective_model
 
     try:
-        # ۱) باز کردن مسیر خروجی صدا (24kHz mono PCM16) در ویس‌چت گروه
+        # ۱) باز کردن مسیر خروجی صدا با نرخ بومی Opus WebRTC (48kHz mono PCM16 — هر فریم 10ms = 960 بایت)
         await call_py.play(
             resolved_cid,
             MediaStream(
                 ExternalMedia.AUDIO,
-                AudioParameters(bitrate=24000, channels=1),
+                AudioParameters(bitrate=VC_OUT_SAMPLE_RATE, channels=VC_OUT_CHANNELS),
                 video_flags=MediaStream.Flags.IGNORE,
             ),
             config=GroupCallConfig(auto_start=True),

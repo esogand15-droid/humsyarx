@@ -4731,8 +4731,16 @@ def parse_live_server_message(raw_msg) -> list:
     return events
 
 
+_BIDI_DISCOVERY_CACHE: dict[str, tuple[float, list]] = {}
+_BIDI_DISCOVERY_TTL_SEC = 600.0
+
+
 async def _discover_bidi_models_for_key(api_key: str) -> list:
-    """دریافت فهرست مدل‌هایی که روی این کلید صریحاً از bidiGenerateContent پشتیبانی می‌کنند."""
+    """دریافت فهرست مدل‌هایی که روی این کلید صریحاً از bidiGenerateContent پشتیبانی می‌کنند (با کش ۱۰ دقیقه‌ای)."""
+    now = time.monotonic()
+    cached = _BIDI_DISCOVERY_CACHE.get(api_key)
+    if cached and (now - cached[0]) < _BIDI_DISCOVERY_TTL_SEC and api_key in _KEY_STATE.get('gemini', {}):
+        return list(cached[1])
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
@@ -4740,9 +4748,11 @@ async def _discover_bidi_models_for_key(api_key: str) -> list:
                 headers={'x-goog-api-key': api_key},
             )
         if resp.status_code in (401, 403):
+            _BIDI_DISCOVERY_CACHE.pop(api_key, None)
             body = _sanitize_provider_text(resp.text or '')[:180]
             raise AIConfigError(f"کلید گوگل نامعتبر یا غیرفعال است ({body})")
         if resp.status_code == 429:
+            _BIDI_DISCOVERY_CACHE.pop(api_key, None)
             raise AIQuotaError("سهمیه کلید گوگل پر شده است (429).")
         if resp.status_code != 200:
             return []
@@ -4753,6 +4763,7 @@ async def _discover_bidi_models_for_key(api_key: str) -> list:
                 name = (m.get('name') or '').replace('models/', '').strip()
                 if name:
                     out.append(name)
+        _BIDI_DISCOVERY_CACHE[api_key] = (now, list(out))
         return out
     except (AIConfigError, AIQuotaError):
         raise

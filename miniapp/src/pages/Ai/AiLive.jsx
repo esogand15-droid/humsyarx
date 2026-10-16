@@ -77,7 +77,8 @@ function float32ToPcm16Base64(float32Buf) {
 
 function pcm16Base64ToFloat32(b64) {
   const binary = atob(b64);
-  const len = binary.length;
+  const len = binary.length - (binary.length % 2);
+  if (len <= 0) return new Float32Array(0);
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i += 1) {
     bytes[i] = binary.charCodeAt(i);
@@ -88,6 +89,80 @@ function pcm16Base64ToFloat32(b64) {
     float32[i] = samples[i] / 32768.0;
   }
   return float32;
+}
+
+
+// م9.4 — ترکیب چند چانک Float32 در یک آرایه پیوسته برای Jitter Buffer بدون شکاف
+function concatFloat32Arrays(arrays) {
+  if (!arrays || arrays.length === 0) return new Float32Array(0);
+  if (arrays.length === 1) return arrays[0];
+  let total = 0;
+  for (let i = 0; i < arrays.length; i += 1) {
+    total += arrays[i].length;
+  }
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (let i = 0; i < arrays.length; i += 1) {
+    merged.set(arrays[i], offset);
+    offset += arrays[i].length;
+  }
+  return merged;
+}
+
+
+// م9.4 — درونیابی خطی پیوسته 24kHz → 48kHz + نرم‌سازی مرز چانک‌ها برای حذف کامل خش‌خش ابتدای مکالمه
+function prepareSmoothAudioSamples(samples24k, ctxSampleRate, prevSampleRef, applyStartFadeIn) {
+  if (!samples24k || !samples24k.length) {
+    return { data: new Float32Array(0), rate: 24000 };
+  }
+  let prev = prevSampleRef.current || 0;
+  if (ctxSampleRate === 48000) {
+    const n = samples24k.length;
+    const out = new Float32Array(n * 2);
+    for (let i = 0; i < n; i += 1) {
+      const cur = samples24k[i];
+      out[2 * i] = 0.5 * (prev + cur);
+      out[2 * i + 1] = cur;
+      prev = cur;
+    }
+    if (applyStartFadeIn) {
+      const ramp = Math.min(out.length, 96); // 2ms نرم‌سازی شروع صحبت در 48kHz
+      for (let i = 0; i < ramp; i += 1) {
+        out[i] *= (i + 1) / ramp;
+      }
+    }
+    prevSampleRef.current = prev;
+    return { data: out, rate: 48000 };
+  }
+
+  const out = new Float32Array(samples24k.length);
+  out.set(samples24k);
+  if (applyStartFadeIn) {
+    const ramp = Math.min(out.length, 48); // 2ms نرم‌سازی شروع صحبت در 24kHz
+    for (let i = 0; i < ramp; i += 1) {
+      out[i] *= (i + 1) / ramp;
+    }
+  } else if (out.length >= 4) {
+    out[0] = 0.5 * (prev + out[0]);
+  }
+  prevSampleRef.current = out[out.length - 1] || 0;
+  return { data: out, rate: 24000 };
+}
+
+
+// م9.4 — گرم‌کردن سخت‌افزار صوتی مرورگر/وب‌ویو با یک بافر بی‌صدا پیش از شروع صحبت هوشیار
+function warmUpAudioContext(ctx) {
+  if (!ctx || ctx.state === 'closed') return;
+  try {
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    const silent = ctx.createBuffer(1, 128, ctx.sampleRate || 48000);
+    const src = ctx.createBufferSource();
+    src.buffer = silent;
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch (_) {}
 }
 
 
@@ -135,8 +210,16 @@ export default function AiLive() {
   const captureCtxRef = useRef(null);
   const processorRef = useRef(null);
   const playCtxRef = useRef(null);
+  const playGainRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
   const activeSourcesRef = useRef([]);
+  const pendingPcmQueueRef = useRef([]);
+  const pendingSamplesCountRef = useRef(0);
+  const isPrebufferingRef = useRef(true);
+  const flushTimerRef = useRef(null);
+  const prevSampleRef = useRef(0);
+  const lastLevelTsRef = useRef(0);
+  const lastLevelValRef = useRef(0);
   const micMutedRef = useRef(false);
   const speakerMutedRef = useRef(false);
   const userBufRef = useRef('');
@@ -160,6 +243,28 @@ export default function AiLive() {
   }, [speakerMuted]);
 
   const stopAllPlayback = useCallback(() => {
+    if (flushTimerRef.current) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    pendingPcmQueueRef.current = [];
+    pendingSamplesCountRef.current = 0;
+    isPrebufferingRef.current = true;
+    prevSampleRef.current = 0;
+
+    // م9.4 — کاهش نرم بهره صدا (12ms) پیش از توقف منابع برای حذف کامل صدای تق در Barge-in
+    const ctx = playCtxRef.current;
+    const gainNode = playGainRef.current;
+    if (ctx && gainNode && ctx.state === 'running') {
+      try {
+        const now = ctx.currentTime;
+        gainNode.gain.cancelScheduledValues(now);
+        gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+        gainNode.gain.linearRampToValueAtTime(0.0001, now + 0.012);
+        gainNode.gain.setValueAtTime(1.0, now + 0.016);
+      } catch (_) {}
+    }
+
     for (const src of activeSourcesRef.current) {
       try {
         src.stop();
@@ -238,35 +343,87 @@ export default function AiLive() {
     }
   }, [cameraOn]);
 
-  const scheduleAudioChunk = useCallback((b64Data) => {
-    if (speakerMutedRef.current || !b64Data) return;
-    try {
-      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
-        const AC = window.AudioContext || window.webkitAudioContext;
+  const ensurePlaybackContext = useCallback(() => {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
+      try {
+        playCtxRef.current = new AC({ latencyHint: 'interactive' });
+      } catch (_) {
         playCtxRef.current = new AC();
       }
-      const ctx = playCtxRef.current;
-      if (ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
-      }
-      const float32 = pcm16Base64ToFloat32(b64Data);
-      if (!float32.length) return;
-      const audioBuf = ctx.createBuffer(1, float32.length, 24000);
-      audioBuf.getChannelData(0).set(float32);
+      playGainRef.current = null;
+    }
+    const ctx = playCtxRef.current;
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+    if (!playGainRef.current) {
+      const gain = ctx.createGain();
+      gain.gain.value = 1.0;
+      gain.connect(ctx.destination);
+      playGainRef.current = gain;
+    }
+    return ctx;
+  }, []);
+
+  const flushPendingAudio = useCallback((forceFlush = false) => {
+    if (flushTimerRef.current && forceFlush) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    if (!pendingPcmQueueRef.current.length) return;
+
+    // م9.4 — Jitter Buffer: صبر برای انباشت حداقل ~140ms (3360 نمونه در 24kHz) در شروع صحبت
+    const prebufferSamples = 3360;
+    if (isPrebufferingRef.current && !forceFlush && pendingSamplesCountRef.current < prebufferSamples) {
+      return;
+    }
+
+    if (flushTimerRef.current) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+
+    const merged24k = concatFloat32Arrays(pendingPcmQueueRef.current);
+    pendingPcmQueueRef.current = [];
+    pendingSamplesCountRef.current = 0;
+    if (!merged24k.length) return;
+
+    try {
+      const ctx = ensurePlaybackContext();
+      const now = ctx.currentTime;
+      const wasUnderrun = !nextPlayTimeRef.current || nextPlayTimeRef.current <= now + 0.004;
+      const applyFadeIn = isPrebufferingRef.current || wasUnderrun;
+      isPrebufferingRef.current = false;
+
+      const { data: smoothSamples, rate: bufRate } = prepareSmoothAudioSamples(
+        merged24k,
+        ctx.sampleRate,
+        prevSampleRef,
+        applyFadeIn,
+      );
+      if (!smoothSamples.length) return;
+
+      const audioBuf = ctx.createBuffer(1, smoothSamples.length, bufRate);
+      audioBuf.getChannelData(0).set(smoothSamples);
 
       const src = ctx.createBufferSource();
       src.buffer = audioBuf;
-      src.connect(ctx.destination);
+      src.connect(playGainRef.current || ctx.destination);
 
-      const now = ctx.currentTime;
-      const startAt = Math.max(now + 0.015, nextPlayTimeRef.current || now + 0.015);
+      // در شروع نوبت صحبت 45ms حاشیه امن (Lookahead) می‌گذاریم تا هرگز Underrun رخ ندهد
+      const startAt = wasUnderrun
+        ? now + 0.045
+        : Math.max(now + 0.008, nextPlayTimeRef.current);
       nextPlayTimeRef.current = startAt + audioBuf.duration;
 
       activeSourcesRef.current.push(src);
-      setStatus('speaking');
+      setStatus((prev) => (prev === 'speaking' ? prev : 'speaking'));
       src.onended = () => {
         activeSourcesRef.current = activeSourcesRef.current.filter((x) => x !== src);
-        if (activeSourcesRef.current.length === 0) {
+        if (activeSourcesRef.current.length === 0 && pendingSamplesCountRef.current === 0) {
+          isPrebufferingRef.current = true;
+          prevSampleRef.current = 0;
           setStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
         }
       };
@@ -274,7 +431,39 @@ export default function AiLive() {
     } catch (e) {
       console.warn('[AiLive playback]', e);
     }
-  }, []);
+  }, [ensurePlaybackContext]);
+
+  const scheduleAudioChunk = useCallback((b64Data) => {
+    if (speakerMutedRef.current || !b64Data) return;
+    try {
+      const float32 = pcm16Base64ToFloat32(b64Data);
+      if (!float32.length) return;
+
+      const ctx = ensurePlaybackContext();
+      const now = ctx.currentTime;
+      if (!nextPlayTimeRef.current || nextPlayTimeRef.current <= now + 0.004) {
+        isPrebufferingRef.current = true;
+      }
+
+      pendingPcmQueueRef.current.push(float32);
+      pendingSamplesCountRef.current += float32.length;
+
+      if (isPrebufferingRef.current) {
+        if (pendingSamplesCountRef.current >= 3360) {
+          flushPendingAudio(true);
+        } else if (!flushTimerRef.current) {
+          flushTimerRef.current = window.setTimeout(() => {
+            flushTimerRef.current = null;
+            flushPendingAudio(true);
+          }, 110);
+        }
+      } else {
+        flushPendingAudio(true);
+      }
+    } catch (e) {
+      console.warn('[AiLive schedule]', e);
+    }
+  }, [ensurePlaybackContext, flushPendingAudio]);
 
   const cleanupSession = useCallback(() => {
     stopAllPlayback();
@@ -285,12 +474,12 @@ export default function AiLive() {
       } catch (_) {}
       processorRef.current = null;
     }
-    if (captureCtxRef.current) {
+    if (captureCtxRef.current && captureCtxRef.current !== playCtxRef.current) {
       try {
         captureCtxRef.current.close();
       } catch (_) {}
-      captureCtxRef.current = null;
     }
+    captureCtxRef.current = null;
     if (mediaStreamRef.current) {
       for (const track of mediaStreamRef.current.getTracks()) {
         try {
@@ -330,15 +519,10 @@ export default function AiLive() {
     setElapsedSec(0);
     haptic('medium');
 
-    // باز کردن AudioContext دقیقاً در لحظه‌ی کلیک کاربر (جلوگیری از بلاک Autoplay مرورگر/وب‌ویو)
+    // باز کردن و گرم‌کردن AudioContext دقیقاً در لحظه‌ی کلیک کاربر
     try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
-        playCtxRef.current = new AC();
-      }
-      if (playCtxRef.current.state === 'suspended') {
-        playCtxRef.current.resume().catch(() => {});
-      }
+      const ctx = ensurePlaybackContext();
+      warmUpAudioContext(ctx);
     } catch (_) {}
 
     let stream;
@@ -356,6 +540,12 @@ export default function AiLive() {
       setErrMsg('دسترسی به میکروفون داده نشد؛ لطفاً مجوز میکروفون را در تلگرام/مرورگر فعال کن.');
       return;
     }
+
+    // گرم‌کردن مجدد مسیر صوتی پس از تغییر مسیر سخت‌افزار به حالت مکالمه (Voice Call Route)
+    try {
+      const ctx = ensurePlaybackContext();
+      warmUpAudioContext(ctx);
+    } catch (_) {}
 
     mediaStreamRef.current = stream;
     setStatus('connecting');
@@ -392,32 +582,39 @@ export default function AiLive() {
         if (msg.max_session_sec) setMaxSessionSec(msg.max_session_sec);
         setStatus('listening');
 
-        // راه‌اندازی ضبط میکروفون با نرخ بومی سخت‌افزار و Downsample به 16kHz PCM16
+        // م9.4 — استفاده از همان AudioContext گرم‌شده (حذف کامل پرش سخت‌افزاری ناشی از ساخت AudioContext دوم)
         try {
-          const AC = window.AudioContext || window.webkitAudioContext;
-          const capCtx = new AC();
+          const capCtx = ensurePlaybackContext();
           captureCtxRef.current = capCtx;
-          if (capCtx.state === 'suspended') {
-            capCtx.resume().catch(() => {});
-          }
           const srcNode = capCtx.createMediaStreamSource(stream);
-          const proc = capCtx.createScriptProcessor(4096, 1, 1);
+          const proc = capCtx.createScriptProcessor(2048, 1, 1);
           const silentGain = capCtx.createGain();
           silentGain.gain.value = 0;
           processorRef.current = proc;
 
           proc.onaudioprocess = (audioEv) => {
             if (micMutedRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-              setMicLevel(0);
+              if (lastLevelValRef.current !== 0) {
+                lastLevelValRef.current = 0;
+                setMicLevel(0);
+              }
               return;
             }
             const raw = audioEv.inputBuffer.getChannelData(0);
-            let sumSq = 0;
-            for (let i = 0; i < raw.length; i += 4) {
-              sumSq += raw[i] * raw[i];
+            const nowMs = performance.now();
+            if (nowMs - lastLevelTsRef.current >= 100) {
+              let sumSq = 0;
+              for (let i = 0; i < raw.length; i += 8) {
+                sumSq += raw[i] * raw[i];
+              }
+              const rms = Math.min(1, Math.sqrt(sumSq / (raw.length / 8)) * 4);
+              lastLevelTsRef.current = nowMs;
+              if (Math.abs(rms - lastLevelValRef.current) > 0.03 || (rms < 0.02 && lastLevelValRef.current > 0)) {
+                const nextLvl = rms < 0.02 ? 0 : rms;
+                lastLevelValRef.current = nextLvl;
+                setMicLevel(nextLvl);
+              }
             }
-            const rms = Math.min(1, Math.sqrt(sumSq / (raw.length / 4)) * 4);
-            setMicLevel(rms);
 
             const pcm16k = downsampleTo16k(raw, capCtx.sampleRate);
             const b64 = float32ToPcm16Base64(pcm16k);
@@ -477,6 +674,7 @@ export default function AiLive() {
         if (msg.interaction_status === 'IN_PROGRESS') {
           setStatus('thinking');
         } else if (msg.interaction_status === 'IDLE' || msg.turn_complete) {
+          flushPendingAudio(true);
           setToolNotice('');
           if (userBufRef.current || aiBufRef.current) {
             const uSnap = userBufRef.current;
@@ -491,7 +689,7 @@ export default function AiLive() {
             setUserLiveText('');
             setAiLiveText('');
           }
-          if (activeSourcesRef.current.length === 0) {
+          if (activeSourcesRef.current.length === 0 && pendingSamplesCountRef.current === 0) {
             setStatus('listening');
           }
         }

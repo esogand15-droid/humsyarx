@@ -1032,6 +1032,75 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
             creds = _rtloop.run(tvc.get_vc_credentials())
             self.assertEqual(creds['session_string'], 'exported_2fa_session_string')
 
+    def test_tg_group_voice_call_m94_48khz_10ms_jitter_buffer_and_anti_click(self):
+        import struct
+        import tg_group_voice_call as tvc
+
+        # ۱) تایید ثوابت حیاتی ntgcalls (فریم‌های دقیقاً 10ms = 960 بایت در 48kHz mono)
+        self.assertEqual(tvc.VC_OUT_SAMPLE_RATE, 48000)
+        self.assertEqual(tvc.VC_OUT_CHANNELS, 1)
+        self.assertAlmostEqual(tvc.VC_FRAME_DURATION_SEC, 0.010)
+        self.assertEqual(tvc.VC_FRAME_SAMPLES, 480)
+        self.assertEqual(tvc.VC_FRAME_BYTES, 960)
+
+        # ۲) تست درونیابی خطی پیوسته 24kHz -> 48kHz با حفظ نمونه‌ی مرزی بین چانک‌ها
+        c1_24k = struct.pack('<hhh', 1000, 2000, 3000)
+        up1, prev1 = tvc._upsample_pcm16_24k_to_48k(c1_24k, prev_sample=0)
+        self.assertEqual(prev1, 3000)
+        self.assertEqual(len(up1), 12)  # 6 نمونه در 48kHz
+        self.assertEqual(struct.unpack('<hhhhhh', up1), (500, 1000, 1500, 2000, 2500, 3000))
+
+        c2_24k = struct.pack('<hh', 4000, 5000)
+        up2, prev2 = tvc._upsample_pcm16_24k_to_48k(c2_24k, prev_sample=prev1)
+        self.assertEqual(prev2, 5000)
+        self.assertEqual(struct.unpack('<hhhh', up2), (3500, 4000, 4500, 5000))
+
+        # ۳) تست Jitter Buffer و استخراج فریم‌های 10ms در _GroupLiveSession
+        sess = tvc._GroupLiveSession(
+            chat_id=-100123456,
+            title='گروه تست',
+            model='gemini-3.8-live',
+            voice='Sulafat',
+            google_ws=None,
+            call_py=None,
+        )
+        t0 = 1000.0
+        # وقتی بافر خالی است باید فریم سکوت 10ms (۹۶۰ بایت صفر) برگردد
+        f_idle = sess.pop_next_10ms_frame(now=t0)
+        self.assertEqual(len(f_idle), 960)
+        self.assertEqual(f_idle, b'\x00' * 960)
+
+        # تزریق فقط 20ms صدا در 24kHz (۴۸۰ نمونه = ۹۶۰ بایت -> در 48kHz می‌شود ۱۹۲۰ بایت = ۲ فریم)
+        # چون کمتر از سقف پیش‌بافرینگ (140ms) است و زمان انتظار هم نگذشته، باید هنوز سکوت برگرداند
+        short_24k = struct.pack('<' + 'h' * 480, *([12000] * 480))
+        sess.enqueue_gemini_pcm24k(short_24k)
+        sess.first_buffered_at = t0
+        f_prebuf = sess.pop_next_10ms_frame(now=t0 + 0.020)
+        self.assertEqual(f_prebuf, b'\x00' * 960)
+        self.assertFalse(sess._playout_active)
+
+        # وقتی زمان انتظار Jitter Buffer بگذرد (یا بافر پر شود)، پخش آغاز می‌شود و Fade-In نرم اعمال می‌گردد
+        f_play1 = sess.pop_next_10ms_frame(now=t0 + 0.200)
+        self.assertTrue(sess._playout_active)
+        self.assertEqual(len(f_play1), 960)
+        samples_play1 = struct.unpack('<' + 'h' * 480, f_play1)
+        # نمونه‌ی اول به خاطر Fade-In ملایم باید بسیار کوچک‌تر از ۱۲۰۰۰ باشد و نمونه انتهایی ۱۲۰۰۰ باشد
+        self.assertLess(samples_play1[0], 500)
+        self.assertEqual(samples_play1[-1], 12000)
+
+        # فریم دوم
+        f_play2 = sess.pop_next_10ms_frame(now=t0 + 0.210)
+        self.assertEqual(len(f_play2), 960)
+
+        # فریم سوم (Underrun در انتهای صحبت): به جای پرش ناگهانی از ۱۲۰۰۰ به ۰، فریم Fade-Out نرم تولید می‌شود
+        f_fadeout = sess.pop_next_10ms_frame(now=t0 + 0.220)
+        self.assertEqual(len(f_fadeout), 960)
+        samples_fade = struct.unpack('<' + 'h' * 480, f_fadeout)
+        self.assertGreater(samples_fade[0], 0)
+        self.assertEqual(samples_fade[-1], 0)
+        self.assertFalse(sess._playout_active)
+
+
 
 
 

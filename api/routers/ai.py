@@ -2156,7 +2156,16 @@ async def live_voice_ws_ep(websocket: WebSocket):
                         user_transcript_buf.append(ev["text"])
                     elif etype == "output_transcript" and ev.get("text"):
                         model_transcript_buf.append(ev["text"])
-                    elif etype == "turn_state" and ev.get("turn_complete"):
+                    elif etype == "tool_call":
+                        await websocket.send_json(ev)
+                        tool_resp = await execute_live_tool_calls(ev.get("calls") or [], uid)
+                        await google_ws.send(_json.dumps(tool_resp))
+                        continue
+
+                    # ارسال فوری رویداد صوتی/وضعیت به مرورگر پیش از هرگونه عملیات دیسک/دیتابیس
+                    await websocket.send_json(ev)
+
+                    if etype == "turn_state" and ev.get("turn_complete"):
                         u_txt = " ".join(user_transcript_buf).strip()
                         m_txt = " ".join(model_transcript_buf).strip()
                         user_transcript_buf.clear()
@@ -2171,12 +2180,6 @@ async def live_voice_ws_ep(websocket: WebSocket):
                                 await _remember(uid, "assistant", m_txt[:2000])
                             except Exception:
                                 pass
-                    elif etype == "tool_call":
-                        await websocket.send_json(ev)
-                        tool_resp = await execute_live_tool_calls(ev.get("calls") or [], uid)
-                        await google_ws.send(_json.dumps(tool_resp))
-                        continue
-                    await websocket.send_json(ev)
 
         t1 = asyncio.create_task(_client_to_google())
         t2 = asyncio.create_task(_google_to_client())

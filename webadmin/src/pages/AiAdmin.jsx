@@ -357,8 +357,14 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   const capCtxRef = useRef(null);
   const procRef = useRef(null);
   const playCtxRef = useRef(null);
+  const playGainRef = useRef(null);
   const nextTimeRef = useRef(0);
   const sourcesRef = useRef([]);
+  const pendingPcmQueueRef = useRef([]);
+  const pendingSamplesCountRef = useRef(0);
+  const isPrebufferingRef = useRef(true);
+  const flushTimerRef = useRef(null);
+  const prevSampleRef = useRef(0);
 
   const loadLiveMeta = async (refresh = false) => {
     setErr('');
@@ -412,7 +418,58 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     setProbing(false);
   };
 
+  const ensurePlayCtx = () => {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
+      try {
+        playCtxRef.current = new AC({ latencyHint: 'interactive' });
+      } catch (_) {
+        playCtxRef.current = new AC();
+      }
+      playGainRef.current = null;
+    }
+    const ctx = playCtxRef.current;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    if (!playGainRef.current) {
+      const g = ctx.createGain();
+      g.gain.value = 1.0;
+      g.connect(ctx.destination);
+      playGainRef.current = g;
+    }
+    return ctx;
+  };
+
+  const warmUpPlayCtx = () => {
+    try {
+      const ctx = ensurePlayCtx();
+      const silent = ctx.createBuffer(1, 128, ctx.sampleRate || 48000);
+      const s = ctx.createBufferSource();
+      s.buffer = silent;
+      s.connect(ctx.destination);
+      s.start(0);
+    } catch (_) {}
+  };
+
   const stopPlayback = () => {
+    if (flushTimerRef.current) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    pendingPcmQueueRef.current = [];
+    pendingSamplesCountRef.current = 0;
+    isPrebufferingRef.current = true;
+    prevSampleRef.current = 0;
+    const ctx = playCtxRef.current;
+    const g = playGainRef.current;
+    if (ctx && g && ctx.state === 'running') {
+      try {
+        const now = ctx.currentTime;
+        g.gain.cancelScheduledValues(now);
+        g.gain.setValueAtTime(g.gain.value, now);
+        g.gain.linearRampToValueAtTime(0.0001, now + 0.012);
+        g.gain.setValueAtTime(1.0, now + 0.016);
+      } catch (_) {}
+    }
     for (const s of sourcesRef.current) { try { s.stop(); } catch (_) {} }
     sourcesRef.current = [];
     nextTimeRef.current = 0;
@@ -471,55 +528,134 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     stopPlayback();
     stopVideo();
     if (procRef.current) { try { procRef.current.disconnect(); } catch (_) {} procRef.current = null; }
-    if (capCtxRef.current) { try { capCtxRef.current.close(); } catch (_) {} capCtxRef.current = null; }
+    if (capCtxRef.current && capCtxRef.current !== playCtxRef.current) {
+      try { capCtxRef.current.close(); } catch (_) {}
+    }
+    capCtxRef.current = null;
     if (streamRef.current) { for (const t of streamRef.current.getTracks()) { try { t.stop(); } catch (_) {} } streamRef.current = null; }
     if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} wsRef.current = null; }
     setCallState('idle');
   };
   useEffect(() => () => stopTestCall(), []);
 
-  const playPcm24k = (b64) => {
+  const flushPendingPcm = (forceFlush = false) => {
+    if (flushTimerRef.current && forceFlush) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    if (!pendingPcmQueueRef.current.length) return;
+    if (isPrebufferingRef.current && !forceFlush && pendingSamplesCountRef.current < 3360) {
+      return;
+    }
+    if (flushTimerRef.current) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+
+    let total = 0;
+    for (let i = 0; i < pendingPcmQueueRef.current.length; i++) total += pendingPcmQueueRef.current[i].length;
+    const merged24k = new Float32Array(total);
+    let off = 0;
+    for (let i = 0; i < pendingPcmQueueRef.current.length; i++) {
+      merged24k.set(pendingPcmQueueRef.current[i], off);
+      off += pendingPcmQueueRef.current[i].length;
+    }
+    pendingPcmQueueRef.current = [];
+    pendingSamplesCountRef.current = 0;
+    if (!merged24k.length) return;
+
     try {
-      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        playCtxRef.current = new AC();
+      const ctx = ensurePlayCtx();
+      const now = ctx.currentTime;
+      const wasUnderrun = !nextTimeRef.current || nextTimeRef.current <= now + 0.004;
+      const applyFadeIn = isPrebufferingRef.current || wasUnderrun;
+      isPrebufferingRef.current = false;
+
+      let prev = prevSampleRef.current || 0;
+      let bufSamples;
+      let bufRate = 24000;
+      if (ctx.sampleRate === 48000) {
+        bufRate = 48000;
+        bufSamples = new Float32Array(merged24k.length * 2);
+        for (let i = 0; i < merged24k.length; i++) {
+          const cur = merged24k[i];
+          bufSamples[2 * i] = 0.5 * (prev + cur);
+          bufSamples[2 * i + 1] = cur;
+          prev = cur;
+        }
+        if (applyFadeIn) {
+          const ramp = Math.min(bufSamples.length, 96);
+          for (let i = 0; i < ramp; i++) bufSamples[i] *= (i + 1) / ramp;
+        }
+        prevSampleRef.current = prev;
+      } else {
+        bufSamples = merged24k;
+        if (applyFadeIn) {
+          const ramp = Math.min(bufSamples.length, 48);
+          for (let i = 0; i < ramp; i++) bufSamples[i] *= (i + 1) / ramp;
+        } else if (bufSamples.length >= 4) {
+          bufSamples[0] = 0.5 * (prev + bufSamples[0]);
+        }
+        prevSampleRef.current = bufSamples[bufSamples.length - 1] || 0;
       }
-      const ctx = playCtxRef.current;
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-      const bin = atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const i16 = new Int16Array(bytes.buffer);
-      const f32 = new Float32Array(i16.length);
-      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
-      const buf = ctx.createBuffer(1, f32.length, 24000);
-      buf.getChannelData(0).set(f32);
+
+      const buf = ctx.createBuffer(1, bufSamples.length, bufRate);
+      buf.getChannelData(0).set(bufSamples);
       const src = ctx.createBufferSource();
       src.buffer = buf;
-      src.connect(ctx.destination);
-      const startAt = Math.max(ctx.currentTime + 0.015, nextTimeRef.current || ctx.currentTime + 0.015);
+      src.connect(playGainRef.current || ctx.destination);
+      const startAt = wasUnderrun ? now + 0.045 : Math.max(now + 0.008, nextTimeRef.current);
       nextTimeRef.current = startAt + buf.duration;
       sourcesRef.current.push(src);
-      setCallState('speaking');
+      setCallState(prevSt => (prevSt === 'speaking' ? prevSt : 'speaking'));
       src.onended = () => {
         sourcesRef.current = sourcesRef.current.filter(x => x !== src);
-        if (!sourcesRef.current.length) setCallState(prev => prev === 'speaking' ? 'listening' : prev);
+        if (!sourcesRef.current.length && !pendingSamplesCountRef.current) {
+          isPrebufferingRef.current = true;
+          prevSampleRef.current = 0;
+          setCallState(prevSt => (prevSt === 'speaking' ? 'listening' : prevSt));
+        }
       };
       src.start(startAt);
     } catch (_) {}
   };
 
-  const startTestCall = async (withVideoMode = '') => {
-    setCallErr(''); setUserSub(''); setAiSub(''); setTurns([]);
+  const playPcm24k = (b64) => {
     try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
-        playCtxRef.current = new AC();
+      const bin = atob(b64);
+      const len = bin.length - (bin.length % 2);
+      if (len <= 0) return;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+      const i16 = new Int16Array(bytes.buffer);
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+
+      const ctx = ensurePlayCtx();
+      if (!nextTimeRef.current || nextTimeRef.current <= ctx.currentTime + 0.004) {
+        isPrebufferingRef.current = true;
       }
-      if (playCtxRef.current.state === 'suspended') {
-        playCtxRef.current.resume().catch(() => {});
+      pendingPcmQueueRef.current.push(f32);
+      pendingSamplesCountRef.current += f32.length;
+
+      if (isPrebufferingRef.current) {
+        if (pendingSamplesCountRef.current >= 3360) {
+          flushPendingPcm(true);
+        } else if (!flushTimerRef.current) {
+          flushTimerRef.current = window.setTimeout(() => {
+            flushTimerRef.current = null;
+            flushPendingPcm(true);
+          }, 110);
+        }
+      } else {
+        flushPendingPcm(true);
       }
     } catch (_) {}
+  };
+
+  const startTestCall = async (withVideoMode = '') => {
+    setCallErr(''); setUserSub(''); setAiSub(''); setTurns([]);
+    warmUpPlayCtx();
 
     let stream;
     try {
@@ -531,6 +667,7 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       setCallErr('دسترسی به میکروفون در مرورگر داده نشد.');
       return;
     }
+    warmUpPlayCtx();
     streamRef.current = stream;
     setCallState('connecting');
     if (withVideoMode) {
@@ -552,12 +689,10 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       if (msg.type === 'ready') {
         setCallState('listening');
         toast(`اتصال زنده به ${msg.model} برقرار شد — صحبت کنید 🎙`);
-        const AC = window.AudioContext || window.webkitAudioContext;
-        const capCtx = new AC();
+        const capCtx = ensurePlayCtx();
         capCtxRef.current = capCtx;
-        if (capCtx.state === 'suspended') capCtx.resume().catch(() => {});
         const src = capCtx.createMediaStreamSource(stream);
-        const proc = capCtx.createScriptProcessor(4096, 1, 1);
+        const proc = capCtx.createScriptProcessor(2048, 1, 1);
         const silentGain = capCtx.createGain();
         silentGain.gain.value = 0;
         procRef.current = proc;
@@ -597,6 +732,7 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       } else if ((msg.type === 'output_transcript' || msg.type === 'text') && msg.text) {
         setAiSub(p => `${p} ${msg.text}`.trim());
       } else if (msg.type === 'turn_state' && (msg.turn_complete || msg.interaction_status === 'IDLE')) {
+        flushPendingPcm(true);
         setUserSub(u => {
           setAiSub(a => {
             if (u || a) {
