@@ -583,8 +583,12 @@ async def practice_stats(user=Depends(get_question_access_user)):
 
 
 class AIGenerateInput(BaseModel):
-    lesson_id: str
-    topic_id: str
+    lesson_id: str = ""
+    topic_id: str = ""
+    # EP-01 (COMPLETION_MATRIX) — پذیرش نام درس/مبحث، هماهنگ با GET /practice
+    # (کلاینت مینی‌اپ درس را با نام می‌شناسد، نه شناسه)
+    lesson: str = Field(default="", max_length=100)
+    topic: str = Field(default="", max_length=100)
     difficulty: str = "medium"
     note: str = Field(default="", max_length=500)
 
@@ -593,7 +597,8 @@ class AIGenerateInput(BaseModel):
 async def generate_ai_practice(body: AIGenerateInput, user=Depends(require_feature("ai_practice"))):
     # 🛡 W3/SEC-03 — تولید AI هزینه دارد؛ سقف سخت‌گیرانه
     await rate_limit_user(user["id"], "ai_generate", 10, 60)
-    taxonomy = await _request_taxonomy(user, body.lesson_id, body.topic_id)
+    taxonomy = await _request_taxonomy(user, body.lesson_id or None, body.topic_id or None,
+                                       body.lesson or None, body.topic or None)
     try:
         return await ai_practice.generate(user=user, taxonomy=taxonomy,
                                           difficulty=body.difficulty, note=body.note,

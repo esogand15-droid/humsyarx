@@ -1,0 +1,99 @@
+کلیدهای یکتا در کد پایتون: 65 (خوانده: 58, نوشته: 43)
+
+══ فقط خوانده می‌شود — نویسنده‌ای در کد ندارد ══
+  __warmup__  ← db/core.py
+  audit_log_alert_count  ← bot.py
+  audit_retention_days  ← audit.py
+  gift_enabled  ← api/routers/subscription.py, subscription.py
+  gift_rate_max  ← api/routers/subscription.py
+  gift_rate_window_h  ← api/routers/subscription.py
+  log_group_admin  ← admin.py, api/routers/admin_panel.py, api/routers/registration.py, audit.py
+  log_group_content  ← admin.py, api/routers/admin_panel.py
+  qbank_ai_daily_limit  ← question_bank/ai_practice.py
+  qbank_ai_topic_daily_limit  ← question_bank/ai_practice.py
+  qbank_weak_accuracy_pct  ← question_bank/service.py
+  qbank_weak_min_attempts  ← question_bank/service.py
+  recon_window_days  ← api/routers/web_admin.py
+  report_rate_max  ← db/content.py
+  report_rate_window_min  ← db/content.py
+  string_key  ← core/settings.py
+  ticket_stale_hours  ← bot.py
+  topup_max  ← api/routers/subscription.py, subscription.py
+  topup_min  ← api/routers/subscription.py, subscription.py
+  trial_days  ← db/finance.py
+  trial_enabled  ← db/finance.py
+  url_import_max_mb  ← url_import_service.py
+
+══ نوشته می‌شود ولی هیچ خواننده‌ای ندارد ══
+  ai_api_key  ← ai_solver.py
+  ai_api_keys  ← ai_solver.py
+  audit_retention_last_deleted  ← bot.py
+  audit_retention_last_run  ← bot.py
+  grades_term_backfill  ← db/core.py
+  index_status  ← db/core.py
+  required_channels  ← db/core.py
+
+══ در UI پنل نیست (تنظیم فقط از env/دیتابیس مستقیم) ══
+  __warmup__
+  ai_api_key
+  ai_api_keys
+  ai_personas_meta
+  audit_log_alert_count
+  audit_retention_days
+  audit_retention_last_deleted
+  audit_retention_last_run
+  auto_backup_consec_fail
+  auto_backup_enabled
+  auto_backup_history
+  auto_backup_hour
+  auto_backup_last_run
+  donation_enabled
+  donation_link
+  dun_cfg
+  file_naming_migration_done
+  gift_enabled
+  gift_rate_max
+  gift_rate_window_h
+  grades_term_backfill
+  index_status
+  log_group_admin
+  log_group_content
+  maintenance_mode
+  maintenance_text
+  notif_default_apply_mode
+  notif_defaults
+  poll_channel_id
+  qbank_ai_daily_limit
+  qbank_ai_topic_daily_limit
+  qbank_weak_accuracy_pct
+  qbank_weak_min_attempts
+  recon_window_days
+  ref_cfg
+  ref_notif_migration_done
+  report_rate_max
+  report_rate_window_min
+  require_student_id
+  required_channels
+  resource_notif_interval_hours
+  resource_notif_last_error
+  resource_notif_last_sent
+  ring.x
+  ring_disable_mode
+  string_key
+  subscription_card_number
+  subscription_card_owner
+  ticket_stale_hours
+  topup_max
+  topup_min
+  trial_days
+  trial_enabled
+  url_import_max_mb
+  wallet_alert_cooldown_hours
+  wallet_alert_enabled
+  wallet_alert_last_at
+  wallet_alert_last_hash
+  wallet_alert_muted_until
+  zarinpal_callback_url
+  zarinpal_enabled
+  zarinpal_merchant_id
+  zarinpal_sandbox

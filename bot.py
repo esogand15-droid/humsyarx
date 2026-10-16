@@ -104,7 +104,6 @@ def _check_flood(uid: int) -> tuple[bool, int]:
     return False, 0
 _FLOOD_WARNED: dict[int, float] = {}
 
-from resources import resources_callback
 from references import references_callback
 from content_admin import content_admin_callback, ca_file_handler, ca_text_handler
 from faq import faq_callback
@@ -2157,13 +2156,13 @@ def build_application() -> Application:
         # علوم پایه
         (basic_science_callback,   r'^bs[_:]'),
         (basic_science_callback,   r'^bs_dl:'),
-        (basic_science_callback,   r'^resources:bs'),
         # رفرنس‌ها
         (references_callback,      r'^ref[_:]'),
-        (references_callback,      r'^resources:ref'),
         # منابع
+        # CB-01 (COMPLETION_MATRIX): زنجیره‌ی مرده‌ی resources.py حذف شد —
+        # ثبت‌های ^resources:bs / ^resources:ref / ^download_resource: هیچ
+        # دکمه‌ی زنده‌ای نداشتند (مسیر جدید bs:main / ref:main است).
         (route_resources,          r'^resources:menu'),
-        (resources_callback,       r'^download_resource:'),
         (route_resources,          r'^resources:'),
         # داشبورد
         (dashboard_callback,       r'^dashboard'),

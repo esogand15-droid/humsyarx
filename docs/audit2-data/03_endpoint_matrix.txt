@@ -1,0 +1,74 @@
+endpointها: 627 | مصرف‌شده: 562 | بدون مصرف: 65 (alias هم‌ارز: 29 | یتیم: 36)
+wrapperهای webadmin/api.js: 321 | بی‌استفاده در صفحات: 1
+
+════ یتیم — هیچ مصرف‌کننده و هیچ هم‌ارزی (36) ════
+  [DELETE] /api/ai-admin/vault/{provider}  ← api/routers/ai_management.py::vault_delete
+  [DELETE] /api/web-admin/schedule/templates/clear  ← api/routers/web_admin.py::wa_schedule_templates_clear_alias
+  [GET] /api/admin/audit-health  ← api/routers/admin_panel.py::audit_health
+  [GET] /api/ai-admin/banned  ← api/routers/ai_management.py::banned
+  [GET] /api/ai-admin/vault  ← api/routers/ai_management.py::vault_status
+  [GET] /api/ai/conversations/{cid}/messages  ← api/routers/ai.py::conversation_messages
+  [GET] /api/content/schedule  ← api/routers/content_admin.py::schedule_list
+  [GET] /api/content/schedule/flex  ← api/routers/content_admin.py::flex_list
+  [GET] /api/content/url-import/jobs/{job_id}  ← api/routers/url_import.py::job_detail
+  [GET] /api/questions/custom-exam/  ← api/routers/questions.py::exam_next
+  [GET] /api/questions/image/{qid}  ← api/routers/questions.py::question_image
+  [GET] /api/questions/practice/stats  ← api/routers/questions.py::practice_stats
+  [GET] /api/references/preview/{file_id}  ← api/routers/references.py::preview
+  [GET] /api/resources/preview/{content_id}  ← api/routers/resources.py::preview
+  [GET] /api/schedule/conflicts  ← api/routers/schedule.py::get_conflicts
+  [GET] /api/schedule/exams  ← api/routers/schedule.py::get_exams
+  [GET] /api/subscription-admin/family  ← api/routers/subscription_management.py::family_overview_admin
+  [GET] /api/subscription/trial/status  ← api/routers/subscription.py::trial_status_ep
+  [GET] /api/subscription/zarinpal/callback  ← api/routers/subscription.py::zarinpal_callback
+  [GET] /api/web-admin/activity  ← api/routers/web_admin.py::activity
+  [GET] /api/web-admin/overview  ← api/routers/web_admin.py::overview
+  [PATCH] /api/content/basic-science/content/{cid}/rename  ← api/routers/content_admin.py::bs_rename_content_ep
+  [PATCH] /api/content/references/files/{fid}/rename  ← api/routers/content_admin.py::ref_rename_file_ep
+  [PATCH] /api/profile/prestige/privacy  ← api/routers/profile.py::patch_prestige_privacy
+  [PATCH] /api/subscription-admin/settings  ← api/routers/subscription_management.py::update_subscription_settings
+  [POST] /api/academic-admin/schedule/templates/bulk  ← api/routers/academic_admin.py::schedule_templates_bulk
+  [POST] /api/content/schedule  ← api/routers/content_admin.py::add_schedule
+  [POST] /api/questions/custom-exam/  ← api/routers/questions.py::exam_answer
+  [POST] /api/questions/my-designs/{question_id}/resubmit  ← api/routers/questions.py::resubmit_my_design
+  [POST] /api/questions/practice/ai/generate  ← api/routers/questions.py::generate_ai_practice
+  [POST] /api/questions/practice/ai/{ai_question_id}/answer  ← api/routers/questions.py::answer_ai_practice
+  [POST] /api/questions/practice/ai/{ai_question_id}/propose  ← api/routers/questions.py::propose_ai_practice
+  [POST] /api/ring/maintenance/disable-all  ← api/routers/ring_admin.py::disable_all
+  [POST] /api/ring/profiles/{uid}/queue/remove  ← api/routers/ring_admin.py::queue_remove
+  [POST] /api/web-admin/schedule/templates/bulk  ← api/routers/web_admin.py::wa_schedule_templates_bulk
+  [PUT] /api/ai-admin/vault/{provider}  ← api/routers/ai_management.py::vault_set
+
+════ alias احتمالی — هم‌ارزِ مصرف‌شده وجود دارد (29) ════
+  [DELETE] /api/content/grades/{gid}  ← api/routers/content_admin.py::del_grade
+  [DELETE] /api/content/schedule/{sid}  ← api/routers/content_admin.py::del_schedule
+  [DELETE] /api/subscription-admin/family/members/{user_id}  ← api/routers/subscription_management.py::family_remove_admin
+  [GET] /api/admin/broadcast/scheduled  ← api/routers/admin_panel.py::broadcast_scheduled
+  [GET] /api/content/grades/find-student  ← api/routers/content_admin.py::grades_find_student
+  [GET] /api/content/grades/recent  ← api/routers/content_admin.py::grades_recent
+  [GET] /api/content/questions/reported  ← api/routers/content_admin.py::reported_questions
+  [GET] /api/questions/taxonomy  ← api/routers/questions.py::taxonomy
+  [GET] /api/ring/sessions/{sid}  ← api/routers/ring_admin.py::session_detail
+  [GET] /api/subscription-admin/discounts/{code}/broadcasts  ← api/routers/subscription_management.py::discount_broadcasts_list
+  [GET] /api/subscription-admin/payments/{payment_id}/receipt  ← api/routers/subscription_management.py::payment_receipt
+  [GET] /api/web-admin/subscription/discounts/{code}/broadcast/{bid}  ← api/routers/web_admin.py::wa_subscription_discount_broadcast_status
+  [PATCH] /api/content/grades/{gid}  ← api/routers/content_admin.py::edit_grade
+  [PATCH] /api/content/schedule/{sid}  ← api/routers/content_admin.py::edit_schedule
+  [POST] /api/academic-admin/schedule/exams/scan  ← api/routers/academic_admin.py::schedule_exams_scan
+  [POST] /api/academic-admin/schedule/exams/scan/confirm  ← api/routers/academic_admin.py::schedule_exams_scan_confirm
+  [POST] /api/academic-admin/schedule/templates/generate  ← api/routers/academic_admin.py::schedule_templates_generate
+  [POST] /api/academic-admin/schedule/templates/scan  ← api/routers/academic_admin.py::schedule_templates_scan
+  [POST] /api/academic-admin/schedule/templates/scan/confirm  ← api/routers/academic_admin.py::schedule_templates_scan_confirm
+  [POST] /api/admin/broadcast/cancel  ← api/routers/admin_panel.py::broadcast_cancel
+  [POST] /api/admin/log-groups/test  ← api/routers/admin_panel.py::log_groups_test
+  [POST] /api/admin/notifications/force-send  ← api/routers/admin_panel.py::notifications_force_send
+  [POST] /api/admin/prestige/backfill  ← api/routers/admin_panel.py::prestige_backfill
+  [POST] /api/ai/conversations/{cid}/duplicate  ← api/routers/ai.py::duplicate_conversation
+  [POST] /api/content/grades/bulk  ← api/routers/content_admin.py::bulk_grades
+  [POST] /api/content/questions/bulk-import  ← api/routers/content_admin.py::bulk_import_questions
+  [POST] /api/content/schedule/{sid}/flex-change  ← api/routers/content_admin.py::flex_change
+  [POST] /api/subscription-admin/family/members  ← api/routers/subscription_management.py::family_add_admin
+  [POST] /api/subscription-admin/subscribers/grant-bulk  ← api/routers/subscription_management.py::grant_subscription_bulk
+
+════ wrapperهای webadmin/api.js که هیچ صفحه‌ای صدا نمی‌زند ════
+  api.dlqDiscard → /api/web-admin/system/dlq/discard

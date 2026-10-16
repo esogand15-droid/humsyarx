@@ -120,7 +120,6 @@ export const api = {
     }),
   logout: () => req("/api/web-admin/auth/logout", { method: "POST" }),
   me: () => req("/api/web-admin/me"),
-  overview: () => req("/api/web-admin/overview"),
   dashboardBundle: () => req("/api/web-admin/dashboard-bundle"),
   myWork: () => req("/api/web-admin/operations/my-work"),
   operationAlerts: () => req("/api/web-admin/operations/alerts"),
@@ -197,14 +196,7 @@ export const api = {
       method: "POST",
       body: { action, ids, value, ...extra },
     }),
-  userDetail: (uid) => req(`/api/admin/users/${uid}`),
-  userPatch: (uid, body) =>
-    req(`/api/admin/users/${uid}`, { method: "PATCH", body }),
-  userAction: (uid, act) =>
-    req(`/api/admin/users/${uid}/${act}`, { method: "POST" }),
-  // ── 🌊 WA2 core ──
   attention: () => req("/api/web-admin/attention"),
-  activity: (limit = 40) => req(`/api/web-admin/activity?limit=${limit}`),
   waSearch: (q) => req("/api/web-admin/search?q=" + encodeURIComponent(q)),
   savedFilters: (scope) =>
     req("/api/web-admin/saved-filters" + (scope ? `?scope=${scope}` : "")),
@@ -233,6 +225,11 @@ export const api = {
     ),
   correlationChain: (id) =>
     req(`/api/web-admin/audit/correlation/${encodeURIComponent(id)}`),
+  ticketClose: (tid) =>
+    req(`/api/web-admin/tickets/${tid}/close`, { method: "POST" }),
+  ticketReopen: (tid) =>
+    req(`/api/web-admin/tickets/${tid}/reopen`, { method: "POST" }),
+  // 🌊 W8/UX-04 — پاسخ‌های آماده
   ticketsBulk: (action, ids) =>
     req("/api/web-admin/tickets/bulk", {
       method: "POST",
@@ -332,10 +329,6 @@ export const api = {
       { method: "POST", form },
     );
   },
-  detachQuestionImage: (qid) =>
-    req(`/api/web-admin/questions/${encodeURIComponent(qid)}/image`, {
-      method: "DELETE",
-    }),
   bulkMatchImages: (jobId, files) => {
     const form = new FormData();
     form.append("job_id", jobId);
@@ -462,8 +455,6 @@ export const api = {
     req("/api/content/url-import/jobs", { method: "POST", body }),
   urlImportJobs: (p) =>
     req("/api/content/url-import/jobs?" + new URLSearchParams(p || {})),
-  urlImportJob: (id) =>
-    req(`/api/content/url-import/jobs/${encodeURIComponent(id)}`),
   urlImportCancel: (id) =>
     req(`/api/content/url-import/jobs/${encodeURIComponent(id)}/cancel`, {
       method: "POST",
@@ -536,7 +527,6 @@ export const api = {
       body: { status },
     }),
   // ── admin panel (owner) ──
-  stats: () => req("/api/admin/stats"),
   botStatus: () => req("/api/web-admin/system/status"),
   // 🩺 دیاگنوستیک عمیق — API + ربات + Mongo + بیلدها + متریک مسیرها.
   // این endpoint از قبل در backend وجود داشت ولی هیچ مصرف‌کننده‌ای نداشت.
@@ -591,11 +581,6 @@ export const api = {
       method: "POST",
       body: { message: text },
     }),
-  ticketClose: (tid) =>
-    req(`/api/web-admin/tickets/${tid}/close`, { method: "POST" }),
-  ticketReopen: (tid) =>
-    req(`/api/web-admin/tickets/${tid}/reopen`, { method: "POST" }),
-  // 🌊 W8/UX-04 — پاسخ‌های آماده
   cannedList: () => req("/api/web-admin/tickets/canned"),
   cannedAdd: (body) =>
     req("/api/web-admin/tickets/canned", { method: "POST", body }),
@@ -754,8 +739,6 @@ export const api = {
     req(`/api/admin/content-admins/${uid}`, { method: "POST" }),
   contentAdminDel: (uid) =>
     req(`/api/admin/content-admins/${uid}`, { method: "DELETE" }),
-  pendingUsers: () => req("/api/admin/users/pending"),
-  // ── rbAC ──
   roles: () => req("/api/admin/rbac/roles"),
   perms: () => req("/api/admin/rbac/permissions"),
   createRole: (body) => req("/api/admin/rbac/roles", { method: "POST", body }),
@@ -928,10 +911,6 @@ export const api = {
       `/api/web-admin/subscription/discounts/${encodeURIComponent(code)}/broadcast`,
       { method: "POST", body },
     ),
-  discountBroadcastStatus: (code, bid) =>
-    req(
-      `/api/web-admin/subscription/discounts/${encodeURIComponent(code)}/broadcast/${bid}`,
-    ),
   discountBroadcastCancel: (code, bid) =>
     req(
       `/api/web-admin/subscription/discounts/${encodeURIComponent(code)}/broadcast/${bid}/cancel`,
@@ -948,15 +927,7 @@ export const api = {
   subCardUpdate: (body) =>
     req("/api/web-admin/subscription/card", { method: "PUT", body }),
   // ── content (scope-aware) ──
-  caIntakes: () => req("/api/content/intakes"),
-  caOverview: (intake) =>
-    req("/api/content/overview" + (intake ? `?intake=${intake}` : "")),
   questionIntakes: () => req("/api/web-admin/questions/intakes"),
-  caQuestionsPending: (intake) =>
-    req(
-      "/api/web-admin/questions/pending" +
-        (intake ? `?intake=${encodeURIComponent(intake)}` : ""),
-    ),
   caQuestionApprove: (qid) =>
     req(`/api/web-admin/questions/${qid}/approve`, {
       method: "POST",
@@ -1050,8 +1021,6 @@ export const api = {
       "/api/web-admin/schedule/templates" +
         (group ? `?group=${encodeURIComponent(group)}` : ""),
     ),
-  caScheduleTemplatesBulk: (body) =>
-    req("/api/web-admin/schedule/templates/bulk", { method: "POST", body }),
   caScheduleTemplatesClear: (group) =>
     req(
       "/api/web-admin/schedule/templates" +
@@ -1274,9 +1243,12 @@ export const api = {
     }),
   // ── 💍 Ring Street (admin) ──
   ringOverview: () => req("/api/ring/overview"),
+  ringPurge: () =>
+    req("/api/ring/maintenance/purge-evidence", { method: "POST" }),
+  ringReconcile: () =>
+    req("/api/ring/maintenance/reconcile", { method: "POST" }),
   ringQueue: (p = {}) => req(`/api/ring/queue?${_ringQ(p)}`),
   ringSessions: (p = {}) => req(`/api/ring/sessions?${_ringQ(p)}`),
-  ringSession: (sid) => req(`/api/ring/sessions/${encodeURIComponent(sid)}`),
   ringEndSession: (sid, reason = "admin") =>
     req(`/api/ring/sessions/${encodeURIComponent(sid)}/end`, {
       method: "POST",
@@ -1295,10 +1267,7 @@ export const api = {
     req(`/api/ring/profiles/${uid}/pause`, { method: "POST" }),
   ringResume: (uid) =>
     req(`/api/ring/profiles/${uid}/resume`, { method: "POST" }),
-  ringQueueRemove: (uid) =>
-    req(`/api/ring/profiles/${uid}/queue/remove`, { method: "POST" }),
   ringBlocks: (p = {}) => req(`/api/ring/blocks?${_ringQ(p)}`),
-  ringBans: () => req("/api/ring/bans"),
   ringBan: (body) => req("/api/ring/bans", { method: "POST", body }),
   ringUnban: (uid) => req(`/api/ring/bans/${uid}`, { method: "DELETE" }),
   // §۴۶/§۴۷/§۴۹ (V6) — سلامتِ چرخهٔ مچ، سلامتِ یک جلسه، و ترمیمِ محافظه‌کارانه
@@ -1319,7 +1288,6 @@ export const api = {
     req("/api/ring/settings", { method: "POST", body: { updates } }),
   ringFlag: (enabled, disable_mode = "soft") =>
     req("/api/ring/flag", { method: "POST", body: { enabled, disable_mode } }),
-  ringState: () => req("/api/ring/state"),
   ringSetState: (state, disable_mode = "soft") =>
     req("/api/ring/state", { method: "POST", body: { state, disable_mode } }),
   ringRules: () => req("/api/ring/rules"),
@@ -1327,12 +1295,8 @@ export const api = {
     req("/api/ring/rules", { method: "POST", body: { text, bump_version } }),
   ringAnalytics: (days = 7) => req(`/api/ring/analytics?days=${days}`),
   ringAuditList: (limit = 60) => req(`/api/ring/audit?limit=${limit}`),
-  ringReconcile: () =>
-    req("/api/ring/maintenance/reconcile", { method: "POST" }),
-  // 🌊 W7 — نیازمند اقدام قابل‌بستن + مدیریت اسپم کیف پول
   attentionDismiss: (key, reason, dismiss_hours=24) => req("/api/web-admin/attention/dismiss", { method: "POST", body: { key, reason, dismiss_hours } }),
   attentionRestore: (key) => req("/api/web-admin/attention/restore", { method: "POST", body: { key } }),
-  attentionDismissals: () => req("/api/web-admin/attention/dismissals"),
   walletAlerts: () => req("/api/web-admin/system/wallet-alerts"),
   walletAlertsPatch: (body) => req("/api/web-admin/system/wallet-alerts", { method: "PATCH", body }),
   // 💳 W6 — Zarinpal Gateway (DB-backed, no restart)
@@ -1340,8 +1304,6 @@ export const api = {
   gatewayZarinpalUpdate: (body) => req("/api/admin/gateway/zarinpal", { method: "PUT", body }),
   gatewayZarinpalTest: () => req("/api/admin/gateway/zarinpal/test", { method: "POST" }),
 
-  ringPurge: () =>
-    req("/api/ring/maintenance/purge-evidence", { method: "POST" }),
 };
 
 export function errText(e) {

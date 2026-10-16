@@ -13,7 +13,11 @@ import { writeHashQuery } from '../urlState.js';
 const fa = n => Number(n ?? 0).toLocaleString('fa-IR');
 
 // 🔍 AUDIT-R1 — برچسب فارسی وضعیت‌ها (قبلاً pending/approved/... خام نمایش داده می‌شد)
-const PAY_STATUS_FA = { pending: 'در انتظار بررسی', approved: 'تأییدشده', rejected: 'ردشده', failed: 'ناموفق' };
+// EN-01 (COMPLETION_MATRIX): هم‌خوان با enum واقعی بک‌اند (db/finance.py) و
+// ربات (subscription.py status_icons) — cancelled/refunded/zarinpal_pending
+// اضافه شدند؛ failed حذف شد چون هیچ‌جا نوشته نمی‌شود.
+const PAY_STATUS_FA = { pending: 'در انتظار بررسی', approved: 'تأییدشده', rejected: 'ردشده',
+  cancelled: 'لغوشده', refunded: 'بازگشت وجه', zarinpal_pending: 'در انتظار پرداخت' };
 const SUB_STATUS_FA = { active: 'فعال', expired: 'منقضی', pending: 'در انتظار', cancelled: 'لغوشده' };
 const RUN_STATUS_FA = { completed: 'کامل‌شده', sending: 'در حال ارسال', cancelled: 'لغوشده', failed: 'ناموفق' };
 const money = n => `${Number(n ?? 0).toLocaleString('fa-IR')} تومان`;

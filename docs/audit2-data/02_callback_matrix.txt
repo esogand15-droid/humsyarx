@@ -1,0 +1,13 @@
+templateهای ساخته‌شده: 639 | الگوهای ثبت‌شده: 36
+
+══ دکمه بدون هندلرِ تطبیق‌شونده (1) ══
+  '⟨X⟩:⟨X⟩'  ← ساخته‌شده در: utils.py
+
+══ هندلر/الگوی بدون هیچ دکمه‌ای (5) ══
+  '^resources:bs'  ← bot.py cbs-table → basic_science_callback
+  '^resources:ref'  ← bot.py cbs-table → references_callback
+  '^resources:menu'  ← bot.py cbs-table → route_resources
+  '^download_resource:'  ← bot.py cbs-table → resources_callback
+  '^resources:'  ← bot.py cbs-table → route_resources
+
+══ هندلر بدون answer() (0) ══

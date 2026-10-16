@@ -15,6 +15,7 @@ import {
 } from '@tanstack/react-query';
 
 import api from '../../lib/api';
+import { faNum } from '../../lib/format';
 import Header from '../../components/layout/Header';
 import SubscriptionLock, {
   isSubscriptionLock,
@@ -770,6 +771,27 @@ export default function Questions() {
     setResult,
   ] = useState(null);
 
+  /* 🤖 EP-01 — سؤال تمرینی هوشمند (وقتی بانک درس تمام شد) */
+  const [
+    aiOffer,
+    setAiOffer,
+  ] = useState(null);
+
+  const [
+    aiQuestionId,
+    setAiQuestionId,
+  ] = useState(null);
+
+  const [
+    aiBusy,
+    setAiBusy,
+  ] = useState(false);
+
+  const [
+    aiProposed,
+    setAiProposed,
+  ] = useState(null);
+
   const [
     excluded,
     setExcluded,
@@ -897,6 +919,9 @@ export default function Questions() {
 
         setQuestion(null);
         setResult(null);
+        setAiOffer(null);
+        setAiQuestionId(null);
+        setAiProposed(null);
 
         try {
           const exclude =
@@ -972,15 +997,27 @@ export default function Questions() {
             !response.data
               ?.question
           ) {
-            toast(
-              response.data
-                ?.message ||
-                'سؤال بیشتری موجود نیست 🎉',
+            /* 🤖 EP-01 — بانکِ درس تمام شد؛ پیشنهاد ساخت سؤال هوشمند
+               (سرور فقط وقتی مجاز می‌سازد که بانک واقعاً تمام شده باشد) */
+            if (
+              practiceMode ===
+                'free' &&
+              lesson
+            ) {
+              setAiOffer({
+                lesson,
+              });
+            } else {
+              toast(
+                response.data
+                  ?.message ||
+                  'سؤال بیشتری موجود نیست 🎉',
 
-              'info'
-            );
+                'info'
+              );
 
-            setView('menu');
+              setView('menu');
+            }
 
             return;
           }
@@ -1028,25 +1065,48 @@ export default function Questions() {
       mutationFn: ({
         questionId,
         selected,
+        isAI,
       }) =>
-        api.post(
-          '/api/questions/answer',
+        /* 🤖 EP-01 — سؤال هوشمند مسیر answer مخصوص خودش را دارد */
+        isAI
+          ? api.post(
+              `/api/questions/practice/ai/${questionId}/answer`,
 
-          {
-            question_id:
-              questionId,
+              {
+                selected,
+              }
+            )
+          : api.post(
+              '/api/questions/answer',
 
-            selected,
-          }
-        ),
+              {
+                question_id:
+                  questionId,
+
+                selected,
+              }
+            ),
 
       onSuccess: (
-        response
+        response,
+        variables
       ) => {
         const answer =
           response.data;
 
-        setResult(answer);
+        setResult(
+          variables?.isAI
+            ? {
+                ...answer,
+
+                ai_question_id:
+                  variables.questionId,
+
+                ai_can_propose:
+                  answer.can_propose,
+              }
+            : answer
+        );
 
         setSummary(
           (current) => ({
@@ -1152,6 +1212,154 @@ export default function Questions() {
       nextExcluded
     );
   };
+
+
+  /* 🤖 EP-01 — ساخت سؤال تمرینی هوشمند وقتی بانک درس
+     تمام شده (سرور سهمیه‌ی روزانه و per-مبحث را اعمال می‌کند) */
+  const generateAi =
+    async () => {
+      if (
+        !aiOffer ||
+        aiBusy
+      ) {
+        return;
+      }
+
+      setAiBusy(
+        true
+      );
+
+      try {
+        const response =
+          await api.post(
+            '/api/questions/practice/ai/generate',
+
+            {
+              lesson:
+                aiOffer.lesson,
+            }
+          );
+
+        const data =
+          response.data;
+
+        setAiOffer(
+          null
+        );
+
+        setAiQuestionId(
+          data.question
+            .ai_question_id ||
+            data.question.id
+        );
+
+        setAiProposed(
+          null
+        );
+
+        setQuestion(
+          data.question
+        );
+
+        setResult(
+          null
+        );
+
+        toast(
+          data.quota
+            ? `🤖 سؤال هوشمند ساخته شد — ${faNum(
+                data.quota
+                  .remaining_today
+              )} سؤال دیگر برای امروز`
+            : '🤖 سؤال هوشمند ساخته شد',
+
+          'success'
+        );
+      } catch (error) {
+        if (
+          isSubscriptionLock(
+            error
+          )
+        ) {
+          setLockErr(
+            error
+          );
+
+          return;
+        }
+
+        const detail =
+          error?.response
+            ?.data?.detail;
+
+        toast(
+          (typeof detail ===
+            'string' &&
+            detail) ||
+            detail?.message ||
+            'ساخت سؤال هوشمند انجام نشد؛ کمی بعد دوباره تلاش کن',
+
+          'error'
+        );
+      } finally {
+        setAiBusy(
+          false
+        );
+      }
+    };
+
+
+  /* 📨 EP-01 — پیشنهاد سؤال هوشمند به بانک سؤالات
+     (پس از تأیید، عمومی می‌شود) */
+  const proposeAi =
+    async () => {
+      if (
+        !result
+          ?.ai_question_id ||
+        aiProposed ===
+          'pending'
+      ) {
+        return;
+      }
+
+      setAiProposed(
+        'pending'
+      );
+
+      try {
+        await api.post(
+          `/api/questions/practice/ai/${result.ai_question_id}/propose`
+        );
+
+        setAiProposed(
+          'done'
+        );
+
+        toast(
+          'سؤال هوشمند برای بازبینی به بانک سؤالات ارسال شد ✅',
+
+          'success'
+        );
+      } catch (error) {
+        setAiProposed(
+          null
+        );
+
+        const detail =
+          error?.response
+            ?.data?.detail;
+
+        toast(
+          (typeof detail ===
+            'string' &&
+            detail) ||
+            detail?.message ||
+            'ارسال پیشنهاد انجام نشد',
+
+          'error'
+        );
+      }
+    };
 
 
   const [
@@ -1745,7 +1953,106 @@ export default function Questions() {
           </>
         ) : (
           <>
-            {loadingQuestion ? (
+            {aiOffer ? (
+              /* 🤖 EP-01 — بانک درس تمام شد؛ پیشنهاد سؤال هوشمند */
+              <section
+                className={
+                  'card pop-in'
+                }
+                style={{
+                  textAlign:
+                    'center',
+
+                  padding:
+                    'var(--sp-5)',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      40,
+                  }}
+                >
+                  🎉
+                </div>
+
+                <div
+                  style={{
+                    fontWeight:
+                      900,
+
+                    marginTop:
+                      8,
+                  }}
+                >
+                  سؤال‌های این درس را همه حل کردی!
+                </div>
+
+                <div
+                  style={{
+                    color:
+                      'var(--tx2)',
+
+                    fontSize:
+                      'var(--fs-meta)',
+
+                    lineHeight:
+                      1.9,
+
+                    marginTop:
+                      6,
+                  }}
+                >
+                  🤖 هوشیار می‌تواند برای این درس سؤال تازه‌ی
+                  اختصاصی بسازد و دوباره به چالشت بکشد.
+                  سقف روزانه محدود است و پاسخ‌های تشریحی دارد.
+                </div>
+
+                <button
+                  className={
+                    'btn btn-p btn-full'
+                  }
+                  style={{
+                    marginTop:
+                      12,
+                  }}
+                  disabled={
+                    aiBusy
+                  }
+                  onClick={
+                    generateAi
+                  }
+                >
+                  {aiBusy
+                    ? 'در حال ساخت…'
+                    : '🤖 ساخت سؤال هوشمند'}
+                </button>
+
+                <button
+                  className={
+                    'btn btn-full'
+                  }
+                  style={{
+                    marginTop:
+                      8,
+                  }}
+                  disabled={
+                    aiBusy
+                  }
+                  onClick={() => {
+                    setAiOffer(
+                      null
+                    );
+
+                    setView(
+                      'menu'
+                    );
+                  }}
+                >
+                  فعلاً نه
+                </button>
+              </section>
+            ) : loadingQuestion ? (
               <div
                 style={{
                   display:
@@ -1773,6 +2080,10 @@ export default function Questions() {
                       .mutate({
                         questionId,
                         selected,
+
+                        isAI:
+                          questionId ===
+                          aiQuestionId,
                       })
                   }
                   showReport={
@@ -1793,6 +2104,56 @@ export default function Questions() {
                 onNext={next}
               />
             )}
+
+            {/* 📨 EP-01 — پیشنهاد سؤال هوشمند به بانک (فقط سؤال AI) */}
+            {result?.ai_can_propose &&
+              aiProposed !==
+                'done' && (
+                <section
+                  className="card"
+                  style={{
+                    marginTop:
+                      12,
+                  }}
+                >
+                  <div
+                    style={{
+                      color:
+                        'var(--tx2)',
+
+                      fontSize:
+                        'var(--fs-meta)',
+
+                      lineHeight:
+                        1.9,
+                    }}
+                  >
+                    📨 این سؤال هوشمند را برای بانک سؤالات
+                    پیشنهاد می‌دهی؟ پس از بازبینی مدیر، برای
+                    همه‌ی دانشجوها منتشر می‌شود.
+                  </div>
+
+                  <button
+                    className="btn btn-full"
+                    style={{
+                      marginTop:
+                        10,
+                    }}
+                    disabled={
+                      aiProposed ===
+                      'pending'
+                    }
+                    onClick={
+                      proposeAi
+                    }
+                  >
+                    {aiProposed ===
+                    'pending'
+                      ? 'در حال ارسال…'
+                      : '📨 پیشنهاد به بانک سؤالات'}
+                  </button>
+                </section>
+              )}
 
             {summary.total > 0 && (
               <section

@@ -1,0 +1,184 @@
+══ TODO (1) ══
+  tools/audit2/m01_markers.py:26: (r'\bTODO\b', 'TODO'), (r'\bFIXME\b', 'FIXME'), (r'\bXXX\b', 'XXX'),
+
+══ FIXME (1) ══
+  tools/audit2/m01_markers.py:26: (r'\bTODO\b', 'TODO'), (r'\bFIXME\b', 'FIXME'), (r'\bXXX\b', 'XXX'),
+
+══ XXX (1) ══
+  tools/audit2/m01_markers.py:26: (r'\bTODO\b', 'TODO'), (r'\bFIXME\b', 'FIXME'), (r'\bXXX\b', 'XXX'),
+
+══ HACK (1) ══
+  tools/audit2/m01_markers.py:27: (r'\bHACK\b', 'HACK'),
+
+══ NotImplementedError (1) ══
+  tools/audit2/m01_markers.py:28: (r'NotImplementedError', 'NotImplementedError'),
+
+══ placeholder (7) ══
+  discount_campaign.py:157: """جایگذاری {{placeholder}} — ساده و در برابر کلید ناموجود امن."""
+  miniapp/src/components/shared/SearchField.jsx:81: ariaLabel || placeholder
+  db/content.py:228: # و نمایش‌ها مقدار واقعی (خالی = اختیاری) را ببینند، نه placeholder.
+  tools/audit2/m01_markers.py:29: (r'placeholder', 'placeholder'), (r'\bdummy\b', 'dummy'),
+  tools/audit2/m01_markers.py:33: (r'فعلا[\u200c ]?این[\u200c ]?طوری|placeholder only', 'stub'),
+  tools/audit2/m01_markers.py:55: if name == 'placeholder' and re.search(
+  api/routers/admin_panel.py:115: نیز برای مصرف‌کننده‌های قدیمی باقی می‌مانند. هیچ مقدار placeholder یا
+
+══ dummy (1) ══
+  tools/audit2/m01_markers.py:29: (r'placeholder', 'placeholder'), (r'\bdummy\b', 'dummy'),
+
+══ mock-ish (96) ══
+  subscription.py:190: return {"online_pay_enabled": False, "mock": False}
+  subscription.py:302: mock_note = "\n\n<i>حالت نمایشی درگاه فعال است (پرداخت واقعی انجام نمی‌شود).</i>" if zp.get("mock") else ""
+  subscription.py:310: f"<i>این لینک ۱ ساعت اعتبار دارد.</i>{mock_note}"
+  subscription_admin.py:1094: status = "🟢 فعال" if (enabled and mid) else ("🟡 آزمایشی (mock) — بدون merchant" if not mid else "🔴 غیرفعال")
+  subscription_admin.py:1122: await query.edit_message_text("🔑 Merchant ID زرین‌پال را بفرست (۳۶ کاراکتری UUID) — برای پاک کردن و برگشت به m
+  subscription_admin.py:1131: if text.lower() in ("clear","mock","test","empty"):
+  subscription_admin.py:1136: await update.message.reply_text("✅ Merchant پاک شد — حالت آزمایشی (mock) فعال است.")
+  subscription_admin.py:1219: is_mock = not bool(mid)
+  subscription_admin.py:1220: msg = f"🧪 تست: {'mock (بدون merchant)' if is_mock else ('sandbox' if sb else 'اصلی')} — merchant={'****' if mi
+  ai_solver.py:670: """ساخت کلاینت HTTP لایه‌ی تصویر — هوکِ تست‌پذیری (MockTransport)."""
+  miniapp/src/pages/Payment/Verify.jsx:269: {detail?.mock && (
+  miniapp/src/pages/Learn/ExamCenter.jsx:1577: featureKey="mock_exam"
+  webadmin/src/pages/Subscriptions.jsx:1279: toast('مرچنت حذف شد — درگاه به حالت آزمایشی (mock) برگشت');
+  webadmin/src/pages/Subscriptions.jsx:1299: {cfg.is_mock
+  webadmin/src/pages/Subscriptions.jsx:1300: ? <B kind="warn">⚠️ حالت آزمایشی (mock) — پرداخت واقعی انجام نمی‌شود</B>
+  webadmin/src/pages/Subscriptions.jsx:1303: {cfg.is_mock && <div className="panel panel-pad data-quality-note" style={{ marginTop: 10 }}>
+  webadmin/src/pages/Subscriptions.jsx:1356: <B kind={testRes.mock ? 'warn' : 'ok'}>{testRes.mock ? '🧪 نتیجه تست (mock)' : '✅ نتیجه تست'}</B>
+  webadmin/src/pages/Subscriptions.jsx:1382: text="مرچنت حذف شود و درگاه به حالت آزمایشی (mock) برگردد؟ پرداخت‌های واقعی تا ثبت مرچنت جدید ممکن نخواهد بود.
+  tools/audit2/m01_markers.py:30: (r'\bmock(?!ed)', 'mock-ish'), (r'\bfake\b', 'fake'),
+  tools/audit2/m01_markers.py:50: if name == 'mock-ish' and '/tests/' not in rel and 'mock' in ln.lower():
+  tools/audit2/m01_markers.py:53: results['mock-ish'].append(f'{rel}:{i}: {ln.strip()[:110]}')
+  api/routers/questions.py:839: user=Depends(require_feature("mock_exam")),
+  api/routers/questions.py:846: async def active_exam(user=Depends(require_feature("mock_exam"))):
+  api/routers/questions.py:851: async def preview_exam(body: ExamStartInput, user=Depends(require_feature("mock_exam"))):
+  api/routers/subscription.py:1250: # 💳 W2 — زرین‌پال (درگاه خودکار + Sandbox mock)
+  api/routers/subscription.py:1334: return {"ok": True, "authority": authority, "url": zp["url"], "payment_id": pid, "final_price": price, "mock":
+  api/routers/subscription.py:1385: "payment_id": str(pid), "final_price": amount, "mock": zp.get("mock", False)}
+  api/routers/subscription.py:1451: return {"ok": True, "ref_id": ref_id, "end_date": act.get("end_date"), "days": act.get("days"), "mock": zp.get
+  api/routers/payment_gateway.py:30: is_mock: bool
+  api/routers/payment_gateway.py:54: is_mock = not bool(mid) or mid.lower() in ("test","mock","sandbox")
+  api/routers/payment_gateway.py:61: is_mock=is_mock,
+  api/routers/payment_gateway.py:66: # Validate merchant_id format (Zarinpal UUID 36 chars, but allow test/mock for mock mode)
+  api/routers/payment_gateway.py:69: if mid and mid.lower() not in ("test","mock","sandbox"):
+  api/routers/payment_gateway.py:105: # Light test: try request with 1000 Toman mock amount (will be mock if no merchant, else real request but we d
+  api/routers/payment_gateway.py:108: if cfg.is_mock:
+  api/routers/payment_gateway.py:109: return {"ok": True, "mock": True, "message": "حالت آزمایشی (mock) فعال است — بدون merchant واقعی، پرداخت شبیه‌
+  api/routers/payment_gateway.py:112: return {"ok": True, "mock": False, "sandbox": cfg.sandbox, "message": f"درگاه {'سندباکس' if cfg.sandbox else '
+  payments/zarinpal.py:6: ZARINPAL_MERCHANT_ID  — 36-char UUID (if empty → mock mode)
+  payments/zarinpal.py:14: Mock mode: when merchant unset, we generate TEST-authority and verify always succeeds.
+  payments/zarinpal.py:16: ⚠️ In production (RAILWAY_ENVIRONMENT_NAME/APP_ENV=production) mock is DISABLED
+  payments/zarinpal.py:17: unless ZARINPAL_ALLOW_MOCK=1 is set explicitly.
+  payments/zarinpal.py:70: # fallback: if merchant still empty, mock mode
+  payments/zarinpal.py:77: def _mock_allowed() -> bool:
+  payments/zarinpal.py:78: """🐞 BUGFIX (CRITICAL) — حالت mock یعنی «پرداخت بدون پول همیشه موفق».
+  payments/zarinpal.py:81: حالا mock فقط در dev/staging مجاز است، یا وقتی صریحاً
+  payments/zarinpal.py:82: ZARINPAL_ALLOW_MOCK=1 تنظیم شده باشد (مثلاً دموی عمومی)."""
+  payments/zarinpal.py:83: v = (os.getenv("ZARINPAL_ALLOW_MOCK", "") or "").strip().lower()
+  payments/zarinpal.py:93: def _merchant_is_mock(merchant_id: str) -> bool:
+  payments/zarinpal.py:95: return (not mid) or mid.lower() in ("test", "mock", "sandbox")
+  payments/zarinpal.py:102: async def _is_mock_async() -> bool:
+  payments/zarinpal.py:105: return not mid or mid.lower() in ("test", "mock", "sandbox")
+  payments/zarinpal.py:107: def _is_mock() -> bool:
+  payments/zarinpal.py:108: # sync fallback for legacy callers (uses env only) — prefer _is_mock_async in async paths
+  payments/zarinpal.py:109: return not MERCHANT_ID or MERCHANT_ID.lower() in ("test", "mock", "sandbox")
+  payments/zarinpal.py:133: mock = (not mid) or (mid.lower() in ("test", "mock", "sandbox"))
+  payments/zarinpal.py:135: # 🐞 BUGFIX — mock غیرمجاز (production بدون مرچنت) = پرداخت آنلاین خاموش
+  payments/zarinpal.py:136: "online_pay_enabled": bool(cfg.get("enabled")) and (not mock or _mock_allowed()),
+  payments/zarinpal.py:137: "mock": mock,
+  payments/zarinpal.py:154: # if gateway disabled and not mock, raise
+  payments/zarinpal.py:155: if not cfg.get("enabled", True) and not (not merchant_id or merchant_id.lower() in ("test","mock","sandbox")):
+  payments/zarinpal.py:164: # Mock
+  payments/zarinpal.py:165: is_mock = not merchant_id or merchant_id.lower() in ("test", "mock", "sandbox")
+  payments/zarinpal.py:166: if is_mock:
+  payments/zarinpal.py:167: if not _mock_allowed():
+  payments/zarinpal.py:168: raise RuntimeError("zarinpal merchant not configured (mock disabled in production)")
+  payments/zarinpal.py:169: # Use deterministic prefix for mock detection in verify
+  payments/zarinpal.py:172: logger.info(f"[ZARINPAL MOCK] request amount={amount_toman}T ({amount_rial}R) desc={description} cb={cb} -> {a
+  payments/zarinpal.py:173: return {"authority": authority, "url": url, "code": 100, "mock": True}
+  payments/zarinpal.py:208: return {"authority": authority, "url": pay_url, "code": code, "mock": False}
+  payments/zarinpal.py:212: Verify payment after redirect. Returns {ok, ref_id, card_pan, fee, code, mock}
+  payments/zarinpal.py:221: # Mock verify
+  payments/zarinpal.py:223: # واقعی «پرداخت موفق» برمی‌گشت. حالا mock فقط وقتی مرچنت mock است.
+  payments/zarinpal.py:224: is_mock = _merchant_is_mock(merchant_id)
+  payments/zarinpal.py:225: if not is_mock and authority.startswith("TEST-"):
+  payments/zarinpal.py:226: logger.warning(f"zarinpal verify rejected mock authority in live mode: {authority}")
+  payments/zarinpal.py:227: return {"ok": False, "code": -99, "errors": {"message": "mock_authority_in_live_mode"}, "mock": False}
+  payments/zarinpal.py:228: if is_mock and not _mock_allowed():
+  payments/zarinpal.py:229: logger.warning("zarinpal verify rejected: mock disabled in production")
+  payments/zarinpal.py:230: return {"ok": False, "code": -98, "errors": {"message": "mock_disabled"}, "mock": True}
+  payments/zarinpal.py:231: if is_mock:
+  … و 16 مورد دیگر
+
+══ fake (1) ══
+  tools/audit2/m01_markers.py:30: (r'\bmock(?!ed)', 'mock-ish'), (r'\bfake\b', 'fake'),
+
+══ به‌زودی (7) ══
+  ticket.py:770: "📬 به زودی پاسخ داده خواهد شد.\n"
+  referral.py:105: """نمایش لینک/آمار دعوت. با کلید خاموش → پیام به‌زودی."""
+  referral.py:112: await query.answer('بخش دعوت دوستان به‌زودی فعال می‌شود 🌱',
+  start.py:79: "به زودی دسترسی شما فعال می‌شود. 🙏",
+  ring/texts.py:582: "به‌زودی دوباره برمی‌گردیم.\n\n"
+  miniapp/src/components/shared/SubscriptionLock.jsx:181: ? 'این قابلیت موقتاً توسط تیم فنی خاموش شده است؛ به‌زودی برمی‌گردد.'
+  tools/audit2/m01_markers.py:31: (r'به[\u200c ]?زودی', 'به‌زودی'), (r'در دست ساخت', 'در-دست-ساخت'),
+
+══ در-دست-ساخت (1) ══
+  tools/audit2/m01_markers.py:31: (r'به[\u200c ]?زودی', 'به‌زودی'), (r'در دست ساخت', 'در-دست-ساخت'),
+
+══ coming-soon (1) ══
+  tools/audit2/m01_markers.py:32: (r'coming soon', 'coming-soon'), (r'not implemented', 'not-implemented'),
+
+══ not-implemented (1) ══
+  tools/audit2/m01_markers.py:32: (r'coming soon', 'coming-soon'), (r'not implemented', 'not-implemented'),
+
+══ stub (1) ══
+  tools/audit2/m01_markers.py:33: (r'فعلا[\u200c ]?این[\u200c ]?طوری|placeholder only', 'stub'),
+
+══ print-temp (19) ══
+  qbank_migrate.py:64: print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+  time_audit.py:168: print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
+  migrate_round1.py:187: print('🔴 migrate_round1 — شروع' + (' (DRY-RUN: فقط گزارش، بدون تغییر)' if DRY else ''))
+  migrate_round1.py:200: print(f'— {title} …')
+  migrate_round1.py:204: print('   (dry-run: رد شد)')
+  migrate_round1.py:209: print('\n🏁 dry-run تمام شد — برای اجرای واقعی بدون --dry اجرا کن.')
+  migrate_round1.py:213: print('\n══════ گزارش migration ══════')
+  migrate_round1.py:215: print(f'  {k}: {v}')
+  migrate_round1.py:216: print('🏁 migration تمام شد.')
+  qbank_legacy_archive.py:114: print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+  qbank_import_cli.py:56: print(json.dumps(ocr_available(), ensure_ascii=False, indent=2))
+  qbank_import_cli.py:61: print(json.dumps(EXAM_SESSIONS, ensure_ascii=False, indent=2))
+  qbank_import_cli.py:83: print(json.dumps({"ok": False, "code": exc.code, "message": exc.message},
+  qbank_import_cli.py:87: print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2),
+  qbank_import_cli.py:108: print(json.dumps(summary, ensure_ascii=False, indent=2))
+  tools/audit2/m01_markers.py:106: print('SUMMARY:', {k: len(v) for k, v in results.items()})
+  tools/audit2/m02_callback_matrix.py:139: print(f'built={len(built)} registered={len(registered)} '
+  tools/audit2/m04_settings_dead.py:117: print(f'settings: {len(all_keys)} | dead-funcs: {len(dead)}')
+  tools/audit2/m03_endpoint_matrix.py:147: print(f'endpoints={len(endpoints)} consumed={len(consumed)} '
+
+══ pass-only-func (0) ══
+
+══ commented-block (25) ══
+  message_router.py:28-33 (6 خط)
+  bot.py:34-45 (12 خط)
+  bot.py:1157-1162 (6 خط)
+  bot.py:1369-1374 (6 خط)
+  bot.py:2066-2071 (6 خط)
+  bot.py:2108-2118 (11 خط)
+  bot.py:2134-2141 (8 خط)
+  ai_admin.py:201-206 (6 خط)
+  content_admin.py:2012-2018 (7 خط)
+  ai_solver.py:711-716 (6 خط)
+  ai_solver.py:1060-1066 (7 خط)
+  ai_solver.py:2035-2040 (6 خط)
+  ai_solver.py:2252-2257 (6 خط)
+  ai_solver.py:2718-2723 (6 خط)
+  ai_solver.py:2785-2793 (9 خط)
+  ring/jobs.py:104-109 (6 خط)
+  db/finance.py:905-910 (6 خط)
+  db/content.py:2281-2288 (8 خط)
+  db/rbac.py:1264-1269 (6 خط)
+  api/main.py:638-643 (6 خط)
+  api/main.py:670-676 (7 خط)
+  api/routers/web_admin.py:1566-1572 (7 خط)
+  api/routers/web_admin.py:4567-4572 (6 خط)
+  api/routers/web_admin.py:5798-5804 (7 خط)
+  api/routers/ai.py:937-942 (6 خط)
+

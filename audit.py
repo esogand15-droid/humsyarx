@@ -991,21 +991,9 @@ async def audit_failure(bot=None, **kwargs) -> dict:
 
 # ══════════════════════════════════════════════════
 #  12) Application Log Helpers — جداسازی §4
+#  (FN-03/COMPLETION_MATRIX: پنج wrapper app_log_* بدون هیچ مصرف‌کننده‌ای
+#   حذف شدند — کد مستقیماً app_logger را صدا می‌زند.)
 # ══════════════════════════════════════════════════
-def app_log_debug(msg: str, *args, **kwargs):
-    app_logger.debug(msg, *args, **kwargs)
-
-def app_log_info(msg: str, *args, **kwargs):
-    app_logger.info(msg, *args, **kwargs)
-
-def app_log_warning(msg: str, *args, **kwargs):
-    app_logger.warning(msg, *args, **kwargs)
-
-def app_log_error(msg: str, *args, **kwargs):
-    app_logger.error(msg, *args, **kwargs)
-
-def app_log_exception(msg: str, *args, **kwargs):
-    app_logger.exception(msg, *args, **kwargs)
 
 # ══════════════════════════════════════════════════
 #  13) Legacy Compatibility — send_audit_log version 2

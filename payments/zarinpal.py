@@ -104,25 +104,17 @@ async def _is_mock_async() -> bool:
     mid = cfg.get("merchant_id") or ""
     return not mid or mid.lower() in ("test", "mock", "sandbox")
 
-def _is_mock() -> bool:
-    # sync fallback for legacy callers (uses env only) — prefer _is_mock_async in async paths
-    return not MERCHANT_ID or MERCHANT_ID.lower() in ("test", "mock", "sandbox")
+# FN-06 (COMPLETION_MATRIX): نمونه‌های sync مرده حذف شدند —
+# _is_mock / _api_base / _pay_url هیچ مصرف‌کننده‌ای نداشتند (همه‌ی
+# مسیرهای زنده async هستند: _is_mock_async / _api_base_async / _pay_url_async).
 
 async def _api_base_async() -> str:
     cfg = await _get_cfg()
     return "https://sandbox.zarinpal.com/pg/v4/payment" if cfg.get("sandbox") else "https://api.zarinpal.com/pg/v4/payment"
 
-def _api_base() -> str:
-    return "https://sandbox.zarinpal.com/pg/v4/payment" if SANDBOX else "https://api.zarinpal.com/pg/v4/payment"
-
 async def _pay_url_async(authority: str) -> str:
     cfg = await _get_cfg()
     if cfg.get("sandbox"):
-        return f"https://sandbox.zarinpal.com/pg/StartPay/{authority}"
-    return f"https://www.zarinpal.com/pg/StartPay/{authority}"
-
-def _pay_url(authority: str) -> str:
-    if SANDBOX:
         return f"https://sandbox.zarinpal.com/pg/StartPay/{authority}"
     return f"https://www.zarinpal.com/pg/StartPay/{authority}"
 
