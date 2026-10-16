@@ -562,6 +562,79 @@ def _upsample_pcm16_24k_to_48k(pcm24k: bytes, prev_sample: int = 0) -> tuple[byt
     return dst.tobytes(), p
 
 
+def _upsample_pcm16_24k_to_48k_hq(
+    pcm24k: bytes,
+    hist: tuple[int, int, int] | None = None,
+) -> tuple[bytes, tuple[int, int, int] | None]:
+    """م9.5 — درون‌یابی ۴ نقطه‌ای مکعبی (Catmull-Rom / Half-Band Lagrange FIR `[-1, 9, 9, -1]/16`)
+    از 24000Hz به 48000Hz با حفظ دقیق ۳ نمونه مرزی بین چانک‌ها برای شفافیت کامل حروف سایشی فارسی.
+    """
+    if not pcm24k or len(pcm24k) < 2:
+        return b"", hist
+    if len(pcm24k) % 2 != 0:
+        pcm24k = pcm24k[:-1]
+    src = array.array("h")
+    src.frombytes(pcm24k)
+    n = len(src)
+    if n == 0:
+        return b"", hist
+    dst = array.array("h", [0]) * (n * 2)
+    if hist is None:
+        first = int(src[0])
+        sm2, sm1, s0 = first, first, first
+    else:
+        sm2, sm1, s0 = int(hist[0]), int(hist[1]), int(hist[2])
+    for i in range(n):
+        sp1 = int(src[i])
+        mid = (-sm2 + 9 * sm1 + 9 * s0 - sp1 + 8) >> 4
+        if mid > 32767:
+            mid = 32767
+        elif mid < -32768:
+            mid = -32768
+        dst[2 * i] = mid
+        dst[2 * i + 1] = sp1
+        sm2 = sm1
+        sm1 = s0
+        s0 = sp1
+    return dst.tobytes(), (sm2, sm1, s0)
+
+
+def _filter_and_measure_pcm16_16k(
+    pcm16k: bytes,
+    hp_state: tuple[float, float] = (0.0, 0.0),
+    attenuate_factor: float = 1.0,
+) -> tuple[bytes, int, tuple[float, float]]:
+    """م9.5 — فیلتر High-Pass مرتبه اول (85Hz در 16kHz برای حذف DC Offset و نویز بم محیطی)
+    + محاسبه انرژی RMS فریم صوتی دریافتی از ویس‌چت گروه.
+    """
+    if not pcm16k or len(pcm16k) < 2:
+        return b"", 0, hp_state
+    if len(pcm16k) % 2 != 0:
+        pcm16k = pcm16k[:-1]
+    arr = array.array("h")
+    arr.frombytes(pcm16k)
+    n = len(arr)
+    if n == 0:
+        return b"", 0, hp_state
+    prev_x, prev_y = float(hp_state[0]), float(hp_state[1])
+    alpha = 0.967  # fc ~= 85Hz @ 16000Hz
+    sum_sq = 0.0
+    for i in range(n):
+        x = float(arr[i])
+        y = alpha * (prev_y + x - prev_x)
+        prev_x = x
+        prev_y = y
+        sum_sq += y * y
+        val = int(round(y * attenuate_factor))
+        if val > 32767:
+            val = 32767
+        elif val < -32768:
+            val = -32768
+        arr[i] = val
+    rms = int((sum_sq / n) ** 0.5)
+    return arr.tobytes(), rms, (prev_x, prev_y)
+
+
 def _apply_fade_in_pcm16(frame_bytes: bytes, start_sample: int = 0, ramp_samples: int = 96) -> bytes:
     """نرم‌سازی لبه‌ی شروع صحبت (2ms = 96 نمونه در 48kHz) برای حذف کامل صدای تق/خش‌خش ابتدای جمله."""
     if not frame_bytes or len(frame_bytes) < 4:
@@ -788,7 +861,7 @@ async def _ensure_assistant_in_group(
 
 
 class _GroupLiveSession:
-    """نشست زنده‌ی اتصال یک ویس‌چت گروه تلگرام به Google Gemini Live API (م9.4 — بهینه‌سازی 48kHz 10ms)."""
+    """نشست زنده‌ی اتصال یک ویس‌چت گروه تلگرام به Google Gemini Live API (م9.5 — DSP مکعبی 48kHz + Adaptive Jitter Buffer + محافظ اکو)."""
 
     def __init__(self, chat_id: int, title: str, model: str, voice: str, google_ws: Any, call_py: Any):
         self.chat_id = int(chat_id)
@@ -804,6 +877,10 @@ class _GroupLiveSession:
         self.in_buf = bytearray()
         self.out_buf = bytearray()  # 48000Hz 16-bit mono PCM (960 bytes = 10ms)
         self._upsample_prev_sample = 0
+        self._upsample_hist: tuple[int, int, int] | None = None
+        self._hp_state: tuple[float, float] = (0.0, 0.0)
+        self._voice_hangover_until = 0.0
+        self._adaptive_prebuffer_frames = VC_PREBUFFER_FRAMES
         self._last_out_sample = 0
         self._playout_active = False
         self._needs_fade_in = True
@@ -821,14 +898,16 @@ class _GroupLiveSession:
         self.last_audio_in_at = time.monotonic()
 
     def enqueue_gemini_pcm24k(self, pcm24k: bytes) -> None:
-        """تبدیل بی‌درنگ چانک صوتی 24kHz جمینی به 48kHz بومی WebRTC و افزودن به Jitter Buffer."""
+        """تبدیل بی‌درنگ چانک صوتی 24kHz جمینی به 48kHz بومی WebRTC (با درون‌یابی مکعبی ۴ نقطه‌ای) و افزودن به Jitter Buffer."""
         if self.closed or not pcm24k:
             return
-        pcm48k, self._upsample_prev_sample = _upsample_pcm16_24k_to_48k(
-            pcm24k, self._upsample_prev_sample
+        pcm48k, self._upsample_hist = _upsample_pcm16_24k_to_48k_hq(
+            pcm24k, self._upsample_hist
         )
         if not pcm48k:
             return
+        if self._upsample_hist:
+            self._upsample_prev_sample = self._upsample_hist[2]
         now = time.monotonic()
         if not self.out_buf:
             self.first_buffered_at = now
@@ -840,19 +919,21 @@ class _GroupLiveSession:
         """پاک‌سازی فوری صف پخش هنگام پریدن وسط حرف (Barge-in / interrupted)."""
         self.out_buf.clear()
         self._upsample_prev_sample = 0
+        self._upsample_hist = None
         self._playout_active = False
         self._needs_fade_in = True
         self._turn_complete = False
         self.first_buffered_at = 0.0
 
     def pop_next_10ms_frame(self, now: float | None = None) -> bytes:
-        """استخراج دقیق یک فریم 10ms (۹۶۰ بایت در 48kHz mono) با Jitter Buffer و حذف کامل خش‌خش/کلیک."""
+        """استخراج دقیق یک فریم 10ms (۹۶۰ بایت در 48kHz mono) با Adaptive Jitter Buffer و حذف کامل خش‌خش/کلیک."""
         if now is None:
             now = time.monotonic()
 
         buf_len = len(self.out_buf)
+        target_prebuf_bytes = VC_FRAME_BYTES * self._adaptive_prebuffer_frames
 
-        # ۱) حالت پیش‌بافرینگ (Jitter Buffer) در ابتدای هر نوبت صحبت هوشیار
+        # ۱) حالت پیش‌بافرینگ (Adaptive Jitter Buffer) در ابتدای هر نوبت صحبت هوشیار
         if not self._playout_active:
             if buf_len == 0:
                 if abs(self._last_out_sample) > 4:
@@ -863,7 +944,7 @@ class _GroupLiveSession:
 
             waited = max(0.0, now - (self.first_buffered_at or now))
             ready = (
-                buf_len >= VC_PREBUFFER_BYTES
+                buf_len >= target_prebuf_bytes
                 or self._turn_complete
                 or waited >= VC_PREBUFFER_MAX_WAIT_SEC
             )
@@ -901,9 +982,15 @@ class _GroupLiveSession:
             self._last_out_sample = 0
             self._playout_active = False
             self._needs_fade_in = True
+            self._upsample_hist = None
             return chunk
 
-        # ۴) خلا موقت شبکه در میانه صحبت (Underrun): بازگشت به پیش‌بافرینگ با شیب ملایم بدون صدای تق
+        # ۴) خلا موقت شبکه در میانه صحبت (Underrun): افزایش تطبیقی Jitter Buffer در صورت رخداد وسط جمله
+        if not self._turn_complete:
+            self._adaptive_prebuffer_frames = min(22, self._adaptive_prebuffer_frames + 3)
+        else:
+            self._adaptive_prebuffer_frames = max(12, self._adaptive_prebuffer_frames - 1)
+            self._upsample_hist = None
         self._playout_active = False
         self._needs_fade_in = True
         self.first_buffered_at = now
@@ -921,7 +1008,9 @@ class _GroupLiveSession:
         ]
 
     async def _flush_incoming_to_gemini_loop(self) -> None:
-        """ارسال کم‌تاخیر چانک‌های ~40-80ms (در 16kHz 16-bit mono) از ویس‌چت گروه به Gemini Live."""
+        """ارسال کم‌تاخیر چانک‌های ~40-80ms (در 16kHz 16-bit mono) از ویس‌چت گروه به Gemini Live
+        همراه با فیلتر High-Pass 85Hz و محافظت در برابر اکو/برگشت صدای خود دستیار.
+        """
         while not self.closed:
             await asyncio.sleep(0.04)
             buf_len = len(self.in_buf)
@@ -935,8 +1024,27 @@ class _GroupLiveSession:
             take -= (take % 2)
             if take <= 0:
                 continue
-            chunk = bytes(self.in_buf[:take])
+            raw_chunk = bytes(self.in_buf[:take])
             del self.in_buf[:take]
+
+            # م9.5 — فیلتر High-Pass و محافظ اکو هنگام صحبت خود هوشیار
+            filtered_chunk, rms, self._hp_state = _filter_and_measure_pcm16_16k(
+                raw_chunk, self._hp_state, attenuate_factor=1.0
+            )
+            voice_thresh = 240 if self._playout_active else 65
+            if rms >= voice_thresh:
+                self._voice_hangover_until = now + 0.50
+                chunk = filtered_chunk
+            elif now < self._voice_hangover_until:
+                chunk = filtered_chunk
+            elif self._playout_active:
+                # تضعیف شدید نویز/اکوی ضعیف اسپیکر شرکت‌کنندگان هنگام صحبت هوشیار تا Barge-in کاذب رخ ندهد
+                chunk, _, _ = _filter_and_measure_pcm16_16k(
+                    raw_chunk, self._hp_state, attenuate_factor=0.12
+                )
+            else:
+                chunk = filtered_chunk
+
             b64 = base64.b64encode(chunk).decode("ascii")
             try:
                 await self.google_ws.send(json.dumps({

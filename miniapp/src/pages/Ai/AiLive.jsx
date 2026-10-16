@@ -24,26 +24,356 @@ import {
 
 
 /* ─────────────────────────────────────────────────────────────
-   🎙📹 م9 — تماس صوتی و ویدیویی زنده با هوشیار (Google Gemini Live API)
-   - اتصال دوطرفه‌ی WebSocket به /api/ai/live/ws
-   - ارسال میکروفون با فرمت استاندارد گوگل:
-     16-bit PCM, 16kHz, mono, little-endian (با Downsample از نرخ بومی سخت‌افزار)
-   - ارسال فریم‌های ویدیویی زنده (دوربین جلو/پشت):
-     JPEG 1fps از طریق realtimeInput.video
-   - دریافت و پخش بدون وقفه‌ی صدای هوشیار:
-     16-bit PCM, 24kHz, mono, little-endian
-   - پشتیبانی کامل از پریدن وسط حرف (Barge-in / interrupted)،
-     زیرنویس زنده‌ی ورودی/خروجی، و وضعیت تفکر (interactionStatus)
+   🎙📹 م9.5 — موتور صوتی سطح استودیویی تماس زنده با هوشیار (Google Gemini Live API)
+   - معماری AudioWorkletProcessor روی ترد اختصاصی بلادرنگ صدا (Ring Buffer دایره‌ای ۴۵ ثانیه‌ای)
+   - انتقال باینری مستقیم (Zero-Copy ArrayBuffer) روی WebSocket (حذف کامل سربار Base64/JSON روی ترد UI)
+   - درون‌یابی ۴ نقطه‌ای مکعبی Catmull-Rom / Half-Band Lagrange از 24kHz به نرخ بومی سخت‌افزار
+   - بافر تطبیقی خودتنظیم‌شونده (Adaptive Jitter Buffer) + پوش کسینوسی (Raised-Cosine Fade-In/Out)
+   - فیلتر High-Pass 85Hz میکروفون + Local Barge-in Ducking + سیگنال پایان صحبت (audioStreamEnd)
 ───────────────────────────────────────────────────────────── */
 
+const HUMSYAR_LIVE_WORKLET_CODE = `
+class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    const sr = sampleRate || 48000;
+    this.sr = sr;
+    this.cap = Math.max(48000 * 30, Math.floor(sr * 45));
+    this.ring = new Float32Array(this.cap);
+    this.readPos = 0;
+    this.writePos = 0;
+    this.avail = 0;
 
-function downsampleTo16k(float32Buf, inputRate) {
-  if (!inputRate || inputRate === 16000) {
-    return float32Buf;
+    // تاریخچه ۴ نقطه‌ای درون‌یابی مکعبی 24kHz -> sampleRate
+    this.hasHist = false;
+    this.sm2 = 0;
+    this.sm1 = 0;
+    this.s0 = 0;
+    this.resamplePhase = 0;
+
+    // وضعیت Adaptive Jitter Buffer و پوش ضدکلیک کسینوسی
+    this.playing = false;
+    this.prebuffering = true;
+    this.turnComplete = false;
+    this.targetPrebufSec = 0.115;
+    this.firstBufTime = 0;
+    this.lastOut = 0;
+    this.fadeInTotal = Math.max(32, Math.floor(sr * 0.003));
+    this.fadeInRem = 0;
+    this.fadeStartSample = 0;
+    this.clearFadeRem = 0;
+    this.clearFadeTotal = Math.max(64, Math.floor(sr * 0.004));
+    this.duckGain = 1.0;
+    this.speakerMuted = false;
+
+    // وضعیت ضبط میکروفون (High-Pass 85Hz + Decimator 16kHz)
+    this.micMuted = false;
+    this.hpPrevX = 0;
+    this.hpPrevY = 0;
+    this.hpAlpha = Math.exp((-2 * Math.PI * 85) / sr);
+    this.decimRatio = sr / 16000;
+    this.decimAcc = 0;
+    this.decimSum = 0;
+    this.decimCount = 0;
+    this.micOut = new Int16Array(640); // 40ms @ 16kHz = 640 samples
+    this.micIdx = 0;
+    this.micVoiceFrames = 0;
+
+    // تله‌متری سطح صدا برای انیمیشن گوی زنده
+    this.telemetrySamples = 0;
+    this.micSqSum = 0;
+    this.micSqCnt = 0;
+    this.aiSqSum = 0;
+    this.aiSqCnt = 0;
+
+    this.port.onmessage = (ev) => {
+      const d = ev.data;
+      if (!d) return;
+      if (d.type === 'pcm24k' && d.buffer) {
+        this._ pushPcm24k(new Int16Array(d.buffer));
+      } else if (d.type === 'clear') {
+        this.readPos = 0;
+        this.writePos = 0;
+        this.avail = 0;
+        this.playing = false;
+        this.prebuffering = true;
+        this.turnComplete = false;
+        this.hasHist = false;
+        this.fadeStartSample = this.lastOut;
+        this.clearFadeRem = this.clearFadeTotal;
+      } else if (d.type === 'turn_complete') {
+        this.turnComplete = true;
+      } else if (d.type === 'mic_mute') {
+        this.micMuted = !!d.muted;
+      } else if (d.type === 'speaker_mute') {
+        this.speakerMuted = !!d.muted;
+      }
+    };
   }
-  const ratio = inputRate / 16000;
+
+  _writeSample(v) {
+    if (this.avail >= this.cap) {
+      this.readPos = (this.readPos + 1) % this.cap;
+      this.avail -= 1;
+    }
+    this.ring[this.writePos] = v;
+    this.writePos = (this.writePos + 1) % this.cap;
+    this.avail += 1;
+  }
+
+  _pushPcm24k(i16) {
+    const n = i16.length;
+    if (!n || this.speakerMuted) return;
+    if (this.avail === 0) {
+      this.firstBufTime = currentTime;
+    }
+    this.turnComplete = false;
+
+    if (!this.hasHist) {
+      const f0 = i16[0] / 32768.0;
+      this.sm2 = f0;
+      this.sm1 = f0;
+      this.s0 = f0;
+      this.resamplePhase = 0;
+      this.hasHist = true;
+    }
+
+    if (this.sr === 48000) {
+      // درون‌یابی ۴ نقطه‌ای Half-Band Lagrange FIR (24kHz -> 48kHz)
+      let sm2 = this.sm2;
+      let sm1 = this.sm1;
+      let s0 = this.s0;
+      for (let i = 0; i < n; i += 1) {
+        const sp1 = i16[i] / 32768.0;
+        let mid = (-0.0625 * sm2) + (0.5625 * sm1) + (0.5625 * s0) - (0.0625 * sp1);
+        if (mid > 1.0) mid = 1.0;
+        else if (mid < -1.0) mid = -1.0;
+        this._writeSample(mid);
+        this._writeSample(sp1);
+        sm2 = sm1;
+        sm1 = s0;
+        s0 = sp1;
+      }
+      this.sm2 = sm2;
+      this.sm1 = sm1;
+      this.s0 = s0;
+      return;
+    }
+
+    if (this.sr === 24000) {
+      for (let i = 0; i < n; i += 1) {
+        this._writeSample(i16[i] / 32768.0);
+      }
+      return;
+    }
+
+    // درون‌یابی مکعبی Hermite برای نرخ‌های نمونه غیر ۴۸ کیلوهرتز (مثل 44.1kHz)
+    const step = 24000 / this.sr;
+    let phase = this.resamplePhase;
+    let sm2 = this.sm2;
+    let sm1 = this.sm1;
+    let s0 = this.s0;
+    for (let i = 0; i < n; i += 1) {
+      const sp1 = i16[i] / 32768.0;
+      while (phase <= 1.0) {
+        const t = phase;
+        const c0 = s0;
+        const c1 = 0.5 * (sp1 - sm1);
+        const c2 = sm1 - 2.5 * s0 + 2.0 * sp1 - 0.5 * sm2;
+        const c3 = 0.5 * (sp1 - sm2) + 1.5 * (s0 - sm1);
+        let y = ((c3 * t + c2) * t + c1) * t + c0;
+        if (y > 1.0) y = 1.0;
+        else if (y < -1.0) y = -1.0;
+        this._writeSample(y);
+        phase += step;
+      }
+      phase -= 1.0;
+      sm2 = sm1;
+      sm1 = s0;
+      s0 = sp1;
+    }
+    this.resamplePhase = phase;
+    this.sm2 = sm2;
+    this.sm1 = sm1;
+    this.s0 = s0;
+  }
+
+  process(inputs, outputs) {
+    const outChan = outputs[0] && outputs[0][0];
+    const inChan = inputs[0] && inputs[0][0];
+    const len = outChan ? outChan.length : 128;
+
+    // ۱) پردازش میکروفون (High-Pass 85Hz + Anti-Aliasing 16kHz + تشخیص Barge-in محلی)
+    if (inChan && inChan.length && !this.micMuted) {
+      let prevX = this.hpPrevX;
+      let prevY = this.hpPrevY;
+      const alpha = this.hpAlpha;
+      let frameSq = 0;
+      for (let i = 0; i < inChan.length; i += 1) {
+        const x = inChan[i];
+        const y = alpha * (prevY + x - prevX);
+        prevX = x;
+        prevY = y;
+        frameSq += y * y;
+        this.micSqSum += y * y;
+        this.micSqCnt += 1;
+
+        this.decimSum += y;
+        this.decimCount += 1;
+        this.decimAcc += 1;
+        if (this.decimAcc >= this.decimRatio) {
+          this.decimAcc -= this.decimRatio;
+          const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
+          this.decimSum = 0;
+          this.decimCount = 0;
+          const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
+          this.micOut[this.micIdx] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
+          this.micIdx += 1;
+          if (this.micIdx >= 640) {
+            const copy = new Int16Array(this.micOut);
+            this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+            this.micIdx = 0;
+          }
+        }
+      }
+      this.hpPrevX = prevX;
+      this.hpPrevY = prevY;
+      const fRms = Math.sqrt(frameSq / inChan.length);
+      if (fRms > 0.045) {
+        this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
+      } else {
+        this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
+      }
+    } else {
+      this.micVoiceFrames = 0;
+    }
+
+    // تنظیم نرم بهره Local Barge-in Ducking هنگام صحبت کاربر وسط حرف هوشیار
+    const targetDuck = this.micVoiceFrames >= 5 ? 0.25 : 1.0;
+    this.duckGain += (targetDuck - this.duckGain) * 0.08;
+
+    // ۲) پخش پیوسته‌ی صدای هوشیار از Ring Buffer با Adaptive Jitter Buffer
+    if (outChan) {
+      if (this.clearFadeRem > 0) {
+        for (let i = 0; i < len; i += 1) {
+          if (this.clearFadeRem > 0) {
+            const prog = 1.0 - (this.clearFadeRem / this.clearFadeTotal);
+            const w = 0.5 * (1.0 + Math.cos(Math.PI * prog));
+            outChan[i] = this.fadeStartSample * w;
+            this.lastOut = outChan[i];
+            this.clearFadeRem -= 1;
+          } else {
+            outChan[i] = 0;
+            this.lastOut = 0;
+          }
+        }
+      } else {
+        if (!this.playing) {
+          const targetSamples = Math.floor(this.sr * this.targetPrebufSec);
+          const waited = this.avail > 0 ? (currentTime - this.firstBufTime) : 0;
+          if (
+            this.avail >= targetSamples
+            || (this.turnComplete && this.avail > 0)
+            || (this.avail > 0 && waited >= 0.145)
+          ) {
+            this.playing = true;
+            this.prebuffering = false;
+            this.fadeStartSample = this.lastOut;
+            this.fadeInRem = this.fadeInTotal;
+          }
+        }
+
+        if (this.playing) {
+          for (let i = 0; i < len; i += 1) {
+            if (this.avail > 0) {
+              let s = this.ring[this.readPos] * this.duckGain;
+              this.readPos = (this.readPos + 1) % this.cap;
+              this.avail -= 1;
+              if (this.fadeInRem > 0) {
+                const prog = 1.0 - (this.fadeInRem / this.fadeInTotal);
+                const w = 0.5 * (1.0 - Math.cos(Math.PI * prog));
+                s = this.fadeStartSample * (1.0 - w) + s * w;
+                this.fadeInRem -= 1;
+              }
+              outChan[i] = this.speakerMuted ? 0 : s;
+              this.lastOut = outChan[i];
+              this.aiSqSum += outChan[i] * outChan[i];
+              this.aiSqCnt += 1;
+            } else {
+              // اتمام موجودی بافر: شیب کسینوسی نرم به صفر بدون کلیک
+              const rem = len - i;
+              const startS = this.lastOut;
+              for (let k = 0; k < rem; k += 1) {
+                const w = 0.5 * (1.0 + Math.cos(Math.PI * ((k + 1) / rem)));
+                outChan[i + k] = startS * w;
+              }
+              this.lastOut = 0;
+              this.playing = false;
+              this.prebuffering = true;
+              if (!this.turnComplete) {
+                // شبکه دچار Jitter شده: افزایش خودکار پیش‌بافرینگ
+                this.targetPrebufSec = Math.min(0.220, this.targetPrebufSec + 0.025);
+              } else {
+                this.targetPrebufSec = Math.max(0.105, this.targetPrebufSec - 0.008);
+                this.turnComplete = false;
+                this.hasHist = false;
+              }
+              break;
+            }
+          }
+        } else {
+          for (let i = 0; i < len; i += 1) {
+            if (Math.abs(this.lastOut) > 0.0001) {
+              this.lastOut *= 0.85;
+              outChan[i] = this.lastOut;
+            } else {
+              this.lastOut = 0;
+              outChan[i] = 0;
+            }
+          }
+        }
+      }
+    }
+
+    // ۳) ارسال دوره‌ای سطح صدا و وضعیت پخش به ترد اصلی (هر ~60ms)
+    this.telemetrySamples += len;
+    if (this.telemetrySamples >= Math.floor(this.sr * 0.06)) {
+      const micRms = this.micSqCnt > 0 ? Math.min(1, Math.sqrt(this.micSqSum / this.micSqCnt) * 4.2) : 0;
+      const aiRms = this.aiSqCnt > 0 ? Math.min(1, Math.sqrt(this.aiSqSum / this.aiSqCnt) * 3.5) : 0;
+      this.micSqSum = 0;
+      this.micSqCnt = 0;
+      this.aiSqSum = 0;
+      this.aiSqCnt = 0;
+      this.telemetrySamples = 0;
+      this.port.postMessage({
+        type: 'telemetry',
+        micRms: micRms < 0.018 ? 0 : micRms,
+        aiRms: aiRms < 0.012 ? 0 : aiRms,
+        playing: this.playing,
+      });
+    }
+
+    return true;
+  }
+}
+registerProcessor('humsyar-live-audio-processor', HumsyarLiveAudioProcessor);
+`.replace('this._ pushPcm24k', 'this._pushPcm24k');
+
+
+let _workletBlobUrl = null;
+function getLiveWorkletBlobUrl() {
+  if (!_workletBlobUrl) {
+    const blob = new Blob([HUMSYAR_LIVE_WORKLET_CODE], { type: 'application/javascript' });
+    _workletBlobUrl = URL.createObjectURL(blob);
+  }
+  return _workletBlobUrl;
+}
+
+
+function downsampleTo16kPcm16Buffer(float32Buf, inputRate) {
+  const ratio = (!inputRate || inputRate === 16000) ? 1 : (inputRate / 16000);
   const outLen = Math.round(float32Buf.length / ratio);
-  const out = new Float32Array(outLen);
+  const pcm16 = new Int16Array(outLen);
   for (let i = 0; i < outLen; i += 1) {
     const start = Math.floor(i * ratio);
     const end = Math.min(float32Buf.length, Math.floor((i + 1) * ratio));
@@ -53,37 +383,29 @@ function downsampleTo16k(float32Buf, inputRate) {
       sum += float32Buf[j];
       count += 1;
     }
-    out[i] = count > 0 ? sum / count : float32Buf[start] || 0;
-  }
-  return out;
-}
-
-
-function float32ToPcm16Base64(float32Buf) {
-  const pcm16 = new Int16Array(float32Buf.length);
-  for (let i = 0; i < float32Buf.length; i += 1) {
-    const s = Math.max(-1, Math.min(1, float32Buf[i]));
+    const v = count > 0 ? sum / count : float32Buf[start] || 0;
+    const s = Math.max(-1, Math.min(1, v));
     pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  const bytes = new Uint8Array(pcm16.buffer);
-  let binary = '';
-  const step = 0x8000;
-  for (let i = 0; i < bytes.length; i += step) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
-  }
-  return btoa(binary);
+  return pcm16.buffer;
 }
 
 
-function pcm16Base64ToFloat32(b64) {
+function pcm16Base64ToArrayBuffer(b64) {
   const binary = atob(b64);
   const len = binary.length - (binary.length % 2);
-  if (len <= 0) return new Float32Array(0);
+  if (len <= 0) return new ArrayBuffer(0);
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i += 1) {
     bytes[i] = binary.charCodeAt(i);
   }
-  const samples = new Int16Array(bytes.buffer);
+  return bytes.buffer;
+}
+
+
+function pcm16ArrayBufferToFloat32(ab) {
+  if (!ab || ab.byteLength < 2) return new Float32Array(0);
+  const samples = new Int16Array(ab, 0, Math.floor(ab.byteLength / 2));
   const float32 = new Float32Array(samples.length);
   for (let i = 0; i < samples.length; i += 1) {
     float32[i] = samples[i] / 32768.0;
@@ -92,7 +414,7 @@ function pcm16Base64ToFloat32(b64) {
 }
 
 
-// م9.4 — ترکیب چند چانک Float32 در یک آرایه پیوسته برای Jitter Buffer بدون شکاف
+// م9.4 — ترکیب چند چانک Float32 در یک آرایه پیوسته برای Jitter Buffer بدون شکاف (Fallback)
 function concatFloat32Arrays(arrays) {
   if (!arrays || arrays.length === 0) return new Float32Array(0);
   if (arrays.length === 1) return arrays[0];
@@ -110,7 +432,7 @@ function concatFloat32Arrays(arrays) {
 }
 
 
-// م9.4 — درونیابی خطی پیوسته 24kHz → 48kHz + نرم‌سازی مرز چانک‌ها برای حذف کامل خش‌خش ابتدای مکالمه
+// م9.5 — درون‌یابی مکعبی ۴ نقطه‌ای 24kHz → 48kHz + نرم‌سازی کسینوسی برای مسیر Fallback
 function prepareSmoothAudioSamples(samples24k, ctxSampleRate, prevSampleRef, applyStartFadeIn) {
   if (!samples24k || !samples24k.length) {
     return { data: new Float32Array(0), rate: 24000 };
@@ -119,28 +441,38 @@ function prepareSmoothAudioSamples(samples24k, ctxSampleRate, prevSampleRef, app
   if (ctxSampleRate === 48000) {
     const n = samples24k.length;
     const out = new Float32Array(n * 2);
+    let sm2 = prev;
+    let sm1 = prev;
+    let s0 = samples24k[0];
     for (let i = 0; i < n; i += 1) {
-      const cur = samples24k[i];
-      out[2 * i] = 0.5 * (prev + cur);
-      out[2 * i + 1] = cur;
-      prev = cur;
+      const sp1 = samples24k[i];
+      let mid = (-0.0625 * sm2) + (0.5625 * sm1) + (0.5625 * s0) - (0.0625 * sp1);
+      if (mid > 1.0) mid = 1.0;
+      else if (mid < -1.0) mid = -1.0;
+      out[2 * i] = mid;
+      out[2 * i + 1] = sp1;
+      sm2 = sm1;
+      sm1 = s0;
+      s0 = sp1;
     }
     if (applyStartFadeIn) {
-      const ramp = Math.min(out.length, 96); // 2ms نرم‌سازی شروع صحبت در 48kHz
+      const ramp = Math.min(out.length, 144); // 3ms نرم‌سازی کسینوسی شروع صحبت در 48kHz
       for (let i = 0; i < ramp; i += 1) {
-        out[i] *= (i + 1) / ramp;
+        const w = 0.5 * (1 - Math.cos((Math.PI * (i + 1)) / ramp));
+        out[i] *= w;
       }
     }
-    prevSampleRef.current = prev;
+    prevSampleRef.current = s0;
     return { data: out, rate: 48000 };
   }
 
   const out = new Float32Array(samples24k.length);
   out.set(samples24k);
   if (applyStartFadeIn) {
-    const ramp = Math.min(out.length, 48); // 2ms نرم‌سازی شروع صحبت در 24kHz
+    const ramp = Math.min(out.length, 72);
     for (let i = 0; i < ramp; i += 1) {
-      out[i] *= (i + 1) / ramp;
+      const w = 0.5 * (1 - Math.cos((Math.PI * (i + 1)) / ramp));
+      out[i] *= w;
     }
   } else if (out.length >= 4) {
     out[0] = 0.5 * (prev + out[0]);
@@ -201,6 +533,7 @@ export default function AiLive() {
   const [toolNotice, setToolNotice] = useState('');
   const [textInput, setTextInput] = useState('');
   const [micLevel, setMicLevel] = useState(0);
+  const [aiLevel, setAiLevel] = useState(0);
 
   const wsRef = useRef(null);
   const mediaStreamRef = useRef(null);
@@ -209,6 +542,8 @@ export default function AiLive() {
   const videoTimerRef = useRef(null);
   const captureCtxRef = useRef(null);
   const processorRef = useRef(null);
+  const workletNodeRef = useRef(null);
+  const workletLoadedCtxRef = useRef(null);
   const playCtxRef = useRef(null);
   const playGainRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
@@ -236,13 +571,37 @@ export default function AiLive() {
 
   useEffect(() => {
     micMutedRef.current = micMuted;
+    if (workletNodeRef.current) {
+      try {
+        workletNodeRef.current.port.postMessage({ type: 'mic_mute', muted: micMuted });
+      } catch (_) {}
+    }
+    if (micMuted) {
+      setMicLevel(0);
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({ type: 'audio_stream_end' }));
+        } catch (_) {}
+      }
+    }
   }, [micMuted]);
 
   useEffect(() => {
     speakerMutedRef.current = speakerMuted;
+    if (workletNodeRef.current) {
+      try {
+        workletNodeRef.current.port.postMessage({ type: 'speaker_mute', muted: speakerMuted });
+      } catch (_) {}
+    }
   }, [speakerMuted]);
 
   const stopAllPlayback = useCallback(() => {
+    if (workletNodeRef.current) {
+      try {
+        workletNodeRef.current.port.postMessage({ type: 'clear' });
+      } catch (_) {}
+    }
+    setAiLevel(0);
     if (flushTimerRef.current) {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
@@ -433,10 +792,23 @@ export default function AiLive() {
     }
   }, [ensurePlaybackContext]);
 
-  const scheduleAudioChunk = useCallback((b64Data) => {
-    if (speakerMutedRef.current || !b64Data) return;
+  const scheduleAudioChunk = useCallback((rawOrB64) => {
+    if (speakerMutedRef.current || !rawOrB64) return;
     try {
-      const float32 = pcm16Base64ToFloat32(b64Data);
+      const ab = (rawOrB64 instanceof ArrayBuffer)
+        ? rawOrB64
+        : pcm16Base64ToArrayBuffer(rawOrB64);
+      if (!ab || ab.byteLength < 2) return;
+
+      // م9.5 — مسیر اصلی: انتقال Zero-Copy مستقیم ArrayBuffer به AudioWorkletProcessor روی ترد بلادرنگ صدا
+      if (workletNodeRef.current) {
+        workletNodeRef.current.port.postMessage({ type: 'pcm24k', buffer: ab }, [ab]);
+        setStatus((prev) => (prev === 'speaking' ? prev : 'speaking'));
+        return;
+      }
+
+      // مسیر Fallback برای مرورگرهای قدیمی بدون AudioWorklet
+      const float32 = pcm16ArrayBufferToFloat32(ab);
       if (!float32.length) return;
 
       const ctx = ensurePlaybackContext();
@@ -468,6 +840,13 @@ export default function AiLive() {
   const cleanupSession = useCallback(() => {
     stopAllPlayback();
     stopCameraStream();
+    if (workletNodeRef.current) {
+      try {
+        workletNodeRef.current.port.onmessage = null;
+        workletNodeRef.current.disconnect();
+      } catch (_) {}
+      workletNodeRef.current = null;
+    }
     if (processorRef.current) {
       try {
         processorRef.current.disconnect();
@@ -495,6 +874,7 @@ export default function AiLive() {
       wsRef.current = null;
     }
     setMicLevel(0);
+    setAiLevel(0);
   }, [stopAllPlayback, stopCameraStream]);
 
   useEffect(() => () => cleanupSession(), [cleanupSession]);
@@ -561,13 +941,21 @@ export default function AiLive() {
       init_data: getInitData() || '',
       voice: voice || liveCfg?.voice || 'Sulafat',
       target_language: targetLang || 'fa',
+      binary: '1',
     });
     const wsUrl = `${wsProto}://${hostPart}/api/ai/live/ws?${qs.toString()}`;
 
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    ws.onmessage = (ev) => {
+    ws.onmessage = async (ev) => {
+      // م9.5 — دریافت فریم صوتی باینری مستقیم (Zero-Copy ArrayBuffer) از سرور
+      if (ev.data instanceof ArrayBuffer) {
+        scheduleAudioChunk(ev.data);
+        return;
+      }
+
       let msg;
       try {
         msg = JSON.parse(ev.data);
@@ -582,11 +970,52 @@ export default function AiLive() {
         if (msg.max_session_sec) setMaxSessionSec(msg.max_session_sec);
         setStatus('listening');
 
-        // م9.4 — استفاده از همان AudioContext گرم‌شده (حذف کامل پرش سخت‌افزاری ناشی از ساخت AudioContext دوم)
+        // م9.5 — راه‌اندازی موتور صوتی AudioWorkletProcessor روی ترد بلادرنگ صدا (با Fallback خودکار)
         try {
           const capCtx = ensurePlaybackContext();
           captureCtxRef.current = capCtx;
           const srcNode = capCtx.createMediaStreamSource(stream);
+
+          if (capCtx.audioWorklet && typeof window.AudioWorkletNode !== 'undefined') {
+            try {
+              if (workletLoadedCtxRef.current !== capCtx) {
+                await capCtx.audioWorklet.addModule(getLiveWorkletBlobUrl());
+                workletLoadedCtxRef.current = capCtx;
+              }
+              const wNode = new window.AudioWorkletNode(capCtx, 'humsyar-live-audio-processor', {
+                numberOfInputs: 1,
+                numberOfOutputs: 1,
+                outputChannelCount: [1],
+              });
+              wNode.port.postMessage({ type: 'mic_mute', muted: micMutedRef.current });
+              wNode.port.postMessage({ type: 'speaker_mute', muted: speakerMutedRef.current });
+              wNode.port.onmessage = (wEv) => {
+                const d = wEv.data;
+                if (!d) return;
+                if (d.type === 'mic_pcm16' && d.buffer) {
+                  if (!micMutedRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(d.buffer);
+                  }
+                } else if (d.type === 'telemetry') {
+                  setMicLevel(d.micRms || 0);
+                  setAiLevel(d.aiRms || 0);
+                  if (d.playing) {
+                    setStatus((prev) => (prev === 'speaking' ? prev : 'speaking'));
+                  } else {
+                    setStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
+                  }
+                }
+              };
+              srcNode.connect(wNode);
+              wNode.connect(playGainRef.current || capCtx.destination);
+              workletNodeRef.current = wNode;
+              return;
+            } catch (workletErr) {
+              console.warn('[AiLive worklet fallback]', workletErr);
+            }
+          }
+
+          // مسیر Fallback برای مرورگرهای قدیمی: ScriptProcessorNode با ارسال فریم باینری مستقیم
           const proc = capCtx.createScriptProcessor(2048, 1, 1);
           const silentGain = capCtx.createGain();
           silentGain.gain.value = 0;
@@ -602,27 +1031,22 @@ export default function AiLive() {
             }
             const raw = audioEv.inputBuffer.getChannelData(0);
             const nowMs = performance.now();
-            if (nowMs - lastLevelTsRef.current >= 100) {
+            if (nowMs - lastLevelTsRef.current >= 80) {
               let sumSq = 0;
               for (let i = 0; i < raw.length; i += 8) {
                 sumSq += raw[i] * raw[i];
               }
               const rms = Math.min(1, Math.sqrt(sumSq / (raw.length / 8)) * 4);
               lastLevelTsRef.current = nowMs;
-              if (Math.abs(rms - lastLevelValRef.current) > 0.03 || (rms < 0.02 && lastLevelValRef.current > 0)) {
+              if (Math.abs(rms - lastLevelValRef.current) > 0.025 || (rms < 0.02 && lastLevelValRef.current > 0)) {
                 const nextLvl = rms < 0.02 ? 0 : rms;
                 lastLevelValRef.current = nextLvl;
                 setMicLevel(nextLvl);
               }
             }
 
-            const pcm16k = downsampleTo16k(raw, capCtx.sampleRate);
-            const b64 = float32ToPcm16Base64(pcm16k);
-            wsRef.current.send(JSON.stringify({
-              type: 'audio',
-              data: b64,
-              mimeType: 'audio/pcm;rate=16000',
-            }));
+            const pcmBuf = downsampleTo16kPcm16Buffer(raw, capCtx.sampleRate);
+            wsRef.current.send(pcmBuf);
           };
 
           srcNode.connect(proc);
@@ -674,7 +1098,13 @@ export default function AiLive() {
         if (msg.interaction_status === 'IN_PROGRESS') {
           setStatus('thinking');
         } else if (msg.interaction_status === 'IDLE' || msg.turn_complete) {
-          flushPendingAudio(true);
+          if (workletNodeRef.current) {
+            try {
+              workletNodeRef.current.port.postMessage({ type: 'turn_complete' });
+            } catch (_) {}
+          } else {
+            flushPendingAudio(true);
+          }
           setToolNotice('');
           if (userBufRef.current || aiBufRef.current) {
             const uSnap = userBufRef.current;
@@ -689,7 +1119,7 @@ export default function AiLive() {
             setUserLiveText('');
             setAiLiveText('');
           }
-          if (activeSourcesRef.current.length === 0 && pendingSamplesCountRef.current === 0) {
+          if (!workletNodeRef.current && activeSourcesRef.current.length === 0 && pendingSamplesCountRef.current === 0) {
             setStatus('listening');
           }
         }
@@ -768,7 +1198,7 @@ export default function AiLive() {
   }[status] || { label: '', color: '#64748B', icon: '🎙' };
 
   const orbScale = status === 'speaking'
-    ? 1.12
+    ? 1.06 + Math.min(0.26, aiLevel * 0.42)
     : status === 'listening'
     ? 1 + Math.min(0.25, micLevel * 0.35)
     : 1;

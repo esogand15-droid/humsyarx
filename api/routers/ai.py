@@ -1977,6 +1977,7 @@ async def live_voice_ws_ep(websocket: WebSocket):
       • {"type": "tool_call", "calls": [...]}
       • {"type": "error", "message": "..."}
     """
+    import base64 as _b64
     import json as _json
     import time as _time
 
@@ -2016,6 +2017,7 @@ async def live_voice_ws_ep(websocket: WebSocket):
     req_voice = (websocket.query_params.get("voice") or "").strip()
     req_lang = (websocket.query_params.get("target_language") or "").strip()
     req_thinking = (websocket.query_params.get("thinking_level") or "").strip().lower()
+    use_binary_out = (websocket.query_params.get("binary") or "").strip().lower() in ("1", "true", "yes")
 
     valid_live_models = {m[0] for m in LIVE_MODEL_CATALOG}
     effective_model = (
@@ -2095,7 +2097,29 @@ async def live_voice_ws_ep(websocket: WebSocket):
                         "message": "مدت زمان مجاز این تماس به پایان رسید.",
                     })
                     break
-                raw_client = await websocket.receive_text()
+                if hasattr(websocket, "receive"):
+                    ws_frame = await websocket.receive()
+                    if ws_frame.get("type") == "websocket.disconnect":
+                        break
+                    raw_bytes = ws_frame.get("bytes")
+                    if raw_bytes:
+                        # م9.5 — فریم باینری مستقیم PCM16 16kHz از AudioWorklet مرورگر (حذف کامل سربار Base64/JSON روی ترد UI)
+                        b64_data = _b64.b64encode(raw_bytes).decode("ascii")
+                        await google_ws.send(_json.dumps({
+                            "realtimeInput": {
+                                "audio": {
+                                    "data": b64_data,
+                                    "mimeType": "audio/pcm;rate=16000",
+                                }
+                            }
+                        }))
+                        continue
+                    raw_client = ws_frame.get("text") or ""
+                else:
+                    raw_client = await websocket.receive_text()
+
+                if not raw_client:
+                    continue
                 try:
                     msg = _json.loads(raw_client)
                 except Exception:
@@ -2115,6 +2139,16 @@ async def live_voice_ws_ep(websocket: WebSocket):
                                 }
                             }
                         }))
+                elif mtype == "audio_stream_end":
+                    # م9.5 — اعلام پایان استریم میکروفون (هنگام Mute کردن توسط کاربر) برای پاسخ فوری جمینی
+                    try:
+                        await google_ws.send(_json.dumps({
+                            "realtimeInput": {
+                                "audioStreamEnd": True,
+                            }
+                        }))
+                    except Exception:
+                        pass
                 elif mtype == "video":
                     b64_data = msg.get("data") or ""
                     mime = msg.get("mimeType") or "image/jpeg"
@@ -2161,6 +2195,16 @@ async def live_voice_ws_ep(websocket: WebSocket):
                         tool_resp = await execute_live_tool_calls(ev.get("calls") or [], uid)
                         await google_ws.send(_json.dumps(tool_resp))
                         continue
+
+                    # م9.5 — ارسال فریم صوتی باینری مستقیم (ArrayBuffer) در صورت فعال بودن binary=1
+                    if etype == "audio" and use_binary_out and ev.get("data") and hasattr(websocket, "send_bytes"):
+                        try:
+                            pcm_raw = _b64.b64decode(ev["data"])
+                            if pcm_raw:
+                                await websocket.send_bytes(pcm_raw)
+                                continue
+                        except Exception:
+                            pass
 
                     # ارسال فوری رویداد صوتی/وضعیت به مرورگر پیش از هرگونه عملیات دیسک/دیتابیس
                     await websocket.send_json(ev)

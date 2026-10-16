@@ -323,8 +323,260 @@ function AiImageStudio({ cfg, me, onSaved }) {
   );
 }
 
-/* ⭐ م9 — استودیوی تماس صوتی زنده با هوشیار (Google Gemini Live API / BidiGenerateContent):
-   مدیریت هر ۴ مدل رسمی Live گوگل + تست زنده‌بودن WebSocket + اتاق تست تماس صوتی زنده در پنل وب */
+/* ⭐ م9 / م9.5 — استودیوی تماس صوتی زنده با هوشیار (Google Gemini Live API / BidiGenerateContent):
+   مدیریت هر ۴ مدل رسمی Live گوگل + تست زنده‌بودن WebSocket + اتاق تست تماس صوتی زنده در پنل وب
+   مجهز به موتور صوتی AudioWorkletProcessor + انتقال باینری مستقیم ArrayBuffer + درون‌یابی مکعبی ۴ نقطه‌ای */
+const ADMIN_LIVE_WORKLET_CODE = `
+class HumsyarAdminLiveAudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    const sr = sampleRate || 48000;
+    this.sr = sr;
+    this.cap = Math.max(48000 * 30, Math.floor(sr * 45));
+    this.ring = new Float32Array(this.cap);
+    this.readPos = 0;
+    this.writePos = 0;
+    this.avail = 0;
+    this.hasHist = false;
+    this.sm2 = 0;
+    this.sm1 = 0;
+    this.s0 = 0;
+    this.resamplePhase = 0;
+    this.playing = false;
+    this.prebuffering = true;
+    this.turnComplete = false;
+    this.targetPrebufSec = 0.115;
+    this.firstBufTime = 0;
+    this.lastOut = 0;
+    this.fadeInTotal = Math.max(32, Math.floor(sr * 0.003));
+    this.fadeInRem = 0;
+    this.fadeStartSample = 0;
+    this.clearFadeRem = 0;
+    this.clearFadeTotal = Math.max(64, Math.floor(sr * 0.004));
+    this.duckGain = 1.0;
+
+    this.hpPrevX = 0;
+    this.hpPrevY = 0;
+    this.hpAlpha = Math.exp((-2 * Math.PI * 85) / sr);
+    this.decimRatio = sr / 16000;
+    this.decimAcc = 0;
+    this.decimSum = 0;
+    this.decimCount = 0;
+    this.micOut = new Int16Array(640);
+    this.micIdx = 0;
+    this.micVoiceFrames = 0;
+    this.telemetrySamples = 0;
+
+    this.port.onmessage = (ev) => {
+      const d = ev.data;
+      if (!d) return;
+      if (d.type === 'pcm24k' && d.buffer) {
+        this._pushPcm24k(new Int16Array(d.buffer));
+      } else if (d.type === 'clear') {
+        this.readPos = 0;
+        this.writePos = 0;
+        this.avail = 0;
+        this.playing = false;
+        this.prebuffering = true;
+        this.turnComplete = false;
+        this.hasHist = false;
+        this.fadeStartSample = this.lastOut;
+        this.clearFadeRem = this.clearFadeTotal;
+      } else if (d.type === 'turn_complete') {
+        this.turnComplete = true;
+      }
+    };
+  }
+
+  _writeSample(v) {
+    if (this.avail >= this.cap) {
+      this.readPos = (this.readPos + 1) % this.cap;
+      this.avail -= 1;
+    }
+    this.ring[this.writePos] = v;
+    this.writePos = (this.writePos + 1) % this.cap;
+    this.avail += 1;
+  }
+
+  _pushPcm24k(i16) {
+    const n = i16.length;
+    if (!n) return;
+    if (this.avail === 0) this.firstBufTime = currentTime;
+    this.turnComplete = false;
+    if (!this.hasHist) {
+      const f0 = i16[0] / 32768.0;
+      this.sm2 = f0; this.sm1 = f0; this.s0 = f0;
+      this.resamplePhase = 0;
+      this.hasHist = true;
+    }
+    if (this.sr === 48000) {
+      let sm2 = this.sm2, sm1 = this.sm1, s0 = this.s0;
+      for (let i = 0; i < n; i++) {
+        const sp1 = i16[i] / 32768.0;
+        let mid = (-0.0625 * sm2) + (0.5625 * sm1) + (0.5625 * s0) - (0.0625 * sp1);
+        if (mid > 1.0) mid = 1.0; else if (mid < -1.0) mid = -1.0;
+        this._writeSample(mid);
+        this._writeSample(sp1);
+        sm2 = sm1; sm1 = s0; s0 = sp1;
+      }
+      this.sm2 = sm2; this.sm1 = sm1; this.s0 = s0;
+      return;
+    }
+    if (this.sr === 24000) {
+      for (let i = 0; i < n; i++) this._writeSample(i16[i] / 32768.0);
+      return;
+    }
+    const step = 24000 / this.sr;
+    let phase = this.resamplePhase, sm2 = this.sm2, sm1 = this.sm1, s0 = this.s0;
+    for (let i = 0; i < n; i++) {
+      const sp1 = i16[i] / 32768.0;
+      while (phase <= 1.0) {
+        const t = phase;
+        const c0 = s0, c1 = 0.5 * (sp1 - sm1);
+        const c2 = sm1 - 2.5 * s0 + 2.0 * sp1 - 0.5 * sm2;
+        const c3 = 0.5 * (sp1 - sm2) + 1.5 * (s0 - sm1);
+        let y = ((c3 * t + c2) * t + c1) * t + c0;
+        if (y > 1.0) y = 1.0; else if (y < -1.0) y = -1.0;
+        this._writeSample(y);
+        phase += step;
+      }
+      phase -= 1.0;
+      sm2 = sm1; sm1 = s0; s0 = sp1;
+    }
+    this.resamplePhase = phase; this.sm2 = sm2; this.sm1 = sm1; this.s0 = s0;
+  }
+
+  process(inputs, outputs) {
+    const outChan = outputs[0] && outputs[0][0];
+    const inChan = inputs[0] && inputs[0][0];
+    const len = outChan ? outChan.length : 128;
+
+    if (inChan && inChan.length) {
+      let prevX = this.hpPrevX, prevY = this.hpPrevY;
+      const alpha = this.hpAlpha;
+      let frameSq = 0;
+      for (let i = 0; i < inChan.length; i++) {
+        const x = inChan[i];
+        const y = alpha * (prevY + x - prevX);
+        prevX = x; prevY = y;
+        frameSq += y * y;
+        this.decimSum += y;
+        this.decimCount += 1;
+        this.decimAcc += 1;
+        if (this.decimAcc >= this.decimRatio) {
+          this.decimAcc -= this.decimRatio;
+          const avg = this.decimCount > 0 ? (this.decimSum / this.decimCount) : y;
+          this.decimSum = 0; this.decimCount = 0;
+          const s = avg > 1.0 ? 1.0 : (avg < -1.0 ? -1.0 : avg);
+          this.micOut[this.micIdx++] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
+          if (this.micIdx >= 640) {
+            const copy = new Int16Array(this.micOut);
+            this.port.postMessage({ type: 'mic_pcm16', buffer: copy.buffer }, [copy.buffer]);
+            this.micIdx = 0;
+          }
+        }
+      }
+      this.hpPrevX = prevX; this.hpPrevY = prevY;
+      const fRms = Math.sqrt(frameSq / inChan.length);
+      if (fRms > 0.045) this.micVoiceFrames = Math.min(25, this.micVoiceFrames + 1);
+      else this.micVoiceFrames = Math.max(0, this.micVoiceFrames - 1);
+    }
+
+    const targetDuck = this.micVoiceFrames >= 5 ? 0.25 : 1.0;
+    this.duckGain += (targetDuck - this.duckGain) * 0.08;
+
+    if (outChan) {
+      if (this.clearFadeRem > 0) {
+        for (let i = 0; i < len; i++) {
+          if (this.clearFadeRem > 0) {
+            const prog = 1.0 - (this.clearFadeRem / this.clearFadeTotal);
+            outChan[i] = this.fadeStartSample * 0.5 * (1.0 + Math.cos(Math.PI * prog));
+            this.lastOut = outChan[i];
+            this.clearFadeRem -= 1;
+          } else {
+            outChan[i] = 0; this.lastOut = 0;
+          }
+        }
+      } else {
+        if (!this.playing) {
+          const targetSamples = Math.floor(this.sr * this.targetPrebufSec);
+          const waited = this.avail > 0 ? (currentTime - this.firstBufTime) : 0;
+          if (this.avail >= targetSamples || (this.turnComplete && this.avail > 0) || (this.avail > 0 && waited >= 0.145)) {
+            this.playing = true;
+            this.prebuffering = false;
+            this.fadeStartSample = this.lastOut;
+            this.fadeInRem = this.fadeInTotal;
+          }
+        }
+        if (this.playing) {
+          for (let i = 0; i < len; i++) {
+            if (this.avail > 0) {
+              let s = this.ring[this.readPos] * this.duckGain;
+              this.readPos = (this.readPos + 1) % this.cap;
+              this.avail -= 1;
+              if (this.fadeInRem > 0) {
+                const prog = 1.0 - (this.fadeInRem / this.fadeInTotal);
+                const w = 0.5 * (1.0 - Math.cos(Math.PI * prog));
+                s = this.fadeStartSample * (1.0 - w) + s * w;
+                this.fadeInRem -= 1;
+              }
+              outChan[i] = s;
+              this.lastOut = s;
+            } else {
+              const rem = len - i;
+              const startS = this.lastOut;
+              for (let k = 0; k < rem; k++) {
+                const w = 0.5 * (1.0 + Math.cos(Math.PI * ((k + 1) / rem)));
+                outChan[i + k] = startS * w;
+              }
+              this.lastOut = 0;
+              this.playing = false;
+              this.prebuffering = true;
+              if (!this.turnComplete) {
+                this.targetPrebufSec = Math.min(0.220, this.targetPrebufSec + 0.025);
+              } else {
+                this.targetPrebufSec = Math.max(0.105, this.targetPrebufSec - 0.008);
+                this.turnComplete = false;
+                this.hasHist = false;
+              }
+              break;
+            }
+          }
+        } else {
+          for (let i = 0; i < len; i++) {
+            if (Math.abs(this.lastOut) > 0.0001) {
+              this.lastOut *= 0.85;
+              outChan[i] = this.lastOut;
+            } else {
+              this.lastOut = 0;
+              outChan[i] = 0;
+            }
+          }
+        }
+      }
+    }
+
+    this.telemetrySamples += len;
+    if (this.telemetrySamples >= Math.floor(this.sr * 0.08)) {
+      this.telemetrySamples = 0;
+      this.port.postMessage({ type: 'state', playing: this.playing });
+    }
+    return true;
+  }
+}
+registerProcessor('humsyar-admin-live-audio-processor', HumsyarAdminLiveAudioProcessor);
+`;
+
+let _adminWorkletBlobUrl = null;
+function getAdminLiveWorkletBlobUrl() {
+  if (!_adminWorkletBlobUrl) {
+    _adminWorkletBlobUrl = URL.createObjectURL(
+      new Blob([ADMIN_LIVE_WORKLET_CODE], { type: 'application/javascript' }),
+    );
+  }
+  return _adminWorkletBlobUrl;
+}
+
 function AiLiveStudio({ cfg, me, onSaved }) {
   const [models, setModels] = useState(null);
   const [meta, setMeta] = useState(null);
@@ -356,6 +608,8 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   const videoTimerRef = useRef(null);
   const capCtxRef = useRef(null);
   const procRef = useRef(null);
+  const workletNodeRef = useRef(null);
+  const workletLoadedCtxRef = useRef(null);
   const playCtxRef = useRef(null);
   const playGainRef = useRef(null);
   const nextTimeRef = useRef(0);
@@ -451,6 +705,9 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   };
 
   const stopPlayback = () => {
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.port.postMessage({ type: 'clear' }); } catch (_) {}
+    }
     if (flushTimerRef.current) {
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
@@ -527,6 +784,13 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   const stopTestCall = () => {
     stopPlayback();
     stopVideo();
+    if (workletNodeRef.current) {
+      try {
+        workletNodeRef.current.port.onmessage = null;
+        workletNodeRef.current.disconnect();
+      } catch (_) {}
+      workletNodeRef.current = null;
+    }
     if (procRef.current) { try { procRef.current.disconnect(); } catch (_) {} procRef.current = null; }
     if (capCtxRef.current && capCtxRef.current !== playCtxRef.current) {
       try { capCtxRef.current.close(); } catch (_) {}
@@ -577,22 +841,29 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       if (ctx.sampleRate === 48000) {
         bufRate = 48000;
         bufSamples = new Float32Array(merged24k.length * 2);
+        let sm2 = prev, sm1 = prev, s0 = merged24k[0];
         for (let i = 0; i < merged24k.length; i++) {
-          const cur = merged24k[i];
-          bufSamples[2 * i] = 0.5 * (prev + cur);
-          bufSamples[2 * i + 1] = cur;
-          prev = cur;
+          const sp1 = merged24k[i];
+          let mid = (-0.0625 * sm2) + (0.5625 * sm1) + (0.5625 * s0) - (0.0625 * sp1);
+          if (mid > 1.0) mid = 1.0; else if (mid < -1.0) mid = -1.0;
+          bufSamples[2 * i] = mid;
+          bufSamples[2 * i + 1] = sp1;
+          sm2 = sm1; sm1 = s0; s0 = sp1;
         }
         if (applyFadeIn) {
-          const ramp = Math.min(bufSamples.length, 96);
-          for (let i = 0; i < ramp; i++) bufSamples[i] *= (i + 1) / ramp;
+          const ramp = Math.min(bufSamples.length, 144);
+          for (let i = 0; i < ramp; i++) {
+            bufSamples[i] *= 0.5 * (1 - Math.cos((Math.PI * (i + 1)) / ramp));
+          }
         }
-        prevSampleRef.current = prev;
+        prevSampleRef.current = s0;
       } else {
         bufSamples = merged24k;
         if (applyFadeIn) {
-          const ramp = Math.min(bufSamples.length, 48);
-          for (let i = 0; i < ramp; i++) bufSamples[i] *= (i + 1) / ramp;
+          const ramp = Math.min(bufSamples.length, 72);
+          for (let i = 0; i < ramp; i++) {
+            bufSamples[i] *= 0.5 * (1 - Math.cos((Math.PI * (i + 1)) / ramp));
+          }
         } else if (bufSamples.length >= 4) {
           bufSamples[0] = 0.5 * (prev + bufSamples[0]);
         }
@@ -620,14 +891,28 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     } catch (_) {}
   };
 
-  const playPcm24k = (b64) => {
+  const playPcm24k = (rawOrB64) => {
     try {
-      const bin = atob(b64);
-      const len = bin.length - (bin.length % 2);
-      if (len <= 0) return;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-      const i16 = new Int16Array(bytes.buffer);
+      let ab;
+      if (rawOrB64 instanceof ArrayBuffer) {
+        ab = rawOrB64;
+      } else {
+        const bin = atob(rawOrB64);
+        const len = bin.length - (bin.length % 2);
+        if (len <= 0) return;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+        ab = bytes.buffer;
+      }
+      if (!ab || ab.byteLength < 2) return;
+
+      if (workletNodeRef.current) {
+        workletNodeRef.current.port.postMessage({ type: 'pcm24k', buffer: ab }, [ab]);
+        setCallState(prevSt => (prevSt === 'speaking' ? prevSt : 'speaking'));
+        return;
+      }
+
+      const i16 = new Int16Array(ab, 0, Math.floor(ab.byteLength / 2));
       const f32 = new Float32Array(i16.length);
       for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
 
@@ -679,11 +964,17 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       voice: liveVoice,
       thinking_level: liveThinking,
       target_language: liveTargetLang,
+      binary: '1',
     });
     const ws = new WebSocket(`${proto}//${window.location.host}/api/ai/live/ws?${qs.toString()}`);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    ws.onmessage = (ev) => {
+    ws.onmessage = async (ev) => {
+      if (ev.data instanceof ArrayBuffer) {
+        playPcm24k(ev.data);
+        return;
+      }
       let msg;
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
       if (msg.type === 'ready') {
@@ -692,6 +983,38 @@ function AiLiveStudio({ cfg, me, onSaved }) {
         const capCtx = ensurePlayCtx();
         capCtxRef.current = capCtx;
         const src = capCtx.createMediaStreamSource(stream);
+
+        if (capCtx.audioWorklet && typeof window.AudioWorkletNode !== 'undefined') {
+          try {
+            if (workletLoadedCtxRef.current !== capCtx) {
+              await capCtx.audioWorklet.addModule(getAdminLiveWorkletBlobUrl());
+              workletLoadedCtxRef.current = capCtx;
+            }
+            const wNode = new window.AudioWorkletNode(capCtx, 'humsyar-admin-live-audio-processor', {
+              numberOfInputs: 1,
+              numberOfOutputs: 1,
+              outputChannelCount: [1],
+            });
+            wNode.port.onmessage = (wEv) => {
+              const d = wEv.data;
+              if (!d) return;
+              if (d.type === 'mic_pcm16' && d.buffer) {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(d.buffer);
+                }
+              } else if (d.type === 'state') {
+                setCallState(prevSt => (d.playing ? 'speaking' : (prevSt === 'speaking' ? 'listening' : prevSt)));
+              }
+            };
+            src.connect(wNode);
+            wNode.connect(playGainRef.current || capCtx.destination);
+            workletNodeRef.current = wNode;
+            return;
+          } catch (wErr) {
+            console.warn('[AiAdmin worklet fallback]', wErr);
+          }
+        }
+
         const proc = capCtx.createScriptProcessor(2048, 1, 1);
         const silentGain = capCtx.createGain();
         silentGain.gain.value = 0;
@@ -711,13 +1034,7 @@ function AiLiveStudio({ cfg, me, onSaved }) {
             const s = Math.max(-1, Math.min(1, avg));
             pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
-          const bytes = new Uint8Array(pcm.buffer);
-          let bin = '';
-          const step = 0x8000;
-          for (let i = 0; i < bytes.length; i += step) {
-            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
-          }
-          wsRef.current.send(JSON.stringify({ type: 'audio', data: btoa(bin), mimeType: 'audio/pcm;rate=16000' }));
+          wsRef.current.send(pcm.buffer);
         };
         src.connect(proc);
         proc.connect(silentGain);
@@ -732,7 +1049,11 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       } else if ((msg.type === 'output_transcript' || msg.type === 'text') && msg.text) {
         setAiSub(p => `${p} ${msg.text}`.trim());
       } else if (msg.type === 'turn_state' && (msg.turn_complete || msg.interaction_status === 'IDLE')) {
-        flushPendingPcm(true);
+        if (workletNodeRef.current) {
+          try { workletNodeRef.current.port.postMessage({ type: 'turn_complete' }); } catch (_) {}
+        } else {
+          flushPendingPcm(true);
+        }
         setUserSub(u => {
           setAiSub(a => {
             if (u || a) {

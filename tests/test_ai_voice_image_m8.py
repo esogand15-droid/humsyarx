@@ -1100,6 +1100,59 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertEqual(samples_fade[-1], 0)
         self.assertFalse(sess._playout_active)
 
+    def test_m95_studio_live_setup_cubic_upsampler_and_adaptive_jitter(self):
+        import array
+        import math
+        import tg_group_voice_call as tvc
+
+        # ۱) بررسی پیکربندی VAD (realtimeInputConfig) و فشرده‌سازی کانتکست (contextWindowCompression)
+        s38 = ai_solver.build_live_setup_message(
+            model='gemini-3.8-live',
+            system_prompt='تو هوشیار هستی',
+            voice='Sulafat',
+        )['setup']
+        self.assertIn('realtimeInputConfig', s38)
+        aad = s38['realtimeInputConfig']['automaticActivityDetection']
+        self.assertEqual(aad['startOfSpeechSensitivity'], 'START_SENSITIVITY_HIGH')
+        self.assertEqual(aad['endOfSpeechSensitivity'], 'END_SENSITIVITY_HIGH')
+        self.assertEqual(aad['prefixPaddingMs'], 120)
+        self.assertEqual(aad['silenceDurationMs'], 520)
+        self.assertEqual(s38['realtimeInputConfig']['activityHandling'], 'START_OF_ACTIVITY_INTERRUPTS')
+        self.assertEqual(s38['realtimeInputConfig']['turnCoverage'], 'TURN_INCLUDES_ONLY_ACTIVITY')
+        self.assertEqual(s38['contextWindowCompression'], {'slidingWindow': {}})
+
+        # در حالت minimal=True باید فیلدهای حساس حذف شوند تا فال‌بک ایمن باشد
+        min_setup = ai_solver._adapt_setup_for_model({'setup': s38}, 'gemini-3.8-live', minimal=True)['setup']
+        self.assertNotIn('realtimeInputConfig', min_setup)
+        self.assertNotIn('contextWindowCompression', min_setup)
+        self.assertNotIn('tools', min_setup)
+
+        # ۲) تست تطابق بیتی (Bit-Exact) درون‌یاب مکعبی ۴ نقطه‌ای 24kHz -> 48kHz در مرز چانک‌ها
+        sine24k = array.array(
+            'h',
+            [int(18000 * math.sin(2 * math.pi * 1000 * i / 24000)) for i in range(600)],
+        ).tobytes()
+        one_shot, _ = tvc._upsample_pcm16_24k_to_48k_hq(sine24k, None)
+
+        chunks = [sine24k[:114], sine24k[114:390], sine24k[390:392], sine24k[392:]]
+        hist = None
+        multi = bytearray()
+        for c in chunks:
+            part, hist = tvc._upsample_pcm16_24k_to_48k_hq(c, hist)
+            multi.extend(part)
+        self.assertEqual(bytes(multi), one_shot)
+
+        # ۳) تست فیلتر High-Pass 85Hz و محاسبه RMS روی صدای میکروفون گروه
+        dc_buf = array.array('h', [8000] * 320).tobytes()
+        filtered_dc, rms_dc, hp_st = tvc._filter_and_measure_pcm16_16k(dc_buf, (0.0, 0.0))
+        self.assertEqual(len(filtered_dc), len(dc_buf))
+        # در انتهای بافر DC، فیلتر High-Pass مقدار DC را به سمت صفر می‌برد
+        last_sample = int.from_bytes(filtered_dc[-2:], 'little', signed=True)
+        self.assertLess(abs(last_sample), 300)
+        self.assertGreater(rms_dc, 0)
+        self.assertIsInstance(hp_st, tuple)
+
+
 
 
 

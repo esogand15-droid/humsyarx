@@ -4596,6 +4596,23 @@ def build_live_setup_message(
         },
         'inputAudioTranscription': {},
         'outputAudioTranscription': {},
+        # م9.5 — تنظیم حرفه‌ای تشخیص فعالیت صوتی (VAD) برای کاهش تأخیر پاسخ به ~520ms،
+        # حفظ ۱۲۰ میلی‌ثانیه ابتدای کلمات (Prefix Padding)، Barge-in آنی و حذف نویز محیطی بین نوبت‌ها
+        'realtimeInputConfig': {
+            'automaticActivityDetection': {
+                'disabled': False,
+                'startOfSpeechSensitivity': 'START_SENSITIVITY_HIGH',
+                'endOfSpeechSensitivity': 'END_SENSITIVITY_HIGH',
+                'prefixPaddingMs': 120,
+                'silenceDurationMs': 520,
+            },
+            'activityHandling': 'START_OF_ACTIVITY_INTERRUPTS',
+            'turnCoverage': 'TURN_INCLUDES_ONLY_ACTIVITY',
+        },
+        # م9.5 — فشرده‌سازی خودکار پنجره کانتکست (Sliding Window) برای پایداری مکالمات طولانی
+        'contextWindowCompression': {
+            'slidingWindow': {},
+        },
     }
 
     if include_tools:
@@ -4784,6 +4801,8 @@ def _adapt_setup_for_model(setup_msg: dict, target_model: str, minimal: bool = F
     if 'translate' in ml:
         s.pop('systemInstruction', None)
         s.pop('tools', None)
+        s.pop('realtimeInputConfig', None)
+        s.pop('contextWindowCompression', None)
         gen.pop('thinkingConfig', None)
         gen.pop('speechConfig', None)
         return msg
@@ -4798,6 +4817,8 @@ def _adapt_setup_for_model(setup_msg: dict, target_model: str, minimal: bool = F
 
     if minimal:
         s.pop('tools', None)
+        s.pop('realtimeInputConfig', None)
+        s.pop('contextWindowCompression', None)
         gen.pop('thinkingConfig', None)
     return msg
 
