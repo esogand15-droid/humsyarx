@@ -1029,6 +1029,24 @@ def mark_key_ok(provider: str, key: str) -> None:
         st['last_error'] = ''
 
 
+# نام‌های سازگار برای لایه‌های Live / فالت‌تولرنس
+KEY_COOLDOWN_AUTH_SEC = KEY_COOLDOWN_AUTH
+KEY_COOLDOWN_QUOTA_SEC = KEY_COOLDOWN_QUOTA
+
+
+def record_key_failure(provider: str, key: str, err_text: str = '',
+                       cooldown_sec: int = KEY_COOLDOWN_AUTH) -> None:
+    st = _KEY_STATE.setdefault(_key_state_id(provider, key), {})
+    st['cooldown_until'] = time.monotonic() + max(1, int(cooldown_sec or KEY_COOLDOWN_SERVER))
+    st['kind'] = 'quota' if cooldown_sec == KEY_COOLDOWN_QUOTA else 'auth'
+    st['last_error'] = _sanitize_provider_text(str(err_text or ''))[:200]
+    st['fails'] = int(st.get('fails', 0)) + 1
+
+
+def record_key_success(provider: str, key: str) -> None:
+    mark_key_ok(provider, key)
+
+
 def key_cooldown_remaining(provider: str, key: str) -> float:
     st = _KEY_STATE.get(_key_state_id(provider, key)) or {}
     try:
@@ -4510,8 +4528,10 @@ def build_live_setup_message(
             d = {
                 'name': fn['name'],
                 'description': fn['description'],
-                'parameters': fn.get('parameters') or {'type': 'object', 'properties': {}},
             }
+            params = fn.get('parameters') or {}
+            if params.get('properties'):
+                d['parameters'] = params
             if use_non_blocking:
                 d['behavior'] = 'NON_BLOCKING'
             decls.append(d)
@@ -4631,6 +4651,66 @@ def parse_live_server_message(raw_msg) -> list:
     return events
 
 
+async def _discover_bidi_models_for_key(api_key: str) -> list:
+    """دریافت فهرست مدل‌هایی که روی این کلید صریحاً از bidiGenerateContent پشتیبانی می‌کنند."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                headers={'x-goog-api-key': api_key},
+            )
+        if resp.status_code in (401, 403):
+            body = _sanitize_provider_text(resp.text or '')[:180]
+            raise AIConfigError(f"کلید گوگل نامعتبر یا غیرفعال است ({body})")
+        if resp.status_code == 429:
+            raise AIQuotaError("سهمیه کلید گوگل پر شده است (429).")
+        if resp.status_code != 200:
+            return []
+        out = []
+        for m in (resp.json() or {}).get('models', []):
+            methods = m.get('supportedGenerationMethods') or []
+            if 'bidiGenerateContent' in methods:
+                name = (m.get('name') or '').replace('models/', '').strip()
+                if name:
+                    out.append(name)
+        return out
+    except (AIConfigError, AIQuotaError):
+        raise
+    except Exception:
+        return []
+
+
+def _adapt_setup_for_model(setup_msg: dict, target_model: str, minimal: bool = False) -> dict:
+    """تطبیق پیام setup برای مدل جایگزین یا حالت کمینه (بدون ابزار/فیلدهای حساس)."""
+    import copy
+    msg = copy.deepcopy(setup_msg or {'setup': {}})
+    s = msg.setdefault('setup', {})
+    mid = (target_model or DEFAULT_LIVE_MODEL).replace('models/', '').strip()
+    ml = mid.lower()
+    s['model'] = f"models/{mid}"
+    gen = s.setdefault('generationConfig', {'responseModalities': ['AUDIO']})
+
+    if 'translate' in ml:
+        s.pop('systemInstruction', None)
+        s.pop('tools', None)
+        gen.pop('thinkingConfig', None)
+        gen.pop('speechConfig', None)
+        return msg
+
+    if 'extended-thinking' not in ml and '3.1-flash-live' not in ml:
+        gen.pop('thinkingConfig', None)
+
+    if '3.8-live' not in ml and 'tools' in s:
+        for t in (s.get('tools') or []):
+            for fd in (t.get('functionDeclarations') or []):
+                fd.pop('behavior', None)
+
+    if minimal:
+        s.pop('tools', None)
+        gen.pop('thinkingConfig', None)
+    return msg
+
+
 async def probe_live_model(provider: str, api_key: str, model: str) -> dict:
     """⭐ م9 — تست واقعی اتصال WebSocket مدل Gemini Live (BidiGenerateContent).
 
@@ -4643,28 +4723,31 @@ async def probe_live_model(provider: str, api_key: str, model: str) -> dict:
         return {'ok': False, 'ms': 0,
                 'error': 'فقط مدل‌های Live گوگل (Gemini) پشتیبانی می‌شوند.',
                 'mode': 'real_live_ws'}
-    try:
-        import websockets
-        ws_url = f"{LIVE_WS_URL_V1BETA}?key={api_key}"
-        setup_msg = build_live_setup_message(mid, include_tools=False)
-        async with websockets.connect(ws_url, open_timeout=12, close_timeout=3) as ws:
-            await ws.send(json.dumps(setup_msg))
-            raw = await asyncio.wait_for(ws.recv(), timeout=12)
-        ms = max(1, int((_t.monotonic() - started) * 1000))
-        evs = parse_live_server_message(raw)
-        if any(e.get('type') == 'ready' for e in evs):
-            return {'ok': True, 'ms': ms, 'error': '', 'mode': 'real_live_ws'}
-        err_ev = next((e for e in evs if e.get('type') == 'error'), None)
-        return {
-            'ok': False,
-            'ms': ms,
-            'error': (err_ev or {}).get('message') or 'پاسخ setupComplete دریافت نشد',
-            'mode': 'real_live_ws',
-        }
-    except Exception as e:
-        ms = max(1, int((_t.monotonic() - started) * 1000))
-        err_str = _sanitize_provider_text(str(e))[:160] or type(e).__name__
-        return {'ok': False, 'ms': ms, 'error': err_str, 'mode': 'real_live_ws'}
+    last_err = ''
+    for base_ws in (LIVE_WS_URL_V1BETA, LIVE_WS_URL_V1ALPHA):
+        for minimal in (False, True):
+            try:
+                import websockets
+                ws_url = f"{base_ws}?key={api_key}"
+                raw_setup = build_live_setup_message(mid, include_tools=False)
+                setup_msg = _adapt_setup_for_model(raw_setup, mid, minimal=minimal)
+                async with websockets.connect(ws_url, open_timeout=12, close_timeout=3) as ws:
+                    await ws.send(json.dumps(setup_msg))
+                    raw = await asyncio.wait_for(ws.recv(), timeout=12)
+                ms = max(1, int((_t.monotonic() - started) * 1000))
+                evs = parse_live_server_message(raw)
+                if any(e.get('type') == 'ready' for e in evs):
+                    return {'ok': True, 'ms': ms, 'error': '', 'mode': 'real_live_ws'}
+                err_ev = next((e for e in evs if e.get('type') == 'error'), None)
+                last_err = (err_ev or {}).get('message') or 'پاسخ setupComplete دریافت نشد'
+            except Exception as e:
+                last_err = _sanitize_provider_text(str(e))[:160] or type(e).__name__
+                low = last_err.lower()
+                if any(c in low for c in ('401', '403', 'api_key', 'unauthenticated', 'service account')):
+                    ms = max(1, int((_t.monotonic() - started) * 1000))
+                    return {'ok': False, 'ms': ms, 'error': last_err, 'mode': 'real_live_ws'}
+    ms = max(1, int((_t.monotonic() - started) * 1000))
+    return {'ok': False, 'ms': ms, 'error': last_err or 'عدم اتصال به WebSocket Live', 'mode': 'real_live_ws'}
 
 
 async def connect_gemini_live_with_failover(
@@ -4673,9 +4756,9 @@ async def connect_gemini_live_with_failover(
     keys: list = None,
 ) -> tuple:
     """⭐ م9 — باز کردن اتصال WebSocket به Gemini Live (BidiGenerateContent)
-    با فال‌بک خودکار کلیدهای گوگل و ارسال پیام setup تا دریافت setupComplete.
+    با فال‌بک خودکار کلیدهای گوگل و فال‌بک خودکار به مدل‌های Live فعال روی کلید.
 
-    خروجی: (ws, initial_events, active_key). در صورت شکست همه‌ی کلیدها AIConfigError/AIError."""
+    خروجی: (ws, initial_events, active_key). روی ws فیلد ws.live_model نام مدل متصل‌شده را دارد."""
     import websockets
     if not keys:
         cfg = await get_ai_config()
@@ -4684,54 +4767,97 @@ async def connect_gemini_live_with_failover(
     if not ordered:
         raise AIConfigError("کلید API گوگل (Gemini) برای تماس صوتی زنده تنظیم نشده است.")
 
+    req_mid = (model or DEFAULT_LIVE_MODEL).replace('models/', '').strip() or DEFAULT_LIVE_MODEL
     last_err = None
+
     for idx, api_key in enumerate(ordered):
         _kp = api_key_problem(api_key)
         if _kp:
-            record_key_failure('gemini', api_key, _kp, cooldown_sec=KEY_COOLDOWN_AUTH_SEC)
+            record_key_failure('gemini', api_key, _kp, cooldown_sec=KEY_COOLDOWN_AUTH)
             last_err = AIConfigError(_kp)
             continue
-        for base_ws in (LIVE_WS_URL_V1BETA, LIVE_WS_URL_V1ALPHA):
-            ws = None
-            try:
-                ws_url = f"{base_ws}?key={api_key}"
-                ws = await websockets.connect(
-                    ws_url,
-                    open_timeout=15,
-                    close_timeout=5,
-                    max_size=16 * 1024 * 1024,
-                    ping_interval=20,
-                    ping_timeout=20,
-                )
-                await ws.send(json.dumps(setup_msg))
-                raw = await asyncio.wait_for(ws.recv(), timeout=15)
-                evs = parse_live_server_message(raw)
-                err_ev = next((e for e in evs if e.get('type') == 'error'), None)
-                if err_ev:
-                    await ws.close()
-                    raise AIError(err_ev.get('message') or 'خطای راه‌اندازی نشست Live')
-                record_key_success('gemini', api_key)
-                return ws, evs, api_key
-            except Exception as e:
-                if ws is not None:
+
+        # بررسی سلامت کلید و کشف مدل‌های bidiGenerateContent فعال روی این کلید
+        try:
+            discovered_bidi = await _discover_bidi_models_for_key(api_key)
+        except AIConfigError as e_auth:
+            mark_key_failed('gemini', api_key, e_auth)
+            last_err = e_auth
+            continue
+        except AIQuotaError as e_quota:
+            mark_key_failed('gemini', api_key, e_quota)
+            last_err = e_quota
+            continue
+
+        # ترتیب کاندیداهای مدل: اول مدل درخواستی، سپس مدل‌های کاتالوگ و مدل‌های bidi کشف‌شده روی کلید
+        candidate_models = [req_mid]
+        for fallback_m in (
+            list(discovered_bidi)
+            + [m[0] for m in LIVE_MODEL_CATALOG]
+            + ['gemini-2.5-flash-native-audio-preview-12-2025', 'gemini-2.0-flash-live-001']
+        ):
+            fm = (fallback_m or '').replace('models/', '').strip()
+            if fm and fm not in candidate_models:
+                # اگر مدل درخواستی مترجم نبود، به مدل مترجمِ صِرف فال‌بک نکنیم
+                if 'translate' in fm.lower() and 'translate' not in req_mid.lower():
+                    continue
+                candidate_models.append(fm)
+
+        key_failed_auth_or_quota = False
+        for cand_model in candidate_models:
+            for base_ws in (LIVE_WS_URL_V1BETA, LIVE_WS_URL_V1ALPHA):
+                for minimal_mode in (False, True):
+                    ws = None
                     try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                err_txt = _sanitize_provider_text(str(e))[:200] or type(e).__name__
-                low = err_txt.lower()
-                # اگر خطا مربوط به نسخه v1beta روی مدل خاصی نبود (مثلاً خطای کلید/سهمیه)،
-                # نیازی به تست v1alpha با همان کلید خراب نیست
-                if any(c in low for c in ('401', '403', 'api_key', 'unauthenticated', 'permission', 'service account')):
-                    record_key_failure('gemini', api_key, err_txt, cooldown_sec=KEY_COOLDOWN_AUTH_SEC)
-                    last_err = AIConfigError(f"کلید گوگل نامعتبر یا غیرفعال است ({err_txt})")
+                        ws_url = f"{base_ws}?key={api_key}"
+                        adapted_setup = _adapt_setup_for_model(setup_msg, cand_model, minimal=minimal_mode)
+                        ws = await websockets.connect(
+                            ws_url,
+                            open_timeout=15,
+                            close_timeout=5,
+                            max_size=16 * 1024 * 1024,
+                            ping_interval=20,
+                            ping_timeout=20,
+                        )
+                        await ws.send(json.dumps(adapted_setup))
+                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                        evs = parse_live_server_message(raw)
+                        err_ev = next((e for e in evs if e.get('type') == 'error'), None)
+                        if err_ev:
+                            await ws.close()
+                            raise AIError(err_ev.get('message') or 'خطای راه‌اندازی نشست Live')
+                        mark_key_ok('gemini', api_key)
+                        try:
+                            setattr(ws, 'live_model', cand_model)
+                        except Exception:
+                            pass
+                        return ws, evs, api_key
+                    except Exception as e:
+                        if ws is not None:
+                            try:
+                                await ws.close()
+                            except Exception:
+                                pass
+                        err_txt = _sanitize_provider_text(str(e))[:220] or type(e).__name__
+                        low = err_txt.lower()
+                        if any(c in low for c in ('401', '403', 'api_key', 'unauthenticated', 'permission', 'service account')):
+                            last_err = AIConfigError(f"کلید گوگل نامعتبر یا غیرفعال است ({err_txt})")
+                            mark_key_failed('gemini', api_key, last_err)
+                            key_failed_auth_or_quota = True
+                            break
+                        if '429' in low or 'quota' in low or 'resource_exhausted' in low:
+                            last_err = AIQuotaError(f"سهمیه‌ی کلید گوگل برای Live پر شده ({err_txt})")
+                            mark_key_failed('gemini', api_key, last_err)
+                            key_failed_auth_or_quota = True
+                            break
+                        last_err = AIError(f"خطا در اتصال به Gemini Live ({cand_model}): {err_txt}")
+                        # اگر مدل اصلاً پیدا نشد (not found / not supported)، نیازی به تکرار minimal_mode همان نسخه نیست
+                        if 'not found' in low or 'not supported for bidigeneratecontent' in low:
+                            break
+                if key_failed_auth_or_quota:
                     break
-                if '429' in low or 'quota' in low or 'resource_exhausted' in low:
-                    record_key_failure('gemini', api_key, err_txt, cooldown_sec=KEY_COOLDOWN_QUOTA_SEC)
-                    last_err = AIQuotaError(f"سهمیه‌ی کلید گوگل برای Live پر شده ({err_txt})")
-                    break
-                last_err = AIError(f"خطا در اتصال به Gemini Live: {err_txt}")
-                # اگر v1beta خطای مدل داد، یک بار هم v1alpha امتحان می‌شود
+            if key_failed_auth_or_quota:
+                break
 
     if len(ordered) > 1 and last_err is not None:
         raise type(last_err)(

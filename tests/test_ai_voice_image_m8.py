@@ -873,4 +873,65 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertIn('turn_state', types)
         self.assertIn('tool_call', types)
 
+    def test_connect_gemini_live_failover_and_model_fallback(self):
+        import json
+        import websockets
+
+        sent_setups = []
+
+        class _FakeWs:
+            def __init__(self, key_ok=True, accept_model='models/gemini-3.1-flash-live-preview'):
+                self.key_ok = key_ok
+                self.accept_model = accept_model
+                self.last_model = None
+                self.closed = False
+
+            async def send(self, payload):
+                obj = json.loads(payload)
+                self.last_model = obj.get('setup', {}).get('model')
+                sent_setups.append(obj)
+
+            async def recv(self):
+                if not self.key_ok:
+                    raise Exception('HTTP 401: The bound service account is deleted or disabled')
+                if self.last_model != self.accept_model:
+                    raise Exception(f'1008 policy violation: {self.last_model} is not found for API version v1beta')
+                return json.dumps({'setupComplete': {}})
+
+            async def close(self):
+                self.closed = True
+
+        async def _fake_connect(url, **_kw):
+            if K1 in url:
+                return _FakeWs(key_ok=False)
+            return _FakeWs(key_ok=True, accept_model='models/gemini-3.1-flash-live-preview')
+
+        async def _fake_discover(api_key):
+            if api_key == K1:
+                raise ai_solver.AIConfigError('The bound service account is deleted')
+            return ['gemini-3.1-flash-live-preview']
+
+        setup_msg = ai_solver.build_live_setup_message(
+            model='gemini-3.8-live',
+            system_prompt='تو هوشیار هستی',
+            uid=12345,
+        )
+        # اطمینان از اینکه توابع بدون پارامتر، فیلد parameters خالی ندارند
+        decls = setup_msg['setup']['tools'][0]['functionDeclarations']
+        grades_fn = next(d for d in decls if d['name'] == 'get_my_grades')
+        self.assertNotIn('parameters', grades_fn)
+
+        with mock.patch.object(websockets, 'connect', side_effect=_fake_connect), \
+             mock.patch.object(ai_solver, '_discover_bidi_models_for_key', side_effect=_fake_discover):
+            ws, evs, active_key = _rtloop.run(
+                ai_solver.connect_gemini_live_with_failover(
+                    'gemini-3.8-live', setup_msg, keys=[K1, K2]
+                )
+            )
+        self.assertEqual(active_key, K2)
+        self.assertEqual(getattr(ws, 'live_model', None), 'gemini-3.1-flash-live-preview')
+        self.assertEqual(evs, [{'type': 'ready'}])
+        self.assertGreater(ai_solver.key_cooldown_remaining('gemini', K1), 0)
+
+
 

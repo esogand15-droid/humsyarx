@@ -2073,9 +2073,11 @@ async def live_voice_ws_ep(websocket: WebSocket):
             await websocket.close(code=4502)
             return
 
+        connected_model = getattr(google_ws, "live_model", None) or effective_model
         await websocket.send_json({
             "type": "ready",
-            "model": effective_model,
+            "model": connected_model,
+            "requested_model": effective_model,
             "voice": effective_voice,
             "thinking_level": effective_thinking,
             "target_language": effective_lang,
@@ -2113,13 +2115,31 @@ async def live_voice_ws_ep(websocket: WebSocket):
                                 }
                             }
                         }))
-                elif mtype == "text":
-                    txt = (msg.get("text") or "").strip()
-                    if txt and "translate" not in effective_model.lower():
-                        user_transcript_buf.append(txt)
+                elif mtype == "video":
+                    b64_data = msg.get("data") or ""
+                    mime = msg.get("mimeType") or "image/jpeg"
+                    if b64_data and "translate" not in connected_model.lower():
                         await google_ws.send(_json.dumps({
                             "realtimeInput": {
-                                "text": txt[:2000],
+                                "video": {
+                                    "data": b64_data,
+                                    "mimeType": mime,
+                                }
+                            }
+                        }))
+                elif mtype == "text":
+                    txt = (msg.get("text") or "").strip()
+                    if txt and "translate" not in connected_model.lower():
+                        user_transcript_buf.append(txt)
+                        await google_ws.send(_json.dumps({
+                            "clientContent": {
+                                "turns": [
+                                    {
+                                        "role": "user",
+                                        "parts": [{"text": txt[:2000]}],
+                                    }
+                                ],
+                                "turnComplete": True,
                             }
                         }))
                 elif mtype == "ping":

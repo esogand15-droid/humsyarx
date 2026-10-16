@@ -341,15 +341,19 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   const [liveMaxSec, setLiveMaxSec] = useState(300);
   const [liveTargetLang, setLiveTargetLang] = useState('fa');
 
-  // اتاق تست زنده در مرورگر ادمین
+  // اتاق تست زنده در مرورگر ادمین (صدا + ویدیو دوربین / اشتراک صفحه)
   const [callState, setCallState] = useState('idle'); // idle | connecting | listening | speaking | error
   const [callErr, setCallErr] = useState('');
+  const [videoOn, setVideoOn] = useState(false);
   const [userSub, setUserSub] = useState('');
   const [aiSub, setAiSub] = useState('');
   const [turns, setTurns] = useState([]);
   const [testText, setTestText] = useState('');
   const wsRef = useRef(null);
   const streamRef = useRef(null);
+  const videoStreamRef = useRef(null);
+  const videoElRef = useRef(null);
+  const videoTimerRef = useRef(null);
   const capCtxRef = useRef(null);
   const procRef = useRef(null);
   const playCtxRef = useRef(null);
@@ -414,8 +418,58 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     nextTimeRef.current = 0;
   };
 
+  const stopVideo = () => {
+    if (videoTimerRef.current) { window.clearInterval(videoTimerRef.current); videoTimerRef.current = null; }
+    if (videoStreamRef.current) {
+      for (const t of videoStreamRef.current.getTracks()) { try { t.stop(); } catch (_) {} }
+      videoStreamRef.current = null;
+    }
+    if (videoElRef.current) videoElRef.current.srcObject = null;
+    setVideoOn(false);
+  };
+
+  const startVideo = async (mode = 'camera') => {
+    stopVideo();
+    try {
+      const vStream = mode === 'screen' && navigator.mediaDevices.getDisplayMedia
+        ? await navigator.mediaDevices.getDisplayMedia({ video: { width: { ideal: 800 }, height: { ideal: 600 } }, audio: false })
+        : await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      videoStreamRef.current = vStream;
+      setVideoOn(true);
+      if (videoElRef.current) {
+        videoElRef.current.srcObject = vStream;
+        videoElRef.current.play().catch(() => {});
+      }
+      const canvas = document.createElement('canvas');
+      const ctx2d = canvas.getContext('2d');
+      videoTimerRef.current = window.setInterval(() => {
+        const vid = videoElRef.current;
+        if (!vid || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!vid.videoWidth || !vid.videoHeight) return;
+        const scale = Math.min(1, 640 / Math.max(vid.videoWidth, vid.videoHeight));
+        canvas.width = Math.round(vid.videoWidth * scale);
+        canvas.height = Math.round(vid.videoHeight * scale);
+        ctx2d.drawImage(vid, 0, 0, canvas.width, canvas.height);
+        const b64 = (canvas.toDataURL('image/jpeg', 0.65).split(',')[1]) || '';
+        if (b64) {
+          wsRef.current.send(JSON.stringify({ type: 'video', data: b64, mimeType: 'image/jpeg' }));
+        }
+      }, 1000);
+    } catch (_) {
+      toast('دسترسی به دوربین/صفحه‌نمایش داده نشد', 'err');
+    }
+  };
+
+  useEffect(() => {
+    if (videoOn && videoElRef.current && videoStreamRef.current) {
+      videoElRef.current.srcObject = videoStreamRef.current;
+      videoElRef.current.play().catch(() => {});
+    }
+  }, [videoOn]);
+
   const stopTestCall = () => {
     stopPlayback();
+    stopVideo();
     if (procRef.current) { try { procRef.current.disconnect(); } catch (_) {} procRef.current = null; }
     if (capCtxRef.current) { try { capCtxRef.current.close(); } catch (_) {} capCtxRef.current = null; }
     if (streamRef.current) { for (const t of streamRef.current.getTracks()) { try { t.stop(); } catch (_) {} } streamRef.current = null; }
@@ -428,7 +482,7 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     try {
       if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
         const AC = window.AudioContext || window.webkitAudioContext;
-        playCtxRef.current = new AC({ sampleRate: 24000 });
+        playCtxRef.current = new AC();
       }
       const ctx = playCtxRef.current;
       if (ctx.state === 'suspended') ctx.resume().catch(() => {});
@@ -455,12 +509,22 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     } catch (_) {}
   };
 
-  const startTestCall = async () => {
+  const startTestCall = async (withVideoMode = '') => {
     setCallErr(''); setUserSub(''); setAiSub(''); setTurns([]);
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
+        playCtxRef.current = new AC();
+      }
+      if (playCtxRef.current.state === 'suspended') {
+        playCtxRef.current.resume().catch(() => {});
+      }
+    } catch (_) {}
+
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch (_) {
       setCallState('error');
@@ -469,6 +533,9 @@ function AiLiveStudio({ cfg, me, onSaved }) {
     }
     streamRef.current = stream;
     setCallState('connecting');
+    if (withVideoMode) {
+      startVideo(withVideoMode);
+    }
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const qs = new URLSearchParams({
       model: liveModel,
@@ -486,10 +553,13 @@ function AiLiveStudio({ cfg, me, onSaved }) {
         setCallState('listening');
         toast(`اتصال زنده به ${msg.model} برقرار شد — صحبت کنید 🎙`);
         const AC = window.AudioContext || window.webkitAudioContext;
-        const capCtx = new AC({ sampleRate: 16000 });
+        const capCtx = new AC();
         capCtxRef.current = capCtx;
+        if (capCtx.state === 'suspended') capCtx.resume().catch(() => {});
         const src = capCtx.createMediaStreamSource(stream);
-        const proc = capCtx.createScriptProcessor(2048, 1, 1);
+        const proc = capCtx.createScriptProcessor(4096, 1, 1);
+        const silentGain = capCtx.createGain();
+        silentGain.gain.value = 0;
         procRef.current = proc;
         proc.onaudioprocess = (ae) => {
           if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -498,16 +568,25 @@ function AiLiveStudio({ cfg, me, onSaved }) {
           const outLen = Math.round(raw.length / ratio);
           const pcm = new Int16Array(outLen);
           for (let i = 0; i < outLen; i++) {
-            const s = Math.max(-1, Math.min(1, raw[Math.min(raw.length - 1, Math.floor(i * ratio))]));
+            const start = Math.floor(i * ratio);
+            const end = Math.min(raw.length, Math.floor((i + 1) * ratio));
+            let sum = 0, cnt = 0;
+            for (let j = start; j < end; j++) { sum += raw[j]; cnt++; }
+            const avg = cnt > 0 ? sum / cnt : (raw[start] || 0);
+            const s = Math.max(-1, Math.min(1, avg));
             pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
           const bytes = new Uint8Array(pcm.buffer);
           let bin = '';
-          for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+          const step = 0x8000;
+          for (let i = 0; i < bytes.length; i += step) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+          }
           wsRef.current.send(JSON.stringify({ type: 'audio', data: btoa(bin), mimeType: 'audio/pcm;rate=16000' }));
         };
         src.connect(proc);
-        proc.connect(capCtx.destination);
+        proc.connect(silentGain);
+        silentGain.connect(capCtx.destination);
       } else if (msg.type === 'audio' && msg.data) {
         playPcm24k(msg.data);
       } else if (msg.type === 'interrupted') {
@@ -681,27 +760,49 @@ function AiLiveStudio({ cfg, me, onSaved }) {
         )}
       </div>
 
-      {/* اتاق تست تماس صوتی زنده برای ادمین */}
+      {/* اتاق تست تماس صوتی و ویدیویی زنده برای ادمین */}
       <div className="panel panel-pad">
         <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <b>🎧 اتاق تست تماس صوتی زنده (مستقیم از مرورگر ادمین)</b>
+          <b>🎧📹 اتاق تست تماس صوتی و ویدیویی زنده (مستقیم از مرورگر ادمین)</b>
           <B kind={callState === 'listening' || callState === 'speaking' ? 'ok' : callState === 'error' ? 'bad' : ''}>
             {callState === 'idle' ? 'آماده تست' : callState === 'connecting' ? 'در حال اتصال…' : callState === 'speaking' ? '🔊 هوشیار در حال صحبت…' : callState === 'listening' ? '🟢 در حال گوش دادن…' : 'خطا'}
           </B>
         </div>
         <div className="muted" style={{ marginTop: 6, fontSize: 'var(--fs-caption)' }}>
-          با زدن دکمه زیر، اتصال WebSocket به مدل انتخابی (<code>{liveModel}</code>) با صدای <code>{liveVoice}</code> برقرار می‌شود و می‌توانید زنده با هوشیار صحبت کنید.
+          با زدن دکمه‌های زیر، اتصال WebSocket به مدل انتخابی (<code>{liveModel}</code>) با صدای <code>{liveVoice}</code> برقرار می‌شود و می‌توانید زنده (صوتی یا ویدیویی + صوتی) با هوشیار مکالمه کنید.
         </div>
         {callErr && <div style={{ color: 'var(--c-bad, #d24)', marginTop: 8 }}>{callErr}</div>}
-        <div className="row" style={{ marginTop: 12, gap: 10 }}>
+
+        {videoOn && (
+          <div style={{ marginTop: 12, maxWidth: 360, borderRadius: 10, overflow: 'hidden', border: '2px solid var(--acc)' }}>
+            <video ref={videoElRef} autoPlay playsInline muted style={{ width: '100%', display: 'block', background: '#000', maxHeight: 240 }} />
+          </div>
+        )}
+
+        <div className="row" style={{ marginTop: 12, gap: 10, flexWrap: 'wrap' }}>
           {callState === 'idle' || callState === 'error' ? (
-            <button className="btn primary" onClick={startTestCall}>🎙 شروع تست تماس زنده با هوشیار</button>
+            <>
+              <button className="btn primary" onClick={() => startTestCall('')}>🎙 شروع تست تماس صوتی زنده</button>
+              {!liveModel.includes('translate') && (
+                <>
+                  <button className="btn" onClick={() => startTestCall('camera')}>📹 تست تماس ویدیویی + صوتی (دوربین)</button>
+                  <button className="btn" onClick={() => startTestCall('screen')}>🖥 تست با اشتراک صفحه‌نمایش</button>
+                </>
+              )}
+            </>
           ) : (
-            <button className="btn danger" onClick={stopTestCall}>📴 پایان تماس آزمایشی</button>
+            <>
+              <button className="btn danger" onClick={stopTestCall}>📴 پایان تماس آزمایشی</button>
+              {!liveModel.includes('translate') && (
+                <button className="btn" onClick={() => (videoOn ? stopVideo() : startVideo('camera'))}>
+                  {videoOn ? '📹 بستن ویدیو' : '📷 روشن کردن دوربین'}
+                </button>
+              )}
+            </>
           )}
           {(callState === 'listening' || callState === 'speaking') && !liveModel.includes('translate') && (
             <>
-              <input className="inp" style={{ flex: 1 }} placeholder="ارسال پیام متنی در نشست زنده…"
+              <input className="inp" style={{ flex: 1, minWidth: 220 }} placeholder="ارسال پیام متنی در نشست زنده…"
                      value={testText} onChange={e => setTestText(e.target.value)}
                      onKeyDown={e => {
                        if (e.key === 'Enter' && testText.trim() && wsRef.current?.readyState === WebSocket.OPEN) {

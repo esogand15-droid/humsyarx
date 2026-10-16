@@ -24,10 +24,12 @@ import {
 
 
 /* ─────────────────────────────────────────────────────────────
-   🎙 م9 — تماس صوتی زنده با هوشیار (Google Gemini Live API)
+   🎙📹 م9 — تماس صوتی و ویدیویی زنده با هوشیار (Google Gemini Live API)
    - اتصال دوطرفه‌ی WebSocket به /api/ai/live/ws
    - ارسال میکروفون با فرمت استاندارد گوگل:
-     16-bit PCM, 16kHz, mono, little-endian (چانک‌های ~100ms)
+     16-bit PCM, 16kHz, mono, little-endian (با Downsample از نرخ بومی سخت‌افزار)
+   - ارسال فریم‌های ویدیویی زنده (دوربین جلو/پشت):
+     JPEG 1fps از طریق realtimeInput.video
    - دریافت و پخش بدون وقفه‌ی صدای هوشیار:
      16-bit PCM, 24kHz, mono, little-endian
    - پشتیبانی کامل از پریدن وسط حرف (Barge-in / interrupted)،
@@ -111,6 +113,8 @@ export default function AiLive() {
   const [errMsg, setErrMsg] = useState('');
   const [micMuted, setMicMuted] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
+  const [cameraOn, setCameraOn] = useState(false);
+  const [facingMode, setFacingMode] = useState('environment'); // environment (پشت) | user (سلفی)
   const [voice, setVoice] = useState('');
   const [targetLang, setTargetLang] = useState('fa');
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -125,6 +129,9 @@ export default function AiLive() {
 
   const wsRef = useRef(null);
   const mediaStreamRef = useRef(null);
+  const videoStreamRef = useRef(null);
+  const videoElRef = useRef(null);
+  const videoTimerRef = useRef(null);
   const captureCtxRef = useRef(null);
   const processorRef = useRef(null);
   const playCtxRef = useRef(null);
@@ -162,12 +169,81 @@ export default function AiLive() {
     nextPlayTimeRef.current = 0;
   }, []);
 
+  const stopCameraStream = useCallback(() => {
+    if (videoTimerRef.current) {
+      window.clearInterval(videoTimerRef.current);
+      videoTimerRef.current = null;
+    }
+    if (videoStreamRef.current) {
+      for (const track of videoStreamRef.current.getTracks()) {
+        try {
+          track.stop();
+        } catch (_) {}
+      }
+      videoStreamRef.current = null;
+    }
+    if (videoElRef.current) {
+      videoElRef.current.srcObject = null;
+    }
+    setCameraOn(false);
+  }, []);
+
+  const startCameraStream = useCallback(async (mode = facingMode) => {
+    stopCameraStream();
+    try {
+      const vStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: mode,
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
+      });
+      videoStreamRef.current = vStream;
+      setCameraOn(true);
+      setFacingMode(mode);
+      if (videoElRef.current) {
+        videoElRef.current.srcObject = vStream;
+        videoElRef.current.play().catch(() => {});
+      }
+      const canvas = document.createElement('canvas');
+      const ctx2d = canvas.getContext('2d');
+      videoTimerRef.current = window.setInterval(() => {
+        const vid = videoElRef.current;
+        if (!vid || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!vid.videoWidth || !vid.videoHeight) return;
+        const scale = Math.min(1, 640 / Math.max(vid.videoWidth, vid.videoHeight));
+        canvas.width = Math.round(vid.videoWidth * scale);
+        canvas.height = Math.round(vid.videoHeight * scale);
+        ctx2d.drawImage(vid, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+        const b64 = dataUrl.split(',')[1] || '';
+        if (b64) {
+          wsRef.current.send(JSON.stringify({
+            type: 'video',
+            data: b64,
+            mimeType: 'image/jpeg',
+          }));
+        }
+      }, 1000);
+    } catch (_) {
+      setErrMsg('دسترسی به دوربین داده نشد؛ لطفاً مجوز دوربین را در تلگرام/مرورگر فعال کن.');
+    }
+  }, [facingMode, stopCameraStream]);
+
+  useEffect(() => {
+    if (cameraOn && videoElRef.current && videoStreamRef.current) {
+      videoElRef.current.srcObject = videoStreamRef.current;
+      videoElRef.current.play().catch(() => {});
+    }
+  }, [cameraOn]);
+
   const scheduleAudioChunk = useCallback((b64Data) => {
     if (speakerMutedRef.current || !b64Data) return;
     try {
       if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
         const AC = window.AudioContext || window.webkitAudioContext;
-        playCtxRef.current = new AC({ sampleRate: 24000 });
+        playCtxRef.current = new AC();
       }
       const ctx = playCtxRef.current;
       if (ctx.state === 'suspended') {
@@ -202,6 +278,7 @@ export default function AiLive() {
 
   const cleanupSession = useCallback(() => {
     stopAllPlayback();
+    stopCameraStream();
     if (processorRef.current) {
       try {
         processorRef.current.disconnect();
@@ -229,7 +306,7 @@ export default function AiLive() {
       wsRef.current = null;
     }
     setMicLevel(0);
-  }, [stopAllPlayback]);
+  }, [stopAllPlayback, stopCameraStream]);
 
   useEffect(() => () => cleanupSession(), [cleanupSession]);
 
@@ -243,7 +320,7 @@ export default function AiLive() {
     return () => window.clearInterval(id);
   }, [status]);
 
-  const startCall = async () => {
+  const startCall = async (withVideo = false) => {
     setErrMsg('');
     setToolNotice('');
     setUserLiveText('');
@@ -253,12 +330,22 @@ export default function AiLive() {
     setElapsedSec(0);
     haptic('medium');
 
+    // باز کردن AudioContext دقیقاً در لحظه‌ی کلیک کاربر (جلوگیری از بلاک Autoplay مرورگر/وب‌ویو)
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!playCtxRef.current || playCtxRef.current.state === 'closed') {
+        playCtxRef.current = new AC();
+      }
+      if (playCtxRef.current.state === 'suspended') {
+        playCtxRef.current.resume().catch(() => {});
+      }
+    } catch (_) {}
+
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -272,6 +359,10 @@ export default function AiLive() {
 
     mediaStreamRef.current = stream;
     setStatus('connecting');
+
+    if (withVideo) {
+      startCameraStream(facingMode);
+    }
 
     const origin = API_ORIGIN || window.location.origin;
     const wsProto = origin.startsWith('https') ? 'wss' : 'ws';
@@ -301,13 +392,18 @@ export default function AiLive() {
         if (msg.max_session_sec) setMaxSessionSec(msg.max_session_sec);
         setStatus('listening');
 
-        // راه‌اندازی ضبط میکروفون (PCM16 16kHz) پس از آماده شدن نشست
+        // راه‌اندازی ضبط میکروفون با نرخ بومی سخت‌افزار و Downsample به 16kHz PCM16
         try {
           const AC = window.AudioContext || window.webkitAudioContext;
-          const capCtx = new AC({ sampleRate: 16000 });
+          const capCtx = new AC();
           captureCtxRef.current = capCtx;
+          if (capCtx.state === 'suspended') {
+            capCtx.resume().catch(() => {});
+          }
           const srcNode = capCtx.createMediaStreamSource(stream);
-          const proc = capCtx.createScriptProcessor(2048, 1, 1);
+          const proc = capCtx.createScriptProcessor(4096, 1, 1);
+          const silentGain = capCtx.createGain();
+          silentGain.gain.value = 0;
           processorRef.current = proc;
 
           proc.onaudioprocess = (audioEv) => {
@@ -333,7 +429,8 @@ export default function AiLive() {
           };
 
           srcNode.connect(proc);
-          proc.connect(capCtx.destination);
+          proc.connect(silentGain);
+          silentGain.connect(capCtx.destination);
         } catch (capErr) {
           console.error('[AiLive capture]', capErr);
         }
@@ -452,7 +549,7 @@ export default function AiLive() {
   if (isLoading) {
     return (
       <main className="page">
-        <Header title="🎙 تماس صوتی زنده با هوشیار" back="/ai" />
+        <Header title="🎙 تماس صوتی و ویدیویی زنده" back="/ai" />
         <div style={{ padding: 32, textAlign: 'center' }}>
           <Spinner />
         </div>
@@ -464,12 +561,12 @@ export default function AiLive() {
   const isTranslateModel = (activeModel || liveCfg?.model || '').includes('translate');
 
   const statusMeta = {
-    idle: { label: 'آماده‌ی برقراری تماس زنده', color: '#64748B', icon: '🎙' },
+    idle: { label: 'آماده‌ی برقراری تماس صوتی/ویدیویی زنده', color: '#64748B', icon: '🎙' },
     connecting: { label: 'در حال اتصال به Gemini Live…', color: '#F59E0B', icon: '⏳' },
     listening: { label: micMuted ? 'میکروفون بی‌صداست' : 'در حال گوش دادن به شما… صحبت کنید', color: '#10B981', icon: '🟢' },
     thinking: { label: 'هوشیار در حال استدلال و بررسی…', color: '#8B5CF6', icon: '🧠' },
     speaking: { label: 'هوشیار در حال صحبت… (هر لحظه صحبت کنید قطع می‌شود)', color: '#3B82F6', icon: '🔊' },
-    error: { label: 'خطا در تماس صوتی زنده', color: '#EF4444', icon: '⚠️' },
+    error: { label: 'خطا در تماس زنده', color: '#EF4444', icon: '⚠️' },
   }[status] || { label: '', color: '#64748B', icon: '🎙' };
 
   const orbScale = status === 'speaking'
@@ -480,10 +577,10 @@ export default function AiLive() {
 
   return (
     <main className="page" style={{ paddingBottom: 32 }}>
-      <Header title="🎙 تماس صوتی زنده با هوشیار" back="/ai" />
+      <Header title="🎙 تماس صوتی و ویدیویی زنده" back="/ai" />
 
       <div style={{ padding: '12px 16px', display: 'grid', gap: 14 }}>
-        {/* کارت وضعیت و گوی صوتی */}
+        {/* کارت وضعیت، پیش‌نمایش دوربین و گوی صوتی */}
         <section
           className="card"
           style={{
@@ -503,17 +600,38 @@ export default function AiLive() {
             )}
           </div>
 
+          {/* پیش‌نمایش ویدیوی زنده دوربین (هنگام روشن بودن دوربین) */}
+          {cameraOn && (
+            <div style={{ position: 'relative', maxWidth: 320, margin: '0 auto 14px', borderRadius: 16, overflow: 'hidden', border: '2px solid #3B82F6' }}>
+              <video
+                ref={videoElRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ width: '100%', display: 'block', background: '#000', maxHeight: 220, objectFit: 'cover' }}
+              />
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => startCameraStream(facingMode === 'environment' ? 'user' : 'environment')}
+                style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(15,23,42,0.8)', borderRadius: 999 }}
+              >
+                🔄 تعویض دوربین
+              </button>
+            </div>
+          )}
+
           {/* گوی انیمیشنی تماس زنده */}
           <div
             style={{
-              width: 128,
-              height: 128,
-              margin: '12px auto 16px',
+              width: cameraOn ? 84 : 128,
+              height: cameraOn ? 84 : 128,
+              margin: '10px auto 14px',
               borderRadius: '50%',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: 46,
+              fontSize: cameraOn ? 32 : 46,
               transform: `scale(${orbScale.toFixed(3)})`,
               transition: 'transform 120ms ease-out, box-shadow 250ms ease',
               background: `radial-gradient(circle at 35% 35%, ${statusMeta.color}55, ${statusMeta.color}18 70%)`,
@@ -585,18 +703,38 @@ export default function AiLive() {
             </div>
           )}
 
-          {/* دکمه‌های اصلی شروع / پایان و کنترل میکروفون */}
+          {/* دکمه‌های اصلی شروع / پایان و کنترل میکروفون و دوربین */}
           <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 18, flexWrap: 'wrap' }}>
             {!isCallActive ? (
-              <button
-                type="button"
-                className="btn primary"
-                disabled={liveCfg && !liveCfg.enabled}
-                onClick={startCall}
-                style={{ minWidth: 210, padding: '12px 22px', fontSize: 15, borderRadius: 999 }}
-              >
-                🎙 شروع تماس صوتی زنده
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="btn primary"
+                  disabled={liveCfg && !liveCfg.enabled}
+                  onClick={() => startCall(false)}
+                  style={{ minWidth: 185, padding: '12px 18px', fontSize: 14, borderRadius: 999 }}
+                >
+                  🎙 تماس صوتی زنده
+                </button>
+                {!isTranslateModel && (
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={liveCfg && !liveCfg.enabled}
+                    onClick={() => startCall(true)}
+                    style={{
+                      minWidth: 185,
+                      padding: '12px 18px',
+                      fontSize: 14,
+                      borderRadius: 999,
+                      background: 'rgba(59,130,246,0.22)',
+                      border: '1px solid rgba(59,130,246,0.5)',
+                    }}
+                  >
+                    📹 تماس ویدیویی + صوتی
+                  </button>
+                )}
+              </>
             ) : (
               <>
                 <button
@@ -610,6 +748,20 @@ export default function AiLive() {
                 >
                   {micMuted ? '🔇 میکروفون بسته' : '🎤 میکروفون باز'}
                 </button>
+
+                {!isTranslateModel && (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => (cameraOn ? stopCameraStream() : startCameraStream(facingMode))}
+                    style={{
+                      borderRadius: 999,
+                      background: cameraOn ? 'rgba(59,130,246,0.28)' : 'rgba(255,255,255,0.08)',
+                    }}
+                  >
+                    {cameraOn ? '📹 بستن دوربین' : '📷 روشن کردن دوربین'}
+                  </button>
+                )}
 
                 <button
                   type="button"
