@@ -304,6 +304,8 @@ def _schedule_document(
             "flex_note",
             "",
         ),
+
+        "credit": float(item.get("credit") or 1.0),
     }
 
 
@@ -349,6 +351,8 @@ class ScheduleCreate(BaseModel):
 
     flex_type: FlexType = "fixed"
 
+    credit: float | None = Field(default=1.0, ge=0.5, le=10.0)
+
 
 class ScheduleUpdate(BaseModel):
     lesson: str = Field(
@@ -389,6 +393,8 @@ class ScheduleUpdate(BaseModel):
     )
 
     flex_type: FlexType = "fixed"
+
+    credit: float | None = Field(default=None, ge=0.5, le=10.0)
 
 
 class FlexChange(BaseModel):
@@ -460,7 +466,7 @@ async def schedule_create(
     group = db.normalize_group(body.group) or "هر دو"
     schedule_id = await db.add_schedule(
         stype=body.type, lesson=lesson, teacher=teacher, date=date, time=time, end_time=end_time,
-        location=location, notes=note, group=group, flex_type=body.flex_type)
+        location=location, notes=note, group=group, flex_type=body.flex_type, credit=body.credit or 1.0)
     item = await db.get_schedule_by_id(str(schedule_id)) or {
         "_id": schedule_id, "type": body.type, "lesson": lesson,
         "teacher": teacher, "date": date, "time": time, "end_time": end_time,
@@ -501,7 +507,7 @@ async def schedule_update(
     ok = await db.update_schedule_full(
         schedule_id, _clean(body.lesson, 100), _clean(body.teacher, 100),
         date, time, _clean(body.location, 100),
-        str(body.note or "").strip()[:500], group, body.flex_type, end_time=end_time)
+        str(body.note or "").strip()[:500], group, body.flex_type, end_time=end_time, credit=body.credit)
     if not ok:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
     item = await db.get_schedule_by_id(schedule_id) or {
@@ -542,6 +548,115 @@ async def schedule_delete(
         tags=["برنامه", "لغو", old.get("type", ""), "پنل_وب"],
     )
     return {"ok": True, "notified": notice.get("notified", 0)}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  🎓 سیستم انتخاب واحد درس‌به‌درس و تنظیمات ترم (پنل ادمین)
+# ══════════════════════════════════════════════════════════════════
+
+@router.get("/schedule/course-selection/stats")
+async def admin_course_selection_stats(
+    term: str | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    """آمار کامل انتخاب واحد دانشجوها + تنظیمات ترم جاری + لیست گروه‌های ارائه‌شده هر درس."""
+    stats = await db.get_course_selection_admin_stats(term=term)
+    offerings = await db.get_term_course_offerings(term=stats.get("term"))
+    raw_offerings = await db.course_offerings.find({"term": stats.get("term")}).sort("lesson", 1).to_list(length=500)
+    for r in raw_offerings:
+        r["id"] = str(r.pop("_id"))
+    return {
+        "stats": stats,
+        "offerings": offerings,
+        "explicit_offerings": raw_offerings,
+    }
+
+
+@router.put("/schedule/term-config")
+async def admin_update_term_config(
+    body: dict,
+    admin=Depends(get_schedule_admin_user),
+):
+    """ویرایش ترم جاری، تاریخ پایان امتحانات، و آرشیو خودکار انتخاب‌های ترم قبل در صورت تغییر ترم."""
+    old_cfg = await db.get_current_term_config()
+    new_term = str(body.get("term") or old_cfg.get("term") or "1404-2").strip()
+    archive_prev = bool(body.get("archive_previous", True))
+    archived_count = 0
+    if new_term != old_cfg.get("term") and archive_prev:
+        arch = await db.archive_previous_term_selections(new_term)
+        archived_count = arch.get("archived_count", 0)
+    updated = await db.set_current_term_config(body)
+    await _audit(
+        admin, "بروزرسانی تنظیمات ترم و انتخاب واحد", "Schedules", severity="INFO",
+        before=old_cfg, after={**updated, "archived_previous": archived_count},
+        tags=["انتخاب_واحد", "تنظیمات_ترم"],
+    )
+    return {"ok": True, "term_config": updated, "archived_previous": archived_count}
+
+
+@router.post("/schedule/course-offerings")
+async def admin_upsert_course_offering(
+    body: dict,
+    admin=Depends(get_schedule_admin_user),
+):
+    """ثبت یا ویرایش یک گروه ارائه‌شده برای درس (پشتیبانی از چند گروه با اساتید متفاوت برای یک درس)."""
+    lesson = _clean(body.get("lesson"), 120)
+    if not lesson:
+        raise HTTPException(422, "نام درس الزامی است")
+    group = str(body.get("group") or "1").strip()
+    teacher = _clean(body.get("teacher"), 80)
+    schedule_summary = _clean(body.get("schedule_summary"), 200)
+    try:
+        credit = float(body.get("credit") or 1.0)
+    except (TypeError, ValueError):
+        credit = 1.0
+    term = str(body.get("term") or "").strip() or None
+    oid = await db.upsert_course_offering(
+        lesson=lesson, group=group, teacher=teacher,
+        credit=credit, schedule_summary=schedule_summary, term=term,
+    )
+    await _audit(
+        admin, "ثبت/ویرایش گروه درس ارائه‌شده", "Schedules", severity="INFO",
+        target_id=oid, target_type="course_offering", target_label=f"{lesson} (گروه {group})",
+        after={"lesson": lesson, "group": group, "teacher": teacher, "credit": credit},
+        tags=["انتخاب_واحد", "گروه_درس"],
+    )
+    return {"ok": True, "id": oid}
+
+
+@router.delete("/schedule/course-offerings/{oid}")
+async def admin_delete_course_offering(
+    oid: str,
+    admin=Depends(get_schedule_admin_user),
+):
+    ok = await db.delete_course_offering(oid)
+    if not ok:
+        raise HTTPException(404, "گروه درس پیدا نشد")
+    await _audit(
+        admin, "حذف گروه درس ارائه‌شده", "Schedules", severity="WARNING",
+        target_id=oid, target_type="course_offering",
+        tags=["انتخاب_واحد", "حذف_گروه_درس"],
+    )
+    return {"ok": True}
+
+
+@router.post("/schedule/course-selection/send-reminder")
+async def admin_send_course_selection_reminder(
+    body: dict | None = None,
+    admin=Depends(get_schedule_admin_user),
+):
+    """ارسال فوری یادآوری انتخاب واحد پایان امتحانات (فقط برای دانشجوهایی که هنوز وارد نکرده‌اند)."""
+    is_second = bool((body or {}).get("second_reminder", False))
+    # صف اوت‌باکس ربات برای ارسال در تلگرام + اجرای مستقیم روی اینباکس مینی‌اپ
+    await db.enqueue_bot_outbox(0, f"__COURSE_SELECTION_REMINDER__:{'second' if is_second else 'first'}")
+    await _audit(
+        admin,
+        "ارسال یادآوری دوم انتخاب واحد" if is_second else "ارسال یادآوری انتخاب واحد پایان ترم",
+        "Schedules", severity="INFO",
+        after={"second_reminder": is_second},
+        tags=["انتخاب_واحد", "یادآوری_ترم"],
+    )
+    return {"ok": True, "queued": True, "second_reminder": is_second}
 
 
 @router.get(

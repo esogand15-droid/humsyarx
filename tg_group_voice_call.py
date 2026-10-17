@@ -1175,6 +1175,8 @@ async def join_group_voice_chat(
     _ensure_pyrogram_compat()
     from ai_solver import (
         DEFAULT_LIVE_MODEL,
+        DEFAULT_LIVE_TEMPERATURE,
+        DEFAULT_VOICE_PROMPT,
         PREBUILT_TTS_VOICES,
         build_live_setup_message,
         connect_gemini_live_with_failover,
@@ -1203,7 +1205,7 @@ async def join_group_voice_chat(
         effective_voice = "Sulafat"
 
     group_prompt = (
-        (cfg.get("system_prompt") or "")
+        (cfg.get("voice_system_prompt") or DEFAULT_VOICE_PROMPT)
         + "\n\n[محیط فعلی: شما اکنون داخل «ویس‌چت گروهی تلگرام» (Group Voice Chat) هستید و "
         "دانشجویان گروه به‌صورت زنده با شما صحبت می‌کنند. پاسخ‌های خود را صمیمی، کوتاه، "
         "روان و مناسب جمع دانشجویی بیان کن.]"
@@ -1215,6 +1217,7 @@ async def join_group_voice_chat(
         thinking_level=cfg.get("live_thinking_level") or "low",
         target_language=cfg.get("live_target_language") or "fa",
         include_tools=("translate" not in effective_model.lower()),
+        temperature=cfg.get("live_temperature", DEFAULT_LIVE_TEMPERATURE),
     )
 
     keys = (cfg.get("vault_multi") or {}).get("gemini") or cfg.get("live_api_key_list") or []

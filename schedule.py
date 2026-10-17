@@ -216,11 +216,27 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_group = user.get('group', '') if user else ''
 
     if action == 'main':
-        await _schedule_main(query, user_group)
+        await _schedule_main(query, user_group, uid=uid)
 
     elif action == 'group_view':
         group_filter = parts[2] if len(parts) > 2 and parts[2] else user_group
-        await _show_group_schedule(query, group_filter)
+        explicit_grp = (len(parts) > 3 and parts[3] == 'explicit')
+        await _show_group_schedule(query, group_filter, uid=uid, explicit_group=explicit_grp)
+
+    elif action == 'course_select':
+        await _show_course_selection_bot(query, context, uid, reset_draft=True)
+
+    elif action == 'cs_all':
+        target_g = parts[2] if len(parts) > 2 else '1'
+        await _handle_cs_all_bot(query, context, uid, target_g)
+
+    elif action == 'cs_toggle':
+        idx_str = parts[2] if len(parts) > 2 else '0'
+        target_g = parts[3] if len(parts) > 3 else '1'
+        await _handle_cs_toggle_bot(query, context, uid, idx_str, target_g)
+
+    elif action == 'cs_save':
+        await _handle_cs_save_bot(query, context, uid)
 
     elif action == 'export_pdf':
         await _export_schedule_pdf(query, context, user, user_group)
@@ -286,31 +302,35 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'type':
         stype        = parts[2] if len(parts) > 2 else 'class'
         group_filter = parts[3] if len(parts) > 3 else user_group
+        explicit_grp = (len(parts) > 4 and parts[4] == 'explicit')
         # FIX سازگاری به‌عقب: اگه کسی هنوز callback قدیمی type:class داشت
         # (مثلاً از پیام‌های قدیمی)، به همان صفحه یکپارچه هدایت شود
         if stype == 'class':
-            await _show_group_schedule(query, group_filter)
+            await _show_group_schedule(query, group_filter, uid=uid, explicit_group=explicit_grp)
             return
-        items        = await db.get_schedules(stype=stype, group=group_filter or None)
+        if not explicit_grp:
+            pers = await db.get_personalized_schedules(uid, stype=stype, upcoming=True)
+            items = pers.get('items') or []
+            group_filter = pers.get('computed_group') or group_filter
+        else:
+            items = await db.get_schedules(stype=stype, group=group_filter or None)
         title        = TYPE_NAMES.get(stype, stype)
         if group_filter:
             title += f" — گروه {group_filter}"
         await _show_schedule_list(query, items, title, stype=stype, group_filter=group_filter)
 
     elif action == 'upcoming':
-        items    = await db.upcoming_exams(14)
-        filtered = [
-            i for i in items
-            if i.get('group', 'هر دو') in ('هر دو', user_group, '')
-        ]
+        pers     = await db.get_personalized_schedules(uid, stype='exam', upcoming=True)
+        filtered = [i for i in (pers.get('items') or []) if 0 <= days_until(i.get('date', '')) <= 14]
         await _show_schedule_list(query, filtered, "⏳ امتحانات ۱۴ روز آینده")
 
     elif action == 'group_sel':
         stype = parts[2] if len(parts) > 2 else 'class'
         keyboard = [
-            [InlineKeyboardButton("1️⃣ گروه ۱",     callback_data=f'schedule:type:{stype}:1')],
-            [InlineKeyboardButton("2️⃣ گروه ۲",     callback_data=f'schedule:type:{stype}:2')],
-            [InlineKeyboardButton("👥 هر دو گروه", callback_data=f'schedule:type:{stype}:')],
+            [InlineKeyboardButton("1️⃣ گروه ۱",     callback_data=f'schedule:type:{stype}:1:explicit')],
+            [InlineKeyboardButton("2️⃣ گروه ۲",     callback_data=f'schedule:type:{stype}:2:explicit')],
+            [InlineKeyboardButton("👥 هر دو گروه", callback_data=f'schedule:type:{stype}::explicit')],
+            [InlineKeyboardButton("🎓 برنامه شخصی من", callback_data='schedule:group_view:')],
             [InlineKeyboardButton("🔙 بازگشت",     callback_data='schedule:main')],
         ]
         await query.edit_message_text(
@@ -524,17 +544,30 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  UI
 # ══════════════════════════════════════════════════
 
-async def _schedule_main(query, user_group: str):
+async def _schedule_main(query, user_group: str, uid: int = None):
     """
     FIX طبق سند: «لیست کلاس‌ها» و «جدول هفتگی» قبلاً دو صفحه جدا
     برای یک داده بودند — گیج‌کننده و تکراری. حالا فقط یک دکمه
     «📊 برنامه کلاسی» وجود دارد که به _show_group_schedule می‌رود؛
     آن تابع همه‌چیز (جدول هفته + امتحانات مرتبط) را یکجا نشان می‌دهد.
     """
-    g = user_group or ''
-    g_label = f" — گروه {g}" if g else ""
+    sel_info = None
+    if uid:
+        try:
+            sel_info = await db.get_student_course_selections(uid)
+        except Exception:
+            sel_info = None
+    g = (sel_info.get('computed_group') if sel_info else None) or user_group or ''
+    has_sel = bool(sel_info and sel_info.get('has_selections'))
+    sel_cnt = int(sel_info.get('selected_count') or 0) if sel_info else 0
+    g_label = f" (شخصی · گروه {g})" if has_sel and g else (f" — گروه {g}" if g else "")
+    cs_btn_label = (
+        f"🎓 ویرایش انتخاب واحد ({sel_cnt} درس)"
+        if has_sel else "🎓 انتخاب واحدم رو وارد می‌کنم"
+    )
     keyboard = [
         [InlineKeyboardButton(f"📊 برنامه کلاسی{g_label}", callback_data=f'schedule:group_view:{g}')],
+        [InlineKeyboardButton(cs_btn_label, callback_data='schedule:course_select')],
         [InlineKeyboardButton("📝 امتحانات",      callback_data=f'schedule:type:exam:{g}')],
         [
             InlineKeyboardButton("🔄 جبرانی",        callback_data=f'schedule:type:makeup:{g}'),
@@ -547,11 +580,162 @@ async def _schedule_main(query, user_group: str):
         ],
         [InlineKeyboardButton("🔙 بازگشت",           callback_data='dashboard:refresh')],
     ]
+    sub_line = (
+        f"🎓 <b>برنامه شخصی‌سازی‌شده فعال</b> ({sel_cnt} درس انتخابی · گروه اکثریت: {g})"
+        if has_sel else
+        (f"👤 گروه شما: {g}\n💡 <i>برای شخصی‌سازی برنامه هر درس، دکمه «انتخاب واحدم رو وارد می‌کنم» را بزنید.</i>" if g else "")
+    )
     await query.edit_message_text(
-        f"📅 <b>برنامه و امتحانات</b>\n"
-        f"{'👤 گروه شما: ' + g if g else ''}",
+        f"📅 <b>برنامه و امتحانات</b>\n{sub_line}",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def _show_course_selection_bot(query, context, uid: int, reset_draft: bool = False):
+    """🎓 رابط دکمه‌های اینلاین انتخاب گروه درس‌به‌درس در ربات تلگرام."""
+    info = await db.get_student_course_selections(uid)
+    offerings = info.get('offerings') or []
+    if reset_draft or 'cs_draft' not in context.user_data:
+        draft = dict(info.get('selections_map') or {})
+        for off in offerings:
+            if off.get('single_group') and off.get('auto_selected_group') and not draft.get(off['lesson']):
+                draft[off['lesson']] = off['auto_selected_group']
+        context.user_data['cs_draft'] = draft
+    else:
+        draft = context.user_data['cs_draft']
+
+    if not offerings:
+        await query.edit_message_text(
+            "🎓 <b>انتخاب واحد درس‌به‌درس</b>\n\n"
+            "📭 هنوز درسی در برنامه این ترم ثبت نشده است.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:main')
+            ]])
+        )
+        return
+
+    # محاسبه زنده‌ی اکثریت
+    sel_list = []
+    for off in offerings:
+        g = draft.get(off['lesson'])
+        if g in ('1', '2'):
+            sel_list.append({'lesson': off['lesson'], 'group': g, 'credit': off.get('credit', 1.0)})
+    maj = db.compute_majority_group(sel_list, fallback_group=info.get('registered_group') or '1')
+
+    lines = [
+        "🎓 <b>انتخاب گروه درس‌های این ترم</b>",
+        "━━━━━━━━━━━━━━━━",
+        "برای هر درس مشخص کن با کدوم گروه و استاد برداشتیش تا برنامه کلاسی دقیق خودت ساخته بشه:",
+        "",
+    ]
+    keyboard = [
+        [
+            InlineKeyboardButton("⚡ همه رو گروه ۱ بزن", callback_data='schedule:cs_all:1'),
+            InlineKeyboardButton("⚡ همه رو گروه ۲ بزن", callback_data='schedule:cs_all:2'),
+        ]
+    ]
+
+    for idx, off in enumerate(offerings[:25]):
+        lesson = off['lesson']
+        chosen = draft.get(lesson, '')
+        is_single = bool(off.get('single_group'))
+        cred = off.get('credit', 1.0)
+        cred_str = f" ({int(cred) if float(cred).is_integer() else cred} واحد)" if cred else ""
+        status_icon = "✅" if chosen else "⬜"
+        lines.append(f"{status_icon} <b>{lesson}</b>{cred_str}")
+        row = []
+        for g_obj in (off.get('groups') or []):
+            g_num = g_obj['group']
+            teacher = g_obj.get('teacher') or 'استاد ثبت نشده'
+            sched_sum = g_obj.get('schedule_summary') or ''
+            lines.append(f"   • گروه {g_num}: {teacher}" + (f" ({sched_sum})" if sched_sum else ""))
+            active = (chosen == g_num)
+            mark = "✅" if active else "⬜"
+            short_t = (teacher[:12] + "…") if len(teacher) > 12 else teacher
+            short_l = (lesson[:12] + "…") if len(lesson) > 12 else lesson
+            btn_text = f"{mark} {short_l} | گ{g_num} ({short_t})"
+            if is_single:
+                btn_text = f"🔒 {short_l} | تک‌گروهی (گ{g_num})"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f'schedule:cs_toggle:{idx}:{g_num}'))
+        if row:
+            keyboard.append(row)
+
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append(
+        f"📊 <b>انتخاب‌شده:</b> {maj['total_selected']} از {len(offerings)} درس "
+        f"({maj['group1_courses']} گروه ۱ · {maj['group2_courses']} گروه ۲)\n"
+        f"👥 <b>گروه اکثریت شما:</b> گروه {maj['computed_group']}"
+    )
+
+    keyboard.append([InlineKeyboardButton("💾 ذخیره و مشاهده برنامه کلاسی من", callback_data='schedule:cs_save')])
+    keyboard.append([InlineKeyboardButton("🔙 انصراف و بازگشت", callback_data='schedule:main')])
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3950] + "\n…"
+    await query.edit_message_text(
+        text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def _handle_cs_all_bot(query, context, uid: int, target_group: str):
+    info = await db.get_student_course_selections(uid)
+    offerings = info.get('offerings') or []
+    draft = {}
+    for off in offerings:
+        if off.get('single_group') and off.get('auto_selected_group'):
+            draft[off['lesson']] = off['auto_selected_group']
+        else:
+            draft[off['lesson']] = target_group if target_group in ('1', '2') else '1'
+    context.user_data['cs_draft'] = draft
+    await _show_course_selection_bot(query, context, uid, reset_draft=False)
+
+
+async def _handle_cs_toggle_bot(query, context, uid: int, idx_str: str, target_group: str):
+    info = await db.get_student_course_selections(uid)
+    offerings = info.get('offerings') or []
+    try:
+        idx = int(idx_str)
+    except ValueError:
+        return
+    if idx < 0 or idx >= len(offerings):
+        return
+    off = offerings[idx]
+    if off.get('single_group'):
+        await query.answer("🔒 این درس فقط یک گروه دارد و به صورت خودکار انتخاب شده است.")
+        return
+    draft = dict(context.user_data.get('cs_draft') or info.get('selections_map') or {})
+    lesson = off['lesson']
+    if draft.get(lesson) == target_group:
+        draft.pop(lesson, None)
+    else:
+        draft[lesson] = target_group
+    context.user_data['cs_draft'] = draft
+    await _show_course_selection_bot(query, context, uid, reset_draft=False)
+
+
+async def _handle_cs_save_bot(query, context, uid: int):
+    info = await db.get_student_course_selections(uid)
+    draft = context.user_data.pop('cs_draft', None)
+    if draft is None:
+        draft = info.get('selections_map') or {}
+    payload = [
+        {'lesson': lesson, 'group': g}
+        for lesson, g in draft.items()
+        if g in ('1', '2')
+    ]
+    res = await db.save_student_course_selections(uid, payload, term=info.get('term'))
+    await _show_group_schedule(
+        query,
+        res.get('computed_group') or '1',
+        uid=uid,
+        explicit_group=False,
+        saved_banner=res,
     )
 
 
@@ -562,7 +746,13 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
     بسازد و همه‌چیز با هم قاطی نشود. stype=None یعنی «همه‌چیز با هم»
     (فقط از دکمه‌ی عمومی توی منوی اصلی برنامه در دسترس است).
     """
-    items = await db.get_schedules(stype=stype, upcoming=True, group=user_group or None)
+    uid = user.get('_id') if user else None
+    if uid:
+        pers = await db.get_personalized_schedules(int(uid), stype=stype, upcoming=True)
+        items = pers.get('items') or []
+        user_group = pers.get('computed_group') or user_group
+    else:
+        items = await db.get_schedules(stype=stype, upcoming=True, group=user_group or None)
     if not items:
         await query.answer("📭 فعلاً چیزی توی این بخش نیست که خروجی بگیریم.", show_alert=True)
         return
@@ -603,11 +793,18 @@ async def _export_schedule_pdf(query, context, user: dict, user_group: str, styp
     )
 
 
-async def _show_group_schedule(query, user_group: str):
+async def _show_group_schedule(
+    query,
+    user_group: str,
+    uid: int = None,
+    explicit_group: bool = False,
+    saved_banner: dict = None,
+):
     """
     FIX طبق سند: منبع واحد برنامه گروه — جدول هفته (شنبه تا جمعه)
     + برجسته‌سازی روز جاری + کلاس‌های منعطف مشخص + امتحانات مرتبط
     همان گروه، همه در یک صفحه. دیگر صفحه‌ی جدا «جدول هفتگی» وجود ندارد.
+    + پشتیبانی از برنامه شخصی‌سازی‌شده درس‌به‌درس دانشجو (بخش ۲).
     """
     from datetime import timedelta
     today = now_tehran().date()
@@ -618,7 +815,13 @@ async def _show_group_schedule(query, user_group: str):
     start_str = week_start.isoformat()
     end_str = week_end.isoformat()
 
-    all_classes = await db.get_schedules(stype='class', upcoming=False, group=user_group or None)
+    pers = None
+    if uid and not explicit_group:
+        pers = await db.get_personalized_schedules(uid, stype='class', upcoming=False)
+        all_classes = pers.get('items') or []
+        user_group = pers.get('computed_group') or user_group
+    else:
+        all_classes = await db.get_schedules(stype='class', upcoming=False, group=user_group or None)
     week_classes = [c for c in all_classes if start_str <= c.get('date', '') <= end_str]
 
     by_day = {i: [] for i in range(7)}
@@ -626,12 +829,34 @@ async def _show_group_schedule(query, user_group: str):
         idx = jalali_weekday_index(c.get('date', ''))
         by_day[idx].append(c)
 
-    g_label = f" — گروه {user_group}" if user_group else ""
-    lines = [
+    has_custom = bool(pers and pers.get('has_custom_selection'))
+    g_label = (
+        f" شخصی شما (گروه اکثریت: {user_group})"
+        if has_custom and user_group
+        else (f" — گروه {user_group}" if user_group else "")
+    )
+    lines = []
+    if saved_banner:
+        lines.append(
+            f"✅ <b>انتخاب واحد شما ذخیره شد!</b>\n"
+            f"👥 گروه اکثریت شما: <b>گروه {saved_banner.get('computed_group')}</b> "
+            f"({saved_banner.get('selected_count', 0)} درس انتخابی)\n"
+            "━━━━━━━━━━━━━━━━"
+        )
+    lines.extend([
         f"📊 <b>برنامه کلاسی{g_label}</b>",
         f"🗓 {fmt_jalali(start_str).split('(')[0].strip()} تا {fmt_jalali(end_str).split('(')[0].strip()}",
         "━━━━━━━━━━━━━━━━",
-    ]
+    ])
+    if pers and not has_custom:
+        lines.append(
+            "💡 <i>شما هنوز انتخاب واحد درس‌به‌درس را وارد نکرده‌اید؛ برنامه پیش‌فرض گروه شما نمایش داده می‌شود.</i>"
+        )
+    conflicts = (pers.get('conflicts') if pers else None) or []
+    if conflicts:
+        lines.append(f"\n⚠️ <b>هشدار تداخل زمانی ({len(conflicts)} مورد):</b>")
+        for cf in conflicts[:3]:
+            lines.append(f"   • {cf.get('message', '')}")
     has_any = False
     for i, day_name in enumerate(JALALI_WEEK_SAT_FIRST):
         items = sorted(by_day[i], key=lambda x: x.get('time', ''))
@@ -651,8 +876,10 @@ async def _show_group_schedule(query, user_group: str):
                     time_part += f" ({c['flex_note']})"
             else:
                 time_part = f"⏰ {_doc_time_display(c)}"
+            c_grp = c.get('group', '')
+            grp_tag = f" [گروه {c_grp}]" if c_grp in ('1', '2') and has_custom else ""
             lines.append(
-                f"   • <b>{c.get('lesson','')}</b>\n"
+                f"   • <b>{c.get('lesson','')}</b>{grp_tag}\n"
                 f"     {time_part}\n"
                 f"     👨‍🏫 {c.get('teacher','')}  |  📍 {c.get('location','')}"
             )
@@ -660,8 +887,12 @@ async def _show_group_schedule(query, user_group: str):
         lines.append("\n<i>هیچ کلاسی برای این هفته ثبت نشده است.</i>")
 
     # FIX طبق سند: امتحانات مرتبط همین گروه هم در همان صفحه
-    exams = await db.upcoming_exams(14)
-    group_exams = [e for e in exams if e.get('group', 'هر دو') in ('هر دو', user_group, '')]
+    if uid and not explicit_group:
+        pers_exams = await db.get_personalized_schedules(uid, stype='exam', upcoming=True)
+        group_exams = [e for e in (pers_exams.get('items') or []) if 0 <= days_until(e.get('date', '')) <= 14]
+    else:
+        exams = await db.upcoming_exams(14)
+        group_exams = [e for e in exams if e.get('group', 'هر دو') in ('هر دو', user_group, '')]
     if group_exams:
         lines.append("\n━━━━━━━━━━━━━━━━")
         lines.append("📝 <b>امتحانات نزدیک</b>")
@@ -673,7 +904,12 @@ async def _show_group_schedule(query, user_group: str):
     if len(text) > 4000:
         text = text[:3900] + "\n\n<i>... برای جزئیات کامل با ادمین هماهنگ کنید</i>"
 
-    keyboard = []
+    keyboard = [
+        [InlineKeyboardButton(
+            "🎓 ویرایش انتخاب واحد" if has_custom else "🎓 انتخاب واحدم رو وارد می‌کنم",
+            callback_data='schedule:course_select'
+        )]
+    ]
     all_upcoming_classes = await db.get_schedules(stype='class', upcoming=True, group=user_group or None)
     if all_upcoming_classes:
         keyboard.append([InlineKeyboardButton(
@@ -1149,10 +1385,23 @@ async def show_schedule_main(message: Message, uid: int, user: dict):
     منوی یکپارچه‌ی _schedule_main را می‌سازد (یک دکمه «برنامه کلاسی»).
     """
     user_group = user.get('group', '') if user else ''
-    g = user_group or ''
-    g_label = f" — گروه {g}" if g else ""
+    sel_info = None
+    if uid:
+        try:
+            sel_info = await db.get_student_course_selections(uid)
+        except Exception:
+            sel_info = None
+    g = (sel_info.get('computed_group') if sel_info else None) or user_group or ''
+    has_sel = bool(sel_info and sel_info.get('has_selections'))
+    sel_cnt = int(sel_info.get('selected_count') or 0) if sel_info else 0
+    g_label = f" (شخصی · گروه {g})" if has_sel and g else (f" — گروه {g}" if g else "")
+    cs_btn_label = (
+        f"🎓 ویرایش انتخاب واحد ({sel_cnt} درس)"
+        if has_sel else "🎓 انتخاب واحدم رو وارد می‌کنم"
+    )
     keyboard = [
         [InlineKeyboardButton(f"📊 برنامه کلاسی{g_label}", callback_data=f'schedule:group_view:{g}')],
+        [InlineKeyboardButton(cs_btn_label, callback_data='schedule:course_select')],
         [InlineKeyboardButton("📝 امتحانات",      callback_data=f'schedule:type:exam:{g}')],
         [
             InlineKeyboardButton("🔄 جبرانی",        callback_data=f'schedule:type:makeup:{g}'),
@@ -1164,9 +1413,13 @@ async def show_schedule_main(message: Message, uid: int, user: dict):
             InlineKeyboardButton("📄 خروجی PDF (همه)", callback_data='schedule:export_pdf'),
         ],
     ]
+    sub_line = (
+        f"🎓 <b>برنامه شخصی‌سازی‌شده فعال</b> ({sel_cnt} درس انتخابی · گروه اکثریت: {g})"
+        if has_sel else
+        (f"👤 گروه شما: {g}\n💡 <i>برای شخصی‌سازی برنامه هر درس، دکمه «انتخاب واحدم رو وارد می‌کنم» را بزنید.</i>" if g else "")
+    )
     await message.reply_text(
-        f"📅 <b>برنامه و امتحانات</b>\n"
-        f"{'👤 گروه شما: ' + g if g else ''}",
+        f"📅 <b>برنامه و امتحانات</b>\n{sub_line}",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )

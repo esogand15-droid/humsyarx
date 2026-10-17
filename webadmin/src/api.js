@@ -1063,6 +1063,25 @@ export const api = {
   },
   caScheduleExamsScanConfirm: (body) =>
     req("/api/web-admin/schedule/exams/scan/confirm", { method: "POST", body }),
+  // ── 🎓 انتخاب واحد درس‌به‌درس و تنظیمات ترم ──
+  caCourseSelectionStats: (term) =>
+    req(
+      "/api/web-admin/schedule/course-selection/stats" +
+        (term ? `?term=${encodeURIComponent(term)}` : ""),
+    ),
+  caUpdateTermConfig: (body) =>
+    req("/api/web-admin/schedule/term-config", { method: "PUT", body }),
+  caUpsertCourseOffering: (body) =>
+    req("/api/web-admin/schedule/course-offerings", { method: "POST", body }),
+  caDeleteCourseOffering: (oid) =>
+    req(`/api/web-admin/schedule/course-offerings/${oid}`, {
+      method: "DELETE",
+    }),
+  caSendCourseSelectionReminder: (body) =>
+    req("/api/web-admin/schedule/course-selection/send-reminder", {
+      method: "POST",
+      body: body || {},
+    }),
   caFaq: () => req("/api/content/faq"),
   caFaqAdd: (body) => req("/api/content/faq", { method: "POST", body }),
   caFaqDel: (fid) => req(`/api/content/faq/${fid}`, { method: "DELETE" }),

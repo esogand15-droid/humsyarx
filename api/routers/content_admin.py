@@ -532,12 +532,13 @@ async def schedule_list(admin=Depends(GLOBAL_USER), stype: Optional[str]=Query(N
     items=await db.get_schedules(stype=stype, upcoming=False)
     return {"schedule":[{"id":str(s["_id"]),"type":s.get("type",""),"lesson":s.get("lesson",""),
         "teacher":s.get("teacher",""),"date":s.get("date",""),"time":s.get("time",""),
+        "end_time":s.get("end_time",""),"credit":float(s.get("credit") or 1.0),
         "location":s.get("location",""),"group":db.normalize_group(s.get("group","هر دو")) or "هر دو","note":s.get("notes",""),
         "flex_type":s.get("flex_type","fixed"),"flex_note":s.get("flex_note","")} for s in items]}
 
 class ScheduleCreate(BaseModel):
-    type: str; lesson: str; teacher: str=""; date: str; time: str=""; group: str="هر دو"
-    location: str=""; note: str=""; flex_type: str="fixed"
+    type: str; lesson: str; teacher: str=""; date: str; time: str=""; end_time: str=""; group: str="هر دو"
+    location: str=""; note: str=""; flex_type: str="fixed"; credit: Optional[float]=1.0
 
 @router.post("/schedule")
 async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
@@ -552,8 +553,8 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
     group = db.normalize_group(body.group) or "هر دو"
     sid = await db.add_schedule(
         stype=body.type, lesson=body.lesson.strip(), teacher=body.teacher.strip(),
-        date=body.date, time=body.time, location=body.location.strip(),
-        notes=body.note.strip(), group=group, flex_type=body.flex_type)
+        date=body.date, time=body.time, end_time=body.end_time, location=body.location.strip(),
+        notes=body.note.strip(), group=group, flex_type=body.flex_type, credit=body.credit or 1.0)
     item = await db.get_schedule_by_id(str(sid)) or {
         "_id": sid, "type": body.type, "lesson": body.lesson.strip(),
         "teacher": body.teacher.strip(), "date": body.date, "time": body.time,
@@ -575,8 +576,8 @@ async def add_schedule(body: ScheduleCreate, admin=Depends(GLOBAL_USER)):
 
 
 class ScheduleUpdate(BaseModel):
-    lesson: str; teacher: str=""; date: str; time: str=""; group: str="هر دو"
-    location: str=""; note: str=""; flex_type: str="fixed"
+    lesson: str; teacher: str=""; date: str; time: str=""; end_time: str=""; group: str="هر دو"
+    location: str=""; note: str=""; flex_type: str="fixed"; credit: Optional[float]=None
 
 @router.patch("/schedule/{sid}")
 async def edit_schedule(sid: str, body: ScheduleUpdate, admin=Depends(GLOBAL_USER)):
@@ -590,7 +591,8 @@ async def edit_schedule(sid: str, body: ScheduleUpdate, admin=Depends(GLOBAL_USE
     group = db.normalize_group(body.group) or "هر دو"
     ok = await db.update_schedule_full(
         sid, body.lesson.strip(), body.teacher.strip(), body.date, body.time,
-        body.location.strip(), body.note.strip(), group, body.flex_type)
+        body.location.strip(), body.note.strip(), group, body.flex_type,
+        end_time=body.end_time, credit=body.credit)
     if not ok:
         raise HTTPException(404, "برنامه پیدا نشد")
     item = await db.get_schedule_by_id(sid) or {

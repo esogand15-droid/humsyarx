@@ -31,6 +31,8 @@ from ai_solver import (
     IMAGE_PROMPT_MIN,
     LIVE_MODEL_CATALOG,
     DEFAULT_LIVE_MODEL,
+    DEFAULT_LIVE_TEMPERATURE,
+    DEFAULT_VOICE_PROMPT,
     LIVE_THINKING_LEVELS,
     LIVE_TRANSLATE_LANGUAGES,
     PREBUILT_TTS_VOICES,
@@ -2075,12 +2077,13 @@ async def live_voice_ws_ep(websocket: WebSocket):
 
     setup_msg = build_live_setup_message(
         model=effective_model,
-        system_prompt=(cfg.get("system_prompt") or "") + student_ctx,
+        system_prompt=(cfg.get("voice_system_prompt") or DEFAULT_VOICE_PROMPT) + student_ctx,
         voice=effective_voice,
         thinking_level=effective_thinking,
         target_language=effective_lang,
         uid=uid,
         include_tools=('translate' not in effective_model.lower()),
+        temperature=cfg.get("live_temperature", DEFAULT_LIVE_TEMPERATURE),
     )
 
     keys = (cfg.get("vault_multi") or {}).get("gemini") or cfg.get("live_api_key_list") or []

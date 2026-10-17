@@ -1411,6 +1411,45 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
               <B kind={g.score >= 10 ? 'ok' : 'bad'}>{Number(g.score).toLocaleString('fa')}</B>
             </div>
           ))}
+
+          {/* 🎓 انتخاب واحد درس‌به‌درس و گروه محاسبه‌شده دانشجو */}
+          {d.course_selection && (
+            <div className="panel panel-pad" style={{ marginTop: 12 }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                <b>🎓 انتخاب واحد درس‌به‌درس ({d.course_selection.term || 'ترم جاری'})</b>
+                <span className="spacer" />
+                <B kind="acc">گروه محاسبه‌شده: گروه {faNum(d.course_selection.computed_group || d.user?.group || '—')}</B>
+                {d.course_selection.registered_group && (
+                  <B kind="muted">گروه ثبت‌نام: گروه {faNum(d.course_selection.registered_group)}</B>
+                )}
+              </div>
+              {d.course_selection.has_selections ? (
+                <>
+                  <div className="muted" style={{ fontSize: 'var(--fs-caption)', marginBottom: 8 }}>
+                    تعداد دروس انتخاب‌شده: <b>{faNum(d.course_selection.selected_count)}</b> از <b>{faNum(d.course_selection.total_offered_count)}</b> درس
+                    {' · '}
+                    گروه ۱: {faNum(d.course_selection.majority?.group1_courses || 0)} درس ({faNum(d.course_selection.majority?.group1_credits || 0)} واحد)
+                    {' · '}
+                    گروه ۲: {faNum(d.course_selection.majority?.group2_courses || 0)} درس ({faNum(d.course_selection.majority?.group2_credits || 0)} واحد)
+                  </div>
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {(d.course_selection.selections || []).map((sel, idx) => (
+                      <div key={idx} className="row" style={{ padding: '6px 8px', borderRadius: 8, background: 'var(--bg)' }}>
+                        <b style={{ flex: 1 }}>📚 {sel.lesson}</b>
+                        {sel.teacher && <span className="muted" style={{ fontSize: 12 }}>👨‍🏫 {sel.teacher}</span>}
+                        {sel.credit && <B kind="muted">{faNum(sel.credit)} واحد</B>}
+                        <B kind={sel.group === '1' ? 'acc' : 'ok'}>گروه {faNum(sel.group)}</B>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="muted" style={{ fontSize: 'var(--fs-caption)' }}>
+                  این دانشجو هنوز انتخاب واحد درس‌به‌درس را وارد نکرده است (نمایش بر اساس گروه پیش‌فرض).
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
       {d && tab === 'questions' && (

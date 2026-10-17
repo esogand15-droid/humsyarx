@@ -814,7 +814,13 @@ async def users_table(
         rows.append({
             "id": uid, "name": u.get("name", ""), "nickname": u.get("nickname"),
             "username": u.get("username", ""), "display_name": db.display_name_of(u),
-            "student_id": u.get("student_id", ""), "group": u.get("group", ""),
+            "student_id": u.get("student_id", ""),
+            "group": u.get("computed_group") or u.get("group", ""),
+            "computed_group": u.get("computed_group") or u.get("group", ""),
+            "registered_group": u.get("registered_group") or u.get("group", ""),
+            "course_selection_count": int(u.get("course_selection_count") or 0),
+            "course_selection_term": u.get("course_selection_term") or "",
+            "course_selection_updated_at": u.get("course_selection_updated_at") or None,
             "intake": u.get("intake", ""), "role": u.get("role", "student"),
             "roles": roles, "role_scope": (role_map.get(uid) or {}).get("scope_intake"),
             "approved": u.get("approved", False), "suspended": u.get("suspended", False),
@@ -4930,7 +4936,13 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "nickname": target.get("nickname"), "username": target.get("username", ""),
             "display_name": db.display_name_of(target),
             "student_id": target.get("student_id", ""),
-            "intake": target.get("intake", ""), "group": target.get("group", ""),
+            "intake": target.get("intake", ""),
+            "group": target.get("computed_group") or target.get("group", ""),
+            "computed_group": target.get("computed_group") or target.get("group", ""),
+            "registered_group": target.get("registered_group") or target.get("group", ""),
+            "course_selection_count": int(target.get("course_selection_count") or 0),
+            "course_selection_term": target.get("course_selection_term") or "",
+            "course_selection_updated_at": target.get("course_selection_updated_at") or None,
             "role": target.get("role", "student"),
             "approved": target.get("approved", False),
             "suspended": target.get("suspended", False),
@@ -5034,6 +5046,21 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
     except Exception:
         out.setdefault("academic", {"grades_recent": []})
         out["section_errors"]["academic"] = "unavailable"
+    try:  # 🎓 انتخاب واحد درس‌به‌درس و گروه محاسبه‌شده دانشجو
+        cs_info = await db.get_student_course_selections(uid)
+        out["course_selection"] = {
+            "term": cs_info.get("term", ""),
+            "computed_group": cs_info.get("computed_group", ""),
+            "registered_group": cs_info.get("registered_group", ""),
+            "has_selections": bool(cs_info.get("has_selections")),
+            "selected_count": int(cs_info.get("selected_count") or 0),
+            "total_offered_count": int(cs_info.get("total_offered_count") or 0),
+            "selections": cs_info.get("selections") or [],
+            "majority": cs_info.get("majority") or {},
+        }
+    except Exception:
+        out["course_selection"] = None
+        out["section_errors"]["course_selection"] = "unavailable"
     try:  # 🤖 هوشیار — از روی سند کاربر (بدون کوئری اضافه)
         today = today_tehran().isoformat()
         out["ai"] = {
@@ -6830,6 +6857,8 @@ class WaAiConfigUpdate(BaseModel):
     live_daily_minutes: Optional[int] = Field(default=None, ge=0, le=600)
     live_max_session_sec: Optional[int] = Field(default=None, ge=60, le=1800)
     live_target_language: Optional[str] = Field(default=None, max_length=10)
+    live_temperature: Optional[float] = Field(default=None, ge=0.1, le=1.5)
+    voice_system_prompt: Optional[str] = Field(default=None, max_length=20000)
 
 
 class WaAiImageConfigUpdate(BaseModel):
@@ -6851,6 +6880,8 @@ class WaAiLiveConfigUpdate(BaseModel):
     live_daily_minutes: Optional[int] = Field(default=None, ge=0, le=600)
     live_max_session_sec: Optional[int] = Field(default=None, ge=60, le=1800)
     live_target_language: Optional[str] = Field(default=None, max_length=10)
+    live_temperature: Optional[float] = Field(default=None, ge=0.1, le=1.5)
+    voice_system_prompt: Optional[str] = Field(default=None, max_length=20000)
 
 
 class WaAiKeyAdd(BaseModel):
@@ -7239,13 +7270,16 @@ async def wa_ai_live_models(refresh: bool = Query(False),
         "live_daily_minutes": int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15),
         "live_max_session_sec": int(cfg.get("live_max_session_sec") or 300),
         "live_target_language": cfg.get("live_target_language") or "fa",
+        "live_temperature": float(cfg.get("live_temperature") or 0.85),
+        "voice_system_prompt": cfg.get("voice_system_prompt") or "",
+        "default_voice_system_prompt": cfg.get("default_voice_system_prompt") or "",
     }
 
 
 @router.post("/ai/live/config")
 async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
                                    user=Depends(_perm("ai.manage"))):
-    """⭐ م9 — ذخیره مستقیم پیکربندی تماس صوتی زنده هوشیار (مدل، صدا، سطح تفکر، سهمیه و وضعیت)."""
+    """⭐ م9 — ذخیره مستقیم پیکربندی تماس صوتی زنده هوشیار (مدل، صدا، سطح تفکر، سهمیه، لحن صوتی و وضعیت)."""
     if body.live_enabled is not None:
         await ai_admin_api.set_ai_setting("live_enabled", "1" if body.live_enabled else "0")
     if body.live_model is not None and body.live_model.strip():
@@ -7263,6 +7297,11 @@ async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
         await ai_admin_api.set_ai_setting("live_max_session_sec", str(max(60, min(1800, int(body.live_max_session_sec)))))
     if body.live_target_language is not None and body.live_target_language.strip():
         await ai_admin_api.set_ai_setting("live_target_language", body.live_target_language.strip().lower()[:10])
+    if body.live_temperature is not None:
+        await ai_admin_api.set_ai_setting("live_temperature", str(round(max(0.1, min(1.5, float(body.live_temperature))), 2)))
+    if body.voice_system_prompt is not None:
+        vp = body.voice_system_prompt.strip()
+        await ai_admin_api.set_ai_setting("voice_system_prompt", vp)
     cfg = await ai_admin_api.get_ai_config()
     try:
         await _audit(
@@ -7275,6 +7314,7 @@ async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
                 "live_thinking_level": cfg.get("live_thinking_level"),
                 "live_daily_minutes": cfg.get("live_daily_minutes"),
                 "live_max_session_sec": cfg.get("live_max_session_sec"),
+                "live_temperature": cfg.get("live_temperature"),
             },
             tags=["هوشیار", "live_voice", "پیکربندی", "پنل_وب"],
         )
@@ -7289,6 +7329,8 @@ async def wa_ai_live_config_update(body: WaAiLiveConfigUpdate,
         "live_daily_minutes": int(cfg.get("live_daily_minutes") if cfg.get("live_daily_minutes") is not None else 15),
         "live_max_session_sec": int(cfg.get("live_max_session_sec") or 300),
         "live_target_language": cfg.get("live_target_language") or "fa",
+        "live_temperature": float(cfg.get("live_temperature") or 0.85),
+        "voice_system_prompt": cfg.get("voice_system_prompt") or "",
     }
 
 
@@ -8641,6 +8683,42 @@ async def wa_schedule_exams_scan_confirm(
     user=Depends(_perm("schedules.manage")),
 ):
     return await academic_api.schedule_exams_scan_confirm(body=body, admin=user)
+
+@router.get("/schedule/course-selection/stats")
+async def wa_course_selection_stats(
+    term: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_course_selection_stats(term=term, admin=user)
+
+@router.put("/schedule/term-config")
+async def wa_update_term_config(
+    body: dict,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_update_term_config(body=body, admin=user)
+
+@router.post("/schedule/course-offerings")
+async def wa_upsert_course_offering(
+    body: dict,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_upsert_course_offering(body=body, admin=user)
+
+@router.delete("/schedule/course-offerings/{oid}")
+async def wa_delete_course_offering(
+    oid: str,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_delete_course_offering(oid=oid, admin=user)
+
+@router.post("/schedule/course-selection/send-reminder")
+async def wa_send_course_selection_reminder(
+    body: Optional[dict] = None,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_send_course_selection_reminder(body=body, admin=user)
+
 
 
 # ── Grades: global/scoped permissions ──────────────────────────────

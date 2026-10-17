@@ -1275,12 +1275,19 @@ export default function Profile() {
                           'group'
                         )
                       }
+                      title={
+                        user.course_selection_count > 0
+                          ? `محاسبه‌شده از اکثریت ${user.course_selection_count} درس انتخابی`
+                          : 'گروه درسی'
+                      }
                     >
                       گروه{' '}
 
-                      {user.group ||
+                      {user.computed_group || user.group ||
                         '—'}{' '}
-
+                      {user.course_selection_count > 0
+                        ? `(اکثریت ${user.course_selection_count} درس) `
+                        : ''}
                       ✎
                     </button>
                   </div>

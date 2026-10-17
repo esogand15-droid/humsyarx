@@ -620,6 +620,9 @@ function AiLiveStudio({ cfg, me, onSaved }) {
   const [liveDailyMin, setLiveDailyMin] = useState(15);
   const [liveMaxSec, setLiveMaxSec] = useState(300);
   const [liveTargetLang, setLiveTargetLang] = useState('fa');
+  const [liveTemperature, setLiveTemperature] = useState(0.85);
+  const [voiceSystemPrompt, setVoiceSystemPrompt] = useState('');
+  const [defaultVoicePrompt, setDefaultVoicePrompt] = useState('');
 
   // اتاق تست زنده در مرورگر ادمین (صدا + ویدیو دوربین / اشتراک صفحه)
   const [callState, setCallState] = useState('idle'); // idle | connecting | listening | speaking | error
@@ -661,6 +664,9 @@ function AiLiveStudio({ cfg, me, onSaved }) {
       setLiveDailyMin(r.live_daily_minutes ?? cfg?.live_daily_minutes ?? 15);
       setLiveMaxSec(r.live_max_session_sec ?? cfg?.live_max_session_sec ?? 300);
       setLiveTargetLang(r.live_target_language || cfg?.live_target_language || 'fa');
+      setLiveTemperature(r.live_temperature ?? cfg?.live_temperature ?? 0.85);
+      setVoiceSystemPrompt(r.voice_system_prompt || cfg?.voice_system_prompt || '');
+      setDefaultVoicePrompt(r.default_voice_system_prompt || cfg?.default_voice_system_prompt || '');
     } catch (e) { setErr(errText(e)); }
   };
   useEffect(() => { loadLiveMeta(false); }, []);
@@ -677,6 +683,8 @@ function AiLiveStudio({ cfg, me, onSaved }) {
         live_daily_minutes: Number(liveDailyMin) || 0,
         live_max_session_sec: Number(liveMaxSec) || 300,
         live_target_language: liveTargetLang || 'fa',
+        live_temperature: Number(liveTemperature) || 0.85,
+        voice_system_prompt: voiceSystemPrompt || '',
       });
       setLiveModel(r.live_model);
       setMeta(x => ({ ...(x || {}), current_model: r.live_model, live_enabled: r.live_enabled }));
@@ -1202,6 +1210,30 @@ function AiLiveStudio({ cfg, me, onSaved }) {
               ))}
             </select>
           </label>
+
+          <label className="fld">
+            <span>🌡 دمای لحن صوتی (Temperature — پیشنهادی: 0.85 برای لحن صمیمی و بااحساس)</span>
+            <input className="inp" type="number" step="0.05" min="0.1" max="1.5" value={liveTemperature} onChange={e => setLiveTemperature(e.target.value)} />
+          </label>
+        </div>
+
+        <div className="grid" style={{ gap: 8, marginTop: 14 }}>
+          <label className="fld">
+            <span className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <span>💬 پرامپت سیستمی اختصاصی ویس‌چت زنده و پاسخ‌های صوتی (مستقل از چت متنی)</span>
+              {defaultVoicePrompt && (
+                <button type="button" className="btn sm" onClick={() => { setVoiceSystemPrompt(defaultVoicePrompt); toast('پرامپت پیش‌فرض صمیمی بارگذاری شد — برای ثبت نهایی دکمه ذخیره را بزنید'); }}>
+                  🔄 بازگردانی به پرامپت صمیمی پیش‌فرض
+                </button>
+              )}
+            </span>
+            <textarea className="inp" rows={10} style={{ resize: 'vertical', marginTop: 6, lineHeight: 1.7 }}
+                      placeholder="پرامپت لحن صمیمی و محاوره‌ای ویس‌چت زنده…"
+                      value={voiceSystemPrompt} onChange={e => setVoiceSystemPrompt(e.target.value)} />
+          </label>
+          <div className="muted" style={{ fontSize: 'var(--fs-caption)' }}>
+            این پرامپت فقط برای ویس‌چت زنده و پاسخ‌های صوتی استفاده می‌شود و چت متنی هوشیار را تغییر نمی‌دهد.
+          </div>
         </div>
 
         <div className="row" style={{ marginTop: 12 }}>
@@ -1842,7 +1874,9 @@ function AiConfig({ cfg, me, onSaved }) {
       const r = await api.aiConfigUpdate({
         enabled: !!f.enabled, provider: f.provider, model: f.model.trim(),
         daily_limit: Number(f.daily_limit) || 0, thinking: f.thinking,
-        system_prompt: f.system_prompt, disabled_message: f.disabled_message || '',
+        system_prompt: f.system_prompt,
+        voice_system_prompt: f.voice_system_prompt || '',
+        disabled_message: f.disabled_message || '',
         image_enabled: f.image_enabled !== false,
         image_provider: 'gemini',
         image_model: (f.image_model || 'gemini-3.1-flash-lite-image').trim(),
@@ -2012,11 +2046,22 @@ function AiConfig({ cfg, me, onSaved }) {
         </div>
       </div>
       <div className="panel panel-pad">
-        <b>پیام و پرامپت</b>
+        <b>پیام و پرامپت‌ها (متنی و صوتی)</b>
         <div className="grid" style={{ gap: 10, marginTop: 12 }}>
-          <label className="fld"><span>System Prompt (۲۰ تا ۲۰هزار کاراکتر)</span>
-            <textarea className="inp" rows={7} style={{ resize: 'vertical' }} value={f.system_prompt}
+          <label className="fld"><span>📝 پرامپت چت متنی (Text System Prompt — ۲۰ تا ۲۰هزار کاراکتر)</span>
+            <textarea className="inp" rows={6} style={{ resize: 'vertical' }} value={f.system_prompt}
                       onChange={e => set('system_prompt', e.target.value)} /></label>
+          <label className="fld">
+            <span className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+              <span>🎙 پرامپت ویس‌چت زنده و پاسخ صوتی (Voice System Prompt — لحن صمیمی و محاوره‌ای)</span>
+              {cfg.default_voice_system_prompt && (
+                <button type="button" className="btn sm" onClick={() => set('voice_system_prompt', cfg.default_voice_system_prompt)}>
+                  🔄 بازگردانی به پیش‌فرض صمیمی
+                </button>
+              )}
+            </span>
+            <textarea className="inp" rows={7} style={{ resize: 'vertical' }} value={f.voice_system_prompt || ''}
+                      onChange={e => set('voice_system_prompt', e.target.value)} /></label>
           <label className="fld"><span>پیام هنگام غیرفعال‌بودن سرویس</span>
             <input className="inp" value={f.disabled_message || ''}
                    onChange={e => set('disabled_message', e.target.value)} /></label>

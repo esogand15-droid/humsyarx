@@ -1947,6 +1947,377 @@ function HushyarScanPanel({ onGenerated }) {
   );
 }
 
+function CourseSelectionAdminPanel() {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [termForm, setTermForm] = useState({
+    term: "1404-2",
+    exams_end_date: "",
+    reminder_enabled: true,
+    second_reminder_enabled: false,
+    archive_previous: true,
+  });
+  const [offForm, setOffForm] = useState({
+    lesson: "",
+    group: "1",
+    teacher: "",
+    credit: 2,
+    schedule_summary: "",
+  });
+  const [busy, setBusy] = useState(false);
+
+  const loadStats = async () => {
+    setLoading(true);
+    try {
+      const r = await api.caCourseSelectionStats();
+      setData(r);
+      const tc = r?.stats?.term_config || {};
+      setTermForm({
+        term: tc.term || r?.stats?.term || "1404-2",
+        exams_end_date: tc.exams_end_date || "",
+        reminder_enabled: tc.reminder_enabled !== false,
+        second_reminder_enabled: Boolean(tc.second_reminder_enabled),
+        archive_previous: true,
+      });
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (open && !data) loadStats();
+  }, [open]);
+
+  const saveTerm = async () => {
+    setBusy(true);
+    try {
+      const r = await api.caUpdateTermConfig(termForm);
+      toast(
+        r.archived_previous
+          ? `تنظیمات ترم ذخیره شد و ${r.archived_previous.toLocaleString("fa")} انتخاب ترم قبل آرشیو شد ✅`
+          : "تنظیمات ترم و تاریخ پایان امتحانات ذخیره شد ✅",
+      );
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setBusy(false);
+  };
+
+  const addOffering = async () => {
+    if (!offForm.lesson.trim()) return toast("نام درس الزامی است", "err");
+    setBusy(true);
+    try {
+      await api.caUpsertCourseOffering({
+        ...offForm,
+        lesson: offForm.lesson.trim(),
+        teacher: offForm.teacher.trim(),
+        credit: Number(offForm.credit || 1),
+        term: termForm.term,
+      });
+      toast("گروه درس ثبت/بروزرسانی شد ✅");
+      setOffForm({ lesson: "", group: "1", teacher: "", credit: 2, schedule_summary: "" });
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setBusy(false);
+  };
+
+  const triggerReminder = async (isSecond = false) => {
+    setBusy(true);
+    try {
+      await api.caSendCourseSelectionReminder({ second_reminder: isSecond });
+      toast(
+        isSecond
+          ? "یادآوری دوم انتخاب واحد در صف ارسال قرار گرفت ✅"
+          : "یادآوری انتخاب واحد پایان امتحانات در صف ارسال قرار گرفت ✅",
+      );
+      setTimeout(loadStats, 1500);
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setBusy(false);
+  };
+
+  const st = data?.stats || {};
+  const offerings = data?.offerings || [];
+  const explicitOfferings = data?.explicit_offerings || [];
+
+  return (
+    <div className="panel panel-pad" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <b>🎓 مدیریت انتخاب واحد درس‌به‌درس، گروه‌ها و یادآوری پایان امتحانات</b>
+        <span className="muted small">
+          تعریف چند گروه با اساتید متفاوت برای یک درس، آمار انتخاب واحد و تاریخ پایان امتحانات ترم
+        </span>
+        <span className="spacer" />
+        <button className="btn sm" onClick={() => setOpen((x) => !x)}>
+          {open ? "▲ بستن پنل انتخاب واحد" : "▼ باز کردن پنل انتخاب واحد و ترم"}
+        </button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+          {/* آمار کلی */}
+          <div
+            className="grid"
+            style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}
+          >
+            <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+              <div className="muted small">ترم جاری</div>
+              <b style={{ fontSize: 16 }}>{st.term || termForm.term}</b>
+            </div>
+            <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+              <div className="muted small">تکمیل انتخاب واحد</div>
+              <b style={{ fontSize: 16, color: "var(--ok)" }}>
+                {Number(st.selected_students || 0).toLocaleString("fa")} نفر
+              </b>
+              <span className="muted small">
+                {" "}از {Number(st.total_students || 0).toLocaleString("fa")} دانشجو
+              </span>
+            </div>
+            <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+              <div className="muted small">وارد نکرده‌اند</div>
+              <b style={{ fontSize: 16, color: "var(--warn)" }}>
+                {Number(st.unselected_students || 0).toLocaleString("fa")} نفر
+              </b>
+            </div>
+            <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+              <div className="muted small">گروه محاسبه‌شده (اکثریت)</div>
+              <b style={{ fontSize: 14 }}>
+                گروه ۱: {Number(st.group1_count || 0).toLocaleString("fa")} · گروه ۲:{" "}
+                {Number(st.group2_count || 0).toLocaleString("fa")}
+              </b>
+            </div>
+          </div>
+
+          {/* تنظیمات ترم و پایان امتحانات */}
+          <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+            <b>🗓 تنظیمات ترم جاری و پیام خودکار پایان امتحانات</b>
+            <div
+              className="grid"
+              style={{
+                gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+                gap: 8,
+                marginTop: 8,
+              }}
+            >
+              <div>
+                <div className="muted small">کد ترم جاری (مثلاً 1404-2)</div>
+                <input
+                  className="inp"
+                  value={termForm.term}
+                  onChange={(e) => setTermForm((f) => ({ ...f, term: e.target.value }))}
+                />
+              </div>
+              <div>
+                <div className="muted small">تاریخ پایان امتحانات ترم</div>
+                <PersianDatePicker
+                  value={termForm.exams_end_date}
+                  onChange={(val) => setTermForm((f) => ({ ...f, exams_end_date: val }))}
+                  placeholder="تاریخ پایان امتحانات"
+                />
+              </div>
+              <label className="row" style={{ gap: 6, alignItems: "center", marginTop: 18 }}>
+                <input
+                  type="checkbox"
+                  checked={termForm.reminder_enabled}
+                  onChange={(e) =>
+                    setTermForm((f) => ({ ...f, reminder_enabled: e.target.checked }))
+                  }
+                />
+                ارسال خودکار پیام پایان امتحانات
+              </label>
+              <label className="row" style={{ gap: 6, alignItems: "center", marginTop: 18 }}>
+                <input
+                  type="checkbox"
+                  checked={termForm.second_reminder_enabled}
+                  onChange={(e) =>
+                    setTermForm((f) => ({ ...f, second_reminder_enabled: e.target.checked }))
+                  }
+                />
+                یادآوری دوم برای جاماندگان
+              </label>
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button className="btn primary sm" disabled={busy} onClick={saveTerm}>
+                💾 ذخیره تنظیمات ترم
+              </button>
+              <button
+                className="btn sm"
+                disabled={busy}
+                onClick={() => triggerReminder(false)}
+                title="ارسال پیام یادآوری انتخاب واحد به دانشجوهایی که در این ترم هنوز پیام را نگرفته‌اند و انتخاب واحد نزده‌اند"
+              >
+                📨 ارسال فوری یادآوری پایان ترم
+              </button>
+              {termForm.second_reminder_enabled && (
+                <button
+                  className="btn sm"
+                  disabled={busy}
+                  onClick={() => triggerReminder(true)}
+                >
+                  🔔 ارسال یادآوری دوم (فقط جاماندگان)
+                </button>
+              )}
+              {loading && <span className="muted small">⏳ در حال بارگذاری…</span>}
+            </div>
+          </div>
+
+          {/* تعریف و ویرایش گروه‌های ارائه‌شده هر درس */}
+          <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+            <b>📚 تعریف گروه‌ها و اساتید هر درس (پشتیبانی از چند گروه برای یک درس)</b>
+            <div className="muted small" style={{ marginTop: 2 }}>
+              علاوه بر استخراج خودکار از جدول برنامه، می‌توانید برای هر درس گروه ۱ و گروه ۲ را با استاد و تعداد واحد مشخص ثبت کنید.
+            </div>
+            <div
+              className="grid"
+              style={{
+                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gap: 8,
+                marginTop: 8,
+              }}
+            >
+              <input
+                className="inp"
+                placeholder="نام درس (مثلاً فارماکولوژی) *"
+                value={offForm.lesson}
+                onChange={(e) => setOffForm((f) => ({ ...f, lesson: e.target.value }))}
+              />
+              <select
+                className="inp"
+                value={offForm.group}
+                onChange={(e) => setOffForm((f) => ({ ...f, group: e.target.value }))}
+              >
+                <option value="1">1️⃣ گروه ۱</option>
+                <option value="2">2️⃣ گروه ۲</option>
+              </select>
+              <input
+                className="inp"
+                placeholder="نام استاد این گروه…"
+                value={offForm.teacher}
+                onChange={(e) => setOffForm((f) => ({ ...f, teacher: e.target.value }))}
+              />
+              <input
+                className="inp"
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="10"
+                placeholder="تعداد واحد"
+                value={offForm.credit}
+                onChange={(e) => setOffForm((f) => ({ ...f, credit: e.target.value }))}
+              />
+              <input
+                className="inp"
+                placeholder="روز و ساعت (اختیاری)"
+                value={offForm.schedule_summary}
+                onChange={(e) =>
+                  setOffForm((f) => ({ ...f, schedule_summary: e.target.value }))
+                }
+              />
+              <button className="btn primary" disabled={busy} onClick={addOffering}>
+                ➕ ثبت گروه درس
+              </button>
+            </div>
+
+            {offerings.length > 0 && (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <table className="tbl" style={{ fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th>درس</th>
+                      <th>واحد</th>
+                      <th>گروه‌ها و اساتید</th>
+                      <th>وضعیت</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {offerings.map((c) => (
+                      <tr key={c.lesson}>
+                        <td>
+                          <b>{c.lesson}</b>
+                        </td>
+                        <td>{Number(c.credit || 1).toLocaleString("fa")} واحد</td>
+                        <td>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {(c.groups || []).map((g) => {
+                              const exp = explicitOfferings.find(
+                                (x) => x.lesson === c.lesson && x.group === g.group,
+                              );
+                              return (
+                                <span
+                                  key={g.group}
+                                  className="badge b-gray"
+                                  style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                                >
+                                  <span>
+                                    گروه {faDigits(g.group)}: {g.teacher || "بدون استاد"}
+                                    {g.schedule_summary ? ` (${g.schedule_summary})` : ""}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn sm"
+                                    style={{ padding: "1px 5px", fontSize: 10 }}
+                                    title="ویرایش این گروه"
+                                    onClick={() =>
+                                      setOffForm({
+                                        lesson: c.lesson,
+                                        group: g.group,
+                                        teacher: g.teacher || "",
+                                        credit: c.credit || 1,
+                                        schedule_summary: g.schedule_summary || "",
+                                      })
+                                    }
+                                  >
+                                    ✏️
+                                  </button>
+                                  {exp?.id && (
+                                    <button
+                                      type="button"
+                                      className="btn sm danger"
+                                      style={{ padding: "1px 5px", fontSize: 10 }}
+                                      title="حذف گروه دستی"
+                                      onClick={async () => {
+                                        try {
+                                          await api.caDeleteCourseOffering(exp.id);
+                                          loadStats();
+                                        } catch (e) {
+                                          toast(errText(e), "err");
+                                        }
+                                      }}
+                                    >
+                                      ✕
+                                    </button>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td>
+                          {c.single_group ? (
+                            <span className="badge b-acc">تک‌گروهی (خودکار)</span>
+                          ) : (
+                            <span className="badge b-grn">چندگروهی</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ScheduleTab() {
   const [stype, setStype] = useState("");
   const [view, setView] = useState("list");
@@ -2136,6 +2507,7 @@ export function ScheduleTab() {
 
   return (
     <>
+      <CourseSelectionAdminPanel />
       <HushyarScanPanel onGenerated={load} />
       <div className="row content-tab-toolbar">
         <div
@@ -2881,6 +3253,7 @@ function ScheduleModal({ row, preset, onClose }) {
     location: preset.location || "",
     note: preset.note || preset.notes || "",
     flex_type: preset.flex_type || "fixed",
+    credit: preset.credit || 1,
   });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
@@ -2977,12 +3350,27 @@ function ScheduleModal({ row, preset, onClose }) {
             })()}
           </div>
         )}
-        <input
-          className="inp"
-          placeholder="استاد…"
-          value={f.teacher}
-          onChange={(e) => set("teacher", e.target.value)}
-        />
+        <div className="row">
+          <input
+            className="inp"
+            style={{ flex: 2 }}
+            placeholder="استاد…"
+            value={f.teacher}
+            onChange={(e) => set("teacher", e.target.value)}
+          />
+          <input
+            className="inp"
+            style={{ flex: 1 }}
+            type="number"
+            step="0.5"
+            min="0.5"
+            max="10"
+            placeholder="واحد درس"
+            title="تعداد واحد درس (برای قانون تساوی انتخاب واحد)"
+            value={f.credit}
+            onChange={(e) => set("credit", Number(e.target.value || 1))}
+          />
+        </div>
         <input
           className="inp"
           placeholder="مکان…"

@@ -39,6 +39,9 @@ def _profile_text(user: dict, stats: dict, open_tickets: int, sub_line: str = ''
     nick_line = escape(nick) if nick else '«ثبت نشده»'
     priv_line = ('نام واقعی هم دیده می‌شود 👁'
                  if show_real else 'فقط لقب دیده می‌شود 🔒')
+    eff_group = user.get('computed_group') or user.get('group', '')
+    sel_cnt   = int(user.get('course_selection_count') or 0)
+    grp_note  = f" (اکثریت {sel_cnt} درس انتخابی)" if sel_cnt > 0 else ""
 
     return (
         "👤 <b>پروفایل من</b>\n"
@@ -48,7 +51,7 @@ def _profile_text(user: dict, stats: dict, open_tickets: int, sub_line: str = ''
         f"👁 <b>نمایش عمومی:</b>  {priv_line}\n"
         f"🎓 <b>شماره دانشجویی:</b>  {sid}\n"
         f"📅 <b>ورودی:</b>  {intake}\n"
-        f"👥 <b>گروه:</b>  گروه {user.get('group', '')}\n"
+        f"👥 <b>گروه:</b>  گروه {eff_group}{grp_note}\n"
         f"📱 <b>یوزرنیم:</b>  {uname}\n"
         f"🎭 <b>نقش:</b>  {role_icon}\n"
         f"📅 <b>ثبت‌نام:</b>  {reg_date}\n"
@@ -349,8 +352,12 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'set_group' and len(parts) > 2:
         new_group = parts[2]
-        _before_g = (await db.get_user(uid) or {}).get('group', '')
-        await db.update_user(uid, {'group': new_group})
+        _u_cur = await db.get_user(uid) or {}
+        _before_g = _u_cur.get('group', '')
+        _updates = {'group': new_group, 'registered_group': new_group}
+        if not int(_u_cur.get('course_selection_count') or 0):
+            _updates['computed_group'] = new_group
+        await db.update_user(uid, _updates)
         try:
             _u3 = await db.get_user(uid)
             _role3 = await db.get_actor_role_label(uid)

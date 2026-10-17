@@ -165,6 +165,9 @@ class DBCore:
         self.ai_quiz_sessions    = _db['ai_quiz_sessions']
         self.ai_quiz_questions   = _db['ai_quiz_questions']
         self.ai_generation_logs  = _db['ai_generation_logs']
+        # 🎓 انتخاب واحد درس‌به‌درس دانشجو و کاتالوگ گروه‌های ارائه‌شده در هر ترم
+        self.course_selections   = _db['student_course_selections']
+        self.course_offerings    = _db['course_offerings']
         # 🚀 PERF-O2: TTL cache for bot_settings (hot path: every handler reads notif_defaults/required_channels)
         # Before: find_one({'_id':'global'}) on EVERY request → ~60% of DB reads were settings
         # After: in-process cache 30s, invalidated on set/delete → -90% settings queries under load
@@ -308,6 +311,9 @@ class DBCore:
                 self._index(self.schedules, [('date', 1), ('type', 1)], background=True),
                 self._index(self.schedule_templates, [('weekday', 1), ('group', 1)], background=True),
                 self._index(self.schedule_templates, [('group', 1), ('weekday', 1), ('time', 1)], background=True),
+                self._index(self.course_selections, [('user_id', 1), ('term', 1), ('lesson', 1)], unique=True, background=True),
+                self._index(self.course_selections, [('term', 1), ('archived', 1)], background=True),
+                self._index(self.course_offerings, [('term', 1), ('lesson', 1), ('group', 1)], unique=True, background=True),
                 self._index(self.stats_col, [('user_id', 1), ('timestamp', -1)], background=True),
                 self._index(self.tickets, 'ticket_id', unique=True, background=True),
                 self._index(self.tickets, [('user_id', 1), ('status', 1)], background=True),
@@ -727,6 +733,8 @@ class DBCore:
             'name':       name,
             'student_id': student_id,
             'group':      group,
+            'registered_group': group,
+            'computed_group': group,
             'username':   username,
             'intake':     intake or '',
             'registered_at': utc_now_iso(),
@@ -797,6 +805,7 @@ class DBCore:
             ('prestige_history', {'uid': uid}),
             ('feed_reactions', {'uid': uid}),
             ('discount_uses', {'user_id': uid}),
+            ('course_selections', {'user_id': uid}),
         ]
         for attr, query in delete_specs:
             collection = getattr(self, attr, None)
@@ -2913,6 +2922,7 @@ class DBCore:
         ('basic_sci',    '🩺 علوم پایه',            'جلسات و محتوای درس‌های علوم پایه',             True),
         ('qbank',        '❓ بانک سؤال',             'سؤال روزانه و وضعیت سؤال‌های پیشنهادی‌ات',    True),
         ('schedule',     '📅 برنامه‌ی هفتگی',       'کلاس جدید، جبرانی و تغییر زمان',               True),
+        ('course_selection', '🎓 یادآوری انتخاب واحد', 'یادآوری وارد کردن انتخاب واحد و برنامه کلاسی در شروع هر ترم', True),
         ('exams',        '📝 امتحان‌ها',            'یادآوری‌های رسمی امتحان',                      True),
         ('grades',       '📊 نمرات',                 'ثبت نمره‌ی جدید در کارنامه',                  True),
         ('tickets',      '🎫 پشتیبانی و تیکت',       'پاسخ‌ها و وضعیت گفت‌وگوی پشتیبانی',          True),
@@ -2940,6 +2950,7 @@ class DBCore:
         'class':            ('schedule',     '🏫', 'blue',   'normal',   'schedule'),
         'makeup':           ('schedule',     '🔄', 'yellow', 'normal',   'schedule'),
         'schedule_change':  ('schedule',     '🔄', 'yellow', 'high',     'schedule'),
+        'course_selection': ('schedule',     '🎓', 'acc',    'high',     'course_selection'),
         'grade':            ('grades',       '📊', 'acc',    'critical', 'grades'),
         # ── پشتیبانی/اشتراک ──
         'ticket_created':   ('tickets',      '🎫', 'green',  'normal',   'tickets'),
@@ -3473,7 +3484,8 @@ class DBCore:
     DEFAULT_NOTIF_FALLBACK = {
         # 🧠 موج N1 — کاتالوگ یکپارچه‌ی دسته‌ها (کلیدهای Canonical)
         'resources': True, 'references': True, 'basic_sci': True,
-        'qbank': True, 'schedule': True, 'exams': True, 'grades': True,
+        'qbank': True, 'schedule': True, 'course_selection': True,
+        'exams': True, 'grades': True,
         'tickets': True, 'subscription': True, 'discounts': True,
         'ai': True, 'announcement': True, 'polls': True, 'profile': True,
         'gamification': True, 'system': True,

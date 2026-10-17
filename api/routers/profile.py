@@ -66,7 +66,12 @@ async def get_profile(user=Depends(get_current_user)):
         "user": {
             "name": _text(db_user.get("name")),
             "intake": _text(db_user.get("intake")),
-            "group": _text(db_user.get("group")),
+            "group": _text(db_user.get("computed_group") or db_user.get("group")),
+            "computed_group": _text(db_user.get("computed_group") or db_user.get("group")),
+            "registered_group": _text(db_user.get("registered_group") or db_user.get("group")),
+            "course_selection_count": non_negative_int(db_user.get("course_selection_count", 0)),
+            "course_selection_term": _text(db_user.get("course_selection_term")),
+            "course_selection_updated_at": _text(db_user.get("course_selection_updated_at")),
             "student_id": _text(db_user.get("student_id")),
             "role": _role_for(uid, db_user),
             "telegram_id": uid,
@@ -174,9 +179,13 @@ class GroupUpdate(BaseModel):
 
 @router.patch("/group")
 async def update_group(body: GroupUpdate, user=Depends(get_current_user)):
-    await db.update_user(user["id"], {"group": body.group})
-    await _profile_audit(user, "ویرایش گروه", before={"group": (user.get("_db") or {}).get("group")}, after={"group": body.group})
-    return {"ok": True, "group": body.group}
+    db_user = user.get("_db") or {}
+    updates = {"group": body.group, "registered_group": body.group}
+    if not int(db_user.get("course_selection_count") or 0):
+        updates["computed_group"] = body.group
+    await db.update_user(user["id"], updates)
+    await _profile_audit(user, "ویرایش گروه", before={"group": db_user.get("group")}, after={"group": body.group})
+    return {"ok": True, "group": body.group, "registered_group": body.group}
 
 
 class IntakeUpdate(BaseModel):

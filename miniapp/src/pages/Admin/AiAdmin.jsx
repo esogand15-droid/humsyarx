@@ -820,8 +820,42 @@ export default function AiAdmin() {
                       event.target.value,
                   })
                 }
-                placeholder="System Prompt"
+                placeholder="System Prompt (چت متنی)"
               />
+
+
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}>🎙 پرامپت ویس‌چت زنده و پاسخ صوتی</span>
+                  {form.default_voice_system_prompt && (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() =>
+                        setForm({
+                          ...form,
+                          voice_system_prompt: form.default_voice_system_prompt,
+                        })
+                      }
+                    >
+                      🔄 پیش‌فرض صمیمی
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  className="inp"
+                  rows={8}
+                  maxLength={20000}
+                  value={form.voice_system_prompt || ''}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      voice_system_prompt: event.target.value,
+                    })
+                  }
+                  placeholder="پرامپت اختصاصی ویس‌چت زنده (لحن صمیمی و محاوره‌ای)"
+                />
+              </div>
 
 
               <textarea

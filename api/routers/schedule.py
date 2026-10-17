@@ -143,20 +143,68 @@ async def get_schedule(
         default=None
     ),
 ):
-    group = _text(
-        user["_db"].get("group")
-    )
-
-    items = await db.get_schedules(
+    personalized = await db.get_personalized_schedules(
+        user["id"],
         stype=stype,
         upcoming=True,
-        group=group,
     )
+    items = personalized.get("items") or []
+    eff_group = personalized.get("computed_group") or _text(user["_db"].get("group")) or "1"
 
     return {
         "schedule": _serialize(items),
-        "group": group,
+        "group": eff_group,
+        "computed_group": eff_group,
+        "registered_group": personalized.get("registered_group") or eff_group,
+        "has_custom_selection": bool(personalized.get("has_custom_selection")),
+        "selected_count": int(personalized.get("selected_count") or 0),
+        "total_offered_count": int(personalized.get("total_offered_count") or 0),
+        "unselected_lessons": personalized.get("unselected_lessons") or [],
+        "majority": personalized.get("majority") or {},
+        "conflicts": personalized.get("conflicts") or [],
+        "term": personalized.get("term") or "",
     }
+
+
+@router.get("/course-selections")
+async def get_course_selections_ep(
+    user=Depends(get_current_user),
+    term: str | None = Query(default=None),
+):
+    """🎓 دریافت لیست درس‌های ارائه‌شده ترم جاری + انتخاب‌های درس‌به‌درس دانشجو و گروه اکثریت."""
+    return await db.get_student_course_selections(user["id"], term=term)
+
+
+@router.post("/course-selections")
+async def save_course_selections_ep(
+    body: dict,
+    user=Depends(get_current_user),
+):
+    """🎓 ذخیره انتخاب‌های درس‌به‌درس دانشجو + محاسبه خودکار گروه اکثریت و به‌روزرسانی پروفایل."""
+    selections = body.get("selections") if isinstance(body, dict) else []
+    term = body.get("term") if isinstance(body, dict) else None
+    if not isinstance(selections, list):
+        from fastapi import HTTPException
+        raise HTTPException(422, "فرمت انتخاب واحد معتبر نیست")
+    res = await db.save_student_course_selections(user["id"], selections, term=term)
+    try:
+        db_user = user.get("_db") or {}
+        name = db_user.get("name") or str(user["id"])
+        await db.log_action(
+            user["id"], name, "student",
+            "ثبت انتخاب واحد درس‌به‌درس", "Schedule", category="academic", severity="INFO",
+            target_id=str(user["id"]), target_type="user", target_label=name,
+            after={
+                "term": res.get("term"),
+                "selected_count": res.get("selected_count"),
+                "computed_group": res.get("computed_group"),
+                "tie_broken_by": (res.get("majority") or {}).get("tie_broken_by"),
+            },
+        )
+    except Exception:
+        pass
+    return res
+
 
 
 @router.get("/exams")
@@ -252,10 +300,10 @@ async def get_ical(
     days: int = Query(default=90, ge=1, le=365),
     stype: ScheduleType | None = Query(default=None),
 ):
-    """🌊 W8/UX-05 — خروجی iCal برنامه‌ی گروه کاربر (۹۰ روز آینده)."""
+    """🌊 W8/UX-05 — خروجی iCal برنامه‌ی شخصی‌سازی‌شده کاربر (۹۰ روز آینده)."""
     from datetime import timedelta
-    group = _text(user["_db"].get("group"))
-    items = await db.get_schedules(stype=stype, upcoming=True, group=group)
+    personalized = await db.get_personalized_schedules(user["id"], stype=stype, upcoming=True)
+    items = personalized.get("items") or []
     cutoff = (now_tehran().date() + timedelta(days=days)).isoformat()
     items = [it for it in (items or [])
              if str(it.get("date") or "") <= cutoff]

@@ -500,6 +500,20 @@ async def new_resources_notif_job(context: ContextTypes.DEFAULT_TYPE):
     await _run_new_resources_notif(context.bot, force=False)
 
 
+async def term_course_selection_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    """🎓 اجرای روزانه‌ی یادآوری انتخاب واحد پس از پایان امتحانات ترم."""
+    try:
+        res = await db.run_term_course_selection_reminder(context.bot, force=False)
+        if res.get('triggered'):
+            logger.info(
+                "🎓 Term course selection reminder executed: sent=%s skipped=%s blocked=%s",
+                res.get('sent'), res.get('skipped_has_selection'), res.get('blocked')
+            )
+    except Exception as e:
+        logger.error("term_course_selection_reminder_job error: %s", e)
+
+
+
 async def _discount_soldout_edit_task(bot, code: str):
     """
     ⛔ موج D2 — ادیت همگانی «اتمام موجودی»:
@@ -705,6 +719,25 @@ async def mini_app_outbox_job(context: ContextTypes.DEFAULT_TYPE):
                     # 🛡 AUDIT-A3 — مثل الگوی __EXCEL_EXPORT__: حتی در شکست هم
                     # مصرف می‌شود، وگرنه سیگنال هر ۲۰ ثانیه تا ابد تکرار می‌شود.
                     logger.error(f"__DISCOUNT_EXHAUSTED__ failed: {e}")
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "failed": True, "error": str(e)[:200],
+                        "sent_at": utc_now_iso(),
+                    }})
+                continue
+
+            if text.startswith("__COURSE_SELECTION_REMINDER__"):
+                try:
+                    _is_second = ":second" in text
+                    await coll.update_one({"_id": d["_id"]}, {"$set": {
+                        "sent": True, "sent_at": utc_now_iso()}})
+                    spawn_bg(
+                        db.run_term_course_selection_reminder(
+                            context.bot, force=True, is_second_reminder=_is_second
+                        ),
+                        'term_course_selection_reminder_manual'
+                    )
+                except Exception as e:
+                    logger.error("__COURSE_SELECTION_REMINDER__ failed: %s", e)
                     await coll.update_one({"_id": d["_id"]}, {"$set": {
                         "sent": True, "failed": True, "error": str(e)[:200],
                         "sent_at": utc_now_iso(),
@@ -1796,7 +1829,7 @@ INTERRUPTIBLE_SIMPLE_MODES = {
     # از منو می‌زد، متنِ آن دکمه به‌جای ناوبری، به‌عنوان ورودیِ همان
     # حالتِ نیمه‌کاره ذخیره می‌شد (مثلاً «📚 منابع» به‌عنوان دستور
     # سیستمیِ جدید ست می‌شد).
-    'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt',
+    'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt', 'ai_set_voice_prompt',
     'ai_reset_quota_search', 'ai_save_persona_name', 'ai_set_disabled_msg',
     'ai_ban_search', 'ai_profile_search',
     # FIX جدید: طراحی سوال با هوشیار (AI) — همین موضوع برای مرحله‌ی
@@ -1947,7 +1980,7 @@ async def unified_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ۴d. 🤖 هوشیار — تنظیمات پنل ادمین (API Key/مدل/محدودیت/prompt/ریست سهمیه/پرسونا/بن/پیام‌خاموش)
     if uid == ADMIN_ID and context.user_data.get('mode') in (
-        'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt',
+        'ai_set_key', 'ai_set_model', 'ai_set_limit', 'ai_set_prompt', 'ai_set_voice_prompt',
         'ai_reset_quota_search', 'ai_save_persona_name', 'ai_set_disabled_msg',
         'ai_ban_search', 'ai_profile_search',
     ):
@@ -2511,6 +2544,13 @@ async def post_init(application: Application):
             time=dtime(hour=19, minute=40, tzinfo=TEHRAN),
             days=(0,),
             name='prestige_challenge_scan'
+        )
+
+        # 🎓 بررسی روزانه تاریخ پایان امتحانات ترم و ارسال یادآوری صمیمی انتخاب واحد — ۱۰:۳۰ تهران
+        application.job_queue.run_daily(
+            term_course_selection_reminder_job,
+            time=dtime(hour=10, minute=30, tzinfo=TEHRAN),
+            name='term_course_selection_reminder'
         )
 
         # FIX: قبلاً اینجا یه job برای جاروی حافظه‌ی موقتِ RAM هوشیار بود؛

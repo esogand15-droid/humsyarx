@@ -20,7 +20,7 @@ from utils import ADMIN_ID, send_audit_log
 from time_utils import format_datetime_fa, today_tehran
 from ai_solver import (
     get_ai_config, set_ai_setting, ask_ai, save_persona, delete_persona,
-    DEFAULT_PROMPT, DEFAULT_DISABLED_MSG, AIError,
+    DEFAULT_PROMPT, DEFAULT_VOICE_PROMPT, DEFAULT_DISABLED_MSG, AIError,
     MODEL_CATALOG, PROVIDERS, IMAGE_MODEL_CATALOG, LIVE_MODEL_CATALOG,
     set_api_key_for_provider, delete_api_key_for_provider,
     add_api_key_for_provider, remove_api_key_for_provider,
@@ -151,6 +151,7 @@ async def ai_voice_screen(query):
         [InlineKeyboardButton(f"🗣 صدا: {cfg.get('tts_voice')} — تغییر", callback_data='ai:pick_tts_voice')],
         [InlineKeyboardButton(f"🎙 تماس صوتی زنده (Live): {'🟢 فعال' if live_on else '🔴 غیرفعال'}", callback_data='ai:toggle_live')],
         [InlineKeyboardButton(f"🤖 مدل Live: {live_model} — تغییر", callback_data='ai:pick_live_model')],
+        [InlineKeyboardButton("💬 پرامپت ویس‌چت زنده (لحن صوتی)", callback_data='ai:set_voice_prompt')],
         [InlineKeyboardButton("▶️ تست صدای هوشیار", callback_data='ai:test_tts')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='ai:main')],
     ]
@@ -596,6 +597,27 @@ async def ai_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "متن جدید رو بفرست، یا کلمه‌ی «حذف» رو بفرست تا به پیش‌فرض برگرده.",
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='ai:main')]])
+        )
+        return
+
+    if action == 'set_voice_prompt':
+        context.user_data['mode'] = 'ai_set_voice_prompt'
+        cfg = await get_ai_config()
+        raw_prompt = cfg.get('voice_system_prompt') or DEFAULT_VOICE_PROMPT
+        prompt_preview = _esc(raw_prompt)
+        MAX_PREVIEW = 2800
+        if len(prompt_preview) > MAX_PREVIEW:
+            prompt_preview = (
+                prompt_preview[:MAX_PREVIEW]
+                + f"…\n\n<i>(متن کامل {len(raw_prompt)} کاراکتره؛ برای نمایش خلاصه شد ولی متن کامل ذخیره‌ست.)</i>"
+            )
+        await query.edit_message_text(
+            "🎙 <b>ویرایش پرامپت اختصاصی ویس‌چت زنده و پاسخ صوتی</b>\n\n"
+            "این پرامپت لحن صمیمی، محاوره‌ای و بااحساس هوشیار در مکالمات صوتی را تعیین می‌کند (مستقل از چت متنی).\n\n"
+            f"متن فعلی:\n<code>{prompt_preview}</code>\n\n"
+            "متن جدید رو بفرست، یا کلمه‌ی «حذف» / «پیش‌فرض» رو بفرست تا به پرامپت صمیمی پیش‌فرض برگرده.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='ai:voice_menu')]])
         )
         return
 
@@ -1064,4 +1086,14 @@ async def ai_admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await set_ai_setting('system_prompt', text)
             await update.message.reply_text("✅ دستور سیستمی جدید ذخیره شد.")
+        return
+
+    if mode == 'ai_set_voice_prompt':
+        context.user_data.pop('mode', None)
+        if text in ('حذف', 'reset', 'پیش‌فرض', 'پیشفرض'):
+            await set_ai_setting('voice_system_prompt', DEFAULT_VOICE_PROMPT)
+            await update.message.reply_text("✅ پرامپت ویس‌چت زنده به حالت صمیمی پیش‌فرض برگشت.")
+        else:
+            await set_ai_setting('voice_system_prompt', text)
+            await update.message.reply_text("✅ پرامپت ویس‌چت زنده ذخیره شد.")
         return

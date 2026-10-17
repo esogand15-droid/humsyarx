@@ -122,6 +122,8 @@ class ConfigUpdate(BaseModel):
     live_daily_minutes: int | None = Field(default=None, ge=0, le=600)
     live_max_session_sec: int | None = Field(default=None, ge=60, le=1800)
     live_target_language: str | None = Field(default=None, max_length=10)
+    live_temperature: float | None = Field(default=None, ge=0.1, le=1.5)
+    voice_system_prompt: str | None = Field(default=None, max_length=20000)
 
     thinking: str = Field(
         pattern="^(auto|high)$"
@@ -220,6 +222,12 @@ async def config(
                 "system_prompt"
             ],
 
+        "voice_system_prompt":
+            value.get("voice_system_prompt", ""),
+
+        "default_voice_system_prompt":
+            value.get("default_voice_system_prompt", ""),
+
         "disabled_message":
             value[
                 "disabled_message"
@@ -277,6 +285,9 @@ async def config(
 
         "live_target_language":
             value.get("live_target_language", "fa"),
+
+        "live_temperature":
+            value.get("live_temperature", 0.85),
     }
 
 
@@ -293,6 +304,7 @@ async def update_config(
         "daily_limit",
         "thinking",
         "system_prompt",
+        "voice_system_prompt",
         "disabled_message",
         "image_enabled",
         "image_model",
@@ -313,6 +325,7 @@ async def update_config(
         "live_daily_minutes",
         "live_max_session_sec",
         "live_target_language",
+        "live_temperature",
     )
 
     for key in editable_fields:

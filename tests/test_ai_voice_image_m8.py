@@ -1187,6 +1187,42 @@ class M9GeminiLiveVoiceTests(unittest.TestCase):
         self.assertEqual(ai_solver.sanitize_live_persian_transcript("Wie geht es dir heute?", is_input=True), "")
         self.assertEqual(ai_solver.sanitize_live_persian_transcript("मैं आपकी कैसे मदद कर सकता हूँ", is_input=True), "")
 
+    def test_voice_system_prompt_separation_and_friendly_persona(self):
+        # ۱) پرامپت ویس باید مستقل از پرامپت متنی باشد و پرامپت متنی دست‌نخورده بماند
+        self.assertNotEqual(ai_solver.DEFAULT_VOICE_PROMPT, ai_solver.DEFAULT_PROMPT)
+        self.assertIn("گزینه‌ی X صحیح است", ai_solver.DEFAULT_PROMPT)
+        self.assertNotIn("گزینه‌ی X صحیح است", ai_solver.DEFAULT_VOICE_PROMPT)
+
+        # ۲) الزامات لحن صمیمی، محاوره‌ای، احساسات کامل، ممنوعیت کلمات کتابی، قوانین TTS و ۱۰ مثال Few-Shot
+        vp = ai_solver.DEFAULT_VOICE_PROMPT
+        for phrase in ("چطوری؟", "آره دیگه", "وای نه!", "راستش...", "خب بذار ببینم", "آره حتماً، بذار بگم برات"):
+            self.assertIn(phrase, vp)
+        for forbidden_rule in ("لذا", "بنابراین", "در خصوص", "می‌بایست", "مقتضی است", "ایشان", "جهت"):
+            self.assertIn(forbidden_rule, vp)
+        for ex_idx in range(1, 11):
+            self.assertIn(f"مثال {ex_idx}".translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")), vp)
+        self.assertIn("بد (ممنوع):", vp)
+        self.assertIn("خوب:", vp)
+        self.assertIn("مارک‌داون", vp)
+        self.assertIn("ایموجی", vp)
+        self.assertIn("هوش مصنوعی‌ام", vp)
+
+        # ۳) بررسی استفاده پیش‌فرض از DEFAULT_VOICE_PROMPT و temperature=0.85 در build_live_setup_message
+        setup_default = ai_solver.build_live_setup_message(model="gemini-3.8-live")["setup"]
+        self.assertEqual(setup_default["generationConfig"]["temperature"], 0.85)
+        sys_instruction = setup_default["systemInstruction"]["parts"][0]["text"]
+        self.assertIn("مثال ۱۰", sys_instruction)
+        self.assertIn("آره حتماً، بذار بگم برات", sys_instruction)
+
+        # ۴) بررسی خواندن و ذخیره مستقل voice_system_prompt در get_ai_config
+        cfg = _rtloop.run(ai_solver.get_ai_config())
+        self.assertEqual(cfg["system_prompt"], ai_solver.DEFAULT_PROMPT)
+        self.assertEqual(cfg["voice_system_prompt"], ai_solver.DEFAULT_VOICE_PROMPT)
+        self.assertEqual(cfg["default_voice_system_prompt"], ai_solver.DEFAULT_VOICE_PROMPT)
+        self.assertEqual(cfg["live_temperature"], 0.85)
+
+
+
 
 
 
