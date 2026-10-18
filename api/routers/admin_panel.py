@@ -410,32 +410,46 @@ async def blacklist(admin=Depends(require_perm("users.view"))):
 @router.get("/content-admins")
 async def content_admins_list(admin=Depends(require_perm("roles.manage"))):
     admins = await db.get_content_admins()
-    return {"admins":[{"id":a.get("user_id"),"name":a.get("name","")} for a in admins]}
+    return {
+        "admins": [
+            {
+                "id": a.get("user_id"),
+                "name": a.get("name", ""),
+                "role": a.get("content_role", "content_admin"),
+                "role_label": a.get("role_label", "🎓 ادمین ارشد محتوا"),
+                "scope_intake": a.get("scope_intake"),
+            }
+            for a in admins
+        ]
+    }
 
 @router.post("/content-admins/{uid}")
-async def grant_content_admin(uid: int, admin=Depends(require_perm("roles.manage"))):
+async def grant_content_admin(uid: int, scope_intake: Optional[str] = Query(None), admin=Depends(require_perm("roles.manage"))):
     user = await db.get_user(uid)
     if not user: raise HTTPException(404)
-    await db.update_user(uid,{"role":"content_admin"})
+    actor_id = admin["id"] if isinstance(admin, dict) else 0
+    await db.grant_content_admin(uid, added_by=actor_id, scope_intake=scope_intake)
     await _notify(uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", "content_admin_granted")
     await _audit(admin, "اعطای دسترسی ادمین ارشد محتوا", "Roles", severity="HIGH",
         target_id=uid, target_type="user", target_label=user.get("name",""),
-        tags=["اعطای_نقش","پنل_وب"])
+        tags=["اعطای_نقش","پنل_وب","rbac"])
     return {"ok":True}
 
 @router.delete("/content-admins/{uid}")
 async def revoke_content_admin(uid: int, admin=Depends(require_perm("roles.manage"))):
-    await db.update_user(uid,{"role":"student"})
+    actor_id = admin["id"] if isinstance(admin, dict) else 0
+    await db.revoke_content_admin(uid, actor_id=actor_id)
     await _notify(uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", "content_admin_revoked")
     await _audit(admin, "لغو دسترسی ادمین ارشد محتوا", "Roles", severity="HIGH",
         target_id=uid, target_type="user",
-        tags=["لغو_نقش","پنل_وب"])
+        tags=["لغو_نقش","پنل_وب","rbac"])
     return {"ok":True}
 
 @router.get("/students")
 async def students_list(admin=Depends(require_perm("users.view")), q: Optional[str]=Query(None)):
     users = await db.all_users(approved_only=True)
-    students = [u for u in users if u.get("role","student")=="student"]
+    ca_ids = {int(a.get("user_id")) for a in (await db.get_content_admins() or []) if a.get("user_id") is not None}
+    students = [u for u in users if int(u.get("user_id", 0)) not in ca_ids and u.get("role","student")=="student"]
     if q:
         ql=q.lower()
         students=[u for u in students if ql in u.get("name","").lower() or ql in u.get("student_id","").lower()]
@@ -461,6 +475,8 @@ async def edit_user(uid: int, body: UserPatch, admin=Depends(require_perm("users
     if body.student_id is not None: updates["student_id"]=body.student_id.strip()
     if body.role       is not None:
         if body.role not in ("student","content_admin","support"): raise HTTPException(422,"نقش نامعتبر")
+        actor_id = admin["id"] if isinstance(admin, dict) else 0
+        await db.set_legacy_user_role(uid, body.role, actor_id=actor_id)
         updates["role"]=body.role
     if body.educational_group is not None:
         actor_id = admin["id"] if isinstance(admin, dict) else 0

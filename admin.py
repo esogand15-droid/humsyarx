@@ -490,7 +490,7 @@ ROOT_ONLY_ACTIONS = {
     'export_excel', 'audit_log',
     'confirm_delete_user', 'delete_user',
     'confirm_block_user', 'block_user', 'unblock_user', 'blacklist_view',  # FIX جدید: بلاک کامل
-    'content_admins', 'ca_set', 'ca_remove',
+    'content_admins', 'ca_grant', 'ca_set', 'ca_remove',
     'notif_manage', 'notif_set_interval', 'notif_history', 'notif_retry',
     'notif_defaults', 'notif_default_toggle', 'notif_force_send',
     'channel_lock', 'channel_lock_add', 'channel_lock_remove',  # FIX جدید
@@ -1042,6 +1042,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'role_remove':
         target_uid = int(parts[2])
+        old_role_doc = await db.get_admin_role(target_uid) or {}
         await db.remove_admin_role(target_uid)
         admin_user = await db.get_user(uid)
         actor_name = admin_user.get('name', 'مدیر ارشد') if admin_user else 'مدیر ارشد'
@@ -1053,7 +1054,14 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "حذف رول از ادمین", module='Roles', severity='CRITICAL',
             actor_role=actor_role,
             target_id=str(target_uid), target_type='user', target_label=target_label,
-            tags=['نقش_ها']
+            before={'role': old_role_doc.get('role', ''), 'scope_intake': old_role_doc.get('scope_intake')},
+            after={'role': 'student', 'scope_intake': None},
+            tags=['نقش_ها', 'لغو_نقش']
+        )
+        await safe_send(
+            context.bot, target_uid,
+            "⚠️ دسترسی مدیریتی شما لغو شد.",
+            reply_markup=await get_keyboard_for_user(target_user_doc, target_uid),
         )
         await query.answer("✅ نقش حذف شد!", show_alert=True)
         await _show_roles(query)
@@ -1355,26 +1363,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به ورودی‌ها", callback_data='admin:intakes')]]))
     elif action == 'content_admins':
-        admins = await db.get_content_admins()
-        keyboard = []
-        for a in admins:
-            keyboard.append([
-                InlineKeyboardButton(f"🎓 {a.get('name','')}", callback_data=f'admin:user_detail:{a["user_id"]}'),
-                InlineKeyboardButton("🗑 لغو", callback_data=f'admin:ca_remove:{a["user_id"]}'),
-            ])
-        keyboard.append([InlineKeyboardButton("➕ دادن دسترسی", callback_data='admin:ca_grant')])
-        keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_users')])
-        await query.edit_message_text(f"🎓 <b>ادمین‌های محتوا</b> — {len(admins)} نفر", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+        await _show_content_admins(query)
     elif action == 'ca_grant':
         users = await db.all_users(approved_only=True)
-        students = [u for u in users if u.get('role','student') == 'student'][:20]
+        existing_ca_ids = {int(a.get('user_id')) for a in (await db.get_content_admins() or []) if a.get('user_id') is not None}
+        students = [u for u in users if int(u.get('user_id', 0)) not in existing_ca_ids and u.get('role', 'student') == 'student'][:20]
         keyboard = [[InlineKeyboardButton(f"👤 {u.get('name','')} | گروه {u.get('group','')}", callback_data=f'admin:ca_set:{u["user_id"]}')] for u in students]
+        keyboard.append([InlineKeyboardButton("📅 افزودن ادمین محتوای ورودی خاص", callback_data='admin:role_type:content_scoped')])
         keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:content_admins')])
-        await query.edit_message_text("➕ کاربر مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("➕ کاربر مورد نظر را برای دسترسی «🎓 ادمین ارشد محتوا» انتخاب کنید (یا دکمه‌ی ورودی خاص را بزنید):", reply_markup=InlineKeyboardMarkup(keyboard))
     elif action == 'ca_set':
         target_uid = int(parts[2])
         _t_before = await db.get_user(target_uid) or {}
-        await db.update_user(target_uid, {'role': 'content_admin'})
+        _old_roles = (await db.get_user_roles(target_uid)).get('keys') or []
+        await db.grant_content_admin(target_uid, added_by=uid)
         try:
             _au = await db.get_user(uid) or {}
             _an = _au.get('name', 'مدیر ارشد')
@@ -1382,17 +1384,19 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_audit_log(context.bot, 'admin', _an, uid,
                 "اعطای دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
                 target_id=str(target_uid), target_type='user', target_label=_t_before.get('name',''),
-                before={'role': _t_before.get('role','')}, after={'role': 'content_admin'},
-                tags=['اعطای_نقش'])
+                before={'role': _t_before.get('role',''), 'roles': _old_roles},
+                after={'role': 'content_admin', 'roles': (await db.get_user_roles(target_uid)).get('keys') or []},
+                tags=['اعطای_نقش', 'rbac'])
         except Exception as _e:
             import logging; logging.getLogger(__name__).warning(f"ca_set audit failed: {_e}")
         await safe_send(context.bot, target_uid, "🎓 <b>دسترسی ادمین محتوا به شما داده شد!</b>", parse_mode='HTML', reply_markup=content_admin_keyboard())
         await query.answer("✅ دسترسی داده شد!", show_alert=True)
-        await _show_cat_users(query, uid=uid)
+        await _show_content_admins(query)
     elif action == 'ca_remove':
         target_uid = int(parts[2])
         _t_before2 = await db.get_user(target_uid) or {}
-        await db.update_user(target_uid, {'role': 'student'})
+        _old_roles2 = (await db.get_user_roles(target_uid)).get('keys') or []
+        await db.revoke_content_admin(target_uid, actor_id=uid)
         try:
             _au = await db.get_user(uid) or {}
             _an = _au.get('name', 'مدیر ارشد')
@@ -1400,13 +1404,19 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_audit_log(context.bot, 'admin', _an, uid,
                 "لغو دسترسی ادمین محتوا", module='Roles', severity='HIGH', actor_role=_ar,
                 target_id=str(target_uid), target_type='user', target_label=_t_before2.get('name',''),
-                before={'role': _t_before2.get('role','')}, after={'role': 'student'},
-                tags=['لغو_نقش'])
+                before={'role': _t_before2.get('role',''), 'roles': _old_roles2},
+                after={'role': 'student', 'roles': (await db.get_user_roles(target_uid)).get('keys') or []},
+                tags=['لغو_نقش', 'rbac'])
         except Exception as _e:
             import logging; logging.getLogger(__name__).warning(f"ca_remove audit failed: {_e}")
-        await safe_send(context.bot, target_uid, "⚠️ دسترسی ادمین محتوای شما لغو شد.", reply_markup=main_keyboard())
+        _updated_target = await db.get_user(target_uid)
+        await safe_send(
+            context.bot, target_uid,
+            "⚠️ دسترسی ادمین محتوای شما لغو شد.",
+            reply_markup=await get_keyboard_for_user(_updated_target, target_uid),
+        )
         await query.answer("↩️ دسترسی لغو شد!", show_alert=True)
-        await _show_cat_users(query, uid=uid)
+        await _show_content_admins(query)
     elif action in ('qbank_manage', 'qbank_upload', 'qbank_lesson', 'qbank_topic', 'qbank_list', 'qbank_del'):
         context.user_data.pop('mode', None)
         await query.edit_message_text(
@@ -2592,8 +2602,35 @@ async def _show_user_detail(query, context, target_uid: int):
         return
     stats   = await db.user_stats(target_uid)
     status  = "✅ تأیید شده" if user.get('approved') else "⏳ در انتظار"
-    role_m  = {'student': '🧑‍🎓 دانشجو', 'content_admin': '🎓 ادمین ارشد محتوا'}
-    role_t  = role_m.get(user.get('role','student'), user.get('role',''))
+    # خوانش یکپارچه‌ی نقش کاربر از هسته واحد RBAC (user_roles + admin_roles + users.role)
+    ur_info = await db.get_user_roles(target_uid)
+    ar_doc  = await db.get_admin_role(target_uid)
+    active_role_labels = []
+    for r_doc in (ur_info.get('roles') or []):
+        lbl = r_doc.get('label') or db.ROLE_LABELS.get(r_doc.get('_id', ''), r_doc.get('_id', ''))
+        if r_doc.get('_id') in ('content_scoped', 'grade_rep') and ur_info.get('scope_intake'):
+            lbl = f"{lbl} ({ur_info.get('scope_intake')})"
+        active_role_labels.append(lbl)
+    if not active_role_labels and ar_doc and ar_doc.get('role'):
+        rk = ar_doc.get('role')
+        lbl = db.ROLE_LABELS.get(rk, rk)
+        if rk in ('content_scoped', 'grade_rep') and ar_doc.get('scope_intake'):
+            lbl = f"{lbl} ({ar_doc.get('scope_intake')})"
+        active_role_labels.append(lbl)
+    if not active_role_labels:
+        role_m = {'student': '🧑‍🎓 دانشجو', 'content_admin': '🎓 ادمین ارشد محتوا', 'support': '🎫 پشتیبان'}
+        role_t = role_m.get(user.get('role', 'student'), user.get('role', '🧑‍🎓 دانشجو'))
+    else:
+        role_t = ' + '.join(active_role_labels)
+    is_target_ca = (
+        target_uid != ADMIN_ID
+        and (
+            user.get('role') == 'content_admin'
+            or 'content_admin' in (ur_info.get('keys') or [])
+            or 'content_scoped' in (ur_info.get('keys') or [])
+            or (ar_doc and ar_doc.get('role') in ('content_admin', 'content_scoped'))
+        )
+    )
     uname   = f"@{user['username']}" if user.get('username') else 'ندارد'
     tickets = await db.ticket_get_user(target_uid)
     open_t  = sum(1 for t in tickets if t['status'] == 'open')
@@ -2640,9 +2677,9 @@ async def _show_user_detail(query, context, target_uid: int):
     # پنل به ADMIN_ID محدود است (bot.py unified_text_handler).
     if query.from_user.id == ADMIN_ID:
         keyboard.append([InlineKeyboardButton("✉️ ارسال پیام به این کاربر", callback_data=f'admin:dm_user:{target_uid}')])
-    if user.get('role','student') == 'student':
+    if not is_target_ca:
         keyboard.append([InlineKeyboardButton("🎓 دادن دسترسی محتوا", callback_data=f'admin:ca_set:{target_uid}')])
-    elif user.get('role') == 'content_admin':
+    else:
         keyboard.append([InlineKeyboardButton("↩️ لغو دسترسی محتوا", callback_data=f'admin:ca_remove:{target_uid}')])
     if user.get('approved'):
         keyboard.append([InlineKeyboardButton("🚫 تعلیق", callback_data=f'admin:suspend:{target_uid}')])
@@ -3162,8 +3199,37 @@ async def _show_intakes(query):
 # 🛡 سطوح دسترسی چندگانه ادمین — UI
 # ══════════════════════════════════════════════════
 
+async def _show_content_admins(query):
+    """نمایش یکپارچه‌ی ادمین‌های محتوا (سراسری + ورودی‌خاص) متصل به هسته واحد RBAC"""
+    admins = await db.get_content_admins()
+    keyboard = []
+    lines = []
+    for a in admins:
+        uid = a.get('user_id')
+        name = a.get('name', '') or f"آیدی {uid}"
+        c_role = a.get('content_role', 'content_admin')
+        sc = a.get('scope_intake')
+        r_lbl = a.get('role_label') or db.ROLE_LABELS.get(c_role, '🎓 ادمین ارشد محتوا')
+        lines.append(f"👤 <b>{_esc(name)}</b> — {_esc(r_lbl)}")
+        icon = "📅" if (c_role == 'content_scoped' or sc) else "🎓"
+        btn_txt = f"{icon} {name}" + (f" ({sc})" if sc else "")
+        keyboard.append([
+            InlineKeyboardButton(btn_txt, callback_data=f'admin:user_detail:{uid}'),
+            InlineKeyboardButton("🗑 لغو", callback_data=f'admin:ca_remove:{uid}'),
+        ])
+    keyboard.append([InlineKeyboardButton("➕ دادن دسترسی", callback_data='admin:ca_grant')])
+    keyboard.append([InlineKeyboardButton("🛡 سطوح دسترسی ادمین", callback_data='admin:roles')])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_users')])
+    body = ("\n━━━━━━━━━━━━━━━━\n" + "\n".join(lines)) if lines else "\n\n<i>هنوز ادمین محتوایی ثبت نشده است.</i>"
+    await query.edit_message_text(
+        f"🎓 <b>ادمین‌های محتوا</b> — {len(admins)} نفر{body}",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
 async def _show_roles(query):
-    """لیست نقش‌های فرعی فعلی + دکمه افزودن"""
+    """لیست نقش‌های فرعی فعلی + دکمه افزودن (متصل به هسته واحد RBAC)"""
     roles = await db.get_all_admin_roles()
     keyboard = []
     if not roles:
@@ -3183,14 +3249,21 @@ async def _show_roles(query):
             target_uid = r['_id']
             u = await db.get_user(target_uid)
             name = u.get('name', '') if u else f"آیدی {target_uid}"
-            role_label = db.ROLE_LABELS.get(r.get('role', ''), r.get('role', ''))
-            scope = r.get('scope_intake')
+            r_key = r.get('role', '')
+            role_label = await db.role_label(r_key) if hasattr(db, 'role_label') else db.ROLE_LABELS.get(r_key, r_key)
+            scope = r.get('scope_intake') if r_key in ('content_scoped', 'grade_rep') else None
             scope_txt = f" ({scope})" if scope else ""
-            text += f"\n👤 <b>{name}</b>\n   {role_label}{scope_txt}\n"
+            extra_roles = [k for k in (r.get('roles') or []) if k and k != r_key]
+            extra_txt = ""
+            if extra_roles:
+                extra_labels = [db.ROLE_LABELS.get(k, k) for k in extra_roles]
+                extra_txt = " + " + " + ".join(extra_labels)
+            text += f"\n👤 <b>{_esc(name)}</b>\n   {role_label}{scope_txt}{extra_txt}\n"
             keyboard.append([InlineKeyboardButton(
                 f"🗑 حذف نقش {name}", callback_data=f'admin:role_remove:{target_uid}'
             )])
     keyboard.append([InlineKeyboardButton("➕ افزودن نقش جدید", callback_data='admin:role_add_pick')])
+    keyboard.append([InlineKeyboardButton("🎓 ادمین‌های محتوا", callback_data='admin:content_admins')])
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data='admin:cat_users')])
     await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -3202,6 +3275,8 @@ async def _show_role_type_picker(query):
         [InlineKeyboardButton("🎓 ادمین ارشد محتوا",   callback_data='admin:role_type:content_admin')],
         [InlineKeyboardButton("📅 ادمین محتوای ورودی خاص", callback_data='admin:role_type:content_scoped')],
         [InlineKeyboardButton("📢 مسئول اطلاعیه",        callback_data='admin:role_type:broadcaster')],
+        [InlineKeyboardButton("🤓 خرخون (بررسی سؤال و گزارش)", callback_data='admin:role_type:reviewer')],
+        [InlineKeyboardButton("👮 ادمین ربات (نماینده)", callback_data='admin:role_type:bot_admin')],
         [InlineKeyboardButton("📊 نماینده ورودی (ثبت نمره)", callback_data='admin:role_type:grade_rep')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:roles')],
     ]

@@ -258,6 +258,10 @@ async def assign_roles(uid: int, body: AssignBody, user=_users_guard):
     assignment_snapshot = await db.rbac_assignment_snapshot(uid)
     try:
         for key in body.add:
+            if key == "content_admin" and "content_scoped" not in body.add:
+                await db._remove_role_key(uid, "content_scoped")
+            elif key == "content_scoped" and "content_admin" not in body.add:
+                await db._remove_role_key(uid, "content_admin")
             await db._add_role_key(uid, key, body.scope_intake)
         for key in body.remove:
             await db._remove_role_key(uid, key)

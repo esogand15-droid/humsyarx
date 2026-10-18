@@ -1045,11 +1045,7 @@ async def handle_grant_days_text(update, context):
         return
     days = int(text)
 
-    if role == 'content_admin':
-        target_uids = [u['user_id'] async for u in db.users.find({'role': 'content_admin'})]
-    else:
-        role_docs = await db.get_all_admin_roles()
-        target_uids = [r['_id'] for r in role_docs if r.get('role') == role]
+    target_uids = await db.user_ids_by_role(role, limit=500)
 
     if not target_uids:
         await update.message.reply_text("⚠️ هیچ کاربری با این نقش پیدا نشد.")

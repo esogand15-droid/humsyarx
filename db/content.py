@@ -4735,7 +4735,9 @@ class DBContent:
 
 
     async def get_reviewers(self) -> list:
-        """همه کاربرانی که نقش reviewer (خرخون) دارند"""
+        """همه کاربرانی که نقش reviewer (خرخون) دارند — از منبع واحد RBAC"""
+        if hasattr(self, 'user_ids_by_role'):
+            return await self.user_ids_by_role('reviewer', limit=200)
         docs = await self.admin_roles.find({'role': 'reviewer'}).to_list(100)
         return [d['_id'] for d in docs]
 

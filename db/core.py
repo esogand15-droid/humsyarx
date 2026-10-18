@@ -3234,13 +3234,20 @@ class DBCore:
         """
         if uid == int(os.getenv('ADMIN_ID', '0')):
             return 'مدیر ارشد'
+        import re
         role_doc = await self.get_admin_role(uid)
-        if role_doc:
-            label = self.ROLE_LABELS.get(role_doc.get('role', ''), '')
-            # حذف ایموجی و پرانتز برای متن لاگ تمیز
-            import re
-            clean = re.sub(r'^[^\w\u0600-\u06FF]+', '', label).strip()
-            return clean or role_doc.get('role', 'نامشخص')
+        if role_doc and role_doc.get('role'):
+            r_key = role_doc.get('role', '')
+            label = await self.role_label(r_key) if hasattr(self, 'role_label') else self.ROLE_LABELS.get(r_key, '')
+            clean = re.sub(r'^[^\w\u0600-\u06FF]+', '', label or '').strip()
+            return clean or r_key or 'نامشخص'
+        if hasattr(self, 'get_user_roles') and getattr(self, 'user_roles', None) is not None:
+            ur_info = await self.get_user_roles(uid)
+            roles = ur_info.get('roles') or []
+            if roles:
+                label = roles[0].get('label') or roles[0].get('_id') or ''
+                clean = re.sub(r'^[^\w\u0600-\u06FF]+', '', label).strip()
+                return clean or roles[0].get('_id', 'نامشخص')
         user = await self.get_user(uid)
         if user and user.get('role') == 'content_admin':
             return 'ادمین ارشد محتوا'

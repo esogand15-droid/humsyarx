@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 COLLECTIONS = (
     "users",
+    "roles",
+    "user_roles",
+    "admin_roles",
     "schedules",
     "schedule_templates",
     "course_offerings",
@@ -147,10 +150,32 @@ async def run_migration(db, dry_run: bool = True) -> dict:
                     "intake": base_eff_intake,
                 })
 
+    # ۵) یکپارچه‌سازی و خودترمیم RBAC (همگام‌سازی user_roles، admin_roles و users.role + رفع تداخل content_scoped/content_admin)
+    ur_docs = await db.user_roles.find({}).to_list(5000)
+    ar_docs = await db.admin_roles.find({}).to_list(5000)
+    ca_users = await db.users.find({"role": "content_admin"}).to_list(5000)
+    rbac_collisions = []
+    for ur in ur_docs or []:
+        r_list = list(ur.get("roles") or [])
+        if "content_admin" in r_list and "content_scoped" in r_list:
+            rbac_collisions.append({"uid": ur.get("_id"), "roles": r_list, "scope_intake": ur.get("scope_intake")})
+    rbac_migrated = 0
+    if not dry_run and hasattr(db, "rbac_migrate_users"):
+        await db.seed_system_roles()
+        rbac_migrated = await db.rbac_migrate_users()
+
     return {
         "dry_run": dry_run,
         "active_term": active_term,
         "users_backfill": users_report,
+        "rbac_unification": {
+            "user_roles_count": len(ur_docs or []),
+            "admin_roles_count": len(ar_docs or []),
+            "legacy_content_admin_users": len(ca_users or []),
+            "collisions_detected": len(rbac_collisions),
+            "collisions": rbac_collisions,
+            "migrated_records": rbac_migrated,
+        },
         "normalized_documents": {
             "schedules": sched_norm_count,
             "schedule_templates": tpl_norm_count,

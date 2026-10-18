@@ -22,9 +22,101 @@ class DBRbac:
 
 
     async def get_content_admins(self):
-        return await self.users.find(
+        """دریافت یکپارچه‌ی تمام ادمین‌های محتوا (سراسری + ورودی‌خاص) از منبع واحد RBAC
+        با حفظ سازگاری کامل با اسناد قدیمی (users.role / admin_roles / user_roles)."""
+        uid_set = set()
+        role_by_uid = {}
+        scope_by_uid = {}
+
+        # ۱) منبع اصلی: user_roles
+        if getattr(self, 'user_roles', None) is not None:
+            try:
+                ur_docs = await self.user_roles.find(
+                    {'roles': {'$in': ['content_admin', 'content_scoped']}}
+                ).to_list(500)
+                for d in (ur_docs or []):
+                    uid = d.get('_id')
+                    if uid is None:
+                        continue
+                    uid = int(uid)
+                    roles = list(d.get('roles') or [])
+                    sc = str(d.get('scope_intake') or '').strip() or None
+                    if 'content_scoped' in roles and sc:
+                        role_by_uid[uid] = 'content_scoped'
+                        scope_by_uid[uid] = sc
+                        uid_set.add(uid)
+                    elif 'content_admin' in roles:
+                        role_by_uid[uid] = 'content_admin'
+                        scope_by_uid[uid] = sc
+                        uid_set.add(uid)
+                    elif 'content_scoped' in roles:
+                        role_by_uid[uid] = 'content_scoped'
+                        scope_by_uid[uid] = sc
+                        uid_set.add(uid)
+            except Exception:
+                pass
+
+        # ۲) آینه‌ی admin_roles
+        if getattr(self, 'admin_roles', None) is not None:
+            try:
+                ar_docs = await self.admin_roles.find(
+                    {'role': {'$in': ['content_admin', 'content_scoped']}}
+                ).to_list(500)
+                for d in (ar_docs or []):
+                    uid = d.get('_id')
+                    if uid is None:
+                        continue
+                    uid = int(uid)
+                    uid_set.add(uid)
+                    sc = str(d.get('scope_intake') or '').strip() or None
+                    if uid not in role_by_uid:
+                        role_by_uid[uid] = d.get('role') or 'content_admin'
+                    if sc and not scope_by_uid.get(uid):
+                        scope_by_uid[uid] = sc
+            except Exception:
+                pass
+
+        # ۳) فیلد میراثی users.role == 'content_admin'
+        legacy_users = await self.users.find(
             {'role': 'content_admin', 'approved': True}
-        ).to_list(100)
+        ).to_list(500)
+        user_map = {}
+        for u in (legacy_users or []):
+            uid = u.get('user_id')
+            if uid is None:
+                continue
+            uid = int(uid)
+            uid_set.add(uid)
+            user_map[uid] = dict(u)
+            if uid not in role_by_uid:
+                role_by_uid[uid] = 'content_admin'
+
+        missing_uids = [u for u in uid_set if u not in user_map]
+        if missing_uids:
+            extra_users = await self.users.find(
+                {'user_id': {'$in': missing_uids}}
+            ).to_list(len(missing_uids) + 10)
+            for u in (extra_users or []):
+                uid = u.get('user_id')
+                if uid is not None:
+                    user_map[int(uid)] = dict(u)
+
+        result = []
+        for uid in sorted(uid_set):
+            u = user_map.get(uid) or {'user_id': uid, 'name': f'کاربر {uid}', 'role': role_by_uid.get(uid, 'content_admin')}
+            c_role = role_by_uid.get(uid, 'content_admin')
+            sc = scope_by_uid.get(uid)
+            if c_role == 'content_scoped' or (sc and c_role == 'content_admin'):
+                label = self.ROLE_LABELS.get('content_scoped' if c_role == 'content_scoped' else 'content_admin', '🎓 ادمین محتوا')
+                if sc:
+                    label = f"{label} ({sc})"
+            else:
+                label = self.ROLE_LABELS.get('content_admin', '🎓 ادمین ارشد محتوا')
+            u['content_role'] = c_role
+            u['scope_intake'] = sc
+            u['role_label'] = label
+            result.append(u)
+        return result
 
 
     async def is_content_admin(self, uid: int) -> bool:
@@ -187,42 +279,242 @@ class DBRbac:
     }
 
 
-    async def add_admin_role(self, uid: int, role: str, added_by: int,
+    async def add_admin_role(self, uid: int, role: str, added_by: int = 0,
                               scope_intake: str = None) -> bool:
-        """افزودن نقش فرعی ادمین — اگه از قبل نقشی داشت، آپدیت میشه"""
-        if role not in self.ROLE_LABELS:
+        """افزودن/به‌روزرسانی نقش مدیریتی از هسته واحد RBAC (همگام‌سازی کامل user_roles + admin_roles + users.role)."""
+        uid = int(uid)
+        role = str(role or '').strip()
+        if not role:
             return False
-        await self.admin_roles.update_one(
-            {'_id': uid},
-            {'$set': {
-                'role':         role,
-                'scope_intake': scope_intake,
-                'added_by':     added_by,
-                'added_at':     utc_now_iso(),
-            }},
-            upsert=True
-        )
-        # 🛡 RBAC-W1 — آینه‌ی دوطرفه: کالکشن جدید هم هم‌زمان به‌روز
-        # می‌شود تا هر دو مخزن قدیمی/جدید همیشه Sync بمانند (§۵).
-        await self._add_role_key(uid, role, scope_intake)
+        if role not in self.ROLE_LABELS:
+            if getattr(self, 'roles', None) is None or not await self.get_role(role):
+                return False
+
+        clean_scope = str(scope_intake or '').strip() or None
+        if role not in ('content_scoped', 'grade_rep'):
+            role_doc_def = await self.get_role(role) if getattr(self, 'roles', None) is not None else None
+            perms_def = set((role_doc_def or {}).get('perms') or [])
+            if not any(p.endswith('.scoped') for p in perms_def):
+                clean_scope = None
+
+        # تفکیک قطعی سطح دسترسی محتوا: content_admin (سراسری) و content_scoped (ورودی‌خاص)
+        # با یکدیگر جایگزین می‌شوند تا هرگز هم‌زمان فعال نمانند و برچسب/دسترسی متناقض نسازند.
+        if getattr(self, 'user_roles', None) is not None:
+            ur_doc = await self.user_roles.find_one({'_id': uid})
+            cur_keys = list((ur_doc or {}).get('roles') or [])
+            if role == 'content_admin' and 'content_scoped' in cur_keys:
+                cur_keys = [k for k in cur_keys if k != 'content_scoped']
+                keep_scope = (ur_doc or {}).get('scope_intake') if 'grade_rep' in cur_keys else None
+                await self.user_roles.update_one(
+                    {'_id': uid},
+                    {'$set': {'roles': cur_keys, 'scope_intake': keep_scope, 'updated_at': utc_now_iso()}},
+                    upsert=True,
+                )
+            elif role == 'content_scoped' and 'content_admin' in cur_keys:
+                cur_keys = [k for k in cur_keys if k != 'content_admin']
+                await self.user_roles.update_one(
+                    {'_id': uid},
+                    {'$set': {'roles': cur_keys, 'scope_intake': clean_scope, 'updated_at': utc_now_iso()}},
+                    upsert=True,
+                )
+
+        if getattr(self, 'admin_roles', None) is not None:
+            await self.admin_roles.update_one(
+                {'_id': uid},
+                {'$set': {
+                    'role':         role,
+                    'scope_intake': clean_scope,
+                    'added_by':     added_by,
+                    'added_at':     utc_now_iso(),
+                }},
+                upsert=True
+            )
+        # 🛡 RBAC-W1 — آینه‌ی دوطرفه: کالکشن جدید و فیلد میراثی users.role هم‌زمان به‌روز می‌شوند
+        await self._add_role_key(uid, role, clean_scope)
+        await self.sync_legacy_role_mirror(uid)
+        try:
+            self._user_cache.pop(uid, None)
+        except Exception:
+            pass
         return True
 
 
-    async def remove_admin_role(self, uid: int):
-        # 🛡 RBAC-W1 — قبل از حذف، کلید نقش را می‌دانیم تا آینه را هم پاک کنیم
-        doc = await self.get_admin_role(uid)
-        await self.admin_roles.delete_one({'_id': uid})
-        if doc and doc.get('role'):
-            await self._remove_role_key(uid, doc['role'])
+    async def remove_admin_role(self, uid: int, role: str = None):
+        """حذف نقش مدیریتی از هسته واحد RBAC و همگام‌سازی کامل هر سه مخزن (user_roles, admin_roles, users.role)."""
+        uid = int(uid)
+        doc = await self.get_admin_role(uid) if getattr(self, 'admin_roles', None) is not None else None
+        ur_doc = await self.user_roles.find_one({'_id': uid}) if getattr(self, 'user_roles', None) is not None else None
+
+        if role:
+            target_roles = [role]
+            if role in ('content_admin', 'content_scoped'):
+                target_roles = ['content_admin', 'content_scoped']
+            for rk in target_roles:
+                await self._remove_role_key(uid, rk)
+        else:
+            # حذف کامل نقش‌های مدیریتی کاربر (از منوی سطوح دسترسی ادمین)
+            if getattr(self, 'admin_roles', None) is not None:
+                await self.admin_roles.delete_one({'_id': uid})
+            all_keys = list((ur_doc or {}).get('roles') or [])
+            if doc and doc.get('role') and doc['role'] not in all_keys:
+                all_keys.append(doc['role'])
+            if getattr(self, 'user_roles', None) is not None:
+                await self.user_roles.update_one(
+                    {'_id': uid},
+                    {'$set': {'roles': [], 'scope_intake': None, 'updated_at': utc_now_iso()}},
+                    upsert=True,
+                )
+            await self._sync_admin_role_projection(uid)
+
+        await self.sync_legacy_role_mirror(uid)
+        # اطمینان از پاک شدن نقش میراثی در صورتی که هنوز روی سند کاربر مانده باشد
+        u = await self.get_user(uid, use_cache=False)
+        if u and u.get('role') in ('content_admin', 'support'):
+            rem_info = await self.get_user_roles(uid)
+            rem_keys = rem_info.get('keys') or []
+            if u.get('role') == 'content_admin' and 'content_admin' not in rem_keys:
+                await self.update_user(uid, {'role': 'support' if 'support' in rem_keys else 'student'})
+            elif u.get('role') == 'support' and 'support' not in rem_keys:
+                await self.update_user(uid, {'role': 'content_admin' if 'content_admin' in rem_keys else 'student'})
+        try:
+            self._user_cache.pop(uid, None)
+        except Exception:
+            pass
+
+
+    async def grant_content_admin(self, uid: int, added_by: int = 0, scope_intake: str = None) -> bool:
+        """اعطای یکپارچه‌ی دسترسی ادمین محتوا (سراسری یا ورودی‌خاص) از طریق هسته مرکزی RBAC."""
+        uid = int(uid)
+        sc = str(scope_intake or '').strip() or None
+        role_key = 'content_scoped' if sc else 'content_admin'
+        return await self.add_admin_role(uid, role_key, added_by=added_by, scope_intake=sc)
+
+
+    async def revoke_content_admin(self, uid: int, actor_id: int = 0) -> bool:
+        """لغو یکپارچه‌ی دسترسی ادمین محتوا (سراسری و ورودی‌خاص) از تمام مخازن RBAC."""
+        uid = int(uid)
+        await self.remove_admin_role(uid, role='content_admin')
+        return True
+
+
+    async def set_legacy_user_role(self, uid: int, legacy_role: str, actor_id: int = 0) -> bool:
+        """همگام‌سازی ویرایش مستقیم فیلد role کاربر (student/content_admin/support) با هسته RBAC."""
+        uid = int(uid)
+        lr = str(legacy_role or 'student').strip()
+        if lr == 'content_admin':
+            return await self.grant_content_admin(uid, added_by=actor_id)
+        if lr == 'support':
+            await self.remove_admin_role(uid, role='content_admin')
+            return await self.add_admin_role(uid, 'support', added_by=actor_id)
+        if lr == 'student':
+            await self.remove_admin_role(uid, role='content_admin')
+            await self.remove_admin_role(uid, role='support')
+            await self.update_user(uid, {'role': 'student'})
+            return True
+        await self.update_user(uid, {'role': lr})
+        return True
 
 
     async def get_admin_role(self, uid: int) -> dict:
-        """نقش فرعی یک کاربر — None اگه نداشت"""
-        return await self.admin_roles.find_one({'_id': uid})
+        """نقش فرعی یک کاربر — با fallback به user_roles و users.role برای یکپارچگی کامل"""
+        uid = int(uid)
+        doc = await self.admin_roles.find_one({'_id': uid}) if getattr(self, 'admin_roles', None) is not None else None
+        if doc and doc.get('role'):
+            # اگر نقش سراسری است و نباید scope داشته باشد، scope کاذب را در نمایش پاک کن
+            r_key = doc.get('role')
+            sc = doc.get('scope_intake')
+            if r_key == 'content_admin' and sc and getattr(self, 'user_roles', None) is not None:
+                ur = await self.user_roles.find_one({'_id': uid})
+                ur_roles = list((ur or {}).get('roles') or [])
+                if 'content_scoped' in ur_roles:
+                    doc = dict(doc)
+                    doc['role'] = 'content_scoped'
+            return doc
+        if getattr(self, 'user_roles', None) is not None:
+            ur = await self.user_roles.find_one({'_id': uid})
+            roles = [k for k in ((ur or {}).get('roles') or []) if k]
+            if roles:
+                primary = 'content_admin' if 'content_admin' in roles else ('content_scoped' if 'content_scoped' in roles else roles[0])
+                sc = (ur or {}).get('scope_intake') if primary in ('content_scoped', 'grade_rep') else None
+                return {
+                    '_id': uid,
+                    'role': primary,
+                    'roles': roles,
+                    'scope_intake': sc,
+                    'added_at': (ur or {}).get('updated_at', ''),
+                }
+        return doc
 
 
     async def get_all_admin_roles(self) -> list:
-        return await self.admin_roles.find({}).sort('added_at', -1).to_list(100)
+        """لیست یکپارچه‌ی تمام دارندگان نقش‌های مدیریتی از هر سه منبع (user_roles, admin_roles, users.role)."""
+        by_uid = {}
+
+        # ۱) admin_roles
+        if getattr(self, 'admin_roles', None) is not None:
+            ar_docs = await self.admin_roles.find({}).sort('added_at', -1).to_list(200)
+            for d in (ar_docs or []):
+                uid = d.get('_id')
+                if uid is None:
+                    continue
+                uid = int(uid)
+                if d.get('role'):
+                    by_uid[uid] = dict(d)
+
+        # ۲) user_roles
+        if getattr(self, 'user_roles', None) is not None:
+            try:
+                ur_docs = await self.user_roles.find({'roles.0': {'$exists': True}}).to_list(200)
+            except Exception:
+                ur_docs = [d for d in await self.user_roles.find({}).to_list(200) if d.get('roles')]
+            for ur in (ur_docs or []):
+                uid = ur.get('_id')
+                if uid is None:
+                    continue
+                uid = int(uid)
+                roles = [k for k in (ur.get('roles') or []) if k]
+                if not roles:
+                    continue
+                sc = str(ur.get('scope_intake') or '').strip() or None
+                if 'content_scoped' in roles and sc:
+                    primary = 'content_scoped'
+                elif 'content_admin' in roles:
+                    primary = 'content_admin'
+                elif uid in by_uid and by_uid[uid].get('role') in roles:
+                    primary = by_uid[uid]['role']
+                else:
+                    primary = roles[0]
+                eff_scope = sc if primary in ('content_scoped', 'grade_rep') else None
+                existing = by_uid.get(uid) or {'_id': uid}
+                existing['role'] = primary
+                existing['roles'] = roles
+                existing['scope_intake'] = eff_scope
+                existing.setdefault('added_at', ur.get('updated_at', ''))
+                by_uid[uid] = existing
+
+        # ۳) users.role میراثی (content_admin / support)
+        if getattr(self, 'users', None) is not None:
+            try:
+                leg_users = await self.users.find(
+                    {'role': {'$in': ['content_admin', 'support']}, 'approved': True}
+                ).to_list(200)
+                for u in (leg_users or []):
+                    uid = u.get('user_id')
+                    if uid is None:
+                        continue
+                    uid = int(uid)
+                    if uid not in by_uid:
+                        by_uid[uid] = {
+                            '_id': uid,
+                            'role': u.get('role'),
+                            'roles': [u.get('role')],
+                            'scope_intake': None,
+                            'added_at': u.get('registered_at', ''),
+                        }
+            except Exception:
+                pass
+
+        return list(by_uid.values())
 
 
     async def has_permission(self, uid: int, permission: str) -> bool:
@@ -626,19 +918,108 @@ class DBRbac:
             'perms_seeded': perms_seeded,
         }
 
+    async def seed_system_roles(self) -> dict:
+        """نام مستعار استاندارد برای بذر نقش‌ها و مجوزهای سیستمی (Idempotent)."""
+        return await self.ensure_rbac_seed()
+
+    # ──────────────────────────────────────────────────
+    #  قرارداد مرکزی یکپارچه RBAC (Phase B & C)
+    # ──────────────────────────────────────────────────
+
+    async def list_available_roles(self) -> list:
+        """لیست نقش‌های قابل اعطا در سیستم (سند کامل نقش‌ها از منبع واحد)."""
+        return await self.list_roles()
+
+    async def list_role_assignments(self) -> list:
+        """لیست تمام انتساب‌های نقش فعال (یکپارچه از user_roles + admin_roles + users.role)."""
+        return await self.get_all_admin_roles()
+
+    async def list_users_by_role(self, role_key: str, limit: int = 1000) -> list:
+        """لیست کاربران دارای یک نقش مشخص (به همراه اطلاعات کاربر و محدوده ورودی)."""
+        if role_key in ('content_admin', 'content_scoped'):
+            all_ca = await self.get_content_admins()
+            if role_key == 'content_scoped':
+                return [u for u in all_ca if u.get('content_role') == 'content_scoped']
+            return all_ca
+        uids = await self.user_ids_by_role(role_key, limit=limit)
+        if not uids:
+            return []
+        users = await self.users.find({'user_id': {'$in': uids}}).to_list(limit)
+        return users or []
+
+    async def grant_role(self, uid: int, role_key: str, granted_by: int = 0, scope_intake: str = None):
+        """اعطای یکپارچه نقش به کاربر و همگام‌سازی فوری هر سه مخزن + باطل‌سازی کش."""
+        if role_key == 'content_admin' and not scope_intake:
+            return await self.grant_content_admin(uid, added_by=granted_by, scope_intake=None)
+        return await self.add_admin_role(uid, role_key, added_by=granted_by, scope_intake=scope_intake)
+
+    async def revoke_role(self, uid: int, role_key: str = None, revoked_by: int = 0):
+        """لغو یکپارچه نقش از کاربر و همگام‌سازی فوری هر سه مخزن + باطل‌سازی کش."""
+        uid = int(uid)
+        if role_key in ('content_admin', 'content_scoped'):
+            return await self.revoke_content_admin(uid, actor_id=revoked_by)
+        if role_key:
+            await self._remove_role_key(uid, role_key)
+            await self.sync_legacy_role_mirror(uid)
+            self._invalidate_user_cache(uid)
+            return
+        return await self.remove_admin_role(uid)
+
+    async def has_role(self, uid: int, role_key: str) -> bool:
+        """بررسی داشتن نقش مشخص از منبع واحد RBAC."""
+        uid = int(uid)
+        if role_key in ('content_admin', 'content_scoped'):
+            scope = await self.get_content_scope(uid)
+            if not scope:
+                return False
+            if role_key == 'content_scoped':
+                return scope.get('kind') == 'scoped'
+            return True
+        info = await self.get_user_roles(uid)
+        if role_key in (info.get('keys') or []):
+            return True
+        ar = await self.get_admin_role(uid)
+        return bool(ar and ar.get('role') == role_key)
+
+    async def check_permission(self, uid: int, perm_key: str) -> bool:
+        """بررسی مجوز کاربر از منبع واحد RBAC."""
+        return await self.has_perm(uid, perm_key)
+
+    async def get_effective_permissions(self, uid: int) -> set:
+        """دریافت مجموعه تمام مجوزهای مؤثر کاربر از منبع واحد RBAC."""
+        return await self.get_user_perms(uid)
+
 
     async def rbac_migrate_users(self) -> dict:
         """مهاجرت idempotent (§۱۰): admin_roles + users.role → user_roles.
 
         از addToSet-منطقی (dedup در پایتون) استفاده می‌کند ⇒ اجرای چندباره
-        هیچ داده‌ای تکرار/بازنویسی نمی‌کند؛ هیچ نقشی حذف نمی‌شود."""
+        هیچ داده‌ای تکرار/بازنویسی نمی‌کند؛ هیچ نقشی حذف نمی‌شود.
+        همچنین تعارض تاریخی (کاربر دارای content_scoped + scope_intake که به دلیل
+        users.role=='content_admin' به اشتباه برچسب «ادمین ارشد محتوا (ورودی)» گرفته بود)
+        را به‌صورت خودکار اصلاح می‌کند."""
         count_ar = 0
+        scoped_content_uids = set()
         async for doc in self.admin_roles.find({}):
             role = doc.get('role')
             if not role:
                 continue
-            await self._add_role_key(
-                doc['_id'], role, doc.get('scope_intake'))
+            uid = doc['_id']
+            sc = str(doc.get('scope_intake') or '').strip() or None
+            if role in ('content_scoped', 'content_admin') and sc:
+                ur = await self.user_roles.find_one({'_id': uid})
+                ur_roles = list((ur or {}).get('roles') or [])
+                if role == 'content_scoped' or 'content_scoped' in ur_roles:
+                    role = 'content_scoped'
+                    scoped_content_uids.add(int(uid))
+                    if 'content_admin' in ur_roles:
+                        ur_roles = [k for k in ur_roles if k != 'content_admin']
+                        await self.user_roles.update_one(
+                            {'_id': uid},
+                            {'$set': {'roles': ur_roles, 'scope_intake': sc, 'updated_at': utc_now_iso()}},
+                            upsert=True,
+                        )
+            await self._add_role_key(uid, role, sc)
             count_ar += 1
 
         count_ur = 0
@@ -648,12 +1029,17 @@ class DBRbac:
             {'role': {'$in': ['content_admin', 'support']}}
         ).batch_size(500)
         async for u in legacy_cursor:
+            uid = u['user_id']
             role_key = u.get('role')
+            if role_key == 'content_admin' and int(uid) in scoped_content_uids:
+                # کاربر ادمین محتوای ورودی‌خاص است؛ نباید با content_admin سراسری بازنویسی شود
+                await self.sync_legacy_role_mirror(uid)
+                continue
             if role_key in ('content_admin', 'support'):
-                await self._add_role_key(u['user_id'], role_key)
+                await self._add_role_key(uid, role_key)
                 count_ur += 1
 
-        return {'from_admin_roles': count_ar, 'from_users_role': count_ur}
+        return {'from_admin_roles': count_ar, 'from_users_role': count_ur, 'healed_scoped': len(scoped_content_uids)}
 
 
     # ══════════════════════════════════════════════════
@@ -1246,13 +1632,19 @@ class DBRbac:
         می‌خوانند برای کلیدهای legacy همیشه درست می‌مانند.
         پایداری: نقش فعلی admin_roles اگر هنوز تخصیص‌یافته است ابقا
         می‌شود؛ در غیر این صورت اولین کلید legacy از لیست کاربر."""
+        if getattr(self, 'user_roles', None) is None or getattr(self, 'admin_roles', None) is None:
+            return
         doc = await self.user_roles.find_one({'_id': uid})
         keys = list((doc or {}).get('roles') or [])
         legacy_keys = [k for k in keys if k in self.ROLE_LABELS]
         cur = await self.admin_roles.find_one({'_id': uid})
         cur_role = (cur or {}).get('role')
-        # آینه‌ی تک‌نقشی نباید نقش ارشد را با نقش محدود عوض کند.
-        if 'content_admin' in legacy_keys:
+        raw_scope = str((doc or {}).get('scope_intake') or '').strip() or None
+        # اگر کاربر content_scoped با scope_intake مشخص دارد، اولویت با نمایش دقیق آن است؛
+        # وگرنه اگر content_admin سراسری دارد، primary='content_admin' بدون scope کاذب.
+        if 'content_scoped' in legacy_keys and raw_scope and 'content_admin' not in legacy_keys:
+            primary = 'content_scoped'
+        elif 'content_admin' in legacy_keys:
             primary = 'content_admin'
         elif cur_role and cur_role in legacy_keys:
             primary = cur_role
@@ -1264,7 +1656,7 @@ class DBRbac:
             if cur is not None:
                 await self.admin_roles.delete_many({'_id': uid})
             return
-        scope = (doc or {}).get('scope_intake')
+        scope = raw_scope if primary in ('content_scoped', 'grade_rep') else None
         if cur and cur_role == primary \
            and cur.get('scope_intake') == scope:
             return  # بدون تغییر — صفر نویز نوشتاری

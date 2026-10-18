@@ -1948,10 +1948,11 @@ function ContentAdminsModal({ onClose }) {
           {items.length === 0 && <Empty icon="🎓" text="هنوز ادمین محتوایی تعریف نشده" />}
           {items.map(a => (
             <div key={a.id} className="row" style={{ padding: '8px 10px', border: '1px solid var(--line)', borderRadius: 10 }}>
-              <span>🎓</span>
+              <span>{a.role === 'content_scoped' || a.scope_intake ? '📅' : '🎓'}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <b style={{ color: 'var(--txt)' }}>{a.name || `#${a.id}`}</b>{' '}
                 <span className="code muted">{a.id}</span>
+                {a.role_label && <div className="muted" style={{ fontSize: 11 }}>{a.role_label}</div>}
               </div>
               <button className="btn sm danger" onClick={() => setRevoke(a)}>لغو دسترسی</button>
             </div>

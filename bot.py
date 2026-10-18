@@ -1630,9 +1630,9 @@ async def channel_lock_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not channels:
         return
 
-    # نقش‌های فرعی ادمین هم معاف هستند
+    # نقش‌های فرعی ادمین و ادمین‌های محتوا هم معاف هستند
     role_doc = await db.get_admin_role(uid)
-    if role_doc:
+    if role_doc or await db.is_content_admin(uid):
         return
 
     not_joined = []
@@ -1714,7 +1714,7 @@ async def broadcast_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid != ADMIN_ID:
         role_doc = await db.get_admin_role(uid)
         perms = db.ROLE_PERMISSIONS.get(role_doc.get('role', ''), set()) if role_doc else set()
-        if 'broadcast' not in perms:
+        if 'broadcast' not in perms and not await db.has_perm(uid, 'broadcast.send'):
             return
 
     if not (msg.text or msg.photo or msg.video or msg.document or msg.voice or msg.audio):

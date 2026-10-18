@@ -127,9 +127,24 @@ def test_detect_schedule_conflicts():
 class _FakeCursor:
     def __init__(self, docs):
         self._docs = list(docs)
+        self._idx = 0
 
     def sort(self, *args, **kwargs):
         return self
+
+    def batch_size(self, *args, **kwargs):
+        return self
+
+    def __aiter__(self):
+        self._idx = 0
+        return self
+
+    async def __anext__(self):
+        if self._idx >= len(self._docs):
+            raise StopAsyncIteration
+        item = self._docs[self._idx]
+        self._idx += 1
+        return item
 
     async def to_list(self, length=None):
         return list(self._docs[:length] if length else self._docs)
@@ -159,6 +174,18 @@ class _FakeCollection:
                 if "$setOnInsert" in update:
                     for k, v in update["$setOnInsert"].items():
                         d.setdefault(k, v)
+                if "$addToSet" in update:
+                    for k, v in update["$addToSet"].items():
+                        arr = list(d.get(k) or [])
+                        items_to_add = v["$each"] if isinstance(v, dict) and "$each" in v else [v]
+                        for item in items_to_add:
+                            if item not in arr:
+                                arr.append(item)
+                        d[k] = arr
+                if "$pull" in update:
+                    for k, v in update["$pull"].items():
+                        arr = list(d.get(k) or [])
+                        d[k] = [x for x in arr if x != v]
                 return MagicMock(modified_count=1)
         if upsert:
             new_doc = dict(filt)
@@ -166,9 +193,22 @@ class _FakeCollection:
                 new_doc.update(update["$setOnInsert"])
             if "$set" in update:
                 new_doc.update(update["$set"])
+            if "$addToSet" in update:
+                for k, v in update["$addToSet"].items():
+                    arr = list(new_doc.get(k) or [])
+                    if v not in arr:
+                        arr.append(v)
+                    new_doc[k] = arr
             self.docs.append(new_doc)
             return MagicMock(modified_count=1)
         return MagicMock(modified_count=0)
+
+    async def delete_one(self, filt):
+        for i, d in enumerate(self.docs):
+            if self._match(d, filt):
+                self.docs.pop(i)
+                return MagicMock(deleted_count=1)
+        return MagicMock(deleted_count=0)
 
     async def update_many(self, filt, update):
         cnt = 0
@@ -222,14 +262,21 @@ class _FakeCollection:
                         return False
                 if "$ne" in v and val == v["$ne"]:
                     return False
-                if "$in" in v and val not in v["$in"]:
-                    return False
+                if "$in" in v:
+                    if isinstance(val, list):
+                        if not any(item in v["$in"] for item in val):
+                            return False
+                    elif val not in v["$in"]:
+                        return False
                 if "$nin" in v and val in v["$nin"]:
                     return False
                 if "$gte" in v and (val is None or val < v["$gte"]):
                     return False
             else:
-                if val != v:
+                if isinstance(val, list):
+                    if v != val and v not in val:
+                        return False
+                elif val != v:
                     return False
         return True
 
@@ -672,4 +719,114 @@ def test_section5_admin_and_student_session_count_consistency():
         assert admin_student_view[0]["_id"] == base_sid
 
     asyncio.run(_run())
+
+
+def test_rbac_unification_menus_and_stores_sync():
+    """تست جامع Phase F: همگام‌سازی کامل دوطرفه بین «🎓 ادمین‌های محتوا» و «🛡 سطوح دسترسی ادمین»،
+    منبع حقیقت واحد (user_roles + admin_roles + users.role)، رفع تداخل تاریخی content_admin/content_scoped و باطل‌سازی کش."""
+    import asyncio
+
+    async def _run():
+        db_inst = Database.__new__(Database)
+        db_inst._user_cache = {}
+        db_inst._user_cache_ttl = 60.0
+        db_inst.perm_catalog = _FakeCollection([])
+        db_inst.roles = _FakeCollection([])
+        db_inst.user_roles = _FakeCollection([])
+        db_inst.admin_roles = _FakeCollection([])
+        await db_inst.seed_system_roles()
+        db_inst.users = _FakeCollection([
+            {"user_id": 501, "name": "سما دمیری", "role": "student", "approved": True},
+            {"user_id": 502, "name": "حورا چگینی", "role": "student", "approved": True},
+            {"user_id": 503, "name": "مائده اسماعیلی", "role": "student", "approved": True},
+        ])
+
+        # ۱) اعطای نقش از منوی «🎓 ادمین‌های محتوا» (grant_content_admin) به کاربر ۵۰۱
+        await db_inst.grant_content_admin(501, added_by=1)
+        ca_list = await db_inst.get_content_admins()
+        ar_list = await db_inst.get_all_admin_roles()
+        u501 = await db_inst.get_user(501)
+        assert any(a["user_id"] == 501 and a["content_role"] == "content_admin" for a in ca_list)
+        assert any(r["_id"] == 501 and r["role"] == "content_admin" for r in ar_list)
+        assert u501["role"] == "content_admin"
+        assert await db_inst.is_content_admin(501) is True
+        assert await db_inst.get_content_scope(501) == {"kind": "global", "intake": None}
+        assert await db_inst.has_role(501, "content_admin") is True
+        assert await db_inst.check_permission(501, "content.manage") is True
+
+        # ۲) اعطای مجدد (Idempotency) ← نباید رکورد تکراری ایجاد شود
+        await db_inst.grant_content_admin(501, added_by=1)
+        ca_list_again = await db_inst.get_content_admins()
+        assert sum(1 for a in ca_list_again if a["user_id"] == 501) == 1
+
+        # ۳) اعطای نقش «📅 ادمین محتوای ورودی خاص» از منوی «🛡 سطوح دسترسی ادمین» به کاربر ۵۰۲
+        await db_inst.add_admin_role(502, "content_scoped", added_by=1, scope_intake="bahman_1404")
+        ca_list = await db_inst.get_content_admins()
+        ar_list = await db_inst.get_all_admin_roles()
+        ca_502 = next(a for a in ca_list if a["user_id"] == 502)
+        ar_502 = next(r for r in ar_list if r["_id"] == 502)
+        assert ca_502["content_role"] == "content_scoped"
+        assert ca_502["scope_intake"] == "bahman_1404"
+        assert "ادمین محتوای ورودی خاص" in ca_502["role_label"]
+        assert ar_502["role"] == "content_scoped"
+        assert ar_502["scope_intake"] == "bahman_1404"
+        assert await db_inst.is_content_admin(502) is True
+        assert await db_inst.get_content_scope(502) == {"kind": "scoped", "intake": "bahman_1404"}
+        assert await db_inst.has_role(502, "content_scoped") is True
+
+        # ۴) تغییر سطح همان کاربر ۵۰۲ از ورودی‌خاص به ادمین ارشد محتوا (جایگزینی متقابل بدون تداخل برچسب)
+        await db_inst.add_admin_role(502, "content_admin", added_by=1)
+        ar_502_after = await db_inst.get_admin_role(502)
+        ur_502_after = await db_inst.get_user_roles(502)
+        assert ar_502_after["role"] == "content_admin"
+        assert ar_502_after.get("scope_intake") is None
+        assert "content_scoped" not in ur_502_after["keys"]
+        assert await db_inst.get_content_scope(502) == {"kind": "global", "intake": None}
+
+        # ۵) لغو نقش از منوی «🎓 ادمین‌های محتوا» (revoke_content_admin) برای کاربر ۵۰۱
+        await db_inst.revoke_content_admin(501, actor_id=1)
+        ca_list = await db_inst.get_content_admins()
+        ar_list = await db_inst.get_all_admin_roles()
+        u501_after = await db_inst.get_user(501)
+        assert not any(a["user_id"] == 501 for a in ca_list)
+        assert not any(r["_id"] == 501 for r in ar_list)
+        assert u501_after["role"] == "student"
+        assert await db_inst.is_content_admin(501) is False
+        assert await db_inst.get_content_scope(501) is None
+
+        # ۶) لغو نقش از منوی «🛡 سطوح دسترسی ادمین» (remove_admin_role) برای کاربر ۵۰۲
+        await db_inst.remove_admin_role(502)
+        ca_list = await db_inst.get_content_admins()
+        ar_list = await db_inst.get_all_admin_roles()
+        u502_after = await db_inst.get_user(502)
+        assert not any(a["user_id"] == 502 for a in ca_list)
+        assert not any(r["_id"] == 502 for r in ar_list)
+        assert u502_after["role"] == "student"
+        assert await db_inst.is_content_admin(502) is False
+        assert await db_inst.get_content_scope(502) is None
+
+        # ۷) شبیه‌سازی رکورد تاریخی متناقض (مشاهده‌شده در image-2.png: هم‌زمان content_scoped + content_admin با scope_intake)
+        # و اجرای خودترمیم rbac_migrate_users
+        db_inst.users.docs.append({"user_id": 504, "name": "سیده یاسمن هاشمی", "role": "content_admin", "approved": True})
+        db_inst.user_roles.docs.append({
+            "_id": 504,
+            "roles": ["content_scoped", "content_admin"],
+            "scope_intake": "bahman_1404",
+        })
+        db_inst.admin_roles.docs.append({
+            "_id": 504,
+            "role": "content_admin",
+            "roles": ["content_scoped", "content_admin"],
+            "scope_intake": "bahman_1404",
+        })
+        await db_inst.rbac_migrate_users()
+        ar_504 = await db_inst.get_admin_role(504)
+        ur_504 = await db_inst.get_user_roles(504)
+        assert ur_504["keys"] == ["content_scoped"]
+        assert ar_504["role"] == "content_scoped"
+        assert ar_504["scope_intake"] == "bahman_1404"
+        assert await db_inst.get_content_scope(504) == {"kind": "scoped", "intake": "bahman_1404"}
+
+    asyncio.run(_run())
+
 
