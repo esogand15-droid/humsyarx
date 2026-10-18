@@ -401,6 +401,12 @@ export default function Register() {
   const [group, setGroup] =
     useState('');
 
+  const [educationalGroup, setEducationalGroup] =
+    useState('');
+
+  const [aiSuggestedEduGroup, setAiSuggestedEduGroup] =
+    useState('');
+
   const [intake, setIntake] =
     useState('');
 
@@ -473,6 +479,18 @@ export default function Register() {
           'نام نباید بیشتر از ۵۰ حرف باشد'
         );
       }
+
+      api
+        .get('/api/auth/suggest-educational-group', {
+          params: { name: trimmed },
+        })
+        .then((res) => {
+          const sug = res.data?.ai_suggested_group;
+          if (sug === 'male' || sug === 'female') {
+            setAiSuggestedEduGroup(sug);
+          }
+        })
+        .catch(() => {});
     }
 
     setStepIndex((index) =>
@@ -494,6 +512,8 @@ export default function Register() {
           {
             name: name.trim(),
             group,
+            educational_group:
+              educationalGroup || 'unknown',
             intake,
             student_id:
               studentId.trim(),
@@ -728,7 +748,7 @@ export default function Register() {
     currentStep === 'name'
       ? name.trim().length >= 3
       : currentStep === 'group'
-        ? Boolean(group)
+        ? Boolean(group) && Boolean(educationalGroup)
         : currentStep === 'intake'
           ? Boolean(intake)
           : studentId.trim().length >= 5;
@@ -815,28 +835,57 @@ export default function Register() {
           />
         )}
 
-        {/* ── مرحله گروه ── */}
+        {/* ── مرحله گروه و گروه آموزشی ── */}
         {currentStep === 'group' && (
-          <div className="choice-grid">
-            <ChoiceCard
-              icon="1️⃣"
-              title="گروه ۱"
-              desc="کلاس‌های گروه یک"
-              selected={group === '1'}
-              onClick={() =>
-                setGroup('1')
-              }
-            />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="choice-grid">
+              <ChoiceCard
+                icon="1️⃣"
+                title="گروه ۱"
+                desc="کلاس‌های گروه یک"
+                selected={group === '1'}
+                onClick={() =>
+                  setGroup('1')
+                }
+              />
 
-            <ChoiceCard
-              icon="2️⃣"
-              title="گروه ۲"
-              desc="کلاس‌های گروه دو"
-              selected={group === '2'}
-              onClick={() =>
-                setGroup('2')
-              }
-            />
+              <ChoiceCard
+                icon="2️⃣"
+                title="گروه ۲"
+                desc="کلاس‌های گروه دو"
+                selected={group === '2'}
+                onClick={() =>
+                  setGroup('2')
+                }
+              />
+            </div>
+
+            <div style={{ marginTop: 4 }}>
+              <div style={{ fontSize: 'var(--fs-cap)', color: 'var(--tx2)', marginBottom: 8, textAlign: 'center', fontWeight: 700 }}>
+                🚻 گروه آموزشی کلاس‌های تفکیک‌شده:
+                {aiSuggestedEduGroup && (
+                  <span style={{ display: 'block', color: 'var(--acc2)', fontWeight: 600, marginTop: 2 }}>
+                    💡 پیشنهاد هوشمند: {aiSuggestedEduGroup === 'male' ? 'کلاس‌های آقایان' : 'کلاس‌های بانوان'}
+                  </span>
+                )}
+              </div>
+              <div className="choice-grid">
+                <ChoiceCard
+                  icon="👨"
+                  title="کلاس‌های آقایان"
+                  desc={aiSuggestedEduGroup === 'male' ? 'پیشنهاد هوشمند' : 'دروس ویژه آقایان + مشترک'}
+                  selected={educationalGroup === 'male'}
+                  onClick={() => setEducationalGroup('male')}
+                />
+                <ChoiceCard
+                  icon="👩"
+                  title="کلاس‌های بانوان"
+                  desc={aiSuggestedEduGroup === 'female' ? 'پیشنهاد هوشمند' : 'دروس ویژه بانوان + مشترک'}
+                  selected={educationalGroup === 'female'}
+                  onClick={() => setEducationalGroup('female')}
+                />
+              </div>
+            </div>
           </div>
         )}
 

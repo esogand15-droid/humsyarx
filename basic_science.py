@@ -109,8 +109,11 @@ async def _show_terms(query, back_cb: str = 'resources:menu'):
 
 async def _student_view_intake(query) -> list | None:
     """🌊 C1 — scope دید دانشجو: ورودی خودش + سراسری.
-    مدیران محتوا (پیش‌نمایش ادمین) None می‌گیرند = بدون فیلتر (رفتار قدیمی)."""
+    ادمین محتوای ورودی خاص (content_scoped) فقط [scope_intake, ''] می‌بیند؛
+    ادمین ارشد (global) برای لیست درس‌ها None می‌گیرد و در سطح جلسات نمای مؤثر بدون تکرار اعمال می‌شود."""
     uid = query.from_user.id
+    if hasattr(db, 'viewer_intake_filter'):
+        return await db.viewer_intake_filter(uid)
     if await db.is_content_admin(uid):
         return None
     u = await db.get_user(uid)

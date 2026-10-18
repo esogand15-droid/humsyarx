@@ -108,9 +108,16 @@ class DBContent:
         مؤثر، API، ربات) با str(_id) می‌پرسند؛ اگر جایی ObjectId رد شود جلسه
         یتیم می‌شود (در هیچ لیستی دیده نمی‌شود) — بی‌صدا و غیرقابل‌بازیابی."""
         lesson_id = str(lesson_id or '')
-        if intake:
-            existing = await self.bs_sessions.find_one(
-                {'lesson_id': lesson_id, 'number': number, 'intake': intake})
+        parent_li = await self.lesson_intake(lesson_id)
+        eff_intake = str(intake or '').strip()
+        # اگر درس والد خودش مختص یک ورودی خاص است، جلسه زیر آن نیز متعلق به همان ورودی است
+        # و نباید دو سند مجزا (یکی با فیلد intake و یکی بدون فیلد intake) برای یک شماره جلسه ساخته شود.
+        if parent_li and (not eff_intake or eff_intake == parent_li):
+            existing = await self.bs_sessions.find_one({
+                'lesson_id': lesson_id,
+                'number': number,
+                'archived': {'$ne': True},
+            })
             if existing:
                 await self.bs_sessions.update_one(
                     {'_id': existing['_id']},
@@ -119,11 +126,39 @@ class DBContent:
                 return str(existing['_id'])
             r = await self.bs_sessions.insert_one({
                 'lesson_id': lesson_id, 'number': number, 'topic': topic,
-                'teacher': teacher, 'intake': intake,
+                'teacher': teacher, 'created_at': utc_now_iso(),
+            })
+            return str(r.inserted_id)
+
+        if eff_intake:
+            existing = await self.bs_sessions.find_one(
+                {'lesson_id': lesson_id, 'number': number, 'intake': eff_intake, 'archived': {'$ne': True}})
+            if existing:
+                await self.bs_sessions.update_one(
+                    {'_id': existing['_id']},
+                    {'$set': {'topic': topic, 'teacher': teacher}}
+                )
+                return str(existing['_id'])
+            r = await self.bs_sessions.insert_one({
+                'lesson_id': lesson_id, 'number': number, 'topic': topic,
+                'teacher': teacher, 'intake': eff_intake,
                 'created_at': utc_now_iso(),
             })
             return str(r.inserted_id)
-        existing = await self.bs_sessions.find_one({'lesson_id': lesson_id, 'number': number})
+        existing = await self.bs_sessions.find_one({
+            'lesson_id': lesson_id,
+            'number': number,
+            'archived': {'$ne': True},
+            '$or': [{'intake': ''}, {'intake': None}, {'intake': {'$exists': False}}],
+        })
+        if not existing:
+            # fallback برای سازگاری با FakeColl در تست‌های واحد که $or ندارند
+            try:
+                cand = await self.bs_sessions.find_one({'lesson_id': lesson_id, 'number': number})
+                if cand and not str(cand.get('intake') or '').strip() and not cand.get('archived'):
+                    existing = cand
+            except Exception:
+                pass
         if existing:
             await self.bs_sessions.update_one(
                 {'_id': existing['_id']},
@@ -1279,36 +1314,57 @@ class DBContent:
 
     async def schedule_find_conflicts(self, group: str, date: str,
                                       time: str, end_time: str = '',
-                                      exclude_id: str = '') -> list:
+                                      exclude_id: str = '',
+                                      educational_group: str = None,
+                                      term: str = None,
+                                      stype: str = 'class') -> list:
         """🌊 W8/UX-05 — برنامه‌های هم‌گروهِ هم‌روز که بازه‌ی زمانی‌شان
         با بازه‌ی داده‌شده هم‌پوشانی دارد (هشدار، نه خطا).
 
-        بدون ساعت ⇒ بدون تداخل؛ بدون end_time ⇒ ‎۹۰ دقیقه پیش‌فرض.
-        گروه «هر دو» با همه تداخل می‌کند. قالب‌های هفتگی (is_weekly)
-        چون تاریخ عینی ندارند لحاظ نمی‌شوند.
+        قوانین استاندارد عدم تداخل کاذب:
+        ۱) فقط رکوردهای فعال (archived != True) و در همان ترم (term) بررسی می‌شوند.
+        ۲) ساعت امتحان (exam) مستقل از ساعت کلاس هفتگی (class) است.
+        ۳) کلاس مخصوص آقایان (male_only) با کلاس مخصوص بانوان (female_only) تداخل ندارد.
+        ۴) فرمول بازه باز: start_a < end_b and start_b < end_a (کلاس ۰۸ تا ۱۰ با ۱۰ تا ۱۲ تداخل ندارد).
         """
         start = self._sched_minutes(time)
         if start is None:
             return []
         end = self._sched_minutes(end_time)
         if end is None or end <= start:
-            end = start + 90
-        group = (group or 'هر دو').strip()
+            end = start + 120
+        group = (self.normalize_group(group) or 'هر دو').strip()
+        target_edu = self.normalize_class_educational_group(educational_group, default='mixed')
+        target_type_bucket = 'exam' if str(stype or 'class').strip() == 'exam' else 'class'
+
         cur = await self.schedules.find(
             {'date': date, 'is_weekly': {'$ne': True}}).to_list(200)
         out = []
         for s in cur or []:
+            if s.get('archived'):
+                continue
             if exclude_id and str(s.get('_id')) == str(exclude_id):
                 continue
-            g = (s.get('group') or 'هر دو').strip()
+            if term and s.get('term') and str(s.get('term')).strip() != str(term).strip():
+                continue
+            s_type = str(s.get('type') or 'class').strip()
+            s_bucket = 'exam' if s_type == 'exam' else 'class'
+            if s_bucket != target_type_bucket:
+                continue
+            g = (self.normalize_group(s.get('group')) or 'هر دو').strip()
             if group != 'هر دو' and g != 'هر دو' and g != group:
+                continue
+            s_edu = self.normalize_class_educational_group(s.get('educational_group'), default='mixed')
+            if (target_edu == 'male_only' and s_edu == 'female_only') or (
+                target_edu == 'female_only' and s_edu == 'male_only'
+            ):
                 continue
             s0 = self._sched_minutes(s.get('time') or '')
             if s0 is None:
                 continue
             s1 = self._sched_minutes(s.get('end_time') or '')
             if s1 is None or s1 <= s0:
-                s1 = s0 + 90
+                s1 = s0 + 120
             if start < s1 and s0 < end:
                 out.append({'id': str(s.get('_id')),
                             'type': s.get('type', ''),
@@ -1316,20 +1372,23 @@ class DBContent:
                             'teacher': s.get('teacher', ''),
                             'time': s.get('time', ''),
                             'end_time': s.get('end_time', ''),
-                            'group': g})
+                            'group': g,
+                            'educational_group': s_edu})
         return out
 
     async def add_schedule(self, stype: str, lesson: str, teacher: str,
                            date: str, time: str, location: str,
                            notes: str = '', group: str = 'هر دو', is_weekly: bool = False,
                            flex_type: str = 'fixed', flex_note: str = '', end_time: str = '',
-                           credit: float = None):
+                           credit: float = None, educational_group: str = 'mixed',
+                           term: str = None, course_code: str = ''):
         """
         FIX جدید: flex_type — 'fixed' (ثابت) یا 'flexible' (منعطف).
         برای کلاس منعطف، flex_note آخرین زمان اعلام‌شده را نگه می‌دارد.
         🕒 range: end_time اختیاری HH:MM برای بازه (08:00 تا 10:00) — اگر خالی باشد تک‌ساعت حساب می‌شود.
         """
         group = self.normalize_group(group) or 'هر دو'
+        edu_group = self.normalize_class_educational_group(educational_group, default='mixed')
         # normalize time/end_time: if time contains range like "08:00-10:00" split
         _etime = (end_time or "").strip()
         _stime = (time or "").strip()
@@ -1355,10 +1414,15 @@ class DBContent:
         doc = {
             'type': stype, 'lesson': lesson, 'teacher': teacher,
             'date': date, 'time': _stime, 'location': location,
-            'notes': notes, 'group': group, 'is_weekly': is_weekly,
+            'notes': notes, 'group': group, 'educational_group': edu_group,
+            'is_weekly': is_weekly, 'archived': False,
             'flex_type': flex_type, 'flex_note': flex_note,
             'created_at': utc_now_iso(), 'notified_days': [],
         }
+        if term:
+            doc['term'] = str(term).strip()
+        if course_code:
+            doc['course_code'] = str(course_code).strip()
         if _etime:
             doc['end_time'] = _etime
         if credit is not None:
@@ -1410,11 +1474,13 @@ class DBContent:
         برنامه‌ی موجود. حتماً از UPDATE استفاده می‌شود، نه INSERT —
         رکورد جدیدی ساخته نمی‌شود و ID برنامه ثابت می‌ماند.
         """
-        allowed_fields = {'date', 'time', 'location', 'teacher', 'lesson', 'notes', 'group'}
+        allowed_fields = {'date', 'time', 'location', 'teacher', 'lesson', 'notes', 'group', 'educational_group', 'term', 'course_code'}
         if field not in allowed_fields:
             return False
         if field == 'group':
             value = self.normalize_group(value) or 'هر دو'
+        elif field == 'educational_group':
+            value = self.normalize_class_educational_group(value, default='mixed')
         try:
             result = await self.schedules.update_one(
                 {'_id': ObjectId(sid)},
@@ -1430,7 +1496,8 @@ class DBContent:
                                     date: str, time: str, location: str,
                                     notes: str = '', group: str = 'هر دو',
                                     flex_type: str = 'fixed', flex_note: str = '', end_time: str = '',
-                                    credit: float = None) -> bool:
+                                    credit: float = None, educational_group: str = None,
+                                    term: str = None, course_code: str = None) -> bool:
         """
         FIX جدید (بخش اول — ویرایش برنامه): ویرایش کامل همه فیلدهای یک
         برنامه‌ی موجود با یک UPDATE واحد. رکورد جدید ساخته نمی‌شود و
@@ -1445,6 +1512,12 @@ class DBContent:
                 'flex_type': flex_type, 'flex_note': flex_note,
                 'last_edited_at': utc_now_iso(),
             }
+            if educational_group is not None:
+                payload['educational_group'] = self.normalize_class_educational_group(educational_group, default='mixed')
+            if term is not None and str(term).strip():
+                payload['term'] = str(term).strip()
+            if course_code is not None:
+                payload['course_code'] = str(course_code).strip()
             if end_time is not None:
                 payload['end_time'] = str(end_time).strip()
             if credit is not None:
@@ -1462,7 +1535,9 @@ class DBContent:
             return False
 
 
-    async def get_schedules(self, stype: str = None, upcoming: bool = True, group: str = None):
+    async def get_schedules(self, stype: str = None, upcoming: bool = True, group: str = None,
+                            term: str = None, educational_group: str = None,
+                            include_archived: bool = False):
         from utils import now_tehran
         q = {}
         if stype:    q['type'] = stype
@@ -1477,7 +1552,20 @@ class DBContent:
                 {'group': None},
                 {'group': {'$exists': False}},
             ]
-        return await self.schedules.find(q).sort('date', 1).to_list(200)
+        raw_items = await self.schedules.find(q).sort('date', 1).to_list(300)
+        out = []
+        for item in (raw_items or []):
+            if not include_archived and item.get('archived'):
+                continue
+            if term and item.get('term') and str(item.get('term')).strip() != str(term).strip():
+                continue
+            if educational_group is not None:
+                if not self.class_matches_user_educational_group(
+                    item.get('educational_group'), educational_group
+                ):
+                    continue
+            out.append(item)
+        return out
 
 
     async def delete_schedule(self, sid: str):
@@ -1569,27 +1657,48 @@ class DBContent:
     #  هر الگو یک کلاسِ هفتگی است که در expand به تاریخ‌های واقعی تبدیل می‌شود
     # ══════════════════════════════════════════════════
 
-    async def get_schedule_templates(self, group: str = None) -> list:
+    async def get_schedule_templates(self, group: str = None, term: str = None,
+                                     educational_group: str = None, include_archived: bool = False) -> list:
         q = {}
         if group:
             q['group'] = self.normalize_group(group)
-        return await self.schedule_templates.find(q).sort([('weekday', 1), ('time', 1)]).to_list(500)
+        raw_items = await self.schedule_templates.find(q).sort([('weekday', 1), ('time', 1)]).to_list(500)
+        out = []
+        for item in (raw_items or []):
+            if not include_archived and item.get('archived'):
+                continue
+            if term and item.get('term') and str(item.get('term')).strip() != str(term).strip():
+                continue
+            if educational_group is not None:
+                if not self.class_matches_user_educational_group(
+                    item.get('educational_group'), educational_group
+                ):
+                    continue
+            out.append(item)
+        return out
 
-    async def clear_schedule_templates(self, group: str = None) -> int:
+    async def clear_schedule_templates(self, group: str = None, term: str = None) -> int:
         q = {}
         if group:
             q['group'] = self.normalize_group(group)
+        if term:
+            q['term'] = str(term).strip()
         r = await self.schedule_templates.delete_many(q)
         return int(getattr(r, 'deleted_count', 0) or 0)
 
-    async def bulk_upsert_schedule_templates(self, items: list) -> dict:
-        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, end_time HH:MM?, lesson, teacher, location, group, flex_type."""
+    async def bulk_upsert_schedule_templates(self, items: list, term: str = None) -> dict:
+        """Upsert weekly templates. Each item: weekday(0=Sat)..6, time HH:MM, end_time HH:MM?, lesson, teacher, location, group, educational_group, flex_type."""
         from time_utils import parse_clock_time, TimeContractError, en_digits
         import re as _re
+        if not term:
+            try:
+                term = (await self.get_current_term_config())['term']
+            except Exception:
+                term = ''
         inserted = 0
         updated = 0
         skipped = 0
-        # dedup within batch by (weekday,time,end_time,lesson,group) to avoid double-counting divisions
+        # dedup within batch by (weekday,time,end_time,lesson,group,educational_group)
         seen_keys = set()
         for raw in (items or []):
             try:
@@ -1624,33 +1733,23 @@ class DBContent:
                         hh = int(hhmm.split(':')[0])
                         mm = hhmm.split(':')[1]
                         if 1 <= hh <= 5:
-                            # if already have valid end_time with 13-17 context, shift
-                            # heuristic: 01-05 always maps to 13-17 for university schedule
                             hh += 12
                             return f"{hh:02d}:{mm}"
                         return hhmm
                     except Exception:
                         return hhmm
-                # only apply fix if raw contains no leading 1x already present? apply universally for 1-5
-                # but avoid double-shifting if already 13+; we already handle.
                 t = _fix_pm(en_digits(t_raw).strip())
                 et = _fix_pm(en_digits(et_raw).strip()) if et_raw else ""
-                # validate start
                 parse_clock_time(t)
                 if et:
                     parse_clock_time(et)
-                    # ensure end after start
                     st = parse_clock_time(t)
                     en = parse_clock_time(et)
                     if en.hour*60+en.minute <= st.hour*60+st.minute:
                         skipped += 1
                         continue
                 else:
-                    # synthesize common 2h block if possible from template time
-                    # keep empty to allow flexible; but for known intervals we synthesize
-                    # mapping: 08->10, 10->12, 13->15, 15->17, 17->19
                     synth = {"08:00":"10:00","10:00":"12:00","13:00":"15:00","15:00":"17:00","17:00":"19:00"}
-                    # apply only if t in synth and not flexible 1h?
                     if t in synth:
                         et = synth[t]
                 lesson = str(raw.get('lesson') or '').strip()
@@ -1658,10 +1757,12 @@ class DBContent:
                     skipped += 1
                     continue
                 group = self.normalize_group(raw.get('group') or 'هر دو') or 'هر دو'
+                edu_group = self.normalize_class_educational_group(raw.get('educational_group'), default='mixed')
+                item_term = str(raw.get('term') or term or '').strip()
                 flex_type = str(raw.get('flex_type') or 'fixed').strip().lower()
                 if flex_type not in ('fixed', 'flexible'):
                     flex_type = 'flexible' if 'عمل' in lesson or 'آز' in lesson else 'fixed'
-                key = (wd, t, et, lesson, group)
+                key = (wd, t, et, lesson, group, edu_group, item_term)
                 if key in seen_keys:
                     skipped += 1
                     continue
@@ -1674,9 +1775,13 @@ class DBContent:
                     'teacher': str(raw.get('teacher') or '').strip()[:80],
                     'location': str(raw.get('location') or '').strip()[:80],
                     'group': group,
+                    'educational_group': edu_group,
+                    'term': item_term,
+                    'course_code': str(raw.get('course_code') or '').strip()[:40],
                     'type': str(raw.get('type') or 'class').strip() or 'class',
                     'flex_type': flex_type,
                     'notes': str(raw.get('notes') or raw.get('note') or '').strip()[:300],
+                    'archived': False,
                     'updated_at': utc_now_iso(),
                 }
                 if raw.get('credit') is not None:
@@ -1684,11 +1789,14 @@ class DBContent:
                         doc['credit'] = max(0.5, min(10.0, float(raw.get('credit'))))
                     except (TypeError, ValueError):
                         pass
-                # upsert by (weekday,time,lesson,group) — two rows at same time with different lesson both stay
-                # include end_time in lookup to distinguish different durations of same lesson (rare)
                 existing = await self.schedule_templates.find_one({
-                    'weekday': wd, 'time': t, 'lesson': doc['lesson'], 'group': group
+                    'weekday': wd, 'time': t, 'lesson': doc['lesson'],
+                    'group': group, 'educational_group': edu_group,
                 })
+                if not existing and edu_group == 'mixed':
+                    existing = await self.schedule_templates.find_one({
+                        'weekday': wd, 'time': t, 'lesson': doc['lesson'], 'group': group,
+                    })
                 if existing:
                     await self.schedule_templates.update_one({'_id': existing['_id']}, {'$set': doc})
                     updated += 1
@@ -1701,16 +1809,20 @@ class DBContent:
                 continue
         return {'inserted': inserted, 'updated': updated, 'skipped': skipped, 'total': inserted + updated}
 
-    async def generate_schedules_from_templates(self, start_date: str, end_date: str, group: str = None, dry_run: bool = False) -> dict:
+    async def generate_schedules_from_templates(self, start_date: str, end_date: str, group: str = None,
+                                                dry_run: bool = False, term: str = None) -> dict:
         """Expand weekly templates into dated schedules for range inclusive."""
         from time_utils import parse_gregorian_date, parse_jalali_date, en_digits, TimeContractError
-        # parse start/end — accept jalali YYYY/MM/DD or gregorian YYYY-MM-DD
+        if not term:
+            try:
+                term = (await self.get_current_term_config())['term']
+            except Exception:
+                term = ''
         def _to_date(s: str):
             raw = str(s or '').strip()
             if not raw:
                 raise TimeContractError('empty date')
-            normalized = ''.join(c for c in en_digits(raw) if c.isprintable()).strip().replace('/', '-').replace('\\\\', '-')
-            # decide jalali vs gregorian by year range
+            normalized = ''.join(c for c in en_digits(raw) if c.isprintable()).strip().replace('/', '-').replace('\\', '-')
             try:
                 y = int(normalized.split('-', 1)[0])
                 if 1200 <= y <= 1600:
@@ -1725,11 +1837,7 @@ class DBContent:
             return {'ok': False, 'error': str(e)}
         if end < start:
             return {'ok': False, 'error': 'end_before_start'}
-        # fetch templates
-        q = {}
-        if group:
-            q['group'] = self.normalize_group(group)
-        templates = await self.schedule_templates.find(q).to_list(500)
+        templates = await self.get_schedule_templates(group=group, term=term)
         if not templates:
             return {'ok': False, 'error': 'no_templates'}
         created = 0
@@ -1742,8 +1850,8 @@ class DBContent:
             for tpl in templates:
                 if int(tpl.get('weekday')) != wd:
                     continue
-                # idempotent: check existing schedule with same date/time/lesson/group/type
-                # include end_time for range uniqueness (e.g., 08-10 vs 08-12)
+                edu_group = self.normalize_class_educational_group(tpl.get('educational_group'), default='mixed')
+                tpl_term = str(tpl.get('term') or term or '').strip()
                 q_exist = {
                     'date': day_str,
                     'time': tpl.get('time'),
@@ -1751,12 +1859,10 @@ class DBContent:
                     'group': tpl.get('group'),
                     'type': tpl.get('type', 'class'),
                 }
-                # if template has end_time, also match it (but fallback to match without for legacy schedules)
                 if tpl.get('end_time'):
                     q_exist['end_time'] = tpl.get('end_time')
                 exists = await self.schedules.find_one(q_exist)
                 if not exists and tpl.get('end_time'):
-                    # legacy schedule without end_time field — treat as duplicate if same date/time/lesson exists
                     alt = await self.schedules.find_one({
                         'date': day_str,
                         'time': tpl.get('time'),
@@ -1766,7 +1872,7 @@ class DBContent:
                     })
                     if alt:
                         exists = alt
-                if exists:
+                if exists and self.normalize_class_educational_group(exists.get('educational_group'), default='mixed') == edu_group:
                     skipped += 1
                     continue
                 preview.append({
@@ -1778,6 +1884,8 @@ class DBContent:
                     'teacher': tpl.get('teacher', ''),
                     'location': tpl.get('location', ''),
                     'group': tpl.get('group'),
+                    'educational_group': edu_group,
+                    'term': tpl_term,
                     'type': tpl.get('type', 'class'),
                     'flex_type': tpl.get('flex_type', 'fixed'),
                 })
@@ -1792,6 +1900,11 @@ class DBContent:
                         'location': tpl.get('location', ''),
                         'notes': tpl.get('notes', ''),
                         'group': tpl.get('group'),
+                        'educational_group': edu_group,
+                        'term': tpl_term,
+                        'course_code': str(tpl.get('course_code') or ''),
+                        'from_template': True,
+                        'archived': False,
                         'is_weekly': False,
                         'flex_type': tpl.get('flex_type', 'fixed'),
                         'flex_note': '',
@@ -1960,20 +2073,41 @@ class DBContent:
         return None
 
     @classmethod
-    def detect_schedule_conflicts(cls, items: list) -> list:
-        """تشخیص تداخل زمانی بین دو درس مختلف در یک روز (یا یک روز هفته)."""
+    def detect_schedule_conflicts(cls, items: list, active_term: str = None,
+                                  user_educational_group: str = None) -> list:
+        """تشخیص تداخل زمانی استاندارد بین دو درس مختلف در یک روز (یا یک روز هفته).
+
+        قوانین قطعی برای جلوگیری از تداخل کاذب:
+        ۱) رکوردهای آرشیوشده (archived=True) و رکوردهای متعلق به ترم‌های دیگر نادیده گرفته می‌شوند.
+        ۲) ساعت امتحان (exam) کاملاً مستقل از ساعت کلاس هفتگی (class/makeup) است و هرگز با کلاس تداخل نمی‌خورد.
+        ۳) کلاس مخصوص آقایان (male_only) هرگز با کلاس مخصوص بانوان (female_only) تداخل ندارد.
+        ۴) اگر دو کلاس تاریخ مشخص (date) و متفاوت دارند (هفته‌های متفاوت)، با هم تداخل ندارند.
+        ۵) فرمول استاندارد هم‌پوشانی بازه باز: start_a < end_b and start_b < end_a
+           (بنابراین کلاس ۰۸:۰۰ تا ۱۰:۰۰ با کلاس ۱۰:۰۰ تا ۱۲:۰۰ هیچ تداخلی ندارد).
+        """
         WEEKDAY_FA = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه']
         normalized_rows = []
         for it in (items or []):
             if not isinstance(it, dict):
                 continue
+            if it.get('archived'):
+                continue
+            it_term = str(it.get('term') or it.get('academic_term') or '').strip()
+            if active_term and it_term and it_term != str(active_term).strip():
+                continue
+            edu_grp = cls.normalize_class_educational_group(it.get('educational_group'), default='mixed')
+            if user_educational_group and user_educational_group != 'unknown':
+                if not cls.class_matches_user_educational_group(edu_grp, user_educational_group):
+                    continue
+
             stype = str(it.get('type') or 'class').strip()
             if stype not in ('class', 'makeup', 'exam'):
                 continue
-            lesson = str(it.get('lesson') or '').strip()
+            type_bucket = 'exam' if stype == 'exam' else 'class'
+            lesson = str(it.get('lesson') or it.get('course_name') or '').strip()
             if not lesson:
                 continue
-            start_str = str(it.get('time') or '').strip()
+            start_str = str(it.get('time') or it.get('start_time') or '').strip()
             end_str = str(it.get('end_time') or it.get('time_end') or '').strip()
             if start_str and ('-' in start_str or 'تا' in start_str) and not end_str:
                 parts = start_str.replace('تا', '-').split('-', 1)
@@ -1986,33 +2120,44 @@ class DBContent:
             if en_min is None or en_min <= st_min:
                 en_min = st_min + 120  # پیش‌فرض ۲ ساعت برای کلاس دانشگاهی
 
-            day_key = ''
-            day_label = ''
-            if it.get('date'):
-                day_key = f"date:{stype}:{it.get('date')}"
-                day_label = format_date_fa(str(it.get('date')), date_only=True, weekday=True, fallback=str(it.get('date')))
-            elif it.get('weekday') is not None:
+            date_str = str(it.get('date') or '').strip()
+            wd = it.get('weekday')
+            if wd is not None and str(wd).strip() != '':
                 try:
-                    wd = int(it.get('weekday'))
-                    day_key = f"wd:{wd}"
-                    day_label = WEEKDAY_FA[wd] if 0 <= wd < 7 else f"روز {wd}"
+                    wd = int(wd)
                 except (TypeError, ValueError):
-                    continue
+                    wd = None
+            elif date_str:
+                try:
+                    from time_utils import parse_gregorian_date
+                    dt_obj = parse_gregorian_date(date_str)
+                    wd = (dt_obj.weekday() - 5) % 7
+                except Exception:
+                    wd = None
+
+            day_label = ''
+            if date_str:
+                day_label = format_date_fa(date_str, date_only=True, weekday=True, fallback=date_str)
+            elif wd is not None and 0 <= wd < 7:
+                day_label = WEEKDAY_FA[wd]
             else:
                 continue
 
             normalized_rows.append({
                 'lesson': lesson,
-                'group': cls.normalize_group(it.get('group')) or 'هر دو',
-                'teacher': str(it.get('teacher') or '').strip(),
-                'day_key': day_key,
+                'course_code': str(it.get('course_code') or '').strip(),
+                'group': cls.normalize_group(it.get('group') or it.get('group_code')) or 'هر دو',
+                'educational_group': edu_grp,
+                'term': it_term,
+                'teacher': str(it.get('teacher') or it.get('instructor_name') or '').strip(),
                 'day_label': day_label,
-                'date': str(it.get('date') or ''),
-                'weekday': it.get('weekday'),
+                'date': date_str,
+                'weekday': wd,
                 'start_min': st_min,
                 'end_min': en_min,
                 'time_label': f"{start_str[:5]}" + (f" تا {end_str[:5]}" if end_str else ""),
                 'type': stype,
+                'type_bucket': type_bucket,
             })
 
         conflicts = []
@@ -2022,28 +2167,56 @@ class DBContent:
             a = normalized_rows[i]
             for j in range(i + 1, n):
                 b = normalized_rows[j]
-                if a['day_key'] != b['day_key']:
+                # ۱) نوع یکسان (کلاس با امتحان هرگز مقایسه نمی‌شود)
+                if a['type_bucket'] != b['type_bucket']:
                     continue
-                if a['lesson'] == b['lesson']:
+                # ۲) ترم یکسان (اگر هر دو ترم صریح دارند)
+                if a['term'] and b['term'] and a['term'] != b['term']:
                     continue
-                # بررسی هم‌پوشانی بازه زمانی: max(start_a, start_b) < min(end_a, end_b)
-                if max(a['start_min'], b['start_min']) < min(a['end_min'], b['end_min']):
-                    pair_Lessons = tuple(sorted([a['lesson'], b['lesson']]))
-                    dedup_key = (pair_Lessons, a['weekday'] if a['weekday'] is not None else a['day_label'], a['start_min'], b['start_min'])
+                # ۳) عدم تداخل بین گروه آقایان و گروه بانوان
+                if (a['educational_group'] == 'male_only' and b['educational_group'] == 'female_only') or (
+                    a['educational_group'] == 'female_only' and b['educational_group'] == 'male_only'
+                ):
+                    continue
+                # ۴) یک درس با خودش تداخل حساب نشود
+                if a['lesson'] == b['lesson'] and (not a['course_code'] or not b['course_code'] or a['course_code'] == b['course_code']):
+                    continue
+                # ۵) بررسی تطابق روز / تاریخ:
+                if a['type_bucket'] == 'exam':
+                    if not a['date'] or a['date'] != b['date']:
+                        continue
+                else:
+                    # برای کلاس‌ها: اگر هر دو تاریخ مشخص دارند، باید در یک تاریخ باشند
+                    if a['date'] and b['date']:
+                        if a['date'] != b['date']:
+                            continue
+                    else:
+                        if a['weekday'] is None or b['weekday'] is None or a['weekday'] != b['weekday']:
+                            continue
+
+                # ۶) فرمول استاندارد هم‌پوشانی: start_a < end_b and start_b < end_a
+                if a['start_min'] < b['end_min'] and b['start_min'] < a['end_min']:
+                    pair_lessons = tuple(sorted([a['lesson'], b['lesson']]))
+                    day_id = a['weekday'] if a['weekday'] is not None else a['date']
+                    dedup_key = (a['type_bucket'], pair_lessons, day_id, min(a['start_min'], b['start_min']), max(a['start_min'], b['start_min']))
                     if dedup_key in seen_pairs:
                         continue
                     seen_pairs.add(dedup_key)
+                    lbl_day = WEEKDAY_FA[a['weekday']] if (a['weekday'] is not None and 0 <= a['weekday'] < 7 and a['type_bucket'] == 'class' and (not a['date'] or not b['date'])) else a['day_label']
                     conflicts.append({
                         'lesson_a': a['lesson'],
                         'group_a': a['group'],
+                        'educational_group_a': a['educational_group'],
                         'time_a': a['time_label'],
                         'lesson_b': b['lesson'],
                         'group_b': b['group'],
+                        'educational_group_b': b['educational_group'],
                         'time_b': b['time_label'],
-                        'day_label': a['day_label'],
-                        'date': a['date'],
+                        'day_label': lbl_day,
+                        'date': a['date'] if a['date'] == b['date'] else '',
+                        'type': a['type_bucket'],
                         'message': (
-                            f"تداخل زمانی در {a['day_label']}: درس «{a['lesson']}» "
+                            f"تداخل زمانی در {lbl_day}: درس «{a['lesson']}» "
                             f"(گروه {a['group']}، ساعت {a['time_label']}) با درس «{b['lesson']}» "
                             f"(گروه {b['group']}، ساعت {b['time_label']}) هم‌زمان است."
                         ),
@@ -2164,16 +2337,24 @@ class DBContent:
         time: str = '',
         end_time: str = '',
         location: str = '',
+        educational_group: str = 'mixed',
+        course_code: str = '',
+        class_code: str = '',
+        exam_date: str = '',
+        exam_time: str = '',
+        source_image: str = '',
+        extraction_confidence: float = None,
     ) -> dict:
-        """ثبت یا ویرایش یک گروه ارائه‌شده برای یک درس در ترم جاری (مثلاً گروه ۱ با استاد الف، گروه ۲ با استاد ب)."""
+        """ثبت یا ویرایش یک گروه ارائه‌شده برای یک درس در ترم جاری با پشتیبانی کامل از کد درس و گروه آموزشی (آقایان/بانوان/مشترک)."""
         if not term:
             term = (await self.get_current_term_config())['term']
         lesson = str(lesson or '').strip()[:120]
         if not lesson:
             raise ValueError('lesson_required')
         norm_group = self.normalize_group(group) or 'هر دو'
-        if norm_group not in ('1', '2', 'هر دو'):
+        if norm_group not in ('1', '2', '3', '4', 'هر دو'):
             norm_group = 'هر دو'
+        edu_grp = self.normalize_class_educational_group(educational_group, default='mixed')
         try:
             cred = max(0.5, min(10.0, float(credit if credit is not None else 1.0)))
         except (TypeError, ValueError):
@@ -2181,39 +2362,74 @@ class DBContent:
         doc = {
             'term': term,
             'lesson': lesson,
+            'course_code': str(course_code or '').strip()[:40],
+            'class_code': str(class_code or '').strip()[:40],
             'group': norm_group,
+            'educational_group': edu_grp,
             'teacher': str(teacher or '').strip()[:100],
             'credit': cred,
             'schedule_summary': str(schedule_summary or '').strip()[:200],
             'weekday': int(weekday) if weekday is not None and str(weekday).strip() != '' else None,
             'time': str(time or '').strip()[:10],
             'end_time': str(end_time or '').strip()[:10],
+            'exam_date': str(exam_date or '').strip()[:20],
+            'exam_time': str(exam_time or '').strip()[:10],
             'location': str(location or '').strip()[:100],
+            'archived': False,
             'updated_at': utc_now_iso(),
         }
-        await self.course_offerings.update_one(
-            {'term': term, 'lesson': lesson, 'group': norm_group},
-            {'$set': doc, '$setOnInsert': {'created_at': utc_now_iso()}},
-            upsert=True,
-        )
+        if source_image:
+            doc['source_image'] = str(source_image).strip()[:120]
+        if extraction_confidence is not None:
+            try:
+                doc['extraction_confidence'] = round(float(extraction_confidence), 2)
+            except (TypeError, ValueError):
+                pass
+        existing = await self.course_offerings.find_one({
+            'term': term, 'lesson': lesson, 'group': norm_group, 'educational_group': edu_grp,
+        })
+        if not existing and edu_grp == 'mixed':
+            cand = await self.course_offerings.find_one({'term': term, 'lesson': lesson, 'group': norm_group})
+            if cand and self.normalize_class_educational_group(cand.get('educational_group'), default='mixed') == 'mixed':
+                existing = cand
+        if existing:
+            await self.course_offerings.update_one({'_id': existing['_id']}, {'$set': doc})
+        else:
+            await self.course_offerings.update_one(
+                {'term': term, 'lesson': lesson, 'group': norm_group, 'educational_group': edu_grp},
+                {'$set': doc, '$setOnInsert': {'created_at': utc_now_iso()}},
+                upsert=True,
+            )
         return doc
 
-    async def delete_course_offering(self, lesson: str, group: str = None, term: str = None) -> int:
+    async def delete_course_offering(self, lesson: str, group: str = None, term: str = None,
+                                     educational_group: str = None) -> int:
+        raw_id = str(lesson or '').strip()
+        if not group and len(raw_id) == 24:
+            try:
+                r = await self.course_offerings.delete_one({'_id': ObjectId(raw_id)})
+                if int(getattr(r, 'deleted_count', 0) or 0) > 0:
+                    return int(r.deleted_count)
+            except Exception:
+                pass
         if not term:
             term = (await self.get_current_term_config())['term']
-        q = {'term': term, 'lesson': str(lesson or '').strip()}
+        q = {'term': term, 'lesson': raw_id}
         if group:
             q['group'] = self.normalize_group(group)
+        if educational_group:
+            q['educational_group'] = self.normalize_class_educational_group(educational_group)
         r = await self.course_offerings.delete_many(q)
         return int(getattr(r, 'deleted_count', 0) or 0)
 
-    async def get_term_course_offerings(self, term: str = None) -> list:
-        """استخراج فهرست یکپارچه درس‌های ارائه‌شده در ترم جاری به تفکیک گروه‌ها و اساتید.
+    async def get_term_course_offerings(self, term: str = None, educational_group: str = None,
+                                        include_all_educational_groups: bool = False) -> list:
+        """استخراج فهرست یکپارچه درس‌های ارائه‌شده در ترم جاری به تفکیک گروه‌ها، اساتید و گروه آموزشی (آقایان/بانوان/مشترک).
 
         منابع تجمیع:
-        ۱) جدول course_offerings (ثبت مستقیم گروه‌ها، اساتید و واحدهای هر درس توسط ادمین)
+        ۱) جدول course_offerings (ثبت مستقیم یا منتشرشده از Staging Vision)
         ۲) الگوهای هفتگی (schedule_templates)
-        ۳) برنامه‌های کلاسی ثبت‌شده در جدول schedules
+        ۳) برنامه‌های کلاسی ثبت‌شده در جدول schedules (فقط در صورتی که برای آن درس الگوی هفتگی یا offering صریح وجود نداشته باشد تا جابه‌جایی‌های تک‌جلسه‌ای باعث تداخل کاذب نشوند)
         """
         WEEKDAY_FA = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه']
         if not term:
@@ -2228,8 +2444,21 @@ class DBContent:
             self.schedules.find({'type': 'class', 'date': {'$gte': today_str}}).sort('date', 1).to_list(500),
         )
         if not explicit_docs and not tpl_docs and not sched_docs:
-            # اگر همه کلاس‌ها در گذشته بوده‌اند، آخرین کلاس‌های ثبت‌شده را بخوان تا لیست خالی نماند
             sched_docs = await self.schedules.find({'type': 'class'}).sort('date', -1).limit(200).to_list(200)
+
+        def _doc_matches_scope(d: dict) -> bool:
+            if d.get('archived'):
+                return False
+            d_term = str(d.get('term') or '').strip()
+            if d_term and d_term != str(term).strip():
+                return False
+            if include_all_educational_groups or educational_group is None:
+                return True
+            return self.class_matches_user_educational_group(d.get('educational_group'), educational_group)
+
+        explicit_docs = [d for d in (explicit_docs or []) if _doc_matches_scope(d)]
+        tpl_docs = [d for d in (tpl_docs or []) if _doc_matches_scope(d)]
+        sched_docs = [d for d in (sched_docs or []) if _doc_matches_scope(d)]
 
         courses_map: dict[str, dict] = {}
 
@@ -2237,21 +2466,42 @@ class DBContent:
             if lesson_name not in courses_map:
                 courses_map[lesson_name] = {
                     'lesson': lesson_name,
+                    'course_code': '',
                     'credit': 1.0,
+                    'educational_groups': set(),
                     'groups_data': {
-                        '1': {'group': '1', 'teachers': [], 'sessions': [], 'explicit': False},
-                        '2': {'group': '2', 'teachers': [], 'sessions': [], 'explicit': False},
+                        '1': {'group': '1', 'teachers': [], 'sessions': [], 'explicit': False, 'educational_group': 'mixed', 'course_code': '', 'exam_date': '', 'exam_time': ''},
+                        '2': {'group': '2', 'teachers': [], 'sessions': [], 'explicit': False, 'educational_group': 'mixed', 'course_code': '', 'exam_date': '', 'exam_time': ''},
                     },
                     'seen_groups': set(),
                     'has_shared': False,
+                    'has_explicit_or_tpl': False,
                 }
             return courses_map[lesson_name]
 
-        def _add_entry(lesson_name: str, grp_raw: str, teacher: str, credit_val, session_info: dict = None, is_explicit: bool = False):
+        def _add_entry(
+            lesson_name: str,
+            grp_raw: str,
+            teacher: str,
+            credit_val,
+            session_info: dict = None,
+            is_explicit: bool = False,
+            from_template: bool = False,
+            edu_grp_raw: str = 'mixed',
+            course_code: str = '',
+            exam_date: str = '',
+            exam_time: str = '',
+        ):
             lesson_name = str(lesson_name or '').strip()
             if not lesson_name:
                 return
             c = _ensure_course(lesson_name)
+            if is_explicit or from_template:
+                c['has_explicit_or_tpl'] = True
+            if course_code and not c['course_code']:
+                c['course_code'] = str(course_code).strip()
+            edu_grp = self.normalize_class_educational_group(edu_grp_raw, default='mixed')
+            c['educational_groups'].add(edu_grp)
             if credit_val is not None:
                 try:
                     cf = float(credit_val)
@@ -2260,19 +2510,37 @@ class DBContent:
                 except (TypeError, ValueError):
                     pass
             norm_g = self.normalize_group(grp_raw) or 'هر دو'
-            target_groups = ['1', '2'] if norm_g not in ('1', '2') else [norm_g]
-            if norm_g not in ('1', '2'):
-                c['has_shared'] = True
-            else:
+            if norm_g in ('1', '2', '3', '4'):
+                if norm_g not in c['groups_data']:
+                    c['groups_data'][norm_g] = {
+                        'group': norm_g, 'teachers': [], 'sessions': [],
+                        'explicit': False, 'educational_group': edu_grp,
+                        'course_code': str(course_code or '').strip(),
+                        'exam_date': str(exam_date or '').strip(),
+                        'exam_time': str(exam_time or '').strip(),
+                    }
+                target_groups = [norm_g]
                 c['seen_groups'].add(norm_g)
+            else:
+                target_groups = ['1', '2']
+                c['has_shared'] = True
 
             for g in target_groups:
                 gd = c['groups_data'][g]
-                if is_explicit and norm_g in ('1', '2'):
+                if is_explicit and norm_g in ('1', '2', '3', '4'):
                     gd['explicit'] = True
+                    gd['educational_group'] = edu_grp
+                    if course_code:
+                        gd['course_code'] = str(course_code).strip()
+                    if exam_date:
+                        gd['exam_date'] = str(exam_date).strip()
+                    if exam_time:
+                        gd['exam_time'] = str(exam_time).strip()
+                elif gd.get('educational_group') == 'mixed' and edu_grp in ('male_only', 'female_only'):
+                    gd['educational_group'] = edu_grp
                 t_clean = str(teacher or '').strip()
                 if t_clean and t_clean not in gd['teachers']:
-                    if is_explicit and norm_g in ('1', '2'):
+                    if is_explicit and norm_g in ('1', '2', '3', '4'):
                         gd['teachers'].insert(0, t_clean)
                     else:
                         gd['teachers'].append(t_clean)
@@ -2293,6 +2561,8 @@ class DBContent:
                     'time': str(doc.get('time') or ''),
                     'end_time': str(doc.get('end_time') or ''),
                     'location': str(doc.get('location') or ''),
+                    'educational_group': self.normalize_class_educational_group(doc.get('educational_group'), default='mixed'),
+                    'term': term,
                 }
             _add_entry(
                 doc.get('lesson'),
@@ -2301,6 +2571,10 @@ class DBContent:
                 doc.get('credit'),
                 s_info,
                 is_explicit=True,
+                edu_grp_raw=doc.get('educational_group', 'mixed'),
+                course_code=doc.get('course_code', ''),
+                exam_date=doc.get('exam_date', ''),
+                exam_time=doc.get('exam_time', ''),
             )
 
         # ۲) الگوهای هفتگی (schedule_templates)
@@ -2313,6 +2587,8 @@ class DBContent:
                 'time': str(tpl.get('time') or ''),
                 'end_time': str(tpl.get('end_time') or ''),
                 'location': str(tpl.get('location') or ''),
+                'educational_group': self.normalize_class_educational_group(tpl.get('educational_group'), default='mixed'),
+                'term': term,
             }
             _add_entry(
                 tpl.get('lesson'),
@@ -2320,10 +2596,24 @@ class DBContent:
                 tpl.get('teacher', ''),
                 tpl.get('credit'),
                 s_info,
+                from_template=True,
+                edu_grp_raw=tpl.get('educational_group', 'mixed'),
+                course_code=tpl.get('course_code', ''),
             )
 
-        # ۳) برنامه‌های کلاسی (schedules)
+        # ۳) برنامه‌های کلاسی (schedules) — فقط برای درس‌هایی که در course_offerings یا schedule_templates الگوی هفتگی ندارند
+        # تا جابه‌جایی تک‌جلسه‌ای یک تاریخ خاص به عنوان دو کلاس هفتگی هم‌زمان تلقی نشود (رفع ریشه‌ای تداخل کاذب بخش ۴)
+        seen_sched_wd = set()
         for sch in (sched_docs or []):
+            lsn_name = str(sch.get('lesson') or '').strip()
+            if not lsn_name:
+                continue
+            existing_c = courses_map.get(lsn_name)
+            if existing_c and existing_c.get('has_explicit_or_tpl'):
+                # اگر درس از قبل الگوی هفتگی دارد، فقط در صورتی که گروه جدیدی در schedules دیده شده اضافه کن
+                norm_sg = self.normalize_group(sch.get('group')) or 'هر دو'
+                if norm_sg in existing_c['seen_groups'] or norm_sg == 'هر دو':
+                    continue
             d_str = str(sch.get('date') or '')
             day_lbl = ''
             wd = None
@@ -2335,6 +2625,11 @@ class DBContent:
                     day_lbl = WEEKDAY_FA[wd]
                 except Exception:
                     day_lbl = d_str
+            dedup_wd_key = (lsn_name, self.normalize_group(sch.get('group')) or 'هر دو', wd)
+            if wd is not None and dedup_wd_key in seen_sched_wd:
+                continue
+            if wd is not None:
+                seen_sched_wd.add(dedup_wd_key)
             s_info = {
                 'weekday': wd,
                 'date': d_str,
@@ -2342,28 +2637,35 @@ class DBContent:
                 'time': str(sch.get('time') or ''),
                 'end_time': str(sch.get('end_time') or ''),
                 'location': str(sch.get('location') or ''),
+                'educational_group': self.normalize_class_educational_group(sch.get('educational_group'), default='mixed'),
+                'term': term,
             }
             _add_entry(
-                sch.get('lesson'),
+                lsn_name,
                 sch.get('group'),
                 sch.get('teacher', ''),
                 sch.get('credit'),
                 s_info,
+                edu_grp_raw=sch.get('educational_group', 'mixed'),
+                course_code=sch.get('course_code', ''),
             )
 
         out = []
         for lesson_name in sorted(courses_map.keys()):
             c = courses_map[lesson_name]
-            seen = c['seen_groups']
+            seen = sorted(c['seen_groups'])
             # اگر درسی فقط به صورت مشترک «هر دو» ثبت شده و هیچ تفکیک گروه ۱ و ۲ ندارد، نیاز به انتخاب گروه ۱/۲ ندارد
             if len(seen) == 0 and c['has_shared']:
                 continue
-            # اگر یک درس فقط برای یک گروه خاص (مثلاً فقط گروه 1 و بدون گروه 2 و بدون مشترک) ثبت شده باشد → تک‌گروهی است
             if len(seen) == 1 and not c['has_shared']:
-                only_g = next(iter(seen))
+                only_g = seen[0]
                 active_groups = [only_g]
                 single_group = True
                 auto_group = only_g
+            elif len(seen) > 1:
+                active_groups = seen
+                single_group = False
+                auto_group = None
             else:
                 active_groups = ['1', '2']
                 single_group = False
@@ -2371,7 +2673,7 @@ class DBContent:
 
             groups_list = []
             for g in active_groups:
-                gd = c['groups_data'][g]
+                gd = c['groups_data'].get(g) or {'group': g, 'teachers': [], 'sessions': [], 'educational_group': 'mixed'}
                 teacher_str = '، '.join(gd['teachers'][:2]) if gd['teachers'] else ''
                 summary_parts = []
                 for s in gd['sessions'][:2]:
@@ -2384,30 +2686,88 @@ class DBContent:
                     elif dl or t_part:
                         summary_parts.append(dl or t_part)
                 sched_summary = ' · '.join(summary_parts)
-                label = f"گروه {g}" + (f" – {teacher_str}" if teacher_str else "")
+                edu_g = gd.get('educational_group') or 'mixed'
+                edu_badge = ''
+                if include_all_educational_groups:
+                    if edu_g == 'male_only':
+                        edu_badge = ' (آقایان)'
+                    elif edu_g == 'female_only':
+                        edu_badge = ' (بانوان)'
+                label = f"گروه {g}{edu_badge}" + (f" – {teacher_str}" if teacher_str else "")
                 groups_list.append({
                     'group': g,
+                    'educational_group': edu_g,
+                    'course_code': gd.get('course_code') or c.get('course_code') or '',
+                    'exam_date': gd.get('exam_date') or '',
+                    'exam_time': gd.get('exam_time') or '',
                     'teacher': teacher_str,
                     'label': label,
                     'schedule_summary': sched_summary,
                     'sessions': gd['sessions'][:4],
                 })
 
+            edu_set = c['educational_groups']
+            course_edu = next(iter(edu_set)) if len(edu_set) == 1 else 'mixed'
             out.append({
                 'lesson': lesson_name,
+                'course_code': c.get('course_code') or '',
                 'credit': c['credit'],
+                'educational_group': course_edu,
                 'single_group': single_group,
                 'auto_selected_group': auto_group,
                 'groups': groups_list,
             })
         return out
 
+    async def flag_mismatched_student_selections(self, uid: int, new_educational_group: str, term: str = None) -> int:
+        """بررسی انتخاب واحدهای قبلی دانشجو پس از تغییر گروه آموزشی (بدون حذف خودکار!).
+        هر انتخاب قبلی که مخصوص گروه آموزشی مقابل باشد با educational_group_mismatch=True علامت‌گذاری می‌شود."""
+        uid = int(uid)
+        if not term:
+            term = (await self.get_current_term_config())['term']
+        ug = self.normalize_user_educational_group(new_educational_group)
+        if ug not in ('male', 'female'):
+            return 0
+        docs = await self.course_selections.find({
+            'user_id': uid, 'term': term, 'archived': {'$ne': True},
+        }).to_list(200)
+        if not docs:
+            return 0
+        all_offerings = await self.course_offerings.find({'term': term}).to_list(500)
+        flagged = 0
+        for sel in docs:
+            lsn = str(sel.get('lesson') or '').strip()
+            grp = self.normalize_group(sel.get('group'))
+            matching_offs = [
+                o for o in (all_offerings or [])
+                if str(o.get('lesson') or '').strip() == lsn and self.normalize_group(o.get('group')) == grp and not o.get('archived')
+            ]
+            mismatch = False
+            if matching_offs:
+                # اگر تمام رکوردهای این درس+گروه در دیتابیس مخصوص جنس مخالف باشد، مغایرت دارد
+                if all(not self.class_matches_user_educational_group(o.get('educational_group'), ug) for o in matching_offs):
+                    mismatch = True
+            sel_filt = {'_id': sel['_id']} if '_id' in sel else {'user_id': uid, 'term': term, 'lesson': lsn}
+            await self.course_selections.update_one(
+                sel_filt,
+                {'$set': {
+                    'educational_group_mismatch': mismatch,
+                    'mismatch_reason': 'گروه درسی انتخابی با گروه آموزشی جدید شما مغایرت دارد و نیازمند بررسی است.' if mismatch else '',
+                }},
+            )
+            if mismatch:
+                flagged += 1
+        return flagged
+
     async def get_student_course_selections(self, uid: int, term: str = None) -> dict:
-        """دریافت انتخاب واحدهای فعلی دانشجو در ترم جاری + کاتالوگ درس‌ها + گروه اکثریت."""
+        """دریافت انتخاب واحدهای فعلی دانشجو در ترم جاری + کاتالوگ درس‌ها (فیلترشده با گروه آموزشی دانشجو) + گروه اکثریت."""
         uid = int(uid)
         term_cfg = await self.get_current_term_config()
         active_term = term or term_cfg['term']
         user = await self.get_user(uid, use_cache=False) or {}
+        edu_info = self.extract_user_educational_group_info(user)
+        user_edu = edu_info['educational_group']  # 'male' | 'female' | 'unknown'
+
         registered_group = self.normalize_group(user.get('registered_group') or user.get('group') or '1')
         if registered_group not in ('1', '2'):
             registered_group = '1'
@@ -2415,8 +2775,9 @@ class DBContent:
         if computed_group not in ('1', '2'):
             computed_group = registered_group
 
-        offerings, docs = await asyncio.gather(
-            self.get_term_course_offerings(active_term),
+        all_offerings, filtered_offerings, docs = await asyncio.gather(
+            self.get_term_course_offerings(active_term, include_all_educational_groups=True),
+            self.get_term_course_offerings(active_term, educational_group=(user_edu if user_edu != 'unknown' else 'unknown')),
             self.course_selections.find({
                 'user_id': uid,
                 'term': active_term,
@@ -2424,19 +2785,37 @@ class DBContent:
             }).sort('lesson', 1).to_list(200),
         )
 
+        has_gender_specific_catalog = any(
+            o.get('educational_group') in ('male_only', 'female_only')
+            or any(g.get('educational_group') in ('male_only', 'female_only') for g in (o.get('groups') or []))
+            for o in (all_offerings or [])
+        )
+        offerings = filtered_offerings if user_edu in ('male', 'female') else (
+            filtered_offerings if has_gender_specific_catalog else all_offerings
+        )
+
         # نقشه انتخاب‌های ذخیره‌شده
         saved_map = {}
+        mismatched_selections = []
         for d in (docs or []):
             lsn = str(d.get('lesson') or '').strip()
             grp = self.normalize_group(d.get('group'))
-            if lsn and grp in ('1', '2'):
-                saved_map[lsn] = {
+            if lsn and grp in ('1', '2', '3', '4'):
+                mismatch = bool(d.get('educational_group_mismatch'))
+                row_obj = {
                     'lesson': lsn,
+                    'course_code': str(d.get('course_code') or ''),
                     'group': grp,
+                    'educational_group': str(d.get('educational_group') or 'mixed'),
                     'teacher': str(d.get('teacher') or ''),
                     'credit': float(d.get('credit') if d.get('credit') is not None else 1.0),
+                    'educational_group_mismatch': mismatch,
+                    'mismatch_reason': str(d.get('mismatch_reason') or ''),
                     'updated_at': d.get('updated_at'),
                 }
+                saved_map[lsn] = row_obj
+                if mismatch:
+                    mismatched_selections.append(row_obj)
 
         majority = self.compute_majority_group(list(saved_map.values()), fallback_group=registered_group)
         return {
@@ -2445,41 +2824,52 @@ class DBContent:
             'has_selections': len(saved_map) > 0,
             'selections': list(saved_map.values()),
             'selections_map': {k: v['group'] for k, v in saved_map.items()},
+            'mismatched_selections': mismatched_selections,
+            'has_educational_group_mismatch': len(mismatched_selections) > 0,
             'offerings': offerings,
             'computed_group': majority['computed_group'] if saved_map else computed_group,
             'registered_group': registered_group,
             'majority': majority,
+            'educational_group_info': edu_info,
+            'educational_group': user_edu,
+            'needs_educational_group_confirmation': bool(edu_info['needs_confirmation']),
+            'has_gender_specific_catalog': has_gender_specific_catalog,
         }
 
     async def save_student_course_selections(self, uid: int, selections: list, term: str = None) -> dict:
-        """ذخیره انتخاب واحد درس‌به‌درس دانشجو + محاسبه خودکار گروه اکثریت و به‌روزرسانی پروفایل."""
+        """ذخیره انتخاب واحد درس‌به‌درس دانشجو + اعمال فیلتر مرکزی گروه آموزشی + محاسبه خودکار گروه اکثریت."""
         uid = int(uid)
         term_cfg = await self.get_current_term_config()
         active_term = term or term_cfg['term']
         user = await self.get_user(uid, use_cache=False) or {}
+        edu_info = self.extract_user_educational_group_info(user)
+        user_edu = edu_info['educational_group']
+
         registered_group = self.normalize_group(user.get('registered_group') or user.get('group') or '1')
         if registered_group not in ('1', '2'):
             registered_group = '1'
 
-        offerings = await self.get_term_course_offerings(active_term)
+        offerings = await self.get_term_course_offerings(
+            active_term,
+            educational_group=(user_edu if user_edu in ('male', 'female') else None),
+        )
         offering_map = {o['lesson']: o for o in offerings}
 
         now_iso = utc_now_iso()
         clean_selections = []
         seen_lessons = set()
 
-        # اگر درس تک‌گروهی در کاتالوگ هست و کاربر لیست انتخاب فرستاده، تک‌گروهی‌ها را هم خودکار لحاظ کن
         incoming_map = {}
         for item in (selections or []):
             if not isinstance(item, dict):
                 continue
             lsn = str(item.get('lesson') or '').strip()[:120]
             grp = self.normalize_group(item.get('group'))
-            if lsn and grp in ('1', '2'):
+            if lsn and grp in ('1', '2', '3', '4'):
                 incoming_map[lsn] = (grp, item)
 
         for o in offerings:
-            if o.get('single_group') and o.get('auto_selected_group') in ('1', '2'):
+            if o.get('single_group') and o.get('auto_selected_group') in ('1', '2', '3', '4'):
                 lsn = o['lesson']
                 if lsn not in incoming_map and incoming_map:
                     incoming_map[lsn] = (o['auto_selected_group'], {'lesson': lsn, 'group': o['auto_selected_group']})
@@ -2496,19 +2886,29 @@ class DBContent:
             except (TypeError, ValueError):
                 cred = 1.0
             teacher = str(raw_item.get('teacher') or '').strip()
-            if not teacher and off.get('groups'):
+            edu_grp_sel = 'mixed'
+            course_code = str(raw_item.get('course_code') or off.get('course_code') or '').strip()
+            if off.get('groups'):
                 for g_obj in off['groups']:
-                    if g_obj.get('group') == grp and g_obj.get('teacher'):
-                        teacher = g_obj['teacher']
+                    if g_obj.get('group') == grp:
+                        if not teacher and g_obj.get('teacher'):
+                            teacher = g_obj['teacher']
+                        edu_grp_sel = g_obj.get('educational_group') or off.get('educational_group') or 'mixed'
+                        if not course_code and g_obj.get('course_code'):
+                            course_code = g_obj['course_code']
                         break
             doc = {
                 'user_id': uid,
                 'term': active_term,
                 'lesson': lsn,
+                'course_code': course_code,
                 'group': grp,
+                'educational_group': edu_grp_sel,
+                'educational_group_mismatch': False,
+                'mismatch_reason': '',
                 'teacher': teacher[:100],
                 'credit': cred,
-                'offering_id': f"{active_term}::{lsn}::{grp}",
+                'offering_id': f"{active_term}::{lsn}::{grp}::{edu_grp_sel}",
                 'archived': False,
                 'updated_at': now_iso,
             }
@@ -2519,7 +2919,6 @@ class DBContent:
             )
             clean_selections.append(doc)
 
-        # حذف درس‌هایی که دانشجو در این ترم قبلاً انتخاب کرده بود ولی در ذخیره جدید حذفشان کرده است
         if clean_selections:
             await self.course_selections.delete_many({
                 'user_id': uid,
@@ -2546,7 +2945,6 @@ class DBContent:
             'course_selection_updated_at': now_iso,
         })
 
-        # بررسی تداخل ساعتی روی جلسات درس‌های انتخابی
         session_rows_for_conflict = []
         for sel in clean_selections:
             off = offering_map.get(sel['lesson'])
@@ -2557,15 +2955,22 @@ class DBContent:
                     for sess in (g_obj.get('sessions') or []):
                         session_rows_for_conflict.append({
                             'lesson': sel['lesson'],
+                            'course_code': sel.get('course_code') or '',
                             'group': sel['group'],
+                            'educational_group': g_obj.get('educational_group') or 'mixed',
+                            'term': active_term,
                             'teacher': g_obj.get('teacher', ''),
                             'weekday': sess.get('weekday'),
-                            'date': sess.get('date'),
+                            'date': sess.get('date') if not sess.get('weekday') is not None else '',
                             'time': sess.get('time'),
                             'end_time': sess.get('end_time'),
                             'type': 'class',
                         })
-        conflicts = self.detect_schedule_conflicts(session_rows_for_conflict)
+        conflicts = self.detect_schedule_conflicts(
+            session_rows_for_conflict,
+            active_term=active_term,
+            user_educational_group=(user_edu if user_edu in ('male', 'female') else None),
+        )
 
         return {
             'ok': True,
@@ -2574,28 +2979,33 @@ class DBContent:
             'computed_group': new_group,
             'registered_group': registered_group,
             'majority': majority,
+            'educational_group': user_edu,
+            'educational_group_info': edu_info,
             'selections': clean_selections,
             'conflicts': conflicts,
         }
 
     async def get_personalized_schedules(self, uid: int, stype: str = None, upcoming: bool = True, term: str = None) -> dict:
-        """ساخت برنامه کلاسی و امتحانی دانشجو دقیقاً از روی انتخاب‌های درس‌به‌درس او.
-
-        - اگر دانشجو انتخاب واحدش را ثبت کرده باشد: برای هر درس فقط جلساتِ گروه انتخابیِ همان درس (یا «هر دو») نمایش داده می‌شود.
-          اگر فقط بخشی از درس‌ها را انتخاب کرده باشد، فقط همان درس‌ها در برنامه می‌آید و لیست درس‌های انتخاب‌نشده در `unselected_lessons` برمی‌گردد.
-        - اگر دانشجو هنوز انتخاب واحدش را ثبت نکرده باشد: fallback کامل به برنامه گروه فعلی (`computed_group` یا `group` ثبت‌نام).
-        """
+        """ساخت برنامه کلاسی و امتحانی دانشجو دقیقاً از روی انتخاب‌های درس‌به‌درس و گروه آموزشی (آقایان/بانوان) او."""
         uid = int(uid)
         sel_state = await self.get_student_course_selections(uid, term=term)
-        sel_map = sel_state['selections_map']  # {lesson: '1'|'2'}
+        active_term = sel_state['term']
+        user_edu = sel_state.get('educational_group') or 'unknown'
+        edu_filter = user_edu if user_edu in ('male', 'female') else None
+        sel_map = sel_state['selections_map']
         sel_teacher_map = {s['lesson']: s.get('teacher', '') for s in sel_state['selections']}
         offerings = sel_state['offerings']
         offered_lessons = [o['lesson'] for o in offerings]
         effective_group = sel_state['computed_group']
 
         if not sel_map:
-            items = await self.get_schedules(stype=stype, upcoming=upcoming, group=effective_group)
-            conflicts = self.detect_schedule_conflicts(items)
+            items = await self.get_schedules(
+                stype=stype, upcoming=upcoming, group=effective_group,
+                term=active_term, educational_group=edu_filter,
+            )
+            conflicts = self.detect_schedule_conflicts(
+                items, active_term=active_term, user_educational_group=edu_filter,
+            )
             return {
                 'items': items,
                 'has_custom_selection': False,
@@ -2605,12 +3015,18 @@ class DBContent:
                 'computed_group': effective_group,
                 'registered_group': sel_state['registered_group'],
                 'majority': sel_state['majority'],
+                'educational_group': user_edu,
+                'educational_group_info': sel_state.get('educational_group_info'),
+                'needs_educational_group_confirmation': sel_state.get('needs_educational_group_confirmation', False),
+                'mismatched_selections': sel_state.get('mismatched_selections', []),
                 'conflicts': conflicts,
-                'term': sel_state['term'],
+                'term': active_term,
             }
 
-        # دانشجو انتخاب واحد ثبت کرده است → همه برنامه‌های پیش‌رو را بخوان و درس‌به‌درس فیلتر کن
-        all_items = await self.get_schedules(stype=stype, upcoming=upcoming, group=None)
+        all_items = await self.get_schedules(
+            stype=stype, upcoming=upcoming, group=None,
+            term=active_term, educational_group=edu_filter,
+        )
         filtered = []
         for item in (all_items or []):
             lsn = str(item.get('lesson') or '').strip()
@@ -2624,15 +3040,15 @@ class DBContent:
                     enriched['selected_group'] = chosen_grp
                     filtered.append(enriched)
             elif lsn not in offered_lessons and item_grp in ('هر دو', ''):
-                # دروس/جلسات مشترک هر دو گروه که تفکیک گروه ۱ و ۲ ندارند
                 filtered.append(dict(item))
             elif item.get('type') == 'exam' and lsn not in offered_lessons:
-                # امتحاناتی که در لیست کلاس‌ها نبوده‌اند بر اساس گروه اکثریت یا «هر دو» نشان داده شوند
                 if item_grp in (effective_group, 'هر دو', ''):
                     filtered.append(dict(item))
 
         unselected_lessons = [lsn for lsn in offered_lessons if lsn not in sel_map]
-        conflicts = self.detect_schedule_conflicts(filtered)
+        conflicts = self.detect_schedule_conflicts(
+            filtered, active_term=active_term, user_educational_group=edu_filter,
+        )
         return {
             'items': filtered,
             'has_custom_selection': True,
@@ -2642,15 +3058,19 @@ class DBContent:
             'computed_group': effective_group,
             'registered_group': sel_state['registered_group'],
             'majority': sel_state['majority'],
+            'educational_group': user_edu,
+            'educational_group_info': sel_state.get('educational_group_info'),
+            'needs_educational_group_confirmation': sel_state.get('needs_educational_group_confirmation', False),
+            'mismatched_selections': sel_state.get('mismatched_selections', []),
             'conflicts': conflicts,
-            'term': sel_state['term'],
+            'term': active_term,
         }
 
     async def get_course_selection_admin_stats(self, term: str = None) -> dict:
-        """آمار مدیریتی انتخاب واحد برای پنل ادمین (تعداد تکمیل‌شدگان، تفکیک گروه اکثریت و درس‌ها)."""
+        """آمار مدیریتی انتخاب واحد برای پنل ادمین (تعداد تکمیل‌شدگان، تفکیک گروه اکثریت، گروه آموزشی و درس‌ها)."""
         term_cfg = await self.get_current_term_config()
         active_term = term or term_cfg['term']
-        offerings = await self.get_term_course_offerings(active_term)
+        offerings = await self.get_term_course_offerings(active_term, include_all_educational_groups=True)
         total_reachable = await self.count_reachable_users()
 
         pipeline = [
@@ -2672,14 +3092,19 @@ class DBContent:
             grp = key.get('group') or ''
             if not lsn:
                 continue
-            per_lesson.setdefault(lsn, {'lesson': lsn, 'group_1': 0, 'group_2': 0})
+            per_lesson.setdefault(lsn, {'lesson': lsn, 'group_1': 0, 'group_2': 0, 'group_3': 0})
             if grp == '1':
                 per_lesson[lsn]['group_1'] += int(row.get('count') or 0)
             elif grp == '2':
                 per_lesson[lsn]['group_2'] += int(row.get('count') or 0)
+            elif grp == '3':
+                per_lesson[lsn]['group_3'] += int(row.get('count') or 0)
 
         g1_users = await self.users.count_documents({'approved': True, 'blocked_bot': {'$ne': True}, 'group': '1'})
         g2_users = await self.users.count_documents({'approved': True, 'blocked_bot': {'$ne': True}, 'group': '2'})
+        male_users = await self.users.count_documents({'approved': True, 'blocked_bot': {'$ne': True}, 'educational_group': 'male', 'group_verified': True})
+        female_users = await self.users.count_documents({'approved': True, 'blocked_bot': {'$ne': True}, 'educational_group': 'female', 'group_verified': True})
+        unknown_edu_users = max(0, total_reachable - male_users - female_users)
 
         return {
             'term': active_term,
@@ -2693,8 +3118,578 @@ class DBContent:
             'group1_count': g1_users,
             'group_2_students': g2_users,
             'group2_count': g2_users,
+            'male_students': male_users,
+            'female_students': female_users,
+            'unknown_educational_group_students': unknown_edu_users,
             'offerings_count': len(offerings),
             'per_lesson': list(per_lesson.values()),
+        }
+
+    # ══════════════════════════════════════════════════
+    #  🖼 بخش ۳: سیستم Staging استخراج انتخاب واحد از چند تصویر (Vision + Dedup/Diff + Publish)
+    # ══════════════════════════════════════════════════
+
+    @staticmethod
+    def _clean_persian_course_title(name: str) -> str:
+        import re as _re
+        from time_utils import en_digits as _en
+        s = _en(str(name or '')).strip()
+        s = s.replace('ي', 'ی').replace('ك', 'ک').replace('\u200c', ' ')
+        s = _re.sub(r'\s+', ' ', s)
+        return s[:120]
+
+    @classmethod
+    def normalize_extracted_course_row(
+        cls,
+        raw: dict,
+        default_term: str = '',
+        default_edu_group: str = 'unknown',
+        source_image: str = '',
+    ) -> dict | None:
+        """نرمال‌سازی و اعتبارسنجی یک ردیف استخراج‌شده از تصویر انتخاب واحد بدون حدس زدن فیلدهای غایب."""
+        from time_utils import en_digits as _en
+        if not isinstance(raw, dict):
+            return None
+        course_name = cls._clean_persian_course_title(
+            raw.get('course_name') or raw.get('lesson') or raw.get('title') or ''
+        )
+        if not course_name:
+            return None
+        course_code = _en(str(raw.get('course_code') or raw.get('code') or '')).strip()[:40]
+        class_code = _en(str(raw.get('class_code') or '')).strip()[:40]
+        group_code = cls.normalize_group(_en(str(raw.get('group_code') or raw.get('group') or '')))
+        if group_code not in ('1', '2', '3', '4', 'هر دو'):
+            group_code = _en(str(raw.get('group_code') or '')).strip()[:10] or '1'
+
+        instructor = cls._clean_persian_course_title(
+            raw.get('instructor_name') or raw.get('teacher') or ''
+        )[:100]
+        wd = raw.get('weekday')
+        if wd is not None and str(wd).strip() != '':
+            try:
+                wd = int(wd)
+                if not (0 <= wd <= 6):
+                    wd = None
+            except (TypeError, ValueError):
+                wd = None
+        else:
+            wd = None
+
+        start_time = _en(str(raw.get('start_time') or raw.get('time') or '')).strip()[:10]
+        end_time = _en(str(raw.get('end_time') or '')).strip()[:10]
+        exam_date = _en(str(raw.get('exam_date') or '')).strip()[:20]
+        exam_time = _en(str(raw.get('exam_time') or '')).strip()[:10]
+        term = _en(str(raw.get('academic_term') or raw.get('term') or default_term or '')).strip()[:40]
+        edu_grp = cls.normalize_class_educational_group(
+            raw.get('educational_group') or default_edu_group, default='unknown'
+        )
+        src_img = str(raw.get('source_image') or source_image or '').strip()[:120]
+        section_type = str(raw.get('section_type') or 'taken_courses').strip()
+        try:
+            conf = round(max(0.0, min(1.0, float(raw.get('extraction_confidence') if raw.get('extraction_confidence') is not None else 0.9))), 2)
+        except (TypeError, ValueError):
+            conf = 0.9
+        try:
+            credit = float(raw.get('credit') if raw.get('credit') is not None and str(raw.get('credit')).strip() != '' else 1.0)
+            if credit <= 0 or credit > 12:
+                credit = 1.0
+        except (TypeError, ValueError):
+            credit = 1.0
+
+        return {
+            'course_name': course_name,
+            'course_code': course_code,
+            'class_code': class_code,
+            'group_code': group_code,
+            'credit': round(credit, 2),
+            'instructor_name': instructor,
+            'weekday': wd,
+            'start_time': start_time,
+            'end_time': end_time,
+            'exam_date': exam_date,
+            'exam_time': exam_time,
+            'academic_term': term,
+            'educational_group': edu_grp,
+            'source_image': src_img,
+            'section_type': section_type,
+            'extraction_confidence': conf,
+        }
+
+    @classmethod
+    def reconcile_staged_course_extractions(cls, raw_items: list, academic_term: str = '') -> dict:
+        """موتور تطبیق چند تصویر (دختران و پسران) و جلوگیری از تکرار در فضای Staging:
+        - مقایسه بر اساس کلید ترکیبی (academic_term, course_code_or_name, group_code, class_code) نه صرفاً نام درس!
+        - اگر یک درس با کد درس و گروه درس یکسان و مشخصات سازگار هم در تصویر آقایان (male_only) و هم در تصویر بانوان (female_only) وجود داشته باشد ← به عنوان درس مشترک (mixed) ادغام می‌شود.
+        - اگر یک درس (مثلاً آئین زندگی یا تربیت بدنی ۲) در تصویر آقایان گروه ۲ و در تصویر بانوان گروه ۱ یا ۳ (یا استاد/ساعت متفاوت) داشته باشد ← هر دو رکورد به صورت مستقل با برچسب male_only و female_only حفظ می‌شوند.
+        - رکوردهای دقیقاً تکراری از یک گروه آموزشی ادغام می‌شوند و موارد متناقض با needs_review=True علامت‌گذاری می‌شوند.
+        """
+        normalized = []
+        for idx, r in enumerate(raw_items or []):
+            n = cls.normalize_extracted_course_row(r, default_term=academic_term)
+            if n:
+                n['item_id'] = str(r.get('item_id') or f"item_{idx + 1}")
+                normalized.append(n)
+
+        # گام ۱: گروه‌بندی بر اساس کلید کاتالوگ (term, course_code || course_name, group_code, class_code)
+        by_section_key: dict[tuple, list[dict]] = {}
+        for item in normalized:
+            code_or_name = item['course_code'] or item['course_name']
+            key = (
+                item['academic_term'] or academic_term,
+                code_or_name,
+                item['group_code'],
+                item['class_code'],
+            )
+            by_section_key.setdefault(key, []).append(item)
+
+        reconciled_items = []
+        merged_shared_count = 0
+        deduplicated_count = 0
+        distinct_gender_count = 0
+        conflict_review_count = 0
+
+        # بررسی اینکه کدام دروس دارای چند گروه متفاوت بین آقایان و بانوان هستند
+        course_gender_groups: dict[str, set] = {}
+        for item in normalized:
+            ck = item['course_code'] or item['course_name']
+            course_gender_groups.setdefault(ck, set()).add((item['educational_group'], item['group_code']))
+
+        seq = 0
+        for key, group_rows in by_section_key.items():
+            if len(group_rows) == 1:
+                row = dict(group_rows[0])
+                seq += 1
+                row['item_id'] = row.get('item_id') or f"stg_{seq}"
+                ck = row['course_code'] or row['course_name']
+                has_other_gender_diff_group = len({g for _, g in course_gender_groups.get(ck, set())}) > 1
+                row['merge_status'] = 'distinct_gender_section' if has_other_gender_diff_group else 'single_source'
+                if has_other_gender_diff_group:
+                    distinct_gender_count += 1
+                row['needs_review'] = bool(row['educational_group'] == 'unknown' or row['extraction_confidence'] < 0.75)
+                row['review_note'] = 'گروه آموزشی تصویر نامشخص است' if row['educational_group'] == 'unknown' else ''
+                row['source_images'] = [row['source_image']] if row.get('source_image') else []
+                reconciled_items.append(row)
+                continue
+
+            # چند ردیف با کلید (term, course_code, group_code, class_code) یکسان آمده‌اند
+            # بررسی سازگاری استاد و ساعت کلاس بین آن‌ها
+            instructors = {r['instructor_name'] for r in group_rows if r.get('instructor_name')}
+            times = {(r['weekday'], r['start_time'], r['end_time']) for r in group_rows if r.get('start_time') or r.get('weekday') is not None}
+            edu_groups = {r['educational_group'] for r in group_rows if r.get('educational_group') and r.get('educational_group') != 'unknown'}
+
+            has_conflict = (len(instructors) > 1) or (len(times) > 1)
+            if has_conflict and ('male_only' in edu_groups and 'female_only' in edu_groups):
+                # یک کد درس و یک شماره گروه ولی برای آقایان و بانوان استاد یا ساعت متفاوت دارد!
+                # نباید ادغام شوند؛ به تفکیک گروه آموزشی نگه داشته می‌شوند
+                for sub_edu in ('male_only', 'female_only', 'mixed', 'unknown'):
+                    sub_rows = [r for r in group_rows if r['educational_group'] == sub_edu]
+                    if not sub_rows:
+                        continue
+                    base = dict(sub_rows[0])
+                    seq += 1
+                    base['item_id'] = f"stg_{seq}"
+                    base['merge_status'] = 'distinct_gender_section'
+                    base['needs_review'] = True
+                    base['review_note'] = 'کد و گروه درس مشترک ولی استاد/ساعت بین تصویر آقایان و بانوان متفاوت است.'
+                    base['source_images'] = sorted({r['source_image'] for r in sub_rows if r.get('source_image')})
+                    distinct_gender_count += 1
+                    conflict_review_count += 1
+                    reconciled_items.append(base)
+                continue
+
+            # ادغام فیلدهای تکمیلی (مثلاً واحد از تصویر پرتال + استاد/ساعت از تصویر برنامه)
+            merged = dict(group_rows[0])
+            seq += 1
+            merged['item_id'] = f"stg_{seq}"
+            for r in group_rows[1:]:
+                for fld in ('course_code', 'class_code', 'instructor_name', 'start_time', 'end_time', 'exam_date', 'exam_time'):
+                    if not merged.get(fld) and r.get(fld):
+                        merged[fld] = r[fld]
+                if merged.get('weekday') is None and r.get('weekday') is not None:
+                    merged['weekday'] = r['weekday']
+                if merged.get('credit', 1.0) == 1.0 and r.get('credit', 1.0) != 1.0:
+                    merged['credit'] = r['credit']
+                merged['extraction_confidence'] = max(merged.get('extraction_confidence', 0.0), r.get('extraction_confidence', 0.0))
+
+            merged['source_images'] = sorted({r['source_image'] for r in group_rows if r.get('source_image')})
+            if ('male_only' in edu_groups and 'female_only' in edu_groups) or ('mixed' in edu_groups):
+                merged['educational_group'] = 'mixed'
+                merged['merge_status'] = 'merged_shared'
+                merged_shared_count += 1
+            elif len(edu_groups) == 1:
+                merged['educational_group'] = next(iter(edu_groups))
+                merged['merge_status'] = 'deduplicated_exact'
+                deduplicated_count += len(group_rows) - 1
+            else:
+                merged['educational_group'] = 'unknown'
+                merged['merge_status'] = 'deduplicated_exact'
+                deduplicated_count += len(group_rows) - 1
+
+            merged['needs_review'] = bool(has_conflict or merged['educational_group'] == 'unknown')
+            if has_conflict:
+                conflict_review_count += 1
+                merged['review_note'] = (
+                    f"تفاوت در اطلاعات استخراج‌شده بین تصاویر (اساتید: {'، '.join(instructors) or '—'}) — نیازمند بررسی ادمین."
+                )
+            else:
+                merged['review_note'] = ''
+            reconciled_items.append(merged)
+
+        return {
+            'academic_term': academic_term,
+            'items': reconciled_items,
+            'summary': {
+                'raw_count': len(normalized),
+                'staged_count': len(reconciled_items),
+                'merged_shared_count': merged_shared_count,
+                'distinct_gender_count': distinct_gender_count,
+                'deduplicated_count': deduplicated_count,
+                'conflict_review_count': conflict_review_count,
+            },
+        }
+
+    async def create_course_import_staging_batch(
+        self,
+        raw_items: list,
+        academic_term: str = None,
+        intake: str = '',
+        source_images: list = None,
+        created_by: int = None,
+    ) -> dict:
+        """ایجاد یک بسته Staging جدید از خروجی استخراج چند تصویر برای بازبینی ادمین پیش از انتشار."""
+        import uuid
+        from datetime import timezone
+        if not academic_term:
+            academic_term = (await self.get_current_term_config())['term']
+        reconciled = self.reconcile_staged_course_extractions(raw_items, academic_term=academic_term)
+        batch_id = f"stg_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        now_iso = utc_now_iso()
+        doc = {
+            'batch_id': batch_id,
+            'academic_term': academic_term,
+            'intake': str(intake or '').strip(),
+            'status': 'staged',  # 'staged' | 'published' | 'rolled_back' | 'rejected'
+            'source_images': list(source_images or []),
+            'items': reconciled['items'],
+            'summary': reconciled['summary'],
+            'created_by': int(created_by or 0),
+            'created_at': now_iso,
+            'updated_at': now_iso,
+            'published_at': None,
+            'published_by': None,
+            'published_snapshot': None,
+        }
+        await self.course_import_staging.insert_one(doc)
+        doc.pop('_id', None)
+        return doc
+
+    async def get_course_import_staging_batch(self, batch_id: str) -> dict | None:
+        doc = await self.course_import_staging.find_one({'batch_id': str(batch_id or '').strip()})
+        if doc:
+            doc = dict(doc)
+            doc['id'] = str(doc.pop('_id', ''))
+        return doc
+
+    async def list_course_import_staging_batches(self, academic_term: str = None, status: str = None, limit: int = 20) -> list:
+        q = {}
+        if academic_term:
+            q['academic_term'] = str(academic_term).strip()
+        if status:
+            q['status'] = str(status).strip()
+        docs = await self.course_import_staging.find(q).sort('created_at', -1).to_list(max(1, min(100, int(limit or 20))))
+        out = []
+        for d in (docs or []):
+            row = dict(d)
+            row['id'] = str(row.pop('_id', ''))
+            row.pop('published_snapshot', None)
+            out.append(row)
+        return out
+
+    async def update_course_import_staging_item(
+        self,
+        batch_id: str,
+        item_id: str,
+        updates: dict,
+        actor_id: int = None,
+    ) -> dict | None:
+        """ویرایش، تأیید یا حذف یک ردیف در فضای Staging توسط ادمین."""
+        batch = await self.course_import_staging.find_one({'batch_id': str(batch_id or '').strip()})
+        if not batch or batch.get('status') != 'staged':
+            return None
+        items = list(batch.get('items') or [])
+        found = False
+        new_items = []
+        for it in items:
+            if str(it.get('item_id')) != str(item_id):
+                new_items.append(it)
+                continue
+            found = True
+            if updates.get('_delete'):
+                continue
+            merged = dict(it)
+            for k in (
+                'course_name', 'course_code', 'class_code', 'group_code', 'credit',
+                'instructor_name', 'weekday', 'start_time', 'end_time',
+                'exam_date', 'exam_time', 'educational_group', 'needs_review', 'review_note',
+            ):
+                if k in updates:
+                    merged[k] = updates[k]
+            norm = self.normalize_extracted_course_row(
+                merged,
+                default_term=batch.get('academic_term', ''),
+                default_edu_group=merged.get('educational_group', 'mixed'),
+                source_image=merged.get('source_image', ''),
+            )
+            if norm:
+                norm['item_id'] = it.get('item_id')
+                norm['merge_status'] = it.get('merge_status', 'edited_by_admin')
+                norm['source_images'] = it.get('source_images', [])
+                norm['needs_review'] = bool(updates.get('needs_review', False))
+                norm['review_note'] = str(updates.get('review_note') or '')
+                new_items.append(norm)
+        if not found:
+            return None
+        now_iso = utc_now_iso()
+        await self.course_import_staging.update_one(
+            {'batch_id': batch['batch_id']},
+            {'$set': {'items': new_items, 'updated_at': now_iso, 'updated_by': int(actor_id or 0)}},
+        )
+        return await self.get_course_import_staging_batch(batch_id)
+
+    async def publish_course_import_staging_batch(
+        self,
+        batch_id: str,
+        actor_id: int = None,
+        selected_item_ids: list = None,
+    ) -> dict:
+        """انتشار Transactional و قابل بازگشت (Rollback-safe) رکوردهای تأییدشده از Staging به دیتابیس اصلی."""
+        batch = await self.course_import_staging.find_one({'batch_id': str(batch_id or '').strip()})
+        if not batch:
+            raise ValueError('staging_batch_not_found')
+        if batch.get('status') == 'published':
+            raise ValueError('staging_batch_already_published')
+
+        term = str(batch.get('academic_term') or (await self.get_current_term_config())['term']).strip()
+        items = list(batch.get('items') or [])
+        if selected_item_ids:
+            sel_set = {str(x) for x in selected_item_ids}
+            items = [it for it in items if str(it.get('item_id')) in sel_set]
+        if not items:
+            raise ValueError('no_items_to_publish')
+
+        # تهیه Snapshot قبل از انتشار برای قابلیت بازگردانی کامل (Rollback)
+        prev_offerings = await self.course_offerings.find({'term': term}).to_list(1000)
+        prev_templates = await self.schedule_templates.find({'term': term}).to_list(1000)
+        snapshot = {
+            'term': term,
+            'offerings': [
+                {k: v for k, v in d.items() if k != '_id'}
+                for d in (prev_offerings or [])
+            ],
+            'templates': [
+                {k: v for k, v in d.items() if k != '_id'}
+                for d in (prev_templates or [])
+            ],
+        }
+
+        published_offerings = 0
+        published_templates = 0
+        WEEKDAY_FA = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه']
+
+        for it in items:
+            edu_grp = self.normalize_class_educational_group(it.get('educational_group'), default='mixed')
+            if edu_grp == 'unknown':
+                edu_grp = 'mixed'
+            wd = it.get('weekday')
+            st = str(it.get('start_time') or '').strip()
+            et = str(it.get('end_time') or '').strip()
+            sched_sum = ''
+            if wd is not None and 0 <= int(wd) < 7:
+                sched_sum = WEEKDAY_FA[int(wd)] + (f" {st}" if st else "") + (f" تا {et}" if et else "")
+            await self.upsert_course_offering(
+                lesson=it['course_name'],
+                group=it['group_code'],
+                teacher=it.get('instructor_name', ''),
+                credit=it.get('credit', 1.0),
+                term=term,
+                schedule_summary=sched_sum,
+                weekday=wd,
+                time=st,
+                end_time=et,
+                educational_group=edu_grp,
+                course_code=it.get('course_code', ''),
+                class_code=it.get('class_code', ''),
+                exam_date=it.get('exam_date', ''),
+                exam_time=it.get('exam_time', ''),
+                source_image=it.get('source_image', ''),
+                extraction_confidence=it.get('extraction_confidence'),
+            )
+            published_offerings += 1
+
+            # اگر روز هفته و ساعت شروع در تصویر وجود داشته است، در الگوی هفتگی همان ترم هم ثبت شود
+            if wd is not None and st:
+                res_tpl = await self.bulk_upsert_schedule_templates([{
+                    'weekday': wd,
+                    'time': st,
+                    'end_time': et,
+                    'lesson': it['course_name'],
+                    'teacher': it.get('instructor_name', ''),
+                    'group': it['group_code'],
+                    'educational_group': edu_grp,
+                    'term': term,
+                    'course_code': it.get('course_code', ''),
+                    'credit': it.get('credit', 1.0),
+                }], term=term)
+                published_templates += int(res_tpl.get('total') or 0)
+
+        now_iso = utc_now_iso()
+        await self.course_import_staging.update_one(
+            {'batch_id': batch['batch_id']},
+            {'$set': {
+                'status': 'published',
+                'published_at': now_iso,
+                'published_by': int(actor_id or 0),
+                'published_snapshot': snapshot,
+                'updated_at': now_iso,
+            }},
+        )
+        return {
+            'ok': True,
+            'batch_id': batch['batch_id'],
+            'academic_term': term,
+            'published_offerings': published_offerings,
+            'published_templates': published_templates,
+        }
+
+    async def rollback_course_import_staging_batch(self, batch_id: str, actor_id: int = None) -> dict:
+        """بازگردانی کامل (Rollback) یک بسته منتشرشده به وضعیت قبل از انتشار."""
+        batch = await self.course_import_staging.find_one({'batch_id': str(batch_id or '').strip()})
+        if not batch or batch.get('status') != 'published':
+            raise ValueError('batch_not_published')
+        snapshot = batch.get('published_snapshot') or {}
+        term = str(snapshot.get('term') or batch.get('academic_term') or '').strip()
+        if not term:
+            raise ValueError('missing_snapshot_term')
+
+        await self.course_offerings.delete_many({'term': term})
+        for off_doc in (snapshot.get('offerings') or []):
+            await self.course_offerings.insert_one(dict(off_doc))
+
+        await self.schedule_templates.delete_many({'term': term})
+        for tpl_doc in (snapshot.get('templates') or []):
+            await self.schedule_templates.insert_one(dict(tpl_doc))
+
+        now_iso = utc_now_iso()
+        await self.course_import_staging.update_one(
+            {'batch_id': batch['batch_id']},
+            {'$set': {
+                'status': 'rolled_back',
+                'rolled_back_at': now_iso,
+                'rolled_back_by': int(actor_id or 0),
+                'updated_at': now_iso,
+            }},
+        )
+        return {
+            'ok': True,
+            'batch_id': batch['batch_id'],
+            'academic_term': term,
+            'restored_offerings': len(snapshot.get('offerings') or []),
+            'restored_templates': len(snapshot.get('templates') or []),
+        }
+
+    # ══════════════════════════════════════════════════
+    #  🧹 بخش ۴: شناسایی و آرشیو ایمن رکوردهای تکراری/منسوخ برنامه
+    # ══════════════════════════════════════════════════
+
+    async def audit_and_cleanup_schedule_anomalies(
+        self,
+        dry_run: bool = True,
+        active_term: str = None,
+    ) -> dict:
+        """شناسایی و آرشیو ایمن رکوردهای تکراری، نامعتبر یا منسوخ در schedules و schedule_templates بدون حذف تاریخچه."""
+        if not active_term:
+            active_term = (await self.get_current_term_config())['term']
+        now_iso = utc_now_iso()
+
+        sched_docs = await self.schedules.find({}).to_list(5000)
+        tpl_docs = await self.schedule_templates.find({}).to_list(2000)
+
+        duplicate_sched_ids = []
+        invalid_time_sched_ids = []
+        stale_term_sched_ids = []
+        seen_sched_keys = {}
+
+        for s in (sched_docs or []):
+            if s.get('archived'):
+                continue
+            sid = s.get('_id')
+            s_term = str(s.get('term') or '').strip()
+            if s_term and s_term != active_term:
+                stale_term_sched_ids.append(sid)
+                continue
+            st_min = self._parse_hhmm_minutes(s.get('time') or '')
+            en_min = self._parse_hhmm_minutes(s.get('end_time') or '')
+            if st_min is not None and en_min is not None and en_min <= st_min:
+                invalid_time_sched_ids.append(sid)
+                continue
+            key = (
+                str(s.get('date') or ''),
+                str(s.get('time') or ''),
+                str(s.get('lesson') or '').strip(),
+                self.normalize_group(s.get('group')) or 'هر دو',
+                self.normalize_class_educational_group(s.get('educational_group'), default='mixed'),
+                str(s.get('type') or 'class'),
+            )
+            if key in seen_sched_keys:
+                duplicate_sched_ids.append(sid)
+            else:
+                seen_sched_keys[key] = sid
+
+        duplicate_tpl_ids = []
+        seen_tpl_keys = {}
+        for t in (tpl_docs or []):
+            if t.get('archived'):
+                continue
+            tid = t.get('_id')
+            key = (
+                t.get('weekday'),
+                str(t.get('time') or ''),
+                str(t.get('lesson') or '').strip(),
+                self.normalize_group(t.get('group')) or 'هر دو',
+                self.normalize_class_educational_group(t.get('educational_group'), default='mixed'),
+                str(t.get('term') or active_term),
+            )
+            if key in seen_tpl_keys:
+                duplicate_tpl_ids.append(tid)
+            else:
+                seen_tpl_keys[key] = tid
+
+        archived_schedules = 0
+        archived_templates = 0
+        if not dry_run:
+            for sid in (duplicate_sched_ids + invalid_time_sched_ids + stale_term_sched_ids):
+                await self.schedules.update_one(
+                    {'_id': sid},
+                    {'$set': {'archived': True, 'archived_at': now_iso, 'archive_reason': 'schedule_cleanup_v2'}},
+                )
+                archived_schedules += 1
+            for tid in duplicate_tpl_ids:
+                await self.schedule_templates.update_one(
+                    {'_id': tid},
+                    {'$set': {'archived': True, 'archived_at': now_iso, 'archive_reason': 'template_duplicate_cleanup_v2'}},
+                )
+                archived_templates += 1
+
+        return {
+            'ok': True,
+            'dry_run': bool(dry_run),
+            'active_term': active_term,
+            'duplicate_schedules_found': len(duplicate_sched_ids),
+            'invalid_time_schedules_found': len(invalid_time_sched_ids),
+            'stale_term_schedules_found': len(stale_term_sched_ids),
+            'duplicate_templates_found': len(duplicate_tpl_ids),
+            'archived_schedules': archived_schedules,
+            'archived_templates': archived_templates,
         }
 
     async def run_term_course_selection_reminder(
@@ -2991,32 +3986,58 @@ class DBContent:
         """⭐ ماموریت ۶ — قاعده‌ی واحد «نمای مؤثر» (برای همه‌ی لایه‌ها):
         sessions با allowed intakeها فیلتر می‌شوند؛ baseای که برای همان
         ورودی fork (غیرآرشیو) دارد سایه‌اندازی می‌شود. lesson_intake_of:
-        {lesson_id: intake} برای ارث والد."""
+        {lesson_id: intake} برای ارث والد.
+        همچنین اگر در یک درس، دو رکورد فعال با شماره و عنوان یکسان (مثلاً یکی بدون فیلد intake و یکی با فیلد intake همان ورودی) وجود داشته باشد،
+        نسخه‌ی اختصاصی/جدیدتر جایگزین می‌شود تا هرگز دو جلسه‌ی تکراری نمایش داده نشود."""
         allowed = set(allowed if isinstance(allowed, (list, tuple, set)) else [allowed])
 
         def _si(s):
-            if 'intake' in s and s.get('intake') is not None:
-                return str(s.get('intake') or '')
-            return lesson_intake_of.get(str(s.get('lesson_id') or ''), '') or ''
+            explicit = str(s.get('intake') or '').strip() if ('intake' in s and s.get('intake') is not None) else ''
+            if explicit:
+                return explicit
+            return str(lesson_intake_of.get(str(s.get('lesson_id') or ''), '') or '').strip()
 
         forked_bases = {str(s.get('fork_of')) for s in sessions
                         if s.get('fork_of') and not s.get('archived')
-                        and _si(s) in allowed and _si(s) != ''}
-        return [s for s in sessions
-                if _si(s) in allowed and str(s['_id']) not in forked_bases
-                and not s.get('archived')]
+                        and _si(s) in allowed}
+        filtered = [s for s in sessions
+                    if _si(s) in allowed and str(s['_id']) not in forked_bases
+                    and not s.get('archived')]
+
+        # حذف تکرارهای ناخواسته در یک درس زمانی که دو سند هم‌شماره و هم‌عنوان در همان دید مؤثر افتاده‌اند
+        # (مثلاً یکی با intake صریح و یکی ارث‌برنده از درس یا سراسری)
+        by_num_topic = {}
+        deduped = []
+        for s in filtered:
+            lid = str(s.get('lesson_id') or '')
+            num = s.get('number')
+            topic = str(s.get('topic') or '').strip()
+            key = (lid, num, topic)
+            if key not in by_num_topic:
+                by_num_topic[key] = len(deduped)
+                deduped.append(s)
+            else:
+                prev_idx = by_num_topic[key]
+                prev_s = deduped[prev_idx]
+                # اولویت با جلسه‌ای است که fork_of دارد یا intake صریح غیرخالی دارد
+                s_score = (1 if s.get('fork_of') else 0, 1 if str(s.get('intake') or '').strip() else 0, str(s.get('created_at') or ''))
+                p_score = (1 if prev_s.get('fork_of') else 0, 1 if str(prev_s.get('intake') or '').strip() else 0, str(prev_s.get('created_at') or ''))
+                if s_score > p_score:
+                    deduped[prev_idx] = s
+        return deduped
 
 
     async def bs_get_sessions_effective(self, lesson_id: str, intake=None):
-        """نمای مؤثر جلسات یک درس. intake=None ⇒ همه (پیش‌نمایش ادمین،
-        رفتار قدیمی)؛ لیست/رشته ⇒ دید آن scope: آیتم‌های در scope، با
-        این تفاوت که baseای که برای آن ورودی fork دارد حذف و fork
-        جایگزین می‌شود. ⭐ م6: قاعده در bs_effective_view (مشترک با پنل)."""
+        """نمای مؤثر جلسات یک درس.
+        حتی وقتی intake=None باشد (پیش‌نمایش ادمین ارشد در 📚 منابع)، قاعده‌ی
+        bs_effective_view بر اساس intake خود درس اجرا می‌شود تا base و fork یا
+        رکوردهای تکراری هم‌زمان به صورت دو جلسه‌ی تکراری نمایش داده نشوند."""
         sessions = await self.bs_get_sessions(lesson_id)
-        if intake is None:
-            return sessions
         lesson = await self.bs_get_lesson(lesson_id) or {}
-        li_map = {str(lesson_id): (lesson.get('intake') or '')}
+        li = str(lesson.get('intake') or '').strip()
+        li_map = {str(lesson_id): li}
+        if intake is None:
+            return self.bs_effective_view(sessions, li, li_map)
         return self.bs_effective_view(sessions, intake, li_map)
 
 

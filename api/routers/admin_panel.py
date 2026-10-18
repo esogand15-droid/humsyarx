@@ -447,6 +447,7 @@ async def students_list(admin=Depends(require_perm("users.view")), q: Optional[s
 
 class UserPatch(BaseModel):
     name: Optional[str]=None; group: Optional[str]=None
+    educational_group: Optional[str]=None
     intake: Optional[str]=None; student_id: Optional[str]=None
     role: Optional[str]=None
     nickname: Optional[str]=None   # 🏷 Identity v1
@@ -461,6 +462,18 @@ async def edit_user(uid: int, body: UserPatch, admin=Depends(require_perm("users
     if body.role       is not None:
         if body.role not in ("student","content_admin","support"): raise HTTPException(422,"نقش نامعتبر")
         updates["role"]=body.role
+    if body.educational_group is not None:
+        actor_id = admin["id"] if isinstance(admin, dict) else 0
+        edu_val = db.normalize_user_educational_group(body.educational_group)
+        await db.set_user_educational_group(
+            uid, edu_val,
+            source="admin_verified" if edu_val in ("male", "female") else "legacy",
+            verified=(edu_val in ("male", "female")),
+            actor_id=actor_id,
+            reason="پنل مدیریت",
+        )
+        if edu_val in ("male", "female"):
+            await db.flag_mismatched_student_selections(uid, edu_val)
     # 🏷 Identity v1 — لقب از مسیر IdentityService (اعتبارسنجی
     # کامل + bypass Cooldown برای ادمین + Audit خودکار در db)
     if body.nickname is not None:

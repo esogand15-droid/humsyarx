@@ -168,6 +168,9 @@ class DBCore:
         # 🎓 انتخاب واحد درس‌به‌درس دانشجو و کاتالوگ گروه‌های ارائه‌شده در هر ترم
         self.course_selections   = _db['student_course_selections']
         self.course_offerings    = _db['course_offerings']
+        # 🖼 فضای Staging استخراج هوشمند انتخاب واحد از چند تصویر + لاگ تغییرات گروه آموزشی
+        self.course_import_staging  = _db['course_import_staging']
+        self.educational_group_logs = _db['educational_group_logs']
         # 🚀 PERF-O2: TTL cache for bot_settings (hot path: every handler reads notif_defaults/required_channels)
         # Before: find_one({'_id':'global'}) on EVERY request → ~60% of DB reads were settings
         # After: in-process cache 30s, invalidated on set/delete → -90% settings queries under load
@@ -313,7 +316,12 @@ class DBCore:
                 self._index(self.schedule_templates, [('group', 1), ('weekday', 1), ('time', 1)], background=True),
                 self._index(self.course_selections, [('user_id', 1), ('term', 1), ('lesson', 1)], unique=True, background=True),
                 self._index(self.course_selections, [('term', 1), ('archived', 1)], background=True),
-                self._index(self.course_offerings, [('term', 1), ('lesson', 1), ('group', 1)], unique=True, background=True),
+                self._index(self.course_offerings, [('term', 1), ('lesson', 1), ('group', 1), ('educational_group', 1)], unique=True, background=True),
+                self._index(self.course_offerings, [('term', 1), ('course_code', 1), ('group', 1), ('educational_group', 1)], background=True),
+                self._index(self.course_import_staging, [('batch_id', 1)], unique=True, background=True),
+                self._index(self.course_import_staging, [('academic_term', 1), ('status', 1), ('created_at', -1)], background=True),
+                self._index(self.educational_group_logs, [('user_id', 1), ('at', -1)], background=True),
+                self._index(self.users, [('educational_group', 1), ('group_verified', 1)], background=True),
                 self._index(self.stats_col, [('user_id', 1), ('timestamp', -1)], background=True),
                 self._index(self.tickets, 'ticket_id', unique=True, background=True),
                 self._index(self.tickets, [('user_id', 1), ('status', 1)], background=True),
@@ -663,6 +671,8 @@ class DBCore:
         aliases = {
             "۱": "1", "الف": "1", "گروه ۱": "1", "گروه 1": "1",
             "۲": "2", "ب": "2", "گروه ۲": "2", "گروه 2": "2",
+            "۳": "3", "گروه ۳": "3", "گروه 3": "3",
+            "۴": "4", "گروه ۴": "4", "گروه 4": "4",
             "هردو": "هر دو", "all": "هر دو",
         }
         return aliases.get(raw, raw)
@@ -675,7 +685,246 @@ class DBCore:
             return ["1", "۱", "الف", "گروه 1", "گروه ۱"]
         if canonical == "2":
             return ["2", "۲", "ب", "گروه 2", "گروه ۲"]
+        if canonical == "3":
+            return ["3", "۳", "گروه 3", "گروه ۳"]
         return [canonical] if canonical else []
+
+    # ══════════════════════════════════════════════════
+    #  🚻 قرارداد مرکزی گروه آموزشی / جنسیت (Educational Group)
+    # ══════════════════════════════════════════════════
+
+    USER_EDUCATIONAL_GROUPS = ('male', 'female', 'unknown')
+    CLASS_EDUCATIONAL_GROUPS = ('male_only', 'female_only', 'mixed', 'unknown')
+    EDUCATIONAL_GROUP_SOURCES = ('university', 'user_confirmed', 'admin_verified', 'ai_suggested', 'legacy')
+    EDUCATIONAL_GROUP_SCHEMA_VERSION = 1
+
+    UNISEX_PERSIAN_NAMES = {
+        'متین', 'آرام', 'دریا', 'باران', 'ماهان', 'امید', 'رها', 'سها', 'یارا', 'هیوا',
+        'آذین', 'نور', 'خورشید', 'روشن', 'صفا', 'وفا', 'عزت', 'نصرت', 'عصمت', 'حکمت',
+        'شوکت', 'قدرت', 'رحمت', 'نعمت', 'رفعت', 'بهجت', 'فرح', 'شفق', 'طلوع', 'شمیم',
+        'نسیم', 'ایمان', 'الهام', 'مهرگان', 'پاییز', 'سایه',
+    }
+
+    MALE_PERSIAN_NAMES = {
+        'محمد', 'علی', 'حسین', 'حسن', 'رضا', 'مهدی', 'امیر', 'امیرحسین', 'امیرمحمد',
+        'امیررضا', 'امیرعلی', 'امیرمهدی', 'محمدرضا', 'محمدحسین', 'محمدمهدی', 'محمدجواد',
+        'محمدامین', 'محمدطه', 'محمدطاها', 'محمدصادق', 'محمدعرفان', 'محمدیاسین', 'محمدصالح',
+        'علیرضا', 'حمیدرضا', 'احمدرضا', 'غلامرضا', 'سعید', 'حمید', 'مجید', 'وحید', 'فرید',
+        'نوید', 'پویا', 'نیما', 'سینا', 'آرمین', 'آرین', 'عرفان', 'احسان', 'شایان', 'کیان',
+        'کامیار', 'مهرداد', 'مهران', 'مهراد', 'فرهاد', 'فرزاد', 'فرشاد', 'بهزاد', 'بهراد',
+        'بهنام', 'بهمن', 'بهروز', 'روزبه', 'پارسا', 'پیمان', 'پدرام', 'پرهام', 'پوریا',
+        'پژمان', 'سروش', 'سپهر', 'سهند', 'سهراب', 'سامان', 'ساسان', 'سجاد', 'صادق', 'باقر',
+        'جعفر', 'موسی', 'عیسی', 'ابراهیم', 'اسماعیل', 'اسحاق', 'یعقوب', 'یوسف', 'یونس',
+        'ایوب', 'داوود', 'سلیمان', 'زکریا', 'یحیی', 'مصطفی', 'مرتضی', 'مجتبی', 'ابوالفضل',
+        'عباس', 'قاسم', 'اکبر', 'اصغر', 'احمد', 'محمود', 'مسعود', 'منصور', 'ناصر', 'یاسر',
+        'عمار', 'میثم', 'مقداد', 'سلمان', 'ابوذر', 'حمزه', 'حیدر', 'طاها', 'طه', 'یاسین',
+        'بنیامین', 'دانیال', 'میکائیل', 'ارسلان', 'اشکان', 'اردشیر', 'اردلان', 'افشین',
+        'بابک', 'بردیا', 'برزو', 'بیژن', 'جمشید', 'خسرو', 'داریوش', 'رامین', 'رستم',
+        'سیامک', 'سیاوش', 'شاپور', 'شاهین', 'شهرام', 'شهریار', 'شهاب', 'فریدون', 'کاوه',
+        'کامران', 'کامبیز', 'کورش', 'کوروش', 'کیارش', 'کیوان', 'مازیار', 'منوچهر', 'نادر',
+        'نریمان', 'هرمز', 'هوشنگ', 'همایون', 'یاشار', 'مهدیار', 'خشایار', 'زانیار',
+        'رادین', 'رایان', 'رهام', 'سورنا', 'صدرا', 'عرشیا', 'ایلیا', 'اهورا', 'آرتین',
+        'آراد', 'آریا', 'آرش', 'آرشام', 'توحید', 'رسول', 'نبی', 'حجت', 'کریم', 'رحیم',
+        'رحمان', 'سبحان', 'جواد', 'کاظم', 'هادی', 'نقی', 'تقی', 'امین', 'امیرعباس',
+    }
+
+    FEMALE_PERSIAN_NAMES = {
+        'فاطمه', 'زهرا', 'زینب', 'مریم', 'معصومه', 'سکینه', 'رقیه', 'رباب', 'طاهره',
+        'طیبه', 'مرضیه', 'راضیه', 'صدیقه', 'لیلا', 'سمیه', 'محدثه', 'مهدیه', 'فهیمه',
+        'حلیمه', 'سلیمه', 'نعیمه', 'کبری', 'صغری', 'عذرا', 'حورا', 'حانیه', 'هانیه',
+        'سارا', 'ساره', 'هاجر', 'آمنه', 'خدیجه', 'حفصه', 'عایشه', 'اسما', 'اسماء',
+        'کوثر', 'زهره', 'بتول', 'نرگس', 'نجمه', 'نسرین', 'نسترن', 'نگار', 'نگین',
+        'نیلوفر', 'نازنین', 'ستاره', 'سپیده', 'سحر', 'سمیرا', 'سمانه', 'سودابه', 'سوسن',
+        'سوگند', 'سیما', 'مینا', 'میترا', 'مهسا', 'مهناز', 'مهتاب', 'مهشید', 'مهدیس',
+        'ملیکا', 'مبینا', 'الناز', 'المیرا', 'الیسا', 'الهه', 'آناهیتا', 'آتوسا', 'آزیتا',
+        'آزاده', 'آرزو', 'آیدا', 'آیلین', 'آیناز', 'آیسان', 'آیسو', 'بهار', 'بهاره',
+        'بهناز', 'بیتا', 'پری', 'پریسا', 'پریا', 'پرنیا', 'پرستو', 'پروانه', 'پروین',
+        'پگاه', 'پانیذ', 'تانیا', 'ترانه', 'ترمه', 'تینا', 'ثریا', 'حدیث', 'حدیثه',
+        'حسنا', 'حنانه', 'خاطره', 'درسا', 'دلارام', 'دلنواز', 'دینا', 'راحله', 'راحیل',
+        'رویا', 'رؤیا', 'ریحانه', 'رزیتا', 'رکسانا', 'روناک', 'روشنک', 'ژیلا', 'ژاله',
+        'ساناز', 'ساغر', 'ساحل', 'ستایش', 'سلاله', 'سلما', 'سولماز', 'سما', 'شادی',
+        'شقایق', 'شهرزاد', 'شهلا', 'شهناز', 'شیدا', 'شیلا', 'شیما', 'شیوا', 'شیرین',
+        'صبا', 'غزل', 'غزاله', 'فائزه', 'فاطیما', 'فرزانه', 'فرشته', 'فرناز', 'فرنگیس',
+        'فریده', 'فریبا', 'فیروزه', 'کتایون', 'کیانا', 'کیمیا', 'گلناز', 'گلنوش',
+        'گلاره', 'گلرخ', 'گندم', 'گیسو', 'لادن', 'لاله', 'لیدا', 'لیلی', 'مارال',
+        'ماندانا', 'مائده', 'مژده', 'مژگان', 'منیره', 'منیژه', 'مونا', 'مروارید',
+        'نادیا', 'نوشین', 'نغمه', 'نفس', 'نهال', 'نیکی', 'نیکا', 'هدی', 'هدیه', 'هلیا',
+        'هلن', 'هما', 'هنگامه', 'یاس', 'یاسمن', 'یاسمین', 'یلدا', 'یکتا', 'عارفه', 'عاطفه',
+    }
+
+    @staticmethod
+    def normalize_user_educational_group(value) -> str:
+        """نرمال‌سازی گروه آموزشی دانشجو به 'male' | 'female' | 'unknown'."""
+        raw = str(value or '').strip().lower()
+        if raw in ('male', 'male_only', 'آقا', 'آقایان', 'پسر', 'پسران', 'مرد', 'boys', 'm'):
+            return 'male'
+        if raw in ('female', 'female_only', 'خانم', 'بانوان', 'دختر', 'دختران', 'زن', 'girls', 'f'):
+            return 'female'
+        return 'unknown'
+
+    @staticmethod
+    def normalize_class_educational_group(value, default: str = 'mixed') -> str:
+        """نرمال‌سازی گروه آموزشی کلاس/درس به 'male_only' | 'female_only' | 'mixed' | 'unknown'."""
+        raw = str(value or '').strip().lower()
+        if not raw:
+            return default if default in ('male_only', 'female_only', 'mixed', 'unknown') else 'mixed'
+        if raw in ('male_only', 'male', 'آقا', 'آقایان', 'پسر', 'پسران', 'مختص آقایان', 'boys'):
+            return 'male_only'
+        if raw in ('female_only', 'female', 'خانم', 'بانوان', 'دختر', 'دختران', 'مختص بانوان', 'girls'):
+            return 'female_only'
+        if raw in ('mixed', 'مشترک', 'مختلط', 'هر دو', 'هردو', 'both', 'shared', 'all'):
+            return 'mixed'
+        if raw in ('unknown', 'نامشخص'):
+            return 'unknown'
+        return default if default in ('male_only', 'female_only', 'mixed', 'unknown') else 'unknown'
+
+    @classmethod
+    def normalize_group_source(cls, value) -> str:
+        raw = str(value or '').strip().lower()
+        return raw if raw in cls.EDUCATIONAL_GROUP_SOURCES else 'legacy'
+
+    @classmethod
+    def allowed_class_educational_groups(cls, user_educational_group: str, include_unknown: bool = False) -> list:
+        """کلاس‌های مجاز برای یک دانشجو بر اساس گروه آموزشی او.
+        - آقا ('male')   → ['male_only', 'mixed']
+        - خانم ('female') → ['female_only', 'mixed']
+        - نامشخص ('unknown') → ['mixed'] (تا زمانی که تعیین گروه نشده، کلاس تفکیک‌شده قطعی پیشنهاد نمی‌شود)
+        """
+        ug = cls.normalize_user_educational_group(user_educational_group)
+        if ug == 'male':
+            out = ['male_only', 'mixed']
+        elif ug == 'female':
+            out = ['female_only', 'mixed']
+        else:
+            out = ['mixed']
+        if include_unknown and 'unknown' not in out:
+            out.append('unknown')
+        return out
+
+    @classmethod
+    def class_matches_user_educational_group(cls, class_edu_group: str, user_edu_group: str,
+                                             allow_all_when_unknown: bool = False) -> bool:
+        """بررسی تطابق گروه آموزشی یک کلاس با گروه آموزشی دانشجو (منبع واحد تصمیم)."""
+        cg = cls.normalize_class_educational_group(class_edu_group, default='mixed')
+        ug = cls.normalize_user_educational_group(user_edu_group)
+        if ug == 'unknown' and allow_all_when_unknown:
+            return True
+        allowed = cls.allowed_class_educational_groups(ug, include_unknown=(ug == 'unknown'))
+        return cg in allowed
+
+    @classmethod
+    def build_class_educational_group_query(cls, user_educational_group: str) -> dict:
+        """ساخت فیلتر سطح دیتابیس (Mongo) برای محدود کردن کلاس‌ها به گروه آموزشی دانشجو."""
+        allowed = cls.allowed_class_educational_groups(user_educational_group)
+        return {
+            '$or': [
+                {'educational_group': {'$in': allowed}},
+                {'educational_group': ''},
+                {'educational_group': None},
+                {'educational_group': {'$exists': False}},
+            ]
+        }
+
+    @classmethod
+    def suggest_educational_group_from_name(cls, full_name: str) -> dict:
+        """تشخیص پیشنهادی گروه آموزشی از روی نام فارسی با محافظت کامل در برابر نام‌های مشترک/مبهم.
+        خروجی: {'suggested_group': 'male'|'female'|'unknown', 'confidence': float, 'reason': str, 'model_version': str}
+        ⚠️ این خروجی صرفاً پیشنهاد اولیه است و هرگز بدون تأیید کاربر/ادمین نهایی نمی‌شود.
+        """
+        import re as _re
+        model_ver = 'persian-name-hybrid-v1'
+        def _ret(grp: str, conf: float, rsn: str) -> dict:
+            return {
+                'suggested_group': grp,
+                'ai_suggested_group': grp,
+                'confidence': conf,
+                'ai_confidence': conf,
+                'reason': rsn,
+                'model_version': model_ver,
+                'ai_model_version': model_ver,
+            }
+
+        raw = str(full_name or '').strip()
+        if not raw or len(raw) < 3:
+            return _ret('unknown', 0.0, 'empty_or_short')
+
+        # نرمال‌سازی حروف عربی به فارسی و حذف اعراب
+        clean = (
+            raw.replace('ي', 'ی').replace('ك', 'ک').replace('ة', 'ه')
+               .replace('\u200c', ' ').replace('_', ' ').replace('-', ' ')
+        )
+        clean = _re.sub(r'[^\w\sآ-ی]', ' ', clean)
+        tokens = [t.strip() for t in clean.split() if t.strip()]
+        if not tokens:
+            return _ret('unknown', 0.0, 'no_valid_tokens')
+
+        # بررسی وجود حروف فارسی؛ اگر فقط لاتین یا عدد یا کلمات تست بود → unknown
+        persian_tokens = [t for t in tokens if _re.search(r'[آ-ی]', t)]
+        if not persian_tokens:
+            return _ret('unknown', 0.0, 'non_persian_name')
+
+        placeholders = {'کاربر', 'دانشجو', 'تست', 'ناشناس', 'ادمین', 'بی', 'نام', 'حساب', 'دکتر', 'مهندس', 'استاد'}
+        if all(t in placeholders for t in persian_tokens):
+            return _ret('unknown', 0.0, 'placeholder_name')
+
+        # حذف عناوین علمی در ابتدای نام
+        honorifics = {'دکتر', 'مهندس', 'استاد', 'حاج', 'کربلایی', 'مشهدی'}
+        while len(persian_tokens) > 1 and persian_tokens[0] in honorifics:
+            persian_tokens.pop(0)
+
+        first = persian_tokens[0]
+        # اگر در متن اولیه علامت سؤال یا ابهام بود → unknown
+        if '?' in raw or '؟' in raw:
+            return _ret('unknown', 0.0, 'question_mark_in_name')
+
+        # ۱) پیشوندهای صریح جنسیتی
+        if first in ('خانم', 'سیده', 'دوشیزه', 'بانو', 'سادات') and len(persian_tokens) >= 2:
+            second = persian_tokens[1]
+            if second in cls.UNISEX_PERSIAN_NAMES:
+                return _ret('female', 0.88, 'explicit_female_prefix')
+            return _ret('female', 0.96, 'explicit_female_prefix')
+        if first in ('آقا', 'آقای') and len(persian_tokens) >= 2:
+            return _ret('male', 0.95, 'explicit_male_prefix')
+        if first == 'سید' and len(persian_tokens) >= 2:
+            second = persian_tokens[1]
+            if second in cls.FEMALE_PERSIAN_NAMES:
+                return _ret('female', 0.88, 'female_after_seyed')
+            if second in cls.UNISEX_PERSIAN_NAMES:
+                return _ret('unknown', 0.0, 'unisex_after_seyed')
+            return _ret('male', 0.93, 'male_seyed_prefix')
+
+        # بررسی نام کوچک دوکلمه‌ای (مثلاً محمد طاها، امیر حسین، فاطمه زهرا، نازنین زهرا)
+        first_two_joined = (persian_tokens[0] + persian_tokens[1]) if len(persian_tokens) >= 2 else ''
+
+        # ۲) اگر نام کوچک در لیست نام‌های مشترک (Unisex) باشد → الزاماً unknown
+        if first in cls.UNISEX_PERSIAN_NAMES:
+            # مگر اینکه بخش دومِ نام کوچک صراحتاً جنسیت را مشخص کند (مثلاً سادات / زهرا / رضا / علی)
+            if len(persian_tokens) >= 2:
+                sec = persian_tokens[1]
+                if sec in ('زهرا', 'سادات', 'بانو', 'فاطمه', 'خانم'):
+                    return _ret('female', 0.86, 'compound_female_second_token')
+                if sec in ('رضا', 'حسین', 'علی', 'مهدی', 'محمد'):
+                    return _ret('male', 0.86, 'compound_male_second_token')
+            return _ret('unknown', 0.0, 'unisex_ambiguous_name')
+
+        # ۳) بررسی تطابق مستقیم با فرهنگ نام‌های فارسی
+        if first in cls.FEMALE_PERSIAN_NAMES or (first_two_joined and first_two_joined in cls.FEMALE_PERSIAN_NAMES):
+            return _ret('female', 0.92, 'lexicon_female')
+        if first in cls.MALE_PERSIAN_NAMES or (first_two_joined and first_two_joined in cls.MALE_PERSIAN_NAMES):
+            return _ret('male', 0.92, 'lexicon_male')
+
+        # ۴) الگوهای ترکیبی مطمئن فارسی
+        if first.startswith(('محمد', 'امیر', 'علی', 'غلام', 'عبدال', 'ملک')):
+            return _ret('male', 0.89, 'male_compound_prefix')
+        if first.startswith(('فاطمه', 'زهرا', 'نازنین', 'سیده', 'گل')):
+            return _ret('female', 0.89, 'female_compound_prefix')
+        if first.endswith(('الله', 'الدین', 'رضا', 'مهدی', 'حسین', 'علی')) and len(first) >= 5:
+            return _ret('male', 0.87, 'male_compound_suffix')
+        if first.endswith(('سادات', 'بانو', 'نسا', 'نساء', 'دخت', 'ناز')) and len(first) >= 5:
+            return _ret('female', 0.87, 'female_compound_suffix')
+
+        # در سایر موارد نامطمئن → unknown
+        return _ret('unknown', 0.0, 'unknown_name')
 
 
     # ══════════════════════════════════════════════════
@@ -724,10 +973,24 @@ class DBCore:
 
 
     async def create_user(self, uid: int, name: str, student_id: str,
-                          group: str, username: str = None, intake: str = ''):
+                          group: str, username: str = None, intake: str = '',
+                          educational_group: str = None, group_source: str = None):
         # FIX طبق سند: مقادیر پیش‌فرض اعلان‌ها از تنظیمات پنل ادمین
         # خوانده می‌شود — قبلاً هاردکد بود و فقط ۴ نوع را داشت
         notif_defaults = await self.get_notif_defaults()
+        now_iso = utc_now_iso()
+        ai_sug = self.suggest_educational_group_from_name(name)
+        norm_edu = self.normalize_user_educational_group(educational_group)
+        if norm_edu in ('male', 'female'):
+            src = self.normalize_group_source(group_source or 'user_confirmed')
+            if src not in ('university', 'user_confirmed', 'admin_verified'):
+                src = 'user_confirmed'
+            verified = True
+        else:
+            norm_edu = 'unknown'
+            src = 'ai_suggested' if ai_sug['suggested_group'] != 'unknown' else 'legacy'
+            verified = False
+
         await self.users.insert_one({
             'user_id':    uid,
             'name':       name,
@@ -735,9 +998,25 @@ class DBCore:
             'group':      group,
             'registered_group': group,
             'computed_group': group,
+            'educational_group': norm_edu,
+            'group_source': src,
+            'group_verified': verified,
+            'group_updated_at': now_iso,
+            'group_schema_version': self.EDUCATIONAL_GROUP_SCHEMA_VERSION,
+            'ai_suggested_group': ai_sug['suggested_group'],
+            'ai_confidence': round(float(ai_sug['confidence']), 2),
+            'ai_model_version': ai_sug['model_version'],
+            'educational_group_history': [{
+                'from_group': 'unknown',
+                'to_group': norm_edu,
+                'source': src,
+                'verified': verified,
+                'actor_id': int(uid),
+                'at': now_iso,
+            }],
             'username':   username,
             'intake':     intake or '',
-            'registered_at': utc_now_iso(),
+            'registered_at': now_iso,
             'approved':   False,
             'role':       'student',
             'notification_settings': dict(notif_defaults),
@@ -771,6 +1050,243 @@ class DBCore:
             self._user_cache.pop(int(uid), None)
         except: pass
         # also bust settings cache if somehow user doc affects it (no-op)
+
+
+    @classmethod
+    def extract_user_educational_group_info(cls, user_doc: dict) -> dict:
+        """استخراج استاندارد وضعیت گروه آموزشی کاربر همراه با پیشنهاد هوش مصنوعی."""
+        u = user_doc or {}
+        edu = cls.normalize_user_educational_group(u.get('educational_group'))
+        verified = bool(u.get('group_verified')) and edu in ('male', 'female')
+        src = cls.normalize_group_source(u.get('group_source') or ('user_confirmed' if verified else 'legacy'))
+        if not verified:
+            edu = 'unknown' if edu not in ('male', 'female') else edu
+        ai_sug = cls.normalize_user_educational_group(u.get('ai_suggested_group'))
+        if ai_sug == 'unknown' and u.get('name'):
+            computed_ai = cls.suggest_educational_group_from_name(u.get('name', ''))
+            ai_sug = computed_ai['suggested_group']
+            ai_conf = float(u.get('ai_confidence') if u.get('ai_confidence') is not None else computed_ai['confidence'])
+            ai_ver = str(u.get('ai_model_version') or computed_ai['model_version'])
+        else:
+            try:
+                ai_conf = float(u.get('ai_confidence') or 0.0)
+            except (TypeError, ValueError):
+                ai_conf = 0.0
+            ai_ver = str(u.get('ai_model_version') or 'persian-name-hybrid-v1')
+
+        effective_edu = edu if verified else 'unknown'
+        label_fa = {
+            'male': '👨 کلاس‌های آقایان',
+            'female': '👩 کلاس‌های بانوان',
+            'unknown': '❓ تعیین‌نشده',
+        }.get(effective_edu, '❓ تعیین‌نشده')
+        ai_label_fa = {
+            'male': '👨 آقایان',
+            'female': '👩 بانوان',
+            'unknown': 'نامشخص',
+        }.get(ai_sug, 'نامشخص')
+
+        return {
+            'educational_group': effective_edu,
+            'raw_educational_group': edu,
+            'group_source': src,
+            'group_verified': verified,
+            'group_updated_at': str(u.get('group_updated_at') or ''),
+            'group_schema_version': int(u.get('group_schema_version') or cls.EDUCATIONAL_GROUP_SCHEMA_VERSION),
+            'ai_suggested_group': ai_sug,
+            'ai_confidence': round(ai_conf, 2),
+            'ai_model_version': ai_ver,
+            'needs_confirmation': not verified or effective_edu == 'unknown',
+            'label_fa': label_fa,
+            'ai_suggested_label_fa': ai_label_fa,
+        }
+
+
+    async def set_user_educational_group(
+        self,
+        uid: int,
+        educational_group: str,
+        source: str = 'user_confirmed',
+        verified: bool = None,
+        actor_id: int = None,
+        ai_confidence: float = None,
+        ai_model_version: str = None,
+    ) -> dict:
+        """ثبت یا ویرایش گروه آموزشی دانشجو با رعایت قوانین قطعی:
+        - پیشنهاد هوش مصنوعی (source='ai_suggested') هرگز فیلد تأییدشده را بازنویسی نمی‌کند و فقط در فیلدهای ai_* می‌نشیند.
+        - تأیید دانشجو ('user_confirmed')، ادمین ('admin_verified') یا دانشگاه ('university') مقدار قطعی را ثبت و group_verified=True می‌کند.
+        - در صورت تغییر گروه آموزشی، انتخاب‌های قبلی دانشجو حذف نمی‌شوند؛ در صورت مغایرت فقط علامت‌گذاری می‌شوند.
+        """
+        uid = int(uid)
+        user = await self.get_user(uid, use_cache=False) or {}
+        prev_info = self.extract_user_educational_group_info(user)
+        norm_group = self.normalize_user_educational_group(educational_group)
+        norm_source = self.normalize_group_source(source)
+        now_iso = utc_now_iso()
+
+        # قانون طلایی: پیشنهاد AI هرگز بدون تأیید، فیلد قطعی را تغییر نمی‌دهد
+        if norm_source == 'ai_suggested':
+            if prev_info['group_verified'] and prev_info['educational_group'] in ('male', 'female'):
+                # فقط فیلد پیشنهادی به‌روز شود بدون دست زدن به گروه قطعی
+                upd = {
+                    'ai_suggested_group': norm_group,
+                    'ai_confidence': round(float(ai_confidence if ai_confidence is not None else 0.0), 2),
+                    'ai_model_version': str(ai_model_version or 'persian-name-hybrid-v1'),
+                }
+                await self.update_user(uid, upd)
+                return self.extract_user_educational_group_info({**user, **upd})
+
+            upd = {
+                'educational_group': 'unknown',
+                'group_source': 'ai_suggested' if norm_group in ('male', 'female') else 'legacy',
+                'group_verified': False,
+                'group_updated_at': now_iso,
+                'group_schema_version': self.EDUCATIONAL_GROUP_SCHEMA_VERSION,
+                'ai_suggested_group': norm_group,
+                'ai_confidence': round(float(ai_confidence if ai_confidence is not None else 0.0), 2),
+                'ai_model_version': str(ai_model_version or 'persian-name-hybrid-v1'),
+            }
+            await self.update_user(uid, upd)
+            return self.extract_user_educational_group_info({**user, **upd})
+
+        if verified is None:
+            is_verified = (norm_group in ('male', 'female')) and (
+                norm_source in ('university', 'user_confirmed', 'admin_verified')
+            )
+        else:
+            is_verified = bool(verified) and (norm_group in ('male', 'female'))
+
+        history = list(user.get('educational_group_history') or [])
+        log_entry = {
+            'user_id': uid,
+            'from_group': prev_info['educational_group'],
+            'to_group': norm_group if is_verified else 'unknown',
+            'source': norm_source,
+            'verified': is_verified,
+            'actor_id': int(actor_id if actor_id is not None else uid),
+            'at': now_iso,
+        }
+        history.append(log_entry)
+        upd = {
+            'educational_group': norm_group if is_verified else 'unknown',
+            'group_source': norm_source,
+            'group_verified': is_verified,
+            'group_updated_at': now_iso,
+            'group_schema_version': self.EDUCATIONAL_GROUP_SCHEMA_VERSION,
+            'educational_group_history': history[-25:],
+        }
+        if ai_confidence is not None:
+            upd['ai_confidence'] = round(float(ai_confidence), 2)
+        if ai_model_version:
+            upd['ai_model_version'] = str(ai_model_version)
+
+        await self.update_user(uid, upd)
+        try:
+            await self.educational_group_logs.insert_one(dict(log_entry))
+        except Exception:
+            pass
+
+        # بررسی انتخاب واحدهای قبلی دانشجو در صورت تغییر گروه آموزشی (بدون حذف خودکار!)
+        flagged_selections = 0
+        if is_verified and prev_info['educational_group'] != norm_group:
+            try:
+                if hasattr(self, 'flag_mismatched_student_selections'):
+                    flagged_selections = await self.flag_mismatched_student_selections(uid, norm_group)
+            except Exception:
+                logger.exception('flag_mismatched_student_selections failed')
+
+        res = self.extract_user_educational_group_info({**user, **upd})
+        res['flagged_selections_count'] = flagged_selections
+        return res
+
+
+    async def backfill_users_educational_group(
+        self,
+        dry_run: bool = True,
+        batch_size: int = 200,
+    ) -> dict:
+        """Backfill و اسکن دسته‌ای کاربران قدیمی برای ثبت پیشنهاد اولیه گروه آموزشی (ai_suggested_group).
+        - هیچ کاربر تأییدشده‌ای (group_verified=True) بازنویسی نمی‌شود.
+        - برای نام‌های مشترک/کوتاه/نامفهوم مقدار unknown ثبت می‌شود.
+        - تا قبل از تأیید خود کاربر یا ادمین، educational_group='unknown' و group_verified=False باقی می‌ماند.
+        """
+        now_iso = utc_now_iso()
+        cursor = self.users.find({})
+        docs = await cursor.to_list(max(1, int(batch_size or 200) * 25))
+        total_scanned = 0
+        already_verified = 0
+        suggested_male = 0
+        suggested_female = 0
+        unknown_ambiguous = 0
+        updated_count = 0
+        samples = []
+
+        for u in (docs or []):
+            uid = u.get('user_id')
+            if uid is None:
+                continue
+            total_scanned += 1
+            if u.get('group_verified') and self.normalize_user_educational_group(u.get('educational_group')) in ('male', 'female'):
+                already_verified += 1
+                continue
+
+            sug = self.suggest_educational_group_from_name(u.get('name', ''))
+            s_grp = sug['suggested_group']
+            s_conf = round(float(sug['confidence']), 2)
+            if s_grp == 'male':
+                suggested_male += 1
+            elif s_grp == 'female':
+                suggested_female += 1
+            else:
+                unknown_ambiguous += 1
+
+            upd = {
+                'educational_group': 'unknown',
+                'group_source': 'ai_suggested' if s_grp in ('male', 'female') else 'legacy',
+                'group_verified': False,
+                'group_updated_at': u.get('group_updated_at') or now_iso,
+                'group_schema_version': self.EDUCATIONAL_GROUP_SCHEMA_VERSION,
+                'ai_suggested_group': s_grp,
+                'ai_confidence': s_conf,
+                'ai_model_version': sug['model_version'],
+            }
+            if not dry_run:
+                filt = {'_id': u['_id']} if '_id' in u else {'user_id': uid}
+                await self.users.update_one(filt, {'$set': upd})
+                try:
+                    self._user_cache.pop(int(uid), None)
+                except Exception:
+                    pass
+                updated_count += 1
+            else:
+                updated_count += 1
+
+            if len(samples) < 25:
+                samples.append({
+                    'user_id': uid,
+                    'name': u.get('name', ''),
+                    'ai_suggested_group': s_grp,
+                    'ai_confidence': s_conf,
+                    'reason': sug['reason'],
+                    'educational_group': 'unknown',
+                    'group_verified': False,
+                })
+
+        return {
+            'ok': True,
+            'dry_run': bool(dry_run),
+            'total_scanned': total_scanned,
+            'already_verified': already_verified,
+            'suggested_male': suggested_male,
+            'suggested_female': suggested_female,
+            'unknown_ambiguous': unknown_ambiguous,
+            'ambiguous_unknown': unknown_ambiguous,
+            'updated_count': updated_count,
+            'samples': samples,
+        }
+
+    backfill_legacy_users_educational_group = backfill_users_educational_group
+    backfill_educational_groups = backfill_users_educational_group
 
 
     async def delete_user(self, uid: int) -> dict:

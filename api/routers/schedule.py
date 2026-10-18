@@ -63,6 +63,10 @@ def _format_schedule(
             item.get("time")
         ),
 
+        "end_time": _text(
+            item.get("end_time") or item.get("time_end")
+        ),
+
         "location": _text(
             item.get("location")
         ),
@@ -76,6 +80,18 @@ def _format_schedule(
 
         "group": _text(
             item.get("group")
+        ),
+
+        "educational_group": _text(
+            item.get("educational_group") or "mixed"
+        ),
+
+        "course_code": _text(
+            item.get("course_code")
+        ),
+
+        "term": _text(
+            item.get("term")
         ),
 
         "flex_type": (
@@ -156,6 +172,10 @@ async def get_schedule(
         "group": eff_group,
         "computed_group": eff_group,
         "registered_group": personalized.get("registered_group") or eff_group,
+        "educational_group": personalized.get("educational_group") or "unknown",
+        "educational_group_info": personalized.get("educational_group_info") or {},
+        "needs_educational_group_confirmation": bool(personalized.get("needs_educational_group_confirmation")),
+        "mismatched_selections": personalized.get("mismatched_selections") or [],
         "has_custom_selection": bool(personalized.get("has_custom_selection")),
         "selected_count": int(personalized.get("selected_count") or 0),
         "total_offered_count": int(personalized.get("total_offered_count") or 0),
@@ -183,6 +203,15 @@ async def save_course_selections_ep(
     """🎓 ذخیره انتخاب‌های درس‌به‌درس دانشجو + محاسبه خودکار گروه اکثریت و به‌روزرسانی پروفایل."""
     selections = body.get("selections") if isinstance(body, dict) else []
     term = body.get("term") if isinstance(body, dict) else None
+    edu_grp_in = body.get("educational_group") if isinstance(body, dict) else None
+    if edu_grp_in in ("male", "female"):
+        await db.set_user_educational_group(
+            user["id"], edu_grp_in,
+            source="user_confirmed",
+            verified=True,
+            actor_id=user["id"],
+            reason="تأیید گروه آموزشی در فرم انتخاب واحد مینی‌اپ",
+        )
     if not isinstance(selections, list):
         from fastapi import HTTPException
         raise HTTPException(422, "فرمت انتخاب واحد معتبر نیست")

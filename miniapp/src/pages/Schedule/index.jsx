@@ -215,18 +215,44 @@ export default function Schedule() {
 
   const offerings = selData?.offerings || [];
   const conflicts = data?.conflicts || [];
+  const mismatchedSelections = data?.mismatched_selections || selData?.mismatched_selections || [];
+  const needsEduGroupConfirm = Boolean(
+    selData?.needs_educational_group_confirmation ?? data?.needs_educational_group_confirmation
+  );
+  const currentEduGroup = selData?.educational_group || data?.educational_group || "unknown";
+  const aiSuggestedEdu = selData?.educational_group_info?.ai_suggested_group || data?.educational_group_info?.ai_suggested_group || "unknown";
   const hasCustomSelection = Boolean(data?.has_custom_selection || selData?.has_selections);
   const unselectedLessons = data?.unselected_lessons || [];
+  const [eduBusy, setEduBusy] = useState(false);
+
+  const confirmEduGroup = async (eduVal) => {
+    if (eduBusy) return;
+    haptic();
+    setEduBusy(true);
+    try {
+      await api.patch("/api/profile/educational-group", { educational_group: eduVal });
+      await Promise.all([
+        refetchSel(),
+        refetch(),
+        queryClient.invalidateQueries({ queryKey: ["profile"] }),
+      ]);
+      toast(eduVal === "male" ? "✅ گروه آموزشی: کلاس‌های آقایان ثبت شد" : "✅ گروه آموزشی: کلاس‌های بانوان ثبت شد");
+    } catch {
+      toast("ثبت گروه آموزشی ناموفق بود", "err");
+    }
+    setEduBusy(false);
+  };
 
   // محاسبه زنده‌ی گروه اکثریت در شیت انتخاب واحد
   const liveMajority = useMemo(() => {
     const fallback = selData?.registered_group || data?.registered_group || userGroup || "1";
-    let c1 = 0, c2 = 0, u1 = 0, u2 = 0;
+    let c1 = 0, c2 = 0, cOther = 0, u1 = 0, u2 = 0;
     for (const off of offerings) {
       const g = selDraft[off.lesson];
       const cred = Number(off.credit || 1) || 1;
       if (g === "1") { c1 += 1; u1 += cred; }
       else if (g === "2") { c2 += 1; u2 += cred; }
+      else if (g === "3" || g === "4") { cOther += 1; }
     }
     let grp = fallback;
     if (c1 > c2) grp = "1";
@@ -236,7 +262,7 @@ export default function Schedule() {
       else if (u2 > u1) grp = "2";
       else grp = fallback;
     }
-    return { group: grp, c1, c2, total: c1 + c2 };
+    return { group: grp, c1, c2, total: c1 + c2 + cOther };
   }, [offerings, selDraft, selData, data, userGroup]);
 
   const setAllGroup = (targetGroup) => {
@@ -246,7 +272,8 @@ export default function Schedule() {
       if (off.single_group && off.auto_selected_group) {
         next[off.lesson] = off.auto_selected_group;
       } else {
-        next[off.lesson] = targetGroup;
+        const avail = (off.groups || []).map((g) => g.group);
+        next[off.lesson] = avail.includes(targetGroup) ? targetGroup : (avail[0] || targetGroup);
       }
     }
     setSelDraft(next);
@@ -270,7 +297,7 @@ export default function Schedule() {
     setSavingSel(true);
     try {
       const payload = Object.entries(selDraft)
-        .filter(([, g]) => g === "1" || g === "2")
+        .filter(([, g]) => ["1", "2", "3", "4"].includes(g))
         .map(([lesson, group]) => ({ lesson, group }));
       const r = await api.post("/api/schedule/course-selections", {
         selections: payload,
@@ -481,6 +508,80 @@ export default function Schedule() {
             </button>
           </div>
         </section>
+
+        {/* 🚻 کارت تأیید گروه آموزشی (آقایان/بانوان) در صورت عدم تعیین */}
+        {needsEduGroupConfirm && (
+          <section
+            className="card"
+            style={{
+              marginBottom: "var(--sp-3)",
+              padding: "13px 15px",
+              borderColor: "var(--bd-warn)",
+              background: "var(--soft-warn)",
+              borderInlineStart: "3px solid var(--warn)",
+            }}
+          >
+            <div style={{ fontWeight: 850, fontSize: "var(--fs-sm)", marginBottom: 4 }}>
+              🚻 تعیین گروه آموزشی کلاس‌ها
+            </div>
+            <div style={{ fontSize: "var(--fs-cap)", color: "var(--tx2)", lineHeight: 1.6, marginBottom: 10 }}>
+              برخی دروس این ترم به صورت تفکیک‌شده (ویژه آقایان یا ویژه بانوان) با کد گروه و اساتید متفاوت ارائه شده‌اند.
+              {aiSuggestedEdu === "male" && " (💡 پیشنهاد هوشمند: کلاس‌های آقایان)"}
+              {aiSuggestedEdu === "female" && " (💡 پیشنهاد هوشمند: کلاس‌های بانوان)"}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={eduBusy}
+                onClick={() => confirmEduGroup("male")}
+                style={{
+                  fontWeight: 800,
+                  borderRadius: 10,
+                  border: aiSuggestedEdu === "male" ? "1.5px solid var(--acc)" : undefined,
+                }}
+              >
+                👨 کلاس‌های آقایان {aiSuggestedEdu === "male" ? "✓" : ""}
+              </button>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={eduBusy}
+                onClick={() => confirmEduGroup("female")}
+                style={{
+                  fontWeight: 800,
+                  borderRadius: 10,
+                  border: aiSuggestedEdu === "female" ? "1.5px solid var(--acc)" : undefined,
+                }}
+              >
+                👩 کلاس‌های بانوان {aiSuggestedEdu === "female" ? "✓" : ""}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ⚠️ هشدار مغایرت انتخاب‌های قبلی با گروه آموزشی */}
+        {mismatchedSelections.length > 0 && (
+          <section
+            className="card"
+            style={{
+              marginBottom: "var(--sp-3)",
+              padding: "11px 13px",
+              borderColor: "var(--bd-warn)",
+              background: "var(--soft-warn)",
+              borderInlineStart: "3px solid var(--warn)",
+            }}
+          >
+            <div style={{ fontWeight: 850, fontSize: "var(--fs-sm)", color: "var(--warn)", marginBottom: 4 }}>
+              ⚠️ نیاز به بازبینی انتخاب واحد ({faNum(mismatchedSelections.length)} درس)
+            </div>
+            {mismatchedSelections.map((m, idx) => (
+              <div key={idx} style={{ fontSize: "var(--fs-cap)", color: "var(--tx2)", lineHeight: 1.6 }}>
+                • درس «{m.lesson}» (گروه {faNum(m.group)}) با گروه آموزشی فعلی شما مغایرت دارد؛ لطفاً از دکمه ویرایش انتخاب واحد گروه مناسب را انتخاب کنید.
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* ⚠️ هشدار تداخل زمانی در صورت تداخل دو درس انتخابی */}
         {conflicts.length > 0 && (
@@ -858,6 +959,63 @@ export default function Schedule() {
                 >
                   ✕
                 </button>
+              </div>
+
+              {/* نوار انتخاب سریع گروه آموزشی (آقایان/بانوان) */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  marginTop: 10,
+                  padding: "8px 10px",
+                  borderRadius: 12,
+                  background: "rgba(255, 255, 255, 0.05)",
+                  border: needsEduGroupConfirm
+                    ? "1px solid rgba(250, 204, 21, 0.55)"
+                    : "1px solid rgba(255, 255, 255, 0.10)",
+                }}
+              >
+                <span style={{ fontSize: "var(--fs-cap)", color: "var(--tx2)", fontWeight: 700 }}>
+                  🚻 گروه آموزشی:
+                </span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="button"
+                    disabled={eduBusy}
+                    onClick={() => confirmEduGroup("male")}
+                    style={{
+                      padding: "5px 10px",
+                      borderRadius: 9,
+                      fontSize: 12,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      background: currentEduGroup === "male" ? "rgba(59, 130, 246, 0.35)" : "rgba(255,255,255,0.06)",
+                      border: currentEduGroup === "male" ? "1.5px solid #60a5fa" : "1px solid rgba(255,255,255,0.14)",
+                      color: "var(--tx)",
+                    }}
+                  >
+                    👨 آقایان {currentEduGroup === "male" ? "✅" : ""}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={eduBusy}
+                    onClick={() => confirmEduGroup("female")}
+                    style={{
+                      padding: "5px 10px",
+                      borderRadius: 9,
+                      fontSize: 12,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                      background: currentEduGroup === "female" ? "rgba(236, 72, 153, 0.32)" : "rgba(255,255,255,0.06)",
+                      border: currentEduGroup === "female" ? "1.5px solid #f472b6" : "1px solid rgba(255,255,255,0.14)",
+                      color: "var(--tx)",
+                    }}
+                  >
+                    👩 بانوان {currentEduGroup === "female" ? "✅" : ""}
+                  </button>
+                </div>
               </div>
 
               {/* میانبرهای سریع بالای لیست */}

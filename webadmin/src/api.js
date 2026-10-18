@@ -1082,6 +1082,50 @@ export const api = {
       method: "POST",
       body: body || {},
     }),
+  caScanCourseSelectionImages: (body) =>
+    req("/api/web-admin/schedule/course-selection/scan-images", {
+      method: "POST",
+      body,
+    }),
+  caListCourseImportStaging: (term, status) =>
+    req(
+      "/api/web-admin/schedule/course-selection/staging" +
+        (term || status
+          ? `?${[
+              term ? `term=${encodeURIComponent(term)}` : "",
+              status ? `status=${encodeURIComponent(status)}` : "",
+            ]
+              .filter(Boolean)
+              .join("&")}`
+          : ""),
+    ),
+  caGetCourseImportStaging: (batchId) =>
+    req(`/api/web-admin/schedule/course-selection/staging/${encodeURIComponent(batchId)}`),
+  caUpdateCourseImportStagingItem: (batchId, itemId, body) =>
+    req(
+      `/api/web-admin/schedule/course-selection/staging/${encodeURIComponent(batchId)}/items/${encodeURIComponent(itemId)}`,
+      { method: "PATCH", body },
+    ),
+  caPublishCourseImportStaging: (batchId, body) =>
+    req(
+      `/api/web-admin/schedule/course-selection/staging/${encodeURIComponent(batchId)}/publish`,
+      { method: "POST", body: body || {} },
+    ),
+  caRollbackCourseImportStaging: (batchId) =>
+    req(
+      `/api/web-admin/schedule/course-selection/staging/${encodeURIComponent(batchId)}/rollback`,
+      { method: "POST", body: {} },
+    ),
+  caCleanupScheduleAnomalies: (body) =>
+    req("/api/web-admin/schedule/cleanup-anomalies", {
+      method: "POST",
+      body: body || {},
+    }),
+  usersBackfillEducationalGroups: (body) =>
+    req("/api/web-admin/users/backfill-educational-groups", {
+      method: "POST",
+      body: body || {},
+    }),
   caFaq: () => req("/api/content/faq"),
   caFaqAdd: (body) => req("/api/content/faq", { method: "POST", body }),
   caFaqDel: (fid) => req(`/api/content/faq/${fid}`, { method: "DELETE" }),

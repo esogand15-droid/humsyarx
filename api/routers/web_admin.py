@@ -766,7 +766,11 @@ async def users_table(
     total = await db.users.count_documents(filt)
     projection = {
         "user_id": 1, "name": 1, "nickname": 1, "username": 1, "student_id": 1,
-        "group": 1, "intake": 1, "role": 1, "approved": 1, "suspended": 1,
+        "group": 1, "computed_group": 1, "registered_group": 1,
+        "course_selection_count": 1, "course_selection_term": 1, "course_selection_updated_at": 1,
+        "educational_group": 1, "group_source": 1, "group_verified": 1,
+        "ai_suggested_group": 1, "ai_confidence": 1,
+        "intake": 1, "role": 1, "approved": 1, "suspended": 1,
         "registered_at": 1, "last_active": 1, "total_answers": 1,
         "correct_answers": 1, "prestige_rank": 1, "prestige_div": 1,
         "streak_current": 1, "ai_total_usage": 1,
@@ -811,6 +815,7 @@ async def users_table(
         roles = list((role_map.get(uid) or {}).get("roles") or [])
         if not roles and u.get("role") not in (None, "", "student"):
             roles = [u.get("role")]
+        edu_info = db.extract_user_educational_group_info(u)
         rows.append({
             "id": uid, "name": u.get("name", ""), "nickname": u.get("nickname"),
             "username": u.get("username", ""), "display_name": db.display_name_of(u),
@@ -818,6 +823,11 @@ async def users_table(
             "group": u.get("computed_group") or u.get("group", ""),
             "computed_group": u.get("computed_group") or u.get("group", ""),
             "registered_group": u.get("registered_group") or u.get("group", ""),
+            "educational_group": edu_info["educational_group"],
+            "group_source": edu_info["group_source"],
+            "group_verified": edu_info["group_verified"],
+            "ai_suggested_group": edu_info["ai_suggested_group"],
+            "ai_confidence": edu_info["ai_confidence"],
             "course_selection_count": int(u.get("course_selection_count") or 0),
             "course_selection_term": u.get("course_selection_term") or "",
             "course_selection_updated_at": u.get("course_selection_updated_at") or None,
@@ -4789,6 +4799,7 @@ class WaUserPatch(BaseModel):
     name: Optional[str] = None
     nickname: Optional[str] = None
     group: Optional[str] = None
+    educational_group: Optional[str] = None
     intake: Optional[str] = None
     student_id: Optional[str] = None
 
@@ -4796,7 +4807,7 @@ class WaUserPatch(BaseModel):
 @router.patch("/users/{uid}")
 async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.manage"))):
     """✏️ ویرایش فیلدهای پروفایل — همان whitelist پنل قبلی + لقب از مسیر
-    IdentityService (اعتبارسنجی/audit خودکار داخل db)."""
+    IdentityService (اعتبارسنجی/audit خودکار داخل db) + گروه آموزشی (آقایان/بانوان)."""
     old_doc = await db.get_user(uid)
     if not old_doc:
         raise HTTPException(404, "کاربر یافت نشد")
@@ -4809,6 +4820,19 @@ async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.m
         updates["intake"] = body.intake
     if body.student_id is not None:
         updates["student_id"] = body.student_id.strip()[:40]
+    edu_note = ""
+    if body.educational_group is not None:
+        edu_val = db.normalize_user_educational_group(body.educational_group)
+        await db.set_user_educational_group(
+            uid, edu_val,
+            source="admin_verified" if edu_val in ("male", "female") else "legacy",
+            verified=(edu_val in ("male", "female")),
+            actor_id=user["id"],
+            reason="ویرایش توسط ادمین در پنل وب",
+        )
+        if edu_val in ("male", "female"):
+            await db.flag_mismatched_student_selections(uid, edu_val)
+        edu_note = " + گروه آموزشی"
     nick_note = ""
     if body.nickname is not None:
         ok, err, _info = await db.set_nickname(
@@ -4820,15 +4844,41 @@ async def wa_user_patch(uid: int, body: WaUserPatch, user=Depends(_perm("users.m
     _LBL = {"name": "نام", "group": "گروه", "intake": "ورودی", "student_id": "شماره دانشجویی"}
     _before = {_LBL.get(k, k): old_doc.get(k) for k in updates}
     _after = {_LBL.get(k, k): updates[k] for k in updates}
+    if body.educational_group is not None:
+        _before["گروه آموزشی"] = old_doc.get("educational_group", "unknown")
+        _after["گروه آموزشی"] = db.normalize_user_educational_group(body.educational_group)
     if updates:
         await db.update_user(uid, updates)
-    if updates or body.nickname is not None:
-        await _audit(user["id"], "ویرایش اطلاعات کاربر" + nick_note, severity="WARNING",
+    if updates or body.nickname is not None or body.educational_group is not None:
+        await _audit(user["id"], "ویرایش اطلاعات کاربر" + nick_note + edu_note, severity="WARNING",
                      target_id=uid, target_type="user",
-                     target_label=" / ".join(f"{k}: {v}" for k, v in updates.items())[:300],
+                     target_label=" / ".join(f"{k}: {v}" for k, v in {**updates, **(
+                         {"educational_group": body.educational_group} if body.educational_group is not None else {}
+                     )}.items())[:300],
                      before=_before or None, after=_after or None,
                      tags=["ویرایش_کاربر", "پنل_وب"])
-    return {"ok": True, "changed": list(updates.keys()) + (["nickname"] if body.nickname is not None else [])}
+    changed_keys = list(updates.keys())
+    if body.nickname is not None:
+        changed_keys.append("nickname")
+    if body.educational_group is not None:
+        changed_keys.append("educational_group")
+    return {"ok": True, "changed": changed_keys}
+
+
+@router.post("/users/backfill-educational-groups")
+async def wa_users_backfill_educational_groups(
+    body: dict | None = None,
+    user=Depends(_perm("users.manage")),
+):
+    """اجرای مایگریشن/Backfill پیشنهاد هوشمند گروه آموزشی برای کاربران قدیمی بدون تغییر قطعی بدون تایید."""
+    dry_run = bool((body or {}).get("dry_run", False))
+    res = await db.backfill_legacy_users_educational_group(dry_run=dry_run)
+    if not dry_run:
+        await _audit(
+            user["id"], "اجرای Backfill گروه آموزشی کاربران قدیمی", severity="INFO",
+            after=res, tags=["مایگریشن", "گروه_آموزشی", "پنل_وب"],
+        )
+    return res
 
 
 @router.get("/blacklist")
@@ -4930,6 +4980,7 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
     target = await db.get_user(uid)
     if not target:
         raise HTTPException(404, "کاربر یافت نشد")
+    edu_360 = db.extract_user_educational_group_info(target)
     out = {
         "user": {
             "id": target.get("user_id"), "name": target.get("name", ""),
@@ -4940,6 +4991,12 @@ async def user_360(uid: int, user=Depends(_perm("users.view"))):
             "group": target.get("computed_group") or target.get("group", ""),
             "computed_group": target.get("computed_group") or target.get("group", ""),
             "registered_group": target.get("registered_group") or target.get("group", ""),
+            "educational_group": edu_360["educational_group"],
+            "group_source": edu_360["group_source"],
+            "group_verified": edu_360["group_verified"],
+            "ai_suggested_group": edu_360["ai_suggested_group"],
+            "ai_confidence": edu_360["ai_confidence"],
+            "needs_educational_group_confirmation": edu_360["needs_confirmation"],
             "course_selection_count": int(target.get("course_selection_count") or 0),
             "course_selection_term": target.get("course_selection_term") or "",
             "course_selection_updated_at": target.get("course_selection_updated_at") or None,
@@ -8718,6 +8775,63 @@ async def wa_send_course_selection_reminder(
     user=Depends(_perm("schedules.manage")),
 ):
     return await academic_api.admin_send_course_selection_reminder(body=body, admin=user)
+
+@router.post("/schedule/course-selection/scan-images")
+async def wa_scan_course_selection_images(
+    body: dict,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_scan_course_selection_images(body=body, admin=user)
+
+@router.get("/schedule/course-selection/staging")
+async def wa_list_course_import_staging(
+    term: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_list_course_import_staging(term=term, status=status, admin=user)
+
+@router.get("/schedule/course-selection/staging/{batch_id}")
+async def wa_get_course_import_staging(
+    batch_id: str,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_get_course_import_staging(batch_id=batch_id, admin=user)
+
+@router.patch("/schedule/course-selection/staging/{batch_id}/items/{item_id}")
+async def wa_update_course_import_staging_item(
+    batch_id: str,
+    item_id: str,
+    body: dict,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_update_course_import_staging_item(
+        batch_id=batch_id, item_id=item_id, body=body, admin=user,
+    )
+
+@router.post("/schedule/course-selection/staging/{batch_id}/publish")
+async def wa_publish_course_import_staging(
+    batch_id: str,
+    body: Optional[dict] = None,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_publish_course_import_staging(
+        batch_id=batch_id, body=body, admin=user,
+    )
+
+@router.post("/schedule/course-selection/staging/{batch_id}/rollback")
+async def wa_rollback_course_import_staging(
+    batch_id: str,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_rollback_course_import_staging(batch_id=batch_id, admin=user)
+
+@router.post("/schedule/cleanup-anomalies")
+async def wa_cleanup_schedule_anomalies(
+    body: Optional[dict] = None,
+    user=Depends(_perm("schedules.manage")),
+):
+    return await academic_api.admin_cleanup_schedule_anomalies(body=body, admin=user)
 
 
 

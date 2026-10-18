@@ -1815,6 +1815,8 @@ async def _show_sessions(query, context, lid):
     _cscope    = await db.get_content_scope(uid)
     is_scoped  = bool(_cscope and _cscope.get('kind') == 'scoped')
     ctx        = context.user_data.get('ca_intake', '')
+    if is_scoped and not ctx:
+        ctx = (_cscope or {}).get('intake') or ''
     # 🌊 C3 — نماینده روی درس 🌐: «جلسه‌ی فقط‌ورودی‌خودم» ساختنی است (والد قفل)
     can_child  = (not writable and
                   await db.scoped_child_intake(uid, _li) not in (None, ''))
@@ -1825,9 +1827,10 @@ async def _show_sessions(query, context, lid):
         _bases = {str(s['_id']) for s in sessions}
         sessions = [s for s in sessions
                     if not (s.get('fork_of') and str(s.get('fork_of')) in _bases)]
-    elif ctx or (not writable and is_scoped):
-        # داخل ورودی انتخاب‌شده: سراسری + همان ورودی (نمای مؤثر/سایه)
-        sessions = await db.bs_get_sessions_effective(lid, [ctx, ''])
+        sessions = db.bs_effective_view(sessions, [_li, ''] if _li else [''], {str(lid): _li})
+    elif ctx or is_scoped:
+        # داخل ورودی انتخاب‌شده یا ادمین ورودی خاص: سراسری + همان ورودی (نمای مؤثر/سایه)
+        sessions = await db.bs_get_sessions_effective(lid, [ctx, ''] if ctx else ([_li, ''] if _li else ['']))
     kb = []
     for s in sessions:
         sid = str(s['_id'])

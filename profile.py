@@ -42,6 +42,16 @@ def _profile_text(user: dict, stats: dict, open_tickets: int, sub_line: str = ''
     eff_group = user.get('computed_group') or user.get('group', '')
     sel_cnt   = int(user.get('course_selection_count') or 0)
     grp_note  = f" (اکثریت {sel_cnt} درس انتخابی)" if sel_cnt > 0 else ""
+    edu_info  = db.extract_user_educational_group_info(user)
+    edu_grp   = edu_info.get('educational_group', 'unknown')
+    if edu_grp == 'male':
+        edu_label = "👨 کلاس‌های آقایان"
+    elif edu_grp == 'female':
+        edu_label = "👩 کلاس‌های بانوان"
+    else:
+        sug = edu_info.get('ai_suggested_group', 'unknown')
+        sug_txt = " (پیشنهاد: آقایان)" if sug == 'male' else (" (پیشنهاد: بانوان)" if sug == 'female' else "")
+        edu_label = f"❓ تعیین‌نشده{sug_txt}"
 
     return (
         "👤 <b>پروفایل من</b>\n"
@@ -52,6 +62,7 @@ def _profile_text(user: dict, stats: dict, open_tickets: int, sub_line: str = ''
         f"🎓 <b>شماره دانشجویی:</b>  {sid}\n"
         f"📅 <b>ورودی:</b>  {intake}\n"
         f"👥 <b>گروه:</b>  گروه {eff_group}{grp_note}\n"
+        f"🚻 <b>گروه آموزشی:</b>  {edu_label}\n"
         f"📱 <b>یوزرنیم:</b>  {uname}\n"
         f"🎭 <b>نقش:</b>  {role_icon}\n"
         f"📅 <b>ثبت‌نام:</b>  {reg_date}\n"
@@ -89,6 +100,9 @@ async def _profile_keyboard(user: dict = None) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("👥 تغییر گروه",  callback_data='profile:edit_group'),
             InlineKeyboardButton("📅 تغییر ورودی", callback_data='profile:edit_intake'),
+        ],
+        [
+            InlineKeyboardButton("🚻 تغییر گروه آموزشی (آقایان/بانوان)", callback_data='profile:edit_edu_group'),
         ],
         # FIX جدید: دسترسی به جزئیات کامل اشتراک از پروفایل
         # 🌊 W6.2 — کیف پول (موجودی + شارژ + خرید) مستقیم از پروفایل
@@ -370,6 +384,60 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _profile_text(user, stats, open_t),
             parse_mode='HTML',
             reply_markup=await _profile_keyboard(user)
+        )
+
+    elif action == 'edit_edu_group':
+        user = await db.get_user(uid) or {}
+        edu_info = db.extract_user_educational_group_info(user)
+        cur_edu = edu_info.get('educational_group', 'unknown')
+        sug_edu = edu_info.get('ai_suggested_group', 'unknown')
+        cur_lbl = '👨 کلاس‌های آقایان' if cur_edu == 'male' else ('👩 کلاس‌های بانوان' if cur_edu == 'female' else '❓ تعیین‌نشده')
+        sug_line = ""
+        if cur_edu == 'unknown' and sug_edu in ('male', 'female'):
+            sug_line = f"\n💡 پیشنهاد هوشمند: <b>{'کلاس‌های آقایان' if sug_edu == 'male' else 'کلاس‌های بانوان'}</b>\n"
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    f"{'✅ ' if cur_edu == 'male' else ''}👨 کلاس‌های آقایان",
+                    callback_data='profile:set_edu_group:male',
+                ),
+                InlineKeyboardButton(
+                    f"{'✅ ' if cur_edu == 'female' else ''}👩 کلاس‌های بانوان",
+                    callback_data='profile:set_edu_group:female',
+                ),
+            ],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data='profile:main')],
+        ]
+        await query.edit_message_text(
+            "🚻 <b>تعیین گروه آموزشی کلاس‌ها</b>\n\n"
+            f"وضعیت فعلی: <b>{cur_lbl}</b>{sug_line}\n"
+            "برخی دروس دانشگاه به صورت تفکیک‌شده (ویژه آقایان یا ویژه بانوان) ارائه می‌شوند.\n"
+            "با انتخاب گزینه زیر، برنامه کلاسی و فهرست انتخاب واحد شما دقیقاً متناسب با گروه آموزشی‌تان فیلتر می‌شود:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    elif action == 'set_edu_group' and len(parts) > 2:
+        new_edu = parts[2]
+        if new_edu not in ('male', 'female'):
+            await query.answer("❌ گزینه نامعتبر است.", show_alert=True)
+            return
+        await db.set_user_educational_group(
+            uid, new_edu,
+            source='user_confirmed',
+            verified=True,
+            actor_id=uid,
+            reason='ویرایش توسط دانشجو در پروفایل تلگرام',
+        )
+        flagged = await db.flag_mismatched_student_selections(uid, new_edu)
+        lbl = 'کلاس‌های آقایان' if new_edu == 'male' else 'کلاس‌های بانوان'
+        extra_msg = f" ({flagged} درس انتخابی قبلی نیازمند بازبینی در انتخاب واحد است)" if flagged > 0 else ""
+        await query.answer(f"✅ گروه آموزشی به «{lbl}» تغییر یافت!{extra_msg}", show_alert=True)
+        user, stats, open_t = await _get_profile_data(uid)
+        await query.edit_message_text(
+            _profile_text(user, stats, open_t),
+            parse_mode='HTML',
+            reply_markup=await _profile_keyboard(user),
         )
 
     elif action == 'edit_intake':

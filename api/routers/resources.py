@@ -23,8 +23,11 @@ _sending_users: set[int] = set()
 
 async def _viewer_intake(user: dict):
     """🌊 C1 — scope دید محتوا: دانشجو → [ورودی خودش، سراسری]؛
-    مدیر محتوا/مالک → None (بدون فیلتر، رفتار پیش‌نمایش قدیمی).
+    ادمین محتوای ورودی خاص → [scope_intake, '']؛
+    مدیر ارشد محتوا/مالک → None (در سطح جلسات از نمای مؤثر بدون تکرار استفاده می‌شود).
     enforce در همین لایه (Backend) انجام می‌شود، نه فرانت."""
+    if hasattr(db, "viewer_intake_filter"):
+        return await db.viewer_intake_filter(user["id"], user.get("_db"))
     if await db.is_content_admin(user["id"]):
         return None
     return db.student_intake_filter(

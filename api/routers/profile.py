@@ -61,6 +61,7 @@ async def get_profile(user=Depends(get_current_user)):
     stats = normalize_stats(raw_stats)
     stats["weekly_chart"] = normalize_weekly(weekly)
     tickets = raw_tickets if isinstance(raw_tickets, list) else []
+    edu_info = db.extract_user_educational_group_info(db_user)
 
     return {
         "user": {
@@ -69,6 +70,12 @@ async def get_profile(user=Depends(get_current_user)):
             "group": _text(db_user.get("computed_group") or db_user.get("group")),
             "computed_group": _text(db_user.get("computed_group") or db_user.get("group")),
             "registered_group": _text(db_user.get("registered_group") or db_user.get("group")),
+            "educational_group": edu_info["educational_group"],
+            "group_source": edu_info["group_source"],
+            "group_verified": edu_info["group_verified"],
+            "ai_suggested_group": edu_info["ai_suggested_group"],
+            "ai_confidence": edu_info["ai_confidence"],
+            "needs_educational_group_confirmation": edu_info["needs_confirmation"],
             "course_selection_count": non_negative_int(db_user.get("course_selection_count", 0)),
             "course_selection_term": _text(db_user.get("course_selection_term")),
             "course_selection_updated_at": _text(db_user.get("course_selection_updated_at")),
@@ -186,6 +193,38 @@ async def update_group(body: GroupUpdate, user=Depends(get_current_user)):
     await db.update_user(user["id"], updates)
     await _profile_audit(user, "ویرایش گروه", before={"group": db_user.get("group")}, after={"group": body.group})
     return {"ok": True, "group": body.group, "registered_group": body.group}
+
+
+class EducationalGroupUpdate(BaseModel):
+    educational_group: str = Field(pattern=r"^(male|female)$")
+
+
+@router.patch("/educational-group")
+async def update_educational_group(body: EducationalGroupUpdate, user=Depends(get_current_user)):
+    uid = int(user["id"])
+    db_user = user.get("_db") or {}
+    prev_edu = _text(db_user.get("educational_group"), "unknown")
+    res = await db.set_user_educational_group(
+        uid,
+        body.educational_group,
+        source="user_confirmed",
+        verified=True,
+        actor_id=uid,
+        reason="تایید/ویرایش توسط دانشجو در مینی‌اپ",
+    )
+    flagged = await db.flag_mismatched_student_selections(uid, body.educational_group)
+    await _profile_audit(
+        user, "تغییر گروه آموزشی کلاس‌ها",
+        before={"educational_group": prev_edu},
+        after={"educational_group": body.educational_group, "flagged_mismatches": flagged},
+    )
+    return {
+        "ok": True,
+        "educational_group": body.educational_group,
+        "group_verified": True,
+        "flagged_mismatches": flagged,
+        "info": res,
+    }
 
 
 class IntakeUpdate(BaseModel):

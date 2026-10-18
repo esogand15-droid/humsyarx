@@ -226,6 +226,21 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'course_select':
         await _show_course_selection_bot(query, context, uid, reset_draft=True)
 
+    elif action == 'set_edugroup':
+        edu_grp = parts[2] if len(parts) > 2 else ''
+        if edu_grp in ('male', 'female'):
+            await db.set_user_educational_group(
+                uid, edu_grp,
+                source='user_confirmed',
+                verified=True,
+                actor_id=uid,
+                reason='تأیید توسط دانشجو در بخش انتخاب واحد/برنامه تلگرام',
+            )
+            await db.flag_mismatched_student_selections(uid, edu_grp)
+            lbl = 'کلاس‌های آقایان' if edu_grp == 'male' else 'کلاس‌های بانوان'
+            await query.answer(f"✅ گروه آموزشی شما ({lbl}) ثبت شد!", show_alert=True)
+        await _show_course_selection_bot(query, context, uid, reset_draft=True)
+
     elif action == 'cs_all':
         target_g = parts[2] if len(parts) > 2 else '1'
         await _handle_cs_all_bot(query, context, uid, target_g)
@@ -519,6 +534,31 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ لغو", callback_data='schedule:scan_menu')]]))
 
+    elif action == 'scan_portal_menu' and can_manage:
+        await _show_portal_scan_menu(query, context)
+
+    elif action == 'scan_portal_start' and can_manage:
+        edu_grp = parts[2] if len(parts) > 2 else 'mixed'
+        context.user_data['portal_scan_edu_group'] = edu_grp
+        context.user_data['mode'] = 'schedule_scan_portal'
+        edu_lbl = '👨 کلاس‌های آقایان' if edu_grp == 'male_only' else ('👩 کلاس‌های بانوان' if edu_grp == 'female_only' else '👥 مشترک')
+        await query.edit_message_text(
+            f"🎓 <b>اسکن تصویر انتخاب واحد ({edu_lbl})</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "لطفاً اسکرین‌شات صفحه انتخاب واحد دانشگاه (شامل جدول دروس اخذشده یا لیست دروس قابل اخذ) را ارسال کنید.\n"
+            "• اطلاعات شخصی دانشجو کاملاً نادیده گرفته می‌شود.\n"
+            "• فقط اطلاعات واقعی موجود در تصویر (کد درس، نام درس، گروه درس، واحد) استخراج می‌شود.\n"
+            "• می‌توانید پس از این تصویر، تصویر گروه مقابل را هم ارسال کنید تا دروس مشترک و تفکیک‌شده به‌صورت هوشمند تطبیق داده شوند.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ بازگشت", callback_data='schedule:scan_portal_menu')]]),
+        )
+
+    elif action == 'scan_portal_stage_only' and can_manage:
+        await _finalize_portal_scan_bot(query, context, uid, publish_now=False)
+
+    elif action == 'scan_portal_publish' and can_manage:
+        await _finalize_portal_scan_bot(query, context, uid, publish_now=True)
+
     elif action == 'scan_confirm' and can_manage:
         await _confirm_scan(query, context, kind='weekly')
 
@@ -527,6 +567,8 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == 'scan_cancel' and can_manage:
         context.user_data.pop('scan_preview', None)
+        context.user_data.pop('portal_scan_items', None)
+        context.user_data.pop('portal_scan_images', None)
         context.user_data.pop('mode', None)
         await query.edit_message_text("❌ اسکن لغو شد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_menu')]]))
 
@@ -593,8 +635,39 @@ async def _schedule_main(query, user_group: str, uid: int = None):
 
 
 async def _show_course_selection_bot(query, context, uid: int, reset_draft: bool = False):
-    """🎓 رابط دکمه‌های اینلاین انتخاب گروه درس‌به‌درس در ربات تلگرام."""
+    """🎓 رابط دکمه‌های اینلاین انتخاب گروه درس‌به‌درس در ربات تلگرام (همراه با فیلتر مرکزی گروه آموزشی آقایان/بانوان)."""
     info = await db.get_student_course_selections(uid)
+    edu_info = info.get('educational_group_info') or {}
+    user_edu = info.get('educational_group') or 'unknown'
+    needs_edu_confirm = bool(info.get('needs_educational_group_confirmation'))
+    mismatched_list = info.get('mismatched_selections') or []
+
+    # اگر گروه آموزشی دانشجو (آقایان/بانوان) هنوز تأیید نشده، دکمه‌های تأیید سریع را نشان بده
+    if needs_edu_confirm:
+        sug_grp = edu_info.get('ai_suggested_group', 'unknown')
+        sug_note = ""
+        if sug_grp in ('male', 'female'):
+            sug_lbl = 'کلاس‌های آقایان' if sug_grp == 'male' else 'کلاس‌های بانوان'
+            sug_note = f"\n💡 پیشنهاد هوشمند بر اساس نام شما: <b>{sug_lbl}</b>\n"
+        male_btn = "✅ 👨 کلاس‌های آقایان" if sug_grp == 'male' else "👨 کلاس‌های آقایان"
+        female_btn = "✅ 👩 کلاس‌های بانوان" if sug_grp == 'female' else "👩 کلاس‌های بانوان"
+        await query.edit_message_text(
+            "🚻 <b>تعیین گروه آموزشی پیش از انتخاب واحد</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "برخی دروس این ترم به صورت تفکیک‌شده (ویژه آقایان یا ویژه بانوان) با کد گروه و اساتید متفاوت ارائه شده‌اند.\n"
+            f"{sug_note}\n"
+            "لطفاً ابتدا گروه آموزشی خود را مشخص کنید تا فقط کلاس‌ها و گروه‌های مجاز شما نمایش داده شود:",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(male_btn, callback_data='schedule:set_edugroup:male'),
+                    InlineKeyboardButton(female_btn, callback_data='schedule:set_edugroup:female'),
+                ],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:main')],
+            ]),
+        )
+        return
+
     offerings = info.get('offerings') or []
     if reset_draft or 'cs_draft' not in context.user_data:
         draft = dict(info.get('selections_map') or {})
@@ -620,16 +693,23 @@ async def _show_course_selection_bot(query, context, uid: int, reset_draft: bool
     sel_list = []
     for off in offerings:
         g = draft.get(off['lesson'])
-        if g in ('1', '2'):
+        if g in ('1', '2', '3', '4'):
             sel_list.append({'lesson': off['lesson'], 'group': g, 'credit': off.get('credit', 1.0)})
     maj = db.compute_majority_group(sel_list, fallback_group=info.get('registered_group') or '1')
 
+    edu_badge = "👨 کلاس‌های آقایان" if user_edu == 'male' else ("👩 کلاس‌های بانوان" if user_edu == 'female' else "👥 عمومی")
     lines = [
-        "🎓 <b>انتخاب گروه درس‌های این ترم</b>",
+        f"🎓 <b>انتخاب گروه درس‌های این ترم</b> ({edu_badge})",
         "━━━━━━━━━━━━━━━━",
         "برای هر درس مشخص کن با کدوم گروه و استاد برداشتیش تا برنامه کلاسی دقیق خودت ساخته بشه:",
         "",
     ]
+    if mismatched_list:
+        lines.append("⚠️ <b>هشدار مغایرت گروه آموزشی:</b>")
+        for m_item in mismatched_list[:5]:
+            lines.append(f"• درس «{m_item.get('lesson')}» (گروه {m_item.get('group')}) با گروه آموزشی فعلی شما مغایرت دارد؛ لطفاً گروه مناسب را انتخاب کنید.")
+        lines.append("")
+
     keyboard = [
         [
             InlineKeyboardButton("⚡ همه رو گروه ۱ بزن", callback_data='schedule:cs_all:1'),
@@ -665,7 +745,7 @@ async def _show_course_selection_bot(query, context, uid: int, reset_draft: bool
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━")
     lines.append(
-        f"📊 <b>انتخاب‌شده:</b> {maj['total_selected']} از {len(offerings)} درس "
+        f"📊 <b>انتخاب‌شده:</b> {len(sel_list)} از {len(offerings)} درس "
         f"({maj['group1_courses']} گروه ۱ · {maj['group2_courses']} گروه ۲)\n"
         f"👥 <b>گروه اکثریت شما:</b> گروه {maj['computed_group']}"
     )
@@ -691,7 +771,13 @@ async def _handle_cs_all_bot(query, context, uid: int, target_group: str):
         if off.get('single_group') and off.get('auto_selected_group'):
             draft[off['lesson']] = off['auto_selected_group']
         else:
-            draft[off['lesson']] = target_group if target_group in ('1', '2') else '1'
+            avail_groups = [g.get('group') for g in (off.get('groups') or [])]
+            if target_group in avail_groups:
+                draft[off['lesson']] = target_group
+            elif avail_groups:
+                draft[off['lesson']] = avail_groups[0]
+            else:
+                draft[off['lesson']] = target_group if target_group in ('1', '2') else '1'
     context.user_data['cs_draft'] = draft
     await _show_course_selection_bot(query, context, uid, reset_draft=False)
 
@@ -727,7 +813,7 @@ async def _handle_cs_save_bot(query, context, uid: int):
     payload = [
         {'lesson': lesson, 'group': g}
         for lesson, g in draft.items()
-        if g in ('1', '2')
+        if g in ('1', '2', '3', '4')
     ]
     res = await db.save_student_course_selections(uid, payload, term=info.get('term'))
     await _show_group_schedule(
@@ -1730,17 +1816,107 @@ async def _show_scan_menu(query):
     txt = (
         "📸 <b>اسکن با هوشیار</b>\n"
         "━━━━━━━━━━━━━━━━\n\n"
-        "عکس جدول را بفرستید تا هوشیار آن را به‌صورت ساختاریافته استخراج کند.\n"
+        "عکس جدول یا پرتال انتخاب واحد را بفرستید تا هوشیار آن را به‌صورت ساختاریافته استخراج کند.\n"
         "بعد پیش‌نمایش را تایید می‌کنید — هیچ چیزی بدون تایید ذخیره نمی‌شود.\n\n"
+        "• <b>اسکرین‌شات انتخاب واحد (Staging چندتصویری)</b> → تطبیق هوشمند تصاویر آقایان و بانوان + جلوگیری از تکرار\n"
         "• <b>برنامه هفتگی</b> → به الگوی شنبه-جمعه تبدیل می‌شود (تکرار خودکار هفته بعد)\n"
         "• <b>امتحانات</b> → مستقیم به لیست امتحانات می‌رود"
     )
     kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎓 اسکن اسکرین‌شات انتخاب واحد (Staging)", callback_data='schedule:scan_portal_menu')],
         [InlineKeyboardButton("📅 اسکن برنامه هفتگی (شنبه-جمعه)", callback_data='schedule:scan_weekly')],
         [InlineKeyboardButton("📝 اسکن لیست امتحانات", callback_data='schedule:scan_exam')],
         [InlineKeyboardButton("🔙 بازگشت", callback_data='admin:cat_schedule')],
     ])
     await query.edit_message_text(txt, parse_mode='HTML', reply_markup=kb)
+
+
+async def _show_portal_scan_menu(query, context):
+    raw_items = context.user_data.get('portal_scan_items') or []
+    imgs = context.user_data.get('portal_scan_images') or []
+    term_cfg = await db.get_current_term_config()
+    active_term = term_cfg.get('term', '')
+    reconciled = db.reconcile_staged_course_extractions(raw_items, academic_term=active_term) if raw_items else None
+    summary = (reconciled or {}).get('summary') or {}
+
+    status_block = ""
+    kb_rows = [
+        [
+            InlineKeyboardButton("👨 ارسال تصویر آقایان", callback_data='schedule:scan_portal_start:male_only'),
+            InlineKeyboardButton("👩 ارسال تصویر بانوان", callback_data='schedule:scan_portal_start:female_only'),
+        ],
+        [
+            InlineKeyboardButton("👥 ارسال تصویر مشترک", callback_data='schedule:scan_portal_start:mixed'),
+        ],
+    ]
+    if reconciled and reconciled.get('items'):
+        status_block = (
+            f"\n📦 <b>وضعیت بسته فعلی ({len(imgs)} تصویر):</b>\n"
+            f"• ردیف‌های استخراج‌شده خام: <b>{summary.get('raw_count', 0)}</b>\n"
+            f"• ردیف‌های یکتای Staging: <b>{summary.get('staged_count', 0)}</b>\n"
+            f"• دروس مشترک ادغام‌شده (هر دو جنس): <b>{summary.get('merged_shared_count', 0)}</b>\n"
+            f"• دروس تفکیک‌شده (آقایان/بانوان مجزا): <b>{summary.get('distinct_gender_count', 0)}</b>\n"
+        )
+        kb_rows.append([InlineKeyboardButton(
+            f"✅ تایید و انتشار در کاتالوگ ترم ({summary.get('staged_count', 0)} ردیف)",
+            callback_data='schedule:scan_portal_publish',
+        )])
+        kb_rows.append([InlineKeyboardButton(
+            "📥 فقط ذخیره در Staging (بازبینی در پنل وب)",
+            callback_data='schedule:scan_portal_stage_only',
+        )])
+        kb_rows.append([InlineKeyboardButton("🗑 پاک‌سازی بسته فعلی", callback_data='schedule:scan_cancel')])
+
+    kb_rows.append([InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_menu')])
+    await query.edit_message_text(
+        "🎓 <b>استخراج هوشمند انتخاب واحد از چند تصویر (Staging)</b>\n"
+        "━━━━━━━━━━━━━━━━\n"
+        f"📅 ترم هدف: <b>{active_term}</b>\n"
+        f"{status_block}\n"
+        "می‌توانید ابتدا اسکرین‌شات انتخاب واحد آقایان و سپس اسکرین‌شات انتخاب واحد بانوان را بفرستید.\n"
+        "سیستم بر اساس <code>(ترم، کد درس، گروه درس)</code> دروس مشترک را تشخیص داده و دروس دارای گروه/استاد متفاوت را به تفکیک جنسیت حفظ می‌کند:",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+
+
+async def _finalize_portal_scan_bot(query, context, uid: int, publish_now: bool = False):
+    raw_items = context.user_data.pop('portal_scan_items', None) or []
+    imgs = context.user_data.pop('portal_scan_images', None) or []
+    context.user_data.pop('mode', None)
+    if not raw_items:
+        await query.edit_message_text(
+            "❌ هیچ آیتمی برای ذخیره وجود ندارد.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_portal_menu')]]),
+        )
+        return
+    term_cfg = await db.get_current_term_config()
+    active_term = term_cfg.get('term', '')
+    batch = await db.create_course_import_staging_batch(
+        raw_items=raw_items,
+        academic_term=active_term,
+        source_images=imgs,
+        created_by=uid,
+    )
+    if not publish_now:
+        await query.edit_message_text(
+            f"📦 <b>بسته Staging با موفقیت ذخیره شد!</b>\n\n"
+            f"🆔 شناسه بسته: <code>{batch['batch_id']}</code>\n"
+            f"📚 تعداد ردیف‌های یکتا: <b>{len(batch.get('items') or [])}</b>\n\n"
+            "از طریق پنل مدیریت وب (بخش برنامه کلاسی → Staging انتخاب واحد) می‌توانید تک‌تک ردیف‌ها را ویرایش و منتشر کنید.",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data='schedule:scan_menu')]]),
+        )
+        return
+    pub_res = await db.publish_course_import_staging_batch(batch['batch_id'], actor_id=uid)
+    await query.edit_message_text(
+        f"✅ <b>استخراج انتخاب واحد در کاتالوگ ترم منتشر شد!</b>\n\n"
+        f"🆔 بسته: <code>{batch['batch_id']}</code>\n"
+        f"📚 گروه‌های درسی ثبت‌شده در کاتالوگ: <b>{pub_res.get('published_offerings', 0)}</b>\n"
+        f"🔁 الگوهای هفتگی به‌روزشده: <b>{pub_res.get('published_templates', 0)}</b>",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 پنل برنامه", callback_data='admin:cat_schedule')]]),
+    )
 
 async def _show_template_menu(query):
     templates = await db.get_schedule_templates()
@@ -1815,8 +1991,13 @@ WEEKDAY_FA = ["شنبه","یکشنبه","دوشنبه","سه‌شنبه","چها
 
 async def handle_schedule_scan_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get('mode', '')
-    kind = 'weekly' if mode == 'schedule_scan_weekly' else 'exam' if mode == 'schedule_scan_exam' else None
-    if kind not in ('weekly','exam'):
+    kind = (
+        'weekly' if mode == 'schedule_scan_weekly'
+        else 'exam' if mode == 'schedule_scan_exam'
+        else 'portal' if mode == 'schedule_scan_portal'
+        else None
+    )
+    if kind not in ('weekly', 'exam', 'portal'):
         return
     msg = update.message
     # get largest photo or document image
@@ -1859,8 +2040,67 @@ async def handle_schedule_scan_photo(update: Update, context: ContextTypes.DEFAU
         pass
     await msg.reply_text("⏳ هوشیار در حال خواندن جدول است... لطفاً صبر کنید.")
     try:
-        from ai_solver import scan_weekly_schedule_image, scan_exam_schedule_image
-        if kind == 'weekly':
+        from ai_solver import scan_weekly_schedule_image, scan_exam_schedule_image, scan_course_selection_image
+        if kind == 'portal':
+            edu_grp = context.user_data.get('portal_scan_edu_group', 'mixed')
+            imgs_so_far = list(context.user_data.get('portal_scan_images') or [])
+            src_name = f"bot_img_{len(imgs_so_far) + 1}_{edu_grp}"
+            term_cfg = await db.get_current_term_config()
+            active_term = term_cfg.get('term', '')
+            parsed = await scan_course_selection_image(
+                image_bytes, mime,
+                educational_group=edu_grp,
+                academic_term=active_term,
+                source_image=src_name,
+            )
+            courses = parsed.get('courses') or []
+            if not courses:
+                await msg.reply_text("❌ درسی در این تصویر تشخیص داده نشد. لطفاً تصویر واضح‌تری ارسال کنید.")
+                return
+            accumulated = list(context.user_data.get('portal_scan_items') or [])
+            accumulated.extend(courses)
+            imgs_so_far.append(src_name)
+            context.user_data['portal_scan_items'] = accumulated
+            context.user_data['portal_scan_images'] = imgs_so_far
+            context.user_data.pop('mode', None)
+
+            reconciled = db.reconcile_staged_course_extractions(accumulated, academic_term=active_term)
+            summary = reconciled.get('summary') or {}
+            staged_items = reconciled.get('items') or []
+            edu_map_fa = {'male_only': '👨 آقایان', 'female_only': '👩 بانوان', 'mixed': '👥 مشترک', 'unknown': '❓ نامشخص'}
+
+            lines = [
+                "👁 <b>پیش‌نمایش استخراج انتخاب واحد (Staging)</b>",
+                "━━━━━━━━━━━━━━━━",
+                f"📸 تصویر جدید: <b>{len(courses)} درس</b> استخراج شد ({edu_map_fa.get(edu_grp, edu_grp)})",
+                f"📦 مجموع تصاویر بسته: <b>{len(imgs_so_far)}</b> | ردیف‌های یکتای Staging: <b>{summary.get('staged_count', 0)}</b>",
+                f"🔗 دروس مشترک ادغام‌شده: <b>{summary.get('merged_shared_count', 0)}</b> | تفکیک‌شده: <b>{summary.get('distinct_gender_count', 0)}</b>",
+                "",
+            ]
+            for it in staged_items[:25]:
+                eb = edu_map_fa.get(it.get('educational_group'), '👥 مشترک')
+                code_s = f"[{it['course_code']}] " if it.get('course_code') else ""
+                lines.append(
+                    f"• {code_s}<b>{it.get('course_name')}</b> — گ{it.get('group_code')} ({it.get('credit', 1)} واحد) · {eb}"
+                )
+            if len(staged_items) > 25:
+                lines.append(f"... و {len(staged_items) - 25} ردیف دیگر")
+            txt = "\n".join(lines)[:3800]
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("➕ تصویر آقایان دیگر", callback_data='schedule:scan_portal_start:male_only'),
+                    InlineKeyboardButton("➕ تصویر بانوان دیگر", callback_data='schedule:scan_portal_start:female_only'),
+                ],
+                [InlineKeyboardButton(
+                    f"✅ تایید و انتشار در کاتالوگ ({len(staged_items)} ردیف)",
+                    callback_data='schedule:scan_portal_publish',
+                )],
+                [InlineKeyboardButton("📥 فقط ذخیره در Staging (وب‌ادمین)", callback_data='schedule:scan_portal_stage_only')],
+                [InlineKeyboardButton("❌ لغو و پاک‌سازی", callback_data='schedule:scan_cancel')],
+            ])
+            await msg.reply_text(txt, parse_mode='HTML', reply_markup=kb)
+            return
+        elif kind == 'weekly':
             parsed = await scan_weekly_schedule_image(image_bytes, mime)
             slots = parsed.get('slots') or []
             if not slots:

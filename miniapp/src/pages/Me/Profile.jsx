@@ -873,6 +873,9 @@ export default function Profile() {
           group:
             'group',
 
+          educational_group:
+            'educational-group',
+
           intake:
             'intake',
         }[field];
@@ -1039,6 +1042,52 @@ export default function Profile() {
               value: '2',
               label: 'گروه ۲',
               icon: '2️⃣',
+            },
+          ]}
+        />
+      )}
+
+
+      {picker ===
+        'educational_group' && (
+        <Picker
+          title={
+            'تعیین گروه آموزشی کلاس‌ها'
+          }
+          current={
+            user.educational_group
+          }
+          pending={
+            updateMutation
+              .isPending
+          }
+          onClose={() => {
+            if (
+              !updateMutation
+                .isPending
+            ) {
+              setPicker(null);
+            }
+          }}
+          onSelect={(value) =>
+            updateMutation.mutate({
+              field:
+                'educational_group',
+
+              value,
+            })
+          }
+          options={[
+            {
+              value: 'male',
+              label: 'کلاس‌های آقایان',
+              icon: '👨',
+            },
+
+            {
+              value: 'female',
+              label: 'کلاس‌های بانوان',
+              icon: '👩',
             },
           ]}
         />
@@ -1288,6 +1337,32 @@ export default function Profile() {
                       {user.course_selection_count > 0
                         ? `(اکثریت ${user.course_selection_count} درس) `
                         : ''}
+                      ✎
+                    </button>
+
+                    <button
+                      type="button"
+                      className={
+                        user.educational_group === 'male' || user.educational_group === 'female'
+                          ? 'badge b-grn'
+                          : 'badge b-warn'
+                      }
+                      onClick={() =>
+                        setPicker(
+                          'educational_group'
+                        )
+                      }
+                      title="گروه آموزشی کلاس‌های تفکیک‌شده (آقایان/بانوان)"
+                    >
+                      {user.educational_group === 'male'
+                        ? '👨 کلاس‌های آقایان'
+                        : user.educational_group === 'female'
+                          ? '👩 کلاس‌های بانوان'
+                          : user.ai_suggested_group === 'male'
+                            ? '❓ گروه آموزشی (پیشنهاد: آقایان)'
+                            : user.ai_suggested_group === 'female'
+                              ? '❓ گروه آموزشی (پیشنهاد: بانوان)'
+                              : '❓ تعیین گروه آموزشی'}{' '}
                       ✎
                     </button>
                   </div>

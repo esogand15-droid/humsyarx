@@ -6159,7 +6159,7 @@ async def scan_weekly_schedule_image(image_bytes: bytes, image_mime: str = 'imag
             g = str(s.get('group') or group_hint or 'هر دو').strip() or 'هر دو'
             from database import db as _db
             g = _db.normalize_group(g) or 'هر دو'
-            if g not in ('1','2','هر دو'):
+            if g not in ('1','2','3','4','هر دو'):
                 g = 'هر دو'
             flex = str(s.get('flex_type') or '').strip().lower()
             if flex not in ('fixed','flexible'):
@@ -6235,4 +6235,185 @@ async def scan_exam_schedule_image(image_bytes: bytes, image_mime: str = 'image/
         except Exception:
             continue
     return {'exams': norm}
+
+
+# ══════════════════════════════════════════════════
+#  🖼 بخش ۳: استخراج ساختاریافته اطلاعات انتخاب واحد از اسکرین‌شات‌های پرتال آموزشی (Vision + Schema Validation)
+# ══════════════════════════════════════════════════
+
+COURSE_SELECTION_PORTAL_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "detected_academic_term": {
+            "type": "STRING",
+            "description": "عنوان یا کد نیمسال تحصیلی دیده‌شده در تصویر (مثلاً '1405-1406-1' یا خالی اگر در تصویر نیست)",
+        },
+        "courses": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "course_name": {"type": "STRING", "description": "نام کامل درس به فارسی (بدون کد درس)"},
+                    "course_code": {"type": "STRING", "description": "کد درس با ارقام انگلیسی (مثلاً '98261047')"},
+                    "class_code": {"type": "STRING", "description": "کد ارائه/کد کلاس در صورت وجود، در غیر این صورت رشته خالی"},
+                    "group_code": {"type": "STRING", "description": "شماره گروه درس با ارقام انگلیسی (مثلاً '1'، '2'، '3')"},
+                    "credit": {"type": "NUMBER", "description": "تعداد واحد درس (مثلاً 2 یا 1 یا 0.5 یا 1.5)"},
+                    "instructor_name": {"type": "STRING", "description": "نام استاد فقط اگر در تصویر نوشته شده باشد؛ هرگز حدس نزن (رشته خالی اگر نیست)"},
+                    "weekday": {"type": "INTEGER", "description": "روز هفته 0=شنبه تا 6=جمعه فقط اگر در تصویر صریحاً ذکر شده باشد؛ در غیر این صورت -1"},
+                    "start_time": {"type": "STRING", "description": "ساعت شروع کلاس به HH:MM فقط اگر در تصویر صریحاً ذکر شده باشد؛ در غیر این صورت رشته خالی"},
+                    "end_time": {"type": "STRING", "description": "ساعت پایان کلاس به HH:MM فقط اگر در تصویر صریحاً ذکر شده باشد؛ در غیر این صورت رشته خالی"},
+                    "exam_date": {"type": "STRING", "description": "تاریخ امتحان فقط اگر در تصویر صریحاً ذکر شده باشد؛ در غیر این صورت رشته خالی"},
+                    "exam_time": {"type": "STRING", "description": "ساعت امتحان فقط اگر در تصویر صریحاً ذکر شده باشد؛ در غیر این صورت رشته خالی"},
+                    "section_type": {"type": "STRING", "description": "'taken_courses' برای جدول دروس اخذشده دانشجو یا 'available_courses' برای لیست دروس قابل اخذ"},
+                    "extraction_confidence": {"type": "NUMBER", "description": "میزان اطمینان استخراج بین 0.0 تا 1.0"},
+                },
+                "required": ["course_name", "course_code", "group_code", "credit"],
+            },
+        },
+    },
+    "required": ["courses"],
+}
+
+COURSE_SELECTION_PORTAL_SYSTEM = (
+    "تو یک سیستم دقیق استخراج اطلاعات انتخاب واحد دانشگاهی از اسکرین‌شات پرتال آموزشی هستی.\n"
+    "قوانین حیاتی و غیرقابل تخطی:\n"
+    "1) حریم خصوصی: هرگونه اطلاعات شخصی دانشجو (نام دانشجو، شماره دانشجویی، کد ملی و غیره) را کاملاً نادیده بگیر و هرگز در خروجی نیاور.\n"
+    "2) عدم حدس زدن (Zero Hallucination): فقط و فقط اطلاعاتی را که واقعاً در تصویر دیده می‌شوند استخراج کن. اگر نام استاد (instructor_name)، روز هفته (weekday)، ساعت کلاس (start_time/end_time) یا تاریخ/ساعت امتحان (exam_date/exam_time) در تصویر وجود ندارد، آن‌ها را رشته خالی \"\" (و برای weekday عدد -1) بگذار و تحت هیچ شرایطی حدس نزن!\n"
+    "3) اولویت با جدول «لیست دروس اخذ شده دانشجو» است که شامل ستون‌های کد درس، نام درس در کاتالوگ، گروه درس و واحد است. تمام ردیف‌های این جدول را با section_type='taken_courses' استخراج کن.\n"
+    "4) اگر در تصویر بخشی با عنوان «لیست دروس قابل اخذ» (کارت‌های <نام درس>-<کد درس>) وجود دارد، دروسی را که قبلاً در جدول «لیست دروس اخذ شده دانشجو» بوده‌اند دوباره تکرار نکن؛ فقط در صورتی که درسی در جدول اخذشده نیست آن را با section_type='available_courses' اضافه کن.\n"
+    "5) تمام اعداد (کد درس، گروه درس، واحد، ساعت) را به ارقام انگلیسی برگردان و فقط JSON معتبر مطابق schema تولید کن."
+)
+
+
+async def scan_course_selection_image(
+    image_bytes: bytes,
+    image_mime: str = 'image/jpeg',
+    educational_group: str = 'unknown',
+    academic_term: str = '',
+    source_image: str = 'image_1',
+) -> dict:
+    """استخراج ساختاریافته دروس انتخاب واحد از یک تصویر پرتال آموزشی با رعایت کامل Schema و بدون حدس زدن فیلدهای غایب."""
+    if not image_bytes or len(image_bytes) < 100:
+        raise AIError("عکس نامعتبر یا خیلی کوچک است.")
+    if len(image_bytes) > 12 * 1024 * 1024:
+        raise AIError("حجم عکس بیش از حد زیاد است — نسخه کم‌حجم‌تر بفرست.")
+    cfg = await get_ai_config()
+    if not cfg.get('enabled'):
+        raise AIConfigError("بخش هوشیار غیرفعال است.")
+    provider, model, key = _pick_vision_config(cfg)
+    if not key:
+        raise AIConfigError("کلید API vision تنظیم نشده — از پنل هوشیار یک کلید Gemini/OpenRouter وارد کن.")
+
+    from database import db as _db
+    edu_grp = _db.normalize_class_educational_group(educational_group, default='unknown')
+    user_prompt = (
+        "از این تصویر انتخاب واحد دانشگاهی، فهرست دروس، کد درس، گروه درس و تعداد واحد را استخراج کن.\n"
+        "فیلدهایی که در تصویر دیده نمی‌شوند (مثل نام استاد یا ساعت کلاس در جدول پرتال) را حتماً خالی بگذار و حدس نزن.\n"
+        "فقط JSON برگردان."
+    )
+    if provider == 'gemini':
+        data = await _vision_json_gemini(
+            key, model, COURSE_SELECTION_PORTAL_SYSTEM, user_prompt,
+            image_bytes, image_mime, COURSE_SELECTION_PORTAL_SCHEMA,
+        )
+    else:
+        data = await _vision_json_openai(
+            key, model, COURSE_SELECTION_PORTAL_SYSTEM, user_prompt,
+            image_bytes, image_mime, provider,
+        )
+
+    detected_term = str((data or {}).get('detected_academic_term') or '').strip()
+    effective_term = academic_term or detected_term
+    raw_courses = (data or {}).get('courses') or []
+
+    # حذف تکرار احتمالی بین taken_courses و available_courses در یک تصویر واحد
+    taken_codes = set()
+    taken_names = set()
+    cleaned_rows = []
+    for raw in raw_courses:
+        if not isinstance(raw, dict):
+            continue
+        wd = raw.get('weekday')
+        if wd is not None and int(wd) < 0:
+            raw = dict(raw, weekday=None)
+        norm = _db.normalize_extracted_course_row(
+            raw,
+            default_term=effective_term,
+            default_edu_group=edu_grp,
+            source_image=source_image,
+        )
+        if not norm:
+            continue
+        if norm.get('section_type') != 'available_courses':
+            if norm['course_code']:
+                taken_codes.add(norm['course_code'])
+            taken_names.add(norm['course_name'])
+        cleaned_rows.append(norm)
+
+    final_rows = []
+    for r in cleaned_rows:
+        if r.get('section_type') == 'available_courses':
+            if (r['course_code'] and r['course_code'] in taken_codes) or (r['course_name'] in taken_names):
+                continue
+        final_rows.append(r)
+
+    return {
+        'detected_academic_term': detected_term,
+        'academic_term': effective_term,
+        'educational_group': edu_grp,
+        'source_image': source_image,
+        'courses': final_rows,
+    }
+
+
+async def scan_course_selection_images(
+    images: list,
+    academic_term: str = '',
+) -> dict:
+    """پردازش یک یا چند تصویر انتخاب واحد (مثلاً تصویر انتخاب واحد آقایان + تصویر انتخاب واحد بانوان)
+    و اجرای موتور تطبیق و حذف تکرار (reconcile_staged_course_extractions) برای آماده‌سازی فضای Staging.
+
+    هر آیتم در `images` دیکشنری شامل:
+      - `bytes`: bytes تصویر
+      - `mime`: str (مثلاً 'image/png')
+      - `educational_group`: 'male_only' | 'female_only' | 'mixed' | 'unknown'
+      - `source_image`: نام یا شناسه تصویر (مثلاً 'boys_portal.png')
+    """
+    from database import db as _db
+    if not images:
+        raise AIError("هیچ تصویری برای استخراج ارسال نشده است.")
+
+    all_extracted = []
+    per_image_reports = []
+    detected_term = academic_term
+
+    for idx, img in enumerate(images):
+        src_name = str(img.get('source_image') or f"image_{idx + 1}").strip()
+        edu_grp = _db.normalize_class_educational_group(img.get('educational_group'), default='unknown')
+        res = await scan_course_selection_image(
+            image_bytes=img.get('bytes') or b'',
+            image_mime=img.get('mime') or 'image/jpeg',
+            educational_group=edu_grp,
+            academic_term=academic_term,
+            source_image=src_name,
+        )
+        if not detected_term and res.get('detected_academic_term'):
+            detected_term = res['detected_academic_term']
+        rows = res.get('courses') or []
+        all_extracted.extend(rows)
+        per_image_reports.append({
+            'source_image': src_name,
+            'educational_group': edu_grp,
+            'extracted_count': len(rows),
+            'detected_academic_term': res.get('detected_academic_term') or '',
+        })
+
+    reconciled = _db.reconcile_staged_course_extractions(all_extracted, academic_term=detected_term)
+    return {
+        'academic_term': detected_term,
+        'per_image': per_image_reports,
+        'items': reconciled['items'],
+        'summary': reconciled['summary'],
+    }
+
 

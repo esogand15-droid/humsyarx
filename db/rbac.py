@@ -378,10 +378,12 @@ class DBRbac:
         s = await self.bs_get_session(session_id)
         if not s:
             return ''
-        # 🍴 موج C2 — جلسه‌ی دارای فیلد intake صریح (fork) همان را برمی‌گرداند؛
-        # جلسات قدیمی فیلد ندارند و از درس والد ارث می‌برند (رفتار C1).
-        if 'intake' in s:
-            return s.get('intake') or ''
+        # 🍴 موج C2 — جلسه‌ی دارای فیلد intake صریح غیرخالی همان را برمی‌گرداند؛
+        # اگر فیلد intake خالی/None باشد یا وجود نداشته باشد، از درس والد ارث می‌برد
+        # تا جلسات داخل یک درسِ ورودی‌خاص هرگز به اشتباه «سراسری» تلقی نشوند.
+        explicit = str(s.get('intake') or '').strip() if 'intake' in s else ''
+        if explicit:
+            return explicit
         return await self.lesson_intake(s.get('lesson_id', ''))
 
 
@@ -405,9 +407,10 @@ class DBRbac:
         b = await self.ref_get_book(book_id)
         if not b:
             return ''
-        # 🍴 موج C2 — کتاب fork فیلد intake صریح دارد؛ کتاب قدیمی از موضوع ارث می‌برد
-        if 'intake' in b:
-            return b.get('intake') or ''
+        # 🍴 موج C2 — کتاب دارای فیلد intake صریح غیرخالی همان را برمی‌گرداند؛ وگرنه از موضوع ارث می‌برد
+        explicit = str(b.get('intake') or '').strip() if 'intake' in b else ''
+        if explicit:
+            return explicit
         return await self.ref_subject_intake(b.get('subject_id', ''))
 
 
@@ -427,6 +430,24 @@ class DBRbac:
         """لیست intakeهای قابل مشاهده برای دانشجو: ورودی خودش + سراسری.
         این تنها قرارداد خواندن سمت دانشجوست (Bot + API)."""
         return [user_intake or '', ''] if user_intake else ['']
+
+    async def viewer_intake_filter(self, uid: int, user_doc: dict = None):
+        """منبع واحد تعیین فیلتر ورودی برای نمای دانشجویی (📚 منابع در ربات و مینی‌اپ):
+        - دانشجوی عادی ← [user_intake, '']
+        - ادمین محتوای ورودی خاص (content_scoped) ← [scope_intake, ''] (هرگز None نگیرد تا جلسات تکراری/سایر ورودی‌ها نشت نکند!)
+        - ادمین ارشد محتوا (global) ← اگر خودش ورودی دانشجویی دارد [user_intake, '']؟ خیر، برای لیست درس‌های همه ورودی‌ها None می‌گیرد، اما در bs_get_sessions_effective نمای مؤثر بدون تکرار اعمال می‌شود.
+        """
+        scope = await self.get_content_scope(uid)
+        if scope and scope.get('kind') == 'global':
+            return None
+        if scope and scope.get('kind') == 'scoped':
+            own = str(scope.get('intake') or '').strip()
+            if not own:
+                u = user_doc if isinstance(user_doc, dict) else (await self.get_user(uid) or {})
+                own = str(u.get('intake') or '').strip()
+            return self.student_intake_filter(own)
+        u = user_doc if isinstance(user_doc, dict) else (await self.get_user(uid) or {})
+        return self.student_intake_filter((u or {}).get('intake', ''))
 
 
     # ══════════════════════════════════════════════════

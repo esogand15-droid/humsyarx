@@ -1375,7 +1375,9 @@ function UserDrawer({ row, me, go, onClose, initialData, onSnapshot, onRemoved }
             'نام کامل': d.user.name, 'نام‌نما': d.user.nickname,
             'یوزرنیم': d.user.username && '@' + d.user.username,
             'Telegram ID': d.user.id, 'شماره دانشجویی': d.user.student_id,
-            'ورودی': d.user.intake, 'گروه': d.user.group, 'نقش قدیمی': d.user.role,
+            'ورودی': d.user.intake, 'گروه': d.user.group,
+            'گروه آموزشی کلاس‌ها': d.user.educational_group === 'male' ? '👨 کلاس‌های آقایان' : d.user.educational_group === 'female' ? '👩 کلاس‌های بانوان' : `❓ تعیین‌نشده${d.user.ai_suggested_group === 'male' ? ' (پیشنهاد AI: آقایان)' : d.user.ai_suggested_group === 'female' ? ' (پیشنهاد AI: بانوان)' : ''}`,
+            'نقش قدیمی': d.user.role,
             'ثبت‌نام': d.user.registered_at, 'آخرین فعالیت': d.user.last_active,
           }).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => (
             <React.Fragment key={k}><dt>{k}</dt><dd className={k === 'Telegram ID' || k === 'یوزرنیم' ? 'code' : ''}>{k === 'ثبت‌نام' || k === 'آخرین فعالیت' ? <FaDateTime value={v} /> : String(v)}</dd></React.Fragment>
@@ -1649,7 +1651,8 @@ function UserActions({ row, d, me, onChanged, onClose, onRemoved }) {
   const [intakes, setIntakes] = useState([]);
   const [form, setForm] = useState({
     name: u.name || '', student_id: u.student_id || '',
-    group: u.group || '', intake: u.intake || '', nickname: u.nickname || '',
+    group: u.group || '', educational_group: u.educational_group || 'unknown',
+    intake: u.intake || '', nickname: u.nickname || '',
   });
   const [confirm, setConfirm] = useState(null);   // {action,text,danger}
   const [pendingPatch, setPendingPatch] = useState(null);
@@ -1666,7 +1669,7 @@ function UserActions({ row, d, me, onChanged, onClose, onRemoved }) {
   };
   const proposeSave = () => {
     const body = {};
-    ['name', 'student_id', 'group', 'intake', 'nickname'].forEach(k => {
+    ['name', 'student_id', 'group', 'educational_group', 'intake', 'nickname'].forEach(k => {
       if (String(form[k] || '') !== String(u[k] || '')) body[k] = form[k];
     });
     if (!Object.keys(body).length) return toast('تغییری اعمال نشده است', 'err');
@@ -1730,6 +1733,12 @@ function UserActions({ row, d, me, onChanged, onClose, onRemoved }) {
               <option value="2">گروه ۲</option>
               {!['', '1', '2'].includes(String(form.group)) &&
                 <option value={form.group}>مقدار قدیمی: {form.group}</option>}
+            </select></label>
+          <label className="fld"><span>گروه آموزشی کلاس‌ها</span>
+            <select className="inp" value={form.educational_group || 'unknown'} onChange={e => setForm({ ...form, educational_group: e.target.value })}>
+              <option value="unknown">❓ تعیین‌نشده {u.ai_suggested_group === 'male' ? '(پیشنهاد AI: آقایان)' : u.ai_suggested_group === 'female' ? '(پیشنهاد AI: بانوان)' : ''}</option>
+              <option value="male">👨 کلاس‌های آقایان</option>
+              <option value="female">👩 کلاس‌های بانوان</option>
             </select></label>
           <label className="fld"><span>ورودی</span>
             <select className="inp" value={form.intake} onChange={e => setForm({ ...form, intake: e.target.value })}>

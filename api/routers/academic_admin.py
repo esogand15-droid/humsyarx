@@ -33,7 +33,16 @@ ScheduleType = Literal[
 ScheduleGroup = Literal[
     "1",
     "2",
+    "3",
+    "4",
     "هر دو",
+]
+
+ClassEducationalGroup = Literal[
+    "male_only",
+    "female_only",
+    "mixed",
+    "unknown",
 ]
 
 FlexType = Literal[
@@ -290,6 +299,21 @@ def _schedule_document(
             or "هر دو"
         ),
 
+        "educational_group": (
+            item.get("educational_group")
+            or "mixed"
+        ),
+
+        "course_code": (
+            item.get("course_code")
+            or ""
+        ),
+
+        "term": (
+            item.get("term")
+            or ""
+        ),
+
         "note": (
             item.get("notes")
             or item.get("note", "")
@@ -339,6 +363,12 @@ class ScheduleCreate(BaseModel):
 
     group: ScheduleGroup = "هر دو"
 
+    educational_group: ClassEducationalGroup = "mixed"
+
+    course_code: str = Field(default="", max_length=40)
+
+    term: str = Field(default="", max_length=40)
+
     location: str = Field(
         default="",
         max_length=100,
@@ -381,6 +411,12 @@ class ScheduleUpdate(BaseModel):
     )
 
     group: ScheduleGroup = "هر دو"
+
+    educational_group: ClassEducationalGroup | None = None
+
+    course_code: str | None = Field(default=None, max_length=40)
+
+    term: str | None = Field(default=None, max_length=40)
 
     location: str = Field(
         default="",
@@ -464,25 +500,30 @@ async def schedule_create(
     location = _clean(body.location, 100)
     note = str(body.note or "").strip()[:500]
     group = db.normalize_group(body.group) or "هر دو"
+    edu_grp = db.normalize_class_educational_group(body.educational_group, default="mixed")
     schedule_id = await db.add_schedule(
         stype=body.type, lesson=lesson, teacher=teacher, date=date, time=time, end_time=end_time,
-        location=location, notes=note, group=group, flex_type=body.flex_type, credit=body.credit or 1.0)
+        location=location, notes=note, group=group, flex_type=body.flex_type, credit=body.credit or 1.0,
+        educational_group=edu_grp, term=(body.term or "").strip() or None, course_code=(body.course_code or "").strip(),
+    )
     item = await db.get_schedule_by_id(str(schedule_id)) or {
         "_id": schedule_id, "type": body.type, "lesson": lesson,
         "teacher": teacher, "date": date, "time": time, "end_time": end_time,
-        "location": location, "notes": note, "group": group,
+        "location": location, "notes": note, "group": group, "educational_group": edu_grp,
     }
     notice = await db.schedule_notify_event(item, "created")
     await _audit(
         admin, "ایجاد برنامه آموزشی", "Schedules", severity="INFO",
         target_id=str(schedule_id), target_type="schedule", target_label=lesson,
         after={"type": body.type, "date": date, "time": time, "end_time": end_time, "group": group,
-               "notified": notice.get("notified", 0)},
+               "educational_group": edu_grp, "notified": notice.get("notified", 0)},
         tags=["برنامه", body.type, "پنل_وب"],
     )
     # 🌊 W8/UX-05 — هشدار تداخل (غیرمسدودکننده)
     conflicts = await db.schedule_find_conflicts(
-        group, date, time, end_time, exclude_id=str(schedule_id))
+        group, date, time, end_time, exclude_id=str(schedule_id),
+        educational_group=edu_grp, stype=body.type, term=item.get("term"),
+    )
     return {"ok": True, "id": str(schedule_id),
             "notified": notice.get("notified", 0),
             "warnings": {"schedule_conflicts": conflicts}}
@@ -507,7 +548,9 @@ async def schedule_update(
     ok = await db.update_schedule_full(
         schedule_id, _clean(body.lesson, 100), _clean(body.teacher, 100),
         date, time, _clean(body.location, 100),
-        str(body.note or "").strip()[:500], group, body.flex_type, end_time=end_time, credit=body.credit)
+        str(body.note or "").strip()[:500], group, body.flex_type, end_time=end_time, credit=body.credit,
+        educational_group=body.educational_group, term=body.term, course_code=body.course_code,
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="برنامه پیدا نشد")
     item = await db.get_schedule_by_id(schedule_id) or {
@@ -559,16 +602,18 @@ async def admin_course_selection_stats(
     term: str | None = Query(default=None),
     admin=Depends(get_schedule_admin_user),
 ):
-    """آمار کامل انتخاب واحد دانشجوها + تنظیمات ترم جاری + لیست گروه‌های ارائه‌شده هر درس."""
+    """آمار کامل انتخاب واحد دانشجوها + تنظیمات ترم جاری + لیست گروه‌های ارائه‌شده هر درس + بسته‌های Staging."""
     stats = await db.get_course_selection_admin_stats(term=term)
-    offerings = await db.get_term_course_offerings(term=stats.get("term"))
+    offerings = await db.get_term_course_offerings(term=stats.get("term"), include_all_educational_groups=True)
     raw_offerings = await db.course_offerings.find({"term": stats.get("term")}).sort("lesson", 1).to_list(length=500)
     for r in raw_offerings:
         r["id"] = str(r.pop("_id"))
+    staging_batches = await db.list_course_import_staging_batches(academic_term=stats.get("term"), limit=15)
     return {
         "stats": stats,
         "offerings": offerings,
         "explicit_offerings": raw_offerings,
+        "staging_batches": staging_batches,
     }
 
 
@@ -599,11 +644,14 @@ async def admin_upsert_course_offering(
     body: dict,
     admin=Depends(get_schedule_admin_user),
 ):
-    """ثبت یا ویرایش یک گروه ارائه‌شده برای درس (پشتیبانی از چند گروه با اساتید متفاوت برای یک درس)."""
+    """ثبت یا ویرایش یک گروه ارائه‌شده برای درس (با پشتیبانی از کد درس و گروه آموزشی آقایان/بانوان/مشترک)."""
     lesson = _clean(body.get("lesson"), 120)
     if not lesson:
         raise HTTPException(422, "نام درس الزامی است")
     group = str(body.get("group") or "1").strip()
+    educational_group = db.normalize_class_educational_group(body.get("educational_group"), default="mixed")
+    course_code = _clean(body.get("course_code"), 40)
+    class_code = _clean(body.get("class_code"), 40)
     teacher = _clean(body.get("teacher"), 80)
     schedule_summary = _clean(body.get("schedule_summary"), 200)
     try:
@@ -611,17 +659,19 @@ async def admin_upsert_course_offering(
     except (TypeError, ValueError):
         credit = 1.0
     term = str(body.get("term") or "").strip() or None
-    oid = await db.upsert_course_offering(
+    doc = await db.upsert_course_offering(
         lesson=lesson, group=group, teacher=teacher,
         credit=credit, schedule_summary=schedule_summary, term=term,
+        educational_group=educational_group, course_code=course_code, class_code=class_code,
     )
     await _audit(
         admin, "ثبت/ویرایش گروه درس ارائه‌شده", "Schedules", severity="INFO",
-        target_id=oid, target_type="course_offering", target_label=f"{lesson} (گروه {group})",
-        after={"lesson": lesson, "group": group, "teacher": teacher, "credit": credit},
+        target_id=f"{lesson}:{group}:{educational_group}", target_type="course_offering",
+        target_label=f"{lesson} (گروه {group} - {educational_group})",
+        after={"lesson": lesson, "group": group, "educational_group": educational_group, "teacher": teacher, "credit": credit, "course_code": course_code},
         tags=["انتخاب_واحد", "گروه_درس"],
     )
-    return {"ok": True, "id": oid}
+    return {"ok": True, "offering": doc}
 
 
 @router.delete("/schedule/course-offerings/{oid}")
@@ -638,6 +688,189 @@ async def admin_delete_course_offering(
         tags=["انتخاب_واحد", "حذف_گروه_درس"],
     )
     return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  🖼 بخش ۳: استخراج هوشمند چندتصویری انتخاب واحد + فضای Staging
+# ══════════════════════════════════════════════════════════════════
+
+@router.post("/schedule/course-selection/scan-images")
+async def admin_scan_course_selection_images(
+    body: dict,
+    admin=Depends(get_schedule_admin_user),
+):
+    """استخراج اطلاعات انتخاب واحد از یک یا چند اسکرین‌شات (مثلاً تصویر آقایان + تصویر بانوان)
+    و ذخیره در فضای Staging بدون نوشتن مستقیم روی دیتابیس اصلی."""
+    import base64
+    from ai_solver import scan_course_selection_images, AIError, AIConfigError
+
+    raw_images = body.get("images") if isinstance(body, dict) else []
+    if not isinstance(raw_images, list) or not raw_images:
+        raise HTTPException(422, "حداقل یک تصویر برای استخراج ارسال کنید")
+    if len(raw_images) > 10:
+        raise HTTPException(422, "حداکثر ۱۰ تصویر در هر نوبت قابل پردازش است")
+
+    academic_term = str(body.get("academic_term") or body.get("term") or "").strip()
+    intake = str(body.get("intake") or "").strip()
+    existing_batch_id = str(body.get("append_to_batch_id") or "").strip()
+
+    parsed_images = []
+    source_names = []
+    for idx, img in enumerate(raw_images):
+        if not isinstance(img, dict):
+            continue
+        b64 = str(img.get("data_base64") or img.get("base64") or "").strip()
+        if "," in b64 and b64.startswith("data:"):
+            b64 = b64.split(",", 1)[1]
+        if not b64:
+            continue
+        try:
+            img_bytes = base64.b64decode(b64)
+        except Exception:
+            raise HTTPException(422, f"فرمت تصویر شماره {idx + 1} نامعتبر است")
+        edu_grp = db.normalize_class_educational_group(img.get("educational_group"), default="unknown")
+        src_name = str(img.get("filename") or img.get("source_image") or f"image_{idx + 1}_{edu_grp}").strip()[:120]
+        source_names.append(src_name)
+        parsed_images.append({
+            "bytes": img_bytes,
+            "mime": str(img.get("mime_type") or "image/jpeg").strip(),
+            "educational_group": edu_grp,
+            "source_image": src_name,
+        })
+
+    if not parsed_images:
+        raise HTTPException(422, "داده تصویر معتبری یافت نشد")
+
+    try:
+        scan_res = await scan_course_selection_images(parsed_images, academic_term=academic_term)
+    except (AIConfigError, AIError) as e:
+        raise HTTPException(422, str(e))
+
+    eff_term = academic_term or scan_res.get("academic_term") or (await db.get_current_term_config()).get("term", "1404-2")
+    raw_items = list(scan_res.get("items") or [])
+
+    if existing_batch_id:
+        old_batch = await db.get_course_import_staging_batch(existing_batch_id)
+        if old_batch and old_batch.get("status") == "staged":
+            combined = list(old_batch.get("items") or []) + raw_items
+            reconciled = db.reconcile_staged_course_extractions(combined, academic_term=eff_term)
+            await db.course_import_staging.update_one(
+                {"batch_id": existing_batch_id},
+                {"$set": {
+                    "items": reconciled["items"],
+                    "summary": reconciled["summary"],
+                    "source_images": list(old_batch.get("source_images") or []) + source_names,
+                    "updated_at": utc_now_iso(),
+                }},
+            )
+            batch = await db.get_course_import_staging_batch(existing_batch_id)
+            return {"ok": True, "batch": batch, "per_image": scan_res.get("per_image", [])}
+
+    batch = await db.create_course_import_staging_batch(
+        raw_items=raw_items,
+        academic_term=eff_term,
+        intake=intake,
+        source_images=source_names,
+        created_by=admin["id"],
+    )
+    await _audit(
+        admin, "استخراج هوشمند انتخاب واحد به Staging", "Schedules", severity="INFO",
+        target_id=batch["batch_id"], target_type="course_import_staging",
+        after=batch.get("summary"),
+        tags=["انتخاب_واحد", "اسکن_هوشیار", "staging"],
+    )
+    return {"ok": True, "batch": batch, "per_image": scan_res.get("per_image", [])}
+
+
+@router.get("/schedule/course-selection/staging")
+async def admin_list_course_import_staging(
+    term: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    admin=Depends(get_schedule_admin_user),
+):
+    batches = await db.list_course_import_staging_batches(academic_term=term, status=status, limit=30)
+    return {"batches": batches}
+
+
+@router.get("/schedule/course-selection/staging/{batch_id}")
+async def admin_get_course_import_staging(
+    batch_id: str,
+    admin=Depends(get_schedule_admin_user),
+):
+    batch = await db.get_course_import_staging_batch(batch_id)
+    if not batch:
+        raise HTTPException(404, "بسته Staging پیدا نشد")
+    return {"batch": batch}
+
+
+@router.patch("/schedule/course-selection/staging/{batch_id}/items/{item_id}")
+async def admin_update_course_import_staging_item(
+    batch_id: str,
+    item_id: str,
+    body: dict,
+    admin=Depends(get_schedule_admin_user),
+):
+    updated = await db.update_course_import_staging_item(batch_id, item_id, body, actor_id=admin["id"])
+    if not updated:
+        raise HTTPException(404, "ردیف یا بسته Staging پیدا نشد (یا قبلاً منتشر شده است)")
+    return {"ok": True, "batch": updated}
+
+
+@router.post("/schedule/course-selection/staging/{batch_id}/publish")
+async def admin_publish_course_import_staging(
+    batch_id: str,
+    body: dict | None = None,
+    admin=Depends(get_schedule_admin_user),
+):
+    selected_ids = (body or {}).get("selected_item_ids") if isinstance(body, dict) else None
+    try:
+        res = await db.publish_course_import_staging_batch(
+            batch_id, actor_id=admin["id"], selected_item_ids=selected_ids,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await _audit(
+        admin, "انتشار بسته Staging انتخاب واحد در دیتابیس اصلی", "Schedules", severity="HIGH",
+        target_id=batch_id, target_type="course_import_staging",
+        after=res,
+        tags=["انتخاب_واحد", "انتشار_staging"],
+    )
+    return res
+
+
+@router.post("/schedule/course-selection/staging/{batch_id}/rollback")
+async def admin_rollback_course_import_staging(
+    batch_id: str,
+    admin=Depends(get_schedule_admin_user),
+):
+    try:
+        res = await db.rollback_course_import_staging_batch(batch_id, actor_id=admin["id"])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    await _audit(
+        admin, "بازگردانی (Rollback) بسته منتشرشده انتخاب واحد", "Schedules", severity="HIGH",
+        target_id=batch_id, target_type="course_import_staging",
+        after=res,
+        tags=["انتخاب_واحد", "rollback_staging"],
+    )
+    return res
+
+
+@router.post("/schedule/cleanup-anomalies")
+async def admin_cleanup_schedule_anomalies(
+    body: dict | None = None,
+    admin=Depends(get_schedule_admin_user),
+):
+    """شناسایی و آرشیو ایمن رکوردهای تکراری/منسوخ در برنامه کلاسی و الگوهای هفتگی بدون حذف تاریخچه."""
+    dry_run = bool((body or {}).get("dry_run", False))
+    active_term = str((body or {}).get("term") or "").strip() or None
+    res = await db.audit_and_cleanup_schedule_anomalies(dry_run=dry_run, active_term=active_term)
+    if not dry_run:
+        await _audit(
+            admin, "پاک‌سازی و آرشیو ایمن رکوردهای تکراری برنامه کلاسی", "Schedules", severity="WARNING",
+            after=res, tags=["برنامه", "پاکسازی_تداخل"],
+        )
+    return res
 
 
 @router.post("/schedule/course-selection/send-reminder")

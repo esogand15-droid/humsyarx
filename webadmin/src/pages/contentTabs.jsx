@@ -1960,12 +1960,18 @@ function CourseSelectionAdminPanel() {
   });
   const [offForm, setOffForm] = useState({
     lesson: "",
+    course_code: "",
     group: "1",
+    educational_group: "mixed",
     teacher: "",
     credit: 2,
     schedule_summary: "",
   });
   const [busy, setBusy] = useState(false);
+  // 🖼 بخش ۳: وضعیت آپلود چندتصویری و فضای Staging
+  const [scanQueue, setScanQueue] = useState([]);
+  const [activeBatch, setActiveBatch] = useState(null);
+  const [scanBusy, setScanBusy] = useState(false);
 
   const loadStats = async () => {
     setLoading(true);
@@ -1980,6 +1986,10 @@ function CourseSelectionAdminPanel() {
         second_reminder_enabled: Boolean(tc.second_reminder_enabled),
         archive_previous: true,
       });
+      if (!activeBatch && Array.isArray(r?.staging_batches) && r.staging_batches.length > 0) {
+        const latestStaged = r.staging_batches.find((b) => b.status === "staged") || r.staging_batches[0];
+        if (latestStaged) setActiveBatch(latestStaged);
+      }
     } catch (e) {
       toast(errText(e), "err");
     }
@@ -1989,6 +1999,115 @@ function CourseSelectionAdminPanel() {
   useEffect(() => {
     if (open && !data) loadStats();
   }, [open]);
+
+  const handleFilesSelected = async (e, defaultEduGroup = "male_only") => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const readAsDataUrl = (file) =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    const added = [];
+    for (const f of files) {
+      try {
+        const dataUrl = await readAsDataUrl(f);
+        added.push({
+          filename: f.name,
+          mime_type: f.type || "image/png",
+          data_base64: dataUrl,
+          educational_group: defaultEduGroup,
+        });
+      } catch {
+        // ignore broken file
+      }
+    }
+    setScanQueue((prev) => [...prev, ...added]);
+    e.target.value = "";
+  };
+
+  const runMultiImageScan = async (appendToExisting = false) => {
+    if (!scanQueue.length) return toast("ابتدا حداقل یک تصویر انتخاب واحد اضافه کنید", "err");
+    setScanBusy(true);
+    try {
+      const r = await api.caScanCourseSelectionImages({
+        images: scanQueue,
+        academic_term: termForm.term,
+        append_to_batch_id:
+          appendToExisting && activeBatch?.status === "staged" ? activeBatch.batch_id : "",
+      });
+      setActiveBatch(r.batch);
+      setScanQueue([]);
+      toast(
+        `✅ استخراج انجام شد: ${r.batch?.summary?.staged_count || 0} ردیف در فضای Staging آماده بازبینی است`,
+      );
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setScanBusy(false);
+  };
+
+  const updateStagingItem = async (itemId, updates) => {
+    if (!activeBatch?.batch_id) return;
+    setScanBusy(true);
+    try {
+      const r = await api.caUpdateCourseImportStagingItem(activeBatch.batch_id, itemId, updates);
+      setActiveBatch(r.batch);
+      toast("ردیف Staging بروزرسانی شد ✅");
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setScanBusy(false);
+  };
+
+  const publishStagingBatch = async () => {
+    if (!activeBatch?.batch_id) return;
+    setScanBusy(true);
+    try {
+      const r = await api.caPublishCourseImportStaging(activeBatch.batch_id);
+      toast(
+        `🚀 بسته Staging منتشر شد (${r.published_offerings || 0} گروه درسی در کاتالوگ ترم ثبت شد) ✅`,
+      );
+      const refreshed = await api.caGetCourseImportStaging(activeBatch.batch_id);
+      setActiveBatch(refreshed.batch);
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setScanBusy(false);
+  };
+
+  const rollbackStagingBatch = async () => {
+    if (!activeBatch?.batch_id) return;
+    setScanBusy(true);
+    try {
+      const r = await api.caRollbackCourseImportStaging(activeBatch.batch_id);
+      toast(`⏪ بسته Staging بازگردانی شد (${r.restored_offerings || 0} رکورد قبلی بازیابی شد)`);
+      const refreshed = await api.caGetCourseImportStaging(activeBatch.batch_id);
+      setActiveBatch(refreshed.batch);
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setScanBusy(false);
+  };
+
+  const cleanupAnomalies = async () => {
+    setBusy(true);
+    try {
+      const r = await api.caCleanupScheduleAnomalies({ dry_run: false, term: termForm.term });
+      toast(
+        `🧹 پاک‌سازی ایمن انجام شد: ${r.archived_schedules || 0} برنامه تکراری/منسوخ و ${r.archived_templates || 0} الگوی تکراری آرشیو شد ✅`,
+      );
+      loadStats();
+    } catch (e) {
+      toast(errText(e), "err");
+    }
+    setBusy(false);
+  };
 
   const saveTerm = async () => {
     setBusy(true);
@@ -2013,12 +2132,21 @@ function CourseSelectionAdminPanel() {
       await api.caUpsertCourseOffering({
         ...offForm,
         lesson: offForm.lesson.trim(),
+        course_code: (offForm.course_code || "").trim(),
         teacher: offForm.teacher.trim(),
         credit: Number(offForm.credit || 1),
         term: termForm.term,
       });
       toast("گروه درس ثبت/بروزرسانی شد ✅");
-      setOffForm({ lesson: "", group: "1", teacher: "", credit: 2, schedule_summary: "" });
+      setOffForm({
+        lesson: "",
+        course_code: "",
+        group: "1",
+        educational_group: "mixed",
+        teacher: "",
+        credit: 2,
+        schedule_summary: "",
+      });
       loadStats();
     } catch (e) {
       toast(errText(e), "err");
@@ -2092,6 +2220,14 @@ function CourseSelectionAdminPanel() {
                 {Number(st.group2_count || 0).toLocaleString("fa")}
               </b>
             </div>
+            <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+              <div className="muted small">گروه آموزشی دانشجویان</div>
+              <b style={{ fontSize: 13 }}>
+                👨 {Number(st.male_students || 0).toLocaleString("fa")} · 👩{" "}
+                {Number(st.female_students || 0).toLocaleString("fa")} · ❓{" "}
+                {Number(st.unknown_educational_group_students || 0).toLocaleString("fa")}
+              </b>
+            </div>
           </div>
 
           {/* تنظیمات ترم و پایان امتحانات */}
@@ -2163,29 +2299,241 @@ function CourseSelectionAdminPanel() {
                   🔔 ارسال یادآوری دوم (فقط جاماندگان)
                 </button>
               )}
+              <button
+                className="btn sm"
+                disabled={busy}
+                onClick={cleanupAnomalies}
+                title="شناسایی و آرشیو ایمن رکوردهای تکراری یا متعلق به ترم‌های قبل در برنامه کلاسی و الگوهای هفتگی بدون حذف تاریخچه"
+              >
+                🧹 پاک‌سازی تداخل‌های کاذب و داده‌های قدیمی
+              </button>
               {loading && <span className="muted small">⏳ در حال بارگذاری…</span>}
             </div>
           </div>
 
+          {/* 🖼 بخش ۳: استخراج هوشمند چندتصویری انتخاب واحد (Staging + تطبیق آقایان/بانوان) */}
+          <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
+            <b>🖼 استخراج هوشمند انتخاب واحد از چند تصویر (Staging + تطبیق دروس آقایان و بانوان)</b>
+            <div className="muted small" style={{ marginTop: 2 }}>
+              یک یا چند اسکرین‌شات از پرتال انتخاب واحد (مثلاً یک تصویر انتخاب واحد آقایان و یک تصویر انتخاب واحد بانوان) اضافه کنید.
+              سیستم بر اساس کلید یکتای <code>(ترم، کد درس، گروه درس)</code> دروس مشترک را ادغام کرده و دروس تفکیک‌شده (مثل آئین زندگی یا تربیت بدنی ۲) را جدا نگه می‌دارد. هیچ داده‌ای پیش از تایید نهایی شما وارد کاتالوگ اصلی نمی‌شود.
+            </div>
+
+            <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <label className="btn sm" style={{ cursor: "pointer" }}>
+                👨 افزودن تصویر انتخاب واحد آقایان
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => handleFilesSelected(e, "male_only")}
+                />
+              </label>
+              <label className="btn sm" style={{ cursor: "pointer" }}>
+                👩 افزودن تصویر انتخاب واحد بانوان
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => handleFilesSelected(e, "female_only")}
+                />
+              </label>
+              <label className="btn sm" style={{ cursor: "pointer" }}>
+                👥 افزودن تصویر مشترک
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={(e) => handleFilesSelected(e, "mixed")}
+                />
+              </label>
+              {scanQueue.length > 0 && (
+                <>
+                  <button
+                    className="btn primary sm"
+                    disabled={scanBusy}
+                    onClick={() => runMultiImageScan(false)}
+                  >
+                    {scanBusy ? "⏳ در حال تحلیل Vision…" : `🤖 استخراج به بسته Staging جدید (${scanQueue.length} تصویر)`}
+                  </button>
+                  {activeBatch?.status === "staged" && (
+                    <button
+                      className="btn sm"
+                      disabled={scanBusy}
+                      onClick={() => runMultiImageScan(true)}
+                    >
+                      ➕ افزودن و تطبیق با بسته Staging فعلی
+                    </button>
+                  )}
+                  <button
+                    className="btn sm danger"
+                    disabled={scanBusy}
+                    onClick={() => setScanQueue([])}
+                  >
+                    پاک کردن صف آپلود
+                  </button>
+                </>
+              )}
+            </div>
+
+            {scanQueue.length > 0 && (
+              <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                {scanQueue.map((img, i) => (
+                  <span key={i} className="badge b-gray" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    <span>{img.filename}</span>
+                    <select
+                      className="inp"
+                      style={{ padding: "1px 4px", fontSize: 11, height: 22 }}
+                      value={img.educational_group}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setScanQueue((prev) =>
+                          prev.map((item, idx) => (idx === i ? { ...item, educational_group: val } : item)),
+                        );
+                      }}
+                    >
+                      <option value="male_only">👨 آقایان</option>
+                      <option value="female_only">👩 بانوان</option>
+                      <option value="mixed">👥 مشترک</option>
+                    </select>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {activeBatch && (
+              <div style={{ marginTop: 12, borderTop: "1px solid var(--bd)", paddingTop: 10 }}>
+                <div className="row" style={{ alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                  <b>📦 بسته Staging: {activeBatch.batch_id}</b>
+                  <span className={`badge ${activeBatch.status === "published" ? "b-grn" : "b-acc"}`}>
+                    {activeBatch.status === "published" ? "✅ منتشرشده" : activeBatch.status === "rolled_back" ? "⏪ بازگردانی‌شده" : "⏳ در انتظار تایید ادمین"}
+                  </span>
+                  {activeBatch.summary && (
+                    <span className="muted small">
+                      ردیف‌های یکتا: <b>{activeBatch.summary.staged_count || 0}</b> · مشترک ادغام‌شده:{" "}
+                      <b>{activeBatch.summary.merged_shared_count || 0}</b> · تفکیک‌شده جنسیتی:{" "}
+                      <b>{activeBatch.summary.distinct_gender_count || 0}</b>
+                    </span>
+                  )}
+                  <span className="spacer" />
+                  {activeBatch.status === "staged" && (
+                    <button className="btn primary sm" disabled={scanBusy} onClick={publishStagingBatch}>
+                      🚀 تایید نهایی و انتشار در کاتالوگ ترم
+                    </button>
+                  )}
+                  {activeBatch.status === "published" && (
+                    <button className="btn sm danger" disabled={scanBusy} onClick={rollbackStagingBatch}>
+                      ⏪ بازگردانی (Rollback) این انتشار
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ overflowX: "auto", maxHeight: 340 }}>
+                  <table className="tbl" style={{ fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        <th>کد درس</th>
+                        <th>نام درس</th>
+                        <th>گروه</th>
+                        <th>واحد</th>
+                        <th>گروه آموزشی</th>
+                        <th>استاد</th>
+                        <th>وضعیت تطبیق</th>
+                        <th>عملیات</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(activeBatch.items || []).map((it) => (
+                        <tr key={it.item_id}>
+                          <td><code>{it.course_code || "—"}</code></td>
+                          <td><b>{it.course_name}</b></td>
+                          <td>گروه {faDigits(it.group_code)}</td>
+                          <td>{it.credit}</td>
+                          <td>
+                            {activeBatch.status === "staged" ? (
+                              <select
+                                className="inp"
+                                style={{ padding: "2px 6px", fontSize: 11, height: 26 }}
+                                value={it.educational_group || "mixed"}
+                                onChange={(e) =>
+                                  updateStagingItem(it.item_id, { educational_group: e.target.value })
+                                }
+                              >
+                                <option value="mixed">👥 مشترک</option>
+                                <option value="male_only">👨 ویژه آقایان</option>
+                                <option value="female_only">👩 ویژه بانوان</option>
+                              </select>
+                            ) : it.educational_group === "male_only" ? (
+                              "👨 آقایان"
+                            ) : it.educational_group === "female_only" ? (
+                              "👩 بانوان"
+                            ) : (
+                              "👥 مشترک"
+                            )}
+                          </td>
+                          <td>{it.instructor_name || <span className="muted">در تصویر نبود</span>}</td>
+                          <td>
+                            {it.merge_status === "merged_shared" ? (
+                              <span className="badge b-grn">🔗 مشترک ادغام‌شده</span>
+                            ) : it.merge_status === "distinct_gender_section" ? (
+                              <span className="badge b-acc">🚻 تفکیک‌شده جنسیتی</span>
+                            ) : (
+                              <span className="badge b-gray">تک‌منبع</span>
+                            )}
+                            {it.needs_review && (
+                              <span className="badge b-warn" title={it.review_note} style={{ marginInlineStart: 4 }}>
+                                ⚠️ بررسی
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            {activeBatch.status === "staged" && (
+                              <button
+                                className="btn sm danger"
+                                style={{ padding: "1px 6px", fontSize: 10 }}
+                                onClick={() => updateStagingItem(it.item_id, { _delete: true })}
+                              >
+                                حذف
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* تعریف و ویرایش گروه‌های ارائه‌شده هر درس */}
           <div className="panel panel-pad" style={{ background: "var(--bg)" }}>
-            <b>📚 تعریف گروه‌ها و اساتید هر درس (پشتیبانی از چند گروه برای یک درس)</b>
+            <b>📚 تعریف گروه‌ها و اساتید هر درس (پشتیبانی از چند گروه و تفکیک آقایان/بانوان)</b>
             <div className="muted small" style={{ marginTop: 2 }}>
-              علاوه بر استخراج خودکار از جدول برنامه، می‌توانید برای هر درس گروه ۱ و گروه ۲ را با استاد و تعداد واحد مشخص ثبت کنید.
+              علاوه بر استخراج خودکار از جدول برنامه و Staging، می‌توانید برای هر درس گروه ۱ تا ۴ را به تفکیک آقایان/بانوان/مشترک ثبت کنید.
             </div>
             <div
               className="grid"
               style={{
-                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
                 gap: 8,
                 marginTop: 8,
               }}
             >
               <input
                 className="inp"
-                placeholder="نام درس (مثلاً فارماکولوژی) *"
+                placeholder="نام درس (مثلاً آئین زندگی) *"
                 value={offForm.lesson}
                 onChange={(e) => setOffForm((f) => ({ ...f, lesson: e.target.value }))}
+              />
+              <input
+                className="inp"
+                placeholder="کد درس (مثلاً 98331048)"
+                value={offForm.course_code}
+                onChange={(e) => setOffForm((f) => ({ ...f, course_code: e.target.value }))}
               />
               <select
                 className="inp"
@@ -2194,6 +2542,17 @@ function CourseSelectionAdminPanel() {
               >
                 <option value="1">1️⃣ گروه ۱</option>
                 <option value="2">2️⃣ گروه ۲</option>
+                <option value="3">3️⃣ گروه ۳</option>
+                <option value="4">4️⃣ گروه ۴</option>
+              </select>
+              <select
+                className="inp"
+                value={offForm.educational_group}
+                onChange={(e) => setOffForm((f) => ({ ...f, educational_group: e.target.value }))}
+              >
+                <option value="mixed">👥 مشترک (آقایان و بانوان)</option>
+                <option value="male_only">👨 ویژه آقایان</option>
+                <option value="female_only">👩 ویژه بانوان</option>
               </select>
               <input
                 className="inp"
@@ -2240,22 +2599,32 @@ function CourseSelectionAdminPanel() {
                       <tr key={c.lesson}>
                         <td>
                           <b>{c.lesson}</b>
+                          {c.course_code ? <div className="muted small">کد: {c.course_code}</div> : null}
                         </td>
                         <td>{Number(c.credit || 1).toLocaleString("fa")} واحد</td>
                         <td>
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             {(c.groups || []).map((g) => {
                               const exp = explicitOfferings.find(
-                                (x) => x.lesson === c.lesson && x.group === g.group,
-                              );
+                                (x) =>
+                                  x.lesson === c.lesson &&
+                                  x.group === g.group &&
+                                  (x.educational_group || "mixed") === (g.educational_group || "mixed"),
+                              ) || explicitOfferings.find((x) => x.lesson === c.lesson && x.group === g.group);
+                              const eduTag =
+                                g.educational_group === "male_only"
+                                  ? " 👨 آقایان"
+                                  : g.educational_group === "female_only"
+                                    ? " 👩 بانوان"
+                                    : "";
                               return (
                                 <span
-                                  key={g.group}
+                                  key={`${g.group}-${g.educational_group || "mixed"}`}
                                   className="badge b-gray"
                                   style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
                                 >
                                   <span>
-                                    گروه {faDigits(g.group)}: {g.teacher || "بدون استاد"}
+                                    گروه {faDigits(g.group)}{eduTag}: {g.teacher || "بدون استاد"}
                                     {g.schedule_summary ? ` (${g.schedule_summary})` : ""}
                                   </span>
                                   <button
@@ -2266,7 +2635,9 @@ function CourseSelectionAdminPanel() {
                                     onClick={() =>
                                       setOffForm({
                                         lesson: c.lesson,
+                                        course_code: g.course_code || c.course_code || "",
                                         group: g.group,
+                                        educational_group: g.educational_group || "mixed",
                                         teacher: g.teacher || "",
                                         credit: c.credit || 1,
                                         schedule_summary: g.schedule_summary || "",

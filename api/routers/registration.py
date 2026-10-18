@@ -84,10 +84,15 @@ async def _public_state(uid: int):
             for i in intakes
         ],
         "groups": ["1", "2"],
+        "educational_groups": [
+            {"code": "male", "label": "👨 کلاس‌های آقایان"},
+            {"code": "female", "label": "👩 کلاس‌های بانوان"},
+        ],
         "user": {
             "name": user.get("name", ""),
             "group": user.get("group", ""),
             "intake": user.get("intake", ""),
+            "educational_group": user.get("educational_group", "unknown"),
         } if user else None,
     }
 
@@ -117,7 +122,13 @@ class RegisterBody(BaseModel):
     group: str
     intake: Optional[str] = ""
     student_id: Optional[str] = ""
+    educational_group: Optional[str] = "unknown"
     ref: Optional[str] = ""  # 🌱 W13 — کد دعوت (اختیاری)
+
+
+@router.get("/suggest-educational-group")
+async def suggest_edu_group_for_name(name: str = ""):
+    return db.suggest_educational_group_from_name(name or "")
 
 
 @router.post("/register")
@@ -176,8 +187,14 @@ async def register_via_miniapp(
     # ── ساخت کاربر — تابع مشترک با بات، schema یکسان ──
     # دابل‌کلیک/درخواست همزمان → ایندکس یکتای user_id خطا می‌دهد؛
     # آن را به 409 تمیز تبدیل می‌کنیم (نه ۵۰۰).
+    edu_grp = db.normalize_user_educational_group(body.educational_group)
     try:
-        await db.create_user(uid, name, student_id, group, username, intake=intake)
+        await db.create_user(
+            uid, name, student_id, group, username, intake=intake,
+            educational_group=edu_grp,
+            group_source="user_confirmed" if edu_grp in ("male", "female") else "ai_suggested",
+            group_verified=(edu_grp in ("male", "female")),
+        )
     except Exception as e:
         if "duplicate key" in str(e).lower():
             raise HTTPException(409, "already_registered")

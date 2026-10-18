@@ -156,6 +156,12 @@ async def register_start_callback(update: Update, context: ContextTypes.DEFAULT_
     elif data == 'register:group2':
         return await _save_group(update, context, '2')
 
+    elif data in ('register:edugroup:male', 'register:edugroup:female'):
+        edu_grp = 'male' if data.endswith(':male') else 'female'
+        context.user_data['reg_edu_group'] = edu_grp
+        group = context.user_data.get('reg_group', '1')
+        return await _proceed_to_intake(update, context, group)
+
     return REGISTER
 
 
@@ -189,6 +195,45 @@ async def step_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _save_group(update, context, group: str):
     query    = update.callback_query
+    name     = context.user_data.get('reg_name', '')
+
+    if not name:
+        await query.edit_message_text("❌ خطا. لطفاً /start بزنید.")
+        return ConversationHandler.END
+
+    context.user_data['reg_group'] = group
+    ai_sug = db.suggest_educational_group_from_name(name)
+    sug_grp = ai_sug.get('ai_suggested_group', 'unknown')
+    hint_line = ""
+    if sug_grp == 'male':
+        hint_line = "💡 <i>پیشنهاد هوشمند بر اساس نام شما: <b>کلاس‌های آقایان</b> (لطفاً تأیید یا اصلاح کنید)</i>\n\n"
+    elif sug_grp == 'female':
+        hint_line = "💡 <i>پیشنهاد هوشمند بر اساس نام شما: <b>کلاس‌های بانوان</b> (لطفاً تأیید یا اصلاح کنید)</i>\n\n"
+
+    male_lbl = "✅ 👨 کلاس‌های آقایان" if sug_grp == 'male' else "👨 کلاس‌های آقایان"
+    female_lbl = "✅ 👩 کلاس‌های بانوان" if sug_grp == 'female' else "👩 کلاس‌های بانوان"
+
+    await query.edit_message_text(
+        f"✅ <b>گروه {group} انتخاب شد</b>\n\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "🎓 <b>تعیین گروه آموزشی کلاس‌ها</b>\n\n"
+        f"{hint_line}"
+        "برخی دروس دانشگاه به صورت تفکیک‌شده (ویژه آقایان یا ویژه بانوان) ارائه می‌شوند.\n"
+        "لطفاً گروه آموزشی خود را برای نمایش دقیق برنامه کلاسی و انتخاب واحد مشخص کنید:",
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(male_lbl, callback_data='register:edugroup:male'),
+                InlineKeyboardButton(female_lbl, callback_data='register:edugroup:female'),
+            ],
+            [InlineKeyboardButton("❌ انصراف", callback_data='register:cancel')],
+        ]),
+    )
+    return STEP_GROUP
+
+
+async def _proceed_to_intake(update, context, group: str):
+    query    = update.callback_query
     uid      = update.effective_user.id
     username = update.effective_user.username
     name     = context.user_data.get('reg_name', '')
@@ -197,8 +242,6 @@ async def _save_group(update, context, group: str):
         await query.edit_message_text("❌ خطا. لطفاً /start بزنید.")
         return ConversationHandler.END
 
-    context.user_data['reg_group'] = group
-
     intakes = await db.get_active_intakes()
     if not intakes:
         return await _after_intake_step(update, context, uid, name, group, '', username, query=query)
@@ -206,8 +249,9 @@ async def _save_group(update, context, group: str):
     keyboard = [[InlineKeyboardButton(i['label'], callback_data=f'register:intake:{i["code"]}')]
                 for i in intakes]
     keyboard.append([InlineKeyboardButton("❌ انصراف", callback_data='register:cancel')])
+    edu_lbl = 'آقایان' if context.user_data.get('reg_edu_group') == 'male' else 'بانوان'
     await query.edit_message_text(
-        f"✅ <b>گروه {group} انتخاب شد</b>\n\n"
+        f"✅ <b>گروه {group} ({edu_lbl}) انتخاب شد</b>\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "📝 <b>مرحله ۳ — ورودی تحصیلی</b>\n\n"
         "📅 ورودی خود را انتخاب کنید:",
@@ -251,7 +295,13 @@ async def _after_intake_step(update, context, uid, name, group, intake, username
             await update.message.reply_text(msg)
         return ConversationHandler.END
 
-    await db.create_user(uid, name, '', group, username, intake=intake)
+    edu_group = context.user_data.get('reg_edu_group', 'unknown')
+    await db.create_user(
+        uid, name, '', group, username, intake=intake,
+        educational_group=edu_group,
+        group_source='user_confirmed' if edu_group in ('male', 'female') else 'ai_suggested',
+        group_verified=(edu_group in ('male', 'female')),
+    )
     # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
     try:
         _pr = context.user_data.pop('pending_ref', None)
@@ -302,7 +352,13 @@ async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("🚫 حساب شما توسط مدیریت مسدود شده و امکان ثبت‌نام ندارید.")
         return ConversationHandler.END
 
-    await db.create_user(uid, name, sid, group, username, intake=intake)
+    edu_group = context.user_data.get('reg_edu_group', 'unknown')
+    await db.create_user(
+        uid, name, sid, group, username, intake=intake,
+        educational_group=edu_group,
+        group_source='user_confirmed' if edu_group in ('male', 'female') else 'ai_suggested',
+        group_verified=(edu_group in ('male', 'female')),
+    )
     # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
     try:
         _pr = context.user_data.pop('pending_ref', None)

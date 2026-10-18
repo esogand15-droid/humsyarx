@@ -912,7 +912,13 @@ async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user),
     scope = admin.get("_scope") or {}
     view = _child_view(admin, intake)
     if view is None:
-        items = await db.bs_get_sessions(lid)
+        if li:
+            items = await db.bs_get_sessions_effective(lid, [li, ""])
+        else:
+            raw_items = await db.bs_get_sessions(lid)
+            _bases = {str(s["_id"]) for s in raw_items}
+            collapsed = [s for s in raw_items if not (s.get("fork_of") and str(s.get("fork_of")) in _bases)]
+            items = db.bs_effective_view(collapsed, [""], {str(lid): ""})
     else:
         items = await db.bs_get_sessions_effective(lid, view)
     # 🌊 C3 — والد قفل است ولی «فرزند ورودی‌خاص» ساختنی است؟
@@ -921,7 +927,7 @@ async def bs_sessions_ep(lid: str, admin=Depends(get_content_admin_user),
     next_number = await db.bs_next_session_number(lid, (child or None) if child else None)
     sessions = []
     for s in items:
-        resolved = (s.get("intake") if "intake" in s else li) or ""
+        resolved = (str(s.get("intake") or "").strip() if "intake" in s else "") or li or ""
         sessions.append({
             "id": str(s["_id"]), "number": s.get("number", 0),
             "topic": s.get("topic", ""), "teacher": s.get("teacher", ""),
