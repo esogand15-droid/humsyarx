@@ -42,6 +42,7 @@ from api.routers import (
     tickets,
     url_import,
     web_admin,
+    web_exam,
     web_ink,
     web_library,
     web_reader,
@@ -512,6 +513,13 @@ app.include_router(
     web_ink.router,
     prefix="/api/web",
     tags=["web-ink"],
+)
+
+# ❓ موج P5 — تمرین بانک سؤال (همان هندلرهای ربات/مینی‌اپ، با ورود وب)
+app.include_router(
+    web_exam.router,
+    prefix="/api/web",
+    tags=["web-exam"],
 )
 
 app.include_router(

@@ -6,6 +6,9 @@ import { LoginScreen } from './screens/LoginScreen';
 import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreens';
 import { HomeScreen } from './screens/HomeScreen';
 import { LibraryScreen } from './screens/library/LibraryScreen';
+import { ExamHome } from './screens/exam/ExamHome';
+import { HistoryScreen } from './screens/exam/HistoryScreen';
+import { PracticeScreen } from './screens/exam/PracticeScreen';
 import { NotesScreen } from './screens/notes/NotesScreen';
 import { ReaderScreen } from './screens/reader/ReaderScreen';
 import {
@@ -98,6 +101,9 @@ export function App() {
         <Route path="/library/book/:id" element={<Gate><BookScreen /></Gate>} />
         <Route path="/read/:scope/:id" element={<Gate><ReaderScreen /></Gate>} />
         <Route path="/me/notes" element={<Gate><NotesScreen /></Gate>} />
+        <Route path="/exam" element={<Gate><ExamHome /></Gate>} />
+        <Route path="/exam/practice" element={<Gate><PracticeScreen /></Gate>} />
+        <Route path="/exam/history" element={<Gate><HistoryScreen /></Gate>} />
         <Route
           path="/search"
           element={
