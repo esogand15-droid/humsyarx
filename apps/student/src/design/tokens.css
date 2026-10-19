@@ -1,0 +1,84 @@
+/* ═══════════════════════════════════════════════════════════
+   توکن‌های طراحی «مرکب» — منبع واحد
+   مرجع: design-system/01-tokens.md · تصمیم‌ها: D-008 … D-012
+   قاعده: هیچ مقدار خامی بیرون از این فایل مجاز نیست.
+   ═══════════════════════════════════════════════════════════ */
+
+:root{
+  /* — سطح‌ها: کاغذ گرم (چشم‌راحت‌تر از سطح سرد) — */
+  --paper:#F7F3EA; --paper-2:#FFFDF7; --paper-3:#EFE8DA;
+  --ink:#1B1712; --ink-2:#4A4339; --ink-3:#7A7264;
+  --line:rgba(27,23,18,.12); --line-2:rgba(27,23,18,.22);
+
+  /* — برند از لوگو: آبی سلطنتی + فیروزه‌ای — */
+  --brand:#1740B8; --brand-deep:#10308F; --brand-soft:#E7EBFA; --brand-ink:#16379F;
+  --cyan:#0A8794; --cyan-deep:#086E7A; --cyan-soft:#DDF1F2; --cyan-ink:#086E7A;
+  --midnight:#010318;
+
+  /* — گرمی و شادابی: عسلی — */
+  --amber:#B4701F; --amber-deep:#96590F; --amber-soft:#F8EAD4; --amber-ink:#8A5511;
+
+  /* — متن روی سطح‌های رنگی — */
+  --on-brand:#FFFDF8; --on-brand-dark:#08120F; --ink-deep:#000000;
+
+  /* — کاغذ مطالعه (ریدر): مستقل از تم، مثل کاغذ واقعی — */
+  --paper-read:#FCF9F2; --ink-read:#1F1A13; --ink-read-3:#8C8171;
+  --tl:#E0D7C4; --tl-strong:#CDC3AC; --dash:#CFC5AE; --wm-ink:#A99E8A;
+  --read-rule:rgba(27,23,18,.045);
+
+  /* — وضعیت — */
+  --danger:#B3453F; --danger-soft:#F7E4E2;
+  --ok:#2F7D5A; --ok-soft:#E3F0E8;
+
+  /* — ارتفاع: خط مو + سایهٔ کم‌هزینه — */
+  --sh-1:0 1px 2px rgba(27,23,18,.06);
+  --sh-2:0 1px 2px rgba(27,23,18,.06), 0 12px 28px -22px rgba(27,23,18,.55);
+
+  /* — شکل — */
+  --r-sm:10px; --r:13px; --r-md:16px; --r-lg:20px; --r-xl:26px; --r-pill:999px;
+
+  /* — حرکت — */
+  --ease:cubic-bezier(.32,.72,0,1); --t-fast:150ms; --t:220ms; --t-slow:340ms;
+
+  /* — تایپ — */
+  --f:'Vazirmatn',system-ui,'Segoe UI',Tahoma,sans-serif;
+  --f-mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+
+  /* — اندازه‌ها — */
+  --space-1:4px; --space-2:6px; --space-3:8px; --space-4:10px; --space-5:12px;
+  --space-6:16px; --space-7:20px; --space-8:24px; --space-9:40px; --space-10:52px;
+
+  --icon-sm:16px; --icon:24px; --icon-lg:30px; --icon-xl:40px;
+
+  --touch-min:44px; --btn-h:48px; --btn-h-sm:38px;
+
+  /* — بریک‌پوینت‌ها (فقط برای مستندسازی؛ در CSS از container query استفاده می‌شود) — */
+  --bp-md:760px; --bp-lg:1000px;
+
+  /* — لایه‌بندی — */
+  --z-base:0; --z-sticky:10; --z-nav:20; --z-sheet:30; --z-toast:40; --z-overlay:50;
+
+  /* — شیشهٔ کنترل‌شده (فهرست سفید: فقط نوار شناور) — */
+  --glass-bg:color-mix(in srgb, var(--paper-2) 78%, transparent);
+  --glass-blur:blur(14px);
+
+  /* — لوگوی برند: برش کتاب + عصا (base64 در brand.css) — */
+  --emblem:none;
+}
+
+/* شبِ گرم، نه سرمه‌ای — همان فلسفهٔ کاغذ */
+html[data-theme="dark"]{
+  --paper:#14110C; --paper-2:#1B1711; --paper-3:#241F17;
+  --ink:#F0EADE; --ink-2:#BCB2A1; --ink-3:#8A8071;
+  --line:rgba(240,234,222,.13); --line-2:rgba(240,234,222,.24);
+
+  --brand:#6E93FF; --brand-deep:#4C74E8; --brand-soft:rgba(110,147,255,.16); --brand-ink:#B4C8FF;
+  --cyan:#45D9D2; --cyan-deep:#2FBDB6; --cyan-soft:rgba(69,217,210,.14); --cyan-ink:#8FE6E1;
+  --amber:#E0A055; --amber-deep:#C48436; --amber-soft:rgba(224,160,85,.16); --amber-ink:#F0C48C;
+
+  --danger:#E88C86; --danger-soft:rgba(232,140,134,.16);
+  --ok:#6DC79B; --ok-soft:rgba(109,199,155,.16);
+
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 1px 2px rgba(0,0,0,.4), 0 14px 30px -24px rgba(0,0,0,.9);
+}

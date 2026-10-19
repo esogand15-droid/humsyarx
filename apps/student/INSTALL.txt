@@ -1,0 +1,62 @@
+هامزیار — کلاینت وب دانشجو (P0)  ·  نسخهٔ 0.1.0
+==================================================
+
+این پوشه (apps/student) را در ریشهٔ مخزن هامزیار بگذارید:
+
+    humsyarx/
+    ├── api/  bot.py  db/  miniapp/  webadmin/
+    ├── apps/
+    │   └── student/          ← همین پوشه
+    └── delivery/CHANGELOG.md ← اختیاری
+
+هیچ فایلی از ربات، API، مینی‌اپ یا پنل ادمین تغییر نکرده است.
+
+اجرا روی سیستم خودتان
+---------------------
+    cd apps/student
+    npm install
+    npm run dev
+
+آدرس پیش‌فرض:  http://localhost:5173/app/
+(اپ عمداً زیر /app/ بیلد می‌شود تا بعداً روی همان دامنهٔ هامزیار در /app سرو شود)
+
+ساخت نسخهٔ نهایی
+----------------
+    npm run build
+خروجی در apps/student/dist/ ساخته می‌شود.
+
+مهم برای استقرار: اپ زیر مسیر /app می‌بیلد می‌شود، پس وب‌سرور باید
+مسیرهای /app/* را به /app/index.html برگرداند (SPA fallback).
+مثال Caddy:
+    handle_path /app/* {
+        root * /srv/humsyar/app
+        try_files {path} /index.html
+        file_server
+    }
+
+فایل‌ها
+-------
+index.html · package.json · package-lock.json · tsconfig.json · vite.config.ts
+src/design/     توکن‌ها، پایه، برند، اجزا، فونت
+src/icons/      ۳۵ نماد (۳۴ آیکون + نشانهٔ برند)
+src/components/ ۱۷ جزء پایه
+src/layout/     پوسته و تب‌بار
+src/lib/        تم (روشن/تاریک/سیستم)
+src/screens/    خانه، من، سیستم طراحی، وضعیت‌های سیستمی، اسکلت‌ها
+public/         فاوآیکون
+
+صفحه‌ها
+-------
+/app/          خانه (اسکلت)
+/app/library   اسکلت — فاز P2
+/app/search    اسکلت — فاز P2
+/app/schedule  اسکلت — فاز P7
+/app/me        حساب؛ تغییر تم واقعاً کار می‌کند
+/app/system    سیستم طراحی زنده: رنگ، تایپ، اجزا، ۳۵ آیکون
+/app/states    وضعیت‌های سیستمی: آفلاین، ۴۰۱، ۴۰۳، قفل، ۴۰۴، ۵۰۰، ۵۰۳
+
+توجه
+----
+· این بسته هیچ منطق احراز یا فراخوانی API ندارد (فاز P1).
+· هیچ دادهٔ ساختگی در رابط نیست؛ صفحات ناقص، «حالت خالی» نشان می‌دهند.
+· npm install لازم است؛ node_modules عمداً داخل بسته نیست.
