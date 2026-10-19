@@ -59,13 +59,18 @@ export class ApiError extends Error {
   status: number;
   code: string;
   offline: boolean;
+  /** کل بدنهٔ `detail` سرور — برای خطاهایی که دادهٔ همراه دارند.
+   *  نمونه: `active_exam_exists` خودِ آزمون فعال را در `detail.exam`
+   *  می‌فرستد تا صفحه بتواند «ادامه بده» پیشنهاد کند. */
+  detail: Record<string, unknown> | null;
 
-  constructor(code: string, status: number, offline = false) {
+  constructor(code: string, status: number, offline = false, detail: Record<string, unknown> | null = null) {
     super(code);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
     this.offline = offline;
+    this.detail = detail;
   }
 }
 
@@ -96,15 +101,18 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const detail = (body as { detail?: unknown } | null)?.detail;
     let code: string;
+    let extra: Record<string, unknown> | null = null;
     if (typeof detail === 'string') {
       code = detail;
     } else if (detail && typeof detail === 'object' && 'code' in detail) {
       // گیت اشتراک: {code: "SUB_REQUIRED"|"feature_disabled"|..., message, feature}
+      // آزمون: {code: "active_exam_exists", exam: {...}}
       code = String((detail as { code?: unknown }).code ?? `http_${res.status}`);
+      extra = detail as Record<string, unknown>;
     } else {
       code = `http_${res.status}`;
     }
-    throw new ApiError(code, res.status);
+    throw new ApiError(code, res.status, false, extra);
   }
   return (body ?? {}) as T;
 }
@@ -154,6 +162,19 @@ export const ERROR_TEXT: Record<string, string> = {
   unknown_feature: 'این بخش در دسترس نیست.',
   forbidden: 'دسترسی به این بخش برای حساب تو باز نیست.',
   http_404: 'این محتوا پیدا نشد.',
+  // ── بانک سؤال و آزمون (P5/P5.2) — همان کدهایی که دامنه برمی‌گرداند
+  active_exam_exists: 'یک آزمون نیمه‌کاره داری؛ اول آن را ادامه بده یا رها کن.',
+  exam_still_active: 'این آزمون هنوز تمام نشده است؛ کارنامه بعد از پایان می‌آید.',
+  exam_not_found: 'این آزمون پیدا نشد.',
+  exam_not_active: 'زمان این آزمون تمام شده است.',
+  active_exam_not_found: 'آزمون فعالی برای رها کردن نیست.',
+  answer_conflict: 'این پاسخ قبلاً ثبت شده است.',
+  exam_capacity: 'برای این تعداد سؤال، ظرفیت بانک کافی نیست.',
+  lesson_not_found: 'این درس در بانک سؤال پیدا نشد.',
+  topic_not_found: 'این مبحث در بانک سؤال پیدا نشد.',
+  ambiguous_lesson: 'درس انتخاب‌شده مبهم است؛ یکی از موارد پیشنهادی را انتخاب کن.',
+  review_unavailable: 'بازبینی این آزمون فعلاً در دسترس نیست.',
+  question_not_found: 'این سؤال پیدا نشد.',
 };
 
 export function errorText(err: unknown, fallback = 'مشکلی پیش آمد. دوباره تلاش کن.'): string {

@@ -7,6 +7,9 @@ import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreen
 import { HomeScreen } from './screens/HomeScreen';
 import { LibraryScreen } from './screens/library/LibraryScreen';
 import { ExamHome } from './screens/exam/ExamHome';
+import { ExamResult } from './screens/exam/ExamResult';
+import { ExamSetup, MockExamHistory } from './screens/exam/ExamSetup';
+import { MockRun } from './screens/exam/MockRun';
 import { HistoryScreen } from './screens/exam/HistoryScreen';
 import { PracticeScreen } from './screens/exam/PracticeScreen';
 import { NotesScreen } from './screens/notes/NotesScreen';
@@ -104,6 +107,10 @@ export function App() {
         <Route path="/exam" element={<Gate><ExamHome /></Gate>} />
         <Route path="/exam/practice" element={<Gate><PracticeScreen /></Gate>} />
         <Route path="/exam/history" element={<Gate><HistoryScreen /></Gate>} />
+        <Route path="/exam/setup" element={<Gate><ExamSetup /></Gate>} />
+        <Route path="/exam/mock/history" element={<Gate><MockExamHistory /></Gate>} />
+        <Route path="/exam/run/:sid" element={<Gate><MockRun /></Gate>} />
+        <Route path="/exam/result/:sid" element={<Gate><ExamResult /></Gate>} />
         <Route
           path="/search"
           element={

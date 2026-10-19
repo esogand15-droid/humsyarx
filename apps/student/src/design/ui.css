@@ -745,3 +745,45 @@ a:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:
   .q-card{max-width:720px;padding:22px 24px}
   .q-stem{font-size:16.5px}
 }
+
+/* ── P5.2: آزمون زمان‌دار ─────────────────────────────────── */
+.chip-btn.is-on{background:var(--brand);border-color:var(--brand);color:var(--on-brand)}
+.chip-btn.is-on .tiny{color:var(--on-brand);opacity:.85}
+
+.timer{
+  font-variant-numeric:tabular-nums;font-weight:800;font-size:15px;
+  padding:6px 10px;border-radius:10px;background:var(--paper-3);color:var(--ink);
+  letter-spacing:.04em;
+}
+.timer.is-urgent{background:var(--danger-soft);color:var(--danger)}
+
+.score{display:flex;align-items:baseline;justify-content:center;gap:2px}
+.score__n{font-size:44px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
+.score__u{font-size:18px;font-weight:700;color:var(--ink-3)}
+.score--good .score__n{color:var(--cyan-deep)}
+.score--mid .score__n{color:var(--amber-deep)}
+.score--low .score__n{color:var(--danger)}
+
+.q-card--review{padding:14px 16px}
+.mock-row{
+  width:100%;display:flex;align-items:center;gap:10px;padding:14px 16px;
+  border:0;border-bottom:1px solid var(--line);background:var(--paper-2);
+  color:var(--ink);font:inherit;cursor:pointer;text-align:start;
+}
+.mock-row:last-child{border-bottom:0}
+.mock-row:hover{background:var(--paper-3)}
+.mock-row:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+
+.sheet-scrim{
+  position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;
+  background:rgba(10,18,34,.34);
+}
+.sheet{
+  width:100%;max-width:520px;margin:0 auto;padding:18px 16px calc(18px + env(safe-area-inset-bottom,0px));
+  background:var(--paper-2);border-radius:16px 16px 0 0;border-top:1px solid var(--line);
+}
+@media (min-width:900px){
+  .sheet-scrim{align-items:center;justify-content:center}
+  .sheet{border-radius:16px;border:1px solid var(--line);box-shadow:0 24px 48px -30px rgba(10,18,34,.6)}
+  .q-card--review{max-width:720px}
+}

@@ -194,6 +194,15 @@ export function ExamHome() {
             )}
 
             <Card variant="flush" className="mt-16">
+              <Link to="/exam/setup">
+                <ListRow
+                  icon="i-clock"
+                  title="آزمون زمان‌دار"
+                  sub="چند سؤال با مهلت، کارنامه و بازبینی در پایان"
+                  chevron
+                  onClick={() => {}}
+                />
+              </Link>
               <Link to="/exam/history">
                 <ListRow icon="i-clock" title="تاریخچهٔ پاسخ‌ها" sub="هر چه پاسخ داده‌ای، با پاسخ صحیح" chevron onClick={() => {}} />
               </Link>
