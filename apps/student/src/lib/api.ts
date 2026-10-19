@@ -95,11 +95,22 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const detail = (body as { detail?: unknown } | null)?.detail;
-    const code = typeof detail === 'string' ? detail : `http_${res.status}`;
+    let code: string;
+    if (typeof detail === 'string') {
+      code = detail;
+    } else if (detail && typeof detail === 'object' && 'code' in detail) {
+      // گیت اشتراک: {code: "SUB_REQUIRED"|"feature_disabled"|..., message, feature}
+      code = String((detail as { code?: unknown }).code ?? `http_${res.status}`);
+    } else {
+      code = `http_${res.status}`;
+    }
     throw new ApiError(code, res.status);
   }
   return (body ?? {}) as T;
 }
+
+/** همان لایهٔ شبکه برای ماژول‌های دیگر (کتابخانه) — مسیر نسبی به /api/web. */
+export const apiCall = call;
 
 export const api = {
   session: () => call<SessionPayload>('/auth/session'),
@@ -135,6 +146,14 @@ export const ERROR_TEXT: Record<string, string> = {
   suspended: 'دسترسی این حساب موقتاً بسته است.',
   not_registered: 'این حساب در هامزیار ثبت نشده است.',
   send_failed: 'ارسال کد ممکن نشد. کمی بعد دوباره تلاش کن.',
+  SUB_REQUIRED: 'این بخش برای مشترکین هامزیار است.',
+  subscription_required: 'این بخش برای مشترکین هامزیار است.',
+  feature_disabled: 'این بخش موقتاً غیرفعال است.',
+  policy_unavailable: 'سیستم دسترسی در دسترس نیست. کمی بعد دوباره تلاش کن.',
+  not_in_scope: 'این محتوا برای ورودی تحصیلی تو نیست.',
+  unknown_feature: 'این بخش در دسترس نیست.',
+  forbidden: 'دسترسی به این بخش برای حساب تو باز نیست.',
+  http_404: 'این محتوا پیدا نشد.',
 };
 
 export function errorText(err: unknown, fallback = 'مشکلی پیش آمد. دوباره تلاش کن.'): string {

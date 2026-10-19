@@ -42,6 +42,7 @@ from api.routers import (
     tickets,
     url_import,
     web_admin,
+    web_library,
     web_student,
 )
 from database import db
@@ -482,12 +483,19 @@ app.include_router(
     tags=["web-admin"],
 )
 
-# 🌐 موج P1 — احراز هویت و کلاینت وب دانشجو (افزودنی خالص؛ هیچ route
-# قدیمی جابه‌جا یا تغییر نکرده). مسیر: /api/web/*  و  /student/*
+# 🌐 موج P1 — احراز هویت و کلاینت وب دانشجو (افزودنی خالص)
 app.include_router(
     web_student.router,
     prefix="/api/web",
     tags=["web-student"],
+)
+
+# 📚 موج P2 — کتابخانهٔ وب (فقط خواندن؛ همان هندلرهای مینی‌اپ با
+# احراز هویت وب. هیچ منطق محتوایی تازه‌ای این‌جا نیست.)
+app.include_router(
+    web_library.router,
+    prefix="/api/web",
+    tags=["web-library"],
 )
 
 app.include_router(

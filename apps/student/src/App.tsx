@@ -5,6 +5,14 @@ import { Shell } from './layout/Shell';
 import { LoginScreen } from './screens/LoginScreen';
 import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreens';
 import { HomeScreen } from './screens/HomeScreen';
+import { LibraryScreen } from './screens/library/LibraryScreen';
+import {
+  BookScreen,
+  LessonScreen,
+  SessionScreen,
+  SubjectScreen,
+  TermScreen,
+} from './screens/library/LibraryScreens';
 import { MeScreen } from './screens/MeScreen';
 import { Placeholder } from './screens/Placeholder';
 import { StatesScreen } from './screens/StatesScreen';
@@ -70,16 +78,15 @@ export function App() {
           path="/library"
           element={
             <Gate>
-              <Placeholder
-                title="کتابخانه"
-                sub="جزوه‌ها، منابع و کتاب مرجع"
-                phase="P2"
-                icon="i-book"
-                note="کتابخانه به دادهٔ واقعی ترم/درس/جلسه و به وضعیت دسترسی کاربر وصل می‌شود."
-              />
+              <LibraryScreen />
             </Gate>
           }
         />
+        <Route path="/library/term/:term" element={<Gate><TermScreen /></Gate>} />
+        <Route path="/library/lesson/:id" element={<Gate><LessonScreen /></Gate>} />
+        <Route path="/library/session/:id" element={<Gate><SessionScreen /></Gate>} />
+        <Route path="/library/subject/:id" element={<Gate><SubjectScreen /></Gate>} />
+        <Route path="/library/book/:id" element={<Gate><BookScreen /></Gate>} />
         <Route
           path="/search"
           element={
