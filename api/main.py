@@ -42,6 +42,7 @@ from api.routers import (
     tickets,
     url_import,
     web_admin,
+    web_student,
 )
 from database import db
 from request_context import current_request_id
@@ -481,6 +482,14 @@ app.include_router(
     tags=["web-admin"],
 )
 
+# 🌐 موج P1 — احراز هویت و کلاینت وب دانشجو (افزودنی خالص؛ هیچ route
+# قدیمی جابه‌جا یا تغییر نکرده). مسیر: /api/web/*  و  /student/*
+app.include_router(
+    web_student.router,
+    prefix="/api/web",
+    tags=["web-student"],
+)
+
 app.include_router(
     payment_gateway.router,
     prefix="/api",
@@ -856,3 +865,14 @@ def _bot_process_ok() -> tuple[bool, int | None]:
         ok, pid = False, None
     _BOT_PROC_CACHE.update({"at": now, "ok": ok, "pid": pid})
     return ok, pid
+
+# ══════════════════════════════════════════════════════════
+#  🌐 موج P1 — کلاینت وب دانشجو روی /student
+#
+#  چرا نه /app:  /app از قبل به مینی‌اپ تلگرام تعلق دارد
+#  (miniapp/dist). سرو روی همان پیشوند، مینی‌اپ را shadow می‌کرد.
+#
+#  این فراخوانی باید **آخرین دستور فایل** بماند: mount فقط پیشوند
+#  خودش را می‌گیرد، ولی ترتیب ثبت، اولویت تطبیق را تعیین می‌کند.
+# ══════════════════════════════════════════════════════════
+web_student.mount(app)
