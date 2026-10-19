@@ -46,6 +46,7 @@ export function MeScreen() {
               label="تم تاریک"
             />
           </div>
+          <ListRow title="دفتر من" sub="یادداشت‌ها و خط‌کشیده‌ها" to="/me/notes" chevron />
           <ListRow title="کد حساب" sub="در فاز P6 — قابل تغییر توسط پشتیبانی" chevron onClick={() => {}} />
           <ListRow title="دستگاه‌های من" sub="در فاز P6" chevron onClick={() => {}} />
           <ListRow title="اشتراک" sub="در فاز P6" chevron onClick={() => {}} />

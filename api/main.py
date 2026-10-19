@@ -42,6 +42,7 @@ from api.routers import (
     tickets,
     url_import,
     web_admin,
+    web_ink,
     web_library,
     web_reader,
     web_student,
@@ -504,6 +505,13 @@ app.include_router(
     web_reader.router,
     prefix="/api/web",
     tags=["web-reader"],
+)
+
+# 🖋 موج P4 — قلم و حاشیه‌نویسی (استروک نرمال‌شده، یک سند برای هر صفحه)
+app.include_router(
+    web_ink.router,
+    prefix="/api/web",
+    tags=["web-ink"],
 )
 
 app.include_router(

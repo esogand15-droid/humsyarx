@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { AppBar, Button, EmptyState } from '../../components';
 import { ErrorBlock, LoadingBlock } from '../../components/AccessStates';
 import { Icon } from '../../icons';
+import { ink } from '../../lib/ink';
 import { reader } from '../../lib/reader';
 import type { Kind, Scope, ViewInfo } from '../../lib/reader';
 
@@ -67,6 +68,12 @@ export function ReaderScreen() {
         setStartPage(prog.page > 0 ? prog.page : 1);
         setStartAt(prog.position > 0 ? prog.position : 0);
       }
+      // ?p=۴ از دفتر یادداشت‌ها → همان صفحه، حتی اگر پیشرفت جای دیگری باشد
+      const jump = Number(new URLSearchParams(window.location.search).get('p'));
+      if (jump > 0) {
+        setStartPage(jump);
+        latest.current = { ...latest.current, page: jump };
+      }
     } catch (err) {
       setError(err);
     } finally {
@@ -76,10 +83,19 @@ export function ReaderScreen() {
 
   useEffect(() => {
     void load();
+    // هر خطی که آفلاین مانده بود، همین‌جا فرستاده می‌شود
+    void ink.flush();
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
     };
   }, [load]);
+
+  useEffect(() => {
+    const onOnline = () => void ink.flush();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, []);
+
 
   /** لینک ۱۰ دقیقه‌ای تمام شده: آدرس تازه بگیر، همان‌جا بمان. */
   const refreshUrl = useCallback(async (): Promise<string | null> => {
@@ -148,6 +164,8 @@ export function ReaderScreen() {
           >
             {kind === 'pdf' ? (
               <PdfView
+                scope={scopeTyped}
+                id={id}
                 url={url}
                 startPage={startPage}
                 onProgress={(page, total) => persist('pdf', { page, total })}

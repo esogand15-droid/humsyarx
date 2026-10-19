@@ -6,6 +6,7 @@ import { LoginScreen } from './screens/LoginScreen';
 import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreens';
 import { HomeScreen } from './screens/HomeScreen';
 import { LibraryScreen } from './screens/library/LibraryScreen';
+import { NotesScreen } from './screens/notes/NotesScreen';
 import { ReaderScreen } from './screens/reader/ReaderScreen';
 import {
   BookScreen,
@@ -96,6 +97,7 @@ export function App() {
         <Route path="/library/subject/:id" element={<Gate><SubjectScreen /></Gate>} />
         <Route path="/library/book/:id" element={<Gate><BookScreen /></Gate>} />
         <Route path="/read/:scope/:id" element={<Gate><ReaderScreen /></Gate>} />
+        <Route path="/me/notes" element={<Gate><NotesScreen /></Gate>} />
         <Route
           path="/search"
           element={
