@@ -42,7 +42,7 @@ import logging
 import os
 import re
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -107,11 +107,22 @@ def _now():
 
 
 def _parse_dt(value):
-    """تاریخ ذخیره‌شده → datetime. مخزن، تاریخ‌ها را همیشه UTC می‌نویسد."""
-    if hasattr(value, "tzinfo"):
+    """تاریخ ذخیره‌شده → datetime آگاه از منطقهٔ زمانی.
+
+    ⚠ درسی که در تولید گران تمام شد: `hasattr(value, "tzinfo")` برای
+    datetimeهای naive هم True است (فقط مقدارش None است). PyMongo بدون
+    `tz_aware=True` تاریخ‌ها را **naive** برمی‌گرداند؛ نتیجه این بود که
+    مقایسهٔ naive با aware در `_expired` استثنا می‌داد و تابع محافظه‌کارانه
+    «منقضی» می‌گفت — یعنی کد تازه‌صادرشده هم «منقضی» شمرده می‌شد و سشن‌ها
+    هم بلافاصله باطل می‌شدند.
+
+    قرارداد مخزن: هر تاریخِ naive در این دیتابیس UTC است (نوشتهٔ خودمان با
+    `now_utc()`)، پس همان‌طور تفسیر می‌شود.
+    """
+    if isinstance(value, datetime) and value.tzinfo is not None:
         return value
     try:
-        return parse_machine_datetime(value)
+        return parse_machine_datetime(value, naive_source=timezone.utc)
     except (TimeContractError, TypeError, ValueError):
         return None
 
