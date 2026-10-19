@@ -43,6 +43,7 @@ from api.routers import (
     url_import,
     web_admin,
     web_library,
+    web_reader,
     web_student,
 )
 from database import db
@@ -496,6 +497,13 @@ app.include_router(
     web_library.router,
     prefix="/api/web",
     tags=["web-library"],
+)
+
+# 📖 موج P3 — ریدر (آدرس امضاشدهٔ همان پراکسی موجود + پیشرفت مطالعه)
+app.include_router(
+    web_reader.router,
+    prefix="/api/web",
+    tags=["web-reader"],
 )
 
 app.include_router(

@@ -6,6 +6,7 @@ import { LoginScreen } from './screens/LoginScreen';
 import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreens';
 import { HomeScreen } from './screens/HomeScreen';
 import { LibraryScreen } from './screens/library/LibraryScreen';
+import { ReaderScreen } from './screens/reader/ReaderScreen';
 import {
   BookScreen,
   LessonScreen,
@@ -48,7 +49,14 @@ function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
   const { status } = useSession();
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
-  return <Shell tabs={status === 'active' && !isPublic}>{children}</Shell>;
+  // ریدر فضای بیشتری می‌خواهد؛ تب‌بار پایین در آن پنهان می‌شود
+  const immersive = pathname.startsWith('/read/');
+  const variant = immersive ? 'reader' : status === 'active' && !isPublic ? 'default' : 'bare';
+  return (
+    <Shell tabs={status === 'active' && !isPublic && !immersive} variant={variant}>
+      {children}
+    </Shell>
+  );
 }
 
 export function App() {
@@ -87,6 +95,7 @@ export function App() {
         <Route path="/library/session/:id" element={<Gate><SessionScreen /></Gate>} />
         <Route path="/library/subject/:id" element={<Gate><SubjectScreen /></Gate>} />
         <Route path="/library/book/:id" element={<Gate><BookScreen /></Gate>} />
+        <Route path="/read/:scope/:id" element={<Gate><ReaderScreen /></Gate>} />
         <Route
           path="/search"
           element={

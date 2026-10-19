@@ -5,6 +5,7 @@ import { AppBar, Card, Chip, EmptyState, ListRow } from '../../components';
 import { ErrorBlock, LoadingBlock } from '../../components/AccessStates';
 import { Icon } from '../../icons';
 import { fileLabel, humanSize, library } from '../../lib/library';
+import { readerPath } from '../../lib/reader';
 import type { BookItem, ContentFile, LessonItem, ReferenceFile, SessionItem } from '../../lib/library';
 import { fa } from '../../lib/library';
 import { useAsync } from '../../lib/useAsync';
@@ -114,13 +115,18 @@ export function SessionScreen() {
                 title={f.name}
                 sub={[fileLabel(f.type), humanSize(f.size)].filter(Boolean).join(' · ')}
                 meta={f.downloads > 0 ? `${fa(f.downloads)} بار دریافت شده` : undefined}
-                trailing={f.preview ? <Chip variant="quiet">پیش‌نمایش</Chip> : undefined}
+                trailing={
+                  f.preview ? <Chip variant="quiet" icon="i-play">باز کردن</Chip> : <Chip variant="quiet">بدون نمایش</Chip>
+                }
+                to={f.preview ? readerPath('res', f.id) : undefined}
+                onClick={f.preview ? undefined : () => {}}
+                chevron={f.preview}
               />
             ))}
           </Card>
           <p className="notice notice--quiet mt-16" role="note">
-            خواندن و پخش داخل هامزیار در فاز P3 فعال می‌شود؛ تا آن زمان این فهرست فقط برای شناخت
-            محتوای هر جلسه است. لینک مستقیم فایل عمداً ساخته نمی‌شود.
+            فایل‌های قابل نمایش، همین‌جا داخل اپ باز می‌شوند. فایل‌های بدون نمایش (مثل پاورپوینت)
+            فرمتشان برای مرورگر مناسب نیست؛ لینک مستقیم تلگرام عمداً ساخته نمی‌شود.
           </p>
         </>
       )}
@@ -173,7 +179,12 @@ function RefRow({ f }: { f: ReferenceFile }) {
       sub={[f.lang === 'fa' ? 'فارسی' : 'انگلیسی', `جلد ${fa(f.volume)}`, humanSize(f.size)]
         .filter(Boolean)
         .join(' · ')}
-      trailing={f.preview ? <Chip variant="quiet">پیش‌نمایش</Chip> : undefined}
+      trailing={
+        f.preview ? <Chip variant="quiet" icon="i-play">خواندن</Chip> : <Chip variant="quiet">بدون نمایش</Chip>
+      }
+      to={f.preview ? readerPath('ref', f.id) : undefined}
+      onClick={f.preview ? undefined : () => {}}
+      chevron={f.preview}
     />
   );
 }
@@ -221,7 +232,7 @@ export function BookScreen() {
 
       {!loading && !error && (
         <p className="notice notice--quiet mt-16" role="note">
-          خواندن کتاب مرجع داخل اپ در فاز P3 فعال می‌شود.
+          جلدها داخل همین برنامه باز می‌شوند و جای توقف خودت ذخیره می‌شود.
         </p>
       )}
     </Shell>
