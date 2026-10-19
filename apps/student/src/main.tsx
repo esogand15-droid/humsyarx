@@ -9,6 +9,7 @@ import './design/ui.css';
 
 import { App } from './App';
 import { IconSprite } from './icons';
+import { SessionProvider } from './lib/session';
 import { ThemeProvider } from './lib/theme';
 
 createRoot(document.getElementById('root')!).render(
@@ -16,7 +17,9 @@ createRoot(document.getElementById('root')!).render(
     <ThemeProvider>
       <IconSprite />
       <BrowserRouter basename={import.meta.env.BASE_URL}>
-        <App />
+        <SessionProvider>
+          <App />
+        </SessionProvider>
       </BrowserRouter>
     </ThemeProvider>
   </StrictMode>,

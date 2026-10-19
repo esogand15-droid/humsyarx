@@ -144,17 +144,28 @@ html[data-theme="dark"] .btn--ghost{color:var(--ink)}
    ═══════════════════════════════════════════════ */
 .mark{
   width:40px;height:40px;flex:0 0 auto;border-radius:12px;
-  background:var(--brand);display:grid;place-items:center;box-shadow:var(--sh-1);
+  background-color:var(--brand);display:grid;place-items:center;box-shadow:var(--sh-1);
 }
 .mark svg{width:26px;height:26px;stroke:var(--on-brand);stroke-width:1.9}
+
+/* نشان برند — یک قاعده، بدون shorthand.
+   درس واقعی: `background:` (shorthand) در قاعدهٔ تم، background-size/position
+   را به مقدار اولیه برمی‌گرداند و تصویر با اندازهٔ طبیعی در گوشه می‌افتد؛
+   یعنی نشان خالی دیده می‌شد. برای همین فقط ویژگی‌های منفرد نوشته می‌شوند. */
 .mark--brand{
-  background:var(--midnight);overflow:hidden;padding:0;
-  border:1px solid rgba(120,155,255,.24);
-  background-image:var(--emblem);background-size:104%;background-position:50% 50%;background-repeat:no-repeat;
+  background-color:var(--midnight);
+  background-image:var(--emblem);
+  background-size:104%;
+  background-position:50% 50%;
+  background-repeat:no-repeat;
+  overflow:hidden;padding:0;border:1px solid var(--line-2);
 }
-html[data-theme="dark"] .mark{background:var(--brand)}
-html[data-theme="dark"] .mark--brand{background-color:var(--midnight);background-image:var(--emblem)}
 html[data-theme="dark"] .mark svg{stroke:var(--on-brand-dark)}
+html[data-theme="dark"] .mark--brand{
+  background-color:var(--midnight);
+  background-image:var(--emblem);
+  border-color:var(--line-2);
+}
 .wordmark{font-size:17px;font-weight:800;letter-spacing:-.01em;line-height:1.2}
 .wordmark+.latin{font-family:ui-monospace,Menlo,monospace;font-size:8.5px;letter-spacing:.34em;color:var(--ink-3);direction:ltr;text-align:right;margin-top:1px}
 
@@ -374,10 +385,6 @@ html[data-theme="dark"] .tabchip[aria-selected="true"]{background:var(--brand);c
    اصلاحات یکپارچگی (پس از بازبینی تصویری P0)
    ═══════════════════════════════════════════════════════════ */
 
-/* ۱) نشان برند: در تم تاریک نباید با shorthand خالی شود */
-.mark--brand{background-color:var(--midnight);background-image:var(--emblem);background-size:104%;background-position:50% 50%;background-repeat:no-repeat}
-html[data-theme="dark"] .mark{background-color:var(--brand);background-image:none}
-html[data-theme="dark"] .mark--brand{background-color:var(--midnight);background-image:var(--emblem)}
 
 /* ۲) نوار ابزار شناور فقط در ریدر؛ در بقیهٔ صفحه‌ها جریان عادی دارد */
 .rtool--static .rtool,.rtool--static{position:static;left:auto;right:auto;transform:none;bottom:auto;box-shadow:none}
@@ -390,3 +397,53 @@ html[data-theme="dark"] .mark--brand{background-color:var(--midnight);background
 
 /* ۴) سواچ رنگ: ارتفاع ثابت و پیش‌بینی‌پذیر */
 .sw i{height:46px;line-height:0}
+
+/* ═══════════════════════════════════════════════════════════
+   موج P1 — ورود و گیت حساب
+   ═══════════════════════════════════════════════════════════ */
+
+.app--bare .content{padding-bottom:24px;display:flex;justify-content:center;align-items:safe center}
+
+.auth{
+  width:100%;max-width:430px;margin:auto;
+  padding:26px 20px 28px;display:flex;flex-direction:column;
+}
+.auth--splash{align-items:center;justify-content:center;min-height:60vh;text-align:center}
+.auth__head{margin-bottom:22px}
+.auth__form{display:flex;flex-direction:column;gap:14px}
+.auth__row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.auth__foot{margin-top:22px;text-align:center;line-height:1.9}
+
+/* دکمهٔ متنی — اقدام ثانویه، بدون ظاهر دکمه (تا سلسله‌مراتب حفظ شود) */
+.linkbtn{
+  border:0;background:none;padding:6px 2px;border-radius:8px;cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:700;color:var(--brand);
+  text-decoration:underline;text-underline-offset:3px;
+}
+.linkbtn:hover{color:var(--brand-deep)}
+.linkbtn:disabled{color:var(--ink-3);cursor:not-allowed;text-decoration:none}
+.linkbtn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+
+/* پیام زمینه‌ای — رنگ + متن، نه رنگ تنها */
+.notice{
+  margin:0;padding:10px 12px;border-radius:var(--r);
+  font-size:12.5px;line-height:1.85;border:1px solid transparent;
+}
+.notice--warn{background:var(--amber-soft);color:var(--amber-ink);border-color:var(--amber-soft)}
+
+/* فهرست مرحله‌ها (صفحهٔ انتظار تأیید) — شماره‌ها باید دیده شوند:
+   ترتیب مراحل خودش اطلاعات است، پس list-style پایه را برمی‌گردانیم. */
+.steps{margin:0;padding-inline-start:22px;display:flex;flex-direction:column;gap:10px;
+  list-style:decimal;list-style-position:outside}
+.steps li{font-size:13px;line-height:1.85;color:var(--ink-2)}
+.steps li::marker{color:var(--amber);font-weight:700;font-size:12px}
+.steps li{padding-inline-start:2px}
+
+/* فاصلهٔ کارت مرحله‌ها از فرم پایین — دکمه نباید به کارت بچسبد */
+.card + .auth__form{margin-top:18px}
+
+/* فیلد کد: ارقام لاتین، فاصله‌گذاری یکنواخت، خوانا در هر دو تم */
+.input--code{letter-spacing:.42em;font-variant-numeric:tabular-nums;font-size:19px;text-align:center}
+
+/* لینک‌های داخل صفحه‌های گیت نباید مثل دکمه دیده شوند */
+.btn--block{width:100%}

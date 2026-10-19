@@ -1,11 +1,15 @@
 import { Route, Routes, useLocation } from 'react-router-dom';
 import { useEffect } from 'react';
+
 import { Shell } from './layout/Shell';
+import { LoginScreen } from './screens/LoginScreen';
+import { BlockedScreen, PendingScreen, SplashScreen } from './screens/GateScreens';
 import { HomeScreen } from './screens/HomeScreen';
 import { MeScreen } from './screens/MeScreen';
 import { Placeholder } from './screens/Placeholder';
 import { StatesScreen } from './screens/StatesScreen';
 import { SystemScreen } from './screens/SystemScreen';
+import { useSession } from './lib/session';
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -15,64 +19,118 @@ function ScrollToTop() {
   return null;
 }
 
+/** گارد — تنها جایی که «وضعیت حساب» به مسیر تبدیل می‌شود.
+    سه وضعیت مستقل (نشست، تأیید، اشتراک) اینجا از هم جدا می‌مانند:
+    این گارد فقط دو تای اول را می‌بیند؛ اشتراک در خود صفحه‌ها تصمیم می‌گیرد. */
+function Gate({ children }: { children: React.ReactNode }) {
+  const { status } = useSession();
+  if (status === 'loading') return <SplashScreen />;
+  if (status === 'pending_approval') return <PendingScreen />;
+  if (status === 'suspended') return <BlockedScreen />;
+  if (status !== 'active') return <LoginScreen />;
+  return <>{children}</>;
+}
+
+/** صفحه‌های مرجع طراحی: بدون گارد، تا در بازبینی P0/P1 قابل دیدن باشند. */
+const PUBLIC_PATHS = ['/system', '/states'];
+
+/** پوسته بر اساس وضعیت واقعی نشست: تب‌بار فقط وقتی معنا دارد که
+    کاربر وارد و تأییدشده باشد و در صفحه‌های مرجع نباشد. */
+function Layout({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
+  const { status } = useSession();
+  const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
+  return <Shell tabs={status === 'active' && !isPublic}>{children}</Shell>;
+}
+
 export function App() {
   return (
-    <Shell>
+    <Layout>
       <ScrollToTop />
       <Routes>
-        <Route path="/" element={<HomeScreen />} />
+        <Route
+          path="/login"
+          element={
+            <Gate>
+              <HomeScreen />
+            </Gate>
+          }
+        />
+        <Route path="/system" element={<SystemScreen />} />
+        <Route path="/states" element={<StatesScreen />} />
+        <Route
+          path="/"
+          element={
+            <Gate>
+              <HomeScreen />
+            </Gate>
+          }
+        />
         <Route
           path="/library"
           element={
-            <Placeholder
-              title="کتابخانه"
-              sub="جزوه‌ها، منابع و کتاب مرجع"
-              phase="P2"
-              icon="i-book"
-              note="کتابخانه به دادهٔ واقعی ترم/درس/جلسه و به وضعیت دسترسی کاربر وصل می‌شود."
-            />
+            <Gate>
+              <Placeholder
+                title="کتابخانه"
+                sub="جزوه‌ها، منابع و کتاب مرجع"
+                phase="P2"
+                icon="i-book"
+                note="کتابخانه به دادهٔ واقعی ترم/درس/جلسه و به وضعیت دسترسی کاربر وصل می‌شود."
+              />
+            </Gate>
           }
         />
         <Route
           path="/search"
           element={
-            <Placeholder
-              title="جستجو"
-              sub="جستجوی سراسری"
-              phase="P2"
-              icon="i-search"
-              note="نتایج جستجو باید به دامنهٔ دید کاربر احترام بگذارد؛ محتوای بیرون از دامنه هرگز برنمی‌گردد."
-            />
+            <Gate>
+              <Placeholder
+                title="جستجو"
+                sub="جستجوی سراسری"
+                phase="P2"
+                icon="i-search"
+                note="نتایج جستجو باید به دامنهٔ دید کاربر احترام بگذارد؛ محتوای بیرون از دامنه هرگز برنمی‌گردد."
+              />
+            </Gate>
           }
         />
         <Route
           path="/schedule"
           element={
-            <Placeholder
-              title="برنامه"
-              sub="برنامهٔ هفتگی"
-              phase="P7"
-              icon="i-calendar"
-              note="تقویم شمسی و جلسات از مسیر موجود برنامه خوانده می‌شود."
-            />
+            <Gate>
+              <Placeholder
+                title="برنامه"
+                sub="برنامهٔ هفتگی"
+                phase="P7"
+                icon="i-calendar"
+                note="تقویم شمسی و جلسات از مسیر موجود برنامه خوانده می‌شود."
+              />
+            </Gate>
           }
         />
-        <Route path="/me" element={<MeScreen />} />
-        <Route path="/system" element={<SystemScreen />} />
-        <Route path="/states" element={<StatesScreen />} />
+        <Route
+          path="/me"
+          element={
+            <Gate>
+              <MeScreen />
+            </Gate>
+          }
+        />
         <Route
           path="*"
           element={
-            <Placeholder
-              title="پیدا نشد"
-              sub="مسیر نامعتبر"
-              phase="—"
-              icon="i-search"
-              note="این مسیر وجود ندارد. از تب پایین به یکی از پنج ناحیه برگردید."
-            />
+            <Gate>
+              <Placeholder
+                title="پیدا نشد"
+                sub="مسیر نامعتبر"
+                phase="—"
+                icon="i-search"
+                note="این مسیر وجود ندارد. از تب پایین به یکی از پنج ناحیه برگردید."
+              />
+            </Gate>
           }
         />
       </Routes>
-    </Shell>
+    </Layout>
   );
 }

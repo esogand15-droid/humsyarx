@@ -1,0 +1,143 @@
+/* کلاینت API موج P1 — تنها جایی که مسیر شبکه‌ای نوشته می‌شود.
+   همه‌ی درخواست‌ها same-origin هستند (`/api/web/...`)؛ پس نه CORS
+   لازم است، نه کلید، نه آدرس هاردکدشده. کوکی نشست HttpOnly است و
+   مرورگر خودش می‌فرستد؛ این لایه هیچ توکنی در JS نگه نمی‌دارد. */
+
+const BASE = '/api/web';
+
+export type AccountState =
+  | 'anonymous'
+  | 'active'
+  | 'pending_approval'
+  | 'suspended'
+  | 'not_registered';
+
+export interface PublicUser {
+  id: number;
+  name: string;
+  username: string;
+  student_id: string;
+  group: string;
+  intake: string;
+  role: string;
+  registered_at: string;
+}
+
+export interface SessionPayload {
+  authenticated: boolean;
+  state: AccountState;
+  user: PublicUser | null;
+}
+
+export interface StartPayload {
+  ok: boolean;
+  challenge: string;
+  channel: 'telegram';
+  hint: string;
+  resend_in: number;
+  expires_in: number;
+  debug_code?: string;
+}
+
+export interface VerifyPayload {
+  ok: boolean;
+  state: AccountState;
+  user: PublicUser;
+}
+
+export interface AuthConfig {
+  otp_length: number;
+  otp_ttl_sec: number;
+  resend_in: number;
+  session_days: number;
+  channels: string[];
+  support_url: string | null;
+}
+
+/** خطای لایه‌ی شبکه: یا سرور کد خطا داده، یا اصلاً جوابی نیامده. */
+export class ApiError extends Error {
+  status: number;
+  code: string;
+  offline: boolean;
+
+  constructor(code: string, status: number, offline = false) {
+    super(code);
+    this.name = 'ApiError';
+    this.code = code;
+    this.status = status;
+    this.offline = offline;
+  }
+}
+
+async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      ...init,
+    });
+  } catch {
+    // قطعی شبکه یا نبودِ سرور — نه خطای اعتبارسنجی
+    throw new ApiError('offline', 0, true);
+  }
+
+  let body: unknown = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // پاسخ HTML (مثلاً صفحه‌ی 404 پروکسی) یعنی API اینجا نیست
+      throw new ApiError('offline', res.status, true);
+    }
+  }
+
+  if (!res.ok) {
+    const detail = (body as { detail?: unknown } | null)?.detail;
+    const code = typeof detail === 'string' ? detail : `http_${res.status}`;
+    throw new ApiError(code, res.status);
+  }
+  return (body ?? {}) as T;
+}
+
+export const api = {
+  session: () => call<SessionPayload>('/auth/session'),
+
+  config: () => call<AuthConfig>('/auth/config'),
+
+  start: (identifier: string) =>
+    call<StartPayload>('/auth/start', {
+      method: 'POST',
+      body: JSON.stringify({ identifier }),
+    }),
+
+  verify: (challenge: string, code: string) =>
+    call<VerifyPayload>('/auth/verify', {
+      method: 'POST',
+      body: JSON.stringify({ challenge, code }),
+    }),
+
+  logout: () => call<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+};
+
+/** پیام فارسی هر کد خطا — یک نگاشت واحد، نه متن پراکنده در کامپوننت‌ها. */
+export const ERROR_TEXT: Record<string, string> = {
+  offline: 'اتصال به سرور برقرار نشد. اینترنت را بررسی کن و دوباره تلاش کن.',
+  identifier_invalid: 'شناسه معتبر نیست. یوزرنیم تلگرام یا شمارهٔ دانشجویی را وارد کن.',
+  code_format: 'کد باید ۶ رقم باشد.',
+  code_invalid: 'کد درست نیست. دوباره بررسی کن.',
+  code_expired: 'این کد منقضی شده است. کد تازه بگیر.',
+  too_many_attempts: 'تلاش‌های ناموفق زیاد شد. کد تازه بگیر.',
+  rate_limited: 'درخواست‌ها زیاد شد. کمی بعد دوباره تلاش کن.',
+  login_required: 'برای ادامه باید وارد شوی.',
+  pending_approval: 'حساب تو هنوز تأیید نشده است.',
+  suspended: 'دسترسی این حساب موقتاً بسته است.',
+  not_registered: 'این حساب در هامزیار ثبت نشده است.',
+  send_failed: 'ارسال کد ممکن نشد. کمی بعد دوباره تلاش کن.',
+};
+
+export function errorText(err: unknown, fallback = 'مشکلی پیش آمد. دوباره تلاش کن.'): string {
+  if (err instanceof ApiError) return ERROR_TEXT[err.code] ?? fallback;
+  return fallback;
+}
