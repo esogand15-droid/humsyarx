@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fa" dir="rtl" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="هامزیار — پروتوتایپ تعاملی کلاینت وب دانشجو (داده‌های نمایشی)" />
+    <title>هامزیار — پروتوتایپ طراحی</title>
+    <!-- در محیط‌هایی که بدون بیلد باز می‌شود (یا آیکون کپی نشده)، برند از دادهٔ درون‌خطی خوانده می‌شود -->
+    <link rel="icon" id="fav" href="./icons/icon-192.png" />
+    <script>
+      // اگر آیکون ۱۹۲ موجود نبود، نشان برند از خود HTML جایگزین می‌شود (بدون درخواست شبکه)
+      window.addEventListener('DOMContentLoaded', function () {
+        var l = document.getElementById('fav');
+        if (!l) return;
+        var probe = new Image();
+        probe.onerror = function () { l.href = './icons/icon-192.png'; };
+        probe.src = l.href;
+      });
+    </script>
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+
+    <!-- iOS: اجرای مستقل پس از Add to Home Screen -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="هامزیار" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#080F1E" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F5F7FB" />
+    <meta name="format-detection" content="telephone=no" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

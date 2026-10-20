@@ -1,68 +1,52 @@
-# هامزیار X (HumsYarX)
+# هامزیار — پروتوتایپ طراحی وب‌اپ دانشجوی پزشکی
 
-پلتفرم آموزشی تلگرام‌محور: **ربات تلگرام** + **مینی‌اپ دانشجویی** + **پنل وب ادمین** + **API واحد** روی MongoDB.
+پروتوتایپ اجراییِ رابط کاربری «هامزیار»، ساخته‌شده با Vite 5 + React 18 + TypeScript و بدون هیچ کتابخانهٔ UI.
+همهٔ داده‌ها نمایشی‌اند و به هیچ سرویس واقعی وصل نیستند.
 
-## نقشه‌ی سریع
-
-| بخش | مسیر | توضیح |
-|---|---|---|
-| ربات تلگرام | `bot.py` + `subscription.py` + `start.py` + ... | polling (پیش‌فرض سالم) |
-| API | `api/main.py` + `api/routers/` (۲۵ روتر) | FastAPI؛ احراز با `X-Init-Data` تلگرام |
-| دیتابیس | `database.py` + `db/` (mixinها) | Motor async روی MongoDB |
-| درگاه پرداخت | `payments/zarinpal.py` | زرین‌پال v4 + mock نمایشی |
-| مینی‌اپ | `miniapp/` (React + Vite، مسیر `/app/`) | پنل دانشجو |
-| وب‌ادمین | `webadmin/` (React + Vite، مسیر `/admin/`) | پنل مدیریت |
-| استقرار | `Dockerfile` + `railway.json` + `supervisord` | تک‌کانتینر: API و ربات کنار هم |
-
-پرداخت‌ها: رسید دستی (بررسی ادمین) + زرین‌پال آنلاین + کیف پول داخلی. همه‌ی جریان‌های پولی idempotent و قابل مغایرت‌گیری‌اند (`/admin` → اشتراک‌ها → مغایرت‌گیری).
-
-## شروع سریع (لوکال)
+## اجرا
 
 ```bash
-# ۱) پیش‌نیازها: Python 3.11+‎ و MongoDB لوکال و Node 18+
-cp .env.example .env          # و مقادیر واقعی (دست‌کم MONGODB_URI و TELEGRAM_TOKEN)
-
-# ۲) بک‌اند
-pip install -r requirements.txt
-python -m unittest discover -s tests      # ~۲۳۰ تست؛ بدون Mongo بخشی skip می‌شود
-uvicorn api.main:app --port 8000          # API روی :8000
-python bot.py                             # ربات (polling) — ترمینال جدا
-
-# ۳) فرانت‌اندها (ترمینال جدا)
-cd miniapp  && npm install && npm run dev     # :5173 با VITE_BASE=/
-cd webadmin && npm install && npm run dev
+npm install
+npm run dev -- --host 0.0.0.0 --port 5178
+# سپس: http://localhost:5178
 ```
 
-نکته: درگاه بدون مرچنت در **حالت نمایشی** کار می‌کند (پول واقعی جابه‌جا نمی‌شود).
-
-## تست و کیفیت
+ساخت نسخهٔ تک‌فایل بدون هیچ درخواست بیرونی (برای باز کردن با دوبار کلیک یا آپلود در هر دامنه):
 
 ```bash
-python -m unittest discover -s tests   # گیت CI همین را اجرا می‌کند
-python -m pyflakes <file>              # بدون هشدار جدید (۴ هشدار قدیمی شناخته‌شده)
+npm run build          # خروجی در dist/
+python3 build_single.py # humsyar-prototype.html
 ```
 
-## استقرار
+## ساختار
 
-تک‌کانتینر Docker روی Railway؛ `supervisord` هم API (`$PORT`) و هم ربات را بالا می‌آورد. هلث‌چک: `/api/health`. جزئیات عملیاتی (حادثه‌ها، بکاپ، درگاه، webhook) در **`docs/runbook.md`**.
+| مسیر | چیست |
+|---|---|
+| `src/styles/tokens.css` | توکن‌های رنگ/فاصله/شعاع/حرکت — تنها منبع مقادیر |
+| `src/styles/layout.css` | **تنها لایهٔ واکنش‌گرا**: `@container frame` (≥۱۵۰۰ / ≥۱۰۰۰ / ≤۱۲۷۹ / ≤۱۱۰۰ / ≥۶۰۱ / ≤۶۰۰) |
+| `src/styles/app.css` | کامپوننت‌ها (پنل، ردیف، بج، چیپ، برنامه، پلن…) |
+| `src/styles/notes.css` | ویرایشگر یادداشت و پنل PDF |
+| `src/styles/motion.css` | حرکت ۹۰–۲۴۰ms + احترام به `prefers-reduced-motion` و `data-motion="calm"` |
+| `src/screens/*` | ۱۸ صفحهٔ محصول (خانه، منابع، بانک سؤال، نتایج، برنامه، هوشیار، یادداشت‌ها، پیشرفت، اشتراک، تنظیمات…) |
+| `src/components/*` | Shell، کامپوننت‌های UI، آیکون‌های SVG دست‌ساز |
+| `src/data/*` | دادهٔ نمایشی (درس‌ها، سؤال‌ها، پلن‌ها، برنامه، یادداشت‌ها) |
+| `tests/*.py` | اجرای Playwright: `e2e_smoke`، `e2e_notes`، `contrast_audit`، `viewport_matrix` |
+| `screenshots/round5/` | عکس‌های واقعی اجرا در ۳۹۰ / ۷۶۸ / ۱۴۴۰ / ۱۹۲۰ + نسخهٔ روشن |
 
-## مستندات
+## قواعد واکنش‌گرایی (خلاصه)
 
-- `docs/runbook.md` — ران‌بوک عملیات و بازیابی
-- `.env.example` — همه‌ی متغیرهای محیطی با پیش‌فرض
-- `FINAL_REPORT.md` — گزارش تاریخی پروژه
+- اندازه‌گیری روی «قاب» است (`container-name: frame`)، نه پنجره — همین کد در پیش‌نمایش ۳۹۰ داخل دسکتاپ هم درست رفتار می‌کند.
+- فقط `#main` اسکرول می‌کند؛ بدنهٔ صفحه قفل است. تغییر تب، اسکرول را ریست نمی‌کند.
+- در ≤۶۰۰px: یک ستون، کارت‌های مرتبط در یک گروه، ردیف‌های فهرستی به‌جای کارت، و «بیشتر» فقط برای موارد ثانویه.
+- دسکتاپ و تبلت فشرده نمی‌شوند: چندستونه، نمودار و حلقه در اندازهٔ کامل.
+- هیچ فونتی برای جا دادن محتوا کوچک نمی‌شود؛ چگالی از اطلاعات و گروه‌بندی می‌آید.
 
-## QBank Import (پایدار / چندسال)
+## دسترس‌پذیری
 
-برای وارد کردن آزمون‌های علوم‌پایه از آرشیو تصویری یا PDF:
+تنظیمات کاربر: تم تیره/روشن، «کاهش حرکت»، «اندازهٔ متن یادداشت‌ها» (کوچک/متوسط/بزرگ).
+هر کنش با صفحه‌کلید در دسترس است، فوکوس دیده می‌شود، اهداف لمسی ≥۲۸px، معنا هرگز فقط با رنگ منتقل نمی‌شود.
 
-```bash
-python qbank_import_cli.py extract \
-  --source path/to/archive.rar \
-  --work /tmp/qbank-work \
-  --exam-year 1404 \
-  --session shahrivar
-```
+## وضعیت اعتبارسنجی
 
-جزئیات: [`docs/qbank-import.md`](docs/qbank-import.md) · گزارش شهریور ۱۴۰۴: [`QBANK_IMPORT_REPORT_SHahrivar_1404.md`](QBANK_IMPORT_REPORT_SHahrivar_1404.md)
-
+`e2e_smoke` ۲۵/۲۵ · `e2e_notes` ۲۴/۲۴ · `contrast_audit` روشن ۰/۰ و تیره ۰/۰ · `viewport_matrix` ۱۳۰ قاب بدون سرریز.
+تست نشده (و ادعا نمی‌شود): صفحه‌کلید مجازی iOS/اندروید، رفتار PWA نصب‌شده، چرخش و split-screen آیپد، بزرگ‌نمایی مرورگر.
