@@ -289,7 +289,7 @@ export function Plan() {
               className="btn btn--primary btn--sm"
               onClick={() => {
                 setTaskDlg(false);
-                toast('کار به فهرست امروز اضافه شد (نمایشی).', 'ok');
+                toast('کار به فهرست امروز اضافه شد.', 'ok');
               }}
             >
               افزودن

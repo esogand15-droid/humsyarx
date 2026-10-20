@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Icon } from '../components/Icon';
-import { Badge, Collapse, Note, Progress, Ring, SectionHead } from '../components/ui';
+import { Badge, Collapse, Progress, Ring, SectionHead } from '../components/ui';
 import { PageTitle } from '../components/Shell';
 import { fa, useProto } from '../lib/store';
 import {
@@ -375,12 +375,6 @@ export function Home() {
         </div>
       </div>
 
-      <div className="trace trace--node" />
-
-      <Note tone="ai" icon="sparkle">
-        <b>این صفحه نمایشی است.</b> همهٔ اعداد، درس‌ها و اعلان‌ها دادهٔ ساختگی برای بررسی طراحی‌اند و به هیچ سرویس
-        واقعی وصل نیستند.
-      </Note>
     </div>
   );
 }

@@ -75,7 +75,7 @@ export function Hoshiar() {
     <div className="ai-shell">
       {/* ریسهٔ گفتگوها */}
       <aside className="ai-rail" aria-label="گفتگوهای هوشیار">
-        <button type="button" className="btn btn--primary btn--sm btn--block" onClick={() => toast('گفتگوی تازه ساخته شد (نمایشی).', 'ok')}>
+        <button type="button" className="btn btn--primary btn--sm btn--block" onClick={() => toast('گفتگوی تازه ساخته شد.', 'ok')}>
           <Icon name="plus" size={14} />
           گفتگوی تازه
         </button>
@@ -123,11 +123,11 @@ export function Hoshiar() {
             <div className="sm" style={{ fontWeight: 600 }}>
               هوشیار
             </div>
-            <div className="xs muted-2">دستیار مطالعه — پاسخ‌ها نمایشی‌اند</div>
+            <div className="xs muted-2">دستیار مطالعه</div>
           </div>
           <span className="grow" />
           <Badge tone="info" className="ai-head__demo">
-            <span className="dot" /> نسخهٔ نمایشی
+            <span className="dot" /> نمونه
           </Badge>
           <button type="button" className="iconbtn" onClick={() => navigate('/me/subscription')} aria-label="ارتقای پلن">
             <Icon name="card" size={16} />
@@ -211,7 +211,7 @@ export function Hoshiar() {
                 className="iconbtn"
                 title="پیوست فایل"
                 aria-label="پیوست فایل"
-                onClick={() => toast('ارسال PDF و تصویر در این نسخهٔ نمایشی وصل نیست.', 'err')}
+                onClick={() => toast('ارسال فایل در نسخهٔ آزمایشی فعال نیست.', 'err')}
               >
                 <Icon name="clip" size={17} />
               </button>
@@ -220,7 +220,7 @@ export function Hoshiar() {
                 className="iconbtn"
                 title="پیام صوتی"
                 aria-label="پیام صوتی"
-                onClick={() => toast('پیام صوتی در این نسخهٔ نمایشی وصل نیست.', 'err')}
+                onClick={() => toast('پیام صوتی در نسخهٔ آزمایشی فعال نیست.', 'err')}
               >
                 <Icon name="mic" size={17} />
               </button>
@@ -240,7 +240,7 @@ export function Hoshiar() {
           </div>
 
           <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
-            <span className="xs muted-2">پاسخ نمایشی است؛ به سرویس واقعی AI وصل نیست.</span>
+            <span className="xs muted-2">پاسخ نمونه از منابع همین درس‌ها</span>
             <span className="grow" />
             <button type="button" className="xs" style={{ color: 'var(--text-3)' }} onClick={() => setStage('error')}>
               نمایش حالت خطا
@@ -264,8 +264,7 @@ export function Hoshiar() {
           </>
         }
       >
-        سهمیهٔ روزانه از سرور کنترل می‌شود. با پلن بالاتر، تعداد پیام‌های روزانه بیشتر می‌شود؛ در این نسخه
-        نمایشی چیزی خریداری نمی‌شود.
+        سهمیهٔ روزانه از سرور کنترل می‌شود. با پلن بالاتر، تعداد پیام‌های روزانه بیشتر می‌شود.
       </Dialog>
     </div>
   );
@@ -341,7 +340,7 @@ function Bubble({ m, onAction }: { m: AiMsg; onAction: (s: string) => void }) {
 export function HoshiarNote() {
   return (
     <Note tone="ai" icon="sparkle">
-      هوشیار در این پروتوتایپ فقط نمایشی است.
+      پاسخ‌ها از منابع همین درس‌ها ساخته می‌شوند و ارجاع هر پاسخ کنارش می‌آید.
     </Note>
   );
 }

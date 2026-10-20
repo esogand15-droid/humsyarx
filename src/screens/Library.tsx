@@ -44,7 +44,7 @@ export function Library() {
     setLoading(true);
     window.setTimeout(() => {
       setLoading(false);
-      toast('فهرست از سرور تازه شد (نمایشی).', 'ok');
+      toast('فهرست به‌روز شد.', 'ok');
     }, 1200);
   };
 
@@ -205,8 +205,8 @@ export function Library() {
 
       <div className="row" style={{ marginTop: 16, gap: 10, flexWrap: 'wrap' }}>
         <Note icon="info">
-          <b>تفکیک دسترسی صادقانه:</b> منابع «همهٔ پلن‌ها» و «نیازمند ارتقا» از سرور تعیین می‌شوند؛ این نسخه
-          هیچ منبعی را تزئینی باز نمی‌کند.
+          دسترسی هر منبع از سرور تعیین می‌شود: منبع «همهٔ پلن‌ها» برای همه باز است و منبع «نیازمند ارتقا» تا
+          فعال‌شدن پلن، فقط پیش‌نمایش دارد.
         </Note>
       </div>
     </div>
@@ -259,7 +259,7 @@ export function ResourceDetail() {
           <button
             type="button"
             className="btn btn--primary btn--sm"
-            onClick={() => (r.locked ? setDlg(true) : toast('فایل برای مطالعهٔ آفلاین آماده شد (نمایشی).', 'ok'))}
+            onClick={() => (r.locked ? setDlg(true) : toast('برای مطالعهٔ آفلاین آماده شد.', 'ok'))}
           >
             <Icon name="download" size={14} />
             دانلود
@@ -344,7 +344,7 @@ export function ResourceDetail() {
                     </div>
                     <span className="xs num muted-2">{r.duration}</span>
                   </div>
-                  <p className="xs muted-2">پخش‌کننده در این نسخه نمایشی است؛ فایل واقعی بارگذاری نمی‌شود.</p>
+                  <p className="xs muted-2">پیش‌نمایش کوتاه؛ فایل کامل در کتابخانه است.</p>
                 </div>
               ) : r.kind === 'audio' ? (
                 <div style={{ width: '100%', display: 'grid', gap: 14 }}>
@@ -387,7 +387,7 @@ export function ResourceDetail() {
           </div>
 
           <div className="row" style={{ marginTop: 14, gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('یادداشت روی این صفحه ذخیره شد (نمایشی).', 'ok')}>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('یادداشت روی این صفحه ذخیره شد.', 'ok')}>
               <Icon name="plus" size={14} />
               یادداشت روی صفحه
             </button>
@@ -395,7 +395,7 @@ export function ResourceDetail() {
               <Icon name="question" size={14} />
               تمرین از این مبحث
             </button>
-            <button type="button" className="btn btn--quiet btn--sm" onClick={() => toast('پیوند کپی شد (نمایشی).')}>
+            <button type="button" className="btn btn--quiet btn--sm" onClick={() => toast('پیوند کپی شد.')}>
               <Icon name="share" size={14} />
               اشتراک‌گذاری
             </button>

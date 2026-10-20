@@ -25,9 +25,13 @@ const NAV: { to: string; label: string; icon: IconName; tag?: string }[] = [
 const NAV_MORE: { to: string; label: string; icon: IconName }[] = [
   { to: '/me/subscription', label: 'اشتراک و پرداخت', icon: 'card' },
   { to: '/me/settings', label: 'تنظیمات حساب', icon: 'settings' },
+];
+
+/* مستندات طراحی، بخشی از تجربهٔ دانشجو نیست؛ در ناوبری جدا نگه داشته می‌شود. */
+const NAV_DOCS: { to: string; label: string; icon: IconName }[] = [
   { to: '/system', label: 'سیستم طراحی', icon: 'layers' },
   { to: '/capability', label: 'ماتریس قابلیت', icon: 'shield' },
-  { to: '/handoff', label: 'سند تحویل و IA', icon: 'book-open' },
+  { to: '/handoff', label: 'سند تحویل', icon: 'book-open' },
 ];
 
 const TITLES: Record<string, string> = {
@@ -101,6 +105,13 @@ export function Shell({ children }: { children: ReactNode }) {
               <span>{n.label}</span>
             </NavLink>
           ))}
+          <div className="nav__label nav__label--docs">مستندات طراحی</div>
+          {NAV_DOCS.map((n) => (
+            <NavLink key={n.to} to={n.to} className="nav__item nav__item--doc">
+              <Icon name={n.icon} size={17} className="ico" />
+              <span>{n.label}</span>
+            </NavLink>
+          ))}
         </nav>
 
         <div className="sidebar__foot">
@@ -128,8 +139,8 @@ export function Shell({ children }: { children: ReactNode }) {
           </button>
 
           <span className="grow" />
-          <span className="demo-pill" title="همهٔ داده‌های این نسخه نمایشی هستند">
-            <span className="dot" /> نسخهٔ نمایشی
+          <span className="demo-pill" title="محتوای این نسخه نمونه است">
+            <span className="dot" /> دادهٔ نمونه
           </span>
 
           <button type="button" className="iconbtn" onClick={toggleTheme} aria-label={theme === 'dark' ? 'تم روشن' : 'تم تیره'} title="تغییر تم">
@@ -153,8 +164,8 @@ export function Shell({ children }: { children: ReactNode }) {
             <img src={emblem} alt="" />
           </span>
           <span className="mobile-head__t">هامزیار</span>
-          <span className="demo-mini" title="همهٔ داده‌های این نسخه نمایشی هستند">
-            <span className="dot" /> نمایشی
+          <span className="demo-mini" title="محتوای این نسخه نمونه است">
+            <span className="dot" /> نمونه
           </span>
           <span className="grow" />
           <button type="button" className="iconbtn" onClick={toggleTheme} aria-label="تغییر تم">
@@ -202,16 +213,16 @@ export function Shell({ children }: { children: ReactNode }) {
             </p>
           </div>
         ))}
-        <p className="xs muted-2">اعلان‌ها در این نسخه نمایشی‌اند؛ سرویس ارسال واقعی وصل نیست.</p>
+        <p className="xs muted-2">اعلان‌ها بر پایهٔ فعالیت همین هفته‌ات ساخته می‌شوند.</p>
       </Drawer>
 
-      {/* ── جست‌وجوی سراسری (نمایشی) ───────────────────────── */}
+      {/* ── جست‌وجوی سراسری ────────────────────────────────── */}
       <Drawer open={searchOpen} title="جست‌وجوی سراسری" onClose={() => setSearchOpen(false)}>
         <div className="search" style={{ minWidth: 0, maxWidth: 'none', flex: 'none' }}>
           <Icon name="search" size={16} />
           <input autoFocus placeholder="مثلاً «چرخهٔ قلبی» یا «تیامین»" aria-label="عبارت جست‌وجو" />
         </div>
-        <p className="xs muted-2">جست‌وجو در منابع، بانک سؤال و گفتگوهای هوشیار — در این نسخه فقط نمایشی.</p>
+        <p className="xs muted-2">در منابع، بانک سؤال و گفتگوهای هوشیار جست‌وجو کن.</p>
         {['جزوهٔ فیزیولوژی قلب — جلسهٔ ۷', 'چرخهٔ قلبی', 'سؤال: مکانیسم فرانک–استارلینگ'].map((s) => (
           <button
             key={s}

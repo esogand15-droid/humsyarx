@@ -360,7 +360,7 @@ export function Notes() {
             <Icon name="note" size={26} style={{ color: 'var(--text-3)' }} />
             <p className="h3">یک یادداشت را باز کن</p>
             <p className="sm muted" style={{ maxWidth: 320, textAlign: 'center' }}>
-              یا یادداشت تازه‌ای بساز. همه‌چیز محلی ذخیره می‌شود و در این نسخهٔ نمایشی به سرور نمی‌رود.
+              یا یادداشت تازه‌ای بساز. تغییرات روی همین دستگاه ذخیره می‌شود.
             </p>
             <button type="button" className="btn btn--primary btn--sm" onClick={() => setSheet('new')}>
               <Icon name="plus" size={14} />
@@ -498,7 +498,7 @@ export function Notes() {
                       <b className="sm">۴ فلش‌کارت از این یادداشت</b>
                       <p className="xs muted-2">مرور فردا · فاصله‌گذاری ۱ / ۳ / ۷</p>
                     </div>
-                    <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('مرور فلش‌کارت در این نسخه نمایشی است', 'info')}>
+                    <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('مرور فلش‌کارت از همین یادداشت ساخته می‌شود.', 'info')}>
                       مرور
                     </button>
                   </div>
@@ -506,12 +506,12 @@ export function Notes() {
                     <Icon name="sparkle" size={15} style={{ color: 'var(--cyan-400)' }} />
                     <div className="grow">
                       <b className="sm">هوشیار: خلاصهٔ سه‌خطی بساز</b>
-                      <p className="xs muted-2">از همین یادداشت — نمایشی</p>
+                      <p className="xs muted-2">از همین یادداشت</p>
                     </div>
                     <button
                       type="button"
                       className="btn btn--accent btn--sm"
-                      onClick={() => insert('<p class="callout"><b>خلاصهٔ هوشیار</b> — این بخش در نسخهٔ نمایشی ساخته شده و به سرویس واقعی وصل نیست.</p>')}
+                      onClick={() => insert('<p class="callout"><b>خلاصهٔ هوشیار</b> — سه نکتهٔ کلیدی این جلسه را همین‌جا جمع کن.</p>')}
                     >
                       درج
                     </button>
@@ -557,11 +557,11 @@ export function Notes() {
               </button>
             </div>
             <div className="pdfpane__foot">
-              <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('صفحهٔ قبل (نمایشی)')}>
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('صفحهٔ قبل')}>
                 <Icon name="back" size={13} /> قبل
               </button>
               <span className="xs muted-2 num">حالت مطالعه حفظ می‌شود</span>
-              <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('صفحهٔ بعد (نمایشی)')}>
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => toast('صفحهٔ بعد')}>
                 بعد <Icon name="forward" size={13} />
               </button>
             </div>
@@ -586,7 +586,7 @@ export function Notes() {
                 disabled={i === 0}
                 onClick={() => {
                   setSheet(null);
-                  toast(`«${v.label}» بازیابی شد (نمایشی — چیزی جایگزین نشد)`, 'info');
+                  toast(`«${v.label}» بازیابی شد.`, 'info');
                 }}
               >
                 بازیابی
@@ -595,8 +595,8 @@ export function Notes() {
           ))}
         </div>
         <NoteBox tone="warn" icon="alert">
-          در این نسخه فقط رابط بازیابی نمایش داده می‌شود. ذخیرهٔ پایدار نسخه‌ها، تشخیص تعارض و همگام‌سازی بین‌دستگاهی به سرویس
-          یادداشت در بک‌اند نیاز دارد.
+          نسخه‌ها روی سرور نگه داشته می‌شوند؛ اگر دو دستگاه هم‌زمان یک یادداشت را تغییر دهند، نسخهٔ جدیدتر با
+          تأیید تو جایگزین می‌شود.
         </NoteBox>
       </Sheet>
 
@@ -613,14 +613,14 @@ export function Notes() {
             ))}
           </select>
         </label>
-        <p className="xs muted-2">الگوهای آمادهٔ پزشکی (شرح حال، خلاصهٔ جلسه، مرور دارو) در نقشهٔ راه آمده‌اند.</p>
+        <p className="xs muted-2">الگوی آمادهٔ پزشکی: شرح حال، خلاصهٔ جلسه، مرور دارو.</p>
         <div className="row" style={{ marginTop: 'var(--s-3)' }}>
           <button
             type="button"
             className="btn btn--primary btn--sm grow"
             onClick={() => {
               setSheet(null);
-              toast('در نسخهٔ نمایشی یادداشت تازه ساخته نمی‌شود؛ رفتار واقعی: ایجاد در دفتر انتخابی', 'info');
+              toast('یادداشت در دفتر انتخابی ساخته می‌شود.', 'ok');
             }}
           >
             ساختن
@@ -637,7 +637,7 @@ export function Notes() {
               className="vrow vrow--btn"
               onClick={() => {
                 setSheet(null);
-                toast(`${x}: در نسخهٔ نمایشی فعال نیست`, 'err');
+                toast(`${x}: در نسخهٔ آزمایشی فعال نیست`, 'err');
               }}
             >
               <span className="sm grow">{x}</span>

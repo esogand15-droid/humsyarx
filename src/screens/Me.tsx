@@ -341,8 +341,8 @@ export function Subscription() {
 
       <div style={{ marginTop: 14 }}>
         <Note icon="info">
-          مبالغ، درگاه پرداخت و وضعیت تراکنش از سرور و درگاه واقعی می‌آیند؛ در این نسخهٔ نمایشی هیچ پرداختی
-          انجام نمی‌شود و عددی جعل نمی‌کنیم.
+          پرداخت در درگاه بانکی انجام می‌شود و وضعیت هر تراکنش از سرور خوانده می‌شود؛ فاکتور رسمی هم در
+          همان صفحه قابل دریافت است.
         </Note>
       </div>
 
@@ -415,7 +415,7 @@ export function Settings() {
       <section className="panel panel--pad">
         <div className="form-grid">
           <label className="field">
-            <span className="field__l">نام نمایشی</span>
+            <span className="field__l">نام برای هم‌گروهی‌ها</span>
             <input className="input" defaultValue={student.name} />
           </label>
           <label className="field">
@@ -432,7 +432,7 @@ export function Settings() {
           </label>
         </div>
         <div className="row" style={{ marginTop: 14, gap: 8 }}>
-          <button type="button" className="btn btn--primary btn--sm" onClick={() => toast('تغییرات ذخیره شد (نمایشی).', 'ok')}>
+          <button type="button" className="btn btn--primary btn--sm" onClick={() => toast('تغییرات ذخیره شد.', 'ok')}>
             ذخیره
           </button>
           <span className="xs muted-2">تغییر ورودی و گروه سمت سرور اعتبارسنجی می‌شود.</span>
@@ -527,7 +527,7 @@ export function Settings() {
               className="switch"
               onClick={() => {
                 setPrefs((p) => ({ ...p, [k]: !p[k] }));
-                toast('تنظیم ذخیره شد (نمایشی).', 'ok');
+                toast('تنظیم ذخیره شد.', 'ok');
               }}
             />
           </div>
@@ -546,7 +546,7 @@ export function Settings() {
             type="button"
             className="rrow"
             style={{ gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
-            onClick={() => toast('این بخش در نسخهٔ نمایشی فعال نیست.', 'info')}
+            onClick={() => toast('این بخش در نسخهٔ آزمایشی فعال نیست.', 'info')}
           >
             <span className="rrow__ic">
               <Icon name={ic as 'ticket'} size={17} />

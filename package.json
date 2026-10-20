@@ -1,7 +1,7 @@
 {
   "name": "humsyar-proto",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "description": "پروتوتایپ تعاملی طراحی کلاینت وب دانشجو — هامزیار",
   "scripts": {

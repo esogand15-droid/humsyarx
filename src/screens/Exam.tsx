@@ -377,7 +377,7 @@ export function Practice() {
                   type="button"
                   className="btn btn--ghost btn--sm"
                   onClick={() => {
-                    toast('سؤال به هوشیار ارجاع داده شد (نمایشی).', 'ok');
+                    toast('سؤال به هوشیار ارجاع داده شد.', 'ok');
                     navigate('/ai');
                   }}
                 >
@@ -481,7 +481,7 @@ export function Practice() {
               className="btn btn--primary btn--sm"
               onClick={() => {
                 setShowDlg(false);
-                toast('گزارش ثبت شد. تیم محتوا بررسی می‌کند (نمایشی).', 'ok');
+                toast('گزارش ثبت شد؛ تیم محتوا بررسی می‌کند.', 'ok');
               }}
             >
               ارسال گزارش
@@ -582,8 +582,8 @@ export function ExamRun() {
           </div>
 
           <Note icon="info">
-            در این محدوده <b className="num">{fa(examConfig.availableCount)}</b> سؤال موجود است؛ آزمون با همان
-            تعداد ساخته می‌شود. این عدد از سرور می‌آید، نه از حدس کلاینت.
+            در این محدوده <b className="num">{fa(examConfig.availableCount)}</b> سؤال موجود است و آزمون با
+            همان تعداد ساخته می‌شود.
           </Note>
 
           <div className="row" style={{ marginTop: 18, gap: 8 }}>
@@ -811,14 +811,14 @@ export function ExamResult() {
                 type="button"
                 className="btn btn--ghost btn--sm"
                 onClick={() => {
-                  toast('تحلیل هوشیار در گفتگو آماده شد (نمایشی).', 'ok');
+                  toast('تحلیل آزمون در گفتگوی هوشیار آماده شد.', 'ok');
                   navigate('/ai');
                 }}
               >
                 <Icon name="sparkle" size={14} style={{ color: 'var(--cyan-400)' }} />
                 تحلیل هوشیار
               </button>
-              <button type="button" className="btn btn--quiet btn--sm" onClick={() => toast('خروجی PDF این آزمون در پلن جامع فعال است (نمایشی).')}>
+              <button type="button" className="btn btn--quiet btn--sm" onClick={() => toast('خروجی PDF در پلن جامع فعال می‌شود.')}>
                 <Icon name="download" size={14} />
                 PDF
               </button>
@@ -920,7 +920,7 @@ export function ExamResult() {
               ))}
             </div>
             <p className="xs muted-2" style={{ marginTop: 12, lineHeight: 1.7 }}>
-              مقایسه با میانگین ۲۰ آزمون قبلی تو؛ این تحلیل از دادهٔ سرور ساخته می‌شود، نه از حدس کلاینت.
+              مقایسه با میانگین ۲۰ آزمون قبلی تو.
             </p>
           </section>
 

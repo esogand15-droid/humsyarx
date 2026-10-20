@@ -168,7 +168,7 @@ export function System() {
           <Badge tone="ok">فعال</Badge>
           <Badge tone="warn">نزدیک</Badge>
           <Badge tone="danger">غلط</Badge>
-          <Badge tone="info">نمایشی</Badge>
+          <Badge tone="info">نمونه</Badge>
           <Badge tone="locked">قفل</Badge>
         </div>
         <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
