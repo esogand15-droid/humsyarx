@@ -1,0 +1,665 @@
+/* ══════════════════════════════════════════════════════════════════
+   سیستم چیدمان v2 — تصمیم‌ها بر پایهٔ «عرض واقعی قاب»
+
+   قاعدهٔ بنیادی: هیچ رفتاری به عرض پنجره گره نخورده است. هر قاب
+   (پنجرهٔ دسکتاپ، تبلت، گوشی، یا قاب پیش‌نمایش) همان اندازه‌گیری را
+   می‌بیند، چون container query روی .frame اجرا می‌شود.
+   ══════════════════════════════════════════════════════════════════ */
+
+html, body, #root { height: 100%; }
+body { overflow: hidden; background: var(--bg-0); }
+
+/* ── قاب ─────────────────────────────────────────────────────── */
+.frame {
+  container-type: inline-size;
+  container-name: frame;
+  height: 100dvh;
+  width: 100%;
+  margin-inline: auto;
+  position: relative;
+}
+/* پیش‌نمایش فقط عرض قاب را عوض می‌کند؛ هیچ استایل چیدمانی دیگری ندارد */
+.frame[data-preview="mobile"],
+.frame[data-preview="tablet"] {
+  border-inline: 1px solid var(--line-strong);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), 0 40px 90px -50px rgba(0, 0, 0, .9);
+}
+.frame[data-preview="mobile"] { max-width: 390px; }
+.frame[data-preview="tablet"] { max-width: 768px; }
+
+/* ── پوسته: تمام ارتفاع، اسکرول داخلی، بدون اسکرول تودرتو ─────── */
+.app {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  overflow: hidden;
+}
+.app__main {
+  min-width: 0; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+/* هیچ ردیفی از پوسته نباید ستون را پهن‌تر از قاب کند */
+.topbar { min-width: 0; }
+.topbar .search { min-width: 0; flex: 1 1 auto; }
+#main {
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.sidebar { position: static; height: 100%; }
+
+.route { min-height: 100%; display: flex; flex-direction: column; }
+.route > .notes,
+.route > .ai-shell { flex: 1 1 auto; min-height: 0; height: auto; }
+.notes { height: auto; }
+.ai-shell { height: auto; min-height: 0; }
+
+/* ── صفحه: تمام عرض، بدون سقف ثابت ───────────────────────────── */
+.page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: clamp(14px, 1.5cqi + 8px, 30px) clamp(14px, 1.8cqi + 10px, 38px) clamp(28px, 4cqi, 56px);
+}
+
+/* عنوان صفحه */
+.hello { display: flex; align-items: flex-end; gap: var(--s-3); margin-bottom: clamp(12px, 1.4cqi, 22px); }
+.hello h1 { font-size: clamp(19px, 1.1cqi + 12px, 30px); font-weight: var(--fw-bold); letter-spacing: -.01em; line-height: 1.4; }
+.hello p { color: var(--text-3); font-size: var(--fs-xs); margin-top: 2px; }
+.hello__chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ══════════════════════════════════════════════════════════════════
+   خانه — چیدمان دو/سه‌گانه
+   ══════════════════════════════════════════════════════════════════ */
+.home { display: grid; gap: var(--s-4); }
+.home__main, .home__side { min-width: 0; display: flex; flex-direction: column; gap: var(--s-4); }
+
+/* آزمون بعدی: در دسکتاپ تکراری است، چون فهرست کامل در ستون کنار هست */
+.sec-exam-next { display: none; }
+.examnext {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--r-md);
+}
+.examnext__t { display: block; margin-top: 1px; line-height: 1.5; }
+
+/* قهرمان */
+.continue__bar { margin-top: 14px; }
+.continue__actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+.continue__actions .btn--icon { margin-inline-start: auto; }
+
+/* دکمهٔ انجام کار */
+.check-dot {
+  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--surface-3); border: 1px solid var(--line); color: var(--text-3);
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.check-dot[data-on="true"] { background: var(--ok-soft); border-color: rgba(47, 208, 154, .4); color: var(--ok); }
+
+/* کارت هفته */
+.weekbars { max-width: 560px; }
+.week-head { display: flex; align-items: center; gap: var(--s-4); margin-bottom: var(--s-4); }
+.week-head__stats { display: grid; gap: 10px; flex: 1 1 auto; min-width: 0; }
+
+/* ══════════════════════════════════════════════════════════════════
+   ۱) دسکتاپ — دو ستون و عرض کامل
+   ══════════════════════════════════════════════════════════════════ */
+@container frame (min-width: 1000px) {
+  .home { grid-template-columns: minmax(0, 1.55fr) minmax(300px, .95fr); align-items: start; }
+  .home__side { position: sticky; top: 0; }
+}
+
+/* مانیتور عریض: ستون کنار پهن‌تر و فاصله‌های بازتر، نه محتوای کشیده */
+@container frame (min-width: 1500px) {
+  .home { grid-template-columns: minmax(0, 1.5fr) minmax(360px, .85fr); gap: var(--s-6); }
+  .page { padding-inline: clamp(24px, 2.2cqi, 52px); }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ۲) تبلت — ریل آیکنی؛ دو پنل فقط اگر عرض کافی باشد
+   ══════════════════════════════════════════════════════════════════ */
+@container frame (max-width: 1279px) {
+  .app { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+  .sidebar { padding: var(--s-4) var(--s-2); align-items: center; }
+  .brand__txt, .nav__label, .nav__item span, .nav__item .tag, .mini-profile div { display: none; }
+  .nav__item { justify-content: center; padding: 11px; }
+  .mini-profile { justify-content: center; }
+  .home { grid-template-columns: minmax(0, 1fr); }
+  .home__side { position: static; }
+  .exam-shell, .rdetail { grid-template-columns: minmax(0, 1fr); }
+  .ai-shell { grid-template-columns: minmax(0, 1fr); }
+  .ai-rail { display: none; }
+}
+
+@container frame (max-width: 1100px) {
+  .topbar { gap: 8px; padding-inline: 14px; }
+  .topbar .kbd { display: none; }
+  .topbar .demo-pill { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* تبلت افقی: دو پنل برمی‌گردد */
+@container frame (min-width: 900px) and (max-width: 1279px) {
+  .home { grid-template-columns: minmax(0, 1.4fr) minmax(290px, 1fr); align-items: start; }
+}
+
+/* تبلت — بدون سربرگ/تب موبایل، با ریل */
+@container frame (min-width: 601px) {
+  .mobile-head { display: none; }
+  .tabbar { display: none; }
+  .sidebar { display: flex; }
+  .topbar { display: flex; }
+  .sec-exam-next { display: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ۳) موبایل — بازچینش کامل، نه فشرده‌سازی
+   ══════════════════════════════════════════════════════════════════ */
+@container frame (max-width: 600px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar, .topbar { display: none; }
+  .mobile-head { display: flex; }
+  .tabbar { display: grid; }
+  .page { padding: 8px 14px calc(var(--tabbar-h) + 20px); }
+  .hello { align-items: center; margin-bottom: 12px; }
+  .hello p { font-size: 11px; }
+  .hello__chips { display: none; }
+
+  /* ستون‌ها با display:contents حذف می‌شوند تا ترتیب موبایل آزاد باشد */
+  /* هر صفحه‌ای که از شبکهٔ دوستونهٔ قدیمی استفاده می‌کند باید در موبایل تک‌ستونه شود.
+     بدون این قاعده، ستون دوم ۳۰۰px می‌شد و ستون اول به ۴۳px می‌رسید. */
+  .home-grid, .rdetail, .exam-shell, .notes, .ai-shell { grid-template-columns: minmax(0, 1fr) !important; }
+  .home { display: flex; flex-direction: column; gap: 10px; }
+  .home__main, .home__side { display: contents; }
+
+  .sec-exam-next { display: flex; order: 1; }
+  .sec-hero { order: 2; }
+  .sec-quick { order: 3; }
+  .sec-week { order: 4; }
+  .sec-tasks { order: 5; }
+  .sec-res { order: 6; }
+  .sec-ai { order: 7; }
+  .sec-lessons { order: 8; }
+  .sec-ann { order: 9; }
+  .sec-exams { display: none; }
+
+  .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 2px; }
+  .quick__i { padding: 10px 11px; column-gap: 9px; }
+  .quick__i b { font-size: 12.5px; }
+  .quick__i span { font-size: 10.5px; }
+
+  .week-head { gap: 12px; margin-bottom: 12px; }
+  .week-head .ring { width: 62px; height: 62px; }
+  .week { gap: 4px; }
+  .qcard { padding: var(--s-4); }
+  .qstem { font-size: 15.5px; }
+  .profile-hero { flex-direction: column; align-items: flex-start; }
+  .tbl-wrap { overflow-x: auto; }
+  .rrow { grid-template-columns: auto minmax(0, 1fr) auto !important; gap: 10px; padding: 12px 12px; }
+  .rrow__ic { width: 34px; height: 34px; }
+  .rrow__go { display: none; }
+
+  .announce { padding-inline: 12px; }
+  .section__head h2 { font-size: 15px; }
+  .stack-m { gap: 10px; }
+
+  /* اهداف لمسی */
+  .btn { min-height: 40px; }
+  .btn--sm { min-height: 36px; }
+  .iconbtn { min-width: 40px; min-height: 40px; }
+}
+
+/* گوشی کوچک: فقط بزرگ‌ترکردن خوانایی و حذف لایه‌های اضافی */
+@container frame (max-width: 400px) {
+  .page { padding-inline: 12px; }
+  .continue h2 { font-size: 17px; }
+  .rrow { padding-inline: 10px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   نمودارها — container query در سطح خودِ کارت
+   ══════════════════════════════════════════════════════════════════ */
+.week-card { container-type: inline-size; }
+.weekbar-sum { display: none; align-items: baseline; gap: 6px; margin-bottom: 10px; }
+.weekbar-sum b { font-size: 20px; font-weight: var(--fw-bold); }
+
+/* کارت هفتهٔ پهن (تبلت/دسکتاپ): آمار و نمودار کنار هم، نه پشت سر هم */
+@container (min-width: 560px) {
+  .week-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 6px var(--s-5); align-items: center; }
+  .week-card > .row:first-child { grid-column: 1 / -1; margin-bottom: 6px; }
+  .week-head { grid-column: 1; flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 0; }
+  .week-head__stats { width: 100%; }
+  .weekbars { grid-column: 2; height: 104px; max-width: none; }
+}
+
+@container (max-width: 430px) {
+  .weekbar-sum { display: flex; }
+  .weekbars { height: 62px; gap: 6px; }
+  .weekbars__b span { font-size: 9px; }
+  .week-head { flex-direction: row; align-items: center; }
+  .week-head__stats { gap: 8px; }
+  .stat__v { font-size: 19px; }
+}
+
+/* قهرمان در عرض کم */
+.continue { container-type: inline-size; }
+@container (max-width: 520px) {
+  .continue { padding: 14px; border-radius: var(--r-lg); }
+  .continue h2 { font-size: 18px; line-height: 1.55; margin-top: 6px; }
+  .continue p { font-size: 12px; }
+  .continue::after { display: none; }
+  .continue__top { font-size: 11px; }
+  .continue__actions .btn--ghost { flex: 1 1 auto; }
+}
+
+/* جدول‌ها هرگز کارت را نشکنند */
+.tbl-wrap { width: 100%; overflow-x: auto; }
+
+/* هدف لمسی برای کنش‌های تک‌خطی در همهٔ عرض‌ها */
+a.xs, button.xs { min-height: 28px; display: inline-flex; align-items: center; }
+a.sm { min-height: 26px; display: inline-flex; align-items: center; }
+
+/* نوار پایین باید به قاب بچسبد، نه به پنجره (قاب پیش‌نمایش هم درست دیده شود) */
+.tabbar {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline: 0;
+  inset-block-start: auto;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   چگالی موبایل — توکن‌های فشرده، فقط برای قاب ≤۶۰۰px
+   قاعده: فاصله‌ها کم می‌شوند، اندازهٔ متن و هدف لمسی نه.
+   ══════════════════════════════════════════════════════════════════ */
+@container frame (max-width: 600px) {
+  .page {
+    --s-3: 10px; --s-4: 11px; --s-5: 13px; --s-6: 15px;
+    --s-7: 18px; --s-8: 20px; --s-10: 28px;
+    padding: 8px 12px calc(var(--tabbar-h) + 18px);
+  }
+
+  /* سربرگ بخش‌ها: فشرده و بدون فاصلهٔ اضافی */
+  .section { margin-top: 14px; }
+  .section__head { margin-bottom: 7px; }
+  .section__head h2 { font-size: 14.5px; }
+  .section__head .sm { font-size: 10.5px; }
+
+  /* کارت‌ها: پدینگ کمتر، بدون افزودن حاشیهٔ تازه */
+  .panel--pad { padding: 12px; }
+  .panel__head { padding: 9px 12px; }
+  .panel--flush .rrow:first-child { border-start-start-radius: var(--r-lg); border-start-end-radius: var(--r-lg); }
+  .panel + .panel, .panel + .section, .section + .panel { margin-top: 0; }
+
+  /* ردیف‌ها */
+  .rrow { padding: 10px 12px; gap: 9px; }
+  .rrow__t { font-size: 13.5px; line-height: 1.55; }
+  .rrow__m { font-size: 10.5px; gap: 6px; margin-top: 1px; }
+
+  /* نوارهای فیلتر: تک‌خطی و افقی، با نشانهٔ ادامهٔ فهرست */
+  .filters {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    padding-bottom: 2px; scroll-snap-type: x proximity;
+    scrollbar-width: none; -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(to left, transparent 0, #000 18px, #000 100%);
+  }
+  .filters::-webkit-scrollbar { display: none; }
+  .filters > * { scroll-snap-align: start; flex: 0 0 auto; }
+
+  /* تب‌ها */
+  .tabs { gap: 0; }
+  .tab { padding: 8px 0; margin-inline-end: 16px; font-size: 13px; }
+
+  /* مسیر/بردکرامب در جزئیات */
+  .crumbs { margin-bottom: 6px; }
+
+  /* هشدار نمایشی: صریح، ولی بدون بلعیدن صفحه */
+  .page > .note { margin-top: 12px; }
+
+  /* گفت‌وگوی هوشیار */
+  .ai-head { padding: 8px 12px; }
+  .ai-thread { padding: 10px 12px 8px; }
+  .msg + .msg { margin-top: 8px; }
+  .prompts { gap: 5px; }
+
+  /* آزمون و تمرین: خوانایی مقدم بر فشردگی */
+  .qcard { padding: 13px; }
+  .qstem { font-size: 15px; line-height: 1.85; }
+  .qopt { padding: 10px 11px; }
+
+  /* گروه سنجه‌ها (پیشرفت): یک بلوک با جداکننده، نه سه کارت جدا */
+  /* دستاوردها: فهرست سه‌ردیفی (زیرنویس حذف نمی‌شود، فقط کنار عنوان می‌آید) */
+  .achievements {
+    gap: 0 !important; grid-template-columns: minmax(0, 1fr) !important;
+    border: 1px solid var(--line); border-radius: var(--r-lg);
+    background: var(--surface-1); overflow: hidden;
+  }
+  .achievements > .panel {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center;
+    column-gap: 10px; row-gap: 0; border: 0; border-radius: 0; box-shadow: none;
+    padding: 9px 12px; border-bottom: 1px solid var(--line);
+  }
+  .achievements > .panel:last-child { border-bottom: 0; }
+  .achievements > .panel > span:first-child { grid-row: 1 / span 2; width: 26px !important; height: 26px !important; }
+  .achievements > .panel b { grid-column: 2; margin-top: 0 !important; font-size: 12.5px; }
+  .achievements > .panel .xs { grid-column: 2; font-size: 10px; }
+
+  .metric-group { gap: 0 !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden;
+    background: var(--surface-1); }
+  .metric-group > .panel {
+    border: 0; border-radius: 0; box-shadow: none; padding: 10px 11px;
+    border-inline-start: 1px solid var(--line);
+  }
+  .metric-group > .panel:first-child { border-inline-start: 0; }
+  .metric-group > .panel .stat__v { font-size: 18px; }
+  .metric-group > .panel .stat__l { font-size: 10px; }
+  .metric-group > .panel .xs { font-size: 9.5px; }
+
+  /* نمای هفتگی: در موبایل فقط فهرست روزانه */
+  .plan-week { display: none !important; }
+  .plan-agenda { display: flex !important; }
+}
+
+/* در عرض‌های بزرگ، فهرست روزانه پنهان و نمای هفته فعال */
+.plan-agenda { display: none; flex-direction: column; gap: 6px; }
+.plan-agenda__day {
+  display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.plan-agenda__day:last-child { border-bottom: 0; }
+.plan-agenda__d { text-align: center; }
+.plan-agenda__d b { display: block; font-size: 13px; }
+.plan-agenda__d span { font-size: 10px; color: var(--text-3); }
+.plan-agenda__items { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.plan-agenda__empty { font-size: 11px; color: var(--text-3); padding: 4px 0; }
+
+.plan-agenda__d.is-today { color: var(--cyan-400); }
+
+/* ── بخش‌های ثانویه: در موبایل جمع، در دسکتاپ/تبلت همیشه باز ──────── */
+.collapse__more { display: none; }
+@container frame (max-width: 600px) {
+  .collapse__more { display: flex; margin-top: 6px; justify-content: center; }
+  .collapse[data-open="false"] .collapse__body > :nth-child(n + 4) { display: none; }
+  .collapse[data-open="false"] .collapse__body > .rrow:nth-child(n + 4) { display: none; }
+  /* آستانهٔ هر بخش صریح نوشته می‌شود (nth-child مقدار var() نمی‌پذیرد) */
+  .sec-res .collapse[data-open="false"] .collapse__body > :nth-child(n + 3) { display: none; }
+  .sec-ann .collapse[data-open="false"] .collapse__body > :nth-child(n + 3) { display: none; }
+  .sec-lessons .collapse[data-open="false"] .collapse__body > div > :nth-child(n + 4) { display: none; }
+
+  /* توضیح اطلاعیه: در موبایل دو خط، بقیه با بازکردن */
+  .announce p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* کارت هفته: یک نوار خلاصه + ستون‌های کوتاه؛ حلقه فقط در ≤۴۳۰ کارت است */
+  .weekbars { height: 50px !important; }
+  .week-head .ring { display: none; }
+  .weekbar-sum { display: flex; margin-bottom: 6px; }
+  .week-head { margin-bottom: 8px; gap: 10px; }
+  .week-head__stats { display: flex; gap: 14px; }
+  .week-head__stats .stat__v { font-size: 17px; }
+  .week-head__stats .stat__l { font-size: 10px; }
+  .week-card > .row:first-child { margin-bottom: 8px !important; }
+  /* عنوان بخش بعد از فهرست کوتاه‌شده */
+  .collapse[data-open="false"] .collapse__body { position: relative; }
+  .collapse[data-open="false"] .collapse__body { padding-bottom: 8px; }
+  .collapse[data-open="false"] .collapse__body::after {
+    content: ""; position: absolute; inset-inline: 0; bottom: 0; height: 16px;
+    background: linear-gradient(to top, var(--surface-1), transparent);
+    pointer-events: none;
+  }
+}
+
+/* ابزار بازبینی طراحی هرگز در قاب موبایل دیده نمی‌شود (بخشی از محصول نیست) */
+@container frame (max-width: 600px) {
+  .review-dock { display: none; }
+}
+
+/* ابزار بازبینی بیرون از قاب است، پس با media query (نه container) پنهان می‌شود */
+@media (max-width: 600px) {
+  .review-dock { display: none; }
+}
+
+/* ── پروفایل در موبایل: جمع‌وجور، بدون بلوک بزرگ ─────────────────── */
+@container frame (max-width: 600px) {
+  .profile-hero {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) auto;
+    align-items: center; gap: 10px;
+    padding: 12px; border-radius: var(--r-lg);
+  }
+  .profile-hero .avatar--lg { width: 44px; height: 44px; font-size: 15px; border-radius: 12px; }
+  .profile-hero .h2 { font-size: 15px; }
+  .profile-hero p { font-size: 10.5px; margin-top: 2px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .profile-hero .row { margin-top: 6px !important; gap: 5px !important; }
+  .profile-hero .btn--sm { width: 38px; padding: 0; justify-content: center; }
+  .profile-hero .btn--sm span, .profile-hero .btn--sm:not(:has(span)) { font-size: 0; }
+  .profile-hero .btn--sm svg { font-size: initial; }
+}
+
+/* برچسب «نمایشی» در سربرگ موبایل — به‌جای بلوک بلند پایین صفحه */
+.demo-mini {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 8px; border-radius: var(--r-pill);
+  font-size: 10px; color: var(--warn);
+  background: var(--warn-soft); border: 1px solid rgba(242, 178, 75, .28);
+  white-space: nowrap;
+}
+@container frame (max-width: 600px) {
+  /* توضیح نمایشی در انتهای صفحه، در موبایل حذف می‌شود؛ جایش برچسب سربرگ است */
+  .page > .note:last-child { display: none; }
+  .page > .trace:last-of-type { margin: 10px 0 0; }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+   پلن‌های اشتراک
+   دسکتاپ: سه ستون کامل. موبایل: انتخاب‌گر + یک پلن در هر لحظه.
+   ══════════════════════════════════════════════════════════════════ */
+.plans { display: grid; gap: var(--s-4); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.plan-switch { display: none; }
+.plan__more { margin-top: 2px; }
+.plan__more > summary {
+  font-size: var(--fs-xs); color: var(--cyan-400); cursor: pointer;
+  list-style: none; padding: 4px 0;
+}
+.plan__more > summary::-webkit-details-marker { display: none; }
+.plan__more > summary::after { content: " ▾"; }
+.plan__more[open] > summary::after { content: " ▴"; }
+.plan__more ul { margin-top: 6px; }
+
+@container frame (max-width: 600px) {
+  .plans { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  /* یک پلن در هر لحظه */
+  .plans .plan { display: none; }
+  .plans .plan--sel { display: flex; }
+  .plan-switch {
+    display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .plan-switch::-webkit-scrollbar { display: none; }
+  .plan-switch .chip { flex: 0 0 auto; }
+  .plan { padding: 12px; gap: 9px; }
+  .plan__price { font-size: 21px; }
+  .plan ul { font-size: 12.5px; gap: 5px; }
+  .plan .btn { margin-top: 2px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   سالت: نوار پرش سریع به بخش‌ها (فقط موبایل) — هیچ بخشی پنهان نمی‌شود
+   ══════════════════════════════════════════════════════════════════ */
+.jumpnav { display: none; }
+@container frame (max-width: 600px) {
+  .jumpnav {
+    display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 6px;
+    position: sticky; top: 0; z-index: 3;
+    background: var(--bg-1); scrollbar-width: none;
+  }
+  .jumpnav::-webkit-scrollbar { display: none; }
+  .jumpnav .chip { flex: 0 0 auto; }
+}
+
+
+/* ── کارت وضعیت اشتراک در موبایل: عنوان تمام‌عرض، سنجه‌ها یک ردیف ─── */
+@container frame (max-width: 600px) {
+  .sub-status { display: grid !important; grid-template-columns: auto minmax(0, 1fr); gap: 10px !important; }
+  .sub-status > div:first-of-type { grid-column: 2; }
+  .sub-status h2, .sub-status .h2 { font-size: 16px; line-height: 1.5; }
+  .sub-status .row:last-child { grid-column: 1 / -1; }
+  .sub-stats { gap: 0 !important; justify-content: space-between; }
+  .sub-stats .stat { flex: 1 1 0; text-align: center; }
+  .sub-stats .stat__v { font-size: 19px; }
+}
+
+/* ── اندازهٔ متن یادداشت (تنظیم کاربر) ────────────────────────────── */
+html[data-textsize="sm"] { --editor-fs: 14px; }
+html[data-textsize="md"] { --editor-fs: 15.5px; }
+html[data-textsize="lg"] { --editor-fs: 17.5px; }
+
+/* ── کاهش حرکت (تنظیم کاربر، مستقل از تنظیم سیستم) ──────────────── */
+html[data-motion="calm"] *,
+html[data-motion="calm"] *::before,
+html[data-motion="calm"] *::after {
+  animation-duration: 1ms !important;
+  transition-duration: 1ms !important;
+}
+
+/* ── پلن فعال: به‌جای دکمهٔ مرده، وضعیت + اقدام واقعی ─────────────── */
+.plan__current {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  justify-content: space-between;
+  border-top: 1px solid var(--line); padding-top: 10px;
+}
+.plan__current .btn { flex: 0 0 auto; }
+.pay-amount { font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; }
+@container frame (max-width: 600px) {
+  .rrow--pay .rrow__m { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+}
+
+/* هم‌ترازی اقدام اصلی در پایین همهٔ کارت‌های پلن (دسکتاپ چندستونه) */
+.plans .plan > :last-child { margin-top: auto; }
+.plans .plan > .btn:last-child { width: 100%; }
+
+/* ── فرم‌های کوتاه: در موبایل دو ستون، بدون کوچک‌کردن فونت ─────────── */
+.form-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+@container frame (max-width: 600px) {
+  .form-grid { gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .form-grid .field { min-width: 0; }
+}
+
+/* تبلت: دو ستون پلن + پلن سوم تمام‌عرض (بدون حفرهٔ خالی) */
+@container frame (min-width: 601px) and (max-width: 899px) {
+  .plans { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plans .plan:nth-child(3):last-child { grid-column: 1 / -1; }
+}
+
+/* ── گروه‌های آماری صفحه‌محور: پایهٔ شبکه (کلاس عمومی ds-grid بماند) ── */
+.metric-group, .achievements {
+  display: grid; gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+/* ═══ نتیجهٔ آزمون: خلاصهٔ فشرده + بازبینی آکاردئونی ═════════════════ */
+.result-hero__top { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: center; }
+.result-hero__meta { display: grid; gap: 14px; min-width: 0; }
+.result-stats { gap: 24px !important; }
+
+.review-list { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.review-q { min-width: 0; }
+.review-q > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-q > summary::-webkit-details-marker { display: none; }
+.review-q__peek {
+  flex: 1 1 180px; min-width: 0; font-size: var(--fs-xs); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.review-q__chev { color: var(--text-3); transition: transform var(--t-1) var(--ease); transform: rotate(-90deg); }
+.review-q[open] .review-q__chev { transform: rotate(90deg); }
+.review-q[open] .review-q__peek { display: none; }
+.review-q__body { margin-top: 10px; }
+
+@container frame (max-width: 600px) {
+  .result-hero__top { grid-template-columns: 78px minmax(0, 1fr); gap: 12px; align-items: center; }
+  .result-hero__top > .ring { width: 78px !important; height: 78px !important; }
+  .result-hero__top > .ring svg { width: 100%; height: 100%; }
+  .result-hero__meta { gap: 10px; }
+  .result-stats { gap: 0 !important; justify-content: space-between; }
+  .result-stats .stat { flex: 1 1 0; text-align: center; }
+  .result-stats .stat__v { font-size: 19px; }
+  .review-q { padding: 12px !important; }
+  .review-q__peek { flex: 1 1 100%; order: 5; max-width: 100%; }
+  .review-q__chev { margin-inline-start: auto; }
+}
+
+/* ── خانه در موبایل: یک جریان واحد با ترتیب اولویت‌دار ───────────────
+   چرا display:contents؟ چون کارت‌های «هفته» و «کارها» در دو ستون منطقی
+   جدا هستند؛ در موبایل باید در یک توالی واحد مرتب شوند، بدون تکرار مارک‌آپ.
+   دسکتاپ/تبلت دست نمی‌خورد (این قاعده فقط ≤۶۰۰ و روی قاب است). */
+@container frame (max-width: 600px) {
+  .home { display: flex; flex-direction: column; gap: 10px; }
+  .home__main, .home__side { display: contents; }
+  .home > .sec-exam-next { order: 1; }
+  .home > .sec-hero { order: 2; }
+  .home > .sec-quick { order: 3; }
+  .home > .sec-tasks { order: 4; }
+  .home > .sec-week { order: 5; }
+  .home > .sec-res { order: 6; }
+  .home > .sec-ai { order: 7; }
+  .home > .sec-exams { order: 8; }
+  .home > .sec-lessons { order: 9; }
+  .home > .sec-ann { order: 10; }
+}
+
+@container frame (max-width: 600px) {
+  /* دسترسی سریع: نوار افقی، ارتفاع کمتر از شبکهٔ ۲×۲ بدون حذف هیچ کاشی */
+  .quick {
+    display: flex !important; flex-wrap: nowrap; overflow-x: auto; gap: 8px;
+    scroll-snap-type: x proximity; padding-bottom: 2px; scrollbar-width: none;
+  }
+  .quick::-webkit-scrollbar { display: none; }
+  .quick__i { flex: 0 0 47%; scroll-snap-align: start; padding: 10px 11px; }
+  .quick__i span { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+  /* کمربند قهرمان: فاصله‌ها جمع‌تر، بدون کوچک‌کردن فونت */
+  .continue { padding: 14px 15px; }
+  .continue__actions { gap: 6px; margin-top: 10px; }
+}
+
+/* ── برنامه در موبایل: انتخاب‌گر روز + یک روز ─────────────────────── */
+.plan-daynav { display: none; }
+@container frame (max-width: 600px) {
+  .plan-daynav {
+    display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 6px;
+    scroll-snap-type: x proximity; scrollbar-width: none;
+  }
+  .plan-daynav::-webkit-scrollbar { display: none; }
+  .plan-daynav .chip { flex: 0 0 auto; gap: 5px; scroll-snap-align: start; }
+  .plan-daynav .chip.is-today { border-color: var(--line-brand); }
+  .plan-daynav__n {
+    font-size: 9.5px; padding: 0 5px; border-radius: 99px;
+    background: var(--surface-3); color: var(--text-2);
+  }
+  .plan-agenda__day { grid-template-columns: 46px minmax(0, 1fr); }
+  /* کارهای من: سه ردیف، بقیه با «بیشتر» */
+  .plan-tasks .collapse[data-open="false"] .collapse__body > :nth-child(n + 4) { display: none; }
+}
+
+/* ردیف‌های فهرستی: عنوان و متادیتا هرگز زیر دکمهٔ کنش نمی‌روند */
+.rrow > span { min-width: 0; }
+.rrow__t { display: block; }
+.plan-tasks .rrow { align-items: start; }
+.plan-tasks .rrow__m { margin-top: 2px; }
+
+/* ── هوشیار در موبایل: سرصفحه یک‌خطی؛ گفتگو اول ──────────────────── */
+@container frame (max-width: 600px) {
+  .ai-head { gap: 8px; }
+  .ai-head > div { min-width: 0; }
+  .ai-head .sm { font-size: 14px; }
+  .ai-head .xs.muted-2 {
+    font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* نشان «نمایشی» در موبایل زیر عنوان می‌رود، نه کنارش */
+  .ai-head__demo { display: none; }
+}

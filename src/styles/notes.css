@@ -1,0 +1,281 @@
+/* ══════════════════════════════════════════════════════════════════
+   یادداشت‌ها — محیط کار مطالعه
+   چیدمان با فضای واقعی تطبیق می‌یابد: ۳ ستون / ۲ ستون / تک‌ستون push
+   ══════════════════════════════════════════════════════════════════ */
+
+.notes {
+  --rail-w-n: 218px;
+  --list-w-n: 312px;
+  display: grid;
+  grid-template-columns: var(--rail-w-n) var(--list-w-n) minmax(0, 1fr);
+  height: calc(100svh - var(--topbar-h));
+  margin: 0;
+  border-top: 1px solid var(--line);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+/* ── ستون دفترها ──────────────────────────────────────────────── */
+.notes__rail {
+  display: flex; flex-direction: column;
+  padding: var(--s-4) var(--s-3);
+  border-inline-end: 1px solid var(--line);
+  background: var(--surface-1);
+  overflow: auto;
+}
+.notes__tree { display: flex; flex-direction: column; gap: 2px; }
+.notes__node {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 8px; border-radius: var(--r-sm);
+  font-size: var(--fs-sm); color: var(--text-2); text-align: start;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.notes__node[data-depth="1"] { padding-inline-start: 22px; font-size: var(--fs-xs); }
+.notes__node:hover { background: var(--surface-2); color: var(--text); }
+.notes__node.is-on { background: var(--chip-on-bg); color: var(--chip-on-fg); font-weight: var(--fw-semi); }
+.notes__tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.notes__sticky { margin-top: auto; padding-top: var(--s-4); }
+
+/* ── ستون فهرست ───────────────────────────────────────────────── */
+.notes__list {
+  display: flex; flex-direction: column;
+  border-inline-end: 1px solid var(--line);
+  background: var(--surface-1);
+  min-width: 0;
+}
+.notes__listhead { display: flex; gap: 6px; padding: var(--s-3); border-bottom: 1px solid var(--line); }
+.notes__listmeta { padding: 6px var(--s-3); border-bottom: 1px solid var(--line); }
+.notes__cards { overflow: auto; padding: var(--s-2); display: flex; flex-direction: column; gap: 4px; }
+.ncard {
+  position: relative; border-radius: var(--r-md);
+  border: 1px solid transparent;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.ncard:hover { background: var(--surface-2); }
+.ncard.is-on { background: var(--surface-2); border-color: var(--line-strong); }
+.ncard__main { display: block; width: 100%; text-align: start; padding: 10px 11px 11px; }
+.ncard__t { font-size: var(--fs-sm); font-weight: var(--fw-semi); line-height: 1.55; }
+.ncard__meta { margin-top: 3px; }
+.ncard__star { position: absolute; inset-block-start: 6px; inset-inline-end: 6px; opacity: .55; }
+.ncard:hover .ncard__star, .ncard.is-on .ncard__star { opacity: 1; }
+
+/* ── ستون سند ─────────────────────────────────────────────────── */
+.notes__doc {
+  display: flex; flex-direction: column;
+  min-width: 0; position: relative; background: var(--bg-1);
+}
+.doc__main { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1 1 auto; }
+.notes__doc:has(.pdfpane) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, .8fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.notes__placeholder {
+  margin: auto; display: flex; flex-direction: column; align-items: center; gap: var(--s-3);
+  padding: var(--s-7) var(--s-4);
+}
+.doc__head {
+  display: flex; align-items: flex-start; gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  position: sticky; inset-block-start: 0; z-index: 3;
+}
+.doc__back { display: none; }
+.doc__title { font-size: 17px; font-weight: var(--fw-semi); line-height: 1.5; }
+.save { font-weight: var(--fw-medium); }
+.save--saving { color: var(--warn); }
+.save--saved { color: var(--ok); }
+.save--offline { color: var(--danger); }
+
+.doc__toolbar {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 6px var(--s-4); border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  position: sticky; inset-block-start: 52px; z-index: 2;
+}
+.toolbtn {
+  width: 30px; height: 30px; border-radius: var(--r-sm);
+  display: grid; place-items: center; color: var(--text-2);
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.toolbtn:hover { background: var(--surface-3); color: var(--text); }
+.toolbtn:active { transform: scale(.94); }
+.toolbar__sep { width: 1px; height: 16px; background: var(--line); margin: 0 4px; }
+
+.doc__scroll { overflow: auto; flex: 1 1 auto; min-height: 0; padding: var(--s-5) var(--s-5) var(--s-8); }
+
+/* ── ویرایشگر ─────────────────────────────────────────────────── */
+.editor {
+  max-width: 720px; margin-inline: auto;
+  font-size: var(--editor-fs, 15.5px); line-height: 2.05; color: var(--text);
+  min-height: 220px; outline: none;
+  caret-color: var(--cyan-400);
+}
+.editor:focus-visible { outline: 2px solid var(--line-brand); outline-offset: 8px; border-radius: 6px; }
+.editor h3 {
+  font-size: 18px; font-weight: var(--fw-semi); line-height: 1.6;
+  margin: var(--s-5) 0 var(--s-2); letter-spacing: -.1px;
+}
+.editor h3:first-child { margin-top: 0; }
+.editor p { margin: 0 0 var(--s-3); }
+.editor ul, .editor ol { margin: 0 0 var(--s-3); padding-inline-start: 20px; }
+.editor li { margin-bottom: 5px; }
+.editor ul.chk { list-style: none; padding-inline-start: 0; }
+.editor blockquote {
+  margin: var(--s-3) 0; padding: 2px var(--s-3);
+  border-inline-start: 2px solid var(--teal-500); color: var(--text-2);
+}
+.editor p.callout {
+  background: var(--info-soft); border: 1px solid rgba(24, 217, 245, .22);
+  border-radius: var(--r-md); padding: 10px 12px; font-size: 14px;
+}
+.editor p.linked { font-size: 14px; color: var(--text-2); }
+.editor p.linked span {
+  font-size: 10px; padding: 2px 6px; border-radius: var(--r-xs);
+  background: var(--chip-on-bg); color: var(--chip-on-fg); margin-inline-end: 6px;
+}
+.editor p.ink-slot { color: var(--text-3); font-size: 12px; text-align: center; border-top: 1px dashed var(--line-strong); padding-top: 8px; }
+.editor table { width: 100%; border-collapse: collapse; margin: 0 0 var(--s-3); font-size: 13.5px; }
+.editor th, .editor td { border: 1px solid var(--line); padding: 6px 9px; text-align: start; }
+.editor th { background: var(--surface-2); font-weight: var(--fw-semi); }
+
+/* ── دست‌نویس ─────────────────────────────────────────────────── */
+.ink {
+  max-width: 720px; margin: var(--s-6) auto 0;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface-1); padding: var(--s-3);
+}
+.ink__head { flex-wrap: wrap; gap: 5px; margin-bottom: var(--s-2); }
+.ink__canvas {
+  display: block; width: 100%; height: 190px; border-radius: var(--r-sm);
+  background: var(--surface-2);
+  /* خط‌کشی دفتری */
+  background-image: repeating-linear-gradient(180deg, transparent 0 27px, var(--line) 27px 28px);
+  touch-action: none; cursor: crosshair;
+}
+html { --ink-stroke: #E8EEF9; }
+html[data-theme="light"] { --ink-stroke: #16233A; }
+
+/* ── زمینهٔ مطالعه ────────────────────────────────────────────── */
+.ctx { max-width: 720px; margin: var(--s-5) auto 0; display: flex; flex-direction: column; gap: 6px; }
+.ctx__row {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-1); border: 1px solid var(--line);
+}
+
+/* ── نمای سند کنار‌هم ─────────────────────────────────────────── */
+.pdfpane {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-inline-start: 1px solid var(--line);
+  background: var(--surface-1);
+}
+.pdfpane__head { display: flex; align-items: center; gap: 6px; padding: 10px var(--s-3); border-bottom: 1px solid var(--line); }
+.pdfpane__search { flex: 0 0 auto; min-width: 0; max-width: none; height: 34px; margin: var(--s-2) var(--s-3); }
+.pdfpane__page { overflow: auto; padding: var(--s-3); flex: 1 1 auto; }
+.pdfpane__page p { font-size: 13.5px; line-height: 2; color: var(--text-2); margin-bottom: var(--s-3); }
+.pdfpane__hl { background: rgba(24, 217, 245, .16); outline: 1px solid rgba(24, 217, 245, .35); border-radius: 4px; padding: 4px 6px; color: var(--text) !important; }
+.pdfpane__h { font-size: 14px; font-weight: var(--fw-semi); margin-bottom: var(--s-3); }
+.pdfpane__foot { display: flex; align-items: center; gap: 6px; padding: var(--s-2) var(--s-3); border-top: 1px solid var(--line); }
+
+/* ── شیت‌ها ───────────────────────────────────────────────────── */
+.stack { display: flex; flex-direction: column; gap: 6px; }
+.vrow {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 10px 12px; border-radius: var(--r-md);
+  background: var(--surface-2); border: 1px solid var(--line);
+  text-align: start; width: 100%;
+}
+.vrow--btn { transition: background var(--dur-1) var(--ease); }
+.vrow--btn:hover { background: var(--surface-3); }
+
+/* ── واکنش‌گرایی ──────────────────────────────────────────────── */
+@media (max-width: 1199px) {
+  .notes { grid-template-columns: var(--list-w-n) minmax(0, 1fr); }
+  .notes__list { border-inline-end: 1px solid var(--line); }
+  .notes__rail { display: none; }
+  .notes__doc:has(.pdfpane) { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .pdfpane { border-inline-start: 0; border-top: 1px solid var(--line); max-height: 46svh; }
+}
+
+@media (min-width: 721px) and (max-width: 860px) {
+  .notes { height: calc(100svh - 56px - var(--tabbar-h)); }
+  .doc__scroll { padding-bottom: var(--s-8); }
+}
+
+/* ── تلفن: یک ستون با جابه‌جایی push ─────────────────────────── */
+@media (max-width: 720px) {
+  .notes {
+    display: block; margin: 0;
+    border-top: 0;
+    min-height: 0;
+  }
+  .notes__list { border-inline-end: 0; }
+
+  /* فهرست ⇄ سند: در موبایل یکی جای دیگری را می‌گیرد */
+  .notes__doc { display: none; }
+  .notes[data-open="true"] .notes__list { display: none; }
+  .notes[data-open="true"] .notes__doc {
+    display: flex; flex-direction: column;
+    height: calc(100svh - 56px - var(--tabbar-h));
+    overflow: hidden;
+  }
+  .notes[data-open="true"] .notes__doc:has(.pdfpane) {
+    display: block; overflow: auto; height: auto;
+    padding-bottom: var(--tabbar-h);
+  }
+
+  .doc__back { display: grid; }
+  .doc__head { position: static; padding: var(--s-3); }
+
+  /* نوار قالب‌بندی، بالای نوار پایین و همیشه در دسترس */
+  .doc__scroll { flex: 1 1 auto; overflow: auto; padding: var(--s-4) var(--s-4) 92px; }
+  .doc__toolbar {
+    position: absolute; inset-inline: 0; inset-block-start: auto;
+    inset-block-end: 0;
+    z-index: 4;
+    padding: 6px var(--s-3);
+    border-top: 1px solid var(--line); border-bottom: 0;
+    background: var(--surface-1);
+    box-shadow: 0 -1px 0 var(--line);
+    overflow-x: auto; flex-wrap: nowrap;
+  }
+  .pdfpane { max-height: none; }
+  .editor { font-size: var(--editor-fs, 15px); line-height: 2; }
+}
+
+/* موبایل: صفحهٔ فهرست کمی جمع‌وجورتر */
+@media (max-width: 560px) {
+  .ncard__main { padding: 9px 10px 10px; }
+  .notes__listhead { padding: var(--s-2) var(--s-3); }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   جدول داده، شبکه و فهرست نشانه‌دار — مشترک بین ماتریس و سند تحویل
+   ══════════════════════════════════════════════════════════════════ */
+.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.tbl th {
+  text-align: start; font-size: 11px; font-weight: var(--fw-semi); letter-spacing: .2px;
+  color: var(--text-3); padding: 9px 12px; background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl tbody tr:last-child td { border-bottom: 0; }
+.tbl tbody tr:hover { background: var(--surface-2); }
+.panel--flush .tbl th:first-child { border-start-start-radius: var(--r-lg); }
+
+.grid { display: grid; gap: var(--s-4); }
+.grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .grid--2, .grid--3 { grid-template-columns: minmax(0, 1fr); } }
+
+.iconbox {
+  width: 28px; height: 28px; border-radius: var(--r-sm); flex: none;
+  display: grid; place-items: center;
+  background: var(--surface-3); color: var(--cyan-400);
+}
+.bullets { display: flex; flex-direction: column; gap: 6px; padding-inline-start: 16px; list-style: disc; }
+.bullets li::marker { color: var(--teal-500); }

@@ -1,0 +1,94 @@
+/* ══════════════════════════════════════════════════════════════════
+   سیستم حرکت — یک‌جا، کوتاه، هدفمند
+   قاعده: ۱۵۰–۲۵۰ms برای جابه‌جایی صفحه، ۹۰–۱۵۰ms برای بازخورد کوچک.
+   هیچ انیمیشنی تزئینی نیست؛ همه برای پیوستگی ادراکی‌اند.
+   ══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --dur-1: 90ms;   /* فشار دکمه، تغییر رنگ */
+  --dur-2: 150ms;  /* بازشدن چیپ، تولتیپ */
+  --dur-3: 200ms;  /* ورود صفحه، کشو */
+  --dur-4: 240ms;  /* شیت پایین، تغییر پنل */
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(.3, 0, .8, .2);
+}
+
+/* ── انتقال صفحه ─────────────────────────────────────────────── */
+.page-enter {
+  animation: page-in var(--dur-3) var(--ease-standard) both;
+}
+@keyframes page-in {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+/* صفحهٔ تودرتو (جزئیات) از سمت inline می‌آید — جهت در RTL برعکس است */
+.page-enter--push {
+  animation: page-push var(--dur-3) var(--ease-standard) both;
+}
+@keyframes page-push {
+  from { opacity: .4; transform: translate3d(-10px, 0, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ── شیت پایین (موبایل) و دیالوگ (دسکتاپ) ────────────────────── */
+.sheet-scrim {
+  position: fixed; inset: 0; z-index: 120;
+  background: var(--scrim);
+  animation: fade-in var(--dur-2) var(--ease-standard) both;
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.sheet {
+  position: fixed; z-index: 121; inset-inline: 0; inset-block-end: 0;
+  background: var(--surface-1); border: 1px solid var(--line);
+  border-start-start-radius: var(--r-lg); border-start-end-radius: var(--r-lg);
+  padding: var(--s-3) var(--s-4) calc(var(--s-4) + env(safe-area-inset-bottom));
+  max-height: 82svh; overflow: auto;
+  animation: sheet-up var(--dur-4) var(--ease-standard) both;
+  box-shadow: var(--e-3);
+}
+@keyframes sheet-up { from { transform: translate3d(0, 100%, 0); } to { transform: none; } }
+.sheet__grip {
+  width: 38px; height: 4px; border-radius: 4px; background: var(--line-strong);
+  margin: 0 auto var(--s-3);
+}
+
+@media (min-width: 861px) {
+  .sheet {
+    inset: 50% auto auto 50%; transform: translate(50%, -50%);
+    inset-inline: auto; inset-block-end: auto;
+    width: min(520px, 92vw); border-radius: var(--r-lg);
+    padding: var(--s-5);
+    animation: dialog-in var(--dur-3) var(--ease-standard) both;
+  }
+  @keyframes dialog-in {
+    from { opacity: 0; transform: translate(50%, calc(-50% + 8px)) scale(.985); }
+    to { opacity: 1; transform: translate(50%, -50%) scale(1); }
+  }
+  .sheet__grip { display: none; }
+}
+
+/* ── بازخورد فوری ─────────────────────────────────────────────── */
+.press { transition: transform var(--dur-1) var(--ease-standard); }
+.press:active { transform: scale(.985); }
+
+/* ── احترام به کاهش حرکت ──────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  .page-enter, .page-enter--push { animation: none; }
+}
+
+/* ── ناحیهٔ امن و کیبورد ──────────────────────────────────────── */
+:root {
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+  --kb: 0px;
+}
+html[data-standalone='true'] .topbar { padding-top: var(--safe-t); }
+html[data-standalone='true'] .tabbar { padding-bottom: var(--safe-b); }
