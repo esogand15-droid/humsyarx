@@ -1,0 +1,330 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   HamsYar Unified Design System — Mini App Token Adapter
+   Telegram Mini App environment: dark-first, mobile-optimized.
+   All token names match the unified system for cross-environment
+   consistency. Environment-specific values are adapted below.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Primitive color palette (dark-optimized for Telegram WebView) ── */
+:root {
+  /* Brand: slightly brighter for small screens */
+  --hym-brand-50:  #EEF2FF;
+  --hym-brand-100: #E0E7FF;
+  --hym-brand-200: #C7D2FE;
+  --hym-brand-300: #A5B4FC;
+  --hym-brand-400: #818CF8;
+  --hym-brand-500: #6366F1;
+  --hym-brand-600: #4F46E5;
+  --hym-brand-700: #4338CA;
+  --hym-brand-800: #3730A3;
+  --hym-brand-900: #312E81;
+
+  /* Teal accent */
+  --hym-teal-50:  #F0FDFA;
+  --hym-teal-100: #CCFBF1;
+  --hym-teal-200: #99F6E4;
+  --hym-teal-300: #5EEAD4;
+  --hym-teal-400: #2DD4BF;
+  --hym-teal-500: #14B8A6;
+  --hym-teal-600: #0D9488;
+  --hym-teal-700: #0F766E;
+  --hym-teal-800: #115E59;
+  --hym-teal-900: #134E4A;
+
+  /* Amber warmth */
+  --hym-amber-50:  #FFFBEB;
+  --hym-amber-100: #FEF3C7;
+  --hym-amber-200: #FDE68A;
+  --hym-amber-300: #FCD34D;
+  --hym-amber-400: #FBBF24;
+  --hym-amber-500: #F59E0B;
+  --hym-amber-600: #D97706;
+  --hym-amber-700: #B45309;
+  --hym-amber-800: #92400E;
+  --hym-amber-900: #78350F;
+
+  /* Semantic: success */
+  --hym-success-50:  #ECFDF5;
+  --hym-success-100: #D1FAE5;
+  --hym-success-200: #A7F3D0;
+  --hym-success-300: #6EE7B7;
+  --hym-success-400: #34D399;
+  --hym-success-500: #10B981;
+  --hym-success-600: #059669;
+  --hym-success-700: #047857;
+  --hym-success-800: #065F46;
+  --hym-success-900: #064E3B;
+
+  /* Semantic: warning */
+  --hym-warning-50:  #FFFBEB;
+  --hym-warning-100: #FEF3C7;
+  --hym-warning-200: #FDE68A;
+  --hym-warning-300: #FCD34D;
+  --hym-warning-400: #FBBF24;
+  --hym-warning-500: #F59E0B;
+  --hym-warning-600: #D97706;
+  --hym-warning-700: #B45309;
+  --hym-warning-800: #92400E;
+  --hym-warning-900: #78350F;
+
+  /* Semantic: danger */
+  --hym-danger-50:  #FFF1F2;
+  --hym-danger-100: #FFE4E6;
+  --hym-danger-200: #FECDD3;
+  --hym-danger-300: #FDA4AF;
+  --hym-danger-400: #FB7185;
+  --hym-danger-500: #F43F5E;
+  --hym-danger-600: #E11D48;
+  --hym-danger-700: #BE123C;
+  --hym-danger-800: #9F1239;
+  --hym-danger-900: #881337;
+
+  /* Neutral: cool grey for dark-first mini app */
+  --hym-neutral-0:   #FFFFFF;
+  --hym-neutral-50:  #F8FAFC;
+  --hym-neutral-100: #F1F5F9;
+  --hym-neutral-200: #E2E8F0;
+  --hym-neutral-300: #CBD5E1;
+  --hym-neutral-400: #94A3B8;
+  --hym-neutral-500: #64748B;
+  --hym-neutral-600: #475569;
+  --hym-neutral-700: #334155;
+  --hym-neutral-800: #1E293B;
+  --hym-neutral-900: #0F172A;
+  --hym-neutral-950: #020617;
+
+  /* ── Typography ── */
+  --hym-font-sans:  'Vazirmatn', Tahoma, system-ui, sans-serif;
+  --hym-font-mono:  ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* ── Spacing ── */
+  --hym-space-0:  0px;
+  --hym-space-1:  4px;
+  --hym-space-2:  8px;
+  --hym-space-3:  12px;
+  --hym-space-4:  16px;
+  --hym-space-5:  20px;
+  --hym-space-6:  24px;
+  --hym-space-8:  32px;
+  --hym-space-10: 40px;
+  --hym-space-12: 48px;
+  --hym-space-16: 64px;
+  --hym-space-20: 80px;
+  --hym-space-24: 96px;
+
+  /* ── Border radius ── */
+  --hym-radius-sm:   6px;
+  --hym-radius-md:   10px;
+  --hym-radius-lg:   14px;
+  --hym-radius-xl:   20px;
+  --hym-radius-2xl:  28px;
+  --hym-radius-pill: 999px;
+
+  /* ── Motion ── */
+  --hym-ease-default: cubic-bezier(.32, .72, 0, 1);
+  --hym-ease-spring:  cubic-bezier(.34, 1.56, .64, 1);
+  --hym-ease-out:     cubic-bezier(.22, 1, .36, 1);
+  --hym-duration-fast:   150ms;
+  --hym-duration-normal: 220ms;
+  --hym-duration-slow:   340ms;
+
+  /* ── Z-index ── */
+  --hym-z-base:    0;
+  --hym-z-sticky:  10;
+  --hym-z-nav:     20;
+  --hym-z-sheet:   30;
+  --hym-z-toast:   40;
+  --hym-z-overlay: 50;
+  --hym-z-modal:   60;
+}
+
+/* ── Mini App: dark-first semantic tokens ── */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces — deep navy, matching Telegram's dark aesthetic */
+  --hym-bg-page:         #070B14;
+  --hym-bg-surface:      #0A1020;
+  --hym-bg-surface-raised: #101827;
+  --hym-bg-surface-inset:  #05080F;
+  --hym-bg-hover:        rgba(148, 163, 184, .08);
+  --hym-bg-active:       rgba(148, 163, 184, .12);
+  --hym-bg-selected:     rgba(59, 130, 246, .14);
+  --hym-bg-overlay:      rgba(3, 6, 13, .68);
+  --hym-bg-scrim:        rgba(3, 6, 13, .80);
+
+  /* Text */
+  --hym-text-primary:    #F8FAFC;
+  --hym-text-secondary:  #B4C0D4;
+  --hym-text-muted:      #8296B3;
+  --hym-text-disabled:   #475569;
+  --hym-text-inverse:    #0F172A;
+  --hym-text-link:       #70A7FF;
+  --hym-text-on-brand:   #FFFFFF;
+
+  /* Borders */
+  --hym-border-default:  rgba(148, 163, 184, .13);
+  --hym-border-subtle:   rgba(148, 163, 184, .08);
+  --hym-border-strong:   rgba(148, 163, 184, .22);
+  --hym-border-focus:    #3B82F6;
+  --hym-border-selected: #3B82F6;
+
+  /* Brand — brighter for dark bg */
+  --hym-brand-default:   #3B82F6;
+  --hym-brand-hover:     #2563EB;
+  --hym-brand-active:    #1D4ED8;
+  --hym-brand-subtle:    rgba(59, 130, 246, .12);
+  --hym-brand-muted:     rgba(59, 130, 246, .24);
+
+  /* Accent — cyan */
+  --hym-accent-default:  #22D3EE;
+  --hym-accent-hover:    #06B6D4;
+  --hym-accent-active:   #0891B2;
+  --hym-accent-subtle:   rgba(34, 211, 238, .12);
+  --hym-accent-muted:    rgba(34, 211, 238, .24);
+
+  /* Warmth — amber */
+  --hym-warm-default:    #FBBF24;
+  --hym-warm-hover:      #F59E0B;
+  --hym-warm-active:     #D97706;
+  --hym-warm-subtle:     rgba(251, 191, 36, .12);
+  --hym-warm-muted:      rgba(251, 191, 36, .24);
+
+  /* Feedback */
+  --hym-success-default: #34D399;
+  --hym-success-subtle:  rgba(16, 185, 129, .14);
+  --hym-success-bg:      rgba(16, 185, 129, .10);
+
+  --hym-warning-default: #FCD34D;
+  --hym-warning-subtle:  rgba(252, 211, 77, .14);
+  --hym-warning-bg:      rgba(245, 158, 11, .10);
+
+  --hym-danger-default:  #FB7185;
+  --hym-danger-subtle:   rgba(239, 68, 68, .14);
+  --hym-danger-bg:       rgba(239, 68, 68, .10);
+
+  --hym-info-default:    #22D3EE;
+  --hym-info-subtle:     rgba(34, 211, 238, .12);
+  --hym-info-bg:         rgba(14, 165, 233, .10);
+
+  /* Elevation — glow-capable shadows for dark */
+  --hym-shadow-sm:  0 1px 3px rgba(0, 0, 0, .30);
+  --hym-shadow-md:  0 3px 12px rgba(0, 0, 0, .35);
+  --hym-shadow-lg:  0 12px 32px rgba(0, 0, 0, .40);
+  --hym-shadow-xl:  0 20px 52px rgba(0, 0, 0, .50);
+
+  /* Focus ring */
+  --hym-focus-ring:    0 0 0 3px rgba(59, 130, 246, .25);
+  --hym-focus-ring-danger: 0 0 0 3px rgba(239, 68, 68, .25);
+
+  /* Skeleton */
+  --hym-skeleton-base: #182235;
+  --hym-skeleton-shine: rgba(190, 205, 228, .10);
+
+  /* Chart */
+  --hym-chart-1: var(--hym-brand-default);
+  --hym-chart-2: var(--hym-accent-default);
+  --hym-chart-3: var(--hym-warm-default);
+  --hym-chart-4: var(--hym-success-default);
+  --hym-chart-5: var(--hym-danger-default);
+  --hym-chart-6: var(--hym-warning-default);
+  --hym-chart-7: var(--hym-neutral-400);
+
+  /* Mini App environment */
+  --hym-app-max-width:        500px;
+  --hym-app-page-padding:       14px;
+  --hym-app-page-padding-bottom: 100px;
+  --hym-app-bar-height:         62px;
+  --hym-app-tab-bar-height:     66px;
+  --hym-density: comfortable;
+  --hym-safe-top:    env(safe-area-inset-top, 0px);
+  --hym-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ── Legacy compatibility aliases for miniapp ── */
+:root {
+  --bg:        var(--hym-bg-page);
+  --bg-soft:   var(--hym-bg-surface);
+  --surf:      var(--hym-bg-surface-raised);
+  --elev:      #182235;
+  --ovr:       #223049;
+
+  --acc:       var(--hym-brand-default);
+  --acc-dim:   var(--hym-brand-hover);
+  --acc2:      var(--hym-accent-default);
+
+  --acc-soft:  var(--hym-brand-subtle);
+  --acc-glow:  rgba(59, 130, 246, .18);
+
+  --ok:        var(--hym-success-default);
+  --warn:      var(--hym-warning-default);
+  --err:       var(--hym-danger-default);
+  --info:      var(--hym-accent-default);
+
+  --tx:        var(--hym-text-primary);
+  --tx2:       var(--hym-text-secondary);
+  --txm:       var(--hym-text-muted);
+
+  --bd:        var(--hym-border-default);
+  --bdg:       rgba(59, 130, 246, .36);
+
+  --r-sm:      var(--hym-radius-sm);
+  --r-md:      var(--hym-radius-md);
+  --r-lg:      var(--hym-radius-lg);
+  --r-xl:      var(--hym-radius-xl);
+
+  --hdr-h:     var(--hym-app-bar-height);
+  --nav-h:     var(--hym-app-tab-bar-height);
+  --content-w: var(--hym-app-max-width);
+
+  --font:      var(--hym-font-sans);
+
+  --shd-1:     var(--hym-shadow-sm);
+  --shd-2:     var(--hym-shadow-md);
+  --shd-3:     var(--hym-shadow-lg);
+  --shd-glow:  0 8px 28px rgba(59, 130, 246, .24);
+
+  --blur:      22px;
+
+  --sk-base:   var(--hym-skeleton-base);
+  --sk-hi:     var(--hym-skeleton-shine);
+  --sk-dur:    1.55s;
+  --sk-ease:   ease-in-out;
+
+  --ease-spring: var(--hym-ease-spring);
+  --ease-out:    var(--hym-ease-out);
+
+  /* Tone text colors */
+  --t-acc:  #70A7FF;
+  --t-ok:   #34D399;
+  --t-warn: #FCD34D;
+  --t-err:  #FB7185;
+  --t-pur:  #C4B5FD;
+  --t-info: #22D3EE;
+  --t-white: #FFFFFF;
+
+  /* Soft backgrounds */
+  --soft-acc:  var(--hym-brand-subtle);
+  --soft-ok:   var(--hym-success-subtle);
+  --soft-warn: var(--hym-warning-subtle);
+  --soft-err:  var(--hym-danger-subtle);
+  --soft-pur:  rgba(139, 92, 246, .13);
+  --soft-info: var(--hym-accent-subtle);
+  --soft-mut:  rgba(100, 116, 139, .08);
+
+  /* Spacing */
+  --sp-1: 4px;
+  --sp-2: 7px;
+  --sp-3: 10px;
+  --sp-4: 14px;
+  --sp-5: 20px;
+
+  /* Type scale */
+  --fs-cap:  10.5px;
+  --fs-meta: 11px;
+  --fs-sm:   12px;
+  --fs-md:   13px;
+  --fs-lg:   15px;
+  --fs-xl:   18px;
+  --fs-2xl:  24px;
+}

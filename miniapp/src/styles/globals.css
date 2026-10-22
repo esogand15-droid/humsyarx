@@ -28,49 +28,19 @@
 }
 
 
+/* ── Mini App: overrides and extensions to Unified Design System ──
+   Primitive tokens now live in tokens.css (imported before this file).
+   Only miniapp-specific values and non-unified legacy tokens remain here. */
+
 :root {
   color-scheme: dark;
 
-  --bg: #070B14;
-  --bg-soft: #0A1020;
-  --surf: #101827;
-  --elev: #182235;
-  --ovr: #223049;
-
-  --acc: #3B82F6;
-  --acc-dim: #1D4ED8;
-  --acc2: #22D3EE;
-
-  --acc-soft: rgba(59, 130, 246, .09);
-  --acc-glow: rgba(59, 130, 246, .18);
-
-  --ok: #10B981;
-  --warn: #F59E0B;
-  --err: #EF4444;
-  --info: #06B6D4;
-
-  --tx: #F8FAFC;
-  --tx2: #B4C0D4;
-  --txm: #8296B3;
-
-  --bd: rgba(148, 163, 184, .13);
-  --bdg: rgba(59, 130, 246, .36);
-
-  --r-sm: 9px;
-  --r-md: 13px;
-  --r-lg: 18px;
-  --r-xl: 24px;
-
+  /* Mini App shell dimensions */
   --hdr-h: 62px;
   --nav-h: 66px;
   --content-w: 500px;
 
-  --font:
-    'Vazirmatn',
-    Tahoma,
-    system-ui,
-    sans-serif;
-
+  /* Gradients unique to miniapp */
   --grad-brand:
     linear-gradient(
       135deg,
@@ -91,55 +61,21 @@
       transparent 32%
     );
 
-  --shd-1:
-    0 3px 12px
-    rgba(0, 0, 0, .24);
-
-  --shd-2:
-    0 12px 32px
-    rgba(0, 0, 0, .34);
-
-  --shd-3:
-    0 20px 52px
-    rgba(0, 0, 0, .48);
-
-  --shd-glow:
-    0 8px 28px
-    rgba(59, 130, 246, .24);
+  /* Shadows — miniapp uses heavier shadows for dark elevation */
+  --shd-1: 0 3px 12px rgba(0, 0, 0, .24);
+  --shd-2: 0 12px 32px rgba(0, 0, 0, .34);
+  --shd-3: 0 20px 52px rgba(0, 0, 0, .48);
+  --shd-glow: 0 8px 28px rgba(59, 130, 246, .24);
 
   --blur: 22px;
 
-  /* Skeleton DS (موج ۴.۴۰) — رنگ پایه/لکه‌ی
-     نور و سرعتِ واحد برای کل مینی‌اپ */
+  /* Skeleton */
   --sk-base: var(--elev);
-  --sk-hi:
-    rgba(190, 205, 228, .11);
+  --sk-hi: rgba(190, 205, 228, .11);
   --sk-dur: 1.55s;
   --sk-ease: ease-in-out;
 
-  --ease-spring:
-    cubic-bezier(
-      .34,
-      1.56,
-      .64,
-      1
-    );
-
-  --ease-out:
-    cubic-bezier(
-      .22,
-      1,
-      .36,
-      1
-    );
-
-  /* ═════════════════════════════════════
-     موج W1 — توکن‌های تکمیلی DS
-     (تا امروز مستقیماً در JSX هاردکد بودند؛
-     جایگزینی مقدار‌به‌مقدار، بدون تغییر بصری)
-     ═════════════════════════════════════ */
-
-  /* متن‌های Tone — جفت هر رنگ معنایی */
+  /* Miniapp-specific tone colors */
   --t-acc:  #70A7FF;
   --t-ok:   #34D399;
   --t-warn: #FCD34D;
@@ -147,67 +83,58 @@
   --t-pur:  #C4B5FD;
   --t-info: #22D3EE;
   --t-white: #FFFFFF;
+  --t-pink: #F9A8D4;
 
-  /* سطوح ملایم Tone (پس‌زمینه‌ی آیکن/تایل) */
-  --soft-acc:  rgba(59, 130, 246, .12);
-  --soft-ok:   rgba(16, 185, 129, .12);
-  --soft-warn: rgba(245, 158, 11, .12);
-  --soft-err:  rgba(239, 68, 68, .12);
-  --soft-pur:  rgba(139, 92, 246, .13);
-  --soft-info: rgba(34, 211, 238, .12);
-  --soft-mut:  rgba(100, 116, 139, .08);
-
-  /* خانواده‌ی بنفش کامل */
-  --pur:      #8B5CF6;
-  --pur-dim:  #7C3AED;
-
-  /* سطح کارت یکدست (۲۶ استفاده‌ی inline) */
-  --surf-card: rgba(16, 24, 39, .95);
-
-  /* قرص کامل — برای chip/pill ها */
-  --r-pill: 999px;
-
-  /* تنوع‌های آلفای باقی‌مانده (دور دوم W1) */
+  /* Soft backgrounds */
   --soft-acc-2:  rgba(59, 130, 246, .13);
   --soft-warn-2: rgba(245, 158, 11, .13);
   --soft-err-2:  rgba(239, 68, 68, .13);
-  --bd-ok:   rgba(16, 185, 129, .25);
-  --bd-warn: rgba(245, 158, 11, .25);
-  --bd-err:  rgba(239, 68, 68, .3);
-  --t-acc-hi: #93C5FD;
-  --t-acc-md: #60A5FA;
-
-  /* اکنت عمیق بنرها + صورتی حمایت */
   --soft-acc-deep: rgba(29, 78, 216, .21);
   --soft-pink:     rgba(236, 72, 153, .12);
 
+  /* Borders */
+  --bd-ok:   rgba(16, 185, 129, .25);
+  --bd-warn: rgba(245, 158, 11, .25);
+  --bd-err:  rgba(239, 68, 68, .3);
+  --bd-pur:  rgba(139, 92, 246, .25);
 
-  /* تک‌موردهای W3 — آخرین خام‌ها */
+  /* Utility */
+  --scrim-strong: rgba(0, 0, 0, .7);
+  --scrim: rgba(11, 18, 32, .85);
+
+  /* Dim variants */
   --ok-dim:    #059669;
   --warn-dim:  #D97706;
   --info-dim:  #0891B2;
-  --bd-pur:    rgba(139, 92, 246, .25);
-  --scrim-strong: rgba(0, 0, 0, .7);
 
-  --t-pink: #F9A8D4;
-  --scrim: rgba(11, 18, 32, .85);
+  /* Purple family */
+  --pur:      #8B5CF6;
+  --pur-dim:  #7C3AED;
 
-  /* Spacing Scale پنج‌پله (W4) */
+  /* Card surface */
+  --surf-card: rgba(16, 24, 39, .95);
+
+  /* Legacy radius that differ from unified scale */
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+
+  /* Legacy spacing */
   --sp-1: 4px;
   --sp-2: 7px;
   --sp-3: 10px;
   --sp-4: 14px;
   --sp-5: 20px;
 
-  /* Type Scale رسمی ۷‌پله (W1) —
-     به‌جای ~۳۰ سایز پراکنده در JSX */
-  --fs-cap:  10.5px;  /* لیبل/نشان کوچک */
-  --fs-meta: 11px;    /* متا/کپشن */
-  --fs-sm:   12px;    /* متن فرعی */
-  --fs-md:   13px;    /* متن اصلی */
-  --fs-lg:   15px;    /* تیتر کارت */
-  --fs-xl:   18px;    /* تیتر بخش */
-  --fs-2xl:  24px;    /* نمایشی */
+  /* Legacy type scale */
+  --fs-cap:  10.5px;
+  --fs-meta: 11px;
+  --fs-sm:   12px;
+  --fs-md:   13px;
+  --fs-lg:   15px;
+  --fs-xl:   18px;
+  --fs-2xl:  24px;
 }
 
 *,

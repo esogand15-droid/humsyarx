@@ -1,0 +1,323 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   HamsYar Unified Design System — Admin Panel Token Adapter
+   Data-dense, management-focused environment.
+   All token names match the unified system.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Brand palette — harmonized with student app (royal blue family) */
+  --hym-brand-50:  #EEF2FF;
+  --hym-brand-100: #E0E7FF;
+  --hym-brand-200: #C7D2FE;
+  --hym-brand-300: #A5B4FC;
+  --hym-brand-400: #818CF8;
+  --hym-brand-500: #6366F1;
+  --hym-brand-600: #4F46E5;
+  --hym-brand-700: #4338CA;
+  --hym-brand-800: #3730A3;
+  --hym-brand-900: #312E81;
+
+  /* Teal accent */
+  --hym-teal-50:  #F0FDFA;
+  --hym-teal-100: #CCFBF1;
+  --hym-teal-200: #99F6E4;
+  --hym-teal-300: #5EEAD4;
+  --hym-teal-400: #2DD4BF;
+  --hym-teal-500: #14B8A6;
+  --hym-teal-600: #0D9488;
+  --hym-teal-700: #0F766E;
+  --hym-teal-800: #115E59;
+  --hym-teal-900: #134E4A;
+
+  /* Amber warmth */
+  --hym-amber-50:  #FFFBEB;
+  --hym-amber-100: #FEF3C7;
+  --hym-amber-200: #FDE68A;
+  --hym-amber-300: #FCD34D;
+  --hym-amber-400: #FBBF24;
+  --hym-amber-500: #F59E0B;
+  --hym-amber-600: #D97706;
+  --hym-amber-700: #B45309;
+  --hym-amber-800: #92400E;
+  --hym-amber-900: #78350F;
+
+  /* Semantic: success */
+  --hym-success-50:  #ECFDF5;
+  --hym-success-100: #D1FAE5;
+  --hym-success-200: #A7F3D0;
+  --hym-success-300: #6EE7B7;
+  --hym-success-400: #34D399;
+  --hym-success-500: #10B981;
+  --hym-success-600: #059669;
+  --hym-success-700: #047857;
+  --hym-success-800: #065F46;
+  --hym-success-900: #064E3B;
+
+  /* Semantic: warning */
+  --hym-warning-50:  #FFFBEB;
+  --hym-warning-100: #FEF3C7;
+  --hym-warning-200: #FDE68A;
+  --hym-warning-300: #FCD34D;
+  --hym-warning-400: #FBBF24;
+  --hym-warning-500: #F59E0B;
+  --hym-warning-600: #D97706;
+  --hym-warning-700: #B45309;
+  --hym-warning-800: #92400E;
+  --hym-warning-900: #78350F;
+
+  /* Semantic: danger */
+  --hym-danger-50:  #FFF1F2;
+  --hym-danger-100: #FFE4E6;
+  --hym-danger-200: #FECDD3;
+  --hym-danger-300: #FDA4AF;
+  --hym-danger-400: #FB7185;
+  --hym-danger-500: #F43F5E;
+  --hym-danger-600: #E11D48;
+  --hym-danger-700: #BE123C;
+  --hym-danger-800: #9F1239;
+  --hym-danger-900: #881337;
+
+  /* Neutral — cool grey for admin dark theme */
+  --hym-neutral-0:   #FFFFFF;
+  --hym-neutral-50:  #F8FAFC;
+  --hym-neutral-100: #F1F5F9;
+  --hym-neutral-200: #E2E8F0;
+  --hym-neutral-300: #CBD5E1;
+  --hym-neutral-400: #94A3B8;
+  --hym-neutral-500: #64748B;
+  --hym-neutral-600: #475569;
+  --hym-neutral-700: #334155;
+  --hym-neutral-800: #1E293B;
+  --hym-neutral-900: #0F172A;
+  --hym-neutral-950: #020617;
+
+  /* Typography */
+  --hym-font-sans:  'Vazirmatn', system-ui, Tahoma, sans-serif;
+  --hym-font-mono:  ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* Spacing */
+  --hym-space-0:  0px;
+  --hym-space-1:  4px;
+  --hym-space-2:  8px;
+  --hym-space-3:  12px;
+  --hym-space-4:  16px;
+  --hym-space-5:  20px;
+  --hym-space-6:  24px;
+  --hym-space-8:  32px;
+  --hym-space-10: 40px;
+  --hym-space-12: 48px;
+  --hym-space-16: 64px;
+  --hym-space-20: 80px;
+  --hym-space-24: 96px;
+
+  /* Border radius — smaller for data density */
+  --hym-radius-sm:   4px;
+  --hym-radius-md:   8px;
+  --hym-radius-lg:   10px;
+  --hym-radius-xl:   14px;
+  --hym-radius-2xl:  18px;
+  --hym-radius-pill: 999px;
+
+  /* Motion */
+  --hym-ease-default: cubic-bezier(.2, .65, .25, 1);
+  --hym-ease-spring:  cubic-bezier(.34, 1.56, .64, 1);
+  --hym-ease-out:     cubic-bezier(.22, 1, .36, 1);
+  --hym-duration-fast:   140ms;
+  --hym-duration-normal: 200ms;
+  --hym-duration-slow:   280ms;
+
+  /* Z-index */
+  --hym-z-base:    0;
+  --hym-z-sticky:  10;
+  --hym-z-nav:     20;
+  --hym-z-sheet:   30;
+  --hym-z-toast:   40;
+  --hym-z-overlay: 50;
+  --hym-z-modal:   60;
+}
+
+/* ── Admin Panel: dark semantic tokens (default) ──
+   Admin uses a dark navy aesthetic appropriate for
+   data-dense management interfaces. */
+:root {
+  /* Surfaces — deep midnight navy */
+  --hym-bg-page:         #090f1f;
+  --hym-bg-surface:      #0c1527;
+  --hym-bg-surface-raised: #111c34;
+  --hym-bg-surface-inset:  #070b14;
+  --hym-bg-hover:        rgba(77, 184, 255, .06);
+  --hym-bg-active:       rgba(77, 184, 255, .10);
+  --hym-bg-selected:     rgba(77, 184, 255, .12);
+  --hym-bg-overlay:      rgba(3, 6, 13, .70);
+  --hym-bg-scrim:        rgba(3, 6, 13, .80);
+
+  /* Text — high contrast for readability */
+  --hym-text-primary:    #eaf0fe;
+  --hym-text-secondary:  #a3b4d8;
+  --hym-text-muted:      #7184ac;
+  --hym-text-disabled:   #475569;
+  --hym-text-inverse:    #0f172a;
+  --hym-text-link:       #4db8ff;
+  --hym-text-on-brand:   #020617;
+
+  /* Borders */
+  --hym-border-default:  #1e2c4b;
+  --hym-border-subtle:   rgba(30, 44, 75, .60);
+  --hym-border-strong:   #2a3d66;
+  --hym-border-focus:    #4db8ff;
+  --hym-border-selected: #4db8ff;
+
+  /* Brand — electric blue for dark bg */
+  --hym-brand-default:   #4db8ff;
+  --hym-brand-hover:     #38a8f5;
+  --hym-brand-active:    #2496e8;
+  --hym-brand-subtle:    rgba(77, 184, 255, .12);
+  --hym-brand-muted:     rgba(77, 184, 255, .24);
+
+  /* Accent — cyan/turquoise */
+  --hym-accent-default:  #2fd6bd;
+  --hym-accent-hover:    #26c4ad;
+  --hym-accent-active:   #1db39d;
+  --hym-accent-subtle:   rgba(47, 214, 189, .12);
+  --hym-accent-muted:    rgba(47, 214, 189, .24);
+
+  /* Warmth — amber (more subtle in admin) */
+  --hym-warm-default:    #f0b545;
+  --hym-warm-hover:      #e0a535;
+  --hym-warm-active:     #d09528;
+  --hym-warm-subtle:     rgba(240, 181, 69, .12);
+  --hym-warm-muted:      rgba(240, 181, 69, .24);
+
+  /* Feedback */
+  --hym-success-default: #3ad29b;
+  --hym-success-subtle:  rgba(58, 210, 155, .12);
+  --hym-success-bg:      rgba(58, 210, 155, .08);
+
+  --hym-warning-default: #f0b545;
+  --hym-warning-subtle:  rgba(240, 181, 69, .12);
+  --hym-warning-bg:      rgba(240, 181, 69, .08);
+
+  --hym-danger-default:  #f87171;
+  --hym-danger-subtle:   rgba(248, 113, 113, .12);
+  --hym-danger-bg:       rgba(248, 113, 113, .08);
+
+  --hym-info-default:    #4db8ff;
+  --hym-info-subtle:     rgba(77, 184, 255, .12);
+  --hym-info-bg:         rgba(77, 184, 255, .08);
+
+  /* Elevation — subtle layered shadows */
+  --hym-shadow-sm:  0 1px 2px rgba(3, 8, 20, .35);
+  --hym-shadow-md:  0 1px 3px rgba(3, 8, 20, .40), 0 8px 24px rgba(3, 8, 20, .45);
+  --hym-shadow-lg:  0 4px 6px rgba(3, 8, 20, .45), 0 16px 40px rgba(2, 8, 23, .55);
+  --hym-shadow-xl:  0 8px 12px rgba(3, 8, 20, .50), 0 24px 60px rgba(2, 8, 23, .72);
+
+  /* Focus */
+  --hym-focus-ring:    0 0 0 3px rgba(77, 184, 255, .25);
+  --hym-focus-ring-danger: 0 0 0 3px rgba(248, 113, 113, .25);
+
+  /* Skeleton */
+  --hym-skeleton-base: #16233f;
+  --hym-skeleton-shine: rgba(255, 255, 255, .04);
+
+  /* Chart */
+  --hym-chart-1: var(--hym-brand-default);
+  --hym-chart-2: var(--hym-accent-default);
+  --hym-chart-3: var(--hym-warm-default);
+  --hym-chart-4: var(--hym-success-default);
+  --hym-chart-5: var(--hym-danger-default);
+  --hym-chart-6: var(--hym-warning-default);
+  --hym-chart-7: var(--hym-neutral-400);
+
+  /* Admin environment */
+  --hym-app-max-width:        1680px;
+  --hym-app-page-padding:       var(--hym-space-4);
+  --hym-app-page-padding-bottom: var(--hym-space-8);
+  --hym-app-bar-height:         60px;
+  --hym-app-tab-bar-height:     0px;
+  --hym-density: compact;
+  --hym-safe-top:    0px;
+  --hym-safe-bottom: 0px;
+}
+
+/* ── Legacy compatibility aliases for webadmin ── */
+:root {
+  --paper:        var(--hym-bg-page);
+  --paper-2:      var(--hym-bg-surface);
+  --paper-3:      var(--hym-bg-surface-raised);
+  --ink:          var(--hym-text-primary);
+  --ink-2:        var(--hym-text-secondary);
+  --ink-3:        var(--hym-text-muted);
+  --line:         var(--hym-border-default);
+  --line-2:       var(--hym-border-strong);
+
+  --brand:        var(--hym-brand-default);
+  --brand-deep:   var(--hym-brand-hover);
+  --brand-soft:   var(--hym-brand-subtle);
+  --brand-ink:    var(--hym-brand-default);
+
+  --cyan:         var(--hym-accent-default);
+  --cyan-deep:    var(--hym-accent-hover);
+  --cyan-soft:    var(--hym-accent-subtle);
+  --cyan-ink:     var(--hym-accent-default);
+
+  --amber:        var(--hym-warm-default);
+  --amber-deep:   var(--hym-warm-hover);
+  --amber-soft:   var(--hym-warm-subtle);
+  --amber-ink:    var(--hym-warm-default);
+
+  --danger:       var(--hym-danger-default);
+  --danger-soft:  var(--hym-danger-subtle);
+  --ok:           var(--hym-success-default);
+  --ok-soft:      var(--hym-success-subtle);
+
+  --on-brand:     var(--hym-text-on-brand);
+  --midnight:     var(--hym-neutral-950);
+
+  --sh-1:         var(--hym-shadow-sm);
+  --sh-2:         var(--hym-shadow-md);
+
+  --r-sm:         var(--hym-radius-sm);
+  --r:            var(--hym-radius-md);
+  --r-md:         var(--hym-radius-lg);
+  --r-lg:         var(--hym-radius-xl);
+  --r-xl:         var(--hym-radius-2xl);
+  --r-pill:       var(--hym-radius-pill);
+
+  --ease:         var(--hym-ease-default);
+  --t-fast:       var(--hym-duration-fast);
+  --t:            var(--hym-duration-normal);
+  --t-slow:       var(--hym-duration-slow);
+
+  --f:            var(--hym-font-sans);
+  --f-mono:       var(--hym-font-mono);
+
+  --space-1:      var(--hym-space-1);
+  --space-2:      6px;
+  --space-3:      var(--hym-space-2);
+  --space-4:      10px;
+  --space-5:      var(--hym-space-3);
+  --space-6:      var(--hym-space-4);
+  --space-7:      var(--hym-space-5);
+  --space-8:      var(--hym-space-6);
+  --space-9:      var(--hym-space-8);
+  --space-10:     var(--hym-space-10);
+
+  --icon-sm:      16px;
+  --icon:         24px;
+  --icon-lg:      30px;
+  --icon-xl:      40px;
+
+  --touch-min:    44px;
+  --btn-h:        44px;
+  --btn-h-sm:     34px;
+
+  --bp-md:        760px;
+  --bp-lg:        1100px;
+
+  --z-base:       var(--hym-z-base);
+  --z-sticky:     var(--hym-z-sticky);
+  --z-nav:        var(--hym-z-nav);
+  --z-sheet:      var(--hym-z-sheet);
+  --z-toast:      var(--hym-z-toast);
+  --z-overlay:    var(--hym-z-overlay);
+}

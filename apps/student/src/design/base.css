@@ -1,57 +1,219 @@
-/* ═══ پایه: فونت، ریست، RTL، تایپوگرافی ═══ */
+/* ═══ HamsYar Base — Typography, Reset, RTL, Accessibility ═══
+   Unified across all HamsYar environments.
+   Environment-specific overrides should live in adapter files.
+   ═══ */
 
-@font-face{
-  font-family:'Vazirmatn';
-  src:url('./fonts/vazirmatn-arabic.woff2') format('woff2');
-  font-weight:100 900; font-style:normal; font-display:swap;
+/* ── Font loading ── */
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('./fonts/vazirmatn-arabic.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
-@font-face{
-  font-family:'Vazirmatn';
-  src:url('./fonts/vazirmatn-latin.woff2') format('woff2');
-  font-weight:100 900; font-style:normal; font-display:swap;
-  unicode-range:U+0000-00FF,U+2000-206F;
+@font-face {
+  font-family: 'Vazirmatn';
+  src: url('./fonts/vazirmatn-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+2000-206F;
 }
 
-*,*::before,*::after{box-sizing:border-box}
-html,body,#root{height:100%}
-body{
-  margin:0; background:var(--paper); color:var(--ink);
-  font-family:var(--f); font-size:15px; line-height:1.85;
-  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+/* ── Global reset ── */
+*, *::before, *::after {
+  box-sizing: border-box;
 }
-img,svg{display:block}
-/* آیکون‌ها: همه از currentColor و stroke می‌آیند — هیچ fill پیش‌فرضی */
-svg{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle}
-button{font-family:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
-a{color:inherit;text-decoration:none}
-ul,ol{margin:0;padding:0;list-style:none}
-h1,h2,h3,h4,p{margin:0}
-::selection{background:var(--brand-soft);color:var(--ink)}
-:focus-visible{outline:2px solid var(--brand);outline-offset:2px;border-radius:6px}
 
-/* اعداد هم‌تراز */
-.num{font-feature-settings:"tnum" 1,"lnum" 1;font-variant-numeric:tabular-nums}
-code,.mono{font-family:var(--f-mono);direction:ltr;unicode-bidi:embed;font-size:.88em;letter-spacing:.02em}
-[hidden]{display:none!important}
-
-/* تایپوگرافی — مقیاس واحد */
-.h1{font-size:26px;font-weight:800;line-height:1.45;letter-spacing:-.01em}
-.h2{font-size:19px;font-weight:800;line-height:1.5}
-.h3{font-size:15.5px;font-weight:700;line-height:1.55}
-.small{font-size:12.5px;color:var(--ink-2);line-height:1.8}
-.tiny{font-size:11px;color:var(--ink-3);line-height:1.7}
-.eyebrow{font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--amber-ink);text-transform:none}
-.lede{font-size:14.5px;line-height:1.95;color:var(--ink-2)}
-strong,b{font-weight:800}
-
-/* فاصله‌های کاربردی */
-.mt-8{margin-top:8px}.mt-12{margin-top:12px}.mt-16{margin-top:16px}.mt-24{margin-top:24px}
-.row{display:flex;align-items:center}.gap-4{gap:4px}.gap-8{gap:8px}.gap-10{gap:10px}.gap-12{gap:12px}
-.grow{flex:1;min-width:0}
-
-@media (prefers-reduced-motion:reduce){
-  *{animation:none!important;transition:none!important}
+html, body, #root {
+  height: 100%;
 }
-@media (prefers-reduced-transparency:reduce){
-  :root{--glass-bg:var(--paper-2);--glass-blur:none}
+
+body {
+  margin: 0;
+  background: var(--hym-bg-page);
+  color: var(--hym-text-primary);
+  font-family: var(--hym-font-sans);
+  font-size: 15px;
+  line-height: 1.85;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  direction: rtl;
+}
+
+img, svg {
+  display: block;
+}
+
+/* Icons: stroke-based, currentColor, no fill */
+svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+ul, ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+h1, h2, h3, h4, p {
+  margin: 0;
+}
+
+/* ── Selection ── */
+::selection {
+  background: var(--hym-brand-subtle);
+  color: var(--hym-text-primary);
+}
+
+/* ── Focus visible ── */
+:focus-visible {
+  outline: 2px solid var(--hym-brand-default);
+  outline-offset: 2px;
+  border-radius: var(--hym-radius-sm);
+}
+
+/* ── Numeric alignment ── */
+.num {
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+code, .mono {
+  font-family: var(--hym-font-mono);
+  direction: ltr;
+  unicode-bidi: embed;
+  font-size: .88em;
+  letter-spacing: .02em;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ── Typography scale ── */
+.h1 {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: -.01em;
+}
+
+.h2 {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.h3 {
+  font-size: 15.5px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.small {
+  font-size: 12.5px;
+  color: var(--hym-text-secondary);
+  line-height: 1.8;
+}
+
+.tiny {
+  font-size: 11px;
+  color: var(--hym-text-muted);
+  line-height: 1.7;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: var(--hym-warm-default);
+  text-transform: none;
+}
+
+.lede {
+  font-size: 14.5px;
+  line-height: 1.95;
+  color: var(--hym-text-secondary);
+}
+
+strong, b {
+  font-weight: 800;
+}
+
+/* ── Utility spacing classes ── */
+.mt-8  { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+
+.row {
+  display: flex;
+  align-items: center;
+}
+
+.gap-4  { gap: 4px; }
+.gap-8  { gap: 8px; }
+.gap-10 { gap: 10px; }
+.gap-12 { gap: 12px; }
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Scrollbar styling ── */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--hym-border-strong);
+  border-radius: 8px;
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-bg: var(--hym-bg-surface);
+    --glass-blur: none;
+  }
+}
+
+/* ── Screen reader only ── */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }

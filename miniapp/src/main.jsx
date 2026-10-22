@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import { ROUTER_BASENAME, APP_BASE } from './lib/base';
+import './styles/tokens.css';
 import './styles/globals.css';
 
 // 🌊 W4 — PWA offline cache (best-effort) — only in production
