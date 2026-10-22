@@ -23,6 +23,8 @@ import {
 } from './screens/library/LibraryScreens';
 import { MeScreen } from './screens/MeScreen';
 import { Placeholder } from './screens/Placeholder';
+import { SearchScreen } from './screens/SearchScreen';
+import { ScheduleScreen } from './screens/ScheduleScreen';
 import { StatesScreen } from './screens/StatesScreen';
 import { SystemScreen } from './screens/SystemScreen';
 import { useSession } from './lib/session';
@@ -111,34 +113,8 @@ export function App() {
         <Route path="/exam/mock/history" element={<Gate><MockExamHistory /></Gate>} />
         <Route path="/exam/run/:sid" element={<Gate><MockRun /></Gate>} />
         <Route path="/exam/result/:sid" element={<Gate><ExamResult /></Gate>} />
-        <Route
-          path="/search"
-          element={
-            <Gate>
-              <Placeholder
-                title="جستجو"
-                sub="جستجوی سراسری"
-                phase="P2"
-                icon="i-search"
-                note="نتایج جستجو باید به دامنهٔ دید کاربر احترام بگذارد؛ محتوای بیرون از دامنه هرگز برنمی‌گردد."
-              />
-            </Gate>
-          }
-        />
-        <Route
-          path="/schedule"
-          element={
-            <Gate>
-              <Placeholder
-                title="برنامه"
-                sub="برنامهٔ هفتگی"
-                phase="P7"
-                icon="i-calendar"
-                note="تقویم شمسی و جلسات از مسیر موجود برنامه خوانده می‌شود."
-              />
-            </Gate>
-          }
-        />
+        <Route path="/search" element={<Gate><SearchScreen /></Gate>} />
+        <Route path="/schedule" element={<Gate><ScheduleScreen /></Gate>} />
         <Route
           path="/me"
           element={
