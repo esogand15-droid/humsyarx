@@ -74,20 +74,50 @@ async def _get_cfg() -> dict:
     _CFG_CACHE["data"] = cfg
     return cfg
 
+#: محیط‌هایی که در آن‌ها mock صریحاً «توسعه‌ای» شناخته می‌شود.
+_DEV_ENVS = ("development", "dev", "local", "test", "testing", "staging")
+
+
 def _mock_allowed() -> bool:
-    """🐞 BUGFIX (CRITICAL) — حالت mock یعنی «پرداخت بدون پول همیشه موفق».
-    قبلاً اگر مرچنت در production خالی/پاک می‌شد، هر کاربر می‌توانست
-    اشتراک بخرد یا کیف پولش را شارژ کند بدون پرداخت واقعی.
-    حالا mock فقط در dev/staging مجاز است، یا وقتی صریحاً
-    ZARINPAL_ALLOW_MOCK=1 تنظیم شده باشد (مثلاً دموی عمومی)."""
+    """آیا «پرداخت آزمایشی» (mock) مجاز است؟  — پیش‌فرض: **نه** (fail-closed)
+
+    چرا این تابع امنیتی است
+    ───────────────────────
+    در حالت mock هیچ پولی جابه‌جا نمی‌شود ولی `verify` **موفق** برمی‌گردد؛
+    یعنی هر کاربری می‌تواند اشتراک یا شارژ کیف پول بگیرد بدون پرداخت.
+
+    تاریخچه
+    ────────
+    نسخهٔ اول: mock فقط در production بسته بود ⇒ اگر هیچ‌کدام از متغیرهای
+    محیطیِ شناسایی‌کنندهٔ محیط ست نشده باشد (`RAILWAY_ENVIRONMENT_NAME` /
+    `APP_ENV` / …) نتیجهٔ `env = ""` و شرط `env not in ("production","prod")`
+    **True** می‌شد ⇒ mock باز می‌ماند. روی VPS با docker-compose (که
+    vps.env.example هیچ‌کدام از این‌ها را ست نمی‌کند) این یعنی پرداخت
+    «همیشه موفق» — بی‌صدا.
+
+    نسخهٔ فعلی (fail-closed)
+    ────────────────────────
+    ۱) `ZARINPAL_ALLOW_MOCK=1` ⇒ مجاز (دمو/تست عمدی)
+    ۲) `ZARINPAL_ALLOW_MOCK=0` ⇒ ممنوع (صریح)
+    ۳) در غیر این صورت: فقط اگر محیط **صریحاً توسعه‌ای** اعلام شده باشد
+       (development/dev/local/test/staging) ⇒ مجاز
+    ۴) هر حالت دیگر (شامل «متغیر ست نشده») ⇒ **ممنوع**
+
+    نتیجهٔ عملی: اگر مرچنت واقعی ست شده باشد، این تابع هیچ نقشی در مسیر
+    پرداخت ندارد؛ فقط وقتی مرچنت خالی/جعلی است تعیین می‌کند پرداخت
+    «بسته» باشد یا «آزمایشی».
+    """
     v = (os.getenv("ZARINPAL_ALLOW_MOCK", "") or "").strip().lower()
     if v in ("1", "true", "yes", "on"):
-        return True
+        return True              # انتخاب صریح اپراتور (دمو)
     if v in ("0", "false", "no", "off"):
+        return False             # انتخاب صریح اپراتور (تولید)
+    env = (os.getenv("APP_ENV") or os.getenv("ENVIRONMENT")
+           or os.getenv("RAILWAY_ENVIRONMENT_NAME")
+           or os.getenv("RAILWAY_ENVIRONMENT") or "").strip().lower()
+    if env in ("production", "prod"):
         return False
-    env = (os.getenv("RAILWAY_ENVIRONMENT_NAME") or os.getenv("RAILWAY_ENVIRONMENT")
-           or os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
-    return env not in ("production", "prod")
+    return env in _DEV_ENVS      # فقط محیط توسعه‌ایِ اعلام‌شده
 
 
 def _merchant_is_mock(merchant_id: str) -> bool:

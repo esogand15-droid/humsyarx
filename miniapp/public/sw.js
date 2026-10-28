@@ -1,7 +1,17 @@
 // 🌊 W4 — Minimal PWA Offline Cache (same-origin, /app/ scope)
 // Cache-first for static assets, network-first for /api
-const CACHE = 'humsyar-v4-20260909';
-const PRECACHE = ['/', '/app/'];
+// 🐞 موج ۳ — نسخهٔ کش بالا رفت و «پوستهٔ نصب» (manifest + آیکون‌ها) هم
+// precache شد؛ قبلاً '/' در precache بود که روی سرور به /app/ ریدایرکت
+// می‌شود (307) و در بعضی مرورگرها addAll را نیمه‌کاره می‌گذاشت.
+const CACHE = 'humsyar-v5-20261029';
+const PRECACHE = [
+  './',
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/maskable-512.png',
+  './icons/apple-touch-icon.png',
+];
 self.addEventListener('install', (e) => {
   self.skipWaiting();
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE).catch(()=>{})));

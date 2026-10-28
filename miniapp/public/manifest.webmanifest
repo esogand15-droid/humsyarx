@@ -1,0 +1,58 @@
+{
+  "name": "هامزیار — دستیار آموزشی پزشکی",
+  "short_name": "هامزیار",
+  "description": "بانک سؤال، منابع درسی، برنامه کلاسی و دستیار هوشمند دانشجویان پزشکی",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "portrait-primary",
+  "background_color": "#070B14",
+  "theme_color": "#070B14",
+  "categories": [
+    "education",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "بانک سؤال",
+      "short_name": "سؤال",
+      "url": "./learn/questions"
+    },
+    {
+      "name": "برنامه کلاسی",
+      "short_name": "برنامه",
+      "url": "./schedule"
+    },
+    {
+      "name": "هوشیار (AI)",
+      "short_name": "هوشیار",
+      "url": "./ai"
+    }
+  ]
+}

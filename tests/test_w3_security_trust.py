@@ -124,6 +124,16 @@ class W3MockTests(unittest.TestCase):
     def setUpClass(cls):
         import payments.zarinpal as zp
         cls.zp = zp
+        # 🐞 موج ۳ — این کلاس عمداً «حالت mock» را تست می‌کند و از موج ۳
+        # حالت mock به‌صورت fail-closed بسته است (محیط ناشناخته = ممنوع).
+        # پس محیط توسعه را صریح اعلام می‌کنیم؛ در غیر این صورت تست، رفتار
+        # درستِ امنیتی را «شکست» می‌دید.
+        cls._env_backup = {k: os.environ.get(k) for k in
+                           ("APP_ENV", "ZARINPAL_ALLOW_MOCK",
+                            "RAILWAY_ENVIRONMENT_NAME", "RAILWAY_ENVIRONMENT",
+                            "ENVIRONMENT")}
+        os.environ["APP_ENV"] = "development"
+        os.environ.pop("ZARINPAL_ALLOW_MOCK", None)
         zp._CFG_CACHE["at"] = time.time()
         zp._CFG_CACHE["data"] = {
             "merchant_id": "", "sandbox": True,
@@ -133,6 +143,11 @@ class W3MockTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.zp._clear_cfg_cache()
+        for k, v in (cls._env_backup or {}).items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def test_mock_reverse_roundtrip(self):
         async def go():
