@@ -147,15 +147,20 @@ class UrlImportStaticTests(unittest.TestCase):
 
 
 def _mongo_available() -> bool:
-    uri = os.getenv("MONGODB_URI", "")
-    if not (uri.startswith("mongodb://127.0.0.1") or uri.startswith("mongodb://localhost")):
-        return False
-    host, _, port = uri[len("mongodb://"):].partition(":")
-    try:
-        with socket.create_connection((host, int(port or 27017)), timeout=1):
-            return True
-    except OSError:
-        return False
+    """پروب مشترک و مقاوم (پارس URI با نام دیتابیس را هم می‌فهمد).
+
+    جزئیات علت در tests/_mongo_probe.py — نسخهٔ قبلیِ محلی با URI
+    `mongodb://host:port/db` در زمان import می‌شکست و کل فایل تست را
+    به error تبدیل می‌کرد.
+    """
+    try:                                   # اجرا با `python -m unittest tests.x`
+        from tests._mongo_probe import mongo_available as _probe
+    except Exception:                      # اجرا با `discover -s tests`
+        try:
+            from _mongo_probe import mongo_available as _probe
+        except Exception:
+            return False
+    return _probe()
 
 
 def _signed_init_data(uid: int) -> str:

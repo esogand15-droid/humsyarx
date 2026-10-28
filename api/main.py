@@ -609,20 +609,17 @@ async def health_deep():
     }
 
 
-# 📌 خط‌مبنای رگرسیون مسیرها.
-# قبلاً ۴۵۰ بود و با رشد API به ۴۹۴ رسید، اما چون هیچ تستی
-# routes_match_baseline را نمی‌خواند، گارد در سکوت False می‌ماند و
-# عملاً بی‌اثر بود. حالا tests/test_route_inventory.py آن را می‌خواند؛
-# تغییر عمدیِ سطح API باید همین عدد را هم آگاهانه به‌روز کند.
-# ۴۹۴ → ۴۹۷ با افزودن DLQ (GET /system/dlq و POST requeue/discard).
-# §W8 — ۴۹۷ → ۴۹۸ با افزودنِ `GET /api/content/questions/{qid}/reports`
-#        (نمای تجمیعیِ گزارش‌های یک سؤال).
-# §W9 — ۴۹۸ → ۵۰۱ با سه endpoint:
-#        `GET /api/content/questions/reported` (فهرستِ سؤالاتِ گزارش‌دار)
-#        + دو delegate در web_admin برای مصرفِ پنل.
-# تغییرِ این عدد باید همیشه عمدی و مستند باشد؛ همین محافظ است که
-# افزودنِ ناخواستهٔ endpoint را لو می‌دهد.
-_ROUTE_BASELINE = 501
+# 📌 خط‌مبنای رگرسیون مسیرها (تعداد عملیات OpenAPI زیر /api).
+#
+# تاریخچه: ۴۵۰ → ۴۹۴ → ۴۹۷ (DLQ) → ۴۹۸ (reports یک سؤال) → ۵۰۱ (W9).
+# 🐞 اصلاحِ موج ۲: کامنت قبلی می‌گفت «tests/test_route_inventory.py آن را
+# می‌خواند» ولی آن فایل **در مخزن وجود نداشت** ⇒ گارد مرده بود، عدد در
+# ۵۰۱ مانده بود در حالی که واقعیت ۷۱۹ است، و `/api/health/deep` همیشه
+# `routes_match_baseline: false` گزارش می‌کرد (هشدار دائمیِ کاذب).
+# حالا تست واقعاً وجود دارد و روی هر push اجرا می‌شود.
+# هر تغییر عمدیِ سطح API باید این عدد و EXPECTED_OPENAPI_OPERATIONS در
+# tests/test_route_inventory.py را هم‌زمان به‌روز کند.
+_ROUTE_BASELINE = 719
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:
