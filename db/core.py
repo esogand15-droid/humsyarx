@@ -972,33 +972,127 @@ class DBCore:
         return out
 
 
+    # ═══════════════════════════════════════════════════════════════════
+    #  📤 صف خروجی ربات (bot_notifications)
+    #
+    #  چرا این متد وجود دارد: `api/routers/academic_admin.py` سیگنال
+    #  «یادآوری انتخاب واحد» را با `db.enqueue_bot_outbox(...)` صف
+    #  می‌کرد، اما چنین متدی هیچ‌جا تعریف نشده بود ⇒ آن endpoint همیشه
+    #  ۵۰۰ می‌داد (AttributeError). مصرف‌کننده‌ی همین صف، جاب
+    #  `mini_app_outbox_job` در bot.py است و شکل سند را همان جاب تعیین
+    #  می‌کند؛ این متد دقیقاً همان شکل را می‌نویسد.
+    # ═══════════════════════════════════════════════════════════════════
+    async def enqueue_bot_outbox(self, chat_id: int, text: str,
+                                 ntype: str = 'signal', link: str = None,
+                                 send_at: str = None, **extra) -> dict:
+        """درج یک پیام/سیگنال در صف `bot_notifications` برای ارسال توسط ربات.
+
+        * `text` متنی است که ربات می‌فرستد (parse_mode=HTML).
+        * سیگنال‌های داخلی با پیشوند `__` (مثل
+          `__COURSE_SELECTION_REMINDER__:first`) توسط جاب مصرف می‌شوند.
+        * `send_at` (ISO UTC) برای ارسال زمان‌دار؛ خالی یعنی فوری.
+        """
+        doc = {
+            'type': ntype or 'signal',
+            'chat_id': int(chat_id),
+            'text': str(text or ''),
+            'sent': False,
+            'created_at': utc_now_iso(),
+            'correlation_id': current_request_id.get(),
+        }
+        if link:
+            doc['link'] = str(link)
+        if send_at:
+            doc['send_at'] = str(send_at)
+        for k, v in (extra or {}).items():
+            if k not in doc:
+                doc[k] = v
+        try:
+            res = await self.bot_notifs.insert_one(doc)
+            return {'ok': True, 'queued': True, 'id': str(getattr(res, 'inserted_id', '') or '')}
+        except Exception:
+            logger.exception('enqueue_bot_outbox failed chat_id=%s', chat_id)
+            return {'ok': False, 'queued': False}
+
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  🧩 قرارداد واحد «ساخت کاربر»  (P0-FIX)
+    #
+    #  علت ریشه‌ای خطای تولیدی
+    #  `TypeError: DBCore.create_user() got an unexpected keyword argument
+    #   'group_verified'`:
+    #  هر سه فراخوانِ ثبت‌نام (start.py ×۲ و
+    #  api/routers/registration.py) این آرگومان را می‌فرستادند، ولی امضای
+    #  این متد آن را نمی‌پذیرفت ⇒ ثبت‌نام در لحظه‌ی نوشتن در دیتابیس می‌شکست
+    #  (هم در ربات و هم در مینی‌اپ؛ به همین دلیل برای ورودی‌های مختلف و
+    #  کاربران مختلف تکرار شد).
+    #
+    #  تصمیم معماری (نه چسباندن **kwargs):
+    #  `group_verified` یک وضعیتِ *ذخیره‌شده* در سند کاربر است
+    #  (کلید `group_verified` در users)، پس ورودی مشروعِ همین متد است.
+    #  اما مرجع نهاییِ حقیقت، خودِ متد است؛ قواعد:
+    #    • group_verified=True فقط معنا دارد وقتی
+    #      educational_group ∈ {male, female} و source از منابع قطعی
+    #      (user_confirmed / admin_verified / university) باشد.
+    #    • group_verified=None ⇒ از منبع استنتاج می‌شود (رفتار قدیمی).
+    #    • تأییدِ بی‌مبنا هرگز ذخیره نمی‌شود: اگر گروه نامشخص باشد،
+    #      `educational_group='unknown'` و `group_verified=False`.
+    #    • هرگز پیشنهاد AI به‌جای تأیید کاربر، وضعیت قطعی نمی‌سازد.
+    #
+    #  Idempotency (جلوگیری از ثبت‌نام تکراری):
+    #    • کاربر از قبل موجود ⇒ رکورد دوم ساخته نمی‌شود و خروجی
+    #      `created=False, duplicate=True` است (دابل‌کلیک روی دکمه‌ی
+    #      ورودی، دو درخواست هم‌زمان، یا کلیک روی دکمه‌ی کهنه).
+    #    • ریسِ دو insert هم‌زمان با ایندکس یکتای `user_id` و گرفتن
+    #      DuplicateKeyError به همان مسیر idempotent می‌افتد.
+    #  خروجی: dict (فراخوان‌های قبلی که مقدار برگشتی را نادیده می‌گیرند
+    #  بدون تغییر کار می‌کنند).
+    # ═══════════════════════════════════════════════════════════════════
+    VERIFIED_GROUP_SOURCES: tuple = ('university', 'user_confirmed', 'admin_verified')
+
     async def create_user(self, uid: int, name: str, student_id: str,
                           group: str, username: str = None, intake: str = '',
-                          educational_group: str = None, group_source: str = None):
+                          educational_group: str = None, group_source: str = None,
+                          group_verified: bool = None) -> dict:
+        uid = int(uid)
         # FIX طبق سند: مقادیر پیش‌فرض اعلان‌ها از تنظیمات پنل ادمین
         # خوانده می‌شود — قبلاً هاردکد بود و فقط ۴ نوع را داشت
         notif_defaults = await self.get_notif_defaults()
         now_iso = utc_now_iso()
         ai_sug = self.suggest_educational_group_from_name(name)
         norm_edu = self.normalize_user_educational_group(educational_group)
+
+        # ── ۱) وضعیت گروه آموزشی: تنها منبع حقیقت، همین بلوک است ──
         if norm_edu in ('male', 'female'):
             src = self.normalize_group_source(group_source or 'user_confirmed')
-            if src not in ('university', 'user_confirmed', 'admin_verified'):
+            if group_verified is None:
+                # سازگاری عقب‌رو: تأیید از منبع استنتاج می‌شود
+                verified = src in self.VERIFIED_GROUP_SOURCES
+            else:
+                verified = bool(group_verified)
+            if verified and src not in self.VERIFIED_GROUP_SOURCES:
+                # تأییدِ صریح ولی منبعِ غیرقطعی (مثلاً ai_suggested):
+                # منبع به «تأیید کاربر» ارتقا می‌یابد تا سند متناقض نباشد
                 src = 'user_confirmed'
-            verified = True
+            if not verified:
+                # گروه اعلام‌شده اما تأییدنشده ⇒ حدس، نه وضعیت قطعی
+                src = 'ai_suggested' if ai_sug['suggested_group'] != 'unknown' else 'legacy'
         else:
             norm_edu = 'unknown'
             src = 'ai_suggested' if ai_sug['suggested_group'] != 'unknown' else 'legacy'
             verified = False
 
-        await self.users.insert_one({
+        effective_edu = norm_edu if verified else 'unknown'
+
+        doc = {
             'user_id':    uid,
             'name':       name,
             'student_id': student_id,
             'group':      group,
             'registered_group': group,
             'computed_group': group,
-            'educational_group': norm_edu,
+            # وضعیت قطعی: تا وقتی تأیید نشده، 'unknown' می‌ماند
+            'educational_group': effective_edu,
             'group_source': src,
             'group_verified': verified,
             'group_updated_at': now_iso,
@@ -1008,10 +1102,10 @@ class DBCore:
             'ai_model_version': ai_sug['model_version'],
             'educational_group_history': [{
                 'from_group': 'unknown',
-                'to_group': norm_edu,
+                'to_group': effective_edu,
                 'source': src,
                 'verified': verified,
-                'actor_id': int(uid),
+                'actor_id': uid,
                 'at': now_iso,
             }],
             'username':   username,
@@ -1040,7 +1134,50 @@ class DBCore:
                         'top1_weeks_current': 0, 'top1_weeks_best': 0},
             'achievements': {}, 'privacy_public': True, 'showcase': [],
             'prestige_migrated': True,   # کاربر تازه نیازی به Backfill ندارد
-        })
+        }
+
+        result = {
+            'user_id': uid,
+            'created': False,
+            'duplicate': False,
+            'educational_group': effective_edu,
+            'group_source': src,
+            'group_verified': verified,
+            'intake': doc['intake'],
+        }
+
+        # ── ۲) Idempotency: هرگز رکورد دوم برای یک user_id ──
+        try:
+            if await self.users.find_one({'user_id': uid}, {'_id': 1}):
+                existing = await self.get_user(uid, use_cache=False) or {}
+                result['duplicate'] = True
+                result['educational_group'] = existing.get('educational_group', 'unknown')
+                result['group_source'] = existing.get('group_source', 'legacy')
+                result['group_verified'] = bool(existing.get('group_verified'))
+                result['intake'] = existing.get('intake', '')
+                logger.info('create_user: کاربر %s از قبل موجود است — ثبت‌نام تکراری نادیده گرفته شد', uid)
+                return result
+        except Exception:
+            # شکست این بررسیِ خواندنی نباید ثبت‌نام را بشکند؛ یکتایی
+            # نهایی را ایندکس user_id تضمین می‌کند (شاخه‌ی پایین).
+            logger.warning('create_user: pre-check برای uid=%s ناموفق بود', uid, exc_info=True)
+
+        try:
+            await self.users.insert_one(doc)
+        except Exception as exc:            # DuplicateKeyError ⇒ ریس هم‌زمان
+            if 'duplicate key' in str(exc).lower() or exc.__class__.__name__ == 'DuplicateKeyError':
+                result['duplicate'] = True
+                logger.info('create_user: درج هم‌زمان برای uid=%s — یک رکورد کافی است', uid)
+                return result
+            raise
+
+        result['created'] = True
+        # کش ۵ ثانیه‌ای get_user نباید «کاربر ناموجود» را نگه دارد
+        try:
+            self._user_cache.pop(uid, None)
+        except Exception:
+            pass
+        return result
 
 
     async def update_user(self, uid: int, data: dict):
@@ -1111,6 +1248,7 @@ class DBCore:
         actor_id: int = None,
         ai_confidence: float = None,
         ai_model_version: str = None,
+        reason: str = None,
     ) -> dict:
         """ثبت یا ویرایش گروه آموزشی دانشجو با رعایت قوانین قطعی:
         - پیشنهاد هوش مصنوعی (source='ai_suggested') هرگز فیلد تأییدشده را بازنویسی نمی‌کند و فقط در فیلدهای ai_* می‌نشیند.
@@ -1166,6 +1304,11 @@ class DBCore:
             'actor_id': int(actor_id if actor_id is not None else uid),
             'at': now_iso,
         }
+        # 🧾 P1-FIX — دلیل تغییر (اختیاری): قبلاً فراخوان‌ها `reason=` را
+        # می‌فرستادند ولی امضا آن را نداشت ⇒ TypeError در ویرایش گروه
+        # آموزشی از پروفایل ربات، پروفایل API، برنامه کلاسی و پنل وب.
+        if reason:
+            log_entry['reason'] = str(reason)[:300]
         history.append(log_entry)
         upd = {
             'educational_group': norm_group if is_verified else 'unknown',

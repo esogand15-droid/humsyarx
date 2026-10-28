@@ -6,7 +6,10 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import db
-from utils import main_keyboard, admin_keyboard, content_admin_keyboard, get_keyboard_for_user
+from utils import (
+    main_keyboard, admin_keyboard, content_admin_keyboard, get_keyboard_for_user,
+    esc as _esc,   # 🛡 P0-FIX: نامِ کاربر داخل parse_mode='HTML' باید escape شود
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,10 @@ async def register_start_callback(update: Update, context: ContextTypes.DEFAULT_
         return STEP_NAME
 
     elif data == 'register:cancel':
+        # 🐞 P1-FIX — لغو باید وضعیت گفتگو را هم پاک کند؛ قبلاً reg_name /
+        # reg_group / reg_edu_group در user_data می‌ماندند و ثبت‌نام بعدی
+        # با داده‌های نیمه‌کارهٔ قبلی شروع می‌شد.
+        context.user_data.clear()
         await query.edit_message_text(
             "❌ ثبت‌نام لغو شد.\n\nبرای شروع مجدد /start بزنید."
         )
@@ -261,12 +268,88 @@ async def _proceed_to_intake(update, context, group: str):
     return STEP_INTAKE
 
 
+async def _active_intake_codes() -> set:
+    """کد ورودی‌های فعال — تنها منبع مجاز برای مقدارِ `intake`."""
+    try:
+        return {str(i.get('code') or '') for i in await db.get_active_intakes()}
+    except Exception:
+        logger.warning('خواندن ورودی‌های فعال ناموفق بود', exc_info=True)
+        return set()
+
+
+async def _reply_registration(update, context, text: str, query=None, reply_markup=None):
+    """پاسخ به کاربر در هر دو حالت (کلیک دکمه = callback، یا پیام متنی).
+
+    🐞 P0-FIX: `_finish_registration` قبلاً همیشه `update.callback_query` را
+    فرض می‌کرد؛ در فلوی «شماره دانشجویی اجباری» پایانِ ثبت‌نام از یک
+    MessageHandler می‌آید و `callback_query=None` است ⇒ AttributeError
+    درست در آخرین قدم ثبت‌نام. این تابع هر دو مسیر را پوشش می‌دهد.
+    """
+    if query is not None:
+        try:
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=reply_markup)
+            return
+        except Exception:
+            # پیام قابل ویرایش نبود (کهنه/حذف‌شده) ⇒ ارسال تازه
+            logger.info('edit_message_text ناموفق بود؛ پیام تازه ارسال می‌شود', exc_info=True)
+    msg = getattr(update, 'effective_message', None) or getattr(update, 'message', None)
+    if msg is not None:
+        await msg.reply_text(text, parse_mode='HTML', reply_markup=reply_markup)
+    elif query is not None:
+        await query.message.reply_text(text, parse_mode='HTML', reply_markup=reply_markup)
+
+
+async def _already_registered_notice(update, context, uid: int, query=None) -> int:
+    """کاربر از قبل ثبت‌نام کرده — پیام روشن، بدون ساخت رکورد دوم."""
+    context.user_data.clear()
+    user = await db.get_user(uid, use_cache=False) or {}
+    if user.get('approved') or uid == ADMIN_ID:
+        body = ("ℹ️ <b>شما قبلاً ثبت‌نام کرده‌اید.</b>\n\n"
+                f"👤 نام: <b>{_esc(user.get('name', ''))}</b>\n\n"
+                "برای دیدن داشبورد /start بزنید.")
+    else:
+        body = ("⏳ <b>ثبت‌نام شما قبلاً ثبت شده است.</b>\n\n"
+                f"👤 نام: <b>{_esc(user.get('name', ''))}</b>\n\n"
+                "درخواست شما در انتظار تأیید ادمین است؛ نیازی به ثبت‌نام دوباره نیست.")
+    await _reply_registration(update, context, body, query=query)
+    return ConversationHandler.END
+
+
 async def _after_intake_step(update, context, uid, name, group, intake, username, query=None):
     """
     نقطه‌ی مشترک بعد از انتخاب ورودی — تصمیم می‌گیرد آیا مرحله‌ی
     شماره دانشجویی لازم است (require_student_id) یا مستقیم ثبت‌نام تکمیل شود.
     """
+    # 🛡 P0-FIX — اعتبارسنجی `intake`: مقدار از callback_data می‌آید و
+    # قبلاً بدون بررسی داخل سند کاربر نوشته می‌شد. فقط کدهای فعال مجازند
+    # (دکمه‌ی کهنه/دستکاری‌شده نباید داده‌ی نامعتبر ثبت کند).
+    codes = await _active_intake_codes()
+    if intake and codes and intake not in codes:
+        await _reply_registration(
+            update, context,
+            "⚠️ این ورودی دیگر فعال نیست. لطفاً /start بزنید و دوباره ثبت‌نام کنید.",
+            query=query)
+        context.user_data.clear()
+        return ConversationHandler.END
+    if not codes:
+        intake = ''          # مثل مینی‌اپ/API: بدون ورودی فعال این مرحله حذف است
+    elif not intake:
+        # callback_data باید کد ورودی داشته باشد؛ نبودنش یعنی دکمهٔ قدیمی/خراب
+        await _reply_registration(
+            update, context,
+            "⚠️ انتخاب ورودی نامعتبر بود. لطفاً /start بزنید و دوباره ثبت‌نام کنید.",
+            query=query)
+        context.user_data.clear()
+        return ConversationHandler.END
     context.user_data['reg_intake'] = intake
+
+    # 🛡 P0-FIX — ثبت‌نام تکراری: قبل از هر نوشتنی در دیتابیس
+    try:
+        if await db.get_user(uid, use_cache=False):
+            return await _already_registered_notice(update, context, uid, query=query)
+    except Exception:
+        logger.warning('بررسی کاربر موجود ناموفق بود (ادامه می‌دهیم)', exc_info=True)
+
     require_sid = await db.get_setting('require_student_id', False)
 
     if require_sid:
@@ -278,30 +361,28 @@ async def _after_intake_step(update, context, uid, name, group, intake, username
             "<i>این فیلد برای تکمیل ثبت‌نام الزامی است.</i>"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ انصراف", callback_data='register:cancel')]])
-        if query:
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=kb)
-        else:
-            await update.message.reply_text(text, parse_mode='HTML', reply_markup=kb)
+        await _reply_registration(update, context, text, query=query, reply_markup=kb)
         return STEP_STUDENT_ID
 
     # FIX جدید: لایه‌ی دوم دفاعی در برابر بلاک — حتی اگر کاربری بین
     # نمایش دکمه‌ی «شروع ثبت‌نام» و رسیدن به همین نقطه بلاک شده باشد.
     if await db.is_blacklisted(uid):
         context.user_data.clear()
-        msg = "🚫 حساب شما توسط مدیریت مسدود شده و امکان ثبت‌نام ندارید."
-        if query:
-            await query.edit_message_text(msg)
-        else:
-            await update.message.reply_text(msg)
+        await _reply_registration(
+            update, context,
+            "🚫 حساب شما توسط مدیریت مسدود شده و امکان ثبت‌نام ندارید.", query=query)
         return ConversationHandler.END
 
     edu_group = context.user_data.get('reg_edu_group', 'unknown')
-    await db.create_user(
+    # قرارداد واحد: create_user خودش تأیید را از منبع/گروه استنتاج می‌کند
+    res = await db.create_user(
         uid, name, '', group, username, intake=intake,
         educational_group=edu_group,
         group_source='user_confirmed' if edu_group in ('male', 'female') else 'ai_suggested',
         group_verified=(edu_group in ('male', 'female')),
     )
+    if res and res.get('duplicate'):
+        return await _already_registered_notice(update, context, uid, query=query)
     # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
     try:
         _pr = context.user_data.pop('pending_ref', None)
@@ -310,7 +391,7 @@ async def _after_intake_step(update, context, uid, name, group, intake, username
             await _ref_attribute(uid, _pr, 'bot')
     except Exception:
         pass
-    return await _finish_registration(update, context, uid, name, group, intake, username)
+    return await _finish_registration(update, context, uid, name, group, intake, username, query=query)
 
 
 async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -353,12 +434,14 @@ async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
 
     edu_group = context.user_data.get('reg_edu_group', 'unknown')
-    await db.create_user(
+    res = await db.create_user(
         uid, name, sid, group, username, intake=intake,
         educational_group=edu_group,
         group_source='user_confirmed' if edu_group in ('male', 'female') else 'ai_suggested',
         group_verified=(edu_group in ('male', 'female')),
     )
+    if res and res.get('duplicate'):
+        return await _already_registered_notice(update, context, uid)
     # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
     try:
         _pr = context.user_data.pop('pending_ref', None)
@@ -367,7 +450,8 @@ async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_
             await _ref_attribute(uid, _pr, 'bot')
     except Exception:
         pass
-    return await _finish_registration(update, context, uid, name, group, intake, username)
+    # این مسیر از MessageHandler می‌آید ⇒ callback_query وجود ندارد
+    return await _finish_registration(update, context, uid, name, group, intake, username, query=None)
 
 
 # ══════════════════════════════════════════════════
@@ -375,32 +459,62 @@ async def step_student_id_handler(update: Update, context: ContextTypes.DEFAULT_
 # ══════════════════════════════════════════════════
 
 async def register_intake_callback(update, context):
-    """وقتی کاربر ورودی رو انتخاب کرد"""
+    """وقتی کاربر ورودی رو انتخاب کرد
+
+    🛡 P0-FIX:
+      • `query.data.split(':')[2]` روی دادهٔ ناقص (مثلاً «register:intake»)
+        IndexError می‌داد و در پیوی ادمین «خطای ربات» می‌شد.
+      • اگر نام/گروه از user_data رفته باشد (ری‌استارت ربات یا context
+        پاک‌شده) ثبت‌نام نیمه‌کاره نباید ساخته شود.
+    """
     query    = update.callback_query
     await query.answer()
     uid      = update.effective_user.id
     username = update.effective_user.username
-    intake   = query.data.split(':')[2]
-    name     = context.user_data.get('reg_name', '')
-    group    = context.user_data.get('reg_group', '1')
+
+    parts  = str(query.data or '').split(':')
+    intake = parts[2].strip() if len(parts) > 2 else ''
+
+    name  = context.user_data.get('reg_name', '')
+    group = context.user_data.get('reg_group', '1')
+
+    if not name:
+        await _reply_registration(
+            update, context,
+            "⌛️ اطلاعات این ثبت‌نام منقضی شده است. لطفاً /start بزنید و از ابتدا شروع کنید.",
+            query=query)
+        context.user_data.clear()
+        return ConversationHandler.END
 
     return await _after_intake_step(update, context, uid, name, group, intake, username, query=query)
 
 
-async def _finish_registration(update, context, uid, name, group, intake, username):
-    """پایان ثبت‌نام — اطلاع به ادمین + پیام کاربر"""
-    query = update.callback_query
+async def _finish_registration(update, context, uid, name, group, intake, username, query=None):
+    """پایان ثبت‌نام — اطلاع به ادمین + پیام کاربر
+
+    🐞 P0-FIX: `query` از پارامتر می‌آید (نه از `update.callback_query`).
+    پایانِ ثبت‌نام در فلوی «شماره دانشجویی اجباری» از MessageHandler
+    می‌آید و callback_query وجود ندارد ⇒ قبلاً AttributeError می‌داد.
+    همچنین ورودیِ کاربر با `_esc` امن می‌شود (تزریق markup به پیام ادمین
+    و خطای «can't parse entities»).
+    """
+    if query is None:
+        query = getattr(update, 'callback_query', None)
     intake_label = intake or 'نامشخص'
+    safe_name = _esc(name)
+    safe_user = _esc(username) if username else ''
 
     if uid == ADMIN_ID:
         await db.update_user(uid, {'approved': True})
-        await query.edit_message_text(
+        await _reply_registration(
+            update, context,
             f"🎉 <b>ثبت‌نام کامل شد!</b>\n\n"
-            f"👤 نام: <b>{name}</b>  |  👥 گروه: <b>{group}</b>\n"
-            f"📅 ورودی: <b>{intake_label}</b>\n"
+            f"👤 نام: <b>{safe_name}</b>  |  👥 گروه: <b>{_esc(group)}</b>\n"
+            f"📅 ورودی: <b>{_esc(intake_label)}</b>\n"
             f"🔑 نقش: <b>ادمین</b>  |  ✅ دسترسی فعال",
-            parse_mode='HTML'
+            query=query
         )
+
         await context.bot.send_message(uid, "به پنل ادمین خوش آمدید! 👨‍⚕️",
             reply_markup=admin_keyboard())
         await _send_dashboard_by_id(context, uid)
@@ -411,10 +525,10 @@ async def _finish_registration(update, context, uid, name, group, intake, userna
             await context.bot.send_message(
                 ADMIN_ID,
                 f"🔔 <b>درخواست ثبت‌نام جدید</b>\n\n"
-                f"👤 نام: <b>{name}</b>\n"
-                f"👥 گروه: <b>{group}</b>\n"
-                f"📅 ورودی: <b>{intake_label}</b>\n"
-                f"📱 یوزرنیم: @{username or 'ندارد'}\n"
+                f"👤 نام: <b>{safe_name}</b>\n"
+                f"👥 گروه: <b>{_esc(group)}</b>\n"
+                f"📅 ورودی: <b>{_esc(intake_label)}</b>\n"
+                f"📱 یوزرنیم: @{safe_user or 'ندارد'}\n"
                 f"🆔 آیدی: <code>{uid}</code>",
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup([[
@@ -436,17 +550,21 @@ async def _finish_registration(update, context, uid, name, group, intake, userna
             tags=['ثبت_نام']
         )
 
-        await query.edit_message_text(
+        await _reply_registration(
+            update, context,
             f"🎉 <b>ثبت‌نام با موفقیت انجام شد!</b>\n\n"
-            f"👤 نام: <b>{name}</b>\n"
-            f"👥 گروه: <b>{group}</b>  |  📅 ورودی: <b>{intake_label}</b>\n\n"
+            f"👤 نام: <b>{safe_name}</b>\n"
+            f"👥 گروه: <b>{_esc(group)}</b>  |  📅 ورودی: <b>{_esc(intake_label)}</b>\n\n"
             "━━━━━━━━━━━━━━━━\n"
             "⏳ <b>در انتظار تأیید ادمین...</b>\n\n"
             "پس از تأیید، پیام دریافت خواهید کرد. 🙏",
-            parse_mode='HTML'
+            query=query
         )
 
-    for k in ('reg_name', 'reg_step', 'reg_group', 'pending_ref'):
+    # پاک‌سازی کامل وضعیت گفتگو؛ reg_edu_group/reg_intake قبلاً جا می‌ماندند
+    # و ثبت‌نام بعدی با گروه آموزشیِ قبلی شروع می‌شد.
+    for k in ('reg_name', 'reg_step', 'reg_group', 'reg_intake',
+              'reg_edu_group', 'pending_ref'):
         context.user_data.pop(k, None)
     return ConversationHandler.END
 

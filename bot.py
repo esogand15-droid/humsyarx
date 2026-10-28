@@ -2121,10 +2121,14 @@ def build_application() -> Application:
                 )
             ],
             STEP_INTAKE: [
-                CallbackQueryHandler(register_intake_callback, pattern=r'^register:intake:')
+                CallbackQueryHandler(register_intake_callback, pattern=r'^register:intake:'),
+                # 🐞 P1-FIX — دکمهٔ «❌ انصراف» در این مرحله هم نشان داده
+                # می‌شد ولی هیچ handlerی نداشت ⇒ تپ روی آن بی‌پاسخ می‌ماند.
+                CallbackQueryHandler(register_start_callback, pattern=r'^register:cancel'),
             ],
             STEP_STUDENT_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, step_student_id_handler),
+                CallbackQueryHandler(register_start_callback, pattern=r'^register:cancel'),
             ],
             # 🧠 FIX معماری «دو مغز» (پرریسک‌ترین ایراد معماری پروژه):
             # state های ANSWERING، CREATING_Q، CA_WAITING_FILE/TEXT،

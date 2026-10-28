@@ -189,7 +189,7 @@ async def register_via_miniapp(
     # آن را به 409 تمیز تبدیل می‌کنیم (نه ۵۰۰).
     edu_grp = db.normalize_user_educational_group(body.educational_group)
     try:
-        await db.create_user(
+        created = await db.create_user(
             uid, name, student_id, group, username, intake=intake,
             educational_group=edu_grp,
             group_source="user_confirmed" if edu_grp in ("male", "female") else "ai_suggested",
@@ -199,6 +199,12 @@ async def register_via_miniapp(
         if "duplicate key" in str(e).lower():
             raise HTTPException(409, "already_registered")
         raise
+
+    # 🛡 P0-FIX — create_user اکنون idempotent است: اگر رکورد از قبل باشد
+    # (ریس دو درخواست هم‌زمان یا کلیک دوباره) به‌جای ۵۰۰، همان ۴۰۹ تمیز
+    # برمی‌گردد و هیچ رکورد دومی ساخته نمی‌شود.
+    if created and created.get("duplicate") and not created.get("created"):
+        raise HTTPException(409, "already_registered")
 
     # 🌱 W13 — attribution دعوت (exception-safe؛ ثبت‌نام را نمی‌شکند)
     try:

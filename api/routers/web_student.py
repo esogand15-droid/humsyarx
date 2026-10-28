@@ -559,6 +559,12 @@ async def auth_config():
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DIST = os.path.join(_ROOT, "apps", "student", "dist")
 PREFIX = os.getenv("WEB_STUDENT_PREFIX", "/student").rstrip("/") or "/student"
+#: 🎨 نسخهٔ آبی (مینی‌اپ تلگرام) نسخهٔ اصلیِ رابط است؛ SPA کرمِ
+#: `apps/student` به‌صورت پیش‌فرض سرو نمی‌شود. `WEB_STUDENT_SPA=1` آن را
+#: (فقط برای بازبینی محلی/انتقال قابلیت‌ها) برمی‌گرداند.
+_SPA_ENABLED = str(os.getenv("WEB_STUDENT_SPA", "0")).strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
 _ASSET_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 
 
@@ -591,8 +597,32 @@ def mount(app) -> bool:
 
     برخلاف `raise`، نبودِ بیلد کل سرویس را نمی‌خواباند: داشبورد ادمین
     و مینی‌اپ و ربات باید در هر حال کار کنند.
+
+    🎨 P1-FIX (یکپارچه‌سازی Web UI):
+    در مخزن چند رابط وب وجود داشت؛ نسخهٔ «کرم» (`apps/student`) و
+    نسخهٔ «آبی» (مینی‌اپ تلگرام روی `/app`). تصمیم محصول: نسخهٔ آبی
+    نسخهٔ اصلی است و نسخهٔ کرم نباید در مسیر فعال سرو شود. این پرچم
+    پیش‌فرض خاموش است؛ API احراز هویت (`/api/web/*`) دست‌نخورده می‌ماند،
+    چون `web_reader`/`web_library`/`web_exam` به همان سشن وابسته‌اند.
+    برای بازگرداندن موقت: `WEB_STUDENT_SPA=1`.
     """
     from fastapi.responses import JSONResponse
+
+    if not _SPA_ENABLED:
+        @app.get(PREFIX, include_in_schema=False)
+        @app.get(PREFIX + "/", include_in_schema=False)
+        async def _student_spa_retired():
+            return JSONResponse(
+                status_code=410,
+                content={
+                    "detail": "web_student_spa_retired",
+                    "hint": "نسخهٔ وب دانشجو بازنشسته شد؛ از مینی‌اپ تلگرام "
+                            "(/app) یا ربات استفاده کنید.",
+                },
+            )
+
+        logger.info("web_student_spa_retired prefix=%s (blue mini-app is canonical)", PREFIX)
+        return False
 
     built = os.path.isdir(DIST) and os.path.isfile(os.path.join(DIST, "index.html"))
     if built:

@@ -70,7 +70,7 @@ def strip_extension(filename: str) -> str:
 
 
 def sanitize_filename(name: str, allow_empty: bool = False) -> str:
-    """
+    r"""
     §13 — Sanitize user input for filename base (without extension).
 
     - Normalize Unicode (NFC) for Persian

@@ -7,6 +7,7 @@
 """
 import os
 import asyncio
+import html   # 🐞 P1-FIX: در خطِ «تولید اطلاعیه با AI ناموفق بود» از html.escape استفاده می‌شد ولی import نشده بود ⇒ NameError جای پیام خطا
 BROADCAST_SEM = asyncio.Semaphore(1)  # 🌊 W3 — یک broadcast در لحظه، جلوگیری از گرسنگی jobهای دیگر
 import logging
 from datetime import datetime, timedelta
