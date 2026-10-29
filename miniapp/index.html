@@ -10,7 +10,7 @@
   <!-- 📲 PWA — نصب روی موبایل و دسکتاپ (موج ۳) -->
   <!-- قبل از این، مینی‌اپ service worker داشت ولی manifest نداشت؛
        بدون manifest مرورگر گزینهٔ «افزودن به صفحهٔ اصلی» نمی‌دهد. -->
-  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -20,7 +20,10 @@
   <meta name="format-detection" content="telephone=no" />
 
   <title>هامزیار</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- تلگرام: defer ⇒ اجرا پیش از باندل (ترتیب سند حفظ می‌شود) ولی بدون
+       بلوکه‌کردن رندر. در نسخهٔ PWA هم بی‌ضرر است؛ اگر آفلاین شکست بخورد
+       فقط window.Telegram تعریف نمی‌شود و اپ حالت وب را انتخاب می‌کند. -->
+  <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <div id="root"></div>

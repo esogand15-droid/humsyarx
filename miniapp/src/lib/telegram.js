@@ -56,7 +56,11 @@ export const hapticNotif = (type = 'success') => {
   );
 };
 
-export const isTelegram = Boolean(tg);
+/* ⚠️ صرفِ وجود شیء `window.Telegram.WebApp` دلیل «داخل تلگرام بودن» نیست:
+   اسکریپت تلگرام را می‌توان بیرون از کلاینت هم لود کرد (مثلاً در مرورگر
+   دسکتاپ) و آن‌وقت `initData` خالی است و هر درخواست ۴۰۱ می‌شود.
+   معیار درست: initData امضاشده وجود داشته باشد. */
+export const isTelegram = Boolean(tg && tg.initData);
 
 /* 🌊 W2 — بازکردن لینک خارجی (درگاه پرداخت) در مرورگر بیرون تلگرام؛
    در کلاینت قدیمی یا وب، fallback به window.open */

@@ -1,5 +1,31 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/* ─────────────────────────────────────────────────────────────
+   📲 بیلد PWA — بازنویسی «پوستهٔ نصب» روی خروجی
+
+   `public/` بین دو بیلد مشترک است (فونت و آیکون)، پس manifest و
+   سرویس‌ورکرِ مخصوص PWA باید از جای دیگری روی خروجی کپی شوند؛
+   وگرنه مسیرها می‌شوند /pwa/pwa/... (تجربه‌شده و اصلاح شد).
+   ───────────────────────────────────────────────────────────── */
+function pwaShell() {
+  return {
+    name: 'humsyar-pwa-shell',
+    apply: 'build',
+    closeBundle() {
+      const from = path.resolve(process.cwd(), 'public-pwa');
+      const to = path.resolve(process.cwd(), 'dist-pwa');
+      if (!fs.existsSync(from) || !fs.existsSync(to)) return;
+      fs.cpSync(from, to, { recursive: true, force: true });
+      // آیکون‌های PWA زیر /pwa/icons/ باشند (manifest نسبی می‌خواندشان)
+      const iconsFrom = path.join(from, 'icons');
+      const iconsTo = path.join(to, 'icons');
+      if (fs.existsSync(iconsFrom)) fs.cpSync(iconsFrom, iconsTo, { recursive: true, force: true });
+    },
+  };
+}
 
 /* ─────────────────────────────────────────────────────────────
    🚂 مهاجرت Railway — مینی‌اپ به‌عنوان زیرمسیر /app/ سرو می‌شود
@@ -24,7 +50,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base,
-    plugins: [react()],
+    plugins: [react(), ...(env.VITE_APP_MODE === 'pwa' ? [pwaShell()] : [])],
     server: {
       host: true,
       port: 5173,
@@ -38,7 +64,8 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
-      outDir: 'dist',
+      // 📲 بیلد PWA جدا و بی‌خطر در پوشهٔ خودش؛ بیلد تلگرام دست‌نخورده می‌ماند
+      outDir: (env.VITE_OUT_DIR || 'dist'),
       emptyOutDir: true,
       sourcemap: false,
     },

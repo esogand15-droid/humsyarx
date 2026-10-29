@@ -1,0 +1,108 @@
+{
+  "id": "/pwa/",
+  "name": "هامزیار — دستیار آموزشی پزشکی",
+  "short_name": "هامزیار",
+  "description": "بانک سؤال، منابع درسی، برنامه کلاسی و دستیار هوشمند دانشجویان پزشکی — نسخهٔ نصب‌شدنی برای iOS، اندروید و ویندوز",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
+  "orientation": "any",
+  "background_color": "#070B14",
+  "theme_color": "#070B14",
+  "categories": [
+    "education",
+    "medical",
+    "productivity"
+  ],
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "handle_links": "preferred",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "./screenshots/mobile-home.png",
+      "sizes": "780x1688",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "داشبورد هامزیار"
+    },
+    {
+      "src": "./screenshots/mobile-schedule.png",
+      "sizes": "780x2168",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "برنامهٔ هفتگی"
+    },
+    {
+      "src": "./screenshots/desktop-home.png",
+      "sizes": "1280x800",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "نسخهٔ ویندوز و دسکتاپ"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "بانک سؤال",
+      "short_name": "سؤال",
+      "url": "./learn/questions",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "برنامه کلاسی",
+      "short_name": "برنامه",
+      "url": "./schedule",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "هوشیار (AI)",
+      "short_name": "هوشیار",
+      "url": "./ai",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}

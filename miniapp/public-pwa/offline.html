@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#070B14" />
+  <meta name="robots" content="noindex" />
+  <title>هامزیار — آفلاین</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: radial-gradient(120% 90% at 50% 0%, #0E1A30 0%, #070B14 55%, #05080F 100%);
+      color: #F2F6FC;
+      font-family: Vazirmatn, Tahoma, system-ui, sans-serif;
+      text-align: center;
+    }
+    .card {
+      width: 100%;
+      max-width: 360px;
+      padding: 26px 22px;
+      border-radius: 20px;
+      border: 1px solid rgba(120, 155, 210, .16);
+      background: linear-gradient(180deg, rgba(61, 134, 255, .08), rgba(12, 21, 38, .92));
+    }
+    .dot {
+      width: 56px; height: 56px; margin: 0 auto 14px;
+      display: grid; place-items: center;
+      border-radius: 18px;
+      background: rgba(61, 134, 255, .14);
+      border: 1px solid rgba(61, 134, 255, .3);
+    }
+    h1 { margin: 0 0 8px; font-size: 17px; font-weight: 800; }
+    p { margin: 0; font-size: 12px; line-height: 2; color: #9AABC2; }
+    button {
+      margin-top: 18px;
+      width: 100%;
+      min-height: 44px;
+      border: 0;
+      border-radius: 13px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 800;
+      color: #fff;
+      cursor: pointer;
+      background: linear-gradient(135deg, #1F6BFF, #3D86FF 55%, #2ADAD7);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="dot" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#7FB2FF"
+           stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 20.6a8.6 8.6 0 1 0 0-17.2 8.6 8.6 0 0 0 0 17.2z"/>
+        <path d="M12 8v5M12 16h.01"/>
+      </svg>
+    </div>
+    <h1>اتصال اینترنت قطع است</h1>
+    <p>
+      هامزیار نصب شده و باز می‌شود، اما برای دیدن داده‌های تازه
+      (برنامه، نمرات، بانک سؤال) به اینترنت نیاز دارد.
+    </p>
+    <button type="button" onclick="location.reload()">تلاش دوباره</button>
+  </div>
+</body>
+</html>

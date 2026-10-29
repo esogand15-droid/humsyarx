@@ -47,6 +47,7 @@ from api.routers import (
     web_library,
     web_reader,
     me_bridge,
+    web_login,
     web_student,
 )
 from database import db
@@ -518,6 +519,13 @@ app.include_router(
     tags=["me"],
 )
 
+# 📲 ورود وب/PWA — کد یک‌بارمصرف از طریق ربات + نشست کوکی (hu_session)
+app.include_router(
+    web_login.router,
+    prefix="/api/web-auth",
+    tags=["web-auth"],
+)
+
 # 🖋 موج P4 — قلم و حاشیه‌نویسی (استروک نرمال‌شده، یک سند برای هر صفحه)
 app.include_router(
     web_ink.router,
@@ -553,6 +561,7 @@ async def health():
         "version": "2.0.0",
         "uptime_s": round(time.monotonic() - _APP_STARTED_MONO, 1),
         "miniapp": _MINIAPP_DIST_STATE["built"],
+        "pwa": _PWA_DIST_STATE["built"],
     }
 
 
@@ -629,7 +638,7 @@ async def health_deep():
 # حالا تست واقعاً وجود دارد و روی هر push اجرا می‌شود.
 # هر تغییر عمدیِ سطح API باید این عدد و EXPECTED_OPENAPI_OPERATIONS در
 # tests/test_route_inventory.py را هم‌زمان به‌روز کند.
-_ROUTE_BASELINE = 723
+_ROUTE_BASELINE = 727
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:
@@ -726,6 +735,10 @@ async def _api_not_found(missing_path: str, request: Request):
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WA_DIST = os.path.join(_ROOT, "webadmin", "dist")
 _MA_DIST = os.path.join(_ROOT, "miniapp", "dist")
+#: 📲 نسخهٔ نصب‌شدنی وب (PWA) — همان کد مینی‌اپ با base=/pwa/ و
+#: manifest/سرویس‌ورکر مستقل. جدا ساخته می‌شود تا کوکی/دامنه/آیکون
+#: نسخهٔ نصب‌شدنی هیچ ربطی به نسخهٔ داخل تلگرام نداشته باشد.
+_PWA_DIST = os.path.join(_ROOT, "miniapp", "dist-pwa")
 
 #: درخواست‌هایی که پسوند فایل دارند، SPA fallback نمی‌گیرند.
 #: چرا؟ اگر deploy نیمه‌کاره بماند، درخواست /app/assets/index-<hash>.js
@@ -782,6 +795,9 @@ _WEBADMIN_DIST_STATE: dict = {"built": False, "path": "webadmin/dist"}
 _WA_MOUNTED = _mount_spa("/admin", _WA_DIST, "web-admin-spa", _WEBADMIN_DIST_STATE)
 # بعد /app
 _MA_MOUNTED = _mount_spa("/app", _MA_DIST, "mini-app-spa", _MINIAPP_DIST_STATE)
+# 📲 و /pwa — نسخهٔ نصب‌شدنی (iOS/Android/Windows)
+_PWA_DIST_STATE: dict = {"built": False, "path": "miniapp/dist-pwa"}
+_PWA_MOUNTED = _mount_spa("/pwa", _PWA_DIST, "pwa-spa", _PWA_DIST_STATE)
 
 
 if not _WA_MOUNTED:
@@ -798,6 +814,21 @@ if not _WA_MOUNTED:
             },
         )
 
+
+
+if not _PWA_DIST_STATE["built"]:
+    @app.get("/pwa", include_in_schema=False)
+    @app.get("/pwa/", include_in_schema=False)
+    async def _pwa_not_built():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "pwa_build_not_present",
+                "hint": "miniapp/dist-pwa/index.html not found — build it "
+                        "(cd miniapp && npm run build:pwa)",
+                "expected": os.path.relpath(_PWA_DIST, _ROOT),
+            },
+        )
 
 
 if not _MINIAPP_DIST_STATE["built"]:

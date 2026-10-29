@@ -1,8 +1,21 @@
 import { create } from 'zustand';
 import api from '../lib/api';
 import { getTgUser, isTelegram } from '../lib/telegram';
+import { IS_PWA } from '../lib/appMode';
 
-export const useAuthStore = create((set) => ({
+/* 📲 در نسخهٔ نصب‌شدنی وب، «نبودِ تلگرام» خطا نیست: کاربر با کد
+   یک‌بارمصرف (که ربات در تلگرام می‌فرستد) وارد می‌شود و نشست کوکی
+   برقرار می‌ماند. تنها حالتی که واقعاً خطاست، «نشست نداریم». */
+async function webSessionActive() {
+  try {
+    const { data } = await api.get('/api/web-auth/session');
+    return Boolean(data?.authenticated);
+  } catch (_) {
+    return false;
+  }
+}
+
+export const useAuthStore = create((set, get) => ({
   user: null,
   tgUser: null,
   loading: true,
@@ -17,15 +30,21 @@ export const useAuthStore = create((set) => ({
       error: null,
     });
 
-    // خارج از محیط تلگرام، initData معتبر وجود ندارد
-    // و API نمی‌تواند کاربر را احراز هویت کند.
-    if (!isTelegram) {
-      set({
-        loading: false,
-        error: 'telegram_required',
-      });
-
-      return;
+    // خارج از محیط تلگرام، initData معتبر وجود ندارد.
+    // در PWA: اگر نشست وب داریم ادامه می‌دهیم، وگرنه صفحهٔ ورود.
+    // 📲 در نسخهٔ نصب‌شدنی، تلگرام اصلاً مرجع نیست — حتی اگر شیء
+    // global آن لود شده باشد؛ همیشه مسیر «نشست وب» تصمیم می‌گیرد.
+    if (IS_PWA || !isTelegram) {
+      if (IS_PWA) {
+        const active = await webSessionActive();
+        if (!active) {
+          set({ loading: false, error: 'web_login_required' });
+          return;
+        }
+      } else {
+        set({ loading: false, error: 'telegram_required' });
+        return;
+      }
     }
 
     try {
@@ -67,6 +86,35 @@ export const useAuthStore = create((set) => ({
     } catch (_) {
       return null;
     }
+  },
+
+  /* 📲 پس از ورود موفق با کد، اپ را دوباره بالا بیاور */
+  loggedIn: async () => {
+    set({ loading: true, error: null });
+    try {
+      const response = await api.get('/api/profile');
+      set({
+        user: response.data?.user || null,
+        loading: false,
+        error: null,
+      });
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      set({
+        loading: false,
+        error: typeof detail === 'string' ? detail : 'error',
+      });
+    }
+  },
+
+  /* 📲 خروج از نسخهٔ وب (نشست کوکی سمت سرور هم باطل می‌شود) */
+  logoutWeb: async () => {
+    try {
+      await api.post('/api/web-auth/logout');
+    } catch (_) {
+      /* حتی اگر شبکه نبود، سمت کلاینت خارج می‌شویم */
+    }
+    set({ user: null, loading: false, error: 'web_login_required' });
   },
 
   /* تغییر وضعیت احراز هویت وسط نشست

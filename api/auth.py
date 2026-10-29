@@ -127,6 +127,9 @@ def verify_telegram_init_data(init_data: str) -> dict:
 #  نبود و کوکی wa_session معتبر بود، همان dict کاربر ساخته می‌شود.
 # ──────────────────────────────────────────────────────────
 WA_SESSION_COOKIE = "wa_session"
+#: 📲 کوکی نشست وب/PWA (کاربر عادی) — نامش با کوکی ادمین یکی نیست
+#: تا هرگز نشست ادمین و کاربر قاطی نشود.
+WEB_SESSION_COOKIE = "hu_session"
 WA_SESSION_TTL_H = 12
 
 
@@ -171,12 +174,53 @@ async def resolve_web_session(token: str) -> dict | None:
     return doc
 
 
+async def resolve_web_user_session(token: str) -> dict | None:
+    """📲 توکن کوکی کاربر وب → سند نشست معتبر (انقضا/revoke چک‌شده).
+
+    کالکشن عمداً جداست (`web_user_sessions`) تا سشن ادمین و سشن
+    کاربر هرگز با هم اشتباه نشوند.
+    """
+    if not token:
+        return None
+    try:
+        doc = await db.client["medicalbot"]["web_user_sessions"].find_one({
+            "_id": _hash_token(token),
+            "revoked": False,
+        })
+    except Exception:
+        return None
+    if not doc or expiry_is_past(doc.get("expires_at")):
+        return None
+    return doc
+
+
 async def get_current_user(
     request: Request,
     x_init_data: str = Header(default="", alias="X-Init-Data"),
 ) -> dict:
     if not x_init_data:
         # 🖥️ WA — fallback سشن وب‌ادمین (فقط وقتی هدر غایب است)
+        # 📲 PWA — fallback سشن وب کاربر (ورود با کد تلگرام) — قبل از
+        # سشن ادمین بررسی می‌شود چون کوکی مستقل و کم‌دسترس‌تری است.
+        _web_user = await resolve_web_user_session(
+            request.cookies.get(WEB_SESSION_COOKIE, ""))
+        if _web_user:
+            uid = int(_web_user.get("uid") or 0)
+            try:
+                request.state.user_id = uid
+            except Exception:
+                pass
+            db_user = await db.get_user(uid)
+            if not db_user:
+                raise HTTPException(status_code=403, detail="not_registered")
+            if not db_user.get("approved"):
+                raise HTTPException(status_code=403, detail="pending_approval")
+            if db_user.get("suspended"):
+                raise HTTPException(status_code=403, detail="suspended")
+            if db_user.get("blacklisted"):
+                raise HTTPException(status_code=403, detail="suspended")
+            return {"id": uid, "first_name": db_user.get("name", ""),
+                    "_db": db_user, "_web_session": _web_user}
         sess = await resolve_web_session(request.cookies.get(WA_SESSION_COOKIE, ""))
         if sess:
             uid = int(sess["uid"])

@@ -35,6 +35,10 @@ import {
 
 import AuthError from './components/shared/AuthError';
 
+/* 📲 نسخهٔ وب/PWA — صفحهٔ ورود با کد تلگرام (فقط در همین حالت) */
+import WebLogin from './components/pwa/WebLogin';
+import { IS_PWA } from './lib/appMode';
+
 import Register from './components/shared/Register';
 
 import Onboarding from './components/shared/Onboarding';
@@ -879,8 +883,9 @@ export default function App() {
         'pending_approval',
       'auth:suspended':
         'suspended',
+      // 📲 در PWA، «۴۰۱» یعنی نشست وب منقضی شده ⇒ همان صفحهٔ ورود
       'auth:invalid':
-        'invalid_init_data',
+        IS_PWA ? 'web_login_required' : 'invalid_init_data',
     };
 
     const listeners = Object.entries(
@@ -927,6 +932,18 @@ export default function App() {
   ) {
     return (
       <Register />
+    );
+  }
+
+
+  /* 📲 نسخهٔ وب: بدون نشست، صفحهٔ ورود با کد تلگرام */
+  if (IS_PWA && (error === 'web_login_required' || error === 'invalid_init_data')) {
+    return (
+      <WebLogin
+        onDone={() => {
+          useAuthStore.getState().loggedIn();
+        }}
+      />
     );
   }
 

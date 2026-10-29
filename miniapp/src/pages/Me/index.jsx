@@ -17,6 +17,9 @@ import {
 import { haptic } from '../../lib/telegram';
 import { useAuthStore } from '../../stores/authStore';
 import { Glyph } from '../../components/ui/Icon';
+import InstallCard from '../../components/pwa/InstallCard';
+import { IS_PWA } from '../../lib/appMode';
+import Icon from '../../components/ui/Icon';
 
 export default function Me() {
   const navigate =
@@ -213,6 +216,21 @@ export default function Me() {
               gap: 13,
             }}
           >
+            {/* 📲 فقط در نسخهٔ نصب‌شدنی: کارت نصب + خروج از نشست وب */}
+            {IS_PWA && (
+              <>
+                <InstallCard />
+                <button
+                  type="button"
+                  className="btn btn-d btn-full"
+                  onClick={() => useAuthStore.getState().logoutWeb()}
+                >
+                  <Icon name="logout" size={15} />
+                  خروج از حساب (نسخهٔ وب)
+                </button>
+              </>
+            )}
+
             <section
               className={
                 'card card-glow card-tap ' +
