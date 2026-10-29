@@ -6,6 +6,7 @@ import App from './App';
 import { ROUTER_BASENAME, APP_BASE } from './lib/base';
 import './styles/tokens.css';
 import './styles/globals.css';
+import './styles/v3-home.css';
 
 // 🌊 W4 — PWA offline cache (best-effort) — only in production
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator && import.meta.env.PROD) {

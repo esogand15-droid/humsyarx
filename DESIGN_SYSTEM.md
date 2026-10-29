@@ -140,12 +140,14 @@ This document defines the unified design system for the entire HamsYar ecosystem
 
 ## Environment Adapters
 
-### Student Web App
-- **File:** `apps/student/src/design/tokens.css`
-- **Default:** Light mode (warm paper aesthetic)
-- **Dark mode:** `html[data-theme="dark"]`
+### Student Web App (blue, unified — `/app`)
+- **File:** `miniapp/src/styles/tokens.css`
+- **Default:** Dark navy (`#060B16`) — همان هویت مینی‌اپ
+- **Light mode:** `html[data-theme="light"]`
 - **Density:** Comfortable
-- **Max width:** 720px (centered "page" layout on desktop)
+- **Max width:** 720px on wide screens (`--content-w`, centered)
+- **Note:** نسخهٔ «کروم» (`apps/student`) در موج v3 حذف شد؛ این تنها
+  رابط دانشجو است — چه داخل تلگرام، چه در مرورگر (PWA).
 
 ### Telegram Mini App
 - **File:** `miniapp/src/styles/tokens.css`
@@ -276,7 +278,7 @@ Replace incrementally:
 
 | Environment | Token File | Base Styles | Component Styles |
 |-------------|-----------|-------------|------------------|
-| Student App | `apps/student/src/design/tokens.css` | `base.css` | `ui.css` |
+| Student App (blue mini-app) | `miniapp/src/styles/tokens.css` | `globals.css` | `v3-home.css` |
 | Mini App | `miniapp/src/styles/tokens.css` | `globals.css` | Component JSX |
 | Admin Panel | `webadmin/src/tokens.css` | `styles.css` | `ui.jsx` |
 

@@ -45,8 +45,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from api.rate_limit import rate_limit
@@ -554,93 +553,50 @@ async def auth_config():
 
 
 # ─────────────────────────────────────────────────────────────
-#  🖥️ سرو SPA دانشجو روی /student
+#  🖥️ /student — بازنشستهٔ دائم (410)
+#
+#  تاریخچه: مخزن قبلاً سه رابط وب داشت —
+#    ۱) نسخهٔ «کرم» (apps/student) روی /student
+#    ۲) نسخهٔ «آبی» مینی‌اپ تلگرام روی /app
+#    ۳) پنل مدیریت روی /admin
+#
+#  تصمیم محصول (موج v3): نسخهٔ آبی تنها رابط دانشجو است و کرم
+#  **کاملاً کنار گذاشته شد** — هم سرو نمی‌شود و هم سورس/بیلدش از
+#  مخزن پاک شد (بدون از دست رفتن هیچ endpoint؛ `/api/web/*` که
+#  احراز هویت آن از همین فایل می‌آید دست‌نخورده است).
+#
+#  چرا 410 و نه 404؟  410 یعنی «رفته و برنمی‌گردد» — خزنده و مرورگر
+#  کش نمی‌کنند و کاربر پیام راهنما می‌گیرد؛ 404 یعنی «شاید بعداً بود».
+#
+#  بازگرداندن: هرگاه لازم شد، کلاینت جدید باید در همان ساختار
+#  آبی (miniapp) ساخته شود — نه با احیای مسیر کرم.
 # ─────────────────────────────────────────────────────────────
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DIST = os.path.join(_ROOT, "apps", "student", "dist")
-PREFIX = os.getenv("WEB_STUDENT_PREFIX", "/student").rstrip("/") or "/student"
-#: 🎨 نسخهٔ آبی (مینی‌اپ تلگرام) نسخهٔ اصلیِ رابط است؛ SPA کرمِ
-#: `apps/student` به‌صورت پیش‌فرض سرو نمی‌شود. `WEB_STUDENT_SPA=1` آن را
-#: (فقط برای بازبینی محلی/انتقال قابلیت‌ها) برمی‌گرداند.
-_SPA_ENABLED = str(os.getenv("WEB_STUDENT_SPA", "0")).strip().lower() not in (
-    "0", "false", "no", "off", "",
-)
-_ASSET_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
-
-
-class _Spa(StaticFiles):
-    """`StaticFiles` با fallback به `index.html` برای مسیرهای بدون پسوند.
-
-    مسیر دارای پسوندِ ناموجود باید 404 بماند: پاسخ HTML به درخواست
-    JS، خطای «Unexpected token '<'» می‌دهد و تشخیص را غیرممکن می‌کند.
-    """
-
-    async def get_response(self, path: str, scope):  # noqa: D102
-        from starlette.exceptions import HTTPException as StarletteHTTPException
-        from starlette.responses import Response as _Resp
-
-        try:
-            return await super().get_response(path, scope)
-        except StarletteHTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            if _ASSET_RE.search(path.split("?")[0]):
-                raise
-            try:
-                return await super().get_response("index.html", scope)
-            except StarletteHTTPException:
-                return _Resp(status_code=404, content=b"")
+_PREFIX = os.getenv("WEB_STUDENT_PREFIX", "/student").rstrip("/") or "/student"
 
 
 def mount(app) -> bool:
-    """کلاینت دانشجو را mount می‌کند؛ اگر بیلد نبود، 503 روشن می‌دهد.
+    """همیشه 410 می‌دهد؛ هیچ بیلدی سرو نمی‌شود.
 
-    برخلاف `raise`، نبودِ بیلد کل سرویس را نمی‌خواباند: داشبورد ادمین
-    و مینی‌اپ و ربات باید در هر حال کار کنند.
+    برخلاف `raise`، این کار کل سرویس را نمی‌خواباند: داشبورد ادمین،
+    مینی‌اپ و ربات در هر حال کار می‌کنند.
 
-    🎨 P1-FIX (یکپارچه‌سازی Web UI):
-    در مخزن چند رابط وب وجود داشت؛ نسخهٔ «کرم» (`apps/student`) و
-    نسخهٔ «آبی» (مینی‌اپ تلگرام روی `/app`). تصمیم محصول: نسخهٔ آبی
-    نسخهٔ اصلی است و نسخهٔ کرم نباید در مسیر فعال سرو شود. این پرچم
-    پیش‌فرض خاموش است؛ API احراز هویت (`/api/web/*`) دست‌نخورده می‌ماند،
-    چون `web_reader`/`web_library`/`web_exam` به همان سشن وابسته‌اند.
-    برای بازگرداندن موقت: `WEB_STUDENT_SPA=1`.
+    Returns:
+        False — یعنی هیچ SPA‌ای mount نشد (قرارداد قبلی حفظ شده).
     """
     from fastapi.responses import JSONResponse
 
-    if not _SPA_ENABLED:
-        @app.get(PREFIX, include_in_schema=False)
-        @app.get(PREFIX + "/", include_in_schema=False)
-        async def _student_spa_retired():
-            return JSONResponse(
-                status_code=410,
-                content={
-                    "detail": "web_student_spa_retired",
-                    "hint": "نسخهٔ وب دانشجو بازنشسته شد؛ از مینی‌اپ تلگرام "
-                            "(/app) یا ربات استفاده کنید.",
-                },
-            )
-
-        logger.info("web_student_spa_retired prefix=%s (blue mini-app is canonical)", PREFIX)
-        return False
-
-    built = os.path.isdir(DIST) and os.path.isfile(os.path.join(DIST, "index.html"))
-    if built:
-        app.mount(PREFIX, _Spa(directory=DIST, html=True), name="web-student-spa")
-        logger.info("web_student_spa_mounted prefix=%s", PREFIX)
-        return True
-
-    @app.get(PREFIX, include_in_schema=False)
-    @app.get(PREFIX + "/", include_in_schema=False)
-    async def _student_not_built():
+    @app.get(_PREFIX, include_in_schema=False)
+    @app.get(_PREFIX + "/", include_in_schema=False)
+    @app.get(_PREFIX + "/{rest:path}", include_in_schema=False)
+    async def _student_spa_retired(rest: str = ""):  # noqa: ARG001
         return JSONResponse(
-            status_code=503,
+            status_code=410,
             content={
-                "detail": "web_student_build_not_present",
-                "hint": "build it: cd apps/student && npm install && npm run build",
-                "expected": os.path.relpath(DIST, _ROOT),
+                "detail": "web_student_spa_retired",
+                "hint": "نسخهٔ وب دانشجو (کروم) بازنشسته شد؛ از مینی‌اپ "
+                        "تلگرام (/app) یا ربات استفاده کنید.",
             },
         )
 
-    logger.warning("web_student_spa_missing dist=%s", os.path.relpath(DIST, _ROOT))
+    logger.info("web_student_spa_retired prefix=%s (blue mini-app canonical)", _PREFIX)
     return False

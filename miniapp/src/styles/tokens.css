@@ -328,3 +328,77 @@
   --fs-xl:   18px;
   --fs-2xl:  24px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   🎨 موج v3 — هم‌ترازی پالت با پروتوتایپ آبی (Design Sync)
+
+   چرا این بلوک در انتهای فایل است؟ چون توکن‌های بالا از موج‌های قبلی
+   دست‌نخورده می‌مانند (قابل بازگشت: حذف همین بلوک = بازگشت به پالت قبل)
+   و در عین حال همه‌ی ۳۴ صفحه‌ی مینی‌اپ هم‌زمان رنگ/شعاع/فاصله‌ی تازه
+   می‌گیرند — نه با ویرایش ۵۰۰۰ خط CSS، بلکه با ۲۴ مقدار.
+
+   منبعِ مقادیر: `humsyar-prototype.html` (متغیرهای --brand-600،
+   --surface-1..3، --line، --text، --r-md/lg/xl، --cyan-400، …).
+   ═══════════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── سطوح: سرمه‌ایِ عمیق‌تر و سه‌پله‌ی واضح‌تر ── */
+  --hym-bg-page:            #060B16;
+  --hym-bg-surface:         #0C1526;
+  --hym-bg-surface-raised:  #111C30;
+  --hym-bg-surface-inset:   #04070F;
+  --hym-bg-hover:           rgba(120, 155, 210, .10);
+  --hym-bg-active:          rgba(120, 155, 210, .14);
+  --hym-bg-selected:        rgba(61, 134, 255, .16);
+
+  /* ── متن: کنتراست بالاتر روی پس‌زمینهٔ تیره ── */
+  --hym-text-primary:       #F2F6FC;
+  --hym-text-secondary:     #9AABC2;
+  --hym-text-muted:         #8293AE;
+  --hym-text-disabled:      #4A5A72;
+  --hym-text-link:          #6FA8FF;
+
+  /* ── خط‌ها: آبی‌خاکستری، نه خاکستری خنثی ── */
+  --hym-border-default:     rgba(120, 155, 210, .13);
+  --hym-border-subtle:      rgba(120, 155, 210, .08);
+  --hym-border-strong:      rgba(120, 155, 210, .22);
+
+  /* ── برند: آبیِ اشباع پروتوتایپ (۳D86FF / ۱F6BFF) ── */
+  --hym-brand-default:      #3D86FF;
+  --hym-brand-hover:        #1F6BFF;
+  --hym-brand-active:       #1350E0;
+  --hym-brand-subtle:       rgba(61, 134, 255, .14);
+  --hym-brand-muted:        rgba(61, 134, 255, .28);
+
+  /* ── اکسنت: فیروزه‌ای پروتوتایپ (۲ADAD7) ── */
+  --hym-accent-default:     #2ADAD7;
+  --hym-accent-hover:       #17B9AE;
+  --hym-accent-active:      #0B8F92;
+  --hym-accent-subtle:      rgba(42, 218, 215, .13);
+  --hym-accent-muted:       rgba(42, 218, 215, .26);
+
+  /* ── بازخورد ── */
+  --hym-success-default:    #2FD09A;
+  --hym-success-subtle:     rgba(47, 208, 154, .13);
+  --hym-warning-default:    #F2B24B;
+  --hym-warning-subtle:     rgba(242, 178, 75, .13);
+  --hym-danger-default:     #FF6B7A;
+  --hym-danger-subtle:      rgba(255, 107, 122, .13);
+
+  /* ── شعاع گوشه‌ها: نرم‌تر از قبل (۱۲/۱۶/۲۰) ── */
+  --hym-radius-sm:          8px;
+  --hym-radius-md:          12px;
+  --hym-radius-lg:          16px;
+  --hym-radius-xl:          20px;
+
+  /* ── رِفرنس‌های تازهٔ v3 (در کامپوننت‌های v3-* استفاده می‌شوند) ── */
+  --fs-h1:   23px;
+  --fs-h2:   19px;
+  --r-pill:  999px;
+  --ease-out: var(--hym-ease-out);
+}
+
+/* آلیاس‌های قدیمی که مقدار ثابت داشتند (نه ارجاع به توکن) */
+:root {
+  --elev: #16233A;
+  --ovr:  #1B2A44;
+}

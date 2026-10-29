@@ -15,6 +15,8 @@ import {
 
 import api from '../../lib/api';
 
+import Icon from '../ui/Icon';
+
 import {
   haptic,
 } from '../../lib/telegram';
@@ -24,30 +26,35 @@ const TABS = [
   {
     path: '/',
     icon: '🩺',
+    iconKey: 'home',
     label: 'داشبورد',
   },
 
   {
     path: '/learn',
     icon: '📖',
+    iconKey: 'book',
     label: 'یادگیری',
   },
 
   {
     path: '/schedule',
     icon: '📅',
+    iconKey: 'calendar',
     label: 'برنامه',
   },
 
   {
     path: '/grades',
     icon: '📊',
+    iconKey: 'chart',
     label: 'نمرات',
   },
 
   {
     path: '/me',
     icon: '🙋',
+    iconKey: 'user',
     label: 'من',
   },
 ];
@@ -57,6 +64,7 @@ const MORE = [
   {
     path: '/ai',
     icon: '🤖',
+    iconKey: 'sparkle',
     label: 'هوشیار',
     desc: 'دستیار آموزشی هوشمند',
   },
@@ -64,6 +72,7 @@ const MORE = [
   {
     path: '/search',
     icon: '🔍',
+    iconKey: 'search',
     label: 'جست‌وجوی سراسری',
     desc: 'سؤال، منبع و کتاب در یک‌جا',
   },
@@ -71,6 +80,7 @@ const MORE = [
   {
     path: '/me/profile',
     icon: '👤',
+    iconKey: 'user',
     label: 'پروفایل',
     desc: 'اطلاعات و آمار حساب',
   },
@@ -78,6 +88,7 @@ const MORE = [
   {
     path: '/me/notifications',
     icon: '🔔',
+    iconKey: 'bell',
     label: 'اعلان‌ها',
     desc: 'تنظیم یادآوری‌ها',
   },
@@ -85,6 +96,7 @@ const MORE = [
   {
     path: '/me/subscription',
     icon: '💳',
+    iconKey: 'wallet',
     label: 'اشتراک',
     desc: 'مدیریت پلن و خرید',
   },
@@ -92,6 +104,7 @@ const MORE = [
   {
     path: '/me/tickets',
     icon: '🎫',
+    iconKey: 'ticket',
     label: 'پشتیبانی',
     desc: 'تیکت و گفت‌وگو',
   },
@@ -99,6 +112,7 @@ const MORE = [
   {
     path: '/me/faq',
     icon: '❓',
+    iconKey: 'quiz',
     label: 'سؤالات متداول',
     desc: 'پاسخ‌های سریع',
   },
@@ -106,6 +120,7 @@ const MORE = [
   {
     path: '/me/reports',
     icon: '🚩',
+    iconKey: 'shield',
     label: 'گزارش ایراد',
     desc: 'اعلام خطای محتوا',
   },
@@ -241,7 +256,7 @@ function MoreSheet({
               }
             >
               <span className="more-sheet__item-icon">
-                {item.icon}
+                {item.iconKey ? <Icon name={item.iconKey} size={19} /> : item.icon}
               </span>
 
               <span className="more-sheet__item-text">
@@ -565,7 +580,11 @@ export default function BottomNav() {
                       'relative',
                   }}
                 >
-                  {tab.icon}
+                  {tab.iconKey ? (
+                    <Icon name={tab.iconKey} size={21} />
+                  ) : (
+                    tab.icon
+                  )}
 
                   {tab.path === '/me' &&
                     unread > 0 && (
@@ -607,7 +626,7 @@ export default function BottomNav() {
           aria-expanded={showMore}
         >
           <span className="bottom-nav__icon">
-            ☰
+            <Icon name="menu" size={21} />
           </span>
 
           <span className="bottom-nav__label">

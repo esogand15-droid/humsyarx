@@ -17,6 +17,8 @@ import {
   navigateBack,
 } from '../../lib/navBack';
 
+import Icon from '../ui/Icon';
+
 import {
   useTelegramBack,
 } from '../../lib/backButton';
@@ -103,7 +105,9 @@ export default function Header({
             }
             aria-label="بازگشت به صفحه‌ی قبل"
           >
-            →
+            {/* v3 — فلش خطی هم‌خانوادهٔ بقیهٔ آیکون‌ها
+                (در RTL «→» یعنی بازگشت) */}
+            <Icon name="arrowRight" size={20} />
           </button>
         )}
 
@@ -140,8 +144,12 @@ export default function Header({
                     ? 'icon-btn__spin'
                     : undefined
                 }
+                style={{
+                  display: 'grid',
+                  placeItems: 'center',
+                }}
               >
-                ↻
+                <Icon name="refresh" size={17} />
               </span>
             </button>
           )}

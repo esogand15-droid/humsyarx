@@ -1,0 +1,233 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   HumsYar v3 — Home blocks (prototype-aligned)
+   ═══════════════════════════════════════════════════════════════════════
+   فقط کلاس‌های پیشوند v3- اینجا هستند تا globals.css دست‌نخورده بماند
+   (کمترین ریسک برای ۵۰۰۰ خط استایل موجود). رنگ‌ها همه از توکن‌ها
+   می‌آیند تا تغییر پالت در tokens.css کل اپ را هم‌زمان به‌روز کند.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── ۱) سلام + هویت تحصیلی (بدون کارت، مثل پروتوتایپ) ── */
+.v3-greet {
+  padding: 4px 2px 2px;
+  margin-bottom: 2px;
+}
+
+.v3-greet__title {
+  margin: 0;
+  font-size: var(--fs-h1, 23px);
+  font-weight: 800;
+  letter-spacing: -0.2px;
+  color: var(--tx);
+  line-height: 1.35;
+}
+
+.v3-greet__meta {
+  margin: 5px 0 0;
+  color: var(--txm);
+  font-size: var(--fs-meta, 11.5px);
+  line-height: 1.8;
+}
+
+.v3-greet__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.v3-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--r-pill, 999px);
+  border: 1px solid var(--bd);
+  background: var(--surf);
+  color: var(--tx2);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.v3-chip--brand {
+  color: var(--t-acc, #6FA8FF);
+  border-color: rgba(61, 134, 255, 0.28);
+  background: rgba(61, 134, 255, 0.12);
+}
+
+.v3-chip--gold {
+  color: var(--warn);
+  border-color: rgba(242, 178, 75, 0.28);
+  background: rgba(242, 178, 75, 0.12);
+}
+
+/* ── ۲) آزمون بعدی + شمارش روز ── */
+.v3-exam {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: var(--r-lg, 16px);
+  border: 1px solid var(--bd);
+  background: var(--surf);
+  color: var(--tx);
+  text-align: right;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s var(--ease-out, ease), background 0.15s ease;
+}
+
+.v3-exam:active {
+  transform: scale(0.985);
+}
+
+.v3-exam__count {
+  display: grid;
+  place-items: center;
+  gap: 0;
+  min-width: 58px;
+  padding: 7px 6px;
+  border-radius: var(--r-md, 12px);
+  background: var(--soft-acc);
+  color: var(--t-acc);
+  line-height: 1.15;
+}
+
+.v3-exam__num {
+  font-size: 20px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.v3-exam__unit {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.v3-exam--danger .v3-exam__count {
+  background: var(--soft-err-2, rgba(255, 107, 122, 0.12));
+  color: var(--err);
+}
+
+.v3-exam--warn .v3-exam__count {
+  background: var(--soft-warn-2, rgba(242, 178, 75, 0.13));
+  color: var(--warn);
+}
+
+.v3-exam--ok .v3-exam__count {
+  background: rgba(47, 208, 154, 0.13);
+  color: var(--ok);
+}
+
+.v3-exam--danger {
+  border-color: rgba(255, 107, 122, 0.26);
+}
+
+.v3-exam__body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.v3-exam__label {
+  color: var(--txm);
+  font-size: 10.5px;
+}
+
+.v3-exam__title {
+  font-size: var(--fs-md, 13.5px);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-exam__date {
+  color: var(--txm);
+  font-size: 10.5px;
+}
+
+.v3-exam__icon {
+  color: var(--txm);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+/* ── ۳) شبکهٔ ۲×۲ کارهای سریع ── */
+.v3-quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.v3-quick__tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 11px;
+  border-radius: var(--r-lg, 16px);
+  border: 1px solid var(--bd);
+  background: var(--surf);
+  color: var(--tx);
+  text-align: right;
+  cursor: pointer;
+  min-height: 62px;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.15s var(--ease-out, ease);
+}
+
+.v3-quick__tile:active {
+  transform: scale(0.975);
+}
+
+.v3-quick__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 11px;
+  background: rgba(61, 134, 255, 0.12);
+  color: var(--t-acc, #6FA8FF);
+}
+
+.v3-quick__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.v3-quick__title {
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.v3-quick__desc {
+  color: var(--txm);
+  font-size: 10.5px;
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* در نمایشگرهای خیلی باریک (۳۲۰px) عنوان‌ها می‌شکنند */
+@media (max-width: 340px) {
+  .v3-quick__tile {
+    gap: 8px;
+    padding: 10px 9px;
+  }
+
+  .v3-quick__icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .v3-quick__desc {
+    display: none;
+  }
+}

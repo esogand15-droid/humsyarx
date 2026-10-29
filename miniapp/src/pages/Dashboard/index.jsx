@@ -10,6 +10,13 @@ import {
 import { useNavigate, Link } from 'react-router-dom';
 import api from '../../lib/api';
 import Header from '../../components/layout/Header';
+
+import {
+  HomeGreeting,
+  NextExamCard,
+  QuickGrid,
+} from '../../components/home/HomeV3';
+import Icon from '../../components/ui/Icon';
 import PrestigeHero from '../../components/shared/PrestigeHero';
 import {
   Spinner,
@@ -429,6 +436,7 @@ function Metric({
           display: 'grid',
           placeItems: 'center',
           background: soft,
+          color,           /* v3 — آیکون خطی رنگ تُن خودش را می‌گیرد */
           fontSize: 'var(--fs-xl)',
         }}
       >
@@ -725,11 +733,19 @@ export default function Dashboard() {
       <Header
         title="داشبورد"
         back={false}
-        subtitle={`ورودی ${
-          user.intake || '—'
-        } • گروه ${
-          user.group || '—'
-        }`}
+        /* 🎨 v3 — زیرنویس هدر فقط وقتی معنا دارد ساخته می‌شود؛
+           الگوی قبلی «ورودی — • گروه —» با خط‌تیره‌های خالی
+           ناقص به‌نظر می‌رسید. */
+        subtitle={[
+          user.intake
+            ? `ورودی ${user.intake}`
+            : '',
+          user.group
+            ? `گروه ${user.group}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' • ')}
         onRefresh={refetch}
         refreshing={isRefetching}
       />
@@ -752,107 +768,27 @@ export default function Dashboard() {
               gap: 12,
             }}
           >
-            <section
-              className={
-                'card card-glow hero-card'
+            {/* 🎨 v3 — سربرگ خانه هم‌تراز با پروتوتایپ آبی:
+                سلام + هویت تحصیلی (بدون کارت سنگین)،
+                سپس فوری‌ترین چیز: آزمون بعدی،
+                بعد شبکهٔ ۲×۲ کارهای سریع. */}
+            <HomeGreeting
+              user={user}
+              role={role}
+              stats={stats}
+            />
+
+            <NextExamCard
+              exam={exams[0]}
+              onOpen={() =>
+                navigate('/schedule')
               }
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems:
-                    'center',
-                  gap: 13,
-                }}
-              >
-                <div
-                  className="avatar"
-                  style={{
-                    width: 52,
-                    height: 52,
-                    fontSize: 21,
-                  }}
-                >
-                  {(
-                    user
-                      .display_name ||
-                    user.name
-                  )?.[0] || 'ه'}
-                </div>
+            />
 
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      color:
-                        'var(--txm)',
-                      fontSize: 'var(--fs-cap)',
-                    }}
-                  >
-                    {dayGreeting()}
-                  </div>
+            <QuickGrid
+              onNavigate={navigate}
+            />
 
-                  <div
-                    style={{
-                      fontSize: 'var(--fs-xl)',
-                      fontWeight: 900,
-                      marginTop: 2,
-                      overflow:
-                        'hidden',
-                      textOverflow:
-                        'ellipsis',
-                      whiteSpace:
-                        'nowrap',
-                    }}
-                  >
-                    {user
-                      .display_name ||
-                      user.name ||
-                      'کاربر هامزیار'}
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexWrap:
-                        'wrap',
-                      gap: 5,
-                      marginTop: 'var(--sp-2)',
-                    }}
-                  >
-                    {role && (
-                      <span className="badge b-yel">
-                        {role}
-                      </span>
-                    )}
-
-                    {stats.level && (
-                      <span className="badge b-acc">
-                        {stats
-                          .level
-                          .icon ||
-                          '📈'}{' '}
-
-                        {stats
-                          .level
-                          .label ||
-                          'سطح کاربر'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <Ring
-                  value={
-                    stats.percentage
-                  }
-                />
-              </div>
-            </section>
 
             {/* 👑 موج P0 — بریف فشرده‌ی
                 Prestige (جری/هدف/استریک) */}
@@ -944,7 +880,7 @@ export default function Dashboard() {
 
             <section className="grid2">
               <Metric
-                icon="🧪"
+                icon={<Icon name="quiz" size={18} />}
                 value={
                   number(
                     stats
@@ -959,7 +895,7 @@ export default function Dashboard() {
               />
 
               <Metric
-                icon="✅"
+                icon={<Icon name="check" size={18} />}
                 value={
                   number(
                     stats
@@ -974,7 +910,7 @@ export default function Dashboard() {
               />
 
               <Metric
-                icon="📥"
+                icon={<Icon name="download" size={18} />}
                 value={
                   number(
                     stats.downloads
@@ -988,7 +924,7 @@ export default function Dashboard() {
               />
 
               <Metric
-                icon="🔥"
+                icon={<Icon name="flame" size={18} />}
                 value={
                   number(
                     stats
@@ -1008,24 +944,14 @@ export default function Dashboard() {
               role="tablist"
             >
               {[
-                [
-                  'stats',
-                  '📈 عملکرد',
-                ],
-
-                [
-                  'exams',
-                  '⏳ امتحانات',
-                ],
-
-                [
-                  'rank',
-                  '🏅 رتبه‌بندی',
-                ],
+                ['stats', 'عملکرد', 'chart'],
+                ['exams', 'امتحانات', 'clock'],
+                ['rank', 'رتبه‌بندی', 'target'],
               ].map(
                 ([
                   key,
                   label,
+                  iconKey,
                 ]) => (
                   <button
                     type="button"
@@ -1044,6 +970,17 @@ export default function Dashboard() {
                       setTab(key);
                     }}
                   >
+                    <Icon
+                      name={iconKey}
+                      size={14}
+                      style={{
+                        display:
+                          'inline-block',
+                        verticalAlign:
+                          '-2px',
+                        marginInlineEnd: 4,
+                      }}
+                    />
                     {label}
                   </button>
                 )
@@ -1123,7 +1060,23 @@ export default function Dashboard() {
                     );
                   }}
                 >
-                  ⚡ شروع تمرین هوشمند
+                  <span
+                    style={{
+                      display:
+                        'inline-flex',
+                      alignItems:
+                        'center',
+                      gap: 6,
+                      justifyContent:
+                        'center',
+                    }}
+                  >
+                    <Icon
+                      name="sparkle"
+                      size={16}
+                    />
+                    شروع تمرین هوشمند
+                  </span>
                 </button>
               </>
             )}
