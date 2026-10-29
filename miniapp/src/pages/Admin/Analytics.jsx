@@ -23,6 +23,7 @@ import {
 import {
   haptic,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ═══════════ نگاشت‌های نمایشی ═══════════ */
@@ -476,7 +477,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  🌱 کاربران جدید
+                  <Glyph value="🌱" /> کاربران جدید
                 </span>
 
                 <span>
@@ -505,7 +506,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  ⚡ فعالیت روزانه کاربران
+                  <Glyph value="⚡" /> فعالیت روزانه کاربران
                 </span>
 
                 <span>
@@ -529,7 +530,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  🎫 تیکت‌های جدید
+                  <Glyph value="🎫" /> تیکت‌های جدید
                 </span>
 
                 <span>
@@ -558,7 +559,7 @@ export default function Analytics() {
                 }}
               >
                 <div className="sec-title">
-                  🏆 پرکاربردترین قابلیت‌ها
+                  <Glyph value="🏆" /> پرکاربردترین قابلیت‌ها
                 </div>
 
                 {topActions.map(
@@ -610,7 +611,7 @@ export default function Analytics() {
                 }}
               >
                 <div className="sec-title">
-                  🕐 ساعت‌های اوج فعالیت
+                  <Glyph value="🕐" /> ساعت‌های اوج فعالیت
                 </div>
 
                 {hourly.map((item) => (

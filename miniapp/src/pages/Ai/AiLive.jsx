@@ -21,7 +21,7 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
-
+import { Glyph } from '../../components/ui/Icon';
 
 /* ─────────────────────────────────────────────────────────────
    🎙📹 م9.5 — موتور صوتی سطح استودیویی تماس زنده با هوشیار (Google Gemini Live API)
@@ -391,7 +391,6 @@ class HumsyarLiveAudioProcessor extends AudioWorkletProcessor {
 registerProcessor('humsyar-live-audio-processor', HumsyarLiveAudioProcessor);
 `.replace('this._ pushPcm24k', 'this._pushPcm24k');
 
-
 let _workletBlobUrl = null;
 function getLiveWorkletBlobUrl() {
   if (!_workletBlobUrl) {
@@ -400,7 +399,6 @@ function getLiveWorkletBlobUrl() {
   }
   return _workletBlobUrl;
 }
-
 
 function downsampleTo16kPcm16Buffer(float32Buf, inputRate) {
   const ratio = (!inputRate || inputRate === 16000) ? 1 : (inputRate / 16000);
@@ -422,7 +420,6 @@ function downsampleTo16kPcm16Buffer(float32Buf, inputRate) {
   return pcm16.buffer;
 }
 
-
 function pcm16Base64ToArrayBuffer(b64) {
   const binary = atob(b64);
   const len = binary.length - (binary.length % 2);
@@ -434,7 +431,6 @@ function pcm16Base64ToArrayBuffer(b64) {
   return bytes.buffer;
 }
 
-
 function pcm16ArrayBufferToFloat32(ab) {
   if (!ab || ab.byteLength < 2) return new Float32Array(0);
   const samples = new Int16Array(ab, 0, Math.floor(ab.byteLength / 2));
@@ -444,7 +440,6 @@ function pcm16ArrayBufferToFloat32(ab) {
   }
   return float32;
 }
-
 
 // م9.4 — ترکیب چند چانک Float32 در یک آرایه پیوسته برای Jitter Buffer بدون شکاف (Fallback)
 function concatFloat32Arrays(arrays) {
@@ -462,7 +457,6 @@ function concatFloat32Arrays(arrays) {
   }
   return merged;
 }
-
 
 // م9.5 — درون‌یابی مکعبی ۴ نقطه‌ای 24kHz → 48kHz + نرم‌سازی کسینوسی برای مسیر Fallback
 function prepareSmoothAudioSamples(samples24k, ctxSampleRate, prevSampleRef, applyStartFadeIn) {
@@ -513,7 +507,6 @@ function prepareSmoothAudioSamples(samples24k, ctxSampleRate, prevSampleRef, app
   return { data: out, rate: 24000 };
 }
 
-
 // م9.4 — گرم‌کردن سخت‌افزار صوتی مرورگر/وب‌ویو با یک بافر بی‌صدا پیش از شروع صحبت هوشیار
 function warmUpAudioContext(ctx) {
   if (!ctx || ctx.state === 'closed') return;
@@ -529,14 +522,12 @@ function warmUpAudioContext(ctx) {
   } catch (_) {}
 }
 
-
 function formatClock(sec) {
   const s = Math.max(0, Math.floor(Number(sec) || 0));
   const mm = String(Math.floor(s / 60)).padStart(2, '0');
   const ss = String(s % 60).padStart(2, '0');
   return `${mm}:${ss}`;
 }
-
 
 export default function AiLive() {
   const {
@@ -1291,6 +1282,7 @@ export default function AiLive() {
   }
 
   const isCallActive = status === 'connecting' || status === 'listening' || status === 'thinking' || status === 'speaking';
+
   const isTranslateModel = (activeModel || liveCfg?.model || '').includes('translate');
 
   const statusMeta = {
@@ -1349,7 +1341,7 @@ export default function AiLive() {
                 onClick={() => startCameraStream(facingMode === 'environment' ? 'user' : 'environment')}
                 style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(15,23,42,0.8)', borderRadius: 999 }}
               >
-                🔄 تعویض دوربین
+                <Glyph value="🔄" /> تعویض دوربین
               </button>
             </div>
           )}
@@ -1374,7 +1366,7 @@ export default function AiLive() {
               boxShadow: isCallActive ? `0 0 36px ${statusMeta.color}55` : 'none',
             }}
           >
-            {statusMeta.icon}
+            <Glyph value={statusMeta.icon} />
           </div>
 
           <div style={{ fontWeight: 700, fontSize: 15, color: '#F8FAFC' }}>
@@ -1396,7 +1388,7 @@ export default function AiLive() {
                   fontSize: 12,
                 }}
               >
-                ✋ قطع صحبت هوشیار و شروع صحبت من
+                <Glyph value="✋" /> قطع صحبت هوشیار و شروع صحبت من
               </button>
             </div>
           )}
@@ -1427,7 +1419,7 @@ export default function AiLive() {
           {!isCallActive && (
             <div style={{ display: 'grid', gap: 10, marginTop: 16, textAlign: 'right' }}>
               <label style={{ fontSize: 12, color: 'var(--txm)' }}>
-                🗣 صدای هوشیار در مکالمه زنده:
+                <Glyph value="🗣" /> صدای هوشیار در مکالمه زنده:
                 <select
                   className="inp"
                   style={{ marginTop: 4 }}
@@ -1442,7 +1434,7 @@ export default function AiLive() {
 
               {isTranslateModel && (
                 <label style={{ fontSize: 12, color: 'var(--txm)' }}>
-                  🌐 زبان مقصد ترجمه‌ی صوت‌به‌صوت:
+                  <Glyph value="🌐" /> زبان مقصد ترجمه‌ی صوت‌به‌صوت:
                   <select
                     className="inp"
                     style={{ marginTop: 4 }}
@@ -1469,7 +1461,7 @@ export default function AiLive() {
                   onClick={() => startCall(false)}
                   style={{ minWidth: 185, padding: '12px 18px', fontSize: 14, borderRadius: 999 }}
                 >
-                  🎙 تماس صوتی زنده
+                  <Glyph value="🎙" /> تماس صوتی زنده
                 </button>
                 {!isTranslateModel && (
                   <button
@@ -1486,7 +1478,7 @@ export default function AiLive() {
                       border: '1px solid rgba(59,130,246,0.5)',
                     }}
                   >
-                    📹 تماس ویدیویی + صوتی
+                    <Glyph value="📹" /> تماس ویدیویی + صوتی
                   </button>
                 )}
               </>
@@ -1540,7 +1532,7 @@ export default function AiLive() {
                   onClick={endCall}
                   style={{ borderRadius: 999, padding: '10px 20px' }}
                 >
-                  📴 پایان تماس
+                  <Glyph value="📴" /> پایان تماس
                 </button>
               </>
             )}
@@ -1551,7 +1543,7 @@ export default function AiLive() {
         {(userLiveText || aiLiveText || historyTurns.length > 0) && (
           <section className="card" style={{ padding: 14, display: 'grid', gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--txm)' }}>
-              📝 زیرنویس زنده مکالمه
+              <Glyph value="📝" /> زیرنویس زنده مکالمه
             </div>
             <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 8 }}>
               {historyTurns.map((t, idx) => (
@@ -1570,13 +1562,13 @@ export default function AiLive() {
               ))}
               {userLiveText && (
                 <div style={{ padding: '8px 11px', borderRadius: 12, fontSize: 13, background: 'rgba(59,130,246,0.22)' }}>
-                  <b>👤 شما (در حال صحبت…): </b>
+                  <b><Glyph value="👤" /> شما (در حال صحبت…): </b>
                   <span>{userLiveText}</span>
                 </div>
               )}
               {aiLiveText && (
                 <div style={{ padding: '8px 11px', borderRadius: 12, fontSize: 13, background: 'rgba(16,185,129,0.22)' }}>
-                  <b>🤖 هوشیار (زنده…): </b>
+                  <b><Glyph value="🤖" /> هوشیار (زنده…): </b>
                   <span>{aiLiveText}</span>
                 </div>
               )}

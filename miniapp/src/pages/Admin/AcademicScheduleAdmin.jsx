@@ -22,6 +22,7 @@ import {
   hapticNotif,
 } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 const TYPES = [
   ['class', '🏫 کلاس'],
@@ -695,7 +696,7 @@ export default function AcademicScheduleAdmin() {
                     startEdit(item)
                   }
                 >
-                  ✏️ ویرایش
+                  <Glyph value="✏️" /> ویرایش
                 </button>
 
                 {item.flex_type ===
@@ -719,7 +720,7 @@ export default function AcademicScheduleAdmin() {
                       });
                     }}
                   >
-                    🔄 تغییر زمان
+                    <Glyph value="🔄" /> تغییر زمان
                   </button>
                 )}
 
@@ -738,7 +739,7 @@ export default function AcademicScheduleAdmin() {
                     }
                   }}
                 >
-                  🗑 حذف
+                  <Glyph value="🗑" /> حذف
                 </button>
               </div>
             </div>

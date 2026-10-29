@@ -35,6 +35,7 @@ import {
 import {
   useContentScope,
 } from '../../hooks/useContentScope';
+import { Glyph } from '../../components/ui/Icon';
 
 
 const LETTERS = [
@@ -197,7 +198,7 @@ function QuestionDetails({
                           'auto',
                       }}
                     >
-                      ✓ صحیح
+                      <Glyph value="✓" /> صحیح
                     </span>
                   )}
                 </div>
@@ -313,7 +314,7 @@ function QuestionDetails({
             disabled={pending}
             onClick={onReject}
           >
-            ❌ رد سؤال
+            <Glyph value="❌" /> رد سؤال
           </button>
         </div>
       </div>
@@ -857,7 +858,7 @@ export function ContentQuestions() {
                         })
                       }
                     >
-                      ✅ تأیید
+                      <Glyph value="✅" /> تأیید
                     </button>
 
                     <button
@@ -1435,7 +1436,7 @@ export function ContentFaq() {
                               setFormOpen(false);
                             }}
                           >
-                            ✏️ ویرایش
+                            <Glyph value="✏️" /> ویرایش
                           </button>
                           <button
                             className={'btn btn-d'}
@@ -1458,7 +1459,7 @@ export function ContentFaq() {
                               }
                             }}
                           >
-                            🗑 حذف
+                            <Glyph value="🗑" /> حذف
                           </button>
                         </div>
                       </>

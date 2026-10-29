@@ -29,7 +29,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 /* ─────────────────────────────────────────────
    🧠 مرکز اعلان‌ها — بازطراحی موج N3
@@ -40,7 +40,6 @@ import {
    BottomNav مشترک است — بج همیشه یکدست.
 ───────────────────────────────────────────── */
 
-
 export const INBOX_KEY = ['notif-inbox'];
 
 /* ⚙ قرارداد رجیستری App.lazyScreen: این صفحه با
@@ -50,7 +49,6 @@ export const INBOX_KEY = ['notif-inbox'];
    lock: رجیستری ۳۸ مسیر باید با exportها ۳۸/۳۸
    تطبیق داشته باشد) */
 export { NotificationCenter };
-
 
 /* برچسب‌های رایج دسته‌ها — آیکون سروری استفاده
    می‌شود ولی انسانی‌نویسی چیپ‌ها از همین نگاشت
@@ -74,7 +72,6 @@ const CAT_LABELS = {
   system: 'سیستم',
 };
 
-
 const TONE_COLORS = {
   blue:   ['var(--soft-acc-2)',  'var(--t-acc-hi)'],
   green:  ['var(--soft-ok)',  'var(--t-ok)'],
@@ -84,15 +81,12 @@ const TONE_COLORS = {
   acc:    ['var(--soft-info)',  'var(--t-info)'],
 };
 
-
 const PRIO_META = {
   critical: ['⚫ حیاتی', 'var(--t-err)'],
   high:     ['🟠 مهم',  'var(--t-warn)'],
   normal:   [null,       null],
   low:      [null,       null],
 };
-
-
 
 
 
@@ -105,7 +99,6 @@ function getErrorMessage(error, fallback) {
 
   return fallback;
 }
-
 
 /* زمان نسبی فارسی — «همین الان» تا «x روز پیش»؛
    قدیمی‌تر از یک هفته = تاریخ کامل fa-IR */
@@ -151,7 +144,6 @@ function timeAgo(iso) {
   return `${value.toLocaleString('fa-IR')} ${unit} پیش`;
 }
 
-
 /* 🗂 گروه‌بندی تاریخی — امروز / دیروز / این هفته /
    قدیمی‌تر (منطقه‌ی زمانی دستگاه — همان حس زمان) */
 function dateGroup(iso) {
@@ -182,14 +174,12 @@ function dateGroup(iso) {
   return 3;
 }
 
-
 const GROUP_TITLES = [
   'امروز',
   'دیروز',
   'این هفته',
   'قدیمی‌تر',
 ];
-
 
 export default function NotificationCenter() {
   const navigate = useNavigate();
@@ -206,7 +196,6 @@ export default function NotificationCenter() {
   const [cat, setCat]             = useState('all');
   const [openIds, setOpenIds]     =
     useState(() => new Set());
-
 
   const {
     data,
@@ -234,7 +223,6 @@ export default function NotificationCenter() {
   const items  = data?.items  || [];
   const unread = data?.unread || 0;
 
-
   /* به‌روزرسانی خوش‌بینانه‌ی کش — بج و لیست
      هر دو از همین یک منبع خوانده می‌شوند */
   const patchCache = (updater) => {
@@ -251,7 +239,6 @@ export default function NotificationCenter() {
 
     return previous;
   };
-
 
   const readMutation = useMutation({
     mutationFn: (ids) =>
@@ -285,7 +272,6 @@ export default function NotificationCenter() {
         queryKey: INBOX_KEY,
       }),
   });
-
 
   const deleteMutation = useMutation({
     mutationFn: (id) =>
@@ -341,7 +327,6 @@ export default function NotificationCenter() {
       }),
   });
 
-
   /* 📌 سنجاق — رفتهرفت به سرور؛ نمایش فوری در همین
      کش (pin‌ها در سرور هم بالا می‌آیند، اینجا
      صرفاً حفظ معنای سریع است) */
@@ -379,7 +364,6 @@ export default function NotificationCenter() {
       }),
   });
 
-
   /* 🔎 فیلتر محلی روی همان داده‌ی سرور —
      بدون هیچ درخواست اضافی (قانون پرفورمنس) */
   const filtered = useMemo(() => {
@@ -405,7 +389,6 @@ export default function NotificationCenter() {
     });
   }, [items, unreadOnly, cat, query]);
 
-
   /* 🗂 گروه‌بندی — پین‌شده‌ها جداگانه بالای همه */
   const pinned = filtered.filter(
     (item) => item.pinned,
@@ -425,7 +408,6 @@ export default function NotificationCenter() {
     return buckets;
   }, [rest]);
 
-
   const cats = useMemo(() => {
     const seen = new Set(
       items.map((item) => item.category),
@@ -435,7 +417,6 @@ export default function NotificationCenter() {
       (key) => seen.has(key),
     );
   }, [items]);
-
 
   /* ✔ Smart Read — «بازکردن اعلان» (= کلیک) خودش
      خواندن است؛ مشاهده‌ی لیست هیچ‌کدام را خوانده
@@ -466,7 +447,6 @@ export default function NotificationCenter() {
     });
   };
 
-
   const headerAction = unread > 0
     ? (
       <button
@@ -495,7 +475,6 @@ export default function NotificationCenter() {
       </button>
     )
     : null;
-
 
   const renderRow = (item, index) => {
     const [
@@ -539,7 +518,7 @@ export default function NotificationCenter() {
             flexShrink: 0,
           }}
         >
-          {item.icon}
+          <Glyph value={item.icon} />
         </div>
 
         <button
@@ -754,7 +733,6 @@ export default function NotificationCenter() {
       </div>
     );
   };
-
 
   return (
     <>
@@ -982,7 +960,7 @@ export default function NotificationCenter() {
                   fontWeight: 700,
                 }}
               >
-                📌 سنجاق‌شده‌ها
+                <Glyph value="📌" /> سنجاق‌شده‌ها
               </div>
 
               {pinned.map(renderRow)}

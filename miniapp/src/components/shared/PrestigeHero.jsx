@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import api from '../../lib/api';
+import { Glyph } from '../ui/Icon';
 
 /* 👑 PrestigeHero — موج P0 (v3 LOCKED)
    کارت قهرمان هویت رقابتی — تک‌منبع داده:
@@ -15,7 +16,6 @@ import api from '../../lib/api';
    هر مقدار (رنگ/گرادیان/آستانه) از پیلود
    می‌آید — هیچ آستانه‌ای اینجا هاردکد نیست. */
 
-
 /* ارقام فارسی برای متن‌های کوتاه نمایشی */
 const faDigits = (value) =>
   String(value ?? '').replace(
@@ -23,9 +23,7 @@ const faDigits = (value) =>
     (digit) => '۰۱۲۳۴۵۶۷۸۹'[digit]
   );
 
-
 ;
-
 
 /* درصد پر شدن نوار از have/span پیلود —
    محاسبات آستانه فقط سمت بک‌اند است */
@@ -42,7 +40,6 @@ const barPercent = (next) => {
     Math.round((have / span) * 100)
   );
 };
-
 
 /* اسکلت لودینگ — همان آینه‌ی چیدمان کارت
    (الگوی FaqListSkeleton: هیچ فاصله‌ی خالی) */
@@ -108,7 +105,6 @@ function PrestigeSkeleton() {
   );
 }
 
-
 /* خط رقیب — «تنها N XP تا …» */
 function RivalLine({
   rival,
@@ -144,7 +140,6 @@ function RivalLine({
     </div>
   );
 }
-
 
 export default function PrestigeHero({
   compact = false,
@@ -231,7 +226,7 @@ export default function PrestigeHero({
             fontSize: 21,
           }}
         >
-          {data.icon}
+          <Glyph value={data.icon} />
         </span>
 
         <span
@@ -327,7 +322,7 @@ export default function PrestigeHero({
           className="pr-hero__badge"
           aria-hidden="true"
         >
-          {data.icon}
+          <Glyph value={data.icon} />
         </span>
 
         <div
@@ -413,8 +408,8 @@ export default function PrestigeHero({
             borderRadius: 'var(--r-md)',
           }}
         >
-          ⚠️ به‌خاطر رکود، یک دیویژن افت
-          دادی: {data.demoted.icon}{' '}
+          <Glyph value="⚠️" /> به‌خاطر رکود، یک دیویژن افت
+          دادی: <Glyph value={data.demoted.icon} />{' '}
           {data.demoted.rank}{' '}
           {data.demoted.roman} — رنکت
           محفوظ است، با چند سؤال برگرد 💪
@@ -531,7 +526,7 @@ export default function PrestigeHero({
 
         {number(records.best_acc) > 0 && (
           <span className="pr-chip">
-            🎯 بهترین دقت{' '}
+            <Glyph value="🎯" /> بهترین دقت{' '}
             {faDigits(
               `${records.best_acc}٪`
             )}

@@ -32,6 +32,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -655,7 +656,7 @@ export default function AiAdmin() {
                       )}
 
                       <option value="__custom">
-                        ✏️ سفارشی (تایپ دستی)
+                        <Glyph value="✏️" /> سفارشی (تایپ دستی)
                       </option>
                     </select>
 
@@ -703,7 +704,7 @@ export default function AiAdmin() {
 
 
               <div className="fld-label">
-                🎨 تولید تصویر
+                <Glyph value="🎨" /> تولید تصویر
               </div>
 
               <select
@@ -826,7 +827,7 @@ export default function AiAdmin() {
 
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}>🎙 پرامپت ویس‌چت زنده و پاسخ صوتی</span>
+                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}><Glyph value="🎙" /> پرامپت ویس‌چت زنده و پاسخ صوتی</span>
                   {form.default_voice_system_prompt && (
                     <button
                       type="button"
@@ -838,7 +839,7 @@ export default function AiAdmin() {
                         })
                       }
                     >
-                      🔄 پیش‌فرض صمیمی
+                      <Glyph value="🔄" /> پیش‌فرض صمیمی
                     </button>
                   )}
                 </div>

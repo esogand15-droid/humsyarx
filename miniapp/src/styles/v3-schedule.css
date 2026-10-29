@@ -1,0 +1,580 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   HumsYar v3 — Schedule (weekly timetable)
+   هدف: یک نگاه = یک هفته. بدون اسکرول برای دیدن جدول.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── نوار «خلاصه» بالای صفحه ── */
+.v3-sumband {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-radius: 14px;
+  border: 1px solid var(--hym-border-default);
+  background: linear-gradient(135deg, rgba(61, 134, 255, .14), rgba(42, 218, 215, .07));
+}
+
+.v3-sumband__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--hym-brand-subtle);
+  color: var(--hym-text-link);
+  flex: none;
+}
+
+.v3-sumband__main {
+  flex: 1;
+  min-width: 120px;
+  display: grid;
+  gap: 1px;
+}
+
+.v3-sumband__main b {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--tx);
+}
+
+.v3-sumband__main span {
+  font-size: 10.5px;
+  color: var(--txm);
+}
+
+.v3-sumband__stats {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.v3-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hym-border-default);
+  background: rgba(6, 11, 22, .45);
+  font-size: 10px;
+  color: var(--tx2);
+  white-space: nowrap;
+}
+
+.v3-stat b {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--hym-text-link);
+}
+
+.v3-stat--ok b {
+  color: var(--hym-success-default);
+}
+
+.v3-stat--warn b {
+  color: var(--hym-warning-default);
+}
+
+/* ── سوییچ نمای صفحه ── */
+.v3-seg {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 11px;
+  border: 1px solid var(--hym-border-default);
+  background: var(--hym-bg-surface);
+}
+
+.v3-seg__btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--txm);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background .16s ease, color .16s ease;
+}
+
+.v3-seg__btn.is-on {
+  background: var(--hym-brand-subtle);
+  color: var(--hym-text-link);
+}
+
+.v3-seg__btn i {
+  font-style: normal;
+  font-size: 10px;
+  opacity: .8;
+}
+
+/* ── پنل ── */
+.v3-panel {
+  border-radius: var(--r-lg, 16px);
+  border: 1px solid var(--hym-border-default);
+  background: var(--hym-bg-surface);
+  padding: 8px 9px 10px;
+  display: grid;
+  gap: 7px;
+}
+
+.v3-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.v3-panel__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--tx);
+}
+
+.v3-panel__title svg {
+  color: var(--hym-text-link);
+}
+
+.v3-panel__hint {
+  font-size: 10.5px;
+  color: var(--txm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── نمودار بار هفته ── */
+.v3-load {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 4px;
+  align-items: end;
+  padding: 2px 0 12px;
+}
+
+.v3-load__col {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.v3-load__num {
+  font-size: 9px;
+  color: var(--txm);
+  font-variant-numeric: tabular-nums;
+  height: 10px;
+}
+
+.v3-load__track {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  height: 32px;
+  border-radius: 5px;
+  background: rgba(120, 155, 210, .08);
+  overflow: hidden;
+}
+
+.v3-load__bar {
+  width: 100%;
+  border-radius: 6px 6px 0 0;
+  background: linear-gradient(180deg, #4C90FF, #1F6BFF);
+  transition: height .3s var(--hym-ease-out);
+}
+
+.v3-load__day {
+  font-size: 10px;
+  color: var(--tx2);
+  font-weight: 700;
+}
+
+.v3-load__col.is-active .v3-load__bar {
+  background: linear-gradient(180deg, #2ADAD7, #17B9AE);
+}
+
+.v3-load__col.is-active .v3-load__day {
+  color: #6FE6E3;
+}
+
+.v3-load__total {
+  position: absolute;
+  inset-inline-start: 2px;
+  bottom: -2px;
+  font-size: 9.5px;
+  color: var(--tx3);
+}
+
+/* ── جدول هفتگی ── */
+.v3-grid {
+  display: grid;
+  gap: 4px;
+  /* هیچ اسکرول افقی/عمودی روی خودِ جدول لازم نیست */
+  overflow: visible;
+}
+
+.v3-grid__head {
+  display: grid;
+  gap: 4px;
+  align-items: center;
+}
+
+.v3-grid__corner {
+  display: grid;
+  place-items: center;
+  color: var(--tx3);
+}
+
+.v3-grid__day {
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(120, 155, 210, .07);
+}
+
+.v3-grid__day b {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--tx);
+}
+
+.v3-grid__day i {
+  font-style: normal;
+  font-size: 8.5px;
+  color: var(--hym-text-link);
+  font-variant-numeric: tabular-nums;
+}
+
+.v3-grid__day.is-empty {
+  opacity: .45;
+}
+
+.v3-grid__body {
+  display: grid;
+  gap: 4px;
+}
+
+.v3-grid__row {
+  display: grid;
+  gap: 4px;
+  align-items: stretch;
+  min-height: 36px;
+}
+
+.v3-grid__time {
+  display: grid;
+  place-items: center;
+  font-size: 9.5px;
+  color: var(--tx3);
+  font-variant-numeric: tabular-nums;
+  border-inline-end: 1px solid var(--hym-border-subtle);
+}
+
+.v3-grid__cell {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgba(120, 155, 210, .045);
+  min-width: 0;
+}
+
+.v3-grid__cell.is-empty {
+  background: rgba(120, 155, 210, .02);
+}
+
+/* نمای یک‌روزه: خانه‌ها بزرگ‌تر و خواناتر */
+.v3-grid--single .v3-grid__cell {
+  padding: 6px;
+  min-height: 52px;
+}
+
+.v3-grid--single .v3-chip-lesson b {
+  font-size: 12px;
+}
+
+.v3-chip-lesson {
+  position: relative;
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 3px 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+.v3-chip-lesson b {
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v3-chip-lesson__n {
+  font-style: normal;
+  font-size: 8px;
+  opacity: .72;
+  font-variant-numeric: tabular-nums;
+}
+
+.v3-chip-lesson.is-exam {
+  border-style: dashed;
+}
+
+.v3-chip-lesson.is-makeup {
+  border-style: dotted;
+}
+
+/* ── جدول درس‌ها ── */
+.v3-ltable {
+  display: grid;
+  gap: 4px;
+}
+
+.v3-ltable__head {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.6fr) 34px;
+  gap: 6px;
+  padding: 0 8px 3px;
+  font-size: 10px;
+  color: var(--tx3);
+}
+
+.v3-ltable__head span:last-child {
+  text-align: center;
+}
+
+.v3-ltable__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.6fr) 34px;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--hym-border-subtle);
+  border-radius: 10px;
+  background: var(--hym-bg-surface-raised);
+  color: var(--tx);
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.v3-ltable__row:active {
+  background: var(--hym-bg-hover);
+}
+
+.v3-ltable__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.v3-ltable__name > span {
+  display: grid;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-ltable__name i {
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--tx3);
+}
+
+.v3-ltable__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.v3-ltable__slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  min-width: 0;
+}
+
+.v3-ltable__slots i {
+  font-style: normal;
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(120, 155, 210, .09);
+  color: var(--tx2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.v3-ltable__slots i.is-muted {
+  background: transparent;
+  color: var(--tx3);
+}
+
+.v3-ltable__count {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--hym-text-link);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── حالت خالی / یادداشت ── */
+.v3-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 26px 16px;
+  border-radius: var(--r-lg, 16px);
+  border: 1px dashed var(--hym-border-default);
+  color: var(--txm);
+  text-align: center;
+}
+
+.v3-empty svg {
+  color: var(--tx3);
+}
+
+.v3-empty b {
+  font-size: 13px;
+  color: var(--tx);
+}
+
+.v3-empty span {
+  font-size: 11px;
+  line-height: 1.7;
+  max-width: 300px;
+}
+
+.v3-note {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid rgba(242, 178, 75, .28);
+  background: rgba(242, 178, 75, .10);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--tx2);
+}
+
+.v3-note svg {
+  color: var(--hym-warning-default);
+  flex: none;
+  margin-top: 1px;
+}
+
+/* ── شیت جزئیات یک درس ── */
+.v3-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(3, 6, 13, .66);
+  backdrop-filter: blur(6px);
+}
+
+.v3-sheet__panel {
+  width: 100%;
+  max-width: 520px;
+  border-radius: 20px 20px 0 0;
+  border: 1px solid var(--hym-border-default);
+  border-bottom: 0;
+  background: var(--hym-bg-surface);
+  padding: 12px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  gap: 10px;
+  animation: v3-sheet-in .22s var(--hym-ease-out);
+}
+
+@keyframes v3-sheet-in {
+  from { transform: translateY(14px); opacity: .6; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.v3-sheet__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.v3-sheet__title b {
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.v3-sheet__rows {
+  display: grid;
+  gap: 7px;
+}
+
+.v3-sheet__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--hym-bg-surface-raised);
+  font-size: 11.5px;
+  color: var(--tx2);
+}
+
+.v3-sheet__row svg {
+  color: var(--hym-text-link);
+  flex: none;
+}
+
+.v3-sheet__row b {
+  color: var(--tx);
+  font-weight: 700;
+  margin-inline-start: auto;
+}
+
+/* در گوشی‌های خیلی کوچک، متن جدول کمی جمع‌تر */
+@media (max-width: 350px) {
+  .v3-grid__head,
+  .v3-grid__row {
+    grid-template-columns: 32px repeat(7, minmax(0, 1fr)) !important;
+    gap: 3px;
+  }
+
+  .v3-chip-lesson b {
+    font-size: 9px;
+  }
+}

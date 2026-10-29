@@ -31,7 +31,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -280,7 +280,6 @@ const SECTIONS = [
 ];
 
 
-
 export default function AdminHome() {
   const navigate =
     useNavigate();
@@ -288,7 +287,6 @@ export default function AdminHome() {
   const toast = useUIStore(
     (state) => state.toast
   );
-
 
   const {
     data: stats,
@@ -312,7 +310,6 @@ export default function AdminHome() {
       60_000,
   });
 
-
   const {
     data: bot,
   } = useQuery({
@@ -332,7 +329,6 @@ export default function AdminHome() {
     staleTime:
       30_000,
   });
-
 
   const {
     data: subscription,
@@ -355,7 +351,6 @@ export default function AdminHome() {
       30_000,
   });
 
-
   const {
     data: aiStatus,
   } = useQuery({
@@ -376,7 +371,6 @@ export default function AdminHome() {
     staleTime:
       30_000,
   });
-
 
   const exportMutation =
     useMutation({
@@ -408,12 +402,10 @@ export default function AdminHome() {
         ),
     });
 
-
   const open = (route) => {
     haptic('light');
     navigate(route);
   };
-
 
   const pendingUsers =
     number(
@@ -436,7 +428,6 @@ export default function AdminHome() {
         ?.stats
         ?.pending
     );
-
 
   return (
     <>
@@ -571,7 +562,6 @@ export default function AdminHome() {
           </div>
         </section>
 
-
         {isLoading ? (
           <AdminHomeSkeleton />
         ) : isError ? (
@@ -644,7 +634,6 @@ export default function AdminHome() {
           </section>
         )}
 
-
         {(
           pendingUsers > 0 ||
           openTickets > 0 ||
@@ -662,7 +651,7 @@ export default function AdminHome() {
             }}
           >
             <div className="sec-title">
-              ⚠️ نیازمند رسیدگی
+              <Glyph value="⚠️" /> نیازمند رسیدگی
             </div>
 
             <div
@@ -703,7 +692,6 @@ export default function AdminHome() {
             </div>
           </section>
         )}
-
 
         <div className="sec-title">
           ابزارهای مدیریت
@@ -755,7 +743,7 @@ export default function AdminHome() {
                   fontSize: 'var(--fs-xl)',
                 }}
               >
-                {item.icon}
+                <Glyph value={item.icon} />
               </span>
 
               <span
@@ -805,7 +793,6 @@ export default function AdminHome() {
             </button>
           ))}
         </section>
-
 
         <button
           className={

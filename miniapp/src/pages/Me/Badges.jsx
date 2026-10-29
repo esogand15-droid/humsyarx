@@ -23,13 +23,13 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 /* 👑 موج P1 Prestige — کلکسیون کامل نشان‌ها
    (۵ تکاملی + تکی‌ها + جهانی‌ها) + پین شوکیس
    (حداکثر ۳) + تب «سفر من». تمام متن/آیکون/
    رنگ/XP از پیلود بک‌اند است — هیچ مقداری
    اینجا هاردکد نمی‌شود. */
-
 
 
 const KIND_TITLES = {
@@ -52,7 +52,6 @@ const KIND_ORDER = [
   'founder',
 ];
 
-
 function RarityDot({ color }) {
   return (
     <span
@@ -69,7 +68,6 @@ function RarityDot({ color }) {
     />
   );
 }
-
 
 function BadgeTile({
   icon,
@@ -149,7 +147,6 @@ function BadgeTile({
     </button>
   );
 }
-
 
 export default function Badges() {
   const navigate = useNavigate();
@@ -349,7 +346,7 @@ export default function Badges() {
             {/* شوکیس پین‌شده */}
             <section>
               <div className="sec-title">
-                📌 شوکیس (حداکثر ۳ نشان)
+                <Glyph value="📌" /> شوکیس (حداکثر ۳ نشان)
               </div>
 
               <div
@@ -372,7 +369,7 @@ export default function Badges() {
             {/* پنج نشان تکاملی */}
             <section>
               <div className="sec-title">
-                🪜 نشان‌های تکاملی
+                <Glyph value="🪜" /> نشان‌های تکاملی
               </div>
 
               <div
@@ -405,7 +402,7 @@ export default function Badges() {
                             fontSize: 'var(--fs-xl)',
                           }}
                         >
-                          {badge.icon}
+                          <Glyph value={badge.icon} />
                         </span>
 
                         <b
@@ -541,7 +538,7 @@ export default function Badges() {
                         (item) => (
                           <BadgeTile
                             key={item.key}
-                            icon={item.icon}
+                            icon=<Glyph value={item.icon} />
                             title={
                               item.title
                             }
@@ -594,7 +591,7 @@ export default function Badges() {
             {/* جهانی‌ها */}
             <section>
               <div className="sec-title">
-                🏆 نشان‌های جهانی — فقط یک نفر در تاریخ
+                <Glyph value="🏆" /> نشان‌های جهانی — فقط یک نفر در تاریخ
               </div>
 
               <div
@@ -624,7 +621,7 @@ export default function Badges() {
                         fontSize: 'var(--fs-xl)',
                       }}
                     >
-                      {g.icon}
+                      <Glyph value={g.icon} />
                     </span>
 
                     <div

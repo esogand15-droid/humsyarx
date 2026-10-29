@@ -12,6 +12,7 @@ import api from '../../lib/api';
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -188,7 +189,7 @@ export default function FamilySection({
         style={{ marginTop: 12 }}
       >
         <b>
-          🎟 کد دعوت خانواده داری؟
+          <Glyph value="🎟" /> کد دعوت خانواده داری؟
         </b>
 
         <div
@@ -345,14 +346,14 @@ export default function FamilySection({
           onClick={makeCode}
           style={{ marginTop: 10 }}
         >
-          ➕ ساخت کد دعوت جدید
+          <Glyph value="➕" /> ساخت کد دعوت جدید
         </button>
       ) : (
         <div
           className="muted"
           style={{ marginTop: 10 }}
         >
-          ⚠️ ظرفیت پر شده است.
+          <Glyph value="⚠️" /> ظرفیت پر شده است.
         </div>
       )}
     </section>

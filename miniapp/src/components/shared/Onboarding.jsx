@@ -1,3 +1,4 @@
+
 import {
   useEffect,
   useState,
@@ -19,11 +20,10 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../ui/Icon';
 
 const STORAGE_KEY =
   'humsyar_onboarded_v1';
-
 
 export function hasSeenOnboarding() {
   try {
@@ -37,7 +37,6 @@ export function hasSeenOnboarding() {
   }
 }
 
-
 function markOnboardingSeen() {
   try {
     localStorage.setItem(
@@ -49,7 +48,6 @@ function markOnboardingSeen() {
        جاری کار را انجام می‌دهد */
   }
 }
-
 
 const SLIDES = [
   {
@@ -109,7 +107,6 @@ const SLIDES = [
   },
 ];
 
-
 export default function Onboarding() {
   const user = useAuthStore(
     (state) => state.user
@@ -131,7 +128,6 @@ export default function Onboarding() {
         state.closeOnboarding
     );
 
-
   /* ✅ سد سه‌لایه در برابر گیر کردن صفحه:
      ۱) dismissed — state محلی همین رندر
      ۲) onboardingDone — فلگ نشست در store
@@ -140,7 +136,6 @@ export default function Onboarding() {
   const [dismissed, setDismissed] =
     useState(false);
 
-
   const shouldShow =
     Boolean(user) &&
     !dismissed &&
@@ -148,10 +143,8 @@ export default function Onboarding() {
     (showOnboarding ||
       !hasSeenOnboarding());
 
-
   const [index, setIndex] =
     useState(0);
-
 
   /* دکمه‌های نیتیو تلگرام روی اوورلی
      نباید دیده بشن */
@@ -178,15 +171,12 @@ export default function Onboarding() {
     };
   }, [shouldShow]);
 
-
   if (!shouldShow) return null;
-
 
   const isLast =
     index === SLIDES.length - 1;
 
   const slide = SLIDES[index];
-
 
   /* بستن قطعی: اول state محلی (فوری،
      حتی اگر store/storage خراب باشند)
@@ -197,7 +187,6 @@ export default function Onboarding() {
     markOnboardingSeen();
     closeOnboarding();
   };
-
 
   const next = () => {
     haptic('light');
@@ -211,7 +200,6 @@ export default function Onboarding() {
       current + 1
     );
   };
-
 
   return (
     <div
@@ -239,7 +227,7 @@ export default function Onboarding() {
               slide.gradient,
           }}
         >
-          {slide.icon}
+          <Glyph value={slide.icon} />
         </div>
 
         <h2 className="onb__title">
@@ -250,7 +238,6 @@ export default function Onboarding() {
           {slide.text}
         </p>
       </div>
-
 
       {/* نقطه‌های پیشرفت */}
       <div className="onb__dots">
@@ -273,7 +260,6 @@ export default function Onboarding() {
           />
         ))}
       </div>
-
 
       {/* دکمه‌ها */}
       <div className="onb__actions">

@@ -9,6 +9,7 @@ import {
 
 
 import api from '../../lib/api';
+import { Glyph } from '../ui/Icon';
 
 
 /* 🌊 QBANK-W3/§۷.۴ — تصویر سؤال با احراز هویت (هدر X-Init-Data)؛
@@ -508,7 +509,7 @@ export default function QuestionCard({
               'pointer',
           }}
         >
-          🚩 گزارش ایراد در این سؤال
+          <Glyph value="🚩" /> گزارش ایراد در این سؤال
         </button>
       )}
     </article>

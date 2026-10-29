@@ -27,6 +27,7 @@ import { confirmAction } from '../../lib/confirm';
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -38,10 +39,8 @@ import {
    تنها منبع حقیقت است (§۴).
 ───────────────────────────────────────────── */
 
-
 const ROLES_KEY = ['rbac-roles'];
 const PERMS_KEY = ['rbac-perms'];
-
 
 /* 🎛 سوییچ کوچک — بدون وابستگی به کلاس‌های خاص
    تا روی هر دیتایی قابل استفاده باشد */
@@ -55,7 +54,6 @@ export function AdminRoles() {
   const [openCats, setOpenCats] = useState(
     () => new Set(),
   );
-
 
   const rolesQuery = useQuery({
     queryKey: ROLES_KEY,
@@ -79,12 +77,10 @@ export function AdminRoles() {
   const categories = permsQuery.data?.categories || [];
   const allPerms = permsQuery.data?.permissions || [];
 
-
   const refresh = () =>
     queryClient.invalidateQueries({
       queryKey: ROLES_KEY,
     });
-
 
   const saveMutation = useMutation({
     mutationFn: (payload) =>
@@ -115,7 +111,6 @@ export function AdminRoles() {
     },
   });
 
-
   const deleteMutation = useMutation({
     mutationFn: (key) =>
       api.delete(`/api/admin/rbac/roles/${key}`),
@@ -137,7 +132,6 @@ export function AdminRoles() {
       );
     },
   });
-
 
   /* ✏️ آغاز ویرایش/ساخت — draft با Set از مجوزها */
   const startEdit = (role = null) => {
@@ -170,7 +164,6 @@ export function AdminRoles() {
     setMode('edit');
   };
 
-
   const togglePerm = (key) => {
     haptic('light');
     setDraft((prev) => {
@@ -180,7 +173,6 @@ export function AdminRoles() {
       return { ...prev, perms };
     });
   };
-
 
   const setCatPerms = (catKey, on) => {
     const keys = allPerms
@@ -195,7 +187,6 @@ export function AdminRoles() {
     });
   };
 
-
   const setAllPerms = (on) =>
     setDraft((prev) => ({
       ...prev,
@@ -203,7 +194,6 @@ export function AdminRoles() {
         ? new Set(allPerms.map((p) => p.key))
         : new Set(),
     }));
-
 
   /* 🔍 فیلتر جست‌وجو روی ماتریس */
   const visiblePerms = useMemo(() => {
@@ -226,7 +216,6 @@ export function AdminRoles() {
     [categories, visiblePerms],
   );
 
-
   const submit = () => {
     if (!draft.label.trim()) {
       toast('نام نقش را بنویس', 'error');
@@ -248,7 +237,6 @@ export function AdminRoles() {
         : { body },
     );
   };
-
 
   /* ════ حالت ویرایشگر (ساخت/ویرایش) ════ */
   if (mode === 'edit' && draft) {
@@ -300,7 +288,7 @@ export function AdminRoles() {
               <input
                 className="input"
                 style={{ width: 52, minHeight: 36, fontSize: 'var(--fs-lg)', textAlign: 'center' }}
-                value={draft.icon}
+                value=<Glyph value={draft.icon} />
                 maxLength={2}
                 onChange={(event) =>
                   setDraft({ ...draft, icon: event.target.value })
@@ -623,7 +611,6 @@ export function AdminRoles() {
     );
   }
 
-
   /* ════ حالت لیست ════ */
   return (
     <>
@@ -697,7 +684,7 @@ export function AdminRoles() {
                   flexShrink: 0,
                 }}
               >
-                {role.icon}
+                <Glyph value={role.icon} />
               </div>
 
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -712,11 +699,11 @@ export function AdminRoles() {
                   <b style={{ fontSize: 'var(--fs-sm)' }}>{role.label}</b>
                   {role.system ? (
                     <span className="badge b-pur" style={{ fontSize: 'var(--fs-cap)' }}>
-                      🔒 سیستمی
+                      <Glyph value="🔒" /> سیستمی
                     </span>
                   ) : (
                     <span className="badge b-grn" style={{ fontSize: 'var(--fs-cap)' }}>
-                      ✨ دلخواه
+                      <Glyph value="✨" /> دلخواه
                     </span>
                   )}
                   {!role.active && (
@@ -812,6 +799,5 @@ export function AdminRoles() {
     </>
   );
 }
-
 
 export default AdminRoles;

@@ -12,6 +12,7 @@ import Header from '../../components/layout/Header';
 import {
   haptic,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 
 const safePercent = (value) =>
@@ -22,7 +23,6 @@ const safePercent = (value) =>
       Number(value) || 0
     )
   );
-
 
 const QUICK_LINKS = [
   {
@@ -81,7 +81,6 @@ const QUICK_LINKS = [
       'var(--soft-pur)',
   },
 ];
-
 
 const LIBRARY = [
   {
@@ -195,11 +194,9 @@ const LIBRARY = [
   },
 ];
 
-
 export default function Learn() {
   const navigate =
     useNavigate();
-
 
   const {
     data: statsData = [],
@@ -225,12 +222,10 @@ export default function Learn() {
       5 * 60 * 1000,
   });
 
-
   const stats =
     Array.isArray(statsData)
       ? statsData
       : [];
-
 
   const totalAnswers =
     stats.reduce(
@@ -243,7 +238,6 @@ export default function Learn() {
 
       0
     );
-
 
   const totalCorrect =
     stats.reduce(
@@ -258,7 +252,6 @@ export default function Learn() {
       0
     );
 
-
   const overall =
     totalAnswers
       ? Math.round(
@@ -269,12 +262,10 @@ export default function Learn() {
         )
       : 0;
 
-
   const open = (route) => {
     haptic('light');
     navigate(route);
   };
-
 
   return (
     <>
@@ -404,9 +395,8 @@ export default function Learn() {
           </div>
         </section>
 
-
         <div className="sec-title">
-          ⚡ شروع سریع
+          <Glyph value="⚡" /> شروع سریع
         </div>
 
         <section
@@ -472,7 +462,7 @@ export default function Learn() {
                     fontSize: 'var(--fs-xl)',
                   }}
                 >
-                  {item.icon}
+                  <Glyph value={item.icon} />
                 </span>
 
                 <span
@@ -505,9 +495,8 @@ export default function Learn() {
           )}
         </section>
 
-
         <div className="sec-title">
-          📚 کتابخانه و ابزارها
+          <Glyph value="📚" /> کتابخانه و ابزارها
         </div>
 
         <section
@@ -575,7 +564,7 @@ export default function Learn() {
                       23,
                   }}
                 >
-                  {item.icon}
+                  <Glyph value={item.icon} />
                 </span>
 
                 <span
@@ -648,7 +637,6 @@ export default function Learn() {
             )
           )}
         </section>
-
 
         <section
           className={
@@ -754,7 +742,6 @@ export default function Learn() {
           </div>
         </section>
 
-
         {/* 🌊 W8/UX-02 — خطای آمار هاب */}
         {statsError && stats.length === 0 && (
           <button
@@ -762,14 +749,14 @@ export default function Learn() {
             className="btn btn-full"
             onClick={() => refetchStats()}
           >
-            🌐 دریافت آمار ناموفق بود — تلاش دوباره
+            <Glyph value="🌐" /> دریافت آمار ناموفق بود — تلاش دوباره
           </button>
         )}
 
         {stats.length > 0 && (
           <section>
             <div className="sec-title">
-              📊 عملکرد به تفکیک درس
+              <Glyph value="📊" /> عملکرد به تفکیک درس
             </div>
 
             <div className="card">

@@ -21,6 +21,7 @@ import {
   hapticNotif,
 } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 const EMPTY_EXAM = {
   lesson: '',
@@ -465,7 +466,7 @@ export default function AcademicGradesAdmin() {
             }}
           >
             <div className="sec-title">
-              📝 اطلاعات امتحان
+              <Glyph value="📝" /> اطلاعات امتحان
             </div>
 
             <label
@@ -615,7 +616,7 @@ export default function AcademicGradesAdmin() {
                     marginTop: 5,
                   }}
                 >
-                  ✓ ترم پیشنهادی از روی درس: {suggestedTerm} — قابل تغییر دستی
+                  <Glyph value="✓" /> ترم پیشنهادی از روی درس: {suggestedTerm} — قابل تغییر دستی
                 </div>
               )}
 
@@ -627,7 +628,7 @@ export default function AcademicGradesAdmin() {
                   marginTop: 5,
                 }}
               >
-                ⚠️ ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.
+                <Glyph value="⚠️" /> ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.
               </div>
             )}
 
@@ -643,7 +644,7 @@ export default function AcademicGradesAdmin() {
                 lineHeight: 1.7,
               }}
             >
-              🎓 هر درس به یک ترم متصل است و کارنامه‌ی
+              <Glyph value="🎓" /> هر درس به یک ترم متصل است و کارنامه‌ی
               دانشجو <b>هر ترم را جدا</b> با میانگین جدا
               نشان می‌دهد. ترم را دقیق انتخاب کنید تا
               نمرات «بدون ترم» تولید نشود.
@@ -657,7 +658,7 @@ export default function AcademicGradesAdmin() {
             }}
           >
             <div className="sec-title">
-              👤 افزودن دانشجو
+              <Glyph value="👤" /> افزودن دانشجو
             </div>
 
             <input
@@ -783,7 +784,7 @@ export default function AcademicGradesAdmin() {
               }}
             >
               <div className="sec-title">
-                🎯 نمرات (
+                <Glyph value="🎯" /> نمرات (
                 {entries.length} نفر)
               </div>
 
@@ -1241,7 +1242,7 @@ export default function AcademicGradesAdmin() {
                       })
                     }
                   >
-                    ✏️ ویرایش
+                    <Glyph value="✏️" /> ویرایش
                   </button>
 
                   <button
@@ -1267,7 +1268,7 @@ export default function AcademicGradesAdmin() {
                       }
                     }}
                   >
-                    🗑 حذف
+                    <Glyph value="🗑" /> حذف
                   </button>
                 </div>
               )}

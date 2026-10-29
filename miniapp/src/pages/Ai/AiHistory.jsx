@@ -29,6 +29,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -270,8 +271,7 @@ export default function AiHistory() {
             navigate('/ai/image');
           }}
         >
-          🎨
-          ساخت تصویر با هوشیار
+          <Glyph value="🎨" /> ساخت تصویر با هوشیار
         </button>
 
         <button
@@ -282,8 +282,7 @@ export default function AiHistory() {
             navigate('/ai/live');
           }}
         >
-          🎙
-          تماس صوتی زنده با هوشیار (Live)
+          <Glyph value="🎙" /> تماس صوتی زنده با هوشیار (Live)
         </button>
 
         <SearchField

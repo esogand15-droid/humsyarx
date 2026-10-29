@@ -32,6 +32,7 @@ import { confirmAction } from '../../lib/confirm';
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ═══════════ ردیف تنظیم ═══════════ */
@@ -324,7 +325,7 @@ function DonationLinkCard({
           marginBottom: 8,
         }}
       >
-        🔗 لینک صفحه حمایت مالی
+        <Glyph value="🔗" /> لینک صفحه حمایت مالی
       </b>
 
       {enabled && !savedLink && (
@@ -342,7 +343,7 @@ function DonationLinkCard({
               '1px solid var(--bd-warn)',
           }}
         >
-          ⚠️ بخش فعال است اما لینکی
+          <Glyph value="⚠️" /> بخش فعال است اما لینکی
           تنظیم نشده — تا لینک ثبت
           نشود، دکمه‌ی حمایت در
           داشبورد کاربران نمایش داده
@@ -932,7 +933,7 @@ export default function SystemSettings() {
                     fontSize: 'var(--fs-sm)',
                   }}
                 >
-                  🔧 حالت تعمیر فعال است
+                  <Glyph value="🔧" /> حالت تعمیر فعال است
                 </b>
 
                 <span
@@ -952,7 +953,7 @@ export default function SystemSettings() {
             )}
 
             <div className="sec-title">
-              🛠 وضعیت سرویس
+              <Glyph value="🛠" /> وضعیت سرویس
             </div>
 
             <section
@@ -983,7 +984,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              📝 متن حالت تعمیر
+              <Glyph value="📝" /> متن حالت تعمیر
             </div>
 
             <section
@@ -1058,7 +1059,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              🎓 ثبت‌نام
+              <Glyph value="🎓" /> ثبت‌نام
             </div>
 
             <section
@@ -1090,7 +1091,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              💙 حمایت مالی
+              <Glyph value="💙" /> حمایت مالی
             </div>
 
             <section
@@ -1140,7 +1141,7 @@ export default function SystemSettings() {
             />
 
             <div className="sec-title">
-              💾 پشتیبان‌گیری
+              <Glyph value="💾" /> پشتیبان‌گیری
             </div>
 
             <section
@@ -1191,7 +1192,7 @@ export default function SystemSettings() {
                   marginBottom: 'var(--sp-1)',
                 }}
               >
-                🕐 ساعت اجرای بکاپ خودکار
+                <Glyph value="🕐" /> ساعت اجرای بکاپ خودکار
               </b>
 
               <span
@@ -1286,7 +1287,7 @@ export default function SystemSettings() {
                   marginBottom: 'var(--sp-1)',
                 }}
               >
-                📦 دریافت فایل پشتیبان
+                <Glyph value="📦" /> دریافت فایل پشتیبان
                 (JSON)
               </b>
 
@@ -1358,7 +1359,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              🛡 گروه‌های لاگ تلگرام
+              <Glyph value="🛡" /> گروه‌های لاگ تلگرام
             </div>
 
             <LogGroupCard
@@ -1653,7 +1654,7 @@ function PrestigeConfigSection() {
   return (
     <>
       <div className="sec-title">
-        👑 تعادل زنده‌ی پرستیژ (بدون ری‌استارت)
+        <Glyph value="👑" /> تعادل زنده‌ی پرستیژ (بدون ری‌استارت)
       </div>
 
       <section
@@ -1670,7 +1671,7 @@ function PrestigeConfigSection() {
             lineHeight: 1.8,
           }}
         >
-          ⚔️ چالش‌های امروز:{' '}
+          <Glyph value="⚔️" /> چالش‌های امروز:{' '}
           <b>{stats.started_today ?? 0}</b>{' '}
           شروع ·{' '}
           <b>{stats.wins_today ?? 0}</b> برد ·{' '}

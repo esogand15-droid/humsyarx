@@ -43,7 +43,7 @@ import {
 import {
   useAuthStore,
 } from '../../stores/authStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 function Picker({
   title,
@@ -137,7 +137,6 @@ function Picker({
     </div>
   );
 }
-
 
 function WeekChart({
   rows = [],
@@ -251,7 +250,6 @@ function WeekChart({
   );
 }
 
-
 // 🏷 موج Identity v1 — کارت لقب و
 // حریم نمایش نام واقعی (§۳/§Privacy)
 function NicknameCard({
@@ -267,7 +265,6 @@ function NicknameCard({
 
   const [value, setValue] =
     useState('');
-
 
   const saveMutation =
     useMutation({
@@ -304,7 +301,6 @@ function NicknameCard({
       },
     });
 
-
   const privacyMutation =
     useMutation({
       mutationFn: (on) =>
@@ -340,7 +336,6 @@ function NicknameCard({
       },
     });
 
-
   const nick = user.nickname || '';
 
   const canChange =
@@ -362,14 +357,12 @@ function NicknameCard({
   const pending =
     saveMutation.isPending;
 
-
   const startEdit = () => {
     haptic();
 
     setValue(nick);
     setEditing(true);
   };
-
 
   const submit = (event) => {
     event.preventDefault();
@@ -381,11 +374,10 @@ function NicknameCard({
     }
   };
 
-
   return (
     <section className="card">
       <div className="sec-title">
-        🏷 لقب و نام نمایشی
+        <Glyph value="🏷" /> لقب و نام نمایشی
       </div>
 
       <div
@@ -581,7 +573,6 @@ function NicknameCard({
   );
 }
 
-
 // 🌱 W13 — کارت دعوت دوستان (فقط وقتی بک‌اند enabled بدهد رندر می‌شود)
 function ReferralCard({ data }) {
   const toast = useUIStore((s) => s.toast);
@@ -609,7 +600,7 @@ function ReferralCard({ data }) {
   return (
     <section className="card" style={{ marginTop: 12 }}>
       <div className="sec-title">
-        🎁 دعوت دوستان
+        <Glyph value="🎁" /> دعوت دوستان
       </div>
       <div
         className="row"
@@ -630,7 +621,7 @@ function ReferralCard({ data }) {
           className="btn sm"
           onClick={copyLink}
         >
-          📋 کپی
+          <Glyph value="📋" /> کپی
         </button>
       </div>
       <div
@@ -665,7 +656,6 @@ function ReferralCard({ data }) {
   );
 }
 
-
 export default function Profile() {
   const [
     editField,
@@ -695,7 +685,6 @@ export default function Profile() {
   const queryClient =
     useQueryClient();
 
-
   const {
     data,
     isLoading,
@@ -718,7 +707,6 @@ export default function Profile() {
       3 * 60 * 1000,
   });
 
-
   // 🌱 W13 — دعوت‌های من (با کلید خاموش، enabled=false و کارت مخفی)
   const {
     data: referral,
@@ -738,7 +726,6 @@ export default function Profile() {
     staleTime:
       5 * 60 * 1000,
   });
-
 
   const {
     data: rank,
@@ -761,7 +748,6 @@ export default function Profile() {
       5 * 60 * 1000,
   });
 
-
   const {
     data: badges = [],
   } = useQuery({
@@ -783,7 +769,6 @@ export default function Profile() {
     staleTime:
       10 * 60 * 1000,
   });
-
 
   const {
     data: intakes = [],
@@ -812,7 +797,6 @@ export default function Profile() {
     staleTime:
       30 * 60 * 1000,
   });
-
 
   const refreshAll = async () => {
     await Promise.all([
@@ -855,7 +839,6 @@ export default function Profile() {
       refreshAuth(),
     ]);
   };
-
 
   const updateMutation =
     useMutation({
@@ -920,7 +903,6 @@ export default function Profile() {
       },
     });
 
-
   const user =
     data?.user || {};
 
@@ -944,7 +926,6 @@ export default function Profile() {
       stats.percentage
     );
 
-
   const startEdit = (
     field,
     value
@@ -957,7 +938,6 @@ export default function Profile() {
       value || ''
     );
   };
-
 
   const validField =
     editField === 'name'
@@ -973,7 +953,6 @@ export default function Profile() {
           )
 
         : false;
-
 
   const submitEdit = (
     event
@@ -991,7 +970,6 @@ export default function Profile() {
     }
   };
 
-
   return (
     <>
       <Header
@@ -1000,7 +978,6 @@ export default function Profile() {
           'اطلاعات تحصیلی و پیشرفت'
         }
       />
-
 
       {picker ===
         'group' && (
@@ -1047,7 +1024,6 @@ export default function Profile() {
         />
       )}
 
-
       {picker ===
         'educational_group' && (
         <Picker
@@ -1092,7 +1068,6 @@ export default function Profile() {
           ]}
         />
       )}
-
 
       {picker ===
         'intake' && (
@@ -1149,7 +1124,6 @@ export default function Profile() {
           }
         />
       )}
-
 
       <main className="page fade-up">
         {isLoading ? (
@@ -1476,7 +1450,6 @@ export default function Profile() {
               )}
             </section>
 
-
             {/* 🏷 موج Identity v1 —
                 لقب + حریم نام واقعی */}
             <NicknameCard
@@ -1484,11 +1457,9 @@ export default function Profile() {
               onSaved={refreshAll}
             />
 
-
             {/* 👑 موج P0 — کارت قهرمان
                 Prestige (رنک/هدف/رقیب/سپر) */}
             <PrestigeHero />
-
 
             {rank?.rank && (
               <section
@@ -1560,9 +1531,7 @@ export default function Profile() {
               </section>
             )}
 
-
             <WalletMiniCard />
-
 
             {referral?.enabled && (
               <ReferralCard data={referral} />
@@ -1570,7 +1539,7 @@ export default function Profile() {
 
             <section className="card">
               <div className="sec-title">
-                📊 عملکرد تحصیلی
+                <Glyph value="📊" /> عملکرد تحصیلی
               </div>
 
               <div
@@ -1735,7 +1704,7 @@ export default function Profile() {
                       marginBottom: 'var(--sp-2)',
                     }}
                   >
-                    ⚡ مباحث نیازمند تمرین
+                    <Glyph value="⚡" /> مباحث نیازمند تمرین
                   </div>
 
                   <div
@@ -1767,12 +1736,11 @@ export default function Profile() {
               )}
             </section>
 
-
             {badgeList.length >
               0 && (
               <section className="card">
                 <div className="sec-title">
-                  🏆 نشان‌های پیشرفت
+                  <Glyph value="🏆" /> نشان‌های پیشرفت
                 </div>
 
                 <div
@@ -1836,7 +1804,7 @@ export default function Profile() {
                               21,
                           }}
                         >
-                          {badge.icon}
+                          <Glyph value={badge.icon} />
                         </div>
 
                         <div
@@ -1865,7 +1833,6 @@ export default function Profile() {
   );
 }
 
-
 // ════════════════════════════════════════════════════════════════
 // 💰 W6 — کارت کوچک کیف پول در پروفایل (§۱۴): موجودی از API canonical
 // + میان‌بر به صفحه‌ی اشتراک برای خرید/تاریخچه. READ-ONLY در فرانت.
@@ -1879,20 +1846,20 @@ export function WalletMiniCard() {
   const w = walletQuery.data;
   return (
     <section className="card">
-      <div className="sec-title">👛 کیف پول</div>
+      <div className="sec-title"><Glyph value="👛" /> کیف پول</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 18 }}>
           {walletQuery.isLoading ? '…' : `${number(w?.balance ?? 0)} تومان`}
         </b>
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription?wallet=topup')}>
-          💳 شارژ کیف پول
+          <Glyph value="💳" /> شارژ کیف پول
         </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
-          💰 خرید اشتراک
+          <Glyph value="💰" /> خرید اشتراک
         </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
-          🧾 تاریخچه
+          <Glyph value="🧾" /> تاریخچه
         </button>
       </div>
       {w?.last_tx && (

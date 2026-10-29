@@ -16,7 +16,7 @@ import {
 } from '../../components/shared/skeletons';
 import { haptic } from '../../lib/telegram';
 import { useAuthStore } from '../../stores/authStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 export default function Me() {
   const navigate =
@@ -175,7 +175,7 @@ export default function Me() {
     (profile?.user || user).roles_detail?.[0];
 
   const roleLabel = rbacPrimary
-    ? `${rbacPrimary.icon} ${rbacPrimary.label}`
+    ? rbacPrimary.label
     : {
       admin: 'مدیر اصلی',
 
@@ -441,7 +441,7 @@ export default function Me() {
                           'var(--warn)',
                       }}
                     >
-                      🏅 رتبه{' '}
+                      <Glyph value="🏅" /> رتبه{' '}
 
                       {number(
                         rank.rank
@@ -658,7 +658,7 @@ export default function Me() {
 
             <section>
               <div className="sec-title">
-                👤 حساب و تنظیمات
+                <Glyph value="👤" /> حساب و تنظیمات
               </div>
 
               <div
@@ -864,7 +864,7 @@ export default function Me() {
             {manager && (
               <section>
                 <div className="sec-title">
-                  ⚙️ ابزارهای مدیریتی
+                  <Glyph value="⚙️" /> ابزارهای مدیریتی
                 </div>
 
                 <div

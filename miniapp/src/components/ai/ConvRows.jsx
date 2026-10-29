@@ -2,6 +2,7 @@ import {
   useEffect,
   useState,
 } from 'react';
+import { Glyph } from '../ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -239,7 +240,7 @@ export default function ConvRows({
                             )
                             : (
                               <span className="sync-chip">
-                                ✓ همگام
+                                <Glyph value="✓" /> همگام
                               </span>
                             )
                         }

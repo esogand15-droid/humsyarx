@@ -1,3 +1,4 @@
+
 import {
   useEffect,
 } from 'react';
@@ -10,7 +11,7 @@ import {
 import {
   hideBackButton,
 } from '../../lib/backButton';
-
+import { Glyph } from '../ui/Icon';
 
 const STATES = {
   telegram_required: {
@@ -154,7 +155,6 @@ const STATES = {
   },
 };
 
-
 export default function AuthError({
   error,
 }) {
@@ -179,7 +179,6 @@ export default function AuthError({
         true,
     };
 
-
   /* صفحه فول‌اسکرین خطا → دکمه بک
      نیتیو تلگرام نباید قابل دیدن باشد */
   useEffect(() => {
@@ -190,13 +189,11 @@ export default function AuthError({
     }
   }, []);
 
-
   const reload = () => {
     haptic('light');
 
     window.location.reload();
   };
-
 
   const close = () => {
     haptic('light');
@@ -208,7 +205,6 @@ export default function AuthError({
       window.history.back();
     }
   };
-
 
   return (
     <main
@@ -328,7 +324,7 @@ export default function AuthError({
               35,
           }}
         >
-          {state.icon}
+          <Glyph value={state.icon} />
         </div>
 
         <h1
@@ -361,7 +357,6 @@ export default function AuthError({
         >
           {state.message}
         </p>
-
 
         {error ===
           'not_registered' && (
@@ -404,7 +399,6 @@ export default function AuthError({
           </div>
         )}
 
-
         <div
           style={{
             display:
@@ -441,7 +435,6 @@ export default function AuthError({
               : 'بازگشت'}
           </button>
         </div>
-
 
         <div
           style={{

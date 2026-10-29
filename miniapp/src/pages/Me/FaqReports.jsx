@@ -31,6 +31,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 export function Faq() {
@@ -822,7 +823,7 @@ export function Reports() {
                   : 'transparent',
             }}
           >
-            🕘 پیگیری گزارش‌ها
+            <Glyph value="🕘" /> پیگیری گزارش‌ها
           </button>
         </div>
 
@@ -867,7 +868,7 @@ export function Reports() {
                     })
                   }
                 >
-                  🧪 سؤال
+                  <Glyph value="🧪" /> سؤال
                 </button>
 
                 <button
@@ -887,7 +888,7 @@ export function Reports() {
                     })
                   }
                 >
-                  📎 فایل یا منبع
+                  <Glyph value="📎" /> فایل یا منبع
                 </button>
               </div>
 

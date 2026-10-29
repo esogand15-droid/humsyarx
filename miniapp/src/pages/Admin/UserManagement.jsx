@@ -45,9 +45,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
-
-
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -96,7 +94,6 @@ export function AdminUsers() {
     setVisible(40);
   }, [search, group, intake, status]);
 
-
   const {
     data,
     isLoading,
@@ -142,7 +139,6 @@ export function AdminUsers() {
       30_000,
   });
 
-
   const {
     data: intakes = [],
   } = useQuery({
@@ -165,12 +161,10 @@ export function AdminUsers() {
       5 * 60 * 1000,
   });
 
-
   const all =
     Array.isArray(data)
       ? data
       : [];
-
 
   const users =
     all.filter((item) => {
@@ -198,13 +192,11 @@ export function AdminUsers() {
       return true;
     });
 
-
   const pending =
     all.filter(
       (item) =>
         !item.approved
     ).length;
-
 
   return (
     <>
@@ -335,7 +327,6 @@ export function AdminUsers() {
           </div>
         </section>
 
-
         <section
           className="card"
           style={{
@@ -418,7 +409,6 @@ export function AdminUsers() {
           </div>
         </section>
 
-
         <div className="tab-bar">
           {[
             [
@@ -468,7 +458,6 @@ export function AdminUsers() {
             )
           )}
         </div>
-
 
         {isLoading ? (
           <UsersActionsSkeleton />
@@ -708,11 +697,9 @@ export function AdminUsers() {
   );
 }
 
-
 /* جزئیات کاربر */
 
 /* عدد فارسی محلی — این صفحه faNum خارجی ندارد */
-
 
 
 /* 🛡 کارت نقش‌های RBAC — موج RBAC-W2 (قرارداد §UserManagement)
@@ -836,7 +823,7 @@ function UserRbacCard({ uid }) {
         }}
       >
         <b style={{ fontSize: 'var(--fs-meta)' }}>
-          🛡 نقش‌های RBAC
+          <Glyph value="🛡" /> نقش‌های RBAC
         </b>
         <span
           className="badge b-gray"
@@ -905,7 +892,7 @@ function UserRbacCard({ uid }) {
               gap: 5,
             }}
           >
-            {role.icon} {role.label}
+            <Glyph value={role.icon} /> {role.label}
             <button
               type="button"
               aria-label={`حذف نقش ${role.label}`}
@@ -986,7 +973,7 @@ function UserRbacCard({ uid }) {
                 });
               }}
             >
-              + {role.icon} {role.label}
+              + <Glyph value={role.icon} /> {role.label}
             </button>
           ))}
         </div>
@@ -1029,7 +1016,6 @@ function UserRbacCard({ uid }) {
   );
 }
 
-
 export function AdminUserDetail() {
   const {
     uid,
@@ -1071,7 +1057,6 @@ export function AdminUserDetail() {
   const queryClient =
     useQueryClient();
 
-
   const {
     data: user,
     isLoading,
@@ -1094,7 +1079,6 @@ export function AdminUserDetail() {
         ),
   });
 
-
   const refresh = async () => {
     await Promise.all([
       queryClient
@@ -1113,7 +1097,6 @@ export function AdminUserDetail() {
         }),
     ]);
   };
-
 
   /* ✉️ ارسال پیام مستقیم به همین کاربر — موج ۴.۸۰
      (سمت سرور در صف outbox قرار می‌گیرد) */
@@ -1154,7 +1137,6 @@ export function AdminUserDetail() {
       setDmBusy(false);
     }
   };
-
 
   const action = useMutation({
     mutationFn: ({
@@ -1215,7 +1197,6 @@ export function AdminUserDetail() {
       ),
   });
 
-
   const startEdit = () => {
     setForm({
       name:
@@ -1238,7 +1219,6 @@ export function AdminUserDetail() {
     setEditing(true);
   };
 
-
   const run = async (
     type,
     message
@@ -1251,7 +1231,6 @@ export function AdminUserDetail() {
       });
     }
   };
-
 
   return (
     <>
@@ -1400,7 +1379,6 @@ export function AdminUserDetail() {
             {/* 🛡 RBAC-W2 — نقش‌های چندتایی دیتابیس‌محور */}
             <UserRbacCard uid={uid} />
 
-
             {editing ? (
               <section
                 className="card"
@@ -1500,7 +1478,7 @@ export function AdminUserDetail() {
                     lineHeight: 1.8,
                   }}
                 >
-                  🛡 نقش‌های کاربر (چندنقشی) از کارت
+                  <Glyph value="🛡" /> نقش‌های کاربر (چندنقشی) از کارت
                   RBAC بالای صفحه مدیریت می‌شود، نه از این فرم.
                 </div>
 
@@ -1667,7 +1645,6 @@ export function AdminUserDetail() {
               </section>
             )}
 
-
             <section className="card">
               <div className="sec-title">
                 عملیات مدیریتی
@@ -1684,7 +1661,7 @@ export function AdminUserDetail() {
                       })
                     }
                   >
-                    ✅ تأیید
+                    <Glyph value="✅" /> تأیید
                   </button>
                 )}
 
@@ -1716,7 +1693,7 @@ export function AdminUserDetail() {
                     )
                   }
                 >
-                  🗑 حذف
+                  <Glyph value="🗑" /> حذف
                 </button>
 
                 <button
@@ -1729,7 +1706,7 @@ export function AdminUserDetail() {
                     )
                   }
                 >
-                  🚫 مسدودسازی
+                  <Glyph value="🚫" /> مسدودسازی
                 </button>
 
                 <button
@@ -1741,7 +1718,7 @@ export function AdminUserDetail() {
                     );
                   }}
                 >
-                  ✉️ ارسال پیام
+                  <Glyph value="✉️" /> ارسال پیام
                 </button>
               </div>
 
@@ -1815,7 +1792,6 @@ export function AdminUserDetail() {
   );
 }
 
-
 /* مدیریت ورودی‌ها */
 
 export function AdminIntakes() {
@@ -1833,7 +1809,6 @@ export function AdminIntakes() {
 
   const queryClient =
     useQueryClient();
-
 
   const {
     data = [],
@@ -1855,14 +1830,12 @@ export function AdminIntakes() {
         ),
   });
 
-
   const refresh = () =>
     queryClient.invalidateQueries({
       queryKey: [
         'admin-intakes',
       ],
     });
-
 
   const mutation = useMutation({
     mutationFn: ({
@@ -1923,12 +1896,10 @@ export function AdminIntakes() {
       ),
   });
 
-
   const items =
     Array.isArray(data)
       ? data
       : [];
-
 
   return (
     <>
@@ -2011,7 +1982,6 @@ export function AdminIntakes() {
             )}
           </button>
         </section>
-
 
         {isLoading ? (
           <SkRowList
@@ -2197,7 +2167,6 @@ export function AdminIntakes() {
   );
 }
 
-
 /* مدیران محتوا */
 
 export function AdminContentAdmins() {
@@ -2212,7 +2181,6 @@ export function AdminContentAdmins() {
 
   const queryClient =
     useQueryClient();
-
 
   const {
     data: admins = [],
@@ -2233,7 +2201,6 @@ export function AdminContentAdmins() {
               ?.admins || []
         ),
   });
-
 
   const {
     data: students = [],
@@ -2266,14 +2233,12 @@ export function AdminContentAdmins() {
       search.trim().length >= 2,
   });
 
-
   const refresh = () =>
     queryClient.invalidateQueries({
       queryKey: [
         'content-admins',
       ],
     });
-
 
   const mutation = useMutation({
     mutationFn: ({
@@ -2312,12 +2277,10 @@ export function AdminContentAdmins() {
       ),
   });
 
-
   const adminList =
     Array.isArray(admins)
       ? admins
       : [];
-
 
   return (
     <>
@@ -2418,11 +2381,9 @@ export function AdminContentAdmins() {
           ))}
         </section>
 
-
         <div className="sec-title">
           فهرست مدیران
         </div>
-
 
         {isLoading ? (
           <SkRowList
@@ -2526,7 +2487,6 @@ export function AdminContentAdmins() {
   );
 }
 
-
 /* فهرست مسدودها */
 
 export function AdminBlacklist() {
@@ -2536,7 +2496,6 @@ export function AdminBlacklist() {
 
   const queryClient =
     useQueryClient();
-
 
   const {
     data = [],
@@ -2559,7 +2518,6 @@ export function AdminBlacklist() {
               ?.blacklist || []
         ),
   });
-
 
   const mutation = useMutation({
     mutationFn: (id) =>
@@ -2595,12 +2553,10 @@ export function AdminBlacklist() {
       ),
   });
 
-
   const rows =
     Array.isArray(data)
       ? data
       : [];
-
 
   return (
     <>
@@ -2663,7 +2619,6 @@ export function AdminBlacklist() {
             </div>
           </div>
         </section>
-
 
         {isLoading ? (
           <UsersListSkeleton />

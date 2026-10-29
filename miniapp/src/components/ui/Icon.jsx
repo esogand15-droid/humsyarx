@@ -92,3 +92,67 @@ export default function Icon({
 }
 
 export const ICON_NAMES = Object.keys(PATHS);
+
+
+/* ─────────────────────────────────────────────────────────────
+   GLYPH MAP — پل مهاجرت از ایموجی به آیکون خطی
+
+   چرا؟ ۱۳۰۰ ایموجی در ۷۰ فایل نمی‌شود یک‌شبه پاک کرد بدون اینکه
+   چیزی بشکند. این نقشه همان معنای ایموجی را به آیکون خطی تبدیل
+   می‌کند و کامپوننت `<Glyph>` هرجا داده‌ای مثل `icon: '📚'` هست
+   آیکون می‌کشد — بدون تغییر شکل دادهٔ صفحه‌ها. هر ایموجی‌ای که
+   نگاشت نداشته باشد، خودش رندر می‌شود (پس هیچ‌جا خالی نمی‌شود).
+   ───────────────────────────────────────────────────────────── */
+const GLYPHS = {
+  '⚡': 'flame', '🎯': 'target', '📝': 'doc', '✏️': 'doc', '✍️': 'doc',
+  '📗': 'book', '📘': 'book', '📚': 'book', '📄': 'doc', '🎓': 'book',
+  '📅': 'calendar', '🕘': 'clock', '⏰': 'clock', '⏳': 'clock',
+  '📊': 'chartBars', '📈': 'chart', '🧪': 'quiz', '❓': 'quiz',
+  '💳': 'wallet', '💰': 'wallet', '🎫': 'ticket', '🎟️': 'ticket',
+  '🔔': 'bell', '📨': 'bell', '🔍': 'search', '👤': 'user', '👥': 'user',
+  '🛡️': 'shield', '🔒': 'shield', '🚩': 'shield', '⚠️': 'info',
+  'ℹ️': 'info', '✅': 'check', '✓': 'check', '❌': 'close', '✕': 'close',
+  '🗑️': 'close', '🚫': 'shield', '🔄': 'refresh', '↻': 'refresh',
+  '📥': 'download', '🤖': 'sparkle', '✨': 'sparkle', '🧠': 'sparkle',
+  '📌': 'layers', '🎨': 'image', '🖼️': 'image', '🗂️': 'layers',
+  '🏆': 'target', '⭐': 'target', '💎': 'target', '👑': 'target',
+  '🌱': 'chart', '🔥': 'flame', '🌊': 'layers', '🌐': 'layers',
+  '⚙️': 'settings', '🔧': 'settings', '💾': 'download',
+  '→': 'arrowRight', '←': 'arrowLeft', '⇒': 'arrowRight',
+};
+
+export function glyphName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  // اگر خودِ مقدار یک نام آیکون معتبر است (مثل 'target')، همان را بکش
+  if (PATHS[raw]) return raw;
+  if (GLYPHS[raw]) return GLYPHS[raw];
+  // ایموجی با Variation Selector (U+FE0F) — بدون آن هم امتحان کن
+  const stripped = raw.replace(/\uFE0F/g, '');
+  return GLYPHS[stripped] || null;
+}
+
+/**
+ * اگر ایموجی نگاشت داشته باشد آیکون خطی می‌کشد، وگرنه خودِ متن.
+ * در RTL اندازه و تراز عمودی هماهنگ است.
+ */
+export function Glyph({ value, size = 18, style, className }) {
+  const name = glyphName(value);
+
+  if (!name) {
+    return (
+      <span className={className} style={{ lineHeight: 1, ...style }} aria-hidden="true">
+        {value}
+      </span>
+    );
+  }
+
+  return (
+    <Icon
+      name={name}
+      size={size}
+      className={className}
+      style={{ display: 'inline-block', verticalAlign: '-3px', ...style }}
+    />
+  );
+}

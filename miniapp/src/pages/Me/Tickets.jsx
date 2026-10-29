@@ -32,6 +32,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -485,19 +486,19 @@ export default function Tickets() {
               }
             >
               <option value="low">
-                🟢 کم‌اهمیت
+                <Glyph value="🟢" /> کم‌اهمیت
               </option>
 
               <option value="normal">
-                ⚪ عادی
+                <Glyph value="⚪" /> عادی
               </option>
 
               <option value="high">
-                🟠 مهم
+                <Glyph value="🟠" /> مهم
               </option>
 
               <option value="urgent">
-                🔴 فوری
+                <Glyph value="🔴" /> فوری
               </option>
             </select>
 
@@ -751,7 +752,7 @@ export default function Tickets() {
 
 
               <div className="sec-title">
-                💬 گفت‌وگو
+                <Glyph value="💬" /> گفت‌وگو
               </div>
 
 
@@ -909,7 +910,7 @@ export default function Tickets() {
                       'center',
                   }}
                 >
-                  🔒 این تیکت بسته شده و
+                  <Glyph value="🔒" /> این تیکت بسته شده و
                   امکان ارسال پاسخ ندارد.
                 </div>
               )}

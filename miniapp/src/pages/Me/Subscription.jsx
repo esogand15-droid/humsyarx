@@ -46,6 +46,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -894,7 +895,7 @@ export default function Subscription() {
                 }}
               >
                 <div className="sec-title">
-                  ✅ عملیات موفق
+                  <Glyph value="✅" /> عملیات موفق
                 </div>
 
                 <div
@@ -930,7 +931,7 @@ export default function Subscription() {
             {/* 🌊 GIFT — پنل خرید هدیه */}
             <section className="card">
               <div className="sec-title">
-                🎁 اشتراک هدیه
+                <Glyph value="🎁" /> اشتراک هدیه
               </div>
 
               <div
@@ -1055,7 +1056,7 @@ export default function Subscription() {
 
             <section>
               <div className="sec-title">
-                💳 انتخاب پلن
+                <Glyph value="💳" /> انتخاب پلن
               </div>
 
               <div
@@ -1239,7 +1240,7 @@ export default function Subscription() {
                 }}
               >
                 <div className="sec-title">
-                  🧾 تکمیل پرداخت
+                  <Glyph value="🧾" /> تکمیل پرداخت
                 </div>
 
                 <div
@@ -1571,7 +1572,7 @@ export default function Subscription() {
                       borderRadius: 'var(--r-md)',
                     }}
                   >
-                    🎁 این پلن با کد تخفیف
+                    <Glyph value="🎁" /> این پلن با کد تخفیف
                     رایگان است و نیازی به
                     رسید ندارد.
                   </div>
@@ -1718,7 +1719,7 @@ export default function Subscription() {
                     style={{ marginTop: 10 }}
                   >
                     <b>
-                      💳 پرداخت در انتظار تأیید
+                      <Glyph value="💳" /> پرداخت در انتظار تأیید
                     </b>
 
                     <div
@@ -1769,7 +1770,7 @@ export default function Subscription() {
                             )
                           }
                         >
-                          🔗 لینک پرداخت
+                          <Glyph value="🔗" /> لینک پرداخت
                         </button>
                       )}
 
@@ -1779,7 +1780,7 @@ export default function Subscription() {
                         disabled={zp.busy}
                         onClick={zp.cancelLocal}
                       >
-                        ✖️ انصراف
+                        <Glyph value="✖️" /> انصراف
                       </button>
                     </div>
                   </div>
@@ -1794,7 +1795,7 @@ export default function Subscription() {
                 ?.length) && (
               <section>
                 <div className="sec-title">
-                  🎁 هدیه‌های من
+                  <Glyph value="🎁" /> هدیه‌های من
                 </div>
 
                 <div
@@ -1978,7 +1979,7 @@ export default function Subscription() {
 
             <section>
               <div className="sec-title">
-                🕘 تاریخچه پرداخت‌ها
+                <Glyph value="🕘" /> تاریخچه پرداخت‌ها
               </div>
 
               {payments.length ===
@@ -2242,7 +2243,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
 
   return (
     <section>
-      <div className="sec-title">👛 کیف پول من</div>
+      <div className="sec-title"><Glyph value="👛" /> کیف پول من</div>
       <div className="card">
         {walletQuery.isLoading ? (
           <Spinner />
@@ -2284,7 +2285,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
 
             {showTopup && (
               <div className="card" style={{ marginTop: 10 }}>
-                <b>💳 شارژ کیف پول با رسید بانکی</b>
+                <b><Glyph value="💳" /> شارژ کیف پول با رسید بانکی</b>
                 <div className="muted" style={{ marginTop: 4 }}>
                   مبلغ را وارد کن، رسید واریز را آپلود کن؛ پس از تأیید ادمین
                   مبلغ به کیف پولت اضافه می‌شود.
@@ -2356,7 +2357,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                 )}
                 {zpTopup.pending && (
                   <div className="card" style={{ marginTop: 10 }}>
-                    <b>💳 شارژ در انتظار تأیید</b>
+                    <b><Glyph value="💳" /> شارژ در انتظار تأیید</b>
                     <div className="muted" style={{ marginTop: 6 }}>
                       مبلغ: {number(zpTopup.pending.final_price)} تومان • ۱ ساعت اعتبار دارد.
                     </div>
@@ -2375,7 +2376,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                           className="btn"
                           onClick={() => openExternalLink(zpTopup.pending.url)}
                         >
-                          🔗 لینک پرداخت
+                          <Glyph value="🔗" /> لینک پرداخت
                         </button>
                       )}
                       <button
@@ -2384,7 +2385,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                         disabled={zpTopup.busy}
                         onClick={zpTopup.cancelLocal}
                       >
-                        ✖️ انصراف
+                        <Glyph value="✖️" /> انصراف
                       </button>
                     </div>
                   </div>

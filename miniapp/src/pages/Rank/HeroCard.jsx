@@ -20,13 +20,13 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 /* 👑 موج P2 Prestige — Hero Card عمومی:
    بنر رنک + Top٪ + شوکیس + رکوردها (بدون
    آمار حساس). احترام کامل به privacy:
    limited ⇒ فقط کارت محدود. QR/لینک اشتراک
    از سرور می‌آید؛ خالی بود ⇒ بلوک پنهان. */
-
 
 
 function RecordCell({ icon, label, value }) {
@@ -205,7 +205,7 @@ export default function HeroCard() {
           }}
         >
           <div style={{ fontSize: 54 }}>
-            {data.icon}
+            <Glyph value={data.icon} />
           </div>
 
           <b style={{ fontSize: 'var(--fs-xl)' }}>
@@ -246,7 +246,7 @@ export default function HeroCard() {
                     fontWeight: 700,
                   }}
                 >
-                  🏆 رتبه‌ی{' '}
+                  <Glyph value="🏆" /> رتبه‌ی{' '}
                   {faNum(data.rank_number)}
                 </span>
               )}
@@ -275,7 +275,7 @@ export default function HeroCard() {
         {!!(data.showcase || []).length && (
           <section>
             <div className="sec-title">
-              📌 نشان‌های منتخب
+              <Glyph value="📌" /> نشان‌های منتخب
             </div>
 
             <div
@@ -308,7 +308,7 @@ export default function HeroCard() {
                         fontSize: 'var(--fs-lg)',
                       }}
                     >
-                      {badge.icon}
+                      <Glyph value={badge.icon} />
                     </span>
 
                     <b
@@ -328,7 +328,7 @@ export default function HeroCard() {
         {/* رکوردها */}
         <section>
           <div className="sec-title">
-            🏆 رکوردها
+            <Glyph value="🏆" /> رکوردها
           </div>
 
           <div

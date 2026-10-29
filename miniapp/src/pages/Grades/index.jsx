@@ -11,7 +11,7 @@ import {
 } from '../../components/shared/Loading';
 
 import { haptic } from '../../lib/telegram';
-
+import { Glyph } from '../../components/ui/Icon';
 
 const finite = (value) => {
   if (
@@ -29,7 +29,6 @@ const finite = (value) => {
     : null;
 };
 
-
 const percentage = (value) => {
   const parsed = finite(value);
 
@@ -45,7 +44,6 @@ const percentage = (value) => {
     )
   );
 };
-
 
 const visual = (value) => {
   const safe =
@@ -128,7 +126,6 @@ const visual = (value) => {
       '💪',
   };
 };
-
 
 function GradeRow({
   grade,
@@ -316,7 +313,7 @@ function GradeRow({
               fontSize: 'var(--fs-xl)',
             }}
           >
-            {style.icon}
+            <Glyph value={style.icon} />
           </div>
 
           <span
@@ -423,7 +420,6 @@ function GradeRow({
   );
 }
 
-
 /* 🎓 ترم‌بندی — نوارِ انتخاب ترم با طبقه‌بندیِ جدا و میانگین هر ترم.
    کارنامه پیش‌تر همه‌ی ترم‌ها را در یک لیستِ صاف نشان می‌داد و «میانگین»
    یعنی میانگینِ درس‌های ترم ۱ تا ۴ با هم؛ عددی که هیچ معنای تحصیلی ندارد.
@@ -475,7 +471,6 @@ function TermTabs({ terms, active, onPick, byTerm = [] }) {
     </div>
   );
 }
-
 
 export default function Grades() {
   const [searchParams, setSearchParams] =
@@ -544,7 +539,6 @@ export default function Grades() {
     ? data.by_term
     : [];
 
-
   const grades =
     Array.isArray(
       data?.grades
@@ -590,10 +584,8 @@ export default function Grades() {
     }
   }, [grades, searchParams]);
 
-
   const average =
     finite(data?.avg);
-
 
   const averagePercent =
     percentage(
@@ -608,16 +600,13 @@ export default function Grades() {
       )
     );
 
-
   const averageStyle =
     visual(
       averagePercent
     );
 
-
   const totalValue =
     Number(data?.total);
-
 
   const total =
     Number.isFinite(
@@ -629,12 +618,10 @@ export default function Grades() {
         )
       : grades.length;
 
-
   const countValue =
     Number(
       data?.graded_count
     );
-
 
   const graded =
     Number.isFinite(
@@ -651,7 +638,6 @@ export default function Grades() {
             ) !== null
         ).length;
 
-
   const passed =
     grades.filter(
       (item) =>
@@ -661,7 +647,6 @@ export default function Grades() {
           ) || 0
         ) >= 50
     ).length;
-
 
   /* گروه‌بندیِ نمرات برای نمایش: وقتی «همه» انتخاب است هر ترم بلوکِ
      خودش را با میانگینِ خودش دارد؛ وقتی یک ترم انتخاب شده فقط همان بلوک.
@@ -715,7 +700,6 @@ export default function Grades() {
       }));
   })();
 
-
   const best =
     grades.reduce(
       (
@@ -732,7 +716,6 @@ export default function Grades() {
 
       0
     );
-
 
   return (
     <>
@@ -955,7 +938,7 @@ export default function Grades() {
                         3,
                     }}
                   >
-                    {averageStyle.icon}{' '}
+                    <Glyph value={averageStyle.icon} />{' '}
                     {averageStyle.label}
                   </div>
 
@@ -1112,7 +1095,7 @@ export default function Grades() {
 
             {byTerm.length > 1 && !activeTerm && (
               <section className="card" style={{ padding: 12 }}>
-                <div style={{ fontWeight: 800, fontSize: 'var(--fs-sm)', marginBottom: 8 }}>🎓 نمای کلی ترم‌ها — هر ترم جدا</div>
+                <div style={{ fontWeight: 800, fontSize: 'var(--fs-sm)', marginBottom: 8 }}><Glyph value="🎓" /> نمای کلی ترم‌ها — هر ترم جدا</div>
                 <div style={{ display: 'grid', gap: 8 }}>
                   {byTerm.map((t) => (
                     <button
@@ -1141,7 +1124,7 @@ export default function Grades() {
                 marginTop: 'var(--sp-1)',
               }}
             >
-              📋 جزئیات نمرات
+              <Glyph value="📋" /> جزئیات نمرات
             </div>
 
             {termGroups.map(

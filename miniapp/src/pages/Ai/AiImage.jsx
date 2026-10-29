@@ -13,6 +13,7 @@ import {
   haptic,
   hapticNotif,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -183,7 +184,7 @@ export default function AiImage() {
 
         {usage && !usage.unlimited && (
           <div className="aiimg-quota">
-            📊 امروز
+            <Glyph value="📊" /> امروز
             {' '}
             {usage.used_today}
             /
@@ -234,7 +235,7 @@ export default function AiImage() {
               href={imageSrc}
               download={`humsyar-${Date.now()}.png`}
             >
-              ⬇️ دانلود
+              <Glyph value="⬇️" /> دانلود
             </a>
 
             <button
@@ -243,7 +244,7 @@ export default function AiImage() {
               disabled={busy}
               onClick={generate}
             >
-              🔄 ساخت دوباره
+              <Glyph value="🔄" /> ساخت دوباره
             </button>
           </div>
         </section>

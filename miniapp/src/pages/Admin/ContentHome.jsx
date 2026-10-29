@@ -29,6 +29,7 @@ import {
 import {
   haptic,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 
 const TOOLS = [
@@ -207,7 +208,6 @@ const TOOLS = [
   },
 ];
 
-
 /* 🌊 موج C1 — ابزارهایی که در بک‌اند فقط برای
    ادمین ارشد محتوا/مالک باز هستند (GLOBAL_USER)؛
    برای ادمین ورودی خاص پنهان می‌شوند (بک‌اند هم ۴۰۳ می‌دهد) */
@@ -216,7 +216,6 @@ const SCOPED_HIDDEN_ROUTES = new Set([
   '/admin/content/grades',
   '/admin/content/reports',
 ]);
-
 
 export default function ContentHome() {
   const navigate =
@@ -274,14 +273,11 @@ export default function ContentHome() {
       60_000,
   });
 
-
   const backendKind =
     scopeData?.scope_kind;
 
-
   const storeReady =
     Boolean(scopeData);
-
 
   /* قفل‌کردن scope از روی پاسخ بک‌اند:
      scoped → همیشه scope خودش، بدون انتخاب */
@@ -309,7 +305,6 @@ export default function ContentHome() {
     }
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [scopeData]);
-
 
   const {
     data,
@@ -350,25 +345,21 @@ export default function ContentHome() {
       60_000,
   });
 
-
   const open = (route) => {
     haptic('light');
     navigate(route);
   };
-
 
   const pending =
     Number(
       data?.pending_questions
     ) || 0;
 
-
   /* ── 🌊 C1: اولین صفحه‌ی ادمین ارشد = انتخاب ورودی ── */
   const showPicker =
     storeReady &&
     backendKind === 'global' &&
     intake === null;
-
 
   const activeIntakes = (
     scopeData?.intakes || []
@@ -377,7 +368,6 @@ export default function ContentHome() {
       item.code !== '' &&
       item.code != null
   );
-
 
   if (showPicker) {
     return (
@@ -391,7 +381,7 @@ export default function ContentHome() {
 
         <main className="page fade-up">
           <div className="sec-title">
-            🎓 محتوای کدام ورودی را
+            <Glyph value="🎓" /> محتوای کدام ورودی را
             مدیریت می‌کنید؟
           </div>
 
@@ -514,7 +504,6 @@ export default function ContentHome() {
     );
   }
 
-
   /* ابزارهای قابل استفاده در این scope
      (بک‌اند مرجع نهایی است؛ این فقط UX) */
   const visibleTools = TOOLS.filter((item) => {
@@ -534,13 +523,11 @@ export default function ContentHome() {
     return item.need.some((perm) => perms.includes(perm));
   });
 
-
   const shownIntakeLabel =
     intakeLabel ||
     (intake === ''
       ? '🌐 سراسری'
       : intake);
-
 
   return (
     <>
@@ -653,7 +640,6 @@ export default function ContentHome() {
           </div>
         </section>
 
-
         {/* 🌊 C1 — بنر scope ورودی (scoped: قفل؛
             global: نمایش انتخاب فعلی + تغییر ورودی) */}
         <section
@@ -718,11 +704,10 @@ export default function ContentHome() {
                   'var(--fs-cap)',
               }}
             >
-              🔄 تغییر ورودی
+              <Glyph value="🔄" /> تغییر ورودی
             </button>
           )}
         </section>
-
 
         {isLoading ? (
           <ContentHomeSkeleton />
@@ -884,7 +869,6 @@ export default function ContentHome() {
           </section>
         )}
 
-
         {/* 🍴 C2 — آمار مؤثر: آنچه دانشجوی این ورودی
              واقعاً می‌بیند (اختصاصی ورودی + سراسری) — فقط
              وقتی ctx یک ورودی مشخص است بک‌اند برمی‌گرداند */}
@@ -902,7 +886,7 @@ export default function ContentHome() {
                   '-8px 2px var(--sp-4)',
               }}
             >
-              🔭 مؤثر برای این ورودی:
+              <Glyph value="🔭" /> مؤثر برای این ورودی:
               {' '}
               {Number(
                 data.effective
@@ -921,7 +905,6 @@ export default function ContentHome() {
               در انتظار
             </div>
           )}
-
 
         {pending > 0 && (
           <button
@@ -999,7 +982,6 @@ export default function ContentHome() {
             <span>←</span>
           </button>
         )}
-
 
         <div className="sec-title">
           ابزارهای محتوا
@@ -1079,7 +1061,7 @@ export default function ContentHome() {
                       21,
                   }}
                 >
-                  {item.icon}
+                  <Glyph value={item.icon} />
                 </span>
 
                 <span

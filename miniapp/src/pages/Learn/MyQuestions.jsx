@@ -33,6 +33,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 const LETTERS = [
@@ -854,7 +855,7 @@ export default function MyQuestions() {
                           })
                         }
                       >
-                        ✏️ ویرایش
+                        <Glyph value="✏️" /> ویرایش
                       </button>
 
                       <button
@@ -883,7 +884,7 @@ export default function MyQuestions() {
                           }
                         }}
                       >
-                        🗑 حذف
+                        <Glyph value="🗑" /> حذف
                       </button>
                     </div>
                   )}

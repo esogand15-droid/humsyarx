@@ -38,6 +38,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -74,7 +75,7 @@ function ContentScopeGate() {
               navigate('/admin/content')
             }
           >
-            📅 انتخاب ورودی
+            <Glyph value="📅" /> انتخاب ورودی
           </button>
         </div>
       </main>
@@ -659,7 +660,7 @@ export function BasicScienceAdmin() {
               }}
             >
               <div className="sec-title">
-                🔬 کتابخانه علوم پایه
+                <Glyph value="🔬" /> کتابخانه علوم پایه
               </div>
 
               <div className="tab-bar">
@@ -858,7 +859,7 @@ export function BasicScienceAdmin() {
                                   2,
                               }}
                             >
-                              🔒 سراسری — فقط‌خواندنی
+                              <Glyph value="🔒" /> سراسری — فقط‌خواندنی
                             </span>
                           )}
 
@@ -871,7 +872,7 @@ export function BasicScienceAdmin() {
                                 marginTop: 2,
                               }}
                             >
-                              🌐 سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                              <Glyph value="🌐" /> سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
                             </span>
                           )}
 
@@ -969,7 +970,7 @@ export function BasicScienceAdmin() {
                     fontSize: 'var(--fs-cap)',
                   }}
                 >
-                  📅 این جلسه فقط برای ورودی شما ساخته می‌شود؛
+                  <Glyph value="📅" /> این جلسه فقط برای ورودی شما ساخته می‌شود؛
                   نسخه‌ی سراسریِ درس تغییر نمی‌کند.
                 </div>
               ) : !lessonRO && iv ? (
@@ -979,7 +980,7 @@ export function BasicScienceAdmin() {
                     fontSize: 'var(--fs-cap)',
                   }}
                 >
-                  🌐 جلسه‌ی جدید سراسری می‌شود. برای مخصوص‌کردن یک جلسه‌ی موجود همین ورودی، ✂️ را بزنید.
+                  <Glyph value="🌐" /> جلسه‌ی جدید سراسری می‌شود. برای مخصوص‌کردن یک جلسه‌ی موجود همین ورودی، ✂️ را بزنید.
                 </div>
               ) : null}
 
@@ -1288,7 +1289,7 @@ export function BasicScienceAdmin() {
               }}
             >
               <div className="sec-title">
-                📤 افزودن محتوا
+                <Glyph value="📤" /> افزودن محتوا
               </div>
 
               <select
@@ -1389,7 +1390,7 @@ export function BasicScienceAdmin() {
                   className="muted"
                   style={{ color: 'var(--red, #e5484d)', margin: '0 2px 9px' }}
                 >
-                  ⚠️ حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
+                  <Glyph value="⚠️" /> حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
                 </div>
               )}
 
@@ -1433,7 +1434,7 @@ export function BasicScienceAdmin() {
                     '0 2px 9px',
                 }}
               >
-                ⭐ نسخه‌ی اختصاصی ورودی
+                <Glyph value="⭐" /> نسخه‌ی اختصاصی ورودی
                 شما — ویرایش این بخش روی
                 نسخه‌ی سراسری اثری ندارد.
               </div>
@@ -2182,7 +2183,7 @@ export function ReferencesAdmin() {
                               2,
                           }}
                         >
-                          🔒 سراسری — فقط‌خواندنی
+                          <Glyph value="🔒" /> سراسری — فقط‌خواندنی
                         </span>
                       )}
 
@@ -2195,7 +2196,7 @@ export function ReferencesAdmin() {
                             marginTop: 2,
                           }}
                         >
-                          🌐 سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                          <Glyph value="🌐" /> سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
                         </span>
                       )}
                     </button>
@@ -2408,7 +2409,7 @@ export function ReferencesAdmin() {
                   margin: '0 2px 1px',
                 }}
               >
-                ⭐ نسخه‌ی اختصاصی ورودی شما
+                <Glyph value="⭐" /> نسخه‌ی اختصاصی ورودی شما
                 — ویرایش این بخش روی نسخه‌ی
                 سراسری اثری ندارد.
               </div>
@@ -2692,7 +2693,7 @@ export function QbankAdmin() {
           }}
         >
           <div className="sec-title">
-            📤 فایل جدید
+            <Glyph value="📤" /> فایل جدید
           </div>
 
           <div className="grid2">
@@ -2871,7 +2872,7 @@ export function QbankAdmin() {
                             2,
                         }}
                       >
-                        🔒 سراسری — فقط‌خواندنی
+                        <Glyph value="🔒" /> سراسری — فقط‌خواندنی
                       </div>
                     )}
 
@@ -3350,7 +3351,7 @@ export function ContentReportsAdmin() {
                         })
                       }
                     >
-                      🔍 بررسی
+                      <Glyph value="🔍" /> بررسی
                     </button>
                   )}
 
@@ -3377,7 +3378,7 @@ export function ContentReportsAdmin() {
                           })
                         }
                       >
-                        ✅ حل شد
+                        <Glyph value="✅" /> حل شد
                       </button>
 
                       <button

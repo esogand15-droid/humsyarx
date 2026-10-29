@@ -1,7 +1,8 @@
+
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../ui/Icon';
 
 const CONFIG = {
   success: {
@@ -61,7 +62,6 @@ const CONFIG = {
   },
 };
 
-
 export default function Toast() {
   const toasts =
     useUIStore(
@@ -69,14 +69,12 @@ export default function Toast() {
         state.toasts
     );
 
-
   if (
     !Array.isArray(toasts) ||
     toasts.length === 0
   ) {
     return null;
   }
-
 
   return (
     <div
@@ -201,7 +199,7 @@ export default function Toast() {
                     900,
                 }}
               >
-                {config.icon}
+                <Glyph value={config.icon} />
               </span>
 
               <span

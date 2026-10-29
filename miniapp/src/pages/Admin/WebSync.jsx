@@ -10,6 +10,7 @@ import { Spinner } from '../../components/shared/Loading';
 import { faNum } from '../../lib/format';
 import { haptic } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 /* میزهای هم‌تراز با پنل وب.
    همان کلاینت مینی‌اپ (X-Init-Data) به /api/web-admin و /api/ring می‌زند.
@@ -97,7 +98,7 @@ function Kpis({ items }) {
       {items.map((item) => (
         <article key={item.label} className="card kpi">
           <span className="kpi__icon" style={{ background: item.soft || 'var(--soft-acc)' }}>
-            {item.icon}
+            <Glyph value={item.icon} />
           </span>
           <b className="kpi__value">{item.value}</b>
           <span className="kpi__label">{item.label}</span>
@@ -198,7 +199,7 @@ function AttentionDesk() {
           ) : hot.map((item) => (
             <article key={item.key} className="card" style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <b style={{ flex: 1 }}>{item.icon} {item.label}</b>
+                <b style={{ flex: 1 }}><Glyph value={item.icon} /> {item.label}</b>
                 <span className={severityBadge(item.severity)}>{nfa(item.count)}</span>
               </div>
               <div style={{ color: 'var(--txm)', fontSize: 'var(--fs-cap)', marginTop: 6 }}>
@@ -337,7 +338,7 @@ function OperationsDesk() {
 
       {tab === 'work' && work.data ? (work.data.tasks || []).map((task) => (
         <button key={task.key} type="button" className="card card-tap" style={{ width: '100%', textAlign: 'right', marginBottom: 8 }} onClick={() => navigate(deskPath(task.go))}>
-          <b>{task.icon} {task.label}</b>
+          <b><Glyph value={task.icon} /> {task.label}</b>
           <div style={{ color: 'var(--txm)', marginTop: 4 }}>{task.empty ? 'خالی' : `${nfa(task.count)} مورد · کهنه‌ترین ${when(task.oldest_at)}`}</div>
         </button>
       )) : null}
@@ -347,7 +348,7 @@ function OperationsDesk() {
           ? <EmptyState icon="🌿">هشدار بازی نیست.</EmptyState>
           : alerts.data.alerts.map((item) => (
             <button key={item.key} type="button" className="card card-tap" style={{ width: '100%', textAlign: 'right', marginBottom: 8 }} onClick={() => navigate(deskPath(item.go))}>
-              <b>{item.icon} {item.label}</b>
+              <b><Glyph value={item.icon} /> {item.label}</b>
               <span className={severityBadge(item.severity)} style={{ marginRight: 8 }}>{nfa(item.count)}</span>
             </button>
           ))
@@ -735,6 +736,7 @@ function FeaturesDesk() {
     const map = {};
     (query.data?.items || []).forEach((item) => {
       const cat = item.category || 'سایر';
+
       map[cat] = map[cat] || [];
       map[cat].push(item);
     });

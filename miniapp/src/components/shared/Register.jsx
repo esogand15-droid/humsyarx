@@ -29,6 +29,7 @@ import {
 import {
   Spinner,
 } from './Loading';
+import { Glyph } from '../ui/Icon';
 
 
 /* ═══════════ قاب ثابت صفحه ═══════════ */
@@ -778,7 +779,7 @@ export default function Register() {
             fontWeight: 900,
           }}
         >
-          🩺 ثبت‌نام در هامزیار
+          <Glyph value="🩺" /> ثبت‌نام در هامزیار
         </h1>
 
         <div
@@ -862,10 +863,10 @@ export default function Register() {
 
             <div style={{ marginTop: 4 }}>
               <div style={{ fontSize: 'var(--fs-cap)', color: 'var(--tx2)', marginBottom: 8, textAlign: 'center', fontWeight: 700 }}>
-                🚻 گروه آموزشی کلاس‌های تفکیک‌شده:
+                <Glyph value="🚻" /> گروه آموزشی کلاس‌های تفکیک‌شده:
                 {aiSuggestedEduGroup && (
                   <span style={{ display: 'block', color: 'var(--acc2)', fontWeight: 600, marginTop: 2 }}>
-                    💡 پیشنهاد هوشمند: {aiSuggestedEduGroup === 'male' ? 'کلاس‌های آقایان' : 'کلاس‌های بانوان'}
+                    <Glyph value="💡" /> پیشنهاد هوشمند: {aiSuggestedEduGroup === 'male' ? 'کلاس‌های آقایان' : 'کلاس‌های بانوان'}
                   </span>
                 )}
               </div>
@@ -995,7 +996,7 @@ export default function Register() {
               </span>
 
               <span className="badge b-gray">
-                👥 گروه {group}
+                <Glyph value="👥" /> گروه {group}
               </span>
 
               {intake && (

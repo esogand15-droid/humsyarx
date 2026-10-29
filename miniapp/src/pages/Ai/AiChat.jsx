@@ -33,7 +33,7 @@ import {
   hapticNotif,
 } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 const FALLBACK_MAX_MEDIA_BYTES = 15 * 1024 * 1024;
 const FALLBACK_MAX_INPUT_CHARS = 2000;
@@ -49,7 +49,6 @@ const NEAR_BOTTOM_PX = 90;
 // — با navigate بین رشته‌ها (ری‌ماونت کامپوننت)
 // هم جای خواندن محفوظ می‌ماند
 const scrollPositions = new Map();
-
 
 /* کارت‌های پیشنهادی حالت خالی — هر کارت یا
    پرامپت آماده می‌فرستد یا مستقیم فایل‌پیکر
@@ -110,7 +109,6 @@ const SUGGESTIONS = [
   },
 ];
 
-
 const ACCEPTED_FILES = [
   'image/jpeg',
   'image/png',
@@ -127,7 +125,6 @@ const ACCEPTED_FILES = [
   'audio/x-m4a',
   'audio/x-wav',
 ].join(',');
-
 
 function getErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
@@ -146,7 +143,6 @@ function getErrorMessage(error, fallback) {
 
   return fallback;
 }
-
 
 function fileKind(file) {
   const type = String(file?.type || '').toLowerCase();
@@ -173,7 +169,6 @@ function fileKind(file) {
   return 'unknown';
 }
 
-
 function fileIcon(kind) {
   if (kind === 'image') return '🖼️';
   if (kind === 'pdf') return '📄';
@@ -181,14 +176,12 @@ function fileIcon(kind) {
   return '📎';
 }
 
-
 function fileLabel(kind) {
   if (kind === 'image') return 'تصویر سؤال';
   if (kind === 'pdf') return 'سند مرجع PDF';
   if (kind === 'audio') return 'پیام یا فایل صوتی';
   return 'فایل';
 }
-
 
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
@@ -206,7 +199,6 @@ function formatBytes(bytes) {
   })} مگابایت`;
 }
 
-
 function formatDuration(seconds) {
   const value = Math.max(0, Number(seconds || 0));
   const minutes = Math.floor(value / 60);
@@ -214,7 +206,6 @@ function formatDuration(seconds) {
 
   return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
 }
-
 
 function formatDate(value) {
   if (!value) {
@@ -235,7 +226,6 @@ function formatDate(value) {
   });
 }
 
-
 // ساعت پیام به سبک اپ‌های چت — فقط HH:MM فارسی
 function formatTime(value) {
   if (!value) {
@@ -254,11 +244,9 @@ function formatTime(value) {
   });
 }
 
-
 function messageId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
-
 
 // کپی امن در WebView — clipboard API مدرن و
 // فالبک execCommand برای کلاینت‌های قدیمی
@@ -295,7 +283,6 @@ async function copyText(text) {
   }
 }
 
-
 // اسکرول به ته صفحه — نرم، مگر برای کاربرانی
 // که reduced-motion فعال کرده‌اند
 function scrollPageToBottom(smooth = true) {
@@ -323,7 +310,6 @@ function scrollPageToBottom(smooth = true) {
   });
 }
 
-
 function prefersReducedMotion() {
   try {
     return Boolean(
@@ -336,7 +322,6 @@ function prefersReducedMotion() {
     return false;
   }
 }
-
 
 /* ─────────────────────────────────────────────
    رندر غنی متن پاسخ — فقط React element خالص،
@@ -356,7 +341,6 @@ const INLINE_RE = new RegExp(
   '|(https?:\\/\\/[^\\s)<]+)',
   'g',
 );
-
 
 // توکن‌های این‌لاین: بولد، کد، لینک markdown و لینک خام
 function InlineText({ text }) {
@@ -439,7 +423,6 @@ function InlineText({ text }) {
 
   return <>{parts}</>;
 }
-
 
 // تجمیع خطوط به پاراگراف/لیست/تیتر/نقل‌قول
 function renderTextLines(text) {
@@ -615,10 +598,8 @@ function renderTextLines(text) {
   return blocks;
 }
 
-
 function CodeBlock({ lang, code }) {
   const [copied, setCopied] = useState(false);
-
 
   const copy = async () => {
     const ok = await copyText(code);
@@ -634,7 +615,6 @@ function CodeBlock({ lang, code }) {
       );
     }
   };
-
 
   return (
     <div className="msg-code">
@@ -660,7 +640,6 @@ function CodeBlock({ lang, code }) {
     </div>
   );
 }
-
 
 function RichText({ text }) {
   const blocks = [];
@@ -706,7 +685,6 @@ function RichText({ text }) {
   return <>{blocks}</>;
 }
 
-
 /* نمایش تدریجی پاسخ (حس استریم نرم، مثل
    اپ‌های درجه‌ی یک) — بک‌اند تک‌پاسخ است، پس
    اینجا متن نهایی در حدود ۱٫۴ ثانیه و در ~۱۶
@@ -732,7 +710,6 @@ function RevealText({ text, onDone, onTick }) {
     tickRef.current = onTick;
   });
 
-
   useEffect(() => {
     if (shown >= total) {
       doneRef.current();
@@ -755,7 +732,6 @@ function RevealText({ text, onDone, onTick }) {
     return () => window.clearTimeout(timer);
   }, [shown, total]);
 
-
   const done = shown >= total;
 
   return (
@@ -777,7 +753,6 @@ function RevealText({ text, onDone, onTick }) {
   );
 }
 
-
 /* نشانگر تایپینگ — سه نقطه‌ی تنفسی + برچسب وضعیت */
 function TypingBubble({ label }) {
   return (
@@ -798,7 +773,6 @@ function TypingBubble({ label }) {
     </div>
   );
 }
-
 
 /* یک ردیف پیام کامل — حباب، ضمیمه، متن غنی
    (یا نمایش تدریجی)، زمان و اکشن‌های پاسخ */
@@ -829,7 +803,6 @@ function MessageRow({
   const actionsReady =
     !revealing
     || revealedSet.has(item.id);
-
 
   return (
     <article
@@ -988,7 +961,6 @@ function MessageRow({
   );
 }
 
-
 export default function AiChat() {
   const navigate = useNavigate();
 
@@ -997,7 +969,6 @@ export default function AiChat() {
   // رشته‌ی فعال از URL می‌آید — /ai/c/:convId
   // (ورود به /ai فهرست تاریخچه است، نه این صفحه)
   const activeConv = convId || LEGACY_ID;
-
 
   // live = پیام‌های همین رشته — یک بار از کوئری
   // بذر می‌شود و بعد خوش‌بینانه رشد می‌کند
@@ -1009,7 +980,6 @@ export default function AiChat() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [previewUrl, setPreviewUrl] = useState('');
-
 
   const [showHistory, setShowHistory] =
     useState(false);
@@ -1029,7 +999,6 @@ export default function AiChat() {
   // کافی نیست)
   const [seedTick, setSeedTick] = useState(0);
 
-
   const fileInputRef = useRef(null);
   const recorderRef = useRef(null);
   const recordingStreamRef = useRef(null);
@@ -1045,10 +1014,8 @@ export default function AiChat() {
   // (در همین نشستِ رشته معتبر است)
   const revealedRef = useRef(new Set());
 
-
   const toast = useUIStore((state) => state.toast);
   const queryClient = useQueryClient();
-
 
   const handleRevealDone = useCallback(
     (id) => {
@@ -1058,7 +1025,6 @@ export default function AiChat() {
     },
     [],
   );
-
 
   const handleRevealTick = useCallback(() => {
     // متن در حال رشد است — اگر کاربر نزدیک ته
@@ -1070,7 +1036,6 @@ export default function AiChat() {
       );
     }
   }, []);
-
 
   const {
     data: status,
@@ -1084,7 +1049,6 @@ export default function AiChat() {
 
     refetchInterval: 60_000,
   });
-
 
   // فهرست گفت‌وگوها — برای عنوان صفحه و شیت
   // سوییچ سریع
@@ -1110,7 +1074,6 @@ export default function AiChat() {
 
   const conversations =
     convData?.conversations || [];
-
 
   // پیام‌های رشته‌ی فعال — enabled نیاز نیست:
   // id نامعتبر با ۴۰۴ به فهرست هدایت می‌شود و
@@ -1150,7 +1113,6 @@ export default function AiChat() {
     refetchOnWindowFocus: false,
   });
 
-
   // رشته‌ی ناشناخته (حذف‌شده در جای دیگر)
   useEffect(() => {
     const status404 =
@@ -1174,7 +1136,6 @@ export default function AiChat() {
     navigate,
     toast,
   ]);
-
 
   // بذردهی live — فقط یک‌بار (این نمونه‌ی
   // کامپوننت به هر convId ری‌ماونت می‌شود)
@@ -1222,7 +1183,6 @@ export default function AiChat() {
     setSeedTick((tick) => tick + 1);
   }, [msgsQuery.data, activeConv]);
 
-
   // بازیابی موقعیت اسکرول همین رشته — دو فریم
   // بعد از رندر تا ارتفاع محتوا پایدار شده باشد
   useEffect(() => {
@@ -1258,7 +1218,6 @@ export default function AiChat() {
     return () =>
       window.cancelAnimationFrame(frames);
   }, [seedTick, activeConv]);
-
 
   // شنونده‌ی اسکرول — ذخیره‌ی موقعیت رشته‌ی
   // فعال + تشخیص نزدیکی به انتها
@@ -1298,7 +1257,6 @@ export default function AiChat() {
       );
   }, [activeConv]);
 
-
   const maxMediaBytes = (
     Number(status?.max_media_bytes)
     || FALLBACK_MAX_MEDIA_BYTES
@@ -1319,7 +1277,6 @@ export default function AiChat() {
 
   const selectedKind = fileKind(selectedFile);
 
-
   useEffect(() => {
     if (!selectedFile) {
       setPreviewUrl('');
@@ -1331,7 +1288,6 @@ export default function AiChat() {
 
     return () => URL.revokeObjectURL(url);
   }, [selectedFile]);
-
 
   useEffect(() => () => {
     if (recordingTimerRef.current) {
@@ -1349,7 +1305,6 @@ export default function AiChat() {
       ?.getTracks?.()
       .forEach((track) => track.stop());
   }, []);
-
 
   const askMutation = useMutation({
     mutationFn: ({ message, file, conv }) => {
@@ -1516,7 +1471,6 @@ export default function AiChat() {
     },
   });
 
-
   // اسکرول خودکار نرم — با پیام جدید یا ظاهرشدن
   // حباب تایپینگ، فقط وقتی کاربر نزدیک انتهاست
   useEffect(() => {
@@ -1534,7 +1488,6 @@ export default function AiChat() {
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.length, askMutation.isPending]);
-
 
   const clearReferenceMutation = useMutation({
     mutationFn: () => api.delete('/api/ai/reference'),
@@ -1563,7 +1516,6 @@ export default function AiChat() {
     },
   });
 
-
   /* 🌊 W7 — قفل دسترسی ai_chat (از خطای پیام‌ها یا ارسال) */
   const chatLock = (
     isSubscriptionLock(msgsQuery.error)
@@ -1572,7 +1524,6 @@ export default function AiChat() {
         ? askMutation.error
         : null
   );
-
 
   const reportMutation = useMutation({
     mutationFn: ({ question, answer }) => api.post(
@@ -1606,7 +1557,6 @@ export default function AiChat() {
       );
     },
   });
-
 
   // ساخت گفت‌وگوی جدید از داخل چت — کش بذر
   // می‌شود و مستقیم به رشته‌ی تازه می‌رویم
@@ -1648,7 +1598,6 @@ export default function AiChat() {
     },
   });
 
-
   // اکشن‌های مشترک — رفتار حذفِ رشته‌ی باز در
   // چت متفاوت است: به فهرست برمی‌گردیم (یا در
   // legacy جایمان می‌مانیم و live خالی می‌شود)
@@ -1672,12 +1621,10 @@ export default function AiChat() {
     },
   });
 
-
   const sheetBusy = (
     createConvMutation.isPending
     || actionsBusy
   );
-
 
   const remaining = status?.unlimited
     ? 'نامحدود'
@@ -1694,7 +1641,6 @@ export default function AiChat() {
       || Boolean(selectedFile)
     )
   );
-
 
   const chooseFile = (file) => {
     if (!file) {
@@ -1761,7 +1707,6 @@ export default function AiChat() {
     haptic('light');
   };
 
-
   const handleFileInput = (event) => {
     chooseFile(
       event.target.files?.[0],
@@ -1770,13 +1715,11 @@ export default function AiChat() {
     event.target.value = '';
   };
 
-
   const removeSelectedFile = () => {
     setSelectedFile(null);
     setUploadProgress(0);
     haptic('light');
   };
-
 
   const send = (
     customMessage,
@@ -1860,7 +1803,6 @@ export default function AiChat() {
     });
   };
 
-
   const runSuggestion = (item) => {
     // کارت «تحلیل تصاویر» مستقیم فایل‌پیکر
     // را باز می‌کند تا مسیر کاربر کوتاه شود
@@ -1876,7 +1818,6 @@ export default function AiChat() {
       ignoreFile: true,
     });
   };
-
 
   const followUp = (type) => {
     const prompts = {
@@ -1897,7 +1838,6 @@ export default function AiChat() {
       },
     );
   };
-
 
   const copyAnswer = async (text) => {
     const ok = await copyText(
@@ -1920,7 +1860,6 @@ export default function AiChat() {
       );
     }
   };
-
 
   const reportAnswer = (
     answer,
@@ -1954,7 +1893,6 @@ export default function AiChat() {
     });
   };
 
-
   const openConversation = (item) => {
     if (item.id === activeConv) {
       setShowHistory(false);
@@ -1967,7 +1905,6 @@ export default function AiChat() {
     navigate(`/ai/c/${item.id}`);
   };
 
-
   const typingLabel = (
     uploadProgress > 0
     && uploadProgress < 100
@@ -1976,7 +1913,6 @@ export default function AiChat() {
         ? 'فایل رسید؛ هوشیار در حال بررسی است...'
         : 'هوشیار در حال نوشتن است...'
   );
-
 
   const stopRecording = () => {
     const recorder = recorderRef.current;
@@ -1988,7 +1924,6 @@ export default function AiChat() {
       recorder.stop();
     }
   };
-
 
   const startRecording = async () => {
     if (
@@ -2175,7 +2110,6 @@ export default function AiChat() {
     }
   };
 
-
   // عنوان زیرتیتر هدر — نام خودِ رشته‌ی فعال
   const currentItem = conversations.find(
     (item) => item.id === activeConv,
@@ -2189,7 +2123,6 @@ export default function AiChat() {
         : 'دستیار هوشمند هامزیار'
     )
   );
-
 
   const headerAction = (
     <div
@@ -2213,7 +2146,7 @@ export default function AiChat() {
         aria-label="تماس صوتی زنده با هوشیار"
         title="تماس صوتی زنده (Gemini Live)"
       >
-        🎙 زنده
+        <Glyph value="🎙" /> زنده
       </button>
 
       <button
@@ -2261,7 +2194,6 @@ export default function AiChat() {
       </button>
     </div>
   );
-
 
   return (
     <>
@@ -2475,7 +2407,7 @@ export default function AiChat() {
                 className="btn btn-full"
                 onClick={() => msgsQuery.refetch()}
               >
-                🌐 دریافت پیام‌ها ناموفق بود — تلاش دوباره
+                <Glyph value="🌐" /> دریافت پیام‌ها ناموفق بود — تلاش دوباره
               </button>
             )
           }
@@ -2518,7 +2450,7 @@ export default function AiChat() {
                         }
                       >
                         <span className="sugg__icon">
-                          {item.icon}
+                          <Glyph value={item.icon} />
                         </span>
 
                         <span className="sugg__txt">

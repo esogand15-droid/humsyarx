@@ -17,12 +17,12 @@ import PageError from '../../components/shared/PageError';
 import EmptyState from '../../components/shared/EmptyState';
 
 import { haptic } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 /* 👑 موج P2 Prestige — میدان رقابت:
    ماتریس بازه × دامنه × تب (کاملاً سرورمحور)
    + ردیف چسبان «من» با Jump هفتگی + رقبا.
    هیچ فرمول رتبه‌بندی در FE نیست. */
-
 
 
 const RANGES = [
@@ -187,7 +187,7 @@ export default function Leaderboard() {
 
       <div style={{ flex: 1 }}>
         <NameChip
-          icon={row.icon}
+          icon=<Glyph value={row.icon} />
           name={
             row.is_me
               ? `${row.name} (تو)`
@@ -300,7 +300,7 @@ export default function Leaderboard() {
 
             <div style={{ flex: 1 }}>
               <NameChip
-                icon={me.icon}
+                icon=<Glyph value={me.icon} />
                 name="تو"
                 color={me.color}
                 roman={me.roman}
@@ -338,7 +338,7 @@ export default function Leaderboard() {
           >
             {data?.rival_above && (
               <span>
-                ⬆️ {data.rival_above.icon}{' '}
+                ⬆️ <Glyph value={data.rival_above.icon} />{' '}
                 {data.rival_above.name} · فاصله{' '}
                 {faNum(data.rival_above.gap)} XP
               </span>
@@ -346,7 +346,7 @@ export default function Leaderboard() {
 
             {data?.rival_below && (
               <span>
-                ⬇️ {data.rival_below.icon}{' '}
+                ⬇️ <Glyph value={data.rival_below.icon} />{' '}
                 {data.rival_below.name} · فاصله{' '}
                 {faNum(data.rival_below.gap)} XP
               </span>

@@ -1,3 +1,4 @@
+
 import {
   useEffect,
 } from 'react';
@@ -5,7 +6,7 @@ import {
 import {
   haptic,
 } from '../../lib/telegram';
-
+import { Glyph } from '../ui/Icon';
 
 /* ─────────────────────────────────────────────
    اکشن‌شیت عملیات روی یک گفت‌وگو — هفت عمل
@@ -13,7 +14,6 @@ import {
    سوییچ سریع داخل چت) استفاده می‌شود تا الگوی
    تعامل کاملاً یکسان بماند.
 ───────────────────────────────────────────── */
-
 
 function buildActions(item) {
   const actions = [];
@@ -89,7 +89,6 @@ function buildActions(item) {
   return actions;
 }
 
-
 export default function ConvActionSheet({
   conv,
   busy = false,
@@ -116,9 +115,7 @@ export default function ConvActionSheet({
       );
   }, [onClose]);
 
-
   const actions = buildActions(conv);
-
 
   const run = (action) => {
     haptic('light');
@@ -127,7 +124,6 @@ export default function ConvActionSheet({
 
     onAction(action.id);
   };
-
 
   return (
     // لایه‌ی بالاتر از شیت تاریخچه (۳۰۰) تا در
@@ -191,7 +187,7 @@ export default function ConvActionSheet({
             disabled={busy}
           >
             <span className="more-sheet__item-icon">
-              {action.icon}
+              <Glyph value={action.icon} />
             </span>
 
             <span className="more-sheet__item-text">

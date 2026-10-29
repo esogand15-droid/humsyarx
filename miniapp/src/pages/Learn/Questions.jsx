@@ -41,7 +41,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 const DIFFICULTIES = [
   [
@@ -60,14 +60,12 @@ const DIFFICULTIES = [
   ],
 ];
 
-
 const LETTERS = [
   'الف',
   'ب',
   'ج',
   'د',
 ];
-
 
 function ResultBox({
   result,
@@ -140,7 +138,7 @@ function ResultBox({
 
           {prestige.display?.title && (
             <span>
-              {prestige.display.icon}{' '}
+              <Glyph value={prestige.display.icon} />{' '}
               {prestige.display.title}{' '}
               {prestige.display.stars}
             </span>
@@ -193,7 +191,6 @@ function ResultBox({
   );
 }
 
-
 function DesignQuestion({
   onBack,
 }) {
@@ -224,7 +221,6 @@ function DesignQuestion({
   const queryClient =
     useQueryClient();
 
-
   const {
     data: lessons = [],
   } = useQuery({
@@ -246,7 +242,6 @@ function DesignQuestion({
     staleTime:
       10 * 60 * 1000,
   });
-
 
   const {
     data: topics = [],
@@ -277,7 +272,6 @@ function DesignQuestion({
     staleTime:
       10 * 60 * 1000,
   });
-
 
   const mutation =
     useMutation({
@@ -341,13 +335,11 @@ function DesignQuestion({
         ),
     });
 
-
   const normalizedOptions =
     form.options.map(
       (item) =>
         item.trim()
     );
-
 
   const valid =
     form.lesson.trim() &&
@@ -361,7 +353,6 @@ function DesignQuestion({
     new Set(
       normalizedOptions
     ).size === 4;
-
 
   return (
     <>
@@ -444,7 +435,6 @@ function DesignQuestion({
             </div>
           </div>
         </section>
-
 
         <section
           className="card"
@@ -717,7 +707,6 @@ function DesignQuestion({
   );
 }
 
-
 export default function Questions() {
   const [
     params,
@@ -879,7 +868,6 @@ export default function Questions() {
   const queryClient =
     useQueryClient();
 
-
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
@@ -904,7 +892,6 @@ export default function Questions() {
     staleTime:
       10 * 60 * 1000,
   });
-
 
   const fetchQuestion =
     useCallback(
@@ -1059,7 +1046,6 @@ export default function Questions() {
       ]
     );
 
-
   const answerMutation =
     useMutation({
       mutationFn: ({
@@ -1161,7 +1147,6 @@ export default function Questions() {
         ),
     });
 
-
   const start = (
     practiceMode,
     lesson = null
@@ -1192,7 +1177,6 @@ export default function Questions() {
     );
   };
 
-
   const next = () => {
     const nextExcluded =
       question
@@ -1212,7 +1196,6 @@ export default function Questions() {
       nextExcluded
     );
   };
-
 
   /* 🤖 EP-01 — ساخت سؤال تمرینی هوشمند وقتی بانک درس
      تمام شده (سرور سهمیه‌ی روزانه و per-مبحث را اعمال می‌کند) */
@@ -1308,7 +1291,6 @@ export default function Questions() {
       }
     };
 
-
   /* 📨 EP-01 — پیشنهاد سؤال هوشمند به بانک سؤالات
      (پس از تأیید، عمومی می‌شود) */
   const proposeAi =
@@ -1361,12 +1343,10 @@ export default function Questions() {
       }
     };
 
-
   const [
     lockErr,
     setLockErr,
   ] = useState(null);
-
 
   const back = () => {
     setLockErr(null);
@@ -1375,7 +1355,6 @@ export default function Questions() {
     setResult(null);
   };
 
-
   if (view === 'design') {
     return (
       <DesignQuestion
@@ -1383,7 +1362,6 @@ export default function Questions() {
       />
     );
   }
-
 
   /* 🌊 W7 — پی‌وال بانک سؤال */
   if (lockErr) {
@@ -1397,7 +1375,6 @@ export default function Questions() {
       </main>
     );
   }
-
 
   const modeTitle =
     mode === 'weak'
@@ -1508,9 +1485,8 @@ export default function Questions() {
               </div>
             </section>
 
-
             <section className="card" style={{ marginBottom: 17, padding: 12 }}>
-              <b style={{ fontSize: 'var(--fs-cap)' }}>🌊 فیلتر سال و منبع (اختیاری)</b>
+              <b style={{ fontSize: 'var(--fs-cap)' }}><Glyph value="🌊" /> فیلتر سال و منبع (اختیاری)</b>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
                 <select className="inp" value={yearFrom} onChange={(e) => setYearFrom(e.target.value)}>
                   <option value="">از همه سال‌ها</option>
@@ -1536,7 +1512,6 @@ export default function Questions() {
                 </div>
               )}
             </section>
-
 
             <div
               style={{
@@ -1632,7 +1607,6 @@ export default function Questions() {
                 <span>←</span>
               </button>
 
-
               <button
                 className={
                   'card card-tap'
@@ -1714,7 +1688,6 @@ export default function Questions() {
 
                 <span>←</span>
               </button>
-
 
               <button
                 className={
@@ -1800,7 +1773,6 @@ export default function Questions() {
               </button>
             </div>
 
-
             <div className="sec-title">
               تمرین آزاد براساس درس
             </div>
@@ -1813,7 +1785,7 @@ export default function Questions() {
                 className="btn btn-full"
                 onClick={() => refetchLessons()}
               >
-                🌐 دریافت درس‌ها ناموفق بود — تلاش دوباره
+                <Glyph value="🌐" /> دریافت درس‌ها ناموفق بود — تلاش دوباره
               </button>
             ) : (
               <section className="grid2">
@@ -1906,7 +1878,6 @@ export default function Questions() {
               </section>
             )}
 
-
             <div
               style={{
                 display:
@@ -1930,7 +1901,7 @@ export default function Questions() {
                   )
                 }
               >
-                ✍️ طراحی سؤال
+                <Glyph value="✍️" /> طراحی سؤال
               </button>
 
               <button
@@ -1947,7 +1918,7 @@ export default function Questions() {
                   )
                 }
               >
-                📋 سؤال‌های من
+                <Glyph value="📋" /> سؤال‌های من
               </button>
             </div>
           </>
@@ -2003,7 +1974,7 @@ export default function Questions() {
                       6,
                   }}
                 >
-                  🤖 هوشیار می‌تواند برای این درس سؤال تازه‌ی
+                  <Glyph value="🤖" /> هوشیار می‌تواند برای این درس سؤال تازه‌ی
                   اختصاصی بسازد و دوباره به چالشت بکشد.
                   سقف روزانه محدود است و پاسخ‌های تشریحی دارد.
                 </div>
@@ -2128,7 +2099,7 @@ export default function Questions() {
                         1.9,
                     }}
                   >
-                    📨 این سؤال هوشمند را برای بانک سؤالات
+                    <Glyph value="📨" /> این سؤال هوشمند را برای بانک سؤالات
                     پیشنهاد می‌دهی؟ پس از بازبینی مدیر، برای
                     همه‌ی دانشجوها منتشر می‌شود.
                   </div>

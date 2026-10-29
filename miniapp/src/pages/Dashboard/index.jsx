@@ -15,6 +15,9 @@ import {
   HomeGreeting,
   NextExamCard,
   QuickGrid,
+  ContinueCard,
+  WeeklyGoalCard,
+  NotesCard,
 } from '../../components/home/HomeV3';
 import Icon from '../../components/ui/Icon';
 import PrestigeHero from '../../components/shared/PrestigeHero';
@@ -26,9 +29,9 @@ import {
   DashboardSkeleton,
 } from '../../components/shared/skeletons';
 import { haptic, tg } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 /* 👑 موج P2 Prestige — ارقام فارسی کوتاه */
-
 
 /* ⚔️ کارت «چالش ارتقا آماده است» — از نمای
    چالش داخل همان پیلود یکتای ['prestige'] */
@@ -72,7 +75,7 @@ export function ChallengeCard() {
 
         <div style={{ flex: 1 }}>
           <b style={{ fontSize: 'var(--fs-sm)' }}>
-            چالش ارتقا آماده است — {ch.icon}{' '}
+            چالش ارتقا آماده است — <Glyph value={ch.icon} />{' '}
             {ch.title}
           </b>
 
@@ -198,7 +201,7 @@ export function FeedCard() {
         className="sec-title"
         style={{ margin: 0 }}
       >
-        ✨ تازه‌های میدان
+        <Glyph value="✨" /> تازه‌های میدان
       </div>
 
       {items.map((item) => (
@@ -285,8 +288,6 @@ export const openExternal = (url) => {
 
 
 
-
-
 /* ✅ سلام متناسب با ساعت روز —
    میکروجزئیتی که محصول را زنده
    و شخصی حس می‌کند */
@@ -300,6 +301,7 @@ const dayGreeting = () => {
   if (hour >= 17 && hour < 20)
     return 'عصر بخیر 🌆';
   return 'شب بخیر 🌙';
+
 };
 
 function Ring({
@@ -580,6 +582,10 @@ export default function Dashboard() {
     setTab,
   ] = useState('stats');
 
+  /* 🎯 شیت تنظیم هدف هفتگی — فقط وقتی کاربر بازش کند */
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalPick, setGoalPick] = useState(5);
+
   const {
     data,
     isLoading,
@@ -789,6 +795,28 @@ export default function Dashboard() {
               onNavigate={navigate}
             />
 
+            {/* 📖/🎯/🗒 سه بلوک پروتوتایپ — با دادهٔ واقعی.
+                هرکدام داده نداشت، خودش را کامل پنهان می‌کند. */}
+            <ContinueCard
+              onOpen={(item) =>
+                navigate(
+                  `/learn/resources?hl=${encodeURIComponent(item.id)}`
+                )
+              }
+            />
+
+            <WeeklyGoalCard
+              onSetGoal={(current) => {
+                setGoalPick(current || 5);
+                setGoalOpen(true);
+              }}
+            />
+
+            <NotesCard
+              onOpen={() =>
+                navigate('/learn/resources')
+              }
+            />
 
             {/* 👑 موج P0 — بریف فشرده‌ی
                 Prestige (جری/هدف/استریک) */}
@@ -873,7 +901,7 @@ export default function Dashboard() {
                     color: 'var(--t-pink)',
                   }}
                 >
-                  💙 حمایت
+                  <Glyph value="💙" /> حمایت
                 </span>
               </button>
             )}
@@ -1006,7 +1034,7 @@ export default function Dashboard() {
                   0 && (
                   <section className="card">
                     <div className="sec-title">
-                      ⚡ مباحث نیازمند تمرین
+                      <Glyph value="⚡" /> مباحث نیازمند تمرین
                     </div>
 
                     <div
@@ -1091,7 +1119,7 @@ export default function Dashboard() {
                 {exams.length ===
                 0 ? (
                   <div className="empty card">
-                    📭 امتحانی در هفت روز
+                    <Glyph value="📭" /> امتحانی در هفت روز
                     آینده ثبت نشده است.
                   </div>
                 ) : (
@@ -1242,7 +1270,7 @@ export default function Dashboard() {
             {tab === 'rank' && (
               <section className="card">
                 <div className="sec-title">
-                  🏆 برترین دانشجویان
+                  <Glyph value="🏆" /> برترین دانشجویان
                 </div>
 
                 {rankLoading ? (

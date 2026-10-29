@@ -40,7 +40,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
-
+import { Glyph } from '../../components/ui/Icon';
 
 const clock = (seconds) => {
   if (seconds == null) {
@@ -71,7 +71,6 @@ const clock = (seconds) => {
   );
 };
 
-
 const STATUS = {
   active: [
     'در حال انجام',
@@ -97,7 +96,6 @@ const STATUS = {
     '⏹',
   ],
 };
-
 
 export default function ExamCenter() {
   const [
@@ -193,7 +191,6 @@ export default function ExamCenter() {
   const queryClient =
     useQueryClient();
 
-
   const {
     data: lessons = [],
     isLoading: lessonsLoading,
@@ -218,7 +215,6 @@ export default function ExamCenter() {
     staleTime:
       10 * 60 * 1000,
   });
-
 
   const {
     data: topics = [],
@@ -250,7 +246,6 @@ export default function ExamCenter() {
       10 * 60 * 1000,
   });
 
-
   const {
     data: history = [],
     isLoading: historyLoading,
@@ -276,7 +271,6 @@ export default function ExamCenter() {
     enabled:
       view === 'history',
   });
-
 
   const refreshHistory = () =>
     queryClient.invalidateQueries({
@@ -309,7 +303,6 @@ export default function ExamCenter() {
       );
     }
   };
-
 
   const loadNext = async (
     sessionId
@@ -366,7 +359,6 @@ export default function ExamCenter() {
       setView('history');
     }
   };
-
 
   const startMutation =
     useMutation({
@@ -429,7 +421,6 @@ export default function ExamCenter() {
           'error'
         ),
     });
-
 
   const answerMutation =
     useMutation({
@@ -547,7 +538,6 @@ export default function ExamCenter() {
         );
       },
     });
-
 
   const abandonMutation =
     useMutation({
@@ -701,7 +691,6 @@ export default function ExamCenter() {
       },
     });
 
-
   useEffect(() => {
     if (
       view !== 'active' ||
@@ -750,7 +739,6 @@ export default function ExamCenter() {
     secondsLeft,
   ]);
 
-
   const resume = async (
     item
   ) => {
@@ -771,7 +759,6 @@ export default function ExamCenter() {
       item.session_id
     );
   };
-
 
   if (view === 'active') {
     const total =
@@ -872,7 +859,6 @@ export default function ExamCenter() {
               </span>
             </div>
           </section>
-
 
           {!question ? (
             <div
@@ -986,7 +972,7 @@ export default function ExamCenter() {
 
                         {display?.title && (
                           <span>
-                            {display.icon}{' '}
+                            <Glyph value={display.icon} />{' '}
                             {display.title}{' '}
                             {display.stars}
                           </span>
@@ -1039,7 +1025,6 @@ export default function ExamCenter() {
             </>
           )}
 
-
           <button
             className={
               'btn btn-d btn-full'
@@ -1081,7 +1066,6 @@ export default function ExamCenter() {
       </>
     );
   }
-
 
   /* ⚔️ موج P1 — کارت معارفه/قفل چالش ارتقا */
   if (view === 'promo') {
@@ -1209,7 +1193,7 @@ export default function ExamCenter() {
                   lineHeight: 2,
                 }}
               >
-                🔒 پیش‌شرط‌ها: بهترین استریک ≥{' '}
+                <Glyph value="🔒" /> پیش‌شرط‌ها: بهترین استریک ≥{' '}
                 {ch?.need?.streak_best ?? '—'}{' '}
                 روز (الان:{' '}
                 {ch?.have?.streak_best ?? 0})
@@ -1537,7 +1521,6 @@ export default function ExamCenter() {
     );
   }
 
-
   if (view === 'history') {
     const rows =
       Array.isArray(history)
@@ -1744,7 +1727,7 @@ export default function ExamCenter() {
                             )
                           }
                         >
-                          📄 دانلود PDF
+                          <Glyph value="📄" /> دانلود PDF
                         </button>
                       )}
 
@@ -1772,7 +1755,6 @@ export default function ExamCenter() {
       </>
     );
   }
-
 
   return (
     <>
@@ -1862,7 +1844,6 @@ export default function ExamCenter() {
           </div>
         </section>
 
-
         <button
           className={
             'btn btn-dark btn-full'
@@ -1874,9 +1855,8 @@ export default function ExamCenter() {
             setView('history')
           }
         >
-          🕘 تاریخچه و ادامه آزمون
+          <Glyph value="🕘" /> تاریخچه و ادامه آزمون
         </button>
-
 
         <section
           className="card"
@@ -1925,7 +1905,7 @@ export default function ExamCenter() {
 
               {lessonsError && lessons.length === 0 && (
                 <option value="" disabled>
-                  🌐 دریافت درس‌ها ناموفق بود
+                  <Glyph value="🌐" /> دریافت درس‌ها ناموفق بود
                 </option>
               )}
 
@@ -2148,7 +2128,7 @@ export default function ExamCenter() {
                   cursor: 'pointer',
                 }}
               >
-                <div style={{ fontSize: 18 }}>{m.icon}</div>
+                <div style={{ fontSize: 18 }}><Glyph value={m.icon} /></div>
                 <div
                   style={{
                     fontSize: 'var(--fs-cap)',

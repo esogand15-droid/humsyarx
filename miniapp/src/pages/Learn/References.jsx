@@ -39,6 +39,7 @@ import {
   useUIStore,
 } from '../../stores/uiStore';
 import { useSearchParams } from 'react-router-dom';
+import { Glyph } from '../../components/ui/Icon';
 
 
 function safeArray(value) {
@@ -942,7 +943,7 @@ function ReferencesPage({ hlFlash = false }) {
                             .isPending
                         }
                       >
-                        🌐 لاتین
+                        <Glyph value="🌐" /> لاتین
 
                         <span
                           className="badge b-gray"

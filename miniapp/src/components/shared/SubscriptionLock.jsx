@@ -11,7 +11,7 @@ import api from '../../lib/api';
 import {
   haptic,
 } from '../../lib/telegram';
-
+import { Glyph } from '../ui/Icon';
 
 /* ─────────────────────────────────────────────
    🔒 صفحه‌ی قفل اشتراک (Sync با ربات)
@@ -48,7 +48,6 @@ const BENEFITS = [
 ];
 
 
-
 /* تشخیص قفل اشتراک — W8 هسته: بک‌اند {code: SUB_REQUIRED} برمی‌گرداند
    (402 یا 403). برای سازگاری عقب‌رو، رشته‌ی قدیمی هم پذیرفته می‌شود. */
 export function isSubscriptionLock(
@@ -68,7 +67,6 @@ export function isSubscriptionLock(
   );
 }
 
-
 /* 🌊 W7 — نوع قفل از روی خطا: بنر/پی‌وال درست + ایونت درست */
 export function lockKind(
   error,
@@ -80,7 +78,6 @@ export function lockKind(
   if (code === 'QUOTA_EXHAUSTED') return { kind: 'quota', feature };
   return { kind: 'sub', feature };
 }
-
 
 export default function SubscriptionLock({
   feature = 'این بخش',
@@ -97,7 +94,6 @@ export default function SubscriptionLock({
       feature: featureKey, event: 'paywall_viewed', extra: { mode },
     }).catch(() => {});
   }, [featureKey]);
-
 
   const goPlans = () => {
     haptic('light');
@@ -198,7 +194,7 @@ export default function SubscriptionLock({
         {BENEFITS.map(
           (item) => (
             <div
-              key={item.icon}
+              key=<Glyph value={item.icon} />
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -223,7 +219,7 @@ export default function SubscriptionLock({
                   flexShrink: 0,
                 }}
               >
-                {item.icon}
+                <Glyph value={item.icon} />
               </span>
 
               <span>{item.text}</span>
@@ -243,7 +239,7 @@ export default function SubscriptionLock({
           }}
           onClick={goPlans}
         >
-          💎 مشاهده پلن‌ها و فعال‌سازی
+          <Glyph value="💎" /> مشاهده پلن‌ها و فعال‌سازی
         </button>
       )}
     </section>

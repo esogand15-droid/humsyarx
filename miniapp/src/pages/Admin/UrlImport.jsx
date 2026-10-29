@@ -5,6 +5,7 @@ import Header from '../../components/layout/Header';
 import EmptyState from '../../components/shared/EmptyState';
 import { haptic, hapticNotif } from '../../lib/telegram';
 import { useUIStore } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 /* 📥 URL-Import — درون‌ریزی محتوای راه‌دور.
    فایل روی سرور دریافت و مستقیم به تلگرام منتقل می‌شود؛
@@ -84,7 +85,7 @@ export default function UrlImport() {
       <Header title="درون‌ریزی از URL" back />
       <main className="page" style={{ padding: 'var(--sp-4)', display: 'grid', gap: 'var(--sp-3)' }}>
         <section className="card">
-          <div className="sec-title">📥 درون‌ریزی محتوا از URL</div>
+          <div className="sec-title"><Glyph value="📥" /> درون‌ریزی محتوا از URL</div>
           <div style={{ color: 'var(--tx2)', fontSize: 'var(--fs-cap)', lineHeight: 1.8 }}>
             فایل روی سرور دریافت و مستقیماً به تلگرام منتقل می‌شود —
             دانلود و آپلود دستی لازم نیست.
@@ -127,7 +128,7 @@ export default function UrlImport() {
 
             <button type="button" className="btn btn-pri" disabled={busy || !url.trim()}
               onClick={() => { haptic('medium'); submit(); }}>
-              📥 شروع درون‌ریزی
+              <Glyph value="📥" /> شروع درون‌ریزی
             </button>
           </div>
         </section>

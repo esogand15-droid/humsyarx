@@ -35,6 +35,7 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
 
 
 
@@ -370,7 +371,7 @@ export function AdminTickets() {
 
 
               <div className="sec-title">
-                💬 گفت‌وگو
+                <Glyph value="💬" /> گفت‌وگو
               </div>
 
 
@@ -1509,7 +1510,7 @@ export function PollAdmin() {
           }}
         >
           <div className="sec-title">
-            📡 تنظیم کانال
+            <Glyph value="📡" /> تنظیم کانال
           </div>
 
           <div
@@ -1562,7 +1563,7 @@ export function PollAdmin() {
           }}
         >
           <div className="sec-title">
-            📊 نظرسنجی جدید
+            <Glyph value="📊" /> نظرسنجی جدید
           </div>
 
           <textarea
@@ -1896,7 +1897,7 @@ export function NotificationsAdmin() {
           }}
         >
           <div className="sec-title">
-            ⚙️ تنظیم فاصله ارسال منابع
+            <Glyph value="⚙️" /> تنظیم فاصله ارسال منابع
           </div>
 
           <div
@@ -1991,7 +1992,7 @@ export function NotificationsAdmin() {
 
 
         <div className="sec-title">
-          🕘 تاریخچه اجرا
+          <Glyph value="🕘" /> تاریخچه اجرا
         </div>
 
 

@@ -231,3 +231,166 @@
     display: none;
   }
 }
+
+
+/* ── کارت «ادامهٔ مطالعه» ── */
+.v3-continue {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 11px 12px 12px;
+  border-radius: var(--r-lg, 16px);
+  border: 1px solid var(--hym-border-default);
+  background: linear-gradient(150deg, rgba(61, 134, 255, .13), var(--hym-bg-surface) 62%);
+  color: var(--tx);
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.v3-continue__top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--txm);
+}
+
+.v3-continue__pct {
+  margin-inline-start: auto;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--hym-text-link);
+}
+
+.v3-continue__title {
+  font-size: 13px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-continue__meta {
+  font-size: 10.5px;
+  color: var(--tx3);
+}
+
+.v3-continue__bar {
+  display: block;
+  height: 4px;
+  margin-top: 3px;
+  border-radius: 999px;
+  background: rgba(120, 155, 210, .16);
+  overflow: hidden;
+}
+
+.v3-continue__bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3D86FF, #2ADAD7);
+}
+
+/* ── کارت «هدف هفتگی» ── */
+.v3-goal {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border-radius: var(--r-lg, 16px);
+  border: 1px solid var(--hym-border-default);
+  background: var(--hym-bg-surface);
+}
+
+.v3-goal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.v3-goal__edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--hym-border-default);
+  background: transparent;
+  color: var(--tx2);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.v3-goal__nums {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.v3-goal__nums b {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--hym-text-link);
+  font-variant-numeric: tabular-nums;
+}
+
+.v3-goal__nums span {
+  font-size: 11px;
+  color: var(--tx2);
+}
+
+.v3-goal__nums i {
+  margin-inline-start: auto;
+  font-style: normal;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--hym-accent-default);
+}
+
+.v3-goal__dots {
+  display: flex;
+  gap: 4px;
+}
+
+.v3-goal__dots span {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(120, 155, 210, .16);
+}
+
+.v3-goal__dots span.is-on {
+  background: linear-gradient(90deg, #3D86FF, #2ADAD7);
+}
+
+.v3-goal__foot {
+  font-size: 10px;
+  color: var(--tx3);
+}
+
+/* ── شیت تنظیم هدف ── */
+.v3-goalpick {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.v3-goalpick button {
+  padding: 9px 0;
+  border-radius: 9px;
+  border: 1px solid var(--hym-border-default);
+  background: var(--hym-bg-surface-raised);
+  color: var(--tx2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.v3-goalpick button.is-on {
+  border-color: var(--hym-brand-default);
+  background: var(--hym-brand-subtle);
+  color: var(--hym-text-link);
+}
