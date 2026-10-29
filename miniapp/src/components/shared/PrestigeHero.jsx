@@ -123,14 +123,14 @@ function RivalLine({
       }}
     >
       {side === 'up'
-        ? `⚔️ تنها ${faDigits(
+        ? ` تنها ${faDigits(
             rival.gap
           )} XP با ${
             rival.icon || '🎓'
           } «${
             rival.name
           }» فاصله داری`
-        : `🛡 ${faDigits(
+    : `<Glyph value="🛡" /> ${faDigits(
             rival.gap
           )} XP جلوتر از ${
             rival.icon || '🎓'
@@ -191,10 +191,10 @@ export default function PrestigeHero({
   /* متن سپر: پاسخی یا زمانی، هرکدام فعال */
   const shieldText = shield.active
     ? number(shield.answers_left) > 0
-      ? `🛡 سپر: ${faDigits(
+      ? ` سپر: ${faDigits(
           shield.answers_left
         )} پاسخ`
-      : '🛡 سپر فعال'
+      : 'سپر فعال'
     : null;
 
   /* ── نسخه‌ی فشرده (داشبورد): یک ردیف
@@ -264,7 +264,7 @@ export default function PrestigeHero({
               whiteSpace: 'nowrap',
             }}
           >
-            🎯 {next.label || '—'}
+      <Glyph value="🎯" /> {next.label || '—'}
           </span>
 
           <span
@@ -288,7 +288,7 @@ export default function PrestigeHero({
               streak.current
             } روز`}
           >
-            🔥 {faDigits(streak.current)}
+      <Glyph value="🔥" /> {faDigits(streak.current)}
           </span>
         )}
       </Link>
@@ -371,7 +371,7 @@ export default function PrestigeHero({
         {/* Top٪ و رتبه‌ی عددی (غیر-lite) */}
         {data.top_pct != null && (
           <span className="pr-chip">
-            🏅 Top{' '}
+      <Glyph value="🏅" /> Top{' '}
             {faDigits(
               `${data.top_pct}٪`
             )}
@@ -408,11 +408,11 @@ export default function PrestigeHero({
             borderRadius: 'var(--r-md)',
           }}
         >
-          <Glyph value="⚠️" /> به‌خاطر رکود، یک دیویژن افت
+          <Glyph value="⚠️" />به‌خاطر رکود، یک دیویژن افت
           دادی: <Glyph value={data.demoted.icon} />{' '}
           {data.demoted.rank}{' '}
           {data.demoted.roman} — رنکت
-          محفوظ است، با چند سؤال برگرد 💪
+          محفوظ است، با چند سؤال برگرد 
         </div>
       )}
 
@@ -440,7 +440,7 @@ export default function PrestigeHero({
               lineHeight: 1.8,
             }}
           >
-            🎯 {next.label || '—'}
+      <Glyph value="🎯" /> {next.label || '—'}
           </span>
 
           <span
@@ -450,7 +450,7 @@ export default function PrestigeHero({
               whiteSpace: 'nowrap',
             }}
           >
-            ⚡ {faDigits(
+      <Glyph value="⚡" /> {faDigits(
               data.effective_xp
             )}{' '}
             XP
@@ -483,7 +483,7 @@ export default function PrestigeHero({
               lineHeight: 1.8,
             }}
           >
-            ⭐ {faDigits(
+      <Glyph value="⭐" /> {faDigits(
               data.overflow_xp
             )}{' '}
             XP مازاد ذخیره شده — بعد از
@@ -502,7 +502,7 @@ export default function PrestigeHero({
       >
         {number(streak.current) > 0 && (
           <span className="pr-chip">
-            🔥 {faDigits(streak.current)}{' '}
+      <Glyph value="🔥" /> {faDigits(streak.current)}{' '}
             روز
             {number(streak.best) >
               number(streak.current) && (
@@ -526,7 +526,7 @@ export default function PrestigeHero({
 
         {number(records.best_acc) > 0 && (
           <span className="pr-chip">
-            <Glyph value="🎯" /> بهترین دقت{' '}
+            <Glyph value="🎯" />بهترین دقت{' '}
             {faDigits(
               `${records.best_acc}٪`
             )}

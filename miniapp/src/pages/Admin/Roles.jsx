@@ -31,7 +31,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
-   🛡 مدیریت نقش‌ها — موج RBAC-W2 (قرارداد §۶)
+    مدیریت نقش‌ها — موج RBAC-W2 (قرارداد §۶)
    همه‌چیز داینامیک از /api/admin/rbac می‌آید:
    لیست نقش‌ها، رجیستری مجوزها، ساخت/ویرایش/حذف،
    ماتریس سوییچ‌های تکی دسته‌بندی‌شده. هیچ نقش/
@@ -93,7 +93,7 @@ export function AdminRoles() {
 
     onSuccess: () => {
       hapticNotif('success');
-      toast('✅ نقش ذخیره شد', 'success');
+      toast('نقش ذخیره شد', 'success');
       setMode('list');
       setDraft(null);
       refresh();
@@ -117,7 +117,7 @@ export function AdminRoles() {
 
     onSuccess: () => {
       hapticNotif('success');
-      toast('🗑 نقش حذف شد', 'success');
+      toast('نقش حذف شد', 'success');
       refresh();
     },
 
@@ -263,7 +263,7 @@ export function AdminRoles() {
             paddingInline: 12,
           }}
         >
-          {/* 🪪 مشخصات نقش */}
+          {/* مشخصات نقش */}
           <section
             className="card fade-up"
             style={{
@@ -373,7 +373,7 @@ export function AdminRoles() {
             </div>
           </section>
 
-          {/* 🎚 نوار ابزار ماتریس مجوزها */}
+          {/* نوار ابزار ماتریس مجوزها */}
           <section
             className="card fade-up"
             style={{
@@ -444,7 +444,7 @@ export function AdminRoles() {
             </div>
           </section>
 
-          {/* 🧩 ماتریس دسته‌بندی‌شده — از رجیستری سرور */}
+          {/* ماتریس دسته‌بندی‌شده — از رجیستری سرور */}
           {grouped.map((cat) =>
             cat.perms.length > 0 && (
               <section
@@ -573,7 +573,7 @@ export function AdminRoles() {
             ),
           )}
 
-          {/* 💾 اکشن‌ها */}
+          {/* اکشن‌ها */}
           <div
             style={{
               display: 'flex',
@@ -699,11 +699,11 @@ export function AdminRoles() {
                   <b style={{ fontSize: 'var(--fs-sm)' }}>{role.label}</b>
                   {role.system ? (
                     <span className="badge b-pur" style={{ fontSize: 'var(--fs-cap)' }}>
-                      <Glyph value="🔒" /> سیستمی
+                      <Glyph value="🔒" />سیستمی
                     </span>
                   ) : (
                     <span className="badge b-grn" style={{ fontSize: 'var(--fs-cap)' }}>
-                      <Glyph value="✨" /> دلخواه
+                      <Glyph value="✨" />دلخواه
                     </span>
                   )}
                   {!role.active && (
@@ -740,10 +740,10 @@ export function AdminRoles() {
                     flexWrap: 'wrap',
                   }}
                 >
-                  <span>🎚 {faNum(role.perm_count)} مجوز</span>
-                  <span>👥 {faNum(role.users_count)} کاربر</span>
+                  <span> {faNum(role.perm_count)} مجوز</span>
+                  <span> {faNum(role.users_count)} کاربر</span>
                   <span>⏫ اولویت {faNum(role.priority)}</span>
-                  <span>🗓 {faDate(role.updated_at)}</span>
+         <span><Glyph value="🗓" /> {faDate(role.updated_at)}</span>
                 </div>
               </div>
 
@@ -761,7 +761,7 @@ export function AdminRoles() {
                   style={{ minHeight: 30, fontSize: 'var(--fs-meta)', padding: '4px 9px' }}
                   onClick={() => startEdit(role)}
                 >
-                  ✏️
+         <Glyph value="✏️" />
                 </button>
                 <button
                   type="button"
@@ -789,7 +789,7 @@ export function AdminRoles() {
                     if (ok) deleteMutation.mutate(role.key);
                   }}
                 >
-                  🗑
+         <Glyph value="🗑" />
                 </button>
               </div>
             </div>

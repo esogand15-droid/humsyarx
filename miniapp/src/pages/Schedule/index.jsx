@@ -16,10 +16,8 @@ import { faNum, faDate } from '../../lib/format';
 
 import ScheduleOverview from './ScheduleOverview';
 import { buildStats, lessonTone, shortLesson } from '../../lib/scheduleEngine';
-import { Glyph } from '../../components/ui/Icon';
-
 /* ─────────────────────────────────────────────────────────────
-   📅 برنامهٔ درسی — بازسازی v3
+ برنامهٔ درسی — بازسازی v3
 
    چه چیزی عوض شد و چرا؟
    ─────────────────────
@@ -422,18 +420,24 @@ export default function Schedule() {
             mode={section}
             activeDay={activeDay}
             onPickDay={setActiveDay}
+            onOpenLesson={setOpenLesson}
           />
         )}
 
         {/* ── اکشن‌های پایین ── */}
-        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-          <button type="button" className="btn sm" disabled={calBusy} onClick={downloadCal}>
-            <Icon name="download" size={14} />
+        <div className="v3-actions">
+          <button
+            type="button"
+            className="btn sm is-primary"
+            disabled={calBusy}
+            onClick={downloadCal}
+          >
+            <Icon name="download" size={15} />
             {calBusy ? 'در حال ساخت…' : 'افزودن به تقویم'}
           </button>
 
           <button type="button" className="btn sm" onClick={() => refetch()}>
-            <Icon name="refresh" size={14} />
+            <Icon name="refresh" size={15} />
             بازآوری
           </button>
         </div>

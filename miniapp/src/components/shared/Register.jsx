@@ -32,6 +32,7 @@ import {
 import { Glyph } from '../ui/Icon';
 
 
+
 /* ═══════════ قاب ثابت صفحه ═══════════ */
 
 function Screen({
@@ -119,7 +120,7 @@ function ChoiceCard({
       </span>
 
       <span className="choice-card__icon">
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <span className="choice-card__text">
@@ -206,7 +207,7 @@ function PendingScreen({
             fontWeight: 900,
           }}
         >
-          ثبت‌نام ثبت شد! 🎉
+          ثبت‌نام ثبت شد! 
         </h1>
 
         <p
@@ -230,7 +231,7 @@ function PendingScreen({
           به محض تأیید،{' '}
           <b>همین صفحه خودکار</b>{' '}
           وارد حسابت می‌شود — لازم
-          نیست چیزی ببندی! ✨
+          نیست چیزی ببندی! 
         </p>
 
         <div
@@ -292,7 +293,7 @@ function BlockedScreen({
             fontSize: 35,
           }}
         >
-          🚫
+     <Glyph value="🚫" />
         </div>
 
         <h1
@@ -641,7 +642,7 @@ export default function Register() {
           <div
             style={{ fontSize: 40 }}
           >
-            🌐
+      <Glyph value="🌐" />
           </div>
 
           <h1
@@ -779,7 +780,7 @@ export default function Register() {
             fontWeight: 900,
           }}
         >
-          <Glyph value="🩺" /> ثبت‌نام در هامزیار
+          <Glyph value="🩺" />ثبت‌نام در هامزیار
         </h1>
 
         <div
@@ -863,10 +864,10 @@ export default function Register() {
 
             <div style={{ marginTop: 4 }}>
               <div style={{ fontSize: 'var(--fs-cap)', color: 'var(--tx2)', marginBottom: 8, textAlign: 'center', fontWeight: 700 }}>
-                <Glyph value="🚻" /> گروه آموزشی کلاس‌های تفکیک‌شده:
+                <Glyph value="🚻" />گروه آموزشی کلاس‌های تفکیک‌شده:
                 {aiSuggestedEduGroup && (
                   <span style={{ display: 'block', color: 'var(--acc2)', fontWeight: 600, marginTop: 2 }}>
-                    <Glyph value="💡" /> پیشنهاد هوشمند: {aiSuggestedEduGroup === 'male' ? 'کلاس‌های آقایان' : 'کلاس‌های بانوان'}
+                    <Glyph value="💡" />پیشنهاد هوشمند: {aiSuggestedEduGroup === 'male' ? 'کلاس‌های آقایان' : 'کلاس‌های بانوان'}
                   </span>
                 )}
               </div>
@@ -973,7 +974,7 @@ export default function Register() {
               textAlign: 'center',
             }}
           >
-            ⚠️ {fieldError}
+      <Glyph value="⚠️" /> {fieldError}
           </div>
         )}
 
@@ -992,16 +993,16 @@ export default function Register() {
               }}
             >
               <span className="badge b-gray">
-                👤 {name.trim()}
+        <Glyph value="👤" /> {name.trim()}
               </span>
 
               <span className="badge b-gray">
-                <Glyph value="👥" /> گروه {group}
+                <Glyph value="👥" />گروه {group}
               </span>
 
               {intake && (
                 <span className="badge b-gray">
-                  📅{' '}
+         <Glyph value="📅" />{' '}
                   {status?.intakes?.find(
                     (item) =>
                       item.code ===
@@ -1057,7 +1058,7 @@ export default function Register() {
           {registerMutation.isPending ? (
             <Spinner size={15} />
           ) : isLast ? (
-            '✅ تکمیل ثبت‌نام'
+            'تکمیل ثبت‌نام'
           ) : (
             'مرحله بعد ←'
           )}

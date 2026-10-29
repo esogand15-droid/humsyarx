@@ -166,8 +166,8 @@ export default function CelebrationOverlay({
           }}
         >
           {isRank
-            ? '🎉 ارتقای رنک!'
-            : '⭐ ارتقای دسته!'}
+            ? 'ارتقای رنک!'
+            : 'ارتقای دسته!'}
         </div>
 
         {fromLine && (
@@ -206,8 +206,8 @@ export default function CelebrationOverlay({
           }}
         >
           {isRank
-            ? 'سپر ارتقا فعال شد؛ بدون دغدغه ادامه بده 🛡'
-            : 'یک پله دیگر نزدیک‌تر شدی؛ سپرت فعال است 🛡'}
+            ? 'سپر ارتقا فعال شد؛ بدون دغدغه ادامه بده'
+            : 'یک پله دیگر نزدیک‌تر شدی؛ سپرت فعال است'}
         </p>
 
         <button
@@ -216,7 +216,7 @@ export default function CelebrationOverlay({
           style={{ marginTop: 18 }}
           onClick={onClose}
         >
-          عالیه، ادامه بده 🚀
+          عالیه، ادامه بده 
         </button>
       </div>
     </div>

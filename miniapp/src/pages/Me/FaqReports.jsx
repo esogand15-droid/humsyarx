@@ -34,6 +34,7 @@ import {
 import { Glyph } from '../../components/ui/Icon';
 
 
+
 export function Faq() {
   const [
     query,
@@ -306,7 +307,7 @@ export function Faq() {
                   24,
               }}
             >
-              💡
+       <Glyph value="💡" />
             </span>
 
             <div>
@@ -633,7 +634,7 @@ export function Reports() {
         toast(
           response.data
             ?.message ||
-            'گزارش ثبت شد ✅',
+            'گزارش ثبت شد',
 
           'success'
         );
@@ -751,7 +752,7 @@ export function Reports() {
                   24,
               }}
             >
-              🚩
+       <Glyph value="🚩" />
             </span>
 
             <div>
@@ -823,7 +824,7 @@ export function Reports() {
                   : 'transparent',
             }}
           >
-            <Glyph value="🕘" /> پیگیری گزارش‌ها
+            <Glyph value="🕘" />پیگیری گزارش‌ها
           </button>
         </div>
 
@@ -868,7 +869,7 @@ export function Reports() {
                     })
                   }
                 >
-                  <Glyph value="🧪" /> سؤال
+                  <Glyph value="🧪" />سؤال
                 </button>
 
                 <button
@@ -888,7 +889,7 @@ export function Reports() {
                     })
                   }
                 >
-                  <Glyph value="📎" /> فایل یا منبع
+                  <Glyph value="📎" />فایل یا منبع
                 </button>
               </div>
 
@@ -1043,7 +1044,7 @@ export function Reports() {
                 .isPending ? (
                 <Spinner size={15} />
               ) : (
-                '🚩 ثبت گزارش'
+                'ثبت گزارش'
               )}
             </button>
           </>
@@ -1128,7 +1129,7 @@ export function Reports() {
                           fontSize: 'var(--fs-xl)',
                         }}
                       >
-                        {icon}
+                        <Glyph value={icon} />
                       </span>
 
                       <div

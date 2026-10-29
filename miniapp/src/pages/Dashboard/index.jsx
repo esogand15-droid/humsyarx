@@ -19,7 +19,7 @@ import {
   WeeklyGoalCard,
   NotesCard,
 } from '../../components/home/HomeV3';
-import Icon from '../../components/ui/Icon';
+import Icon, { Glyph } from '../../components/ui/Icon';
 import PrestigeHero from '../../components/shared/PrestigeHero';
 import {
   Spinner,
@@ -29,8 +29,6 @@ import {
   DashboardSkeleton,
 } from '../../components/shared/skeletons';
 import { haptic, tg } from '../../lib/telegram';
-import { Glyph } from '../../components/ui/Icon';
-
 /* 👑 موج P2 Prestige — ارقام فارسی کوتاه */
 
 /* ⚔️ کارت «چالش ارتقا آماده است» — از نمای
@@ -70,7 +68,7 @@ export function ChallengeCard() {
         }}
       >
         <span style={{ fontSize: 26 }}>
-          ⚔️
+     <Glyph value="⚔️" />
         </span>
 
         <div style={{ flex: 1 }}>
@@ -119,7 +117,7 @@ export function ChallengeCard() {
           ⏳
         </span>
         چالش ارتقا در کول‌داون است — XP‌ات
-        محفوظ است، کمی دیگر برگرد 💪
+        محفوظ است، کمی دیگر برگرد 
       </div>
     );
   }
@@ -137,7 +135,7 @@ export function ChallengeCard() {
         }}
       >
         <span style={{ fontSize: 'var(--fs-xl)' }}>
-          🔒
+     <Glyph value="🔒" />
         </span>
         چالش Apex هنوز قفل است — پیش‌شرط‌ها را
         در کارت قهرمان ببین.
@@ -201,7 +199,7 @@ export function FeedCard() {
         className="sec-title"
         style={{ margin: 0 }}
       >
-        <Glyph value="✨" /> تازه‌های میدان
+        <Glyph value="✨" />تازه‌های میدان
       </div>
 
       {items.map((item) => (
@@ -295,12 +293,12 @@ const dayGreeting = () => {
   const hour = new Date().getHours();
 
   if (hour >= 5 && hour < 12)
-    return 'صبح بخیر ☀️';
+    return 'صبح بخیر';
   if (hour >= 12 && hour < 17)
-    return 'ظهر بخیر 👋';
+    return 'ظهر بخیر';
   if (hour >= 17 && hour < 20)
-    return 'عصر بخیر 🌆';
-  return 'شب بخیر 🌙';
+    return 'عصر بخیر';
+  return 'شب بخیر';
 
 };
 
@@ -442,7 +440,7 @@ function Metric({
           fontSize: 'var(--fs-xl)',
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </div>
 
       <div>
@@ -725,13 +723,13 @@ export default function Dashboard() {
     );
 
   const role = {
-    admin: '👑 مدیر',
+    admin: 'مدیر',
 
     content_admin:
-      '🎓 ادمین ارشد محتوا',
+      'ادمین ارشد محتوا',
 
     support:
-      '🛟 پشتیبان',
+      'پشتیبان',
   }[user.role];
 
   return (
@@ -774,7 +772,7 @@ export default function Dashboard() {
               gap: 12,
             }}
           >
-            {/* 🎨 v3 — سربرگ خانه هم‌تراز با پروتوتایپ آبی:
+            {/* v3 — سربرگ خانه هم‌تراز با پروتوتایپ آبی:
                 سلام + هویت تحصیلی (بدون کارت سنگین)،
                 سپس فوری‌ترین چیز: آزمون بعدی،
                 بعد شبکهٔ ۲×۲ کارهای سریع. */}
@@ -795,7 +793,7 @@ export default function Dashboard() {
               onNavigate={navigate}
             />
 
-            {/* 📖/🎯/🗒 سه بلوک پروتوتایپ — با دادهٔ واقعی.
+            {/* // سه بلوک پروتوتایپ — با دادهٔ واقعی.
                 هرکدام داده نداشت، خودش را کامل پنهان می‌کند. */}
             <ContinueCard
               onOpen={(item) =>
@@ -818,15 +816,15 @@ export default function Dashboard() {
               }
             />
 
-            {/* 👑 موج P0 — بریف فشرده‌ی
+            {/* موج P0 — بریف فشرده‌ی
                 Prestige (جری/هدف/استریک) */}
             <PrestigeHero compact />
 
-            {/* 👑 P2 — کارت چالش آماده + فید تازه‌های میدان */}
+            {/* P2 — کارت چالش آماده + فید تازه‌های میدان */}
             <ChallengeCard />
             <FeedCard />
 
-            {/* 💙 حمایت مالی — فقط وقتی
+            {/* حمایت مالی — فقط وقتی
                 مدیر فعالش کرده (سینک با ربات) */}
             {showDonation && (
               <button
@@ -863,7 +861,7 @@ export default function Dashboard() {
                     fontSize: 'var(--fs-xl)',
                   }}
                 >
-                  💙
+         <Glyph value="💙" />
                 </span>
 
                 <span
@@ -889,7 +887,7 @@ export default function Dashboard() {
                     }}
                   >
                     با حمایت کوچیکت به ادامه‌دار
-                    بودن و پیشرفت هامزیار کمک کن 🙏
+                    بودن و پیشرفت هامزیار کمک کن 
                   </span>
                 </span>
 
@@ -901,7 +899,7 @@ export default function Dashboard() {
                     color: 'var(--t-pink)',
                   }}
                 >
-                  <Glyph value="💙" /> حمایت
+                  <Glyph value="💙" />حمایت
                 </span>
               </button>
             )}
@@ -1034,7 +1032,7 @@ export default function Dashboard() {
                   0 && (
                   <section className="card">
                     <div className="sec-title">
-                      <Glyph value="⚡" /> مباحث نیازمند تمرین
+                      <Glyph value="⚡" />مباحث نیازمند تمرین
                     </div>
 
                     <div
@@ -1119,7 +1117,7 @@ export default function Dashboard() {
                 {exams.length ===
                 0 ? (
                   <div className="empty card">
-                    <Glyph value="📭" /> امتحانی در هفت روز
+                    <Glyph value="📭" />امتحانی در هفت روز
                     آینده ثبت نشده است.
                   </div>
                 ) : (
@@ -1189,7 +1187,7 @@ export default function Dashboard() {
                                 fontSize: 'var(--fs-xl)',
                               }}
                             >
-                              📝
+               <Glyph value="📝" />
                             </div>
 
                             <div
@@ -1270,7 +1268,7 @@ export default function Dashboard() {
             {tab === 'rank' && (
               <section className="card">
                 <div className="sec-title">
-                  <Glyph value="🏆" /> برترین دانشجویان
+                  <Glyph value="🏆" />برترین دانشجویان
                 </div>
 
                 {rankLoading ? (
@@ -1342,16 +1340,11 @@ export default function Dashboard() {
                               900,
                           }}
                         >
-                          {item.rank ===
-                          1
-                            ? '🥇'
-                            : item.rank ===
-                                2
-                              ? '🥈'
-                              : item.rank ===
-                                  3
-                                ? '🥉'
-                                : item.rank}
+                          {item.rank === 1 || item.rank === 2 || item.rank === 3 ? (
+                            <Glyph value="🏆" size={18} />
+                          ) : (
+                            item.rank
+                          )}
                         </div>
 
                         <div
@@ -1453,7 +1446,7 @@ export default function Dashboard() {
                     fontSize: 22,
                   }}
                 >
-                  🎫
+         <Glyph value="🎫" />
                 </span>
 
                 <span

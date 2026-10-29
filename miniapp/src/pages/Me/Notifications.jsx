@@ -26,6 +26,8 @@ import {
 import {
   useUIStore,
 } from '../../stores/uiStore';
+import { Glyph } from '../../components/ui/Icon';
+
 
 
 const TONES = {
@@ -248,7 +250,7 @@ export function Notifications() {
                   24,
               }}
             >
-              🔔
+       <Glyph value="🔔" />
             </div>
 
             <div
@@ -498,7 +500,7 @@ export function Notifications() {
                         fontSize: 'var(--fs-xl)',
                       }}
                     >
-                      {icon}
+                      <Glyph value={icon} />
                     </span>
 
                     <div

@@ -35,6 +35,7 @@ import {
 import { Glyph } from '../../components/ui/Icon';
 
 
+
 /* ═══════════ ردیف تنظیم ═══════════ */
 
 function SettingRow({
@@ -69,7 +70,7 @@ function SettingRow({
           fontSize: 'var(--fs-xl)',
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <span
@@ -160,7 +161,7 @@ function LogGroupCard({
             fontSize: 'var(--fs-xl)',
           }}
         >
-          {icon}
+          <Glyph value={icon} />
         </span>
 
         <span
@@ -190,7 +191,7 @@ function LogGroupCard({
           >
             {savedId ? (
               <>
-                تنظیم شده ✅{' '}
+                تنظیم شده {' '}
                 <code
                   dir="ltr"
                   style={{
@@ -258,7 +259,7 @@ function LogGroupCard({
           {saving ? (
             <Spinner size={14} />
           ) : (
-            '💾 ذخیره'
+            'ذخیره'
           )}
         </button>
 
@@ -274,7 +275,7 @@ function LogGroupCard({
           {testing ? (
             <Spinner size={14} />
           ) : (
-            '🧪 تست'
+            'تست'
           )}
         </button>
       </div>
@@ -325,7 +326,7 @@ function DonationLinkCard({
           marginBottom: 8,
         }}
       >
-        <Glyph value="🔗" /> لینک صفحه حمایت مالی
+        <Glyph value="🔗" />لینک صفحه حمایت مالی
       </b>
 
       {enabled && !savedLink && (
@@ -343,7 +344,7 @@ function DonationLinkCard({
               '1px solid var(--bd-warn)',
           }}
         >
-          <Glyph value="⚠️" /> بخش فعال است اما لینکی
+          <Glyph value="⚠️" />بخش فعال است اما لینکی
           تنظیم نشده — تا لینک ثبت
           نشود، دکمه‌ی حمایت در
           داشبورد کاربران نمایش داده
@@ -399,7 +400,7 @@ function DonationLinkCard({
           }}
         >
           {savedLink
-            ? '✅ لینک فعلی ذخیره شده است'
+            ? 'لینک فعلی ذخیره شده است'
             : 'هنوز لینکی ثبت نشده'}
           {' — '}
           خالی = حذف لینک
@@ -420,7 +421,7 @@ function DonationLinkCard({
           {saving ? (
             <Spinner size={14} />
           ) : (
-            '💾 ذخیره'
+            'ذخیره'
           )}
         </button>
       </div>
@@ -434,16 +435,16 @@ function DonationLinkCard({
 const BACKUP_BUTTONS = [
   {
     section: 'all',
-    label: '💾 پشتیبان کامل (همه بخش‌ها)',
+    label: 'پشتیبان کامل (همه بخش‌ها)',
     wide: true,
   },
-  { section: 'users', label: '👥 کاربران' },
-  { section: 'content', label: '📚 علوم پایه' },
-  { section: 'refs', label: '📖 رفرنس‌ها' },
-  { section: 'qbank', label: '🧪 بانک سوال' },
-  { section: 'subscription', label: '💳 اشتراک' },
-  { section: 'grades', label: '📊 نمرات' },
-  { section: 'access', label: '🔐 دسترسی‌ها' },
+  { section: 'users', label: 'کاربران' },
+  { section: 'content', label: 'علوم پایه' },
+  { section: 'refs', label: 'رفرنس‌ها' },
+  { section: 'qbank', label: 'بانک سوال' },
+  { section: 'subscription', label: 'اشتراک' },
+  { section: 'grades', label: 'نمرات' },
+  { section: 'access', label: 'دسترسی‌ها' },
 ];
 
 
@@ -610,7 +611,7 @@ export default function SystemSettings() {
         true
       ) {
         toast(
-          '🔧 حالت تعمیر فعال شد — کاربران پیام تعمیر را می‌بینند',
+          'حالت تعمیر فعال شد — کاربران پیام تعمیر را می‌بینند',
           'warning',
           3500
         );
@@ -619,7 +620,7 @@ export default function SystemSettings() {
         false
       ) {
         toast(
-          '✅ حالت تعمیر غیرفعال شد',
+          'حالت تعمیر غیرفعال شد',
           'success'
         );
       } else if (
@@ -627,7 +628,7 @@ export default function SystemSettings() {
         true
       ) {
         toast(
-          '💙 بخش حمایت مالی فعال شد',
+          'بخش حمایت مالی فعال شد',
           'success'
         );
       } else if (
@@ -643,8 +644,8 @@ export default function SystemSettings() {
       ) {
         toast(
           payload.donation_link
-            ? '✅ لینک حمایت مالی ذخیره شد'
-            : '🗑 لینک حمایت مالی حذف شد',
+            ? 'لینک حمایت مالی ذخیره شد'
+            : 'لینک حمایت مالی حذف شد',
           'success'
         );
       } else if (
@@ -667,7 +668,7 @@ export default function SystemSettings() {
         'auto_backup_hour' in payload
       ) {
         toast(
-          '✅ ساعت بکاپ خودکار ذخیره شد',
+          'ساعت بکاپ خودکار ذخیره شد',
           'success'
         );
       } else if (
@@ -681,8 +682,8 @@ export default function SystemSettings() {
             null;
         toast(
           removed
-            ? '🗑 تنظیم گروه لاگ حذف شد'
-            : '✅ گروه لاگ به‌روزرسانی شد',
+            ? 'تنظیم گروه لاگ حذف شد'
+            : 'گروه لاگ به‌روزرسانی شد',
           'success'
         );
       } else {
@@ -717,7 +718,7 @@ export default function SystemSettings() {
       hapticNotif('success');
       toast(
         response.data?.message ||
-          '🧪 پیام تست در راه است',
+          'پیام تست در راه است',
         'success',
         4000
       );
@@ -748,7 +749,7 @@ export default function SystemSettings() {
       hapticNotif('success');
       toast(
         response.data?.message ||
-          '💾 فایل پشتیبان در راه است',
+          'فایل پشتیبان در راه است',
         'success',
         4500
       );
@@ -933,7 +934,7 @@ export default function SystemSettings() {
                     fontSize: 'var(--fs-sm)',
                   }}
                 >
-                  <Glyph value="🔧" /> حالت تعمیر فعال است
+                  <Glyph value="🔧" />حالت تعمیر فعال است
                 </b>
 
                 <span
@@ -953,7 +954,7 @@ export default function SystemSettings() {
             )}
 
             <div className="sec-title">
-              <Glyph value="🛠" /> وضعیت سرویس
+              <Glyph value="🛠" />وضعیت سرویس
             </div>
 
             <section
@@ -984,7 +985,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              <Glyph value="📝" /> متن حالت تعمیر
+              <Glyph value="📝" />متن حالت تعمیر
             </div>
 
             <section
@@ -1052,14 +1053,14 @@ export default function SystemSettings() {
                     undefined ? (
                     <Spinner size={14} />
                   ) : (
-                    '💾 ذخیره متن'
+                    'ذخیره متن'
                   )}
                 </button>
               </div>
             </section>
 
             <div className="sec-title">
-              <Glyph value="🎓" /> ثبت‌نام
+              <Glyph value="🎓" />ثبت‌نام
             </div>
 
             <section
@@ -1091,7 +1092,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              <Glyph value="💙" /> حمایت مالی
+              <Glyph value="💙" />حمایت مالی
             </div>
 
             <section
@@ -1104,7 +1105,7 @@ export default function SystemSettings() {
               <SettingRow
                 icon="💙"
                 title="بخش حمایت مالی"
-                desc="نمایش دکمه‌ی «💙 حمایت مالی» در داشبورد و صفحه‌ی «من» — همان تاگل پنل ربات"
+                desc="نمایش دکمه‌ی « حمایت مالی» در داشبورد و صفحه‌ی «من» — همان تاگل پنل ربات"
                 checked={donationOn}
                 busy={
                   patchMutation.isPending &&
@@ -1141,7 +1142,7 @@ export default function SystemSettings() {
             />
 
             <div className="sec-title">
-              <Glyph value="💾" /> پشتیبان‌گیری
+              <Glyph value="💾" />پشتیبان‌گیری
             </div>
 
             <section
@@ -1192,7 +1193,7 @@ export default function SystemSettings() {
                   marginBottom: 'var(--sp-1)',
                 }}
               >
-                <Glyph value="🕐" /> ساعت اجرای بکاپ خودکار
+                <Glyph value="🕐" />ساعت اجرای بکاپ خودکار
               </b>
 
               <span
@@ -1270,7 +1271,7 @@ export default function SystemSettings() {
                     undefined ? (
                     <Spinner size={14} />
                   ) : (
-                    '💾 ذخیره'
+                    'ذخیره'
                   )}
                 </button>
               </div>
@@ -1287,7 +1288,7 @@ export default function SystemSettings() {
                   marginBottom: 'var(--sp-1)',
                 }}
               >
-                <Glyph value="📦" /> دریافت فایل پشتیبان
+                <Glyph value="📦" />دریافت فایل پشتیبان
                 (JSON)
               </b>
 
@@ -1303,7 +1304,7 @@ export default function SystemSettings() {
                 فایل مثل خروجی اکسل، توسط
                 ربات به چت شخصی تو ارسال
                 می‌شود — با همان سازنده‌ی
-                مشترک منوی «💾 پشتیبان» در
+                مشترک منوی « پشتیبان» در
                 ربات.
               </span>
 
@@ -1359,7 +1360,7 @@ export default function SystemSettings() {
             </section>
 
             <div className="sec-title">
-              <Glyph value="🛡" /> گروه‌های لاگ تلگرام
+              <Glyph value="🛡" />گروه‌های لاگ تلگرام
             </div>
 
             <LogGroupCard
@@ -1434,7 +1435,7 @@ export default function SystemSettings() {
               className="page-hint"
               style={{ marginTop: 2 }}
             >
-              <span>💡</span>
+              <span></span>
 
               <span>
                 آیدی گروه همیشه{' '}
@@ -1450,14 +1451,14 @@ export default function SystemSettings() {
               </span>
             </div>
 
-            {/* 👑 P3 — بخش تعادل زنده‌ی پرستیژ */}
+            {/* P3 — بخش تعادل زنده‌ی پرستیژ */}
             <PrestigeConfigSection />
 
             <div
               className="page-hint"
               style={{ marginTop: 'var(--sp-4)' }}
             >
-              <span>🛡</span>
+              <span></span>
 
               <span>
                 هر تغییر در این صفحه به‌صورت
@@ -1607,7 +1608,7 @@ function PrestigeConfigSection() {
 
   const groups = [
     [
-      '🎯 XP پاسخ',
+      ' XP پاسخ',
       [
         'xp_easy',
         'xp_medium',
@@ -1618,7 +1619,7 @@ function PrestigeConfigSection() {
       ],
     ],
     [
-      '📝 XP آزمون و اکوسیستم',
+      ' XP آزمون و اکوسیستم',
       [
         'xp_exam_complete',
         'xp_exam_acc80',
@@ -1630,7 +1631,7 @@ function PrestigeConfigSection() {
       ],
     ],
     [
-      '🏆 جوایز رقابتی',
+      'جوایز رقابتی',
       [
         'xp_challenge_win',
         'xp_apex_win',
@@ -1638,7 +1639,7 @@ function PrestigeConfigSection() {
       ],
     ],
     [
-      '⚖️ قواعد تعادل',
+      'قواعد تعادل',
       [
         'daily_cap',
         'diminish_after',
@@ -1654,7 +1655,7 @@ function PrestigeConfigSection() {
   return (
     <>
       <div className="sec-title">
-        <Glyph value="👑" /> تعادل زنده‌ی پرستیژ (بدون ری‌استارت)
+        <Glyph value="👑" />تعادل زنده‌ی پرستیژ (بدون ری‌استارت)
       </div>
 
       <section
@@ -1671,7 +1672,7 @@ function PrestigeConfigSection() {
             lineHeight: 1.8,
           }}
         >
-          <Glyph value="⚔️" /> چالش‌های امروز:{' '}
+          <Glyph value="⚔️" />چالش‌های امروز:{' '}
           <b>{stats.started_today ?? 0}</b>{' '}
           شروع ·{' '}
           <b>{stats.wins_today ?? 0}</b> برد ·{' '}
@@ -1783,7 +1784,7 @@ function PrestigeConfigSection() {
           >
             {saveMutation.isPending
               ? 'در حال ذخیره…'
-              : '💾 ذخیره‌ی تنظیمات تعادل'}
+              : 'ذخیره‌ی تنظیمات تعادل'}
           </button>
 
           <button

@@ -1,3 +1,5 @@
+import { Glyph } from '../ui/Icon';
+
 // ── StatTile — موج W2 Design Refactor
 // تایل آمار مشترک کل پروژه — دو چیدمان:
 //   variant="row"  → کارت افقی (آیکن‌باکس ۳۸ + متن)
@@ -34,7 +36,7 @@ export default function StatTile({
         }}
       >
         <div style={{ fontSize: 'var(--fs-xl)' }}>
-          {icon}
+          <Glyph value={icon} />
         </div>
 
         <div
@@ -70,7 +72,7 @@ export default function StatTile({
           borderRadius: 'var(--r-md)',
         }}
       >
-        <div>{icon}</div>
+        <div><Glyph value={icon} /></div>
 
         <div
           style={{
@@ -122,7 +124,7 @@ export default function StatTile({
           fontSize: 'var(--fs-xl)',
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <div>

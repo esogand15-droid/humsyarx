@@ -82,7 +82,7 @@ export default function AdminDesk() {
       />
 
       <section className="card" style={{ marginTop: 8, padding: 18 }}>
-        <div style={{ fontSize: 36, lineHeight: 1 }} aria-hidden="true">🧭</div>
+        <div style={{ fontSize: 36, lineHeight: 1 }} aria-hidden="true"></div>
         <h2 style={{ margin: '10px 0 8px', fontSize: 20 }}>
           یک میز، نه دو تا
         </h2>

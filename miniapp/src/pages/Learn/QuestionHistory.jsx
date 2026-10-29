@@ -13,6 +13,7 @@ import {
 import {
   SkRowList,
 } from '../../components/shared/skeletons';
+import { Glyph } from '../../components/ui/Icon';
 
 
 const LETTERS = [
@@ -132,7 +133,7 @@ export default function QuestionHistory() {
                   24,
               }}
             >
-              🕘
+       <Glyph value="🕘" />
             </span>
 
             <div
@@ -402,7 +403,7 @@ export default function QuestionHistory() {
                         marginTop: 'var(--sp-2)',
                       }}
                     >
-                      📆{' '}
+           <Glyph value="📆" />{' '}
 
                       {faDate(item.answered_at)}
                     </div>

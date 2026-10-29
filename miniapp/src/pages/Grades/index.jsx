@@ -295,7 +295,7 @@ function GradeRow({
                 3,
             }}
           >
-            📆{' '}
+      <Glyph value="📆" />{' '}
 
             {grade.exam_date ||
               'تاریخ نامشخص'}
@@ -413,7 +413,7 @@ function GradeRow({
               1.7,
           }}
         >
-          📝 {grade.note}
+     <Glyph value="📝" /> {grade.note}
         </div>
       )}
     </article>
@@ -758,7 +758,7 @@ export default function Grades() {
           0 ? (
           <div className="empty card">
             <div className="empty__ic">
-              📊
+       <Glyph value="📊" />
             </div>
 
             <div
@@ -1095,7 +1095,7 @@ export default function Grades() {
 
             {byTerm.length > 1 && !activeTerm && (
               <section className="card" style={{ padding: 12 }}>
-                <div style={{ fontWeight: 800, fontSize: 'var(--fs-sm)', marginBottom: 8 }}><Glyph value="🎓" /> نمای کلی ترم‌ها — هر ترم جدا</div>
+                <div style={{ fontWeight: 800, fontSize: 'var(--fs-sm)', marginBottom: 8 }}><Glyph value="🎓" />نمای کلی ترم‌ها — هر ترم جدا</div>
                 <div style={{ display: 'grid', gap: 8 }}>
                   {byTerm.map((t) => (
                     <button
@@ -1124,7 +1124,7 @@ export default function Grades() {
                 marginTop: 'var(--sp-1)',
               }}
             >
-              <Glyph value="📋" /> جزئیات نمرات
+              <Glyph value="📋" />جزئیات نمرات
             </div>
 
             {termGroups.map(
@@ -1166,7 +1166,7 @@ export default function Grades() {
                             'var(--fs-sm)',
                         }}
                       >
-                        🎓 {group.label}
+            <Glyph value="🎓" /> {group.label}
                       </b>
 
                       <span

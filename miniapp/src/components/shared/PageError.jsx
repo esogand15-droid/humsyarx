@@ -15,7 +15,7 @@ export default function PageError({
 }) {
   return (
     <div className="empty card">
-      <div className="empty__ic">🌐</div>
+      <div className="empty__ic"></div>
 
       <div>{text}</div>
 

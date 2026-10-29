@@ -1,8 +1,10 @@
 import { SkeletonLine } from './Loading';
+import { Glyph } from '../ui/Icon';
+
 
 
 /* ─────────────────────────────────────────────
-   🦴 Skeleton Loading System — موج ۴.۴۰
+    Skeleton Loading System — موج ۴.۴۰
 
    قانون طلایی: اسکلت «نسخه‌ی در حال ساخته‌شدن
    همان صفحه» است، نه چند باکس عمومی.
@@ -297,7 +299,7 @@ export function SkRowCard({
           gap: 11,
         }}
       >
-        <IconShape size={icon} />
+        <IconShape size=<Glyph value={icon} /> />
 
         <div
           style={{ flex: 1, minWidth: 0 }}
@@ -368,7 +370,7 @@ export function SkRowList({
         (_u, i) => (
           <SkRowCard
             key={i}
-            icon={icon}
+            icon=<Glyph value={icon} />
             circle={circle}
             lines={lines}
           />

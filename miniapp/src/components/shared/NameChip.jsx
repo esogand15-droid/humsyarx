@@ -1,3 +1,5 @@
+import { Glyph } from '../ui/Icon';
+
 /* 👑 NameChip — موج P0 Prestige (v3 LOCKED)
    چیپ کوچک «آیکون رنک + نام» برای جاهایی که
    هویت رقابتی باید کنار نام دیده شود.
@@ -23,7 +25,7 @@ export default function NameChip({
         className="name-chip__icon"
         aria-hidden="true"
       >
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <span>

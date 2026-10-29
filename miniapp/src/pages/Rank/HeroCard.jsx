@@ -22,6 +22,7 @@ import {
 } from '../../lib/telegram';
 import { Glyph } from '../../components/ui/Icon';
 
+
 /* 👑 موج P2 Prestige — Hero Card عمومی:
    بنر رنک + Top٪ + شوکیس + رکوردها (بدون
    آمار حساس). احترام کامل به privacy:
@@ -41,7 +42,7 @@ function RecordCell({ icon, label, value }) {
       }}
     >
       <span style={{ fontSize: 'var(--fs-xl)' }}>
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <b style={{ fontSize: 'var(--fs-sm)' }}>
@@ -90,7 +91,7 @@ export default function HeroCard() {
       return;
     }
 
-    const text = `کارت رقابتی من در هامزیار 👑`;
+    const text = `کارت رقابتی من در هامزیار `;
 
     try {
       const tg =
@@ -159,7 +160,7 @@ export default function HeroCard() {
             }}
           >
             <span style={{ fontSize: 40 }}>
-              🕶️
+       <Glyph value="🕶️" />
             </span>
 
             <b>این کاربر ، کارت خود را خصوصی کرده است</b>
@@ -246,7 +247,7 @@ export default function HeroCard() {
                     fontWeight: 700,
                   }}
                 >
-                  <Glyph value="🏆" /> رتبه‌ی{' '}
+                  <Glyph value="🏆" />رتبه‌ی{' '}
                   {faNum(data.rank_number)}
                 </span>
               )}
@@ -275,7 +276,7 @@ export default function HeroCard() {
         {!!(data.showcase || []).length && (
           <section>
             <div className="sec-title">
-              <Glyph value="📌" /> نشان‌های منتخب
+              <Glyph value="📌" />نشان‌های منتخب
             </div>
 
             <div
@@ -328,7 +329,7 @@ export default function HeroCard() {
         {/* رکوردها */}
         <section>
           <div className="sec-title">
-            <Glyph value="🏆" /> رکوردها
+            <Glyph value="🏆" />رکوردها
           </div>
 
           <div
@@ -409,8 +410,8 @@ export default function HeroCard() {
           >
             {data.share_link
               ? copied
-                ? '✅ لینک کپی شد'
-                : '🔗 اشتراک‌گذاری کارت'
+                ? 'لینک کپی شد'
+                : 'اشتراک‌گذاری کارت'
               : 'اشتراک‌گذاری فعلاً در دسترس نیست'}
           </button>
 

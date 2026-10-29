@@ -198,7 +198,7 @@ function QuestionDetails({
                           'auto',
                       }}
                     >
-                      <Glyph value="✓" /> صحیح
+                      <Glyph value="✓" />صحیح
                     </span>
                   )}
                 </div>
@@ -302,7 +302,7 @@ function QuestionDetails({
             {pending ? (
               <Spinner size={14} />
             ) : (
-              '✅ تأیید سؤال'
+              'تأیید سؤال'
             )}
           </button>
 
@@ -314,7 +314,7 @@ function QuestionDetails({
             disabled={pending}
             onClick={onReject}
           >
-            <Glyph value="❌" /> رد سؤال
+            <Glyph value="❌" />رد سؤال
           </button>
         </div>
       </div>
@@ -411,7 +411,7 @@ export function ContentQuestions() {
       toast(
         variables.type ===
         'approve'
-          ? 'سؤال تأیید شد ✅'
+          ? 'سؤال تأیید شد'
           : 'سؤال رد و حذف شد',
 
         variables.type ===
@@ -583,7 +583,7 @@ export function ContentQuestions() {
                 fontSize: 25,
               }}
             >
-              🔍
+       <Glyph value="🔍" />
             </span>
 
             <div
@@ -798,7 +798,7 @@ export function ContentQuestions() {
                     }}
                   >
                     <span>
-                      ✍️{' '}
+           <Glyph value="✍️" />{' '}
 
                       {item.creator_name ||
                         'نامشخص'}
@@ -858,7 +858,7 @@ export function ContentQuestions() {
                         })
                       }
                     >
-                      <Glyph value="✅" /> تأیید
+                      <Glyph value="✅" />تأیید
                     </button>
 
                     <button
@@ -1003,11 +1003,11 @@ export function ContentFaq() {
       );
 
       if (variables.type === 'edit') {
-        toast('سؤال ویرایش شد ✅', 'success');
+        toast('سؤال ویرایش شد', 'success');
       } else {
         toast(
           variables.type === 'add'
-            ? 'سؤال متداول اضافه شد ✅'
+            ? 'سؤال متداول اضافه شد'
             : 'سؤال حذف شد',
 
           variables.type === 'add'
@@ -1193,9 +1193,9 @@ export function ContentFaq() {
             {mutation.isPending ? (
               <Spinner size={15} />
             ) : isEdit ? (
-              '💾 ذخیره ویرایش'
+              'ذخیره ویرایش'
             ) : (
-              '💾 ذخیره سؤال متداول'
+              'ذخیره سؤال متداول'
             )}
           </button>
         </main>
@@ -1240,7 +1240,7 @@ export function ContentFaq() {
               fontSize: 24,
             }}
           >
-            ❓
+      <Glyph value="❓" />
           </span>
 
           <div
@@ -1436,7 +1436,7 @@ export function ContentFaq() {
                               setFormOpen(false);
                             }}
                           >
-                            <Glyph value="✏️" /> ویرایش
+                            <Glyph value="✏️" />ویرایش
                           </button>
                           <button
                             className={'btn btn-d'}
@@ -1459,7 +1459,7 @@ export function ContentFaq() {
                               }
                             }}
                           >
-                            <Glyph value="🗑" /> حذف
+                            <Glyph value="🗑" />حذف
                           </button>
                         </div>
                       </>

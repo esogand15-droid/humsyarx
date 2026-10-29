@@ -1,3 +1,5 @@
+import { Glyph } from '../ui/Icon';
+
 // ── EmptyState — موج W2 Design Refactor
 // حالت خالی مشترک کل پروژه. تا امروز ۶ پیاده‌ی
 // محلی Empty(...) با تفاوت‌های جزئی (آیکن 40/42px،
@@ -18,7 +20,7 @@ export default function EmptyState({
     >
       {icon ? (
         <div className="empty__ic">
-          {icon}
+          <Glyph value={icon} />
         </div>
       ) : null}
 

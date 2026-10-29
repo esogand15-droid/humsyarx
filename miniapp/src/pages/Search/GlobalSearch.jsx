@@ -29,6 +29,8 @@ import {
 import {
   haptic,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
+
 
 
 const TYPES = {
@@ -288,7 +290,7 @@ export default function GlobalSearch() {
                   25,
               }}
             >
-              🔎
+       <Glyph value="🔎" />
             </span>
 
             <div>
@@ -386,7 +388,7 @@ export default function GlobalSearch() {
                         24,
                     }}
                   >
-                    {icon}
+                    <Glyph value={icon} />
                   </div>
 
                   <div

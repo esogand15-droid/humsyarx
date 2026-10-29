@@ -25,9 +25,9 @@ import { useUIStore } from '../../stores/uiStore';
 import { Glyph } from '../../components/ui/Icon';
 
 const TYPES = [
-  ['class', '🏫 کلاس'],
-  ['exam', '📝 امتحان'],
-  ['makeup', '🔄 جبرانی'],
+  ['class', 'کلاس'],
+  ['exam', 'امتحان'],
+  ['makeup', 'جبرانی'],
 ];
 
 const EMPTY_FORM = {
@@ -153,8 +153,8 @@ export default function AcademicScheduleAdmin() {
 
       toast(
         editingId
-          ? 'برنامه ویرایش شد ✅'
-          : 'برنامه ثبت شد ✅',
+          ? 'برنامه ویرایش شد'
+          : 'برنامه ثبت شد',
         'success'
       );
 
@@ -219,7 +219,7 @@ export default function AcademicScheduleAdmin() {
       toast(
         `زمان تغییر کرد؛ ${
           response.data?.notified || 0
-        } اعلان ثبت شد ✅`,
+        } اعلان ثبت شد `,
         'success'
       );
 
@@ -309,8 +309,8 @@ export default function AcademicScheduleAdmin() {
         <Header
           title={
             editingId
-              ? '✏️ ویرایش برنامه'
-              : '➕ برنامه جدید'
+              ? 'ویرایش برنامه'
+              : 'برنامه جدید'
           }
           onBack={() =>
             setFormOpen(false)
@@ -532,7 +532,7 @@ export default function AcademicScheduleAdmin() {
           >
             {saveMutation.isPending
               ? <Spinner size={16} />
-              : '💾 ذخیره برنامه'}
+              : 'ذخیره برنامه'}
           </button>
         </div>
       </>
@@ -542,7 +542,7 @@ export default function AcademicScheduleAdmin() {
   return (
     <>
       <Header
-        title="📅 مدیریت برنامه"
+        title="مدیریت برنامه"
         subtitle={`${items.length} مورد`}
       />
 
@@ -656,13 +656,13 @@ export default function AcademicScheduleAdmin() {
 
                   {item.location && (
                     <div>
-                      📍 {item.location}
+           <Glyph value="📍" /> {item.location}
                     </div>
                   )}
 
                   {item.note && (
                     <div>
-                      📝 {item.note}
+           <Glyph value="📝" /> {item.note}
                     </div>
                   )}
                 </div>
@@ -696,7 +696,7 @@ export default function AcademicScheduleAdmin() {
                     startEdit(item)
                   }
                 >
-                  <Glyph value="✏️" /> ویرایش
+                  <Glyph value="✏️" />ویرایش
                 </button>
 
                 {item.flex_type ===
@@ -720,7 +720,7 @@ export default function AcademicScheduleAdmin() {
                       });
                     }}
                   >
-                    <Glyph value="🔄" /> تغییر زمان
+                    <Glyph value="🔄" />تغییر زمان
                   </button>
                 )}
 
@@ -739,7 +739,7 @@ export default function AcademicScheduleAdmin() {
                     }
                   }}
                 >
-                  <Glyph value="🗑" /> حذف
+                  <Glyph value="🗑" />حذف
                 </button>
               </div>
             </div>

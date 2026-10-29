@@ -1,5 +1,6 @@
+import Icon, { Glyph } from '../ui/Icon';
 /* ─────────────────────────────────────────────────────────────
-   🎨 HumsYar v3 — بلوک‌های خانه (هم‌تراز با پروتوتایپ آبی)
+    HumsYar v3 — بلوک‌های خانه (هم‌تراز با پروتوتایپ آبی)
 
    فلسفهٔ چیدمان (از پروتوتایپ):
    ۱) «حالِ امروز» بالا: سلام + هویت تحصیلی، بدون کارت سنگین.
@@ -13,7 +14,6 @@
 
 import { useQuery } from '@tanstack/react-query';
 
-import Icon, { Glyph } from '../ui/Icon';
 import api from '../../lib/api';
 import { faNum, number, percent } from '../../lib/format';
 import { haptic } from '../../lib/telegram';

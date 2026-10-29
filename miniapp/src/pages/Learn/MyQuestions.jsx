@@ -122,7 +122,7 @@ export default function MyQuestions() {
 
             difficulty:
               editing.difficulty ||
-              'متوسط 🟡',
+              'متوسط',
           }
         ),
 
@@ -132,7 +132,7 @@ export default function MyQuestions() {
         );
 
         toast(
-          'سؤال ویرایش شد ✅',
+          'سؤال ویرایش شد',
           'success'
         );
 
@@ -312,7 +312,7 @@ export default function MyQuestions() {
                     22,
                 }}
               >
-                ✏️
+        <Glyph value="✏️" />
               </span>
 
               <div>
@@ -507,15 +507,15 @@ export default function MyQuestions() {
                 })
               }
             >
-              <option value="آسان 🟢">
+              <option value="آسان">
                 آسان
               </option>
 
-              <option value="متوسط 🟡">
+              <option value="متوسط">
                 متوسط
               </option>
 
-              <option value="سخت 🔴">
+              <option value="سخت">
                 سخت
               </option>
             </select>
@@ -563,7 +563,7 @@ export default function MyQuestions() {
               .isPending ? (
               <Spinner size={15} />
             ) : (
-              '💾 ذخیره تغییرات'
+              'ذخیره تغییرات'
             )}
           </button>
         </main>
@@ -633,7 +633,7 @@ export default function MyQuestions() {
                   25,
               }}
             >
-              ✍️
+       <Glyph value="✍️" />
             </span>
 
             <div
@@ -809,7 +809,7 @@ export default function MyQuestions() {
                           6,
                       }}
                     >
-                      📆 {faDate(item.created_at)}
+           <Glyph value="📆" /> {faDate(item.created_at)}
                     </div>
                   )}
 
@@ -855,7 +855,7 @@ export default function MyQuestions() {
                           })
                         }
                       >
-                        <Glyph value="✏️" /> ویرایش
+                        <Glyph value="✏️" />ویرایش
                       </button>
 
                       <button
@@ -884,7 +884,7 @@ export default function MyQuestions() {
                           }
                         }}
                       >
-                        <Glyph value="🗑" /> حذف
+                        <Glyph value="🗑" />حذف
                       </button>
                     </div>
                   )}

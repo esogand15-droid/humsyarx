@@ -6,6 +6,8 @@
 // می‌شوند. رفتار: همان onClick + haptic قبلی.
 
 import { haptic } from '../../lib/telegram';
+import { Glyph } from '../ui/Icon';
+
 
 
 const TONES = {
@@ -82,7 +84,7 @@ export default function MenuRow({
           fontSize: 'var(--fs-xl)',
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <span

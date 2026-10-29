@@ -17,7 +17,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
-   🎨 ساخت تصویر با هوشیار (Gemini)
+    ساخت تصویر با هوشیار (Gemini)
    - توضیح + نسبت تصویر → POST /api/ai/generate-image
    - کلید API سمت سرور می‌ماند؛ تصویر base64
      یک‌بارمصرف برمی‌گردد (بدون فایلِ ماندگار)
@@ -127,7 +127,7 @@ export default function AiImage() {
     <main className="page fade-up">
       <Header
         title="ساخت تصویر"
-        subtitle="توضیح بده، هوشیار می‌سازد 🎨"
+        subtitle="توضیح بده، هوشیار می‌سازد"
       />
 
       <section className="card aiimg-card">
@@ -179,12 +179,12 @@ export default function AiImage() {
         >
           {busy
             ? 'در حال ساخت تصویر...'
-            : '🎨 ساخت تصویر'}
+            : 'ساخت تصویر'}
         </button>
 
         {usage && !usage.unlimited && (
           <div className="aiimg-quota">
-            <Glyph value="📊" /> امروز
+            <Glyph value="📊" />امروز
             {' '}
             {usage.used_today}
             /
@@ -205,7 +205,7 @@ export default function AiImage() {
 
       {error && !isSubscriptionLock(errObj) && (
         <section className="card aiimg-error" role="alert">
-          ⚠️
+     <Glyph value="⚠️" />
           {' '}
           {error}
         </section>
@@ -235,7 +235,7 @@ export default function AiImage() {
               href={imageSrc}
               download={`humsyar-${Date.now()}.png`}
             >
-              <Glyph value="⬇️" /> دانلود
+              <Glyph value="⬇️" />دانلود
             </a>
 
             <button
@@ -244,7 +244,7 @@ export default function AiImage() {
               disabled={busy}
               onClick={generate}
             >
-              <Glyph value="🔄" /> ساخت دوباره
+              <Glyph value="🔄" />ساخت دوباره
             </button>
           </div>
         </section>

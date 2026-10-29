@@ -290,7 +290,7 @@ export default function Me() {
                       'کاربر هامزیار'}
                   </h2>
 
-                  {/* 🏷 Identity v1 —
+         {/* <Glyph value="🏷" /> Identity v1 —
                       نام واقعی زیر لقب */}
                   {user.nickname && (
                     <div
@@ -441,7 +441,7 @@ export default function Me() {
                           'var(--warn)',
                       }}
                     >
-                      <Glyph value="🏅" /> رتبه{' '}
+                      <Glyph value="🏅" />رتبه{' '}
 
                       {number(
                         rank.rank
@@ -500,7 +500,7 @@ export default function Me() {
                         21,
                     }}
                   >
-                    💎
+          <Glyph value="💎" />
                   </span>
 
                   <div
@@ -612,7 +612,7 @@ export default function Me() {
                     fontSize: 23,
                   }}
                 >
-                  🔐
+         <Glyph value="🔐" />
                 </span>
 
                 <span
@@ -658,7 +658,7 @@ export default function Me() {
 
             <section>
               <div className="sec-title">
-                <Glyph value="👤" /> حساب و تنظیمات
+                <Glyph value="👤" />حساب و تنظیمات
               </div>
 
               <div
@@ -722,7 +722,7 @@ export default function Me() {
                   }
                   description={
                     'همه‌ی رویدادهای مهم حسابت،'
-                    + ' یک‌جا'
+                    + 'یک‌جا'
                   }
                   badge={
                     notifUnread
@@ -759,7 +759,7 @@ export default function Me() {
 
             <section>
               <div className="sec-title">
-                🆘 پشتیبانی و راهنما
+                 پشتیبانی و راهنما
               </div>
 
               <div
@@ -823,7 +823,7 @@ export default function Me() {
                   last={!showDonation}
                 />
 
-                {/* 💙 فقط وقتی مدیر فعال
+                {/* فقط وقتی مدیر فعال
                     کرده — سینک با ربات */}
                 {showDonation && (
                   <MenuRow
@@ -864,7 +864,7 @@ export default function Me() {
             {manager && (
               <section>
                 <div className="sec-title">
-                  <Glyph value="⚙️" /> ابزارهای مدیریتی
+                  <Glyph value="⚙️" />ابزارهای مدیریتی
                 </div>
 
                 <div

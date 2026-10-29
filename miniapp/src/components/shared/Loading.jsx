@@ -1,3 +1,5 @@
+import { Glyph } from '../ui/Icon';
+
 export function Spinner({
   size = 24,
   color = 'var(--acc2)',
@@ -10,7 +12,6 @@ export function Spinner({
         size / 10
       )
     );
-
   return (
     <span
       role="status"
@@ -157,7 +158,7 @@ export function LoadingScreen() {
               37,
           }}
         >
-          🩺
+     <Glyph value="🩺" />
         </div>
 
         <div>

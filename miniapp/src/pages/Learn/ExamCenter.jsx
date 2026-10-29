@@ -42,6 +42,7 @@ import {
 } from '../../stores/uiStore';
 import { Glyph } from '../../components/ui/Icon';
 
+
 const clock = (seconds) => {
   if (seconds == null) {
     return '∞';
@@ -75,7 +76,7 @@ const STATUS = {
   active: [
     'در حال انجام',
     'b-yel',
-    '▶️',
+    '▶',
   ],
 
   finished: [
@@ -294,7 +295,7 @@ export default function ExamCenter() {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast('PDF آماده شد — دانلود شروع شد 📄', 'success');
+      toast('PDF آماده شد — دانلود شروع شد', 'success');
       haptic('medium');
     } catch (e) {
       toast(
@@ -918,11 +919,11 @@ export default function ExamCenter() {
                     }}
                   >
                     {answer.is_correct
-                      ? '✅ پاسخ صحیح؛ آفرین!'
-                      : '❌ پاسخ نادرست'}
+                      ? 'پاسخ صحیح؛ آفرین!'
+                      : 'پاسخ نادرست'}
                   </div>
 
-                  {/* 👑 موج P0 — XP کسب‌شده
+                  {/* موج P0 — XP کسب‌شده
                       (پاسخ + تکمیل آزمون) */}
                   {(() => {
                     const xpTotal =
@@ -965,7 +966,7 @@ export default function ExamCenter() {
                                 'var(--warn)',
                             }}
                           >
-                            ⚡ +{xpTotal}{' '}
+              <Glyph value="⚡" /> +{xpTotal}{' '}
                             XP
                           </span>
                         )}
@@ -1053,7 +1054,7 @@ export default function ExamCenter() {
           </button>
         </main>
 
-        {/* 👑 موج P0 — جشن ارتقا روی
+        {/* موج P0 — جشن ارتقا روی
             کارت نتیجه‌ی آزمون */}
         {celebration && (
           <CelebrationOverlay
@@ -1141,7 +1142,7 @@ export default function ExamCenter() {
                   }}
                 >
                   {ch.apex
-                    ? 'باس‌فایت نهایی: ۳۰ سؤال، قبولی با ۹۰٪ — افسانه‌ای شو 🌌'
+                    ? 'باس‌فایت نهایی: ۳۰ سؤال، قبولی با ۹۰٪ — افسانه‌ای شو'
                     : '۲۰ سؤال ترکیبی از سراسر بانک · قبولی با ۸۰٪ · مهلت ۲۴ ساعت'}
                 </p>
 
@@ -1161,7 +1162,7 @@ export default function ExamCenter() {
                 >
                   {promoMutation.isPending
                     ? 'در حال ساخت چالش…'
-                    : `⚔️ شروع چالش${
+                    : ` شروع چالش${
                         ch.apex ? ' Apex' : ''
                       }`}
                 </button>
@@ -1181,7 +1182,7 @@ export default function ExamCenter() {
                   ? `حدود ${hoursLeft} ساعت دیگر`
                   : 'کمی بعد'}{' '}
                 می‌توانی دوباره تلاش کنی. هیچ
-                XP‌ای از دست نرفته است 💪
+                XP‌ای از دست نرفته است 
               </p>
             )}
 
@@ -1193,7 +1194,7 @@ export default function ExamCenter() {
                   lineHeight: 2,
                 }}
               >
-                <Glyph value="🔒" /> پیش‌شرط‌ها: بهترین استریک ≥{' '}
+                <Glyph value="🔒" />پیش‌شرط‌ها: بهترین استریک ≥{' '}
                 {ch?.need?.streak_best ?? '—'}{' '}
                 روز (الان:{' '}
                 {ch?.have?.streak_best ?? 0})
@@ -1235,7 +1236,7 @@ export default function ExamCenter() {
         <Header
           title={
             won
-              ? '🎉 ارتقا رسمی شد'
+              ? 'ارتقا رسمی شد'
               : 'نتیجه چالش'
           }
           onBack={() => {
@@ -1297,7 +1298,7 @@ export default function ExamCenter() {
               {won
                 ? `${
                     promoResult.reward || 0
-                  }+ XP جایزه‌ی چالش · سپر ارتقا فعال شد 🛡`
+                  }+ XP جایزه‌ی چالش · سپر ارتقا فعال شد `
                 : promoResult.ttl
                   ? `مهلت ۲۴ ساعته تمام شد. XP‌ات محفوظ است — ${
                       promoResult.cooldown_h ??
@@ -1328,7 +1329,7 @@ export default function ExamCenter() {
           </section>
         </main>
 
-        {/* ⚔️ موج P1 — جشن ارتقای رنک روی
+        {/* موج P1 — جشن ارتقای رنک روی
             نتیجه‌ی چالش (هم‌پوشانی با نمای
             فعال — تا از دست نرود) */}
         {celebration && (
@@ -1506,7 +1507,7 @@ export default function ExamCenter() {
           </section>
         </main>
 
-        {/* 👑 موج P0 — جشن ارتقا روی نتیجه‌ی
+        {/* موج P0 — جشن ارتقا روی نتیجه‌ی
             آزمون (تکمیل آزمون ممکن است خودش
             چالش‌زننده‌ی رنک باشد) */}
         {celebration && (
@@ -1639,7 +1640,7 @@ export default function ExamCenter() {
                             fontSize: 'var(--fs-xl)',
                           }}
                         >
-                          {icon}
+                          <Glyph value={icon} />
                         </span>
 
                         <div
@@ -1706,7 +1707,7 @@ export default function ExamCenter() {
                             resume(item)
                           }
                         >
-                          ▶️ ادامه آزمون
+                          ▶ ادامه آزمون
                         </button>
                       )}
 
@@ -1727,7 +1728,7 @@ export default function ExamCenter() {
                             )
                           }
                         >
-                          <Glyph value="📄" /> دانلود PDF
+                          <Glyph value="📄" />دانلود PDF
                         </button>
                       )}
 
@@ -1741,8 +1742,8 @@ export default function ExamCenter() {
                           }}
                         >
                           {item.output_mode === 'pdf_practice'
-                            ? '📄 PDF تمرینی — پاسخ زیر هر سوال'
-                            : '📝 PDF آزمونی — پاسخنامه در انتها'}
+                            ? ' PDF تمرینی — پاسخ زیر هر سوال'
+                            : ' PDF آزمونی — پاسخنامه در انتها'}
                         </div>
                       )}
                     </article>
@@ -1811,7 +1812,7 @@ export default function ExamCenter() {
                   26,
               }}
             >
-              🧪
+       <Glyph value="🧪" />
             </span>
 
             <div>
@@ -1855,7 +1856,7 @@ export default function ExamCenter() {
             setView('history')
           }
         >
-          <Glyph value="🕘" /> تاریخچه و ادامه آزمون
+          <Glyph value="🕘" />تاریخچه و ادامه آزمون
         </button>
 
         <section
@@ -1905,7 +1906,7 @@ export default function ExamCenter() {
 
               {lessonsError && lessons.length === 0 && (
                 <option value="" disabled>
-                  <Glyph value="🌐" /> دریافت درس‌ها ناموفق بود
+                  <Glyph value="🌐" />دریافت درس‌ها ناموفق بود
                 </option>
               )}
 
@@ -1923,7 +1924,7 @@ export default function ExamCenter() {
             </select>
           )}
 
-          {/* 🌊 W8/UX-02 */}
+     {/* <Glyph value="🌊" /> W8/UX-02 */}
           {lessonsError && lessons.length === 0 && (
             <button
               type="button"
@@ -2165,8 +2166,8 @@ export default function ExamCenter() {
               }}
             >
               {outputMode === 'pdf_practice'
-                ? '📄 PDF تمرینی: هر سوال با پاسخ و تحلیل بلافاصله زیر آن — مناسب تمرین و مرور.'
-                : '📝 PDF آزمونی: سوالات بدون پاسخ + پاسخنامه جداگانه در پایان — مناسب چاپ و برگزاری آزمون.'}
+                ? ' PDF تمرینی: هر سوال با پاسخ و تحلیل بلافاصله زیر آن — مناسب تمرین و مرور.'
+                : ' PDF آزمونی: سوالات بدون پاسخ + پاسخنامه جداگانه در پایان — مناسب چاپ و برگزاری آزمون.'}
             </div>
           )}
         </section>
@@ -2192,7 +2193,7 @@ export default function ExamCenter() {
           {startMutation.isPending ? (
             <Spinner size={16} />
           ) : (
-            '🚀 شروع آزمون'
+            'شروع آزمون'
           )}
         </button>
       </main>

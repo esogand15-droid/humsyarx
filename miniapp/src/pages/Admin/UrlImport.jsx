@@ -18,10 +18,10 @@ const STATUS_FA = {
   validating_file: ['بررسی فایل', 'b-yel'],
   uploading: ['انتقال به تلگرام', 'b-yel'],
   registering: ['ثبت محتوا', 'b-yel'],
-  completed: ['کامل شد ✅', 'b-grn'],
-  failed: ['ناموفق ❌', 'b-red'],
+  completed: ['کامل شد', 'b-grn'],
+  failed: ['ناموفق', 'b-red'],
   cancelled: ['لغو شد', 'b-gray'],
-  duplicate: ['تکراری ⚠️', 'b-yel'],
+  duplicate: ['تکراری', 'b-yel'],
 };
 
 export default function UrlImport() {
@@ -85,7 +85,7 @@ export default function UrlImport() {
       <Header title="درون‌ریزی از URL" back />
       <main className="page" style={{ padding: 'var(--sp-4)', display: 'grid', gap: 'var(--sp-3)' }}>
         <section className="card">
-          <div className="sec-title"><Glyph value="📥" /> درون‌ریزی محتوا از URL</div>
+          <div className="sec-title"><Glyph value="📥" />درون‌ریزی محتوا از URL</div>
           <div style={{ color: 'var(--tx2)', fontSize: 'var(--fs-cap)', lineHeight: 1.8 }}>
             فایل روی سرور دریافت و مستقیماً به تلگرام منتقل می‌شود —
             دانلود و آپلود دستی لازم نیست.
@@ -128,13 +128,13 @@ export default function UrlImport() {
 
             <button type="button" className="btn btn-pri" disabled={busy || !url.trim()}
               onClick={() => { haptic('medium'); submit(); }}>
-              <Glyph value="📥" /> شروع درون‌ریزی
+              <Glyph value="📥" />شروع درون‌ریزی
             </button>
           </div>
         </section>
 
         <section>
-          <div className="sec-title">🕘 Jobهای من</div>
+          <div className="sec-title"> Jobهای من</div>
           {jobs.length === 0 && (
             <EmptyState icon="📥">هنوز درون‌ریزی‌ای ثبت نشده است.</EmptyState>
           )}
@@ -154,7 +154,7 @@ export default function UrlImport() {
                     {(j.status === 'failed' || j.status === 'duplicate') && (
                       <button type="button" className="btn btn-xs"
                         onClick={() => retry(j.id, j.status === 'duplicate')}>
-                        {j.status === 'duplicate' ? 'ثبت با وجود تکرار' : '🔁'}
+                        {j.status === 'duplicate' ? 'ثبت با وجود تکرار' : ''}
                       </button>
                     )}
                   </div>

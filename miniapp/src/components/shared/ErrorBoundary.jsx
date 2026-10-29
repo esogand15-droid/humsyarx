@@ -3,6 +3,7 @@ import {
 } from 'react';
 
 import { APP_BASE } from '../../lib/base';
+import { Glyph } from '../ui/Icon';
 
 
 /* ─────────────────────────────────────────────
@@ -133,7 +134,7 @@ export default class ErrorBoundary
       return (
         <main dir="rtl" style={{display:'flex',alignItems:'center',justifyContent:'center',width:'100%',minHeight:'100dvh',padding:'24px 16px',color:'var(--tx)',background:'transparent'}}>
           <section className={'card card-glow fade-up'} style={{width:'100%',maxWidth:390,padding:22,textAlign:'center'}}>
-            <div style={{display:'grid',width:68,height:68,placeItems:'center',margin:'0 auto',background:'var(--soft-err)',border:'1px solid var(--bd-err)',borderRadius:'var(--r-xl)',fontSize:32}}>🔄</div>
+            <div style={{display:'grid',width:68,height:68,placeItems:'center',margin:'0 auto',background:'var(--soft-err)',border:'1px solid var(--bd-err)',borderRadius:'var(--r-xl)',fontSize:32}}></div>
             <h1 style={{marginTop:'var(--sp-4)',fontSize:'var(--fs-xl)',fontWeight:900}}>نسخه جدید در دسترس است</h1>
             <p style={{marginTop:'var(--sp-2)',color:'var(--tx2)',fontSize:'var(--fs-cap)',lineHeight:1.9}}>برنامه به‌روزرسانی شده است. برای ادامه، صفحه را بازگذاری کنید.</p>
             <div style={{display:'grid',gap:8,marginTop:16}}>
@@ -200,7 +201,7 @@ export default class ErrorBoundary
               fontSize: 32,
             }}
           >
-            🧯
+      <Glyph value="🧯" />
           </div>
 
           <h1

@@ -958,7 +958,7 @@ export default function App() {
           می‌کند */}
       <SwipeBack />
 
-      {/* 🧯 دیوار آتش: کرش هر صفحه = صفحه‌ی
+      {/* دیوار آتش: کرش هر صفحه = صفحه‌ی
           بازیابی، نه صفحه‌ی تاریک */}
       <ErrorBoundary
         key={location.pathname}
@@ -1261,7 +1261,7 @@ export default function App() {
           }
         />
 
-        {/* 🛡 RBAC-W2 — مدیریت نقش‌ها/مجوزها */}
+        {/* RBAC-W2 — مدیریت نقش‌ها/مجوزها */}
         <Route
           path="/admin/roles"
           element={
@@ -1421,7 +1421,7 @@ export default function App() {
           }
         />
 
-        {/* 📥 URL-Import — سرور دانلود و به تلگرام منتقل می‌کند */}
+        {/* URL-Import — سرور دانلود و به تلگرام منتقل می‌کند */}
         <Route
           path="/admin/content/url-import"
           element={

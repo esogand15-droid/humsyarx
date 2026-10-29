@@ -45,17 +45,17 @@ import { Glyph } from '../../components/ui/Icon';
 
 const DIFFICULTIES = [
   [
-    'آسان 🟢',
+    'آسان',
     'آسان',
   ],
 
   [
-    'متوسط 🟡',
+    'متوسط',
     'متوسط',
   ],
 
   [
-    'سخت 🔴',
+    'سخت',
     'سخت',
   ],
 ];
@@ -108,8 +108,8 @@ function ResultBox({
         }}
       >
         {result.is_correct
-          ? '✅ پاسخ صحیح؛ آفرین!'
-          : '❌ پاسخ نادرست'}
+          ? 'پاسخ صحیح؛ آفرین!'
+          : 'پاسخ نادرست'}
       </div>
 
       {prestige && (
@@ -132,7 +132,7 @@ function ResultBox({
                 color: 'var(--warn)',
               }}
             >
-              ⚡ +{xpGained} XP
+       <Glyph value="⚡" /> +{xpGained} XP
             </span>
           )}
 
@@ -148,7 +148,7 @@ function ResultBox({
             prestige.streak?.current
           ) > 1 && (
             <span>
-              · 🔥{' '}
+       · <Glyph value="🔥" />{' '}
               {prestige.streak.current}{' '}
               روز
             </span>
@@ -211,7 +211,7 @@ function DesignQuestion({
 
     correct: 0,
     explanation: '',
-    difficulty: 'متوسط 🟡',
+    difficulty: 'متوسط',
   });
 
   const toast = useUIStore(
@@ -309,7 +309,7 @@ function DesignQuestion({
         toast(
           response.data
             ?.message ||
-            'سؤال ثبت شد ✅',
+            'سؤال ثبت شد',
 
           'success'
         );
@@ -410,7 +410,7 @@ function DesignQuestion({
                   24,
               }}
             >
-              ✍️
+       <Glyph value="✍️" />
             </span>
 
             <div>
@@ -699,7 +699,7 @@ function DesignQuestion({
           {mutation.isPending ? (
             <Spinner size={15} />
           ) : (
-            '📨 ثبت سؤال'
+            'ثبت سؤال'
           )}
         </button>
       </main>
@@ -998,7 +998,7 @@ export default function Questions() {
               toast(
                 response.data
                   ?.message ||
-                  'سؤال بیشتری موجود نیست 🎉',
+                  'سؤال بیشتری موجود نیست',
 
                 'info'
               );
@@ -1250,11 +1250,11 @@ export default function Questions() {
 
         toast(
           data.quota
-            ? `🤖 سؤال هوشمند ساخته شد — ${faNum(
+            ? ` سؤال هوشمند ساخته شد — ${faNum(
                 data.quota
                   .remaining_today
               )} سؤال دیگر برای امروز`
-            : '🤖 سؤال هوشمند ساخته شد',
+            : 'سؤال هوشمند ساخته شد',
 
           'success'
         );
@@ -1318,7 +1318,7 @@ export default function Questions() {
         );
 
         toast(
-          'سؤال هوشمند برای بازبینی به بانک سؤالات ارسال شد ✅',
+          'سؤال هوشمند برای بازبینی به بانک سؤالات ارسال شد',
 
           'success'
         );
@@ -1454,7 +1454,7 @@ export default function Questions() {
                       25,
                   }}
                 >
-                  🧪
+         <Glyph value="🧪" />
                 </span>
 
                 <div>
@@ -1486,7 +1486,7 @@ export default function Questions() {
             </section>
 
             <section className="card" style={{ marginBottom: 17, padding: 12 }}>
-              <b style={{ fontSize: 'var(--fs-cap)' }}><Glyph value="🌊" /> فیلتر سال و منبع (اختیاری)</b>
+              <b style={{ fontSize: 'var(--fs-cap)' }}><Glyph value="🌊" />فیلتر سال و منبع (اختیاری)</b>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
                 <select className="inp" value={yearFrom} onChange={(e) => setYearFrom(e.target.value)}>
                   <option value="">از همه سال‌ها</option>
@@ -1572,7 +1572,7 @@ export default function Questions() {
                       21,
                   }}
                 >
-                  ⚡
+         <Glyph value="⚡" />
                 </span>
 
                 <span
@@ -1654,7 +1654,7 @@ export default function Questions() {
                       21,
                   }}
                 >
-                  🔴
+         <Glyph value="🔴" />
                 </span>
 
                 <span
@@ -1738,7 +1738,7 @@ export default function Questions() {
                       21,
                   }}
                 >
-                  📝
+         <Glyph value="📝" />
                 </span>
 
                 <span
@@ -1785,7 +1785,7 @@ export default function Questions() {
                 className="btn btn-full"
                 onClick={() => refetchLessons()}
               >
-                <Glyph value="🌐" /> دریافت درس‌ها ناموفق بود — تلاش دوباره
+                <Glyph value="🌐" />دریافت درس‌ها ناموفق بود — تلاش دوباره
               </button>
             ) : (
               <section className="grid2">
@@ -1845,7 +1845,7 @@ export default function Questions() {
                             21,
                         }}
                       >
-                        📖
+            <Glyph value="📖" />
                       </span>
 
                       <b
@@ -1901,7 +1901,7 @@ export default function Questions() {
                   )
                 }
               >
-                <Glyph value="✍️" /> طراحی سؤال
+                <Glyph value="✍️" />طراحی سؤال
               </button>
 
               <button
@@ -1918,7 +1918,7 @@ export default function Questions() {
                   )
                 }
               >
-                <Glyph value="📋" /> سؤال‌های من
+                <Glyph value="📋" />سؤال‌های من
               </button>
             </div>
           </>
@@ -1944,7 +1944,7 @@ export default function Questions() {
                       40,
                   }}
                 >
-                  🎉
+         <Glyph value="🎉" />
                 </div>
 
                 <div
@@ -1974,7 +1974,7 @@ export default function Questions() {
                       6,
                   }}
                 >
-                  <Glyph value="🤖" /> هوشیار می‌تواند برای این درس سؤال تازه‌ی
+                  <Glyph value="🤖" />هوشیار می‌تواند برای این درس سؤال تازه‌ی
                   اختصاصی بسازد و دوباره به چالشت بکشد.
                   سقف روزانه محدود است و پاسخ‌های تشریحی دارد.
                 </div>
@@ -1996,7 +1996,7 @@ export default function Questions() {
                 >
                   {aiBusy
                     ? 'در حال ساخت…'
-                    : '🤖 ساخت سؤال هوشمند'}
+                    : 'ساخت سؤال هوشمند'}
                 </button>
 
                 <button
@@ -2076,7 +2076,7 @@ export default function Questions() {
               />
             )}
 
-            {/* 📨 EP-01 — پیشنهاد سؤال هوشمند به بانک (فقط سؤال AI) */}
+            {/* EP-01 — پیشنهاد سؤال هوشمند به بانک (فقط سؤال AI) */}
             {result?.ai_can_propose &&
               aiProposed !==
                 'done' && (
@@ -2099,7 +2099,7 @@ export default function Questions() {
                         1.9,
                     }}
                   >
-                    <Glyph value="📨" /> این سؤال هوشمند را برای بانک سؤالات
+                    <Glyph value="📨" />این سؤال هوشمند را برای بانک سؤالات
                     پیشنهاد می‌دهی؟ پس از بازبینی مدیر، برای
                     همه‌ی دانشجوها منتشر می‌شود.
                   </div>
@@ -2121,7 +2121,7 @@ export default function Questions() {
                     {aiProposed ===
                     'pending'
                       ? 'در حال ارسال…'
-                      : '📨 پیشنهاد به بانک سؤالات'}
+                      : 'پیشنهاد به بانک سؤالات'}
                   </button>
                 </section>
               )}
@@ -2222,7 +2222,7 @@ export default function Questions() {
         )}
       </main>
 
-      {/* 👑 موج P0 — جشن ارتقا روی
+      {/* موج P0 — جشن ارتقا روی
           همه‌ی ویوهای این صفحه */}
       {celebration && (
         <CelebrationOverlay

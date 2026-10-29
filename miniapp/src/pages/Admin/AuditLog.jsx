@@ -24,6 +24,7 @@ import {
 import {
   haptic,
 } from '../../lib/telegram';
+import { Glyph } from '../../components/ui/Icon';
 
 
 /* ═══════════ نگاشت‌های نمایشی ═══════════ */
@@ -92,16 +93,16 @@ const SEVERITY_META = {
 
 const CATEGORY_FILTERS = [
   ['', 'همه'],
-  ['admin', '🛡 مدیریتی'],
-  ['content', '🎓 محتوایی'],
+  ['admin', 'مدیریتی'],
+  ['content', 'محتوایی'],
 ];
 
 const SEVERITY_FILTERS = [
   ['', 'همه سطوح'],
-  ['CRITICAL', '🔴 بحرانی'],
-  ['HIGH', '🟠 مهم'],
-  ['WARNING', '🟡 توجه'],
-  ['INFO', '🟢 عادی'],
+  ['CRITICAL', 'بحرانی'],
+  ['HIGH', 'مهم'],
+  ['WARNING', 'توجه'],
+  ['INFO', 'عادی'],
 ];
 
 const PAGE_SIZE = 25;
@@ -183,7 +184,7 @@ function AuditItem({ log }) {
         </div>
 
         <div className="audit-item__meta">
-          👤 {actor.name || '—'}
+     <Glyph value="👤" /> {actor.name || '—'}
 
           {actor.role && actor.role !== 'نامشخص' && (
             <span
@@ -194,12 +195,12 @@ function AuditItem({ log }) {
             </span>
           )}
 
-          {' • '}📂 {moduleFa}
+     {' • '}<Glyph value="📂" /> {moduleFa}
 
           {(target.label ||
             target.id) && (
             <>
-              {' • '}🎯{' '}
+       {' • '}<Glyph value="🎯" />{' '}
               {target.label ||
                 `#${target.id}`}
             </>
@@ -406,7 +407,7 @@ export default function AuditLog() {
 
       <main className="page fade-up">
         <div className="page-hint">
-          <span>🛡</span>
+          <span></span>
 
           <span>
             هر اقدام حساس مدیران (تأیید و
@@ -484,7 +485,7 @@ export default function AuditLog() {
               padding: '0 14px',
             }}
           >
-            🔍
+      <Glyph value="🔍" />
           </button>
         </form>
 

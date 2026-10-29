@@ -164,7 +164,7 @@ export default function QuestionCard({
         }}
       >
         <span className="badge b-acc">
-          📚{' '}
+     <Glyph value="📚" />{' '}
 
           {question.lesson ||
             'درس'}
@@ -172,20 +172,20 @@ export default function QuestionCard({
 
         {question.topic && (
           <span className="badge b-gray">
-            📌 {question.topic}
+      <Glyph value="📌" /> {question.topic}
           </span>
         )}
 
-        {/* 🌊 QBANK-W1 — سال و منبع سؤال */}
+        {/* QBANK-W1 — سال و منبع سؤال */}
         {question.exam_year && (
           <span className="badge b-gray">
-            📅 {question.exam_year}
+      <Glyph value="📅" /> {question.exam_year}
           </span>
         )}
 
         {question.content_source_label_fa && (
           <span className="badge b-gray">
-            🏷 {question.content_source_label_fa}
+      <Glyph value="🏷" /> {question.content_source_label_fa}
           </span>
         )}
 
@@ -207,7 +207,7 @@ export default function QuestionCard({
           }}
         >
           {question.difficulty ||
-            'متوسط 🟡'}
+            'متوسط'}
         </span>
       </div>
 
@@ -509,7 +509,7 @@ export default function QuestionCard({
               'pointer',
           }}
         >
-          <Glyph value="🚩" /> گزارش ایراد در این سؤال
+          <Glyph value="🚩" />گزارش ایراد در این سؤال
         </button>
       )}
     </article>

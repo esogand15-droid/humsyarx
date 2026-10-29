@@ -271,7 +271,7 @@ export default function AiHistory() {
             navigate('/ai/image');
           }}
         >
-          <Glyph value="🎨" /> ساخت تصویر با هوشیار
+          <Glyph value="🎨" />ساخت تصویر با هوشیار
         </button>
 
         <button
@@ -282,7 +282,7 @@ export default function AiHistory() {
             navigate('/ai/live');
           }}
         >
-          <Glyph value="🎙" /> تماس صوتی زنده با هوشیار (Live)
+          <Glyph value="🎙" />تماس صوتی زنده با هوشیار (Live)
         </button>
 
         <SearchField
@@ -295,7 +295,7 @@ export default function AiHistory() {
           style={{ marginBottom: 9 }}
         />
 
-        {/* 🌊 W8/UX-02 */}
+    {/* <Glyph value="🌊" /> W8/UX-02 */}
         {!convsPending && convsError && (
           <PageError
             text="دریافت گفت‌وگوها انجام نشد."

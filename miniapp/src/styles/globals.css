@@ -449,9 +449,94 @@ a {
 }
 
 .btn-g {
-  color: #70A7FF;
-  background: var(--acc-soft);
-  border: 1px solid var(--bdg);
+  color: #8DBBFF;
+  background: rgba(61, 134, 255, .09);
+  border: 1px solid rgba(61, 134, 255, .22);
+}
+
+/* ── یکپارچه‌سازی دکمه‌ها (v3.2) ────────────────────────────────
+   مشکل: هر دکمه‌ای که کلاس گرافیکی (btn-p/btn-g/...) نداشت، رنگِ
+   پیش‌فرض مرورگر را می‌گرفت و خاکستری/بی‌ربط دیده می‌شد (صفحهٔ
+   برنامه، پروفایل، ...). حالا «.btn» خودش یک دکمهٔ شیشه‌ای آبیِ
+   کامل است و همه‌جا یکدست دیده می‌شود. ── */
+.btn {
+  color: #C7DCFF;
+  background:
+    linear-gradient(180deg, rgba(61, 134, 255, .16), rgba(61, 134, 255, .08));
+  border: 1px solid rgba(61, 134, 255, .26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+}
+
+.btn:hover:not(:disabled) {
+  color: #E4EEFF;
+  border-color: rgba(61, 134, 255, .44);
+  background:
+    linear-gradient(180deg, rgba(61, 134, 255, .24), rgba(61, 134, 255, .12));
+}
+
+.btn:focus-visible {
+  outline: 2px solid rgba(61, 134, 255, .55);
+  outline-offset: 2px;
+}
+
+/* اندازه‌ها — قبلاً «.sm» و «.xs» تعریف نشده بودند.
+   توجه: صفحه‌ها هم «btn sm» و هم «btn btn-xs» (با خط تیره) می‌نویسند،
+   پس هر دو شکل پوشش داده می‌شود. */
+.btn.sm,
+.btn.btn-sm {
+  min-height: 34px;
+  padding: 6px 12px;
+  gap: 6px;
+  border-radius: 11px;
+  font-size: 11.5px;
+}
+
+.btn.xs,
+.btn.btn-xs {
+  min-height: 29px;
+  padding: 4px 10px;
+  gap: 5px;
+  border-radius: 9px;
+  font-size: 10.5px;
+}
+
+/* نام‌های قدیمی/مترادف که در کد صفحه‌ها استفاده شده بود */
+.btn.primary,
+.btn.btn-pri,
+.btn--primary {
+  color: #fff;
+  background: var(--grad-brand);
+  border-color: transparent;
+  box-shadow: var(--shd-glow);
+}
+
+.btn.danger,
+.btn.btn-danger {
+  color: #FB7185;
+  background: rgba(239, 68, 68, .1);
+  border-color: rgba(239, 68, 68, .24);
+}
+
+/* ردیف اکشن‌های پایین صفحه — دو دکمهٔ هم‌عرض، هم‌خانواده */
+.v3-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.v3-actions > .btn {
+  width: 100%;
+  min-height: 40px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.v3-actions > .btn.is-primary {
+  color: #fff;
+  background: var(--grad-brand);
+  border-color: transparent;
+  box-shadow: 0 8px 20px rgba(61, 134, 255, .28);
 }
 
 .btn-d {
@@ -466,13 +551,13 @@ a {
 }
 
 .btn-dark {
-  color: var(--tx2);
+  color: #A9C4E8;
 
   background:
-    rgba(30, 41, 59, .72);
+    rgba(18, 33, 58, .82);
 
   border:
-    1px solid var(--bd);
+    1px solid rgba(120, 155, 210, .2);
 }
 
 .btn-full {

@@ -52,6 +52,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 
+
 const money = (value) => {
   const formatted =
     new Intl.NumberFormat(
@@ -98,7 +99,7 @@ const PAYMENT_STATUS = {
   refunded: [
     'بازگشت وجه',
     'b-gray',
-    '↩️',
+    '↩',
   ],
 };
 
@@ -221,7 +222,7 @@ export default function Subscription() {
     setTrialBusy(true);
     try {
       await api.post('/api/subscription/trial');
-      toast('🎉 اشتراک آزمایشی فعال شد');
+      toast('اشتراک آزمایشی فعال شد');
       refetch();
     } catch (e) {
       toast(e?.response?.data?.detail || 'خطا در فعال‌سازی trial', 'err');
@@ -430,7 +431,7 @@ export default function Subscription() {
         toast(
           `${
             response.data.percent
-          }٪ تخفیف اعمال شد ✅`,
+          }٪ تخفیف اعمال شد `,
 
           'success'
         );
@@ -568,7 +569,7 @@ export default function Subscription() {
         toast(
           response.data
             ?.message ||
-            'درخواست ثبت شد ✅',
+            'درخواست ثبت شد',
 
           'success'
         );
@@ -733,9 +734,7 @@ export default function Subscription() {
                       28,
                   }}
                 >
-                  {data?.active
-                    ? '💎'
-                    : '🚀'}
+                  <Glyph value={data?.active ? '💎' : '🚀'} size={26} />
                 </span>
 
                 <div
@@ -812,7 +811,7 @@ export default function Subscription() {
                 )}
               </div>
 
-              {/* 🌊 W6/MISS-03 — بنر trial فقط برای واجدین بدون اشتراک */}
+              {/* W6/MISS-03 — بنر trial فقط برای واجدین بدون اشتراک */}
               {!data?.active && data?.trial?.eligible && (
                 <button
                   type="button"
@@ -821,12 +820,12 @@ export default function Subscription() {
                   onClick={claimTrial}
                   style={{ marginTop: 12 }}
                 >
-                  {trialBusy ? '⏳ …' : `🎁 شروع ${number(data.trial.days)} روز آزمایشی رایگان`}
+                  {trialBusy ? '⏳ …' : ` شروع ${number(data.trial.days)} روز آزمایشی رایگان`}
                 </button>
               )}
             </section>
 
-            {/* 🌊 W8/MISS-03 — خانواده */}
+            {/* W8/MISS-03 — خانواده */}
             <FamilySection hasActive={!!data?.active} />
 
 
@@ -895,7 +894,7 @@ export default function Subscription() {
                 }}
               >
                 <div className="sec-title">
-                  <Glyph value="✅" /> عملیات موفق
+                  <Glyph value="✅" />عملیات موفق
                 </div>
 
                 <div
@@ -928,10 +927,10 @@ export default function Subscription() {
             )}
 
 
-            {/* 🌊 GIFT — پنل خرید هدیه */}
+            {/* GIFT — پنل خرید هدیه */}
             <section className="card">
               <div className="sec-title">
-                <Glyph value="🎁" /> اشتراک هدیه
+                <Glyph value="🎁" />اشتراک هدیه
               </div>
 
               <div
@@ -963,8 +962,8 @@ export default function Subscription() {
                 }}
               >
                 {giftMode
-                  ? '✅ حالت هدیه روشن است (خاموش کردن)'
-                  : '🎁 خرید هدیه برای یک دوست'}
+                  ? 'حالت هدیه روشن است (خاموش کردن)'
+                  : 'خرید هدیه برای یک دوست'}
               </button>
 
               {giftMode && (
@@ -992,7 +991,7 @@ export default function Subscription() {
                           fontSize: 'var(--fs-sm)',
                         }}
                       >
-                        🎯 {giftTo.name}
+            <Glyph value="🎯" /> {giftTo.name}
                         {giftTo.username
                           ? ` (@${giftTo.username})`
                           : ''}
@@ -1056,7 +1055,7 @@ export default function Subscription() {
 
             <section>
               <div className="sec-title">
-                <Glyph value="💳" /> انتخاب پلن
+                <Glyph value="💳" />انتخاب پلن
               </div>
 
               <div
@@ -1188,16 +1187,16 @@ export default function Subscription() {
                               )}{' '}
 
                               روز دسترسی
-                              {/* 🌊 W8/MISS-03 */}
+               {/* <Glyph value="🌊" /> W8/MISS-03 */}
                               {Number(plan.max_members) > 1 && (
                                 <span style={{ display: 'block', marginTop: 2 }}>
-                                  👨‍👩‍👧 خانوادگی ({number(plan.max_members)} نفره)
+                                  ‍‍ خانوادگی ({number(plan.max_members)} نفره)
                                 </span>
                               )}
-                              {/* 🌊 W6/MISS-04 */}
+               {/* <Glyph value="🌊" /> W6/MISS-04 */}
                               {Number(plan.ai_daily_limit) > 0 && (
                                 <span style={{ display: 'block', marginTop: 2 }}>
-                                  🤖 {number(plan.ai_daily_limit)} سوال هوشیار/روز
+                                   {number(plan.ai_daily_limit)} سوال هوشیار/روز
                                 </span>
                               )}
                             </span>
@@ -1240,7 +1239,7 @@ export default function Subscription() {
                 }}
               >
                 <div className="sec-title">
-                  <Glyph value="🧾" /> تکمیل پرداخت
+                  <Glyph value="🧾" />تکمیل پرداخت
                 </div>
 
                 <div
@@ -1572,7 +1571,7 @@ export default function Subscription() {
                       borderRadius: 'var(--r-md)',
                     }}
                   >
-                    <Glyph value="🎁" /> این پلن با کد تخفیف
+                    <Glyph value="🎁" />این پلن با کد تخفیف
                     رایگان است و نیازی به
                     رسید ندارد.
                   </div>
@@ -1657,13 +1656,13 @@ export default function Subscription() {
                     .isPending ? (
                     <Spinner size={16} />
                   ) : free ? (
-                    '🎁 فعال‌سازی رایگان'
+                    'فعال‌سازی رایگان'
                   ) : (
-                    '📤 ارسال رسید'
+                    'ارسال رسید'
                   )}
                 </button>
 
-                {/* 🌊 W2 — پرداخت آنلاین (زرین‌پال) */}
+                {/* W2 — پرداخت آنلاین (زرین‌پال) */}
                 {gatewayOn &&
                   !free &&
                   !zp.pending && (
@@ -1708,7 +1707,7 @@ export default function Subscription() {
                       {zp.busy ? (
                         <Spinner size={16} />
                       ) : (
-                        '⚡ پرداخت آنلاین (زرین‌پال)'
+                        'پرداخت آنلاین (زرین‌پال)'
                       )}
                     </button>
                   )}
@@ -1719,7 +1718,7 @@ export default function Subscription() {
                     style={{ marginTop: 10 }}
                   >
                     <b>
-                      <Glyph value="💳" /> پرداخت در انتظار تأیید
+                      <Glyph value="💳" />پرداخت در انتظار تأیید
                     </b>
 
                     <div
@@ -1756,7 +1755,7 @@ export default function Subscription() {
                         {zp.busy ? (
                           <Spinner size={16} />
                         ) : (
-                          '✅ پرداخت کردم، بررسی کن'
+                          'پرداخت کردم، بررسی کن'
                         )}
                       </button>
 
@@ -1770,7 +1769,7 @@ export default function Subscription() {
                             )
                           }
                         >
-                          <Glyph value="🔗" /> لینک پرداخت
+                          <Glyph value="🔗" />لینک پرداخت
                         </button>
                       )}
 
@@ -1780,7 +1779,7 @@ export default function Subscription() {
                         disabled={zp.busy}
                         onClick={zp.cancelLocal}
                       >
-                        <Glyph value="✖️" /> انصراف
+                        <Glyph value="✖" />انصراف
                       </button>
                     </div>
                   </div>
@@ -1789,13 +1788,13 @@ export default function Subscription() {
             )}
 
 
-            {/* 🌊 GIFT — تاریخچه‌ی هدیه‌ها */}
+            {/* GIFT — تاریخچه‌ی هدیه‌ها */}
             {(giftsQuery.data?.data?.as_payer?.length ||
               giftsQuery.data?.data?.as_recipient
                 ?.length) && (
               <section>
                 <div className="sec-title">
-                  <Glyph value="🎁" /> هدیه‌های من
+                  <Glyph value="🎁" />هدیه‌های من
                 </div>
 
                 <div
@@ -1837,7 +1836,7 @@ export default function Subscription() {
                               fontSize: 'var(--fs-xl)',
                             }}
                           >
-                            {icon}
+                            <Glyph value={icon} />
                           </span>
 
                           <div style={{ flex: 1 }}>
@@ -1881,7 +1880,7 @@ export default function Subscription() {
                                 'var(--fs-cap)',
                             }}
                           >
-                            💬 {item.message}
+              <Glyph value="💬" /> {item.message}
                           </div>
                         )}
                       </article>
@@ -1916,7 +1915,7 @@ export default function Subscription() {
                             fontSize: 'var(--fs-xl)',
                           }}
                         >
-                          🎁
+             <Glyph value="🎁" />
                         </span>
 
                         <div style={{ flex: 1 }}>
@@ -1936,7 +1935,7 @@ export default function Subscription() {
                             {item.plan_name ||
                               'اشتراک'}
                             {item.activated_at
-                              ? ' • فعال شد ✅'
+                              ? ' • فعال شد'
                               : ''}
                           </div>
                         </div>
@@ -1967,7 +1966,7 @@ export default function Subscription() {
                             fontSize: 'var(--fs-cap)',
                           }}
                         >
-                          💬 {item.message}
+             <Glyph value="💬" /> {item.message}
                         </div>
                       )}
                     </article>
@@ -1979,7 +1978,7 @@ export default function Subscription() {
 
             <section>
               <div className="sec-title">
-                <Glyph value="🕘" /> تاریخچه پرداخت‌ها
+                <Glyph value="🕘" />تاریخچه پرداخت‌ها
               </div>
 
               {payments.length ===
@@ -2054,7 +2053,7 @@ export default function Subscription() {
                                 fontSize: 'var(--fs-xl)',
                               }}
                             >
-                              {icon}
+                              <Glyph value={icon} />
                             </span>
 
                             <div
@@ -2243,7 +2242,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
 
   return (
     <section>
-      <div className="sec-title"><Glyph value="👛" /> کیف پول من</div>
+      <div className="sec-title"><Glyph value="👛" />کیف پول من</div>
       <div className="card">
         {walletQuery.isLoading ? (
           <Spinner />
@@ -2272,20 +2271,20 @@ export function WalletSection({ plans = [], selectedId, onDone,
                 disabled={!sel || !enough || buyMutation.isPending}
                 onClick={startBuy}
               >
-                {sel ? `💰 خرید «${sel.name}» با کیف پول` : '💰 ابتدا یک پلن انتخاب کنید'}
+                {sel ? ` خرید «${sel.name}» با کیف پول` : 'ابتدا یک پلن انتخاب کنید'}
               </button>
               <button
                 type="button"
                 className="btn"
                 onClick={() => setShowTopup((v) => !v)}
               >
-                {showTopup ? 'بستن شارژ کیف پول' : '💳 شارژ کیف پول'}
+                {showTopup ? 'بستن شارژ کیف پول' : 'شارژ کیف پول'}
               </button>
             </div>
 
             {showTopup && (
               <div className="card" style={{ marginTop: 10 }}>
-                <b><Glyph value="💳" /> شارژ کیف پول با رسید بانکی</b>
+                <b><Glyph value="💳" />شارژ کیف پول با رسید بانکی</b>
                 <div className="muted" style={{ marginTop: 4 }}>
                   مبلغ را وارد کن، رسید واریز را آپلود کن؛ پس از تأیید ادمین
                   مبلغ به کیف پولت اضافه می‌شود.
@@ -2334,9 +2333,9 @@ export function WalletSection({ plans = [], selectedId, onDone,
                     })
                   }
                 >
-                  {topupMutation.isPending ? '…' : '📨 ثبت رسید شارژ'}
+                  {topupMutation.isPending ? '…' : 'ثبت رسید شارژ'}
                 </button>
-                {/* 🌊 W2 — شارژ آنی با درگاه */}
+                {/* W2 — شارژ آنی با درگاه */}
                 {gatewayOnW && !zpTopup.pending && (
                   <button
                     type="button"
@@ -2352,12 +2351,12 @@ export function WalletSection({ plans = [], selectedId, onDone,
                       }
                     }}
                   >
-                    {zpTopup.busy ? '…' : '⚡ شارژ آنی با درگاه'}
+                    {zpTopup.busy ? '…' : 'شارژ آنی با درگاه'}
                   </button>
                 )}
                 {zpTopup.pending && (
                   <div className="card" style={{ marginTop: 10 }}>
-                    <b><Glyph value="💳" /> شارژ در انتظار تأیید</b>
+                    <b><Glyph value="💳" />شارژ در انتظار تأیید</b>
                     <div className="muted" style={{ marginTop: 6 }}>
                       مبلغ: {number(zpTopup.pending.final_price)} تومان • ۱ ساعت اعتبار دارد.
                     </div>
@@ -2368,7 +2367,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                         disabled={zpTopup.busy}
                         onClick={() => zpTopup.verify(zpTopup.pending.authority).catch(() => {})}
                       >
-                        {zpTopup.busy ? '…' : '✅ پرداخت کردم، بررسی کن'}
+                        {zpTopup.busy ? '…' : 'پرداخت کردم، بررسی کن'}
                       </button>
                       {zpTopup.pending.url && (
                         <button
@@ -2376,7 +2375,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                           className="btn"
                           onClick={() => openExternalLink(zpTopup.pending.url)}
                         >
-                          <Glyph value="🔗" /> لینک پرداخت
+                          <Glyph value="🔗" />لینک پرداخت
                         </button>
                       )}
                       <button
@@ -2385,7 +2384,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                         disabled={zpTopup.busy}
                         onClick={zpTopup.cancelLocal}
                       >
-                        <Glyph value="✖️" /> انصراف
+                        <Glyph value="✖" />انصراف
                       </button>
                     </div>
                   </div>
@@ -2410,7 +2409,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                     disabled={buyMutation.isPending}
                     onClick={() => buyMutation.mutate(confirmBuy)}
                   >
-                    {buyMutation.isPending ? '…' : '✅ تأیید خرید'}
+                    {buyMutation.isPending ? '…' : 'تأیید خرید'}
                   </button>
                   <button type="button" className="btn btn-xs" onClick={() => setConfirmBuy(null)}>
                     انصراف
@@ -2436,7 +2435,7 @@ export function WalletSection({ plans = [], selectedId, onDone,
                       <button type="button" className="btn btn-xs"
                         disabled={loadingMore} onClick={loadMore}
                         style={{ marginTop: 6 }}>
-                        {loadingMore ? '…' : '🕓 تراکنش‌های قدیمی‌تر'}
+                        {loadingMore ? '…' : 'تراکنش‌های قدیمی‌تر'}
                       </button>
                     )}
                   </>

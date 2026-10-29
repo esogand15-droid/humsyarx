@@ -122,7 +122,7 @@ export default function PaymentVerify() {
     ) {
       return (
         <div className="card">
-          <b>پرداخت لغو شد 🚫</b>
+          <b>پرداخت لغو شد </b>
 
           <div
             className="muted"
@@ -146,7 +146,7 @@ export default function PaymentVerify() {
     if (!authority) {
       return (
         <div className="card">
-          <b>لینک نامعتبر است ⚠️</b>
+          <b>لینک نامعتبر است </b>
 
           <div
             className="muted"
@@ -170,7 +170,7 @@ export default function PaymentVerify() {
     if (!hasAuth) {
       return (
         <div className="card">
-          <b>پرداخت انجام شد ✅</b>
+          <b>پرداخت انجام شد </b>
 
           <div
             className="muted"
@@ -204,7 +204,7 @@ export default function PaymentVerify() {
                 )
               }
             >
-              بازگشت به ربات 🤖
+              بازگشت به ربات 
             </button>
           )}
 
@@ -243,7 +243,7 @@ export default function PaymentVerify() {
     if (state === 'success') {
       return (
         <div className="card">
-          <b>پرداخت تأیید شد 🎉</b>
+          <b>پرداخت تأیید شد </b>
 
           <div
             className="muted"
@@ -291,7 +291,7 @@ export default function PaymentVerify() {
 
     return (
       <div className="card">
-        <b>تأیید نشد ⚠️</b>
+        <b>تأیید نشد </b>
 
         <div
           className="muted"
@@ -339,7 +339,7 @@ export default function PaymentVerify() {
             textAlign: 'center',
           }}
         >
-          پرداخت امن با زرین‌پال 💳
+          پرداخت امن با زرین‌پال 
         </div>
       </main>
     </>

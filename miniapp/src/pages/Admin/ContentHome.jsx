@@ -381,7 +381,7 @@ export default function ContentHome() {
 
         <main className="page fade-up">
           <div className="sec-title">
-            <Glyph value="🎓" /> محتوای کدام ورودی را
+            <Glyph value="🎓" />محتوای کدام ورودی را
             مدیریت می‌کنید؟
           </div>
 
@@ -426,7 +426,7 @@ export default function ContentHome() {
                       fontSize: 22,
                     }}
                   >
-                    📅
+          <Glyph value="📅" />
                   </span>
 
                   <b
@@ -451,7 +451,7 @@ export default function ContentHome() {
                 haptic('light');
                 setIntake(
                   '',
-                  '🌐 سراسری'
+                  'سراسری'
                 );
               }}
               style={{
@@ -474,7 +474,7 @@ export default function ContentHome() {
                   fontSize: 22,
                 }}
               >
-                🌐
+        <Glyph value="🌐" />
               </span>
 
               <b
@@ -526,7 +526,7 @@ export default function ContentHome() {
   const shownIntakeLabel =
     intakeLabel ||
     (intake === ''
-      ? '🌐 سراسری'
+      ? 'سراسری'
       : intake);
 
   return (
@@ -588,7 +588,7 @@ export default function ContentHome() {
                   27,
               }}
             >
-              🎓
+       <Glyph value="🎓" />
             </span>
 
             <div
@@ -640,7 +640,7 @@ export default function ContentHome() {
           </div>
         </section>
 
-        {/* 🌊 C1 — بنر scope ورودی (scoped: قفل؛
+        {/* C1 — بنر scope ورودی (scoped: قفل؛
             global: نمایش انتخاب فعلی + تغییر ورودی) */}
         <section
           className="card"
@@ -661,7 +661,7 @@ export default function ContentHome() {
               fontSize: 20,
             }}
           >
-            📅
+      <Glyph value="📅" />
           </span>
 
           <span
@@ -704,7 +704,7 @@ export default function ContentHome() {
                   'var(--fs-cap)',
               }}
             >
-              <Glyph value="🔄" /> تغییر ورودی
+              <Glyph value="🔄" />تغییر ورودی
             </button>
           )}
         </section>
@@ -869,7 +869,7 @@ export default function ContentHome() {
           </section>
         )}
 
-        {/* 🍴 C2 — آمار مؤثر: آنچه دانشجوی این ورودی
+        {/* C2 — آمار مؤثر: آنچه دانشجوی این ورودی
              واقعاً می‌بیند (اختصاصی ورودی + سراسری) — فقط
              وقتی ctx یک ورودی مشخص است بک‌اند برمی‌گرداند */}
         {Boolean(intake) &&
@@ -886,7 +886,7 @@ export default function ContentHome() {
                   '-8px 2px var(--sp-4)',
               }}
             >
-              <Glyph value="🔭" /> مؤثر برای این ورودی:
+              <Glyph value="🔭" />مؤثر برای این ورودی:
               {' '}
               {Number(
                 data.effective

@@ -14,10 +14,10 @@ import {
 import { Glyph } from '../ui/Icon';
 
 /* ─────────────────────────────────────────────
-   🔒 صفحه‌ی قفل اشتراک (Sync با ربات)
+    صفحه‌ی قفل اشتراک (Sync با ربات)
 
    بک‌اند مرجع نهایی است: وقتی GETِ بخش محافظت‌شده
-   با 403 + detail='subscription_required' جواب
+   با 403 + detail='subscription_required'جواب
    بدهد (همان قانونِ واحدِ has_access ربات)،
    صفحه‌های علوم پایه/رفرنس به‌جای کارت خطای
    عمومی این صفحه را می‌آورند. هیچ قضاوتِ
@@ -239,7 +239,7 @@ export default function SubscriptionLock({
           }}
           onClick={goPlans}
         >
-          <Glyph value="💎" /> مشاهده پلن‌ها و فعال‌سازی
+          <Glyph value="💎" />مشاهده پلن‌ها و فعال‌سازی
         </button>
       )}
     </section>

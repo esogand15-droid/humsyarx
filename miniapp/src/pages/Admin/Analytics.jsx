@@ -26,6 +26,7 @@ import {
 import { Glyph } from '../../components/ui/Icon';
 
 
+
 /* ═══════════ نگاشت‌های نمایشی ═══════════ */
 
 const ACTION_FA = {
@@ -205,7 +206,7 @@ function Kpi({
           background: soft,
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <b className="kpi__value">
@@ -477,7 +478,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  <Glyph value="🌱" /> کاربران جدید
+                  <Glyph value="🌱" />کاربران جدید
                 </span>
 
                 <span>
@@ -506,7 +507,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  <Glyph value="⚡" /> فعالیت روزانه کاربران
+                  <Glyph value="⚡" />فعالیت روزانه کاربران
                 </span>
 
                 <span>
@@ -530,7 +531,7 @@ export default function Analytics() {
             >
               <div className="chart__title">
                 <span>
-                  <Glyph value="🎫" /> تیکت‌های جدید
+                  <Glyph value="🎫" />تیکت‌های جدید
                 </span>
 
                 <span>
@@ -559,7 +560,7 @@ export default function Analytics() {
                 }}
               >
                 <div className="sec-title">
-                  <Glyph value="🏆" /> پرکاربردترین قابلیت‌ها
+                  <Glyph value="🏆" />پرکاربردترین قابلیت‌ها
                 </div>
 
                 {topActions.map(
@@ -611,7 +612,7 @@ export default function Analytics() {
                 }}
               >
                 <div className="sec-title">
-                  <Glyph value="🕐" /> ساعت‌های اوج فعالیت
+                  <Glyph value="🕐" />ساعت‌های اوج فعالیت
                 </div>
 
                 {hourly.map((item) => (

@@ -226,7 +226,7 @@ export default function ConvRows({
                               className="conv__pin"
                               title="پین‌شده"
                             >
-                              📌
+               <Glyph value="📌" />
                             </span>
                           )
                         }

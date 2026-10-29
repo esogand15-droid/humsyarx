@@ -42,6 +42,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Glyph } from '../../components/ui/Icon';
 
 
+
 function safeArray(value) {
   return Array.isArray(value)
     ? value
@@ -88,7 +89,7 @@ function EmptyState({
       style={styles.empty}
     >
       <span style={styles.emptyIcon}>
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <p>{text}</p>
@@ -166,7 +167,7 @@ function ReferenceFile({
             ) || 0
           }
 
-          {' دانلود'}
+          {'دانلود'}
         </span>
 
         {
@@ -187,7 +188,7 @@ function ReferenceFile({
           onClick={() => onPreview(item)}
           aria-label="پیش‌نمایش فایل"
         >
-          👁
+     <Glyph value="👁" />
         </button>
       )}
 
@@ -390,7 +391,7 @@ function ReferencesPage({ hlFlash = false }) {
           `جلد ${
             response.data?.volume
             || ''
-          } در ربات ارسال شد ✅`,
+          } در ربات ارسال شد `,
           'success'
         );
 
@@ -547,7 +548,7 @@ function ReferencesPage({ hlFlash = false }) {
       className="card"
       style={styles.errorCard}
     >
-      <span>⚠️</span>
+      <span></span>
 
       <p>{message}</p>
 
@@ -604,7 +605,7 @@ function ReferencesPage({ hlFlash = false }) {
                 <div
                   style={styles.heroIcon}
                 >
-                  📚
+         <Glyph value="📚" />
                 </div>
 
                 <div>
@@ -693,7 +694,7 @@ function ReferencesPage({ hlFlash = false }) {
                                         styles.subjectIcon
                                       }
                                     >
-                                      📖
+                   <Glyph value="📖" />
                                     </span>
 
                                     <strong
@@ -801,7 +802,7 @@ function ReferencesPage({ hlFlash = false }) {
                                   styles.bookIcon
                                 }
                               >
-                                📘
+                <Glyph value="📘" />
                               </span>
 
                               <span
@@ -904,7 +905,7 @@ function ReferencesPage({ hlFlash = false }) {
                             .isPending
                         }
                       >
-                        🇮🇷 فارسی
+                         فارسی
 
                         <span
                           className="badge b-gray"
@@ -943,7 +944,7 @@ function ReferencesPage({ hlFlash = false }) {
                             .isPending
                         }
                       >
-                        <Glyph value="🌐" /> لاتین
+                        <Glyph value="🌐" />لاتین
 
                         <span
                           className="badge b-gray"
@@ -957,7 +958,7 @@ function ReferencesPage({ hlFlash = false }) {
                       className="card"
                       style={styles.notice}
                     >
-                      <span>ℹ️</span>
+                      <span></span>
 
                       با زدن «ارسال»، فقط همان جلد انتخاب‌شده در ربات فرستاده می‌شود.
                     </div>

@@ -1,6 +1,6 @@
-import { Glyph } from '../../components/ui/Icon';
+import Icon from '../../components/ui/Icon';
 /* ─────────────────────────────────────────────────────────────
-   📅 HumsYar v3 — نمای «هفته در یک نگاه»
+ HumsYar v3 — نمای «هفته در یک نگاه»
 
    سه تکهٔ چسبیده:
    ۱) نمودار بار هفته (۷ ستون، تعداد جلسه در هر روز)
@@ -14,7 +14,6 @@ import { Glyph } from '../../components/ui/Icon';
 
 import { useMemo, useState } from 'react';
 
-import Icon from '../../components/ui/Icon';
 import { faNum } from '../../lib/format';
 import { haptic } from '../../lib/telegram';
 import {
@@ -23,7 +22,6 @@ import {
   buildStats,
   buildLessonTable,
   lessonTone,
-  shortLesson,
 } from '../../lib/scheduleEngine';
 
 /* ── ۱) نمودار بار هفته ── */
@@ -68,77 +66,81 @@ export function WeekLoadChart({ week, activeDay, onPickDay }) {
   );
 }
 
-/* ── ۲) جدول هفتگی ── */
+/* ── ۲) جدول هفتگی — «روز × درس» با نام کامل ─────────────────
+   نسخهٔ قبل ۷ ستون روز در ۳۹۰px بود؛ هر خانه ~۴۵px می‌شد و نام
+   درس قطع می‌شد («ا-فیزیو…»). حالا هر روز یک ردیف جدول است و
+   درس‌ها با **نام کامل** داخل همان ردیف می‌نشینند. هم خوانا، هم
+   کوتاه‌تر از قبل، هم بدون اسکرول افقی. ── */
 export function WeeklyGrid({ week, dayFilter, onOpenLesson }) {
   const days = dayFilter
     ? week.days.filter((d) => d.key === dayFilter)
     : week.days;
 
-  const dayIndexes = days.map((d) => WEEK.findIndex((w) => w.key === d.key));
+  const maxCount = week.maxPerDay || 1;
 
   return (
-    <div className={`v3-grid${dayFilter ? ' v3-grid--single' : ''}`}>
-      {/* سرستون‌ها */}
-      <div className="v3-grid__head" style={{ gridTemplateColumns: `38px repeat(${days.length}, minmax(0,1fr))` }}>
-        <span className="v3-grid__corner">
-          <Icon name="clock" size={13} />
-        </span>
+    <div
+      className={`v3-wtable${dayFilter ? ' v3-wtable--single' : ''}`}
+      role="table"
+      aria-label="جدول هفتگی درس‌ها"
+    >
+      {days.map((day) => {
+        const dayIdx = WEEK.findIndex((w) => w.key === day.key);
+        const slots = [];
 
-        {days.map((day) => (
-          <span
-            key={day.key}
-            className={`v3-grid__day${week.daySessions[day.key] ? '' : ' is-empty'}`}
-          >
-            <b>{day.short}</b>
-            <i>{faNum(week.daySessions[day.key] || 0)}</i>
-          </span>
-        ))}
-      </div>
+        week.rows.forEach((row) => {
+          (row.cells[dayIdx] || []).forEach((slot) => {
+            slots.push({ ...slot, _start: row.start, _label: row.label });
+          });
+        });
 
-      {/* ردیف‌های ساعت */}
-      <div className="v3-grid__body">
-        {week.rows.map((row) => (
+        slots.sort((a, b) => a._start - b._start);
+
+        const count = week.daySessions[day.key] || 0;
+
+        return (
           <div
-            key={row.start}
-            className="v3-grid__row"
-            style={{ gridTemplateColumns: `38px repeat(${days.length}, minmax(0,1fr))` }}
+            className={`v3-wtable__row${count ? '' : ' is-off'}`}
+            role="row"
+            key={day.key}
           >
-            <span className="v3-grid__time">{faNum(row.label)}</span>
-
-            {dayIndexes.map((dayIdx) => {
-              const slots = row.cells[dayIdx] || [];
-
-              if (!slots.length) {
-                return <span key={`${row.start}-${dayIdx}`} className="v3-grid__cell is-empty" />;
-              }
-
-              return (
-                <span key={`${row.start}-${dayIdx}`} className="v3-grid__cell">
-                  {slots.map((slot, index) => {
-                    const tone = lessonTone(slot.lesson);
-
-                    return (
-                      <button
-                        type="button"
-                        key={`${slot.lesson}-${index}`}
-                        className={`v3-chip-lesson${slot.type === 'exam' ? ' is-exam' : ''}${slot.type === 'makeup' ? ' is-makeup' : ''}`}
-                        style={{ background: tone.bg, color: tone.fg, borderColor: tone.line }}
-                        title={`${slot.lesson} · ${slot.teacher || 'استاد نامشخص'} · ${slot.start ? `${slot.start} تا ${slot.end} دقیقه` : ''} · ${slot.sessions} جلسه`}
-                        onClick={() => onOpenLesson?.(slot)}
-                      >
-                        <b>{shortLesson(slot.lesson, 11)}</b>
-                        {slot.sessions > 1 && (
-                          <i className="v3-chip-lesson__n">{faNum(slot.sessions)}×</i>
-                        )}
-                      </button>
-                    );
-                  })}
+            <div className="v3-wtable__day" role="rowheader">
+              <b>{day.name}</b>
+              <i>{count ? `${faNum(count)} جلسه` : 'بدون کلاس'}</i>
+              {count > 0 && (
+                <span className="v3-wtable__bar" aria-hidden="true">
+                  <span style={{ width: `${Math.round((count / maxCount) * 100)}%` }} />
                 </span>
-              );
-            })}
+              )}
+            </div>
+
+            {count > 0 && (
+              <div className="v3-wtable__lessons" role="cell">
+                {slots.map((slot, index) => {
+                  const tone = lessonTone(slot.lesson);
+
+                  return (
+                    <button
+                      type="button"
+                      key={`${slot.lesson}-${index}-${slot._start}`}
+                      className={`v3-wchip${slot.type === 'exam' ? ' is-exam' : ''}${slot.type === 'makeup' ? ' is-makeup' : ''}`}
+                      style={{ background: tone.bg, color: tone.fg, borderColor: tone.line }}
+                      title={`${slot.lesson}${slot.teacher ? ` · ${slot.teacher}` : ''}${slot.start ? ` · ${slot.start} تا ${slot.end} دقیقه` : ''}${slot.sessions > 1 ? ` · ${slot.sessions} جلسه در ترم` : ''}`}
+                      onClick={() => onOpenLesson?.(slot)}
+                    >
+                      <span className="v3-wchip__time">{faNum(slot._label)}</span>
+                      <b className="v3-wchip__name">{slot.lesson || 'بدون عنوان'}</b>
+                      {slot.sessions > 1 && (
+                        <em className="v3-wchip__n">{faNum(slot.sessions)}×</em>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }
@@ -249,6 +251,7 @@ export default function ScheduleOverview({
   items,
   activeDay,
   onPickDay,
+  onOpenLesson,
   mode,
 }) {
   const stats = useMemo(() => buildStats(items), [items]);
@@ -322,6 +325,7 @@ export default function ScheduleOverview({
           <WeeklyGrid
             week={stats.week}
             dayFilter={activeDay}
+            onOpenLesson={onOpenLesson}
           />
         </section>
       )}
@@ -338,7 +342,7 @@ export default function ScheduleOverview({
             </span>
           </header>
 
-          <LessonTable items={items} />
+          <LessonTable items={items} onOpenLesson={onOpenLesson} />
         </section>
       )}
 

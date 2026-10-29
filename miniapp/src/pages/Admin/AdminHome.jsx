@@ -496,7 +496,7 @@ export default function AdminHome() {
                 fontSize: 27,
               }}
             >
-              👑
+       <Glyph value="👑" />
             </span>
 
             <div
@@ -651,7 +651,7 @@ export default function AdminHome() {
             }}
           >
             <div className="sec-title">
-              <Glyph value="⚠️" /> نیازمند رسیدگی
+              <Glyph value="⚠️" />نیازمند رسیدگی
             </div>
 
             <div
@@ -814,7 +814,7 @@ export default function AdminHome() {
             .isPending ? (
             <Spinner size={15} />
           ) : (
-            '📥 دریافت خروجی Excel در ربات'
+            'دریافت خروجی Excel در ربات'
           )}
         </button>
       </main>

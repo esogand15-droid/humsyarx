@@ -269,7 +269,7 @@ export default function Onboarding() {
           onClick={next}
         >
           {isLast
-            ? '🚀 بزن بریم!'
+            ? 'بزن بریم!'
             : 'بعدی ←'}
         </button>
 

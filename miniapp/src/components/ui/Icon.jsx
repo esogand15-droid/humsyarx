@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────
-   🎨 HumsYar v3 — مجموعهٔ آیکون خطی (Design System یکپارچه)
+    HumsYar v3 — مجموعهٔ آیکون خطی (Design System یکپارچه)
 
    چرا SVG و نه ایموجی؟
    ایموجی‌ها بین اندروید/iOS/دسکتاپ شکل و اندازهٔ متفاوت دارند،
@@ -45,6 +45,20 @@ const PATHS = {
   download: 'M12 4v10.4M7.6 10.4 12 14.8l4.4-4.4M5 19.4h14',
   menu: 'M4 7h16M4 12h16M4 17h16',
   layers: 'M12 3.6 3.6 8.2 12 12.8l8.4-4.6zM3.6 12.6 12 17.2l8.4-4.6M3.6 17 12 21.6l8.4-4.6',
+  globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3.2 12h17.6M12 3c2.4 2.4 3.6 5.4 3.6 9S14.4 18.6 12 21c-2.4-2.4-3.6-5.4-3.6-9S9.6 5.4 12 3z',
+  gift: 'M4 10.6h16v9.8H4zM4 10.6V7.4h16v3.2M12 7.4v13M12 7.4c-1.4 0-4.2-.6-4.2-2.6A2 2 0 0 1 12 4.2a2 2 0 0 1 4.2.6c0 2-2.8 2.6-4.2 2.6z',
+  mic: 'M12 15.4a3.2 3.2 0 0 0 3.2-3.2V6.6a3.2 3.2 0 1 0-6.4 0v5.6A3.2 3.2 0 0 0 12 15.4zM6.6 11.8a5.4 5.4 0 0 0 10.8 0M12 15.6V20M9 20h6',
+  video: 'M3.8 6.6h9.8a1.6 1.6 0 0 1 1.6 1.6v7.6a1.6 1.6 0 0 1-1.6 1.6H3.8a1.6 1.6 0 0 1-1.6-1.6V8.2a1.6 1.6 0 0 1 1.6-1.6zM15.2 11l6-3.4v8.8l-6-3.4',
+  link: 'M10.2 13.8a4 4 0 0 1 0-5.6l2.6-2.6a4 4 0 0 1 5.6 5.6l-1.4 1.4M13.8 10.2a4 4 0 0 1 0 5.6l-2.6 2.6a4 4 0 0 1-5.6-5.6l1.4-1.4',
+  mail: 'M3.6 6.4h16.8v11.2H3.6zM3.6 7.2 12 13l8.4-5.8',
+  list: 'M8.4 6.6h11.4M8.4 12h11.4M8.4 17.4h11.4M4.4 6.6h.01M4.4 12h.01M4.4 17.4h.01',
+  eye: 'M12 6.4c4.4 0 7.8 3 9 5.6-1.2 2.6-4.6 5.6-9 5.6S4.2 14.6 3 12c1.2-2.6 4.6-5.6 9-5.6zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  tag: 'M11.4 3.4H20v8.6l-8.4 8.4-8.6-8.6zM15.8 8.2h.01',
+  box: 'M12 3.4 20.4 8v8L12 20.6 3.6 16V8zM3.6 8 12 12.6 20.4 8M12 12.6v8',
+  heart: 'M12 20.4S3.6 15.6 3.6 9.9A4.3 4.3 0 0 1 12 9.2a4.3 4.3 0 0 1 8.4.7c0 5.7-8.4 10.5-8.4 10.5z',
+  upload: 'M12 20V9.6M7.6 14 12 9.6l4.4 4.4M5 4.6h14',
+  chat: 'M20.4 12c0 4.2-3.8 7.6-8.4 7.6-1 0-2-.2-2.9-.5L4.2 20.4l1.4-4a7 7 0 0 1-2-4.4C3.6 7.8 7.4 4.4 12 4.4s8.4 3.4 8.4 7.6z',
+  pulse: 'M3.4 12h3.2l2.4-6 3.2 12 2.4-6h4.4',
   refresh: 'M20 12a8 8 0 1 1-2.6-5.9M20 4v4.2h-4.2',
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5.4M12 7.6h.01',
   check: 'M5 12.6 10 17.4 19 7.4',
@@ -104,27 +118,42 @@ export const ICON_NAMES = Object.keys(PATHS);
    نگاشت نداشته باشد، خودش رندر می‌شود (پس هیچ‌جا خالی نمی‌شود).
    ───────────────────────────────────────────────────────────── */
 const GLYPHS = {
-  '⚡': 'flame', '🎯': 'target', '📝': 'doc', '✏️': 'doc', '✍️': 'doc',
-  '📗': 'book', '📘': 'book', '📚': 'book', '📄': 'doc', '🎓': 'book',
-  '📅': 'calendar', '🕘': 'clock', '⏰': 'clock', '⏳': 'clock',
-  '📊': 'chartBars', '📈': 'chart', '🧪': 'quiz', '❓': 'quiz',
-  '💳': 'wallet', '💰': 'wallet', '🎫': 'ticket', '🎟️': 'ticket',
-  '🔔': 'bell', '📨': 'bell', '🔍': 'search', '👤': 'user', '👥': 'user',
-  '🛡️': 'shield', '🔒': 'shield', '🚩': 'shield', '⚠️': 'info',
-  'ℹ️': 'info', '✅': 'check', '✓': 'check', '❌': 'close', '✕': 'close',
-  '🗑️': 'close', '🚫': 'shield', '🔄': 'refresh', '↻': 'refresh',
-  '📥': 'download', '🤖': 'sparkle', '✨': 'sparkle', '🧠': 'sparkle',
-  '📌': 'layers', '🎨': 'image', '🖼️': 'image', '🗂️': 'layers',
-  '🏆': 'target', '⭐': 'target', '💎': 'target', '👑': 'target',
-  '🌱': 'chart', '🔥': 'flame', '🌊': 'layers', '🌐': 'layers',
-  '⚙️': 'settings', '🔧': 'settings', '💾': 'download',
+  '⚡': 'flame', '🔥': 'flame', '⚔️': 'flame',
+  '🎯': 'target', '🏆': 'target', '⭐': 'target', '💎': 'target', '👑': 'target', '🏅': 'target',
+  '📝': 'doc', '✏️': 'doc', '✍️': 'doc', '📄': 'doc', '🧾': 'doc',
+  '📗': 'book', '📘': 'book', '📚': 'book', '🎓': 'book',
+  '📅': 'calendar',
+  '🕘': 'clock', '🕐': 'clock', '⏰': 'clock', '⏳': 'clock',
+  '📊': 'chartBars', '📈': 'chart', '🌱': 'chart', '🪜': 'chart',
+  '🧪': 'quiz', '❓': 'quiz', '🔬': 'quiz',
+  '💳': 'wallet', '💰': 'wallet', '👛': 'wallet',
+  '🎫': 'ticket', '🎟': 'ticket', '🎟️': 'ticket',
+  '🔔': 'bell', '📨': 'bell', '📣': 'bell', '📡': 'bell',
+  '🔍': 'search', '🔭': 'search',
+  '👤': 'user', '👥': 'user', '🚻': 'user',
+  '🛡': 'shield', '🛡️': 'shield', '🔒': 'shield', '🚩': 'shield', '🚫': 'shield', '⛔': 'shield', '✋': 'shield',
+  '⚠️': 'info', 'ℹ️': 'info', '💡': 'info', '⚪': 'info', '🟠': 'info', '🔴': 'info',
+  '✅': 'check', '✓': 'check', '🟢': 'check',
+  '❌': 'close', '✕': 'close', '✖': 'close', '🗑': 'close', '🗑️': 'close', '📴': 'close',
+  '🔄': 'refresh', '↻': 'refresh',
+  '📥': 'download', '⬇️': 'download', '💾': 'download',
+  '📤': 'upload',
+  '🤖': 'sparkle', '✨': 'sparkle', '🧠': 'sparkle',
+  '📌': 'layers', '🗂️': 'layers', '🌊': 'layers',
+  '🎨': 'image', '🖼️': 'image',
+  '🌐': 'globe', '🎁': 'gift', '🎙': 'mic', '📹': 'video', '🔗': 'link', '📎': 'link',
+  '✉️': 'mail', '📭': 'mail', '💬': 'chat', '🗣': 'chat',
+  '📋': 'list', '👁': 'eye', '🏷': 'tag', '📦': 'box',
+  '💙': 'heart', '🩺': 'pulse',
+  '⚙️': 'settings', '🔧': 'settings', '🛠': 'settings',
+  '➕': 'plus',
   '→': 'arrowRight', '←': 'arrowLeft', '⇒': 'arrowRight',
 };
 
 export function glyphName(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
-  // اگر خودِ مقدار یک نام آیکون معتبر است (مثل 'target')، همان را بکش
+  // اگر خودِ مقدار یک نام آیکون معتبر است (مثل'target')، همان را بکش
   if (PATHS[raw]) return raw;
   if (GLYPHS[raw]) return GLYPHS[raw];
   // ایموجی با Variation Selector (U+FE0F) — بدون آن هم امتحان کن
@@ -140,6 +169,14 @@ export function Glyph({ value, size = 18, style, className }) {
   const name = glyphName(value);
 
   if (!name) {
+    // اگر مقدار یک ایموجی ناشناخته بود، به‌جای خودِ ایموجی یک آیکون خطیِ خنثی می‌کشیم
+    // تا هیچ‌جای مینی‌اپ ایموجیِ رنگی دیده نشود.
+    const raw = String(value || '');
+    if (/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}]/u.test(raw)) {
+      return <Icon name="sparkle" size={size} className={className}
+        style={{ display: 'inline-block', verticalAlign: '-3px', ...style }} />;
+    }
+
     return (
       <span className={className} style={{ lineHeight: 1, ...style }} aria-hidden="true">
         {value}

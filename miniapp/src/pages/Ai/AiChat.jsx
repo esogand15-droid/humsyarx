@@ -59,8 +59,8 @@ const SUGGESTIONS = [
     title: 'برنامه‌ریزی درسی',
     desc: 'برنامه‌ی هفتگی متناسب با درس‌ها',
     prompt:
-      'یک برنامه‌ی مطالعه‌ی هفتگی برای دروس ' +
-      'اصلی پزشکی طراحی کن؛ با تکنیک‌های ' +
+      'یک برنامه‌ی مطالعه‌ی هفتگی برای دروس' +
+      'اصلی پزشکی طراحی کن؛ با تکنیک‌های' +
       'مطالعه‌ی مؤثر و مرور فعال.',
   },
 
@@ -69,7 +69,7 @@ const SUGGESTIONS = [
     title: 'پرسش پزشکی',
     desc: 'توضیح ساده‌ی مفاهیم سخت',
     prompt:
-      'مبحث پتانسیل عمل را ساده، نکته‌ای و ' +
+      'مبحث پتانسیل عمل را ساده، نکته‌ای و' +
       'مثال‌دار توضیح بده.',
   },
 
@@ -78,8 +78,8 @@ const SUGGESTIONS = [
     title: 'خلاصه‌ی جزوه',
     desc: 'چکیده‌سازی نکته‌محور',
     prompt:
-      'چطور از یک فصل جزوه خلاصه‌ی نکته‌محور ' +
-      'بگیرم؟ قالب پیشنهادی بده و با یک مثال ' +
+      'چطور از یک فصل جزوه خلاصه‌ی نکته‌محور' +
+      'بگیرم؟ قالب پیشنهادی بده و با یک مثال' +
       'نشان بده.',
   },
 
@@ -88,7 +88,7 @@ const SUGGESTIONS = [
     title: 'آزمون تستی',
     desc: 'سؤال چهارگزینه‌ای با پاسخ',
     prompt:
-      'از فیزیولوژی تنفس یک سؤال چهارگزینه‌ای ' +
+      'از فیزیولوژی تنفس یک سؤال چهارگزینه‌ای' +
       'در سطح امتحان بساز و پاسخ تشریحی بده.',
   },
 
@@ -97,7 +97,7 @@ const SUGGESTIONS = [
     title: 'سؤالات دانشگاه',
     desc: 'سبک امتحانات تشریحی',
     prompt:
-      'سه سؤال تشریحی شبیه امتحان دانشگاه از ' +
+      'سه سؤال تشریحی شبیه امتحان دانشگاه از' +
       'آناتومی قلب طرح کن و معیار نمره‌دهی بگو.',
   },
 
@@ -328,7 +328,7 @@ function prefersReducedMotion() {
    بدون dangerouslySetInnerHTML
 
    پشتیبانی: بلوک کد ``` ، بولد ** ، کد این‌لاین ` ،
-   تیتر # ، نقل‌قول > ، لیست - و 1. و لینک‌ها
+   تیتر # ، نقل‌قول >، لیست - و 1. و لینک‌ها
 ───────────────────────────────────────────── */
 
 const CODE_BLOCK_RE =
@@ -825,7 +825,7 @@ function MessageRow({
             {
               isUser
                 ? 'شما'
-                : '✦ هوشیار'
+                : 'هوشیار'
             }
           </span>
 
@@ -2146,7 +2146,7 @@ export default function AiChat() {
         aria-label="تماس صوتی زنده با هوشیار"
         title="تماس صوتی زنده (Gemini Live)"
       >
-        <Glyph value="🎙" /> زنده
+        <Glyph value="🎙" />زنده
       </button>
 
       <button
@@ -2164,7 +2164,7 @@ export default function AiChat() {
         }}
         aria-label="سوییچ سریع گفت‌وگو"
       >
-        ☰
+    <Glyph value="☰" />
       </button>
 
       <button
@@ -2215,7 +2215,7 @@ export default function AiChat() {
       >
         <section className="ai-strip">
           <span className="ai-orb">
-            ✦
+      <Glyph value="✦" />
           </span>
 
           <span className="ai-strip__txt">
@@ -2249,7 +2249,7 @@ export default function AiChat() {
                   formatDate(activeReference.expires_at)
                 }
               >
-                📄
+        <Glyph value="📄" />
 
                 <span>
                   {activeReference.name}
@@ -2396,7 +2396,7 @@ export default function AiChat() {
             )
           }
 
-          {/* 🌊 W8/UX-02 — خطای غیرقفلی پیام‌ها */}
+          {/* W8/UX-02 — خطای غیرقفلی پیام‌ها */}
           {
             !msgsQuery.isPending
             && msgsQuery.isError
@@ -2407,7 +2407,7 @@ export default function AiChat() {
                 className="btn btn-full"
                 onClick={() => msgsQuery.refetch()}
               >
-                <Glyph value="🌐" /> دریافت پیام‌ها ناموفق بود — تلاش دوباره
+                <Glyph value="🌐" />دریافت پیام‌ها ناموفق بود — تلاش دوباره
               </button>
             )
           }
@@ -2423,7 +2423,7 @@ export default function AiChat() {
             && (
               <div className="chat-empty">
                 <div className="chat-orb">
-                  ✦
+         <Glyph value="✦" />
                 </div>
 
                 <h2 className="chat-empty__title">
@@ -2681,7 +2681,7 @@ export default function AiChat() {
                     aria-label="انتخاب عکس، PDF یا فایل صوتی"
                     title="پیوست فایل"
                   >
-                    📎
+          <Glyph value="📎" />
                   </button>
 
                   <button
@@ -2696,7 +2696,7 @@ export default function AiChat() {
                     aria-label="ضبط پیام صوتی"
                     title="ضبط صدا"
                   >
-                    🎙️
+          <Glyph value="🎙️" />
                   </button>
 
                   <textarea

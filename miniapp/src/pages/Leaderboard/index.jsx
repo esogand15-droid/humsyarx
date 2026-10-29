@@ -39,10 +39,10 @@ const SCOPES = [
 ];
 
 const TABS = [
-  ['xp', '⚡ XP', 'XP'],
-  ['acc', '🎯 دقت', '٪'],
-  ['exam', '📝 آزمون', 'آزمون'],
-  ['contrib', '✍️ مشارکت', 'سؤال'],
+  ['xp', 'XP', 'XP'],
+  ['acc', 'دقت', '٪'],
+  ['exam', 'آزمون', 'آزمون'],
+  ['contrib', 'مشارکت', 'سؤال'],
 ];
 
 function ChipRow({ options, value, onPick }) {
@@ -217,7 +217,7 @@ export default function Leaderboard() {
   return (
     <>
       <Header
-        title="🏟️ میدان رقابت"
+        title="میدان رقابت"
         onBack={() => navigate(-1)}
       />
 
@@ -234,7 +234,7 @@ export default function Leaderboard() {
                 fontSize: 'var(--fs-meta)',
               }}
             >
-              🗓 {data.season.label}
+       <Glyph value="🗓" /> {data.season.label}
               <span
                 style={{
                   color: 'var(--txm)',
@@ -356,7 +356,7 @@ export default function Leaderboard() {
 
         {isLoading && <UsersListSkeleton />}
 
-        {/* 🌊 W8/UX-02 */}
+    {/* <Glyph value="🌊" /> W8/UX-02 */}
         {!isLoading && isError && (
           <PageError
             text="دریافت جدول رقابت انجام نشد."
@@ -391,7 +391,7 @@ export default function Leaderboard() {
         >
           {faNum(data?.total_users || 0)}{' '}
           رقبا در این جدول · صدر هفته با بستن
-          هفته (دوشنبه ۰۰:۰۰) +۱۰۰ XP می‌گیرد 👑
+          هفته (دوشنبه ۰۰:۰۰) +۱۰۰ XP می‌گیرد 
         </div>
       </main>
     </>

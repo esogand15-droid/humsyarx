@@ -40,21 +40,21 @@ import { Glyph } from '../../components/ui/Icon';
 
 /* 🌊 W9 — برچسب وضعیت (هم‌گام با ورک‌فلو سرور) */
 const statusInfo = (status) => ({
-  open: { label: '🟡 باز', badge: 'b-grn' },
-  in_progress: { label: '🔵 در حال بررسی', badge: '' },
-  waiting_user: { label: '🟣 منتظر شما', badge: 'b-yel' },
-  resolved: { label: '✅ حل‌شده', badge: 'b-grn' },
+  open: { label: 'باز', badge: 'b-grn' },
+  in_progress: { label: 'در حال بررسی', badge: '' },
+  waiting_user: { label: 'منتظر شما', badge: 'b-yel' },
+  resolved: { label: 'حل‌شده', badge: 'b-grn' },
   closed: { label: 'بسته‌شده', badge: 'b-gray' },
 }[status] || { label: 'باز', badge: 'b-grn' });
 
 
 /* 🌊 W8/UX-04 — برچسب اولویت */
 const prioInfo = (prio) => ({
-  low: { label: '🟢 کم‌اهمیت', badge: 'b-gray' },
-  normal: { label: '⚪ عادی', badge: 'b-gray' },
-  high: { label: '🟠 مهم', badge: 'b-warn' },
-  urgent: { label: '🔴 فوری', badge: 'b-red' },
-}[prio] || { label: '⚪ عادی', badge: 'b-gray' });
+  low: { label: 'کم‌اهمیت', badge: 'b-gray' },
+  normal: { label: 'عادی', badge: 'b-gray' },
+  high: { label: 'مهم', badge: 'b-warn' },
+  urgent: { label: 'فوری', badge: 'b-red' },
+}[prio] || { label: 'عادی', badge: 'b-gray' });
 
 
 export default function Tickets() {
@@ -78,7 +78,7 @@ export default function Tickets() {
   });
 
   /* 🔔 موج ۴.۹۰ — Deep Link از مرکز اعلان:
-     /me/tickets?t=<id> همان تیکت را مستقیم
+     /me/tickets?t=<id>همان تیکت را مستقیم
      در نمای جزئیات باز می‌کند (یک‌بار) */
   const [searchParams] = useSearchParams();
 
@@ -232,7 +232,7 @@ export default function Tickets() {
         );
 
         toast(
-          'تیکت با موفقیت ثبت شد ✅',
+          'تیکت با موفقیت ثبت شد',
           'success'
         );
 
@@ -284,7 +284,7 @@ export default function Tickets() {
         setReply('');
 
         toast(
-          'پاسخ ارسال شد ✅',
+          'پاسخ ارسال شد',
           'success'
         );
 
@@ -396,7 +396,7 @@ export default function Tickets() {
                     23,
                 }}
               >
-                🎫
+        <Glyph value="🎫" />
               </span>
 
               <div>
@@ -486,19 +486,19 @@ export default function Tickets() {
               }
             >
               <option value="low">
-                <Glyph value="🟢" /> کم‌اهمیت
+                <Glyph value="🟢" />کم‌اهمیت
               </option>
 
               <option value="normal">
-                <Glyph value="⚪" /> عادی
+                <Glyph value="⚪" />عادی
               </option>
 
               <option value="high">
-                <Glyph value="🟠" /> مهم
+                <Glyph value="🟠" />مهم
               </option>
 
               <option value="urgent">
-                <Glyph value="🔴" /> فوری
+                <Glyph value="🔴" />فوری
               </option>
             </select>
 
@@ -524,7 +524,7 @@ export default function Tickets() {
                 })
               }
               placeholder={
-                'مشکل یا سؤال خود را ' +
+                'مشکل یا سؤال خود را' +
                 'دقیق بنویسید...'
               }
             />
@@ -711,7 +711,7 @@ export default function Tickets() {
                     </span>
                   </span>
 
-                  {/* 🌊 W10.1 — انتظار پاسخ‌گویی (یکپارچه با SLA ادمین) */}
+                  {/* W10.1 — انتظار پاسخ‌گویی (یکپارچه با SLA ادمین) */}
                   {!!ticket.sla?.sla_hours &&
                     !ticket.sla?.responded &&
                     ticket.status !== 'closed' && (
@@ -752,7 +752,7 @@ export default function Tickets() {
 
 
               <div className="sec-title">
-                <Glyph value="💬" /> گفت‌وگو
+                <Glyph value="💬" />گفت‌وگو
               </div>
 
 
@@ -910,7 +910,7 @@ export default function Tickets() {
                       'center',
                   }}
                 >
-                  <Glyph value="🔒" /> این تیکت بسته شده و
+                  <Glyph value="🔒" />این تیکت بسته شده و
                   امکان ارسال پاسخ ندارد.
                 </div>
               )}
@@ -975,7 +975,7 @@ export default function Tickets() {
                   24,
               }}
             >
-              🛟
+       <Glyph value="🛟" />
             </span>
 
             <div
@@ -1139,7 +1139,7 @@ export default function Tickets() {
                         fontSize: 'var(--fs-xl)',
                       }}
                     >
-                      🎫
+           <Glyph value="🎫" />
                     </span>
 
                     <span

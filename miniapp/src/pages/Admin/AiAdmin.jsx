@@ -325,7 +325,7 @@ export default function AiAdmin() {
                 ?.answer ||
               'اتصال موفق است'
             )
-          : 'عملیات انجام شد ✅',
+          : 'عملیات انجام شد',
 
         'success'
       );
@@ -401,7 +401,7 @@ export default function AiAdmin() {
                 29,
             }}
           >
-            🤖
+      <Glyph value="🤖" />
           </span>
 
           <div
@@ -495,7 +495,7 @@ export default function AiAdmin() {
                   9,
               }}
             >
-              {/* label → div: کنترل حالا <button role="switch"> است و
+              {/* label → div: کنترل حالا <button role="switch">است و
                   قراردادنِ button داخل label نه معتبر است نه کلیکِ
                   label را به سوییچ می‌رساند. */}
               <div className="menu-row">
@@ -656,7 +656,7 @@ export default function AiAdmin() {
                       )}
 
                       <option value="__custom">
-                        <Glyph value="✏️" /> سفارشی (تایپ دستی)
+                        <Glyph value="✏️" />سفارشی (تایپ دستی)
                       </option>
                     </select>
 
@@ -704,7 +704,7 @@ export default function AiAdmin() {
 
 
               <div className="fld-label">
-                <Glyph value="🎨" /> تولید تصویر
+                <Glyph value="🎨" />تولید تصویر
               </div>
 
               <select
@@ -827,7 +827,7 @@ export default function AiAdmin() {
 
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}><Glyph value="🎙" /> پرامپت ویس‌چت زنده و پاسخ صوتی</span>
+                  <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}><Glyph value="🎙" />پرامپت ویس‌چت زنده و پاسخ صوتی</span>
                   {form.default_voice_system_prompt && (
                     <button
                       type="button"
@@ -839,7 +839,7 @@ export default function AiAdmin() {
                         })
                       }
                     >
-                      <Glyph value="🔄" /> پیش‌فرض صمیمی
+                      <Glyph value="🔄" />پیش‌فرض صمیمی
                     </button>
                   )}
                 </div>
@@ -1117,7 +1117,7 @@ export default function AiAdmin() {
                             .usage_today
                         )}
 
-                        {' • کل '}
+                        {' • کل'}
 
                         {number(
                           user
@@ -1212,7 +1212,7 @@ export default function AiAdmin() {
                         }
                       }}
                     >
-                      🧠✕
+           <Glyph value="🧠" /><Glyph value="✕" />
                     </button>
                   </div>
                 </article>

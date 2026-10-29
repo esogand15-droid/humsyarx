@@ -314,7 +314,7 @@ export default function Learn() {
                 fontSize: 26,
               }}
             >
-              🧠
+       <Glyph value="🧠" />
             </div>
 
             <div
@@ -396,7 +396,7 @@ export default function Learn() {
         </section>
 
         <div className="sec-title">
-          <Glyph value="⚡" /> شروع سریع
+          <Glyph value="⚡" />شروع سریع
         </div>
 
         <section
@@ -496,7 +496,7 @@ export default function Learn() {
         </section>
 
         <div className="sec-title">
-          <Glyph value="📚" /> کتابخانه و ابزارها
+          <Glyph value="📚" />کتابخانه و ابزارها
         </div>
 
         <section
@@ -698,7 +698,7 @@ export default function Learn() {
                   25,
               }}
             >
-              🧪
+       <Glyph value="🧪" />
             </div>
 
             <div
@@ -742,21 +742,21 @@ export default function Learn() {
           </div>
         </section>
 
-        {/* 🌊 W8/UX-02 — خطای آمار هاب */}
+        {/* W8/UX-02 — خطای آمار هاب */}
         {statsError && stats.length === 0 && (
           <button
             type="button"
             className="btn btn-full"
             onClick={() => refetchStats()}
           >
-            <Glyph value="🌐" /> دریافت آمار ناموفق بود — تلاش دوباره
+            <Glyph value="🌐" />دریافت آمار ناموفق بود — تلاش دوباره
           </button>
         )}
 
         {stats.length > 0 && (
           <section>
             <div className="sec-title">
-              <Glyph value="📊" /> عملکرد به تفکیک درس
+              <Glyph value="📊" />عملکرد به تفکیک درس
             </div>
 
             <div className="card">

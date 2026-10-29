@@ -45,6 +45,7 @@ import {
 } from '../../stores/authStore';
 import { Glyph } from '../../components/ui/Icon';
 
+
 function Picker({
   title,
   options,
@@ -279,7 +280,7 @@ function NicknameCard({
         hapticNotif('success');
 
         toast(
-          'لقب به‌روزرسانی شد ✅',
+          'لقب به‌روزرسانی شد',
           'success'
         );
 
@@ -316,7 +317,7 @@ function NicknameCard({
         hapticNotif('success');
 
         toast(
-          'تنظیم نمایش ذخیره شد ✅',
+          'تنظیم نمایش ذخیره شد',
           'success'
         );
 
@@ -377,7 +378,7 @@ function NicknameCard({
   return (
     <section className="card">
       <div className="sec-title">
-        <Glyph value="🏷" /> لقب و نام نمایشی
+        <Glyph value="🏷" />لقب و نام نمایشی
       </div>
 
       <div
@@ -581,17 +582,17 @@ function ReferralCard({ data }) {
   const earned = stats.earned || {};
   const rewards = data?.rewards || {};
   const rewardLine = [
-    rewards.sub_days ? `🎁 ${rewards.sub_days.amount} روز اشتراک` : '',
-    rewards.wallet ? `👛 ${Number(rewards.wallet.amount).toLocaleString('fa-IR')} تومان` : '',
-    rewards.discount ? `🎟 تخفیف ${rewards.discount.amount}٪` : '',
-    rewards.xp ? `⚡ ${rewards.xp.amount} XP` : '',
+    rewards.sub_days ? ` ${rewards.sub_days.amount} روز اشتراک` : '',
+    rewards.wallet ? ` ${Number(rewards.wallet.amount).toLocaleString('fa-IR')} تومان` : '',
+    rewards.discount ? ` تخفیف ${rewards.discount.amount}٪` : '',
+  rewards.xp ? `<Glyph value="⚡" /> ${rewards.xp.amount} XP` : '',
   ].filter(Boolean).join(' · ');
 
   const copyLink = async () => {
     haptic('light');
     try {
       await navigator.clipboard.writeText(data.link || '');
-      toast('لینک دعوت کپی شد ✅');
+      toast('لینک دعوت کپی شد');
     } catch {
       toast('کپی نشد — لینک را دستی کپی کن', 'err');
     }
@@ -600,7 +601,7 @@ function ReferralCard({ data }) {
   return (
     <section className="card" style={{ marginTop: 12 }}>
       <div className="sec-title">
-        <Glyph value="🎁" /> دعوت دوستان
+        <Glyph value="🎁" />دعوت دوستان
       </div>
       <div
         className="row"
@@ -621,15 +622,15 @@ function ReferralCard({ data }) {
           className="btn sm"
           onClick={copyLink}
         >
-          <Glyph value="📋" /> کپی
+          <Glyph value="📋" />کپی
         </button>
       </div>
       <div
         className="row"
         style={{ gap: 8, marginTop: 10 }}
       >
-        <span className="badge b-acc">👥 {stats.total || 0} دعوت</span>
-        <span className="badge b-grn">✅ {byStatus.counted || 0}</span>
+        <span className="badge b-acc"> {stats.total || 0} دعوت</span>
+    <span className="badge b-grn"><Glyph value="✅" /> {byStatus.counted || 0}</span>
         {(stats.awaiting_buy || 0) > 0 && (
           <span className="badge b-yel">⏳ {stats.awaiting_buy} در انتظار خرید</span>
         )}
@@ -880,7 +881,7 @@ export default function Profile() {
           );
 
           toast(
-            'اطلاعات با موفقیت ذخیره شد ✅',
+            'اطلاعات با موفقیت ذخیره شد',
             'success'
           );
 
@@ -1253,7 +1254,7 @@ export default function Profile() {
                     {user.student_id ||
                       'ثبت نشده'}{' '}
 
-                    ✎
+          <Glyph value="✎" />
                   </button>
 
                   <div
@@ -1285,7 +1286,7 @@ export default function Profile() {
                       {user.intake ||
                         '—'}{' '}
 
-                      ✎
+           <Glyph value="✎" />
                     </button>
 
                     <button
@@ -1311,7 +1312,7 @@ export default function Profile() {
                       {user.course_selection_count > 0
                         ? `(اکثریت ${user.course_selection_count} درس) `
                         : ''}
-                      ✎
+           <Glyph value="✎" />
                     </button>
 
                     <button
@@ -1329,15 +1330,15 @@ export default function Profile() {
                       title="گروه آموزشی کلاس‌های تفکیک‌شده (آقایان/بانوان)"
                     >
                       {user.educational_group === 'male'
-                        ? '👨 کلاس‌های آقایان'
+                        ? 'کلاس‌های آقایان'
                         : user.educational_group === 'female'
-                          ? '👩 کلاس‌های بانوان'
+                          ? 'کلاس‌های بانوان'
                           : user.ai_suggested_group === 'male'
-                            ? '❓ گروه آموزشی (پیشنهاد: آقایان)'
+                            ? 'گروه آموزشی (پیشنهاد: آقایان)'
                             : user.ai_suggested_group === 'female'
-                              ? '❓ گروه آموزشی (پیشنهاد: بانوان)'
-                              : '❓ تعیین گروه آموزشی'}{' '}
-                      ✎
+                              ? 'گروه آموزشی (پیشنهاد: بانوان)'
+                              : 'تعیین گروه آموزشی'}{' '}
+           <Glyph value="✎" />
                     </button>
                   </div>
                 </div>
@@ -1353,7 +1354,7 @@ export default function Profile() {
                     )
                   }
                 >
-                  ✎
+         <Glyph value="✎" />
                 </button>
               </div>
 
@@ -1450,14 +1451,14 @@ export default function Profile() {
               )}
             </section>
 
-            {/* 🏷 موج Identity v1 —
+            {/* موج Identity v1 —
                 لقب + حریم نام واقعی */}
             <NicknameCard
               user={user}
               onSaved={refreshAll}
             />
 
-            {/* 👑 موج P0 — کارت قهرمان
+            {/* موج P0 — کارت قهرمان
                 Prestige (رنک/هدف/رقیب/سپر) */}
             <PrestigeHero />
 
@@ -1484,7 +1485,7 @@ export default function Profile() {
                     fontSize: 29,
                   }}
                 >
-                  🏅
+         <Glyph value="🏅" />
                 </span>
 
                 <div>
@@ -1539,7 +1540,7 @@ export default function Profile() {
 
             <section className="card">
               <div className="sec-title">
-                <Glyph value="📊" /> عملکرد تحصیلی
+                <Glyph value="📊" />عملکرد تحصیلی
               </div>
 
               <div
@@ -1606,7 +1607,7 @@ export default function Profile() {
                     <StatTile
                       key={label}
                       variant="grid"
-                      icon={icon}
+                      icon=<Glyph value={icon} />
                       value={value}
                       label={label}
                       color={color}
@@ -1654,10 +1655,7 @@ export default function Profile() {
                       fontSize: 'var(--fs-xl)',
                     }}
                   >
-                    {stats
-                      .level
-                      .icon ||
-                      '📈'}
+                    <Glyph value={stats.level.icon || '📈'} size={20} />
                   </span>
 
                   <b>
@@ -1704,7 +1702,7 @@ export default function Profile() {
                       marginBottom: 'var(--sp-2)',
                     }}
                   >
-                    <Glyph value="⚡" /> مباحث نیازمند تمرین
+                    <Glyph value="⚡" />مباحث نیازمند تمرین
                   </div>
 
                   <div
@@ -1740,7 +1738,7 @@ export default function Profile() {
               0 && (
               <section className="card">
                 <div className="sec-title">
-                  <Glyph value="🏆" /> نشان‌های پیشرفت
+                  <Glyph value="🏆" />نشان‌های پیشرفت
                 </div>
 
                 <div
@@ -1846,25 +1844,25 @@ export function WalletMiniCard() {
   const w = walletQuery.data;
   return (
     <section className="card">
-      <div className="sec-title"><Glyph value="👛" /> کیف پول</div>
+      <div className="sec-title"><Glyph value="👛" />کیف پول</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 18 }}>
           {walletQuery.isLoading ? '…' : `${number(w?.balance ?? 0)} تومان`}
         </b>
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription?wallet=topup')}>
-          <Glyph value="💳" /> شارژ کیف پول
+          <Glyph value="💳" />شارژ کیف پول
         </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
-          <Glyph value="💰" /> خرید اشتراک
+          <Glyph value="💰" />خرید اشتراک
         </button>
         <button type="button" className="btn btn-xs" onClick={() => nav('/me/subscription')}>
-          <Glyph value="🧾" /> تاریخچه
+          <Glyph value="🧾" />تاریخچه
         </button>
       </div>
       {w?.last_tx && (
         <div className="muted" style={{ marginTop: 6 }}>
-          آخرین تراکنش: {w.last_tx.direction === 'credit' ? '➕' : '➖'}{' '}
+          آخرین تراکنش: {w.last_tx.direction === 'credit' ? '' : ''}{' '}
           {number(w.last_tx.amount)} — {w.last_tx.label}
         </div>
       )}

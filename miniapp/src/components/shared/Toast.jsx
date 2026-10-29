@@ -216,7 +216,7 @@ export default function Toast() {
                     1.7,
                 }}
               >
-                {/* 🧯 uiStore متن را ایمن
+                {/* uiStore متن را ایمن
                     می‌کند؛ این گارد اضافی هم
                     سندِ دفاع است */}
                 {typeof toast.msg ===

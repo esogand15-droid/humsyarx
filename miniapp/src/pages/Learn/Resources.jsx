@@ -43,6 +43,8 @@ import {
   useUIStore,
 } from '../../stores/uiStore';
 import { useSearchParams } from 'react-router-dom';
+import { Glyph } from '../../components/ui/Icon';
+
 
 
 const TYPES = {
@@ -166,7 +168,7 @@ function ResourceFile({
           background: soft,
         }}
       >
-        {icon}
+        <Glyph value={icon} />
       </div>
 
       <div style={styles.fileBody}>
@@ -205,7 +207,7 @@ function ResourceFile({
           onClick={() => onPreview(item)}
           aria-label="پیش‌نمایش فایل"
         >
-          👁
+     <Glyph value="👁" />
         </button>
       )}
 
@@ -267,7 +269,7 @@ function EmptyState({
       style={styles.empty}
     >
       <span style={styles.emptyIcon}>
-        {icon}
+        <Glyph value={icon} />
       </span>
 
       <p>{text}</p>
@@ -498,7 +500,7 @@ function ResourcesPage({ hlFlash = false }) {
           `${
             response.data?.name
             || 'فایل'
-          } در ربات ارسال شد ✅`,
+          } در ربات ارسال شد `,
           'success'
         );
 
@@ -603,7 +605,7 @@ function ResourcesPage({ hlFlash = false }) {
 
   /* 🔒 گیت اشتراک — بک‌اند مرجع نهایی است.
      اگر هرکدام از کوئری‌های این صفحه 403 با
-     detail='subscription_required' بگیرند (دقیقاً
+     detail='subscription_required'بگیرند (دقیقاً
      همان قانون has_access ربات)، به‌جای کارت خطای
      عمومی، صفحه‌ی قفل حرفه‌ای نمایش داده می‌شود */
   const subLock =
@@ -681,7 +683,7 @@ function ResourcesPage({ hlFlash = false }) {
       className="card"
       style={styles.errorCard}
     >
-      <span>⚠️</span>
+      <span></span>
 
       <p>{message}</p>
 
@@ -738,7 +740,7 @@ function ResourcesPage({ hlFlash = false }) {
                 <div
                   style={styles.heroIcon}
                 >
-                  📚
+         <Glyph value="📚" />
                 </div>
 
                 <div>
@@ -927,7 +929,7 @@ function ResourcesPage({ hlFlash = false }) {
                                           styles.navIcon
                                         }
                                       >
-                                        🎓
+                    <Glyph value="🎓" />
                                       </span>
 
                                       <strong>
@@ -1027,7 +1029,7 @@ function ResourcesPage({ hlFlash = false }) {
                                   styles.rowIcon
                                 }
                               >
-                                📘
+                <Glyph value="📘" />
                               </span>
 
                               <span
@@ -1237,7 +1239,7 @@ function ResourcesPage({ hlFlash = false }) {
                           styles.notice
                         }
                       >
-                        <span>ℹ️</span>
+                        <span></span>
 
                         با زدن «ارسال»، فقط همان ردیف انتخاب‌شده در ربات فرستاده می‌شود.
                       </div>

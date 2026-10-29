@@ -32,7 +32,7 @@ import {
 import { Glyph } from '../../components/ui/Icon';
 
 /* ─────────────────────────────────────────────
-   🧠 مرکز اعلان‌ها — بازطراحی موج N3
+    مرکز اعلان‌ها — بازطراحی موج N3
    بازتاب همه‌ی رویدادهای مهم حساب با معماری
    Notification Spine: دسته/آیکون/تُن/اولویت/pin
    و count از خودِ سرور می‌آید (هیچ مقدار بصری
@@ -82,8 +82,8 @@ const TONE_COLORS = {
 };
 
 const PRIO_META = {
-  critical: ['⚫ حیاتی', 'var(--t-err)'],
-  high:     ['🟠 مهم',  'var(--t-warn)'],
+  critical: ['حیاتی', 'var(--t-err)'],
+  high: ['مهم', 'var(--t-warn)'],
   normal:   [null,       null],
   low:      [null,       null],
 };
@@ -561,7 +561,7 @@ export default function NotificationCenter() {
                 aria-label="سنجاق‌شده"
                 style={{ fontSize: 'var(--fs-cap)' }}
               >
-                📌
+        <Glyph value="📌" />
               </span>
             )}
 
@@ -707,7 +707,7 @@ export default function NotificationCenter() {
               fontSize: 'var(--fs-meta)',
             }}
           >
-            📌
+      <Glyph value="📌" />
           </button>
 
           <button
@@ -756,7 +756,7 @@ export default function NotificationCenter() {
           paddingInline: 12,
         }}
       >
-        {/* 🎛 نوار ابزار — جست‌وجو + سوییچ unread + دسته‌ها */}
+        {/* نوار ابزار — جست‌وجو + سوییچ unread + دسته‌ها */}
         <div
           className="card fade-up"
           style={{
@@ -780,7 +780,7 @@ export default function NotificationCenter() {
               }}
               aria-hidden="true"
             >
-              🔎
+       <Glyph value="🔎" />
             </span>
 
             <input
@@ -925,7 +925,7 @@ export default function NotificationCenter() {
           && (
             <div className="empty card">
               <div style={{ fontSize: 24 }}>
-                🔍
+        <Glyph value="🔍" />
               </div>
 
               <p>
@@ -944,7 +944,7 @@ export default function NotificationCenter() {
           )
         }
 
-        {/* 📌 سنجاق‌شده‌ها — همیشه بالای همه */}
+        {/* سنجاق‌شده‌ها — همیشه بالای همه */}
         {
           pinned.length > 0
           && (
@@ -960,7 +960,7 @@ export default function NotificationCenter() {
                   fontWeight: 700,
                 }}
               >
-                <Glyph value="📌" /> سنجاق‌شده‌ها
+                <Glyph value="📌" />سنجاق‌شده‌ها
               </div>
 
               {pinned.map(renderRow)}
@@ -968,7 +968,7 @@ export default function NotificationCenter() {
           )
         }
 
-        {/* 🗂 گروه‌های تاریخی */}
+        {/* گروه‌های تاریخی */}
         {
           groups.map((bucket, gi) => (
             bucket.length > 0 && (

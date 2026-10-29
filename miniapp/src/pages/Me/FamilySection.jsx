@@ -16,7 +16,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 /* ─────────────────────────────────────────────
-   🌊 W8/MISS-03 — بخش خانواده در صفحه‌ی اشتراک
+    W8/MISS-03 — بخش خانواده در صفحه‌ی اشتراک
 
    سه حالت: مالک پلن خانوادگی (اعضا + صندلی +
    ساخت کد)، عضو (نمایش مالک)، بی‌اشتراک
@@ -105,7 +105,7 @@ export default function FamilySection({
       );
 
       toast(
-        '🎉 به خانواده پیوستی!'
+        'به خانواده پیوستی!'
       );
 
       setCode('');
@@ -189,7 +189,7 @@ export default function FamilySection({
         style={{ marginTop: 12 }}
       >
         <b>
-          <Glyph value="🎟" /> کد دعوت خانواده داری؟
+          <Glyph value="🎟" />کد دعوت خانواده داری؟
         </b>
 
         <div
@@ -242,7 +242,7 @@ export default function FamilySection({
         style={{ marginTop: 12 }}
       >
         <b>
-          👨‍👩‍👧 عضو خانواده‌ی{' '}
+          ‍‍ عضو خانواده‌ی{' '}
 
           {data.owner_name || '—'}
         </b>
@@ -276,7 +276,7 @@ export default function FamilySection({
       style={{ marginTop: 12 }}
     >
       <b>
-        👨‍👩‍👧 خانواده‌ی من
+        ‍‍ خانواده‌ی من
       </b>
 
       <span className="muted">
@@ -296,7 +296,7 @@ export default function FamilySection({
           }}
         >
           <span style={{ flex: 1 }}>
-            👤 {m.name || m.user_id}
+      <Glyph value="👤" /> {m.name || m.user_id}
           </span>
 
           <button
@@ -346,14 +346,14 @@ export default function FamilySection({
           onClick={makeCode}
           style={{ marginTop: 10 }}
         >
-          <Glyph value="➕" /> ساخت کد دعوت جدید
+          <Glyph value="➕" />ساخت کد دعوت جدید
         </button>
       ) : (
         <div
           className="muted"
           style={{ marginTop: 10 }}
         >
-          <Glyph value="⚠️" /> ظرفیت پر شده است.
+          <Glyph value="⚠️" />ظرفیت پر شده است.
         </div>
       )}
     </section>

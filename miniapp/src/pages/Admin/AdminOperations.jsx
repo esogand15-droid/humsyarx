@@ -185,7 +185,7 @@ export function AdminTickets() {
       );
 
       toast(
-        'تیکت به‌روزرسانی شد ✅',
+        'تیکت به‌روزرسانی شد',
         'success'
       );
 
@@ -313,13 +313,13 @@ export function AdminTickets() {
                         ?.student_id ||
                         'بدون شماره'}
 
-                      {' • ورودی '}
+                      {' • ورودی'}
 
                       {ticket.user
                         ?.intake ||
                         '—'}
 
-                      {' • گروه '}
+                      {' • گروه'}
 
                       {ticket.user
                         ?.group ||
@@ -371,7 +371,7 @@ export function AdminTickets() {
 
 
               <div className="sec-title">
-                <Glyph value="💬" /> گفت‌وگو
+                <Glyph value="💬" />گفت‌وگو
               </div>
 
 
@@ -520,8 +520,8 @@ export function AdminTickets() {
               >
                 {ticket.status ===
                 'closed'
-                  ? '🔓 بازگشایی تیکت'
-                  : '🔒 بستن تیکت'}
+                  ? 'بازگشایی تیکت'
+                  : 'بستن تیکت'}
               </button>
             </div>
           )}
@@ -566,7 +566,7 @@ export function AdminTickets() {
                 28,
             }}
           >
-            🎫
+      <Glyph value="🎫" />
           </span>
 
           <div>
@@ -708,7 +708,7 @@ export function AdminTickets() {
                           : 'var(--soft-warn)',
                     }}
                   >
-                    🎫
+          <Glyph value="🎫" />
                   </span>
 
                   <span
@@ -920,7 +920,7 @@ export function BroadcastAdmin() {
           `${
             response.data
               ?.queued || 0
-          } پیام در صف قرار گرفت ✅`,
+          } پیام در صف قرار گرفت `,
 
           'success'
         );
@@ -991,7 +991,7 @@ export function BroadcastAdmin() {
                   28,
               }}
             >
-              📣
+       <Glyph value="📣" />
             </span>
 
             <div>
@@ -1408,7 +1408,7 @@ export function PollAdmin() {
 
       onSuccess: async () => {
         toast(
-          'کانال ذخیره شد ✅',
+          'کانال ذخیره شد',
           'success'
         );
 
@@ -1456,7 +1456,7 @@ export function PollAdmin() {
         );
 
         toast(
-          'نظرسنجی ارسال شد ✅',
+          'نظرسنجی ارسال شد',
           'success'
         );
 
@@ -1510,7 +1510,7 @@ export function PollAdmin() {
           }}
         >
           <div className="sec-title">
-            <Glyph value="📡" /> تنظیم کانال
+            <Glyph value="📡" />تنظیم کانال
           </div>
 
           <div
@@ -1563,7 +1563,7 @@ export function PollAdmin() {
           }}
         >
           <div className="sec-title">
-            <Glyph value="📊" /> نظرسنجی جدید
+            <Glyph value="📊" />نظرسنجی جدید
           </div>
 
           <textarea
@@ -1662,7 +1662,7 @@ export function PollAdmin() {
           </button>
 
           {/* label → div چون کنترل دیگر input نیست بلکه
-              <button role="switch"> است. */}
+              <button role="switch">است. */}
           <div className="menu-row">
             <span
               style={{
@@ -1726,7 +1726,7 @@ export function PollAdmin() {
             .isPending ? (
             <Spinner size={15} />
           ) : (
-            '📤 ارسال نظرسنجی'
+            'ارسال نظرسنجی'
           )}
         </button>
       </main>
@@ -1818,7 +1818,7 @@ export function NotificationsAdmin() {
 
       onSuccess: async () => {
         toast(
-          'تنظیمات ذخیره شد ✅',
+          'تنظیمات ذخیره شد',
           'success'
         );
 
@@ -1897,7 +1897,7 @@ export function NotificationsAdmin() {
           }}
         >
           <div className="sec-title">
-            <Glyph value="⚙️" /> تنظیم فاصله ارسال منابع
+            <Glyph value="⚙️" />تنظیم فاصله ارسال منابع
           </div>
 
           <div
@@ -1992,7 +1992,7 @@ export function NotificationsAdmin() {
 
 
         <div className="sec-title">
-          <Glyph value="🕘" /> تاریخچه اجرا
+          <Glyph value="🕘" />تاریخچه اجرا
         </div>
 
 

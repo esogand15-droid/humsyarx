@@ -54,6 +54,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 
+
 /* مدیریت کاربران */
 
 export function AdminUsers() {
@@ -279,7 +280,7 @@ export function AdminUsers() {
                   23,
               }}
             >
-              👥
+       <Glyph value="👥" />
             </span>
 
             <div
@@ -569,7 +570,7 @@ export function AdminUsers() {
                       {user.name ||
                         `#${user.id}`}
 
-                      {/* 👑 P3 — مینی-چیپ پرستیژ کنار نام */}
+                      {/* P3 — مینی-چیپ پرستیژ کنار نام */}
                       {user.prestige?.icon && (
                         <span
                           title={
@@ -615,12 +616,12 @@ export function AdminUsers() {
                       {user.student_id ||
                         'بدون شماره'}
 
-                      {' • ورودی '}
+                      {' • ورودی'}
 
                       {user.intake ||
                         '—'}
 
-                      {' • گروه '}
+                      {' • گروه'}
 
                       {user.group ||
                         '—'}
@@ -823,7 +824,7 @@ function UserRbacCard({ uid }) {
         }}
       >
         <b style={{ fontSize: 'var(--fs-meta)' }}>
-          <Glyph value="🛡" /> نقش‌های RBAC
+          <Glyph value="🛡" />نقش‌های RBAC
         </b>
         <span
           className="badge b-gray"
@@ -1117,7 +1118,7 @@ export function AdminUserDetail() {
       hapticNotif('success');
 
       toast(
-        'پیام در صف ارسال به کاربر قرار گرفت ✅',
+        'پیام در صف ارسال به کاربر قرار گرفت',
         'success'
       );
 
@@ -1164,7 +1165,7 @@ export function AdminUserDetail() {
       );
 
       toast(
-        'عملیات با موفقیت انجام شد ✅',
+        'عملیات با موفقیت انجام شد',
         'success'
       );
 
@@ -1371,12 +1372,12 @@ export function AdminUserDetail() {
                     startEdit
                   }
                 >
-                  ✏️
+         <Glyph value="✏️" />
                 </button>
               </div>
             </section>
 
-            {/* 🛡 RBAC-W2 — نقش‌های چندتایی دیتابیس‌محور */}
+            {/* RBAC-W2 — نقش‌های چندتایی دیتابیس‌محور */}
             <UserRbacCard uid={uid} />
 
             {editing ? (
@@ -1467,7 +1468,7 @@ export function AdminUserDetail() {
                   </select>
                 </div>
 
-                {/* 🛡 RBAC-W2: سلکت سه‌تایی هاردکد حذف شد؛ نقش‌ها
+                {/* RBAC-W2: سلکت سه‌تایی هاردکد حذف شد؛ نقش‌ها
                     فقط از کارت RBAC بالای صفحه (دیتابیس‌محور، چندنقشی)
                     مدیریت می‌شوند — users.role به‌عنوان mirror از
                     سرور می‌آید (تک‌منبع، بدون تعریف موازی) */}
@@ -1478,7 +1479,7 @@ export function AdminUserDetail() {
                     lineHeight: 1.8,
                   }}
                 >
-                  <Glyph value="🛡" /> نقش‌های کاربر (چندنقشی) از کارت
+                  <Glyph value="🛡" />نقش‌های کاربر (چندنقشی) از کارت
                   RBAC بالای صفحه مدیریت می‌شود، نه از این فرم.
                 </div>
 
@@ -1612,7 +1613,7 @@ export function AdminUserDetail() {
                       }}
                     >
                       <span>
-                        {icon}
+                        <Glyph value={icon} />
                       </span>
 
                       <span
@@ -1661,7 +1662,7 @@ export function AdminUserDetail() {
                       })
                     }
                   >
-                    <Glyph value="✅" /> تأیید
+                    <Glyph value="✅" />تأیید
                   </button>
                 )}
 
@@ -1680,7 +1681,7 @@ export function AdminUserDetail() {
                   }
                 >
                   {user.suspended
-                    ? '🔓 رفع تعلیق'
+                    ? 'رفع تعلیق'
                     : '⏸ تعلیق'}
                 </button>
 
@@ -1693,7 +1694,7 @@ export function AdminUserDetail() {
                     )
                   }
                 >
-                  <Glyph value="🗑" /> حذف
+                  <Glyph value="🗑" />حذف
                 </button>
 
                 <button
@@ -1706,7 +1707,7 @@ export function AdminUserDetail() {
                     )
                   }
                 >
-                  <Glyph value="🚫" /> مسدودسازی
+                  <Glyph value="🚫" />مسدودسازی
                 </button>
 
                 <button
@@ -1718,11 +1719,11 @@ export function AdminUserDetail() {
                     );
                   }}
                 >
-                  <Glyph value="✉️" /> ارسال پیام
+                  <Glyph value="✉️" />ارسال پیام
                 </button>
               </div>
 
-              {/* ✉️ کامپوزر پیام مستقیم
+              {/* کامپوزر پیام مستقیم
                   — گیرنده: همین کاربر */}
               {dmOpen && (
                 <div
@@ -1768,7 +1769,7 @@ export function AdminUserDetail() {
                     >
                       {dmBusy
                         ? '⏳ در حال ارسال...'
-                        : '📨 ارسال'}
+                        : 'ارسال'}
                     </button>
 
                     <button
@@ -1874,7 +1875,7 @@ export function AdminIntakes() {
       );
 
       toast(
-        'تغییرات ذخیره شد ✅',
+        'تغییرات ذخیره شد',
         'success'
       );
 
@@ -2043,7 +2044,7 @@ export function AdminIntakes() {
                       fontSize: 'var(--fs-xl)',
                     }}
                   >
-                    📅
+          <Glyph value="📅" />
                   </span>
 
                   <div
@@ -2155,7 +2156,7 @@ export function AdminIntakes() {
                       }
                     }}
                   >
-                    🗑
+          <Glyph value="🗑" />
                   </button>
                 </div>
               </article>
@@ -2258,7 +2259,7 @@ export function AdminContentAdmins() {
 
     onSuccess: async () => {
       toast(
-        'دسترسی به‌روزرسانی شد ✅',
+        'دسترسی به‌روزرسانی شد',
         'success'
       );
 
@@ -2531,7 +2532,7 @@ export function AdminBlacklist() {
       );
 
       toast(
-        'مسدودیت برداشته شد ✅',
+        'مسدودیت برداشته شد',
         'success'
       );
 
@@ -2595,7 +2596,7 @@ export function AdminBlacklist() {
                 27,
             }}
           >
-            🚫
+      <Glyph value="🚫" />
           </span>
 
           <div>
@@ -2691,7 +2692,7 @@ export function AdminBlacklist() {
                       fontSize: 'var(--fs-xl)',
                     }}
                   >
-                    🚫
+          <Glyph value="🚫" />
                   </span>
 
                   <div

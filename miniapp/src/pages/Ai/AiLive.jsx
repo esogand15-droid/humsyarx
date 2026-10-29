@@ -24,7 +24,7 @@ import {
 import { Glyph } from '../../components/ui/Icon';
 
 /* ─────────────────────────────────────────────────────────────
-   🎙📹 م9.5 — موتور صوتی سطح استودیویی تماس زنده با هوشیار (Google Gemini Live API)
+    م9.5 — موتور صوتی سطح استودیویی تماس زنده با هوشیار (Google Gemini Live API)
    - معماری AudioWorkletProcessor روی ترد اختصاصی بلادرنگ صدا (Ring Buffer دایره‌ای ۴۵ ثانیه‌ای)
    - انتقال باینری مستقیم (Zero-Copy ArrayBuffer) روی WebSocket (حذف کامل سربار Base64/JSON روی ترد UI)
    - درون‌یابی ۴ نقطه‌ای مکعبی Catmull-Rom / Half-Band Lagrange از 24kHz به نرخ بومی سخت‌افزار
@@ -1171,8 +1171,8 @@ export default function AiLive() {
       }
 
       if (msg.type === 'tool_call') {
-        const names = (msg.calls || []).map((c) => c.name).join('، ');
-        setToolNotice(`🔧 در حال بررسی اطلاعات هامزیار (${names})…`);
+        const names = (msg.calls || []).map((c) => c.name).join('،');
+        setToolNotice(` در حال بررسی اطلاعات هامزیار (${names})…`);
         setStatus('thinking');
         return;
       }
@@ -1273,7 +1273,7 @@ export default function AiLive() {
   if (isLoading) {
     return (
       <main className="page">
-        <Header title="🎙 تماس صوتی و ویدیویی زنده" back="/ai" />
+        <Header title="تماس صوتی و ویدیویی زنده" back="/ai" />
         <div style={{ padding: 32, textAlign: 'center' }}>
           <Spinner />
         </div>
@@ -1302,7 +1302,7 @@ export default function AiLive() {
 
   return (
     <main className="page" style={{ paddingBottom: 32 }}>
-      <Header title="🎙 تماس صوتی و ویدیویی زنده" back="/ai" />
+      <Header title="تماس صوتی و ویدیویی زنده" back="/ai" />
 
       <div style={{ padding: '12px 16px', display: 'grid', gap: 14 }}>
         {/* کارت وضعیت، پیش‌نمایش دوربین و گوی صوتی */}
@@ -1341,7 +1341,7 @@ export default function AiLive() {
                 onClick={() => startCameraStream(facingMode === 'environment' ? 'user' : 'environment')}
                 style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(15,23,42,0.8)', borderRadius: 999 }}
               >
-                <Glyph value="🔄" /> تعویض دوربین
+                <Glyph value="🔄" />تعویض دوربین
               </button>
             </div>
           )}
@@ -1388,7 +1388,7 @@ export default function AiLive() {
                   fontSize: 12,
                 }}
               >
-                <Glyph value="✋" /> قطع صحبت هوشیار و شروع صحبت من
+                <Glyph value="✋" />قطع صحبت هوشیار و شروع صحبت من
               </button>
             </div>
           )}
@@ -1419,7 +1419,7 @@ export default function AiLive() {
           {!isCallActive && (
             <div style={{ display: 'grid', gap: 10, marginTop: 16, textAlign: 'right' }}>
               <label style={{ fontSize: 12, color: 'var(--txm)' }}>
-                <Glyph value="🗣" /> صدای هوشیار در مکالمه زنده:
+                <Glyph value="🗣" />صدای هوشیار در مکالمه زنده:
                 <select
                   className="inp"
                   style={{ marginTop: 4 }}
@@ -1434,7 +1434,7 @@ export default function AiLive() {
 
               {isTranslateModel && (
                 <label style={{ fontSize: 12, color: 'var(--txm)' }}>
-                  <Glyph value="🌐" /> زبان مقصد ترجمه‌ی صوت‌به‌صوت:
+                  <Glyph value="🌐" />زبان مقصد ترجمه‌ی صوت‌به‌صوت:
                   <select
                     className="inp"
                     style={{ marginTop: 4 }}
@@ -1461,7 +1461,7 @@ export default function AiLive() {
                   onClick={() => startCall(false)}
                   style={{ minWidth: 185, padding: '12px 18px', fontSize: 14, borderRadius: 999 }}
                 >
-                  <Glyph value="🎙" /> تماس صوتی زنده
+                  <Glyph value="🎙" />تماس صوتی زنده
                 </button>
                 {!isTranslateModel && (
                   <button
@@ -1478,7 +1478,7 @@ export default function AiLive() {
                       border: '1px solid rgba(59,130,246,0.5)',
                     }}
                   >
-                    <Glyph value="📹" /> تماس ویدیویی + صوتی
+                    <Glyph value="📹" />تماس ویدیویی + صوتی
                   </button>
                 )}
               </>
@@ -1493,7 +1493,7 @@ export default function AiLive() {
                     background: micMuted ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.08)',
                   }}
                 >
-                  {micMuted ? '🔇 میکروفون بسته' : '🎤 میکروفون باز'}
+                  {micMuted ? 'میکروفون بسته' : 'میکروفون باز'}
                 </button>
 
                 {!isTranslateModel && (
@@ -1506,7 +1506,7 @@ export default function AiLive() {
                       background: cameraOn ? 'rgba(59,130,246,0.28)' : 'rgba(255,255,255,0.08)',
                     }}
                   >
-                    {cameraOn ? '📹 بستن دوربین' : '📷 روشن کردن دوربین'}
+                    {cameraOn ? 'بستن دوربین' : 'روشن کردن دوربین'}
                   </button>
                 )}
 
@@ -1523,7 +1523,7 @@ export default function AiLive() {
                     background: speakerMuted ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.08)',
                   }}
                 >
-                  {speakerMuted ? '🔈 بلندگو بسته' : '🔊 بلندگو باز'}
+                  {speakerMuted ? 'بلندگو بسته' : 'بلندگو باز'}
                 </button>
 
                 <button
@@ -1532,7 +1532,7 @@ export default function AiLive() {
                   onClick={endCall}
                   style={{ borderRadius: 999, padding: '10px 20px' }}
                 >
-                  <Glyph value="📴" /> پایان تماس
+                  <Glyph value="📴" />پایان تماس
                 </button>
               </>
             )}
@@ -1543,7 +1543,7 @@ export default function AiLive() {
         {(userLiveText || aiLiveText || historyTurns.length > 0) && (
           <section className="card" style={{ padding: 14, display: 'grid', gap: 8 }}>
             <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--txm)' }}>
-              <Glyph value="📝" /> زیرنویس زنده مکالمه
+              <Glyph value="📝" />زیرنویس زنده مکالمه
             </div>
             <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 8 }}>
               {historyTurns.map((t, idx) => (
@@ -1556,19 +1556,19 @@ export default function AiLive() {
                     background: t.role === 'user' ? 'rgba(59,130,246,0.14)' : 'rgba(16,185,129,0.12)',
                   }}
                 >
-                  <b>{t.role === 'user' ? '👤 شما: ' : '🤖 هوشیار: '}</b>
+                  <b>{t.role === 'user' ? 'شما: ' : 'هوشیار: '}</b>
                   <span>{t.text}</span>
                 </div>
               ))}
               {userLiveText && (
                 <div style={{ padding: '8px 11px', borderRadius: 12, fontSize: 13, background: 'rgba(59,130,246,0.22)' }}>
-                  <b><Glyph value="👤" /> شما (در حال صحبت…): </b>
+                  <b><Glyph value="👤" />شما (در حال صحبت…): </b>
                   <span>{userLiveText}</span>
                 </div>
               )}
               {aiLiveText && (
                 <div style={{ padding: '8px 11px', borderRadius: 12, fontSize: 13, background: 'rgba(16,185,129,0.22)' }}>
-                  <b><Glyph value="🤖" /> هوشیار (زنده…): </b>
+                  <b><Glyph value="🤖" />هوشیار (زنده…): </b>
                   <span>{aiLiveText}</span>
                 </div>
               )}

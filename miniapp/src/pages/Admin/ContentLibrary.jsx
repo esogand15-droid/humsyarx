@@ -50,6 +50,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 
+
 /* 🌊 موج C1 — گیت انتخاب ورودی برای ادمین ارشد:
    مدیریت محتوا فقط در متن یک ورودی معتبر انجام می‌شود */
 function ContentScopeGate() {
@@ -75,7 +76,7 @@ function ContentScopeGate() {
               navigate('/admin/content')
             }
           >
-            <Glyph value="📅" /> انتخاب ورودی
+            <Glyph value="📅" />انتخاب ورودی
           </button>
         </div>
       </main>
@@ -103,7 +104,7 @@ function ContentScopeBanner({
         marginBottom: 12,
       }}
     >
-      <span>📅</span>
+      <span></span>
 
       <span
         style={{
@@ -138,7 +139,7 @@ function DeleteButton({
       disabled={pending}
       onClick={onClick}
     >
-      🗑
+   <Glyph value="🗑" />
     </button>
   );
 }
@@ -201,7 +202,7 @@ export function BasicScienceAdmin() {
 
   const iv = cscope.intake ?? '';
 
-  {/* 🌊 C1.5 — درس سراسری برای ادمین ورودی خاص: فقط‌خواندنی */}
+  {/* C1.5 — درس سراسری برای ادمین ورودی خاص: فقط‌خواندنی */}
   const lessonRO = Boolean(lesson?.readonly);
 
 
@@ -533,7 +534,7 @@ export function BasicScienceAdmin() {
       );
 
       toast(
-        'عملیات با موفقیت انجام شد ✅',
+        'عملیات با موفقیت انجام شد',
         'success'
       );
 
@@ -660,7 +661,7 @@ export function BasicScienceAdmin() {
               }}
             >
               <div className="sec-title">
-                <Glyph value="🔬" /> کتابخانه علوم پایه
+                <Glyph value="🔬" />کتابخانه علوم پایه
               </div>
 
               <div className="tab-bar">
@@ -809,7 +810,7 @@ export function BasicScienceAdmin() {
                             fontSize: 'var(--fs-xl)',
                           }}
                         >
-                          📗
+             <Glyph value="📗" />
                         </span>
 
                         <button
@@ -843,7 +844,7 @@ export function BasicScienceAdmin() {
                             {item.name}
                           </b>
 
-                          {/* 🌊 C1.5 — بج سراسری (فقط‌خواندنی) */}
+                          {/* C1.5 — بج سراسری (فقط‌خواندنی) */}
                           {item.readonly && (
                             <span
                               style={{
@@ -859,7 +860,7 @@ export function BasicScienceAdmin() {
                                   2,
                               }}
                             >
-                              <Glyph value="🔒" /> سراسری — فقط‌خواندنی
+                              <Glyph value="🔒" />سراسری — فقط‌خواندنی
                             </span>
                           )}
 
@@ -872,7 +873,7 @@ export function BasicScienceAdmin() {
                                 marginTop: 2,
                               }}
                             >
-                              <Glyph value="🌐" /> سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                              <Glyph value="🌐" />سراسری — باز کنید و با مخصوص این ورودی کنید
                             </span>
                           )}
 
@@ -895,7 +896,7 @@ export function BasicScienceAdmin() {
                           </span>
                         </button>
 
-                        {/* 🌊 C1.5 — حذف روی سراسری برای scoped مخفی */}
+                        {/* C1.5 — حذف روی سراسری برای scoped مخفی */}
                         {!item.readonly && (
                         <DeleteButton
                           pending={
@@ -906,7 +907,7 @@ export function BasicScienceAdmin() {
                             const accepted =
                               await confirmAction(
                                 iv && !item.intake
-                                  ? 'این درس سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و ✂️ بزنید. ادامه می‌دهید؟'
+                                  ? 'این درس سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، جلسه را باز کنید و بزنید. ادامه می‌دهید؟'
                                   : 'درس و زیرمجموعه‌های آن حذف شود؟'
                               );
 
@@ -936,7 +937,7 @@ export function BasicScienceAdmin() {
         {lesson &&
           !session && (
           <>
-            {/* 🌊 C1.5/C3 — افزودن جلسه روی درس سراسری برای scoped مخفی بود؛
+            {/* C1.5/C3 — افزودن جلسه روی درس سراسری برای scoped مخفی بود؛
                 حالا اگر سرور اجازه‌ی «فرزند ورودی‌خاص» را بدهد (can_create_own)
                 فرم باز می‌شود و جلسه فقط برای ورودی خودِ کاربر ساخته می‌شود. */}
             {(!lessonRO || canAddOwnSession) && (
@@ -970,7 +971,7 @@ export function BasicScienceAdmin() {
                     fontSize: 'var(--fs-cap)',
                   }}
                 >
-                  <Glyph value="📅" /> این جلسه فقط برای ورودی شما ساخته می‌شود؛
+                  <Glyph value="📅" />این جلسه فقط برای ورودی شما ساخته می‌شود؛
                   نسخه‌ی سراسریِ درس تغییر نمی‌کند.
                 </div>
               ) : !lessonRO && iv ? (
@@ -980,7 +981,7 @@ export function BasicScienceAdmin() {
                     fontSize: 'var(--fs-cap)',
                   }}
                 >
-                  <Glyph value="🌐" /> جلسه‌ی جدید سراسری می‌شود. برای مخصوص‌کردن یک جلسه‌ی موجود همین ورودی، ✂️ را بزنید.
+                  <Glyph value="🌐" />جلسه‌ی جدید سراسری می‌شود. برای مخصوص‌کردن یک جلسه‌ی موجود همین ورودی، را بزنید.
                 </div>
               ) : null}
 
@@ -1170,21 +1171,21 @@ export function BasicScienceAdmin() {
                             {item.teacher ||
                               'بدون استاد'}
 
-                            {/* 🍴 C2 — نشان نسخه‌ی اختصاصی */}
+                            {/* C2 — نشان نسخه‌ی اختصاصی */}
                             {item.is_fork &&
-                              ' • ⭐ نسخه‌ی اختصاصی'}
+                              ' • نسخه‌ی اختصاصی'}
 
-                            {/* 🌊 C3 — جلسه‌ای که فقط برای ورودی
+                            {/* C3 — جلسه‌ای که فقط برای ورودی
                                 خودِ کاربر است (فرزند، نه فورک) */}
                             {item.own &&
-                              ' • 📅 فقط ورودی من'}
+                              ' • فقط ورودی من'}
 
                             {iv && !item.is_fork && !item.intake &&
-                              ' • 🌐 سراسری (با آپلود، ⭐ نسخه‌ی ورودی شما ساخته می‌شود)'}
+                              ' • سراسری (با آپلود، نسخه‌ی ورودی شما ساخته می‌شود)'}
                           </span>
                         </button>
 
-                        {/* ⭐ م6 — دکمه‌ی ✂️ حذف شد: شخصی‌سازی دیگر اکشنِ
+                        {/* م6 — دکمه‌ی حذف شد: شخصی‌سازی دیگر اکشنِ
                              مستقل نیست؛ با اولین ویرایش/آپلود روی جلسه‌ی
                              سراسری، نسخه‌ی اختصاصی ورودی به‌صورت خودکار
                              (CoW در لحظه‌ی ذخیره) ساخته می‌شود */}
@@ -1229,8 +1230,8 @@ export function BasicScienceAdmin() {
                             </button>
                           )}
 
-                        {/* 🌊 C1.5 — حذف جلسه‌ی سراسری برای scoped مخفی
-                            🌊 C3 — ولی «فرزند ورودی من» مالِ خود اوست ⇒ حذف‌پذیر */}
+                        {/* C1.5 — حذف جلسه‌ی سراسری برای scoped مخفی
+                             C3 — ولی «فرزند ورودی من» مالِ خود اوست ⇒ حذف‌پذیر */}
                         {(!lessonRO || item.own) && (
                         <DeleteButton
                           pending={
@@ -1241,7 +1242,7 @@ export function BasicScienceAdmin() {
                             const accepted =
                               await confirmAction(
                                 iv && !item.intake
-                                  ? 'این جلسه سراسری است. حذف برای همه است. اگر فقط همین ورودی را می‌خواهید، حذف نکنید و ✂️ بزنید. ادامه می‌دهید؟'
+                                  ? 'این جلسه سراسری است. حذف برای همه است. اگر فقط همین ورودی را می‌خواهید، حذف نکنید و بزنید. ادامه می‌دهید؟'
                                   : 'جلسه حذف شود؟'
                               );
 
@@ -1270,7 +1271,7 @@ export function BasicScienceAdmin() {
 
         {session && (
           <>
-            {/* 🍴 C2 — آپلود در سطح جلسه enforce می‌شود:
+            {/* C2 — آپلود در سطح جلسه enforce می‌شود:
                  جلسه‌ی سراسری برای scoped مخفی؛ نسخه‌ی fork مجاز */}
             {!sessionRO && (
             <section
@@ -1289,7 +1290,7 @@ export function BasicScienceAdmin() {
               }}
             >
               <div className="sec-title">
-                <Glyph value="📤" /> افزودن محتوا
+                <Glyph value="📤" />افزودن محتوا
               </div>
 
               <select
@@ -1318,7 +1319,7 @@ export function BasicScienceAdmin() {
                       key={key}
                       value={key}
                     >
-                      {icon} {key}
+                      <Glyph value={icon} /> {key}
                     </option>
                   )
                 )}
@@ -1383,14 +1384,14 @@ export function BasicScienceAdmin() {
                 }
               />
 
-              {/* 🐛 FIX آپلود ویدیو — سقف حجم قبل از ارسال (۴۵MB = سقف
+              {/* FIX آپلود ویدیو — سقف حجم قبل از ارسال (۴۵MB = سقف
                   سرور)؛ پیام شفاف به‌جای خطای عمومی پس از آپلود کامل. */}
               {upload.file && upload.file.size > 45 * 1024 * 1024 && (
                 <div
                   className="muted"
                   style={{ color: 'var(--red, #e5484d)', margin: '0 2px 9px' }}
                 >
-                  <Glyph value="⚠️" /> حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
+                  <Glyph value="⚠️" />حجم این فایل بیش از ۴۵ مگابایت است — آپلود نمی‌شود.
                 </div>
               )}
 
@@ -1420,7 +1421,7 @@ export function BasicScienceAdmin() {
             )}
 
 
-            {/* 🍴 C2 — راهنمای وضعیت نسخه‌ی اختصاصی */}
+            {/* C2 — راهنمای وضعیت نسخه‌ی اختصاصی */}
             {sessionIsFork && (
               <div
                 style={{
@@ -1434,7 +1435,7 @@ export function BasicScienceAdmin() {
                     '0 2px 9px',
                 }}
               >
-                <Glyph value="⭐" /> نسخه‌ی اختصاصی ورودی
+                <Glyph value="⭐" />نسخه‌ی اختصاصی ورودی
                 شما — ویرایش این بخش روی
                 نسخه‌ی سراسری اثری ندارد.
               </div>
@@ -1536,7 +1537,7 @@ export function BasicScienceAdmin() {
                           </div>
                         </div>
 
-                        {/* 🍴 C2 — حذف محتوا در سطح جلسه enforce می‌شود:
+                        {/* C2 — حذف محتوا در سطح جلسه enforce می‌شود:
                              محتوای fork برای مالک ورودی حذف‌پذیر است */}
                         {!sessionRO && (
                         <DeleteButton
@@ -1617,7 +1618,7 @@ export function ReferencesAdmin() {
 
   const iv = cscope.intake ?? '';
 
-  {/* 🌊 C1.5 — موضوع سراسری برای ادمین ورودی خاص: فقط‌خواندنی */}
+  {/* C1.5 — موضوع سراسری برای ادمین ورودی خاص: فقط‌خواندنی */}
   const subjectRO = Boolean(subject?.readonly);
 
 
@@ -1861,7 +1862,7 @@ export function ReferencesAdmin() {
 
     onSuccess: async () => {
       toast(
-        'عملیات انجام شد ✅',
+        'عملیات انجام شد',
         'success'
       );
 
@@ -1922,7 +1923,7 @@ export function ReferencesAdmin() {
 
       <main className="page fade-up">
         <ContentScopeBanner scope={cscope} />
-        {/* 🍴 C2 — در سطح کتاب، قفل کتابِ انتخاب‌شده enforce می‌شود:
+        {/* C2 — در سطح کتاب، قفل کتابِ انتخاب‌شده enforce می‌شود:
              fork روی موضوع سراسری برای مالک ورودی باز (آپلود جلد مجاز) */}
         {(book ? !bookRO : (!subjectRO || booksCanCreate)) && (
         <section
@@ -1936,7 +1937,7 @@ export function ReferencesAdmin() {
         >
           <div className="sec-title">
             {book
-              ? '📤 افزودن جلد'
+              ? 'افزودن جلد'
 
               : subject
                 ? `＋ افزودن کتاب${
@@ -2136,7 +2137,7 @@ export function ReferencesAdmin() {
                           22,
                       }}
                     >
-                      🩺
+           <Glyph value="🩺" />
                     </span>
 
                     <button
@@ -2167,7 +2168,7 @@ export function ReferencesAdmin() {
                         {item.name}
                       </b>
 
-                      {/* 🌊 C1.5 — بج سراسری (فقط‌خواندنی) */}
+                      {/* C1.5 — بج سراسری (فقط‌خواندنی) */}
                       {item.readonly && (
                         <span
                           style={{
@@ -2183,7 +2184,7 @@ export function ReferencesAdmin() {
                               2,
                           }}
                         >
-                          <Glyph value="🔒" /> سراسری — فقط‌خواندنی
+                          <Glyph value="🔒" />سراسری — فقط‌خواندنی
                         </span>
                       )}
 
@@ -2196,12 +2197,12 @@ export function ReferencesAdmin() {
                             marginTop: 2,
                           }}
                         >
-                          <Glyph value="🌐" /> سراسری — باز کنید و با ✂️ مخصوص این ورودی کنید
+                          <Glyph value="🌐" />سراسری — باز کنید و با مخصوص این ورودی کنید
                         </span>
                       )}
                     </button>
 
-                    {/* 🌊 C1.5 — حذف روی سراسری برای scoped مخفی */}
+                    {/* C1.5 — حذف روی سراسری برای scoped مخفی */}
                     {!item.readonly && (
                     <DeleteButton
                       pending={
@@ -2212,7 +2213,7 @@ export function ReferencesAdmin() {
                         const accepted =
                           await confirmAction(
                             iv && !item.intake
-                              ? 'این موضوع سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، کتاب را باز کنید و ✂️ بزنید. ادامه می‌دهید؟'
+                              ? 'این موضوع سراسری است. حذف، آن را برای همه برمی‌دارد. برای مخصوص‌کردن همین ورودی، کتاب را باز کنید و بزنید. ادامه می‌دهید؟'
                               : 'موضوع حذف شود؟'
                           );
 
@@ -2267,7 +2268,7 @@ export function ReferencesAdmin() {
                           22,
                       }}
                     >
-                      📕
+           <Glyph value="📕" />
                     </span>
 
                     <button
@@ -2295,20 +2296,20 @@ export function ReferencesAdmin() {
                       <b>
                         {item.name}
 
-                        {/* 🍴 C2 — نشان نسخه‌ی اختصاصی */}
+                        {/* C2 — نشان نسخه‌ی اختصاصی */}
                         {item.is_fork &&
                           ' ⭐'}
 
-                        {/* 🌊 C3 — کتابی که فقط برای ورودی خودِ کاربر است */}
+                        {/* C3 — کتابی که فقط برای ورودی خودِ کاربر است */}
                         {item.own &&
-                          ' • 📅 فقط ورودی من'}
+                          ' • فقط ورودی من'}
 
                         {iv && !item.is_fork && !item.intake &&
-                          ' • 🌐 سراسری (با تغییر، ⭐ نسخه‌ی ورودی شما ساخته می‌شود)'}
+                          ' • سراسری (با تغییر، نسخه‌ی ورودی شما ساخته می‌شود)'}
                       </b>
                     </button>
 
-                    {/* ⭐ م6 — دکمه‌ی ✂️ حذف شد: شخصی‌سازی کتاب با اولین
+                    {/* م6 — دکمه‌ی حذف شد: شخصی‌سازی کتاب با اولین
                          تغییر (CoW در ذخیره) انجام می‌شود */}
 
                     {iv &&
@@ -2350,7 +2351,7 @@ export function ReferencesAdmin() {
                         </button>
                       )}
 
-                    {/* 🌊 C1.5/C3 — حذف کتابِ سراسری برای scoped مخفی؛
+                    {/* C1.5/C3 — حذف کتابِ سراسری برای scoped مخفی؛
                          فرزندِ «فقط ورودی من» خودِ کاربر می‌تواند حذف کند */}
                     {(!subjectRO || item.own) && (
                     <DeleteButton
@@ -2396,7 +2397,7 @@ export function ReferencesAdmin() {
                 8,
             }}
           >
-            {/* 🍴 C2 — راهنمای وضعیت نسخه‌ی اختصاصی کتاب */}
+            {/* C2 — راهنمای وضعیت نسخه‌ی اختصاصی کتاب */}
             {bookIsFork && (
               <div
                 style={{
@@ -2409,7 +2410,7 @@ export function ReferencesAdmin() {
                   margin: '0 2px 1px',
                 }}
               >
-                <Glyph value="⭐" /> نسخه‌ی اختصاصی ورودی شما
+                <Glyph value="⭐" />نسخه‌ی اختصاصی ورودی شما
                 — ویرایش این بخش روی نسخه‌ی
                 سراسری اثری ندارد.
               </div>
@@ -2474,7 +2475,7 @@ export function ReferencesAdmin() {
                       </div>
                     </div>
 
-                    {/* 🍴 C2 — حذف فایل در سطح کتاب enforce می‌شود:
+                    {/* C2 — حذف فایل در سطح کتاب enforce می‌شود:
                          فایل fork برای مالک ورودی حذف‌پذیر است */}
                     {!bookRO && (
                     <DeleteButton
@@ -2631,7 +2632,7 @@ export function QbankAdmin() {
 
     onSuccess: async () => {
       toast(
-        'عملیات انجام شد ✅',
+        'عملیات انجام شد',
         'success'
       );
 
@@ -2693,7 +2694,7 @@ export function QbankAdmin() {
           }}
         >
           <div className="sec-title">
-            <Glyph value="📤" /> فایل جدید
+            <Glyph value="📤" />فایل جدید
           </div>
 
           <div className="grid2">
@@ -2859,7 +2860,7 @@ export function QbankAdmin() {
                       {item.topic}
                     </b>
 
-                    {/* 🌊 C1.5 — بج سراسری (فقط‌خواندنی) */}
+                    {/* C1.5 — بج سراسری (فقط‌خواندنی) */}
                     {item.readonly && (
                       <div
                         style={{
@@ -2872,7 +2873,7 @@ export function QbankAdmin() {
                             2,
                         }}
                       >
-                        <Glyph value="🔒" /> سراسری — فقط‌خواندنی
+                        <Glyph value="🔒" />سراسری — فقط‌خواندنی
                       </div>
                     )}
 
@@ -2905,7 +2906,7 @@ export function QbankAdmin() {
                     </div>
                   </div>
 
-                  {/* 🌊 C1.5 — حذف روی سراسری برای scoped مخفی */}
+                  {/* C1.5 — حذف روی سراسری برای scoped مخفی */}
                   {!item.readonly && (
                   <DeleteButton
                     pending={
@@ -3025,7 +3026,7 @@ export function ContentReportsAdmin() {
       );
 
       toast(
-        'وضعیت گزارش تغییر کرد ✅',
+        'وضعیت گزارش تغییر کرد',
         'success'
       );
 
@@ -3351,7 +3352,7 @@ export function ContentReportsAdmin() {
                         })
                       }
                     >
-                      <Glyph value="🔍" /> بررسی
+                      <Glyph value="🔍" />بررسی
                     </button>
                   )}
 
@@ -3378,7 +3379,7 @@ export function ContentReportsAdmin() {
                           })
                         }
                       >
-                        <Glyph value="✅" /> حل شد
+                        <Glyph value="✅" />حل شد
                       </button>
 
                       <button

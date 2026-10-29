@@ -25,6 +25,7 @@ import {
 } from '../../lib/telegram';
 import { Glyph } from '../../components/ui/Icon';
 
+
 /* 👑 موج P1 Prestige — کلکسیون کامل نشان‌ها
    (۵ تکاملی + تکی‌ها + جهانی‌ها) + پین شوکیس
    (حداکثر ۳) + تب «سفر من». تمام متن/آیکون/
@@ -106,7 +107,7 @@ function BadgeTile({
             fontSize: 'var(--fs-cap)',
           }}
         >
-          📌
+     <Glyph value="📌" />
         </span>
       )}
 
@@ -118,7 +119,7 @@ function BadgeTile({
         }}
       >
         <span style={{ fontSize: 21 }}>
-          {icon}
+          <Glyph value={icon} />
         </span>
 
         <b
@@ -305,7 +306,7 @@ export default function Badges() {
   return (
     <>
       <Header
-        title="🏅 نشان‌های من"
+        title="نشان‌های من"
         onBack={() => navigate('/me')}
       />
 
@@ -318,8 +319,8 @@ export default function Badges() {
           }}
         >
           {[
-            ['badges', '🏅 نشان‌ها'],
-            ['journey', '📜 سفر من'],
+            ['badges', 'نشان‌ها'],
+            ['journey', 'سفر من'],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -346,7 +347,7 @@ export default function Badges() {
             {/* شوکیس پین‌شده */}
             <section>
               <div className="sec-title">
-                <Glyph value="📌" /> شوکیس (حداکثر ۳ نشان)
+                <Glyph value="📌" />شوکیس (حداکثر ۳ نشان)
               </div>
 
               <div
@@ -369,7 +370,7 @@ export default function Badges() {
             {/* پنج نشان تکاملی */}
             <section>
               <div className="sec-title">
-                <Glyph value="🪜" /> نشان‌های تکاملی
+                <Glyph value="🪜" />نشان‌های تکاملی
               </div>
 
               <div
@@ -482,7 +483,7 @@ export default function Badges() {
                             )} · پله بعد: +${faNum(
                               badge.next_xp
                             )} XP`
-                          : 'به بالاترین پله رسیدی — اسطوره‌ای! 🌟'}
+                          : 'به بالاترین پله رسیدی — اسطوره‌ای! '}
                       </div>
                     </div>
                   )
@@ -591,7 +592,7 @@ export default function Badges() {
             {/* جهانی‌ها */}
             <section>
               <div className="sec-title">
-                <Glyph value="🏆" /> نشان‌های جهانی — فقط یک نفر در تاریخ
+                <Glyph value="🏆" />نشان‌های جهانی — فقط یک نفر در تاریخ
               </div>
 
               <div
@@ -644,7 +645,7 @@ export default function Badges() {
                       >
                         {g.claimed
                           ? g.owned_by_me
-                            ? '👑 مال توئه!'
+                            ? 'مال توئه!'
                             : `تصاحب شد: ${g.owner_name}`
                           : 'هنوز آزاد است…'}
                       </div>
@@ -663,7 +664,7 @@ export default function Badges() {
             >
               {faNum(earnedSingles)} نشان
               تکی باز کرده‌ای · روی نشان بازشده
-              بزن تا پین شود 📌
+              بزن تا پین شود 
             </div>
           </>
         )}

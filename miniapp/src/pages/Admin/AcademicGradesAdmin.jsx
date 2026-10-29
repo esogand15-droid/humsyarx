@@ -280,7 +280,7 @@ export default function AcademicGradesAdmin() {
       toast(
         `${
           response.data?.updated || 0
-        } نمره ثبت شد ✅`,
+        } نمره ثبت شد `,
         'success'
       );
 
@@ -320,7 +320,7 @@ export default function AcademicGradesAdmin() {
       hapticNotif('success');
 
       toast(
-        'نمره ویرایش شد ✅',
+        'نمره ویرایش شد',
         'success'
       );
 
@@ -452,7 +452,7 @@ export default function AcademicGradesAdmin() {
     return (
       <>
         <Header
-          title="📊 ثبت دسته‌ای نمرات"
+          title="ثبت دسته‌ای نمرات"
           onBack={() =>
             setView('list')
           }
@@ -466,7 +466,7 @@ export default function AcademicGradesAdmin() {
             }}
           >
             <div className="sec-title">
-              <Glyph value="📝" /> اطلاعات امتحان
+              <Glyph value="📝" />اطلاعات امتحان
             </div>
 
             <label
@@ -616,7 +616,7 @@ export default function AcademicGradesAdmin() {
                     marginTop: 5,
                   }}
                 >
-                  <Glyph value="✓" /> ترم پیشنهادی از روی درس: {suggestedTerm} — قابل تغییر دستی
+                  <Glyph value="✓" />ترم پیشنهادی از روی درس: {suggestedTerm} — قابل تغییر دستی
                 </div>
               )}
 
@@ -628,7 +628,7 @@ export default function AcademicGradesAdmin() {
                   marginTop: 5,
                 }}
               >
-                <Glyph value="⚠️" /> ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.
+                <Glyph value="⚠️" />ترم الزامی است — بدون انتخاب ترم ثبت انجام نمی‌شود.
               </div>
             )}
 
@@ -644,7 +644,7 @@ export default function AcademicGradesAdmin() {
                 lineHeight: 1.7,
               }}
             >
-              <Glyph value="🎓" /> هر درس به یک ترم متصل است و کارنامه‌ی
+              <Glyph value="🎓" />هر درس به یک ترم متصل است و کارنامه‌ی
               دانشجو <b>هر ترم را جدا</b> با میانگین جدا
               نشان می‌دهد. ترم را دقیق انتخاب کنید تا
               نمرات «بدون ترم» تولید نشود.
@@ -658,7 +658,7 @@ export default function AcademicGradesAdmin() {
             }}
           >
             <div className="sec-title">
-              <Glyph value="👤" /> افزودن دانشجو
+              <Glyph value="👤" />افزودن دانشجو
             </div>
 
             <input
@@ -670,7 +670,7 @@ export default function AcademicGradesAdmin() {
                 )
               }
               placeholder={
-                'نام، شماره دانشجویی، ' +
+                'نام، شماره دانشجویی،' +
                 'یوزرنیم یا آیدی...'
               }
             />
@@ -756,12 +756,12 @@ export default function AcademicGradesAdmin() {
                             .student_id ||
                             'بدون شماره دانشجویی'}
 
-                          {' • گروه '}
+                          {' • گروه'}
 
                           {student.group ||
                             '—'}
 
-                          {' • ورودی '}
+                          {' • ورودی'}
 
                           {student.intake ||
                             '—'}
@@ -784,7 +784,7 @@ export default function AcademicGradesAdmin() {
               }}
             >
               <div className="sec-title">
-                <Glyph value="🎯" /> نمرات (
+                <Glyph value="🎯" />نمرات (
                 {entries.length} نفر)
               </div>
 
@@ -919,7 +919,7 @@ export default function AcademicGradesAdmin() {
                         fontSize: 'var(--fs-lg)',
                       }}
                     >
-                      🗑
+           <Glyph value="🗑" />
                     </button>
                   </div>
                 )
@@ -940,7 +940,7 @@ export default function AcademicGradesAdmin() {
             {bulkMutation.isPending ? (
               <Spinner size={16} />
             ) : (
-              `💾 ثبت ${entries.length} نمره`
+              ` ثبت ${entries.length} نمره`
             )}
           </button>
         </div>
@@ -951,7 +951,7 @@ export default function AcademicGradesAdmin() {
   return (
     <>
       <Header
-        title="📊 مدیریت نمرات"
+        title="مدیریت نمرات"
         subtitle={`${
           Number(data?.total) || 0
         } نمره ثبت‌شده`}
@@ -1100,7 +1100,7 @@ export default function AcademicGradesAdmin() {
                       '—'}
 
                     {grade.term
-                      ? ` • 🎓 ${grade.term}`
+           ? ` • <Glyph value="🎓" /> ${grade.term}`
                       : ''}
                   </div>
                 </div>
@@ -1242,7 +1242,7 @@ export default function AcademicGradesAdmin() {
                       })
                     }
                   >
-                    <Glyph value="✏️" /> ویرایش
+                    <Glyph value="✏️" />ویرایش
                   </button>
 
                   <button
@@ -1268,7 +1268,7 @@ export default function AcademicGradesAdmin() {
                       }
                     }}
                   >
-                    <Glyph value="🗑" /> حذف
+                    <Glyph value="🗑" />حذف
                   </button>
                 </div>
               )}

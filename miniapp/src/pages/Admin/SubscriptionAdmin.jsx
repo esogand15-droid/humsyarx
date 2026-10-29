@@ -44,6 +44,7 @@ import { Glyph } from '../../components/ui/Icon';
 
 
 
+
 const money = (value) => {
   const formatted =
     new Intl.NumberFormat(
@@ -577,7 +578,7 @@ export default function SubscriptionAdmin() {
       );
 
       toast(
-        'عملیات با موفقیت انجام شد ✅',
+        'عملیات با موفقیت انجام شد',
         'success'
       );
 
@@ -750,10 +751,10 @@ export default function SubscriptionAdmin() {
           } else {
             setBroadcastResult({ code, state: 'done', summary: st, bid });
             if (st.status === 'cancelled') {
-              toast('انتشار متوقف شد ⛔', 'info');
+              toast('انتشار متوقف شد', 'info');
             } else {
               hapticNotif('success');
-              toast('انتشار کامل شد ✅', 'success');
+              toast('انتشار کامل شد', 'success');
             }
             refresh();
           }
@@ -781,7 +782,7 @@ export default function SubscriptionAdmin() {
       await api.post(
         `/api/subscription-admin/discounts/${encodeURIComponent(code)}/broadcast/${bid}/cancel`
       );
-      toast('درخواست توقف ثبت شد ⛔', 'info');
+      toast('درخواست توقف ثبت شد', 'info');
     } catch (e) {
       toast(
         e?.response?.data?.detail || 'توقف انتشار ممکن نشد',
@@ -892,7 +893,7 @@ export default function SubscriptionAdmin() {
                   25,
               }}
             >
-              💳
+       <Glyph value="💳" />
             </span>
 
             <div>
@@ -1021,7 +1022,7 @@ export default function SubscriptionAdmin() {
                     }}
                   >
                     <div>
-                      {icon}
+                      <Glyph value={icon} />
                     </div>
 
                     <b
@@ -1072,7 +1073,7 @@ export default function SubscriptionAdmin() {
               }}
             >
               <div className="sec-title">
-                <Glyph value="💳" /> اطلاعات کارت
+                <Glyph value="💳" />اطلاعات کارت
               </div>
 
               <input
@@ -1150,7 +1151,7 @@ export default function SubscriptionAdmin() {
               }}
             >
               <div className="sec-title">
-                <Glyph value="🎁" /> اعطای دستی
+                <Glyph value="🎁" />اعطای دستی
               </div>
 
               <UserSearchSelect
@@ -1372,7 +1373,7 @@ export default function SubscriptionAdmin() {
                           22,
                       }}
                     >
-                      💠
+           <Glyph value="💠" />
                     </span>
 
                     <div
@@ -1471,7 +1472,7 @@ export default function SubscriptionAdmin() {
                         }
                       }}
                     >
-                      🗑
+           <Glyph value="🗑" />
                     </button>
                   </div>
                 </article>
@@ -1593,7 +1594,7 @@ export default function SubscriptionAdmin() {
                               22,
                           }}
                         >
-                          🧾
+             <Glyph value="🧾" />
                         </span>
 
                         <div
@@ -1673,7 +1674,7 @@ export default function SubscriptionAdmin() {
                           })
                         }
                       >
-                        <Glyph value="📨" /> ارسال رسید به تلگرام من
+                        <Glyph value="📨" />ارسال رسید به تلگرام من
                       </button>
 
                       {item.status ===
@@ -1743,7 +1744,7 @@ export default function SubscriptionAdmin() {
                                 })
                               }
                             >
-                              <Glyph value="✅" /> تأیید
+                              <Glyph value="✅" />تأیید
                             </button>
 
                             <button
@@ -1779,7 +1780,7 @@ export default function SubscriptionAdmin() {
                                 })
                               }
                             >
-                              <Glyph value="❌" /> رد
+                              <Glyph value="❌" />رد
                             </button>
                           </div>
                         </>
@@ -1960,7 +1961,7 @@ export default function SubscriptionAdmin() {
 
                             {item.plan_name}
 
-                            {' • تا '}
+                            {' • تا'}
 
                             {item.end_date ||
                               '—'}
@@ -2216,7 +2217,7 @@ export default function SubscriptionAdmin() {
                 />
               </div>
 
-              {/* 🎟 موج D1 — هدف پلن + سقف هر کاربر */}
+              {/* موج D1 — هدف پلن + سقف هر کاربر */}
               <div
                 style={{
                   display: 'grid',
@@ -2229,7 +2230,7 @@ export default function SubscriptionAdmin() {
                     color: 'var(--txm)',
                   }}
                 >
-                  <Glyph value="📦" /> پلن‌های قابل استفاده
+                  <Glyph value="📦" />پلن‌های قابل استفاده
                   (خالی = همه پلن‌های فعال)
                 </span>
 
@@ -2342,7 +2343,7 @@ export default function SubscriptionAdmin() {
                             22,
                         }}
                       >
-                        🎟
+            <Glyph value="🎟" />
                       </span>
 
                       <div
@@ -2377,7 +2378,7 @@ export default function SubscriptionAdmin() {
                               )
                             : 'نامحدود'}
 
-                          {' • تا '}
+                          {' • تا'}
 
                           {item.expires_at ||
                             'بدون انقضا'}
@@ -2397,7 +2398,7 @@ export default function SubscriptionAdmin() {
                       </span>
                     </div>
 
-                    {/* 🎟 موج D1 — نمایش پلن‌های هدف */}
+                    {/* موج D1 — نمایش پلن‌های هدف */}
                     {item.target_plan_ids?.length ? (
                       <div
                         style={{
@@ -2406,7 +2407,7 @@ export default function SubscriptionAdmin() {
                           fontSize: 'var(--fs-cap)',
                         }}
                       >
-                        <Glyph value="📦" /> فقط {_fa(item.target_plan_ids.length)} پلن خاص
+                        <Glyph value="📦" />فقط {_fa(item.target_plan_ids.length)} پلن خاص
                       </div>
                     ) : (
                       <div
@@ -2416,7 +2417,7 @@ export default function SubscriptionAdmin() {
                           fontSize: 'var(--fs-cap)',
                         }}
                       >
-                        <Glyph value="📦" /> همه پلن‌های فعال
+                        <Glyph value="📦" />همه پلن‌های فعال
                       </div>
                     )}
 
@@ -2471,11 +2472,11 @@ export default function SubscriptionAdmin() {
                           }
                         }}
                       >
-                        🗑
+            <Glyph value="🗑" />
                       </button>
                     </div>
 
-                    {/* 🎟 موج D1 — اکشن‌های کمپین */}
+                    {/* موج D1 — اکشن‌های کمپین */}
                     <div
                       style={{
                         display:
@@ -2493,7 +2494,7 @@ export default function SubscriptionAdmin() {
                         disabled={campaignLoading === item.code}
                         onClick={() => handleDiscountPreview(item.code)}
                       >
-                        <Glyph value="👁" /> پیش‌نمایش
+                        <Glyph value="👁" />پیش‌نمایش
                       </button>
 
                       <button
@@ -2504,7 +2505,7 @@ export default function SubscriptionAdmin() {
                           handleDiscountStats(item.code)
                         }
                       >
-                        <Glyph value="📊" /> آمار
+                        <Glyph value="📊" />آمار
                       </button>
 
                       <button
@@ -2515,7 +2516,7 @@ export default function SubscriptionAdmin() {
                           handleBroadcastStart(item.code)
                         }
                       >
-                        <Glyph value="📣" /> انتشار
+                        <Glyph value="📣" />انتشار
                       </button>
                     </div>
 
@@ -2546,26 +2547,26 @@ export default function SubscriptionAdmin() {
                           fontSize: 'var(--fs-sm)',
                         }}
                       >
-                        <b><Glyph value="📊" /> آمار {item.code}</b>
+                        <b><Glyph value="📊" />آمار {item.code}</b>
                         <span>
-                          <Glyph value="🎟" /> مصرف: {faNum(discountStats.used_count)}
+                          <Glyph value="🎟" />مصرف: {faNum(discountStats.used_count)}
                           {discountStats.max_uses
                             ? ` از ${faNum(discountStats.max_uses)} — باقی ${faNum(discountStats.remaining_uses ?? 0)}`
                             : ' (نامحدود)'}
                         </span>
                         <span>
-                          <Glyph value="💳" /> تأییدشده: {faNum(discountStats.payments?.usage_approved ?? 0)}
+                          <Glyph value="💳" />تأییدشده: {faNum(discountStats.payments?.usage_approved ?? 0)}
                         </span>
                         <span>
-                          <Glyph value="💰" /> تخفیف‌داده‌شده: {fmtToman(discountStats.payments?.discount_given ?? 0)}
+                          <Glyph value="💰" />تخفیف‌داده‌شده: {fmtToman(discountStats.payments?.discount_given ?? 0)}
                         </span>
                         <span>
-                          <Glyph value="📥" /> درآمد: {fmtToman(discountStats.payments?.revenue ?? 0)}
+                          <Glyph value="📥" />درآمد: {fmtToman(discountStats.payments?.revenue ?? 0)}
                         </span>
                         {discountStats.remaining_uses != null &&
                           discountStats.remaining_uses <= 5 && (
                             <span style={{ color: 'var(--t-warn)' }}>
-                              <Glyph value="⚡" /> فقط {faNum(discountStats.remaining_uses)} استفاده باقی!
+                              <Glyph value="⚡" />فقط {faNum(discountStats.remaining_uses)} استفاده باقی!
                             </span>
                           )}
                       </div>
@@ -2582,7 +2583,7 @@ export default function SubscriptionAdmin() {
                       >
                         {broadcastResult.state === 'picking' ? (
                           <>
-                            <b><Glyph value="📣" /> انتشار {item.code}</b>
+                            <b><Glyph value="📣" />انتشار {item.code}</b>
                             <div
                               style={{
                                 marginTop: 6,
@@ -2607,10 +2608,10 @@ export default function SubscriptionAdmin() {
                                     onChange={() => setBroadcastTarget(t)}
                                   />
                                   {t === 'all'
-                                    ? '📨 همه کاربران تأییدشده'
+                                    ? 'همه کاربران تأییدشده'
                                     : t === 'subscribers'
-                                      ? '💎 فقط دارای اشتراک فعال'
-                                      : '🆓 فقط بدون اشتراک فعال'}
+                                      ? 'فقط دارای اشتراک فعال'
+                                      : 'فقط بدون اشتراک فعال'}
                                 </label>
                               ))}
                               <div style={{ display: 'flex', gap: 7 }}>
@@ -2641,7 +2642,7 @@ export default function SubscriptionAdmin() {
                                 {faNum(broadcastResult.status.sent || 0)}/
                                 {faNum(broadcastResult.status.total || 0)}
                                 {broadcastResult.status.blocked
-                                  ? ` — 🚫 ${faNum(broadcastResult.status.blocked)}`
+                 ? ` — <Glyph value="🚫" /> ${faNum(broadcastResult.status.blocked)}`
                                   : ''}
                               </span>
                             )}
@@ -2656,7 +2657,7 @@ export default function SubscriptionAdmin() {
                                   )
                                 }
                               >
-                                <Glyph value="⛔" /> توقف انتشار
+                                <Glyph value="⛔" />توقف انتشار
                               </button>
                             )}
                           </div>
@@ -2664,19 +2665,19 @@ export default function SubscriptionAdmin() {
                           <div style={{ display: 'grid', gap: 4 }}>
                             <b>
                               {broadcastResult.summary?.status === 'cancelled'
-                                ? '⛔ انتشار متوقف شد'
-                                : '✅ گزارش انتشار'}
+                                ? 'انتشار متوقف شد'
+                                : 'گزارش انتشار'}
                             </b>
                             {broadcastResult.summary && (
                               <>
                                 <span>
-                                  👥 {_fa(broadcastResult.summary.total)} نفر — ✅{' '}
-                                  {faNum(broadcastResult.summary.sent)} | ❌{' '}
-                                  {faNum(broadcastResult.summary.failed)} | 🚫{' '}
+                                   {_fa(broadcastResult.summary.total)} نفر — {' '}
+                 {faNum(broadcastResult.summary.sent)} | <Glyph value="❌" />{' '}
+                 {faNum(broadcastResult.summary.failed)} | <Glyph value="🚫" />{' '}
                                   {faNum(broadcastResult.summary.blocked)}
                                 </span>
                                 <span>
-                                  <Glyph value="📨" /> نرخ موفقیت:{' '}
+                                  <Glyph value="📨" />نرخ موفقیت:{' '}
                                   {faNum(
                                     broadcastResult.summary.total
                                       ? Math.round(
@@ -2718,7 +2719,7 @@ function faNum(n) {
 }
 function fmtToman(n) {
   const v = Number(n) || 0;
-  return v.toLocaleString('en-US').replace(/,/g, '٬') + ' تومان';
+  return v.toLocaleString('en-US').replace(/,/g, '٬') + 'تومان';
 }
 function _fa(n) {
   return faNum(n);
