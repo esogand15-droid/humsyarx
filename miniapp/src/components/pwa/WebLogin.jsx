@@ -144,10 +144,13 @@ export default function WebLogin({ onDone }) {
               spellCheck={false}
               dir="ltr"
               disabled={busy}
+              /* 🔎 راهنمای Skill: خطا باید به فیلد وصل باشد، نه فقط رنگی */
+              aria-invalid={error ? 'true' : undefined}
+              aria-describedby={error ? 'pwa-auth-error' : undefined}
             />
 
             {error && (
-              <div className="pwa-auth__error" role="alert">
+              <div className="pwa-auth__error" id="pwa-auth-error" role="alert">
                 <Icon name="info" size={14} />
                 {error}
               </div>
@@ -186,10 +189,12 @@ export default function WebLogin({ onDone }) {
               maxLength={8}
               dir="ltr"
               disabled={busy}
+              aria-invalid={error ? 'true' : undefined}
+              aria-describedby={error ? 'pwa-auth-error' : undefined}
             />
 
             {error && (
-              <div className="pwa-auth__error" role="alert">
+              <div className="pwa-auth__error" id="pwa-auth-error" role="alert">
                 <Icon name="info" size={14} />
                 {error}
               </div>

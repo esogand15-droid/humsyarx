@@ -10,6 +10,32 @@ import path from 'node:path';
    سرویس‌ورکرِ مخصوص PWA باید از جای دیگری روی خروجی کپی شوند؛
    وگرنه مسیرها می‌شوند /pwa/pwa/... (تجربه‌شده و اصلاح شد).
    ───────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────
+   🏠 بیلد لندینگ (صفحهٔ ریشهٔ دامنه)
+
+   لندینگ نه manifest دارد نه سرویس‌ورکر (وگرنه مرورگر برای همان
+   صفحهٔ معرفی هم «نصب» پیشنهاد می‌داد). پس `public/` کامل کپی
+   نمی‌شود؛ فقط فونت و آیکون که واقعاً استفاده می‌شوند.
+   ───────────────────────────────────────────────────────────── */
+function landingAssets() {
+  return {
+    name: 'humsyar-landing-assets',
+    apply: 'build',
+    closeBundle() {
+      const root = process.cwd();
+      const to = path.resolve(root, process.env.VITE_OUT_DIR || 'dist-landing');
+      if (!fs.existsSync(to)) return;
+      for (const dir of ['fonts', 'icons']) {
+        const from = path.join(root, 'public', dir);
+        if (fs.existsSync(from)) fs.cpSync(from, path.join(to, dir), { recursive: true, force: true });
+      }
+      // ورودی بیلد `landing.html` است ولی روی دامنه باید `/` باشد
+      const built = path.join(to, 'landing.html');
+      if (fs.existsSync(built)) fs.renameSync(built, path.join(to, 'index.html'));
+    },
+  };
+}
+
 function pwaShell() {
   return {
     name: 'humsyar-pwa-shell',
@@ -44,13 +70,20 @@ function pwaShell() {
    ───────────────────────────────────────────────────────────── */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
+  const isLanding = env.VITE_APP_MODE === 'landing';
   const rawBase = (env.VITE_BASE || '/app/').trim();
   // Vite به base با اسلش پایانی نیاز دارد؛ /app → /app/
   const base = rawBase === '/' ? '/' : rawBase.replace(/\/+$/, '') + '/';
 
   return {
     base,
-    plugins: [react(), ...(env.VITE_APP_MODE === 'pwa' ? [pwaShell()] : [])],
+    plugins: [
+      react(),
+      ...(env.VITE_APP_MODE === 'pwa' ? [pwaShell()] : []),
+      ...(isLanding ? [landingAssets()] : []),
+    ],
+    // لندینگ نباید manifest/sw مینی‌اپ را روی ریشه ببیند
+    publicDir: isLanding ? false : 'public',
     server: {
       host: true,
       port: 5173,
@@ -68,6 +101,12 @@ export default defineConfig(({ mode }) => {
       outDir: (env.VITE_OUT_DIR || 'dist'),
       emptyOutDir: true,
       sourcemap: false,
+      // پوشهٔ دارایی لندینگ نام اختصاصی دارد تا با /assets/ هیچ اپ دیگری
+      // روی ریشهٔ دامنه اشتباه گرفته نشود.
+      assetsDir: isLanding ? 'landing-assets' : 'assets',
+      rollupOptions: isLanding
+        ? { input: path.resolve(process.cwd(), 'landing.html') }
+        : {},
     },
   };
 });

@@ -276,6 +276,15 @@ class PwaBuildContractTests(unittest.TestCase):
         self.assertIn("IS_PWA", app)
         self.assertIn("web_login_required", app)
 
+    def test_login_errors_are_wired_to_fields(self):
+        """راهنمای Skill: خطا باید role=alert داشته باشد و به فیلد وصل شود."""
+        src = read("miniapp", "src", "components", "pwa", "WebLogin.jsx")
+        self.assertIn('id="pwa-auth-error"', src)
+        self.assertIn('role="alert"', src)
+        self.assertEqual(src.count("aria-invalid"), 2, "هر دو فیلد باید aria-invalid بگیرند")
+        self.assertEqual(src.count("aria-describedby"), 2)
+        self.assertIn('aria-describedby={error ? \'pwa-auth-error\' : undefined}', src)
+
     def test_pwa_mode_ignores_telegram(self):
         """در PWA حتی اگر اسکریپت تلگرام لود شود، مسیر «نشست وب» تصمیم می‌گیرد."""
         store = read("miniapp", "src", "stores", "authStore.js")

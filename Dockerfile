@@ -49,6 +49,8 @@ COPY miniapp/ ./miniapp/
 RUN npm --prefix ./miniapp run build
 # 📲 نسخهٔ نصب‌شدنی (PWA) — همان کد با base=/pwa/ و پوستهٔ نصب مستقل
 RUN npm --prefix ./miniapp run build:pwa
+# 🏠 لندینگ — صفحهٔ ریشهٔ دامنه (base=/، خروجی dist-landing)
+RUN npm --prefix ./miniapp run build:landing
 
 # ── Web Admin ── (base آن از قبل در webadmin/vite.config.js روی /admin/ است)
 COPY webadmin/package.json webadmin/package-lock.json ./webadmin/
@@ -101,6 +103,7 @@ COPY . .
 # ── خروجی build فرانت‌اندها (dist داخل git نبود؛ از stage 1 می‌آید) ──
 COPY --from=frontend /build/miniapp/dist  ./miniapp/dist
 COPY --from=frontend /build/miniapp/dist-pwa ./miniapp/dist-pwa
+COPY --from=frontend /build/miniapp/dist-landing ./miniapp/dist-landing
 COPY --from=frontend /build/webadmin/dist ./webadmin/dist
 
 # ── کاربر غیرroot (همه‌ی کارهای root همین‌جا، قبل از USER) ──
@@ -145,6 +148,8 @@ RUN set -eu; \
                                           || { echo "Dockerfile selfcheck: miniapp/dist-pwa نساخته شد"; exit 1; }; \
     test -f /srv/humsyar/miniapp/dist-pwa/manifest.webmanifest \
                                           || { echo "Dockerfile selfcheck: manifest نسخهٔ PWA کپی نشد"; exit 1; }; \
+    test -f /srv/humsyar/miniapp/dist-landing/index.html \
+                                          || { echo "Dockerfile selfcheck: miniapp/dist-landing ساخته نشد"; exit 1; }; \
     command -v supervisord >/dev/null      || { echo "Dockerfile selfcheck: supervisord در PATH نیست"; exit 1; }; \
     id humsyar >/dev/null                  || { echo "Dockerfile selfcheck: کاربر humsyar ساخته نشده"; exit 1; }; \
     /entrypoint.sh /bin/true >/dev/null     # entrypoint را واقعاً اجرا می‌کند (shebang/CRLF/set -e)

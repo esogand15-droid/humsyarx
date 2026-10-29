@@ -562,6 +562,7 @@ async def health():
         "uptime_s": round(time.monotonic() - _APP_STARTED_MONO, 1),
         "miniapp": _MINIAPP_DIST_STATE["built"],
         "pwa": _PWA_DIST_STATE["built"],
+        "landing": _LANDING_DIST_STATE["built"],
     }
 
 
@@ -739,6 +740,12 @@ _MA_DIST = os.path.join(_ROOT, "miniapp", "dist")
 #: manifest/سرویس‌ورکر مستقل. جدا ساخته می‌شود تا کوکی/دامنه/آیکون
 #: نسخهٔ نصب‌شدنی هیچ ربطی به نسخهٔ داخل تلگرام نداشته باشد.
 _PWA_DIST = os.path.join(_ROOT, "miniapp", "dist-pwa")
+#: 🏠 لندینگ (صفحهٔ ریشهٔ دامنه) — بیلد جدا با base=/
+_LANDING_DIST = os.path.join(_ROOT, "miniapp", "dist-landing")
+#: فونت و آیکون مشترک هر سه بیلد. globals.css فونت‌ها را با مسیر مطلق
+#: `/fonts/...` صدا می‌زند، پس اگر این‌ها روی ریشه mount نشوند، در
+#: production همه ۴۰۴ می‌شوند و مرورگر بی‌صدا به فونت سیستم برمی‌گردد.
+_PUBLIC_DIR = os.path.join(_ROOT, "miniapp", "public")
 
 #: درخواست‌هایی که پسوند فایل دارند، SPA fallback نمی‌گیرند.
 #: چرا؟ اگر deploy نیمه‌کاره بماند، درخواست /app/assets/index-<hash>.js
@@ -800,6 +807,27 @@ _PWA_DIST_STATE: dict = {"built": False, "path": "miniapp/dist-pwa"}
 _PWA_MOUNTED = _mount_spa("/pwa", _PWA_DIST, "pwa-spa", _PWA_DIST_STATE)
 
 
+# ── فونت/آیکون روی ریشه (مشترک سه بیلد) ─────────────────────────
+# عمداً StaticFiles خام (بدون SPA-fallback): مسیر ناموجود باید ۴۰۴
+# بدهد، نه index.html.
+def _mount_static(prefix: str, directory: str, name: str) -> bool:
+    if not os.path.isdir(directory):
+        return False
+    app.mount(prefix, StaticFiles(directory=directory, html=False), name=name)
+    return True
+
+
+_FONTS_MOUNTED = _mount_static("/fonts", os.path.join(_PUBLIC_DIR, "fonts"), "shared-fonts")
+_ICONS_MOUNTED = _mount_static("/icons", os.path.join(_PUBLIC_DIR, "icons"), "shared-icons")
+
+# ── دارایی‌های لندینگ (نام اختصاصی، نه /assets/) ────────────────
+_LANDING_ASSETS_MOUNTED = _mount_static(
+    "/landing-assets", os.path.join(_LANDING_DIST, "landing-assets"), "landing-assets")
+_LANDING_DIST_STATE: dict = {"built": False, "path": "miniapp/dist-landing"}
+_LANDING_INDEX = os.path.join(_LANDING_DIST, "index.html")
+_LANDING_DIST_STATE["built"] = os.path.isfile(_LANDING_INDEX)
+
+
 if not _WA_MOUNTED:
     # رفتار قبلی حفظ شد (پاسخ تشخیصی به‌جای 404 بی‌نام‌ونشان)، فقط
     # با status دقیق‌تر و راهنمای build.
@@ -848,13 +876,18 @@ if not _MINIAPP_DIST_STATE["built"]:
 
 
 # ──────────────────────────────────────────────────────────
-#  ریشه‌ی دامنه → مینی‌اپ
-#  (روی دامنه‌ی Railway، کاربر/لینک قدیمی ممکن است / را بزند؛
-#   302 به /app/ او را به مقصد می‌رساند. /admin و /api دست‌نخورده‌اند.)
+#  ریشه‌ی دامنه → لندینگ
+#  (قبلاً ۳۰۷ به /app/ بود؛ یعنی بازدیدکنندهٔ بیرون تلگرام مستقیم
+#   داخل مینی‌اپ می‌افتاد و صفحهٔ «از تلگرام باز کن» می‌دید. حالا
+#   یک صفحهٔ معرفی واقعی سرو می‌شود و مسیر اپ از همان‌جا انتخاب می‌شود.
+#   اگر بیلد لندینگ نباشد، همان رفتار قبلی (۳۰۷ به /app/) برمی‌گردد —
+#   یعنی هیچ deployی با نبودِ بیلد نمی‌شکند.)
 # ──────────────────────────────────────────────────────────
 @app.get("/", include_in_schema=False)
 async def _root():
-    from fastapi.responses import RedirectResponse
+    from fastapi.responses import FileResponse, RedirectResponse
+    if os.path.isfile(_LANDING_INDEX):
+        return FileResponse(_LANDING_INDEX, media_type="text/html")
     return RedirectResponse(url="/app/", status_code=307)
 
 
@@ -871,8 +904,13 @@ async def _spa_cache_headers(request, call_next):
         path = _raw_path(request)   # 🛡 AUDIT-R4 — مسیر خام (ضدِ Host-header confusion)
     except Exception:
         path = ""
-    if path.startswith("/app/assets/") or path.startswith("/admin/assets/"):
+    if (path.startswith("/app/assets/") or path.startswith("/admin/assets/")
+            or path.startswith("/landing-assets/")):
         resp.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    elif path == "/" or path == "/index.html":
+        # لندینگ: همیشه تازه چک شود تا لینک‌های تازه سریع دیده شوند
+        if resp.headers.get("Cache-Control") is None and resp.status_code == 200:
+            resp.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
     elif path == "/app" or path.startswith("/app/") or path == "/admin" or path.startswith("/admin/"):
         if resp.headers.get("Cache-Control") is None and resp.status_code == 200:
             resp.headers["Cache-Control"] = "public, max-age=0, must-revalidate"

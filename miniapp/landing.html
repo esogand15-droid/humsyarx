@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#060B16" />
+
+    <title>هامزیار — دستیار دانشجوی پزشکی</title>
+    <meta
+      name="description"
+      content="هامزیار: برنامهٔ هفتگی، بانک سؤال و آزمون، جزوه و منابع، دستیار هوشمند و پشتیبانی — برای دانشجویان پزشکی. با همان حساب تلگرام وارد شوید؛ نه رمز لازم است نه نصب از استور."
+    />
+
+    <!-- کارت اشتراک‌گذاری (og) — بدون اسکریپت سوم‌شخص -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="هامزیار — دستیار دانشجوی پزشکی" />
+    <meta
+      property="og:description"
+      content="برنامهٔ هفتگی، بانک سؤال، جزوه و منابع، دستیار هوشمند. ورود با کد تلگرام، روی هر دستگاهی."
+    />
+    <meta property="og:locale" content="fa_IR" />
+    <meta property="og:image" content="/icons/icon-512.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+
+    <!--
+      ⚠️ عمداً no manifest و no service worker در این صفحه:
+      لندینگ «اپ» نیست؛ اگر manifest مینی‌اپ/پوستهٔ PWA را اینجا لود کنیم،
+      مرورگر برای همین صفحهٔ معرفی هم «نصب» پیشنهاد می‌دهد.
+      نصب‌پذیری فقط روی /pwa/ است.
+    -->
+  </head>
+  <body>
+    <div id="landing-root"></div>
+    <noscript>
+      <div style="padding: 24px; font-family: system-ui, sans-serif; line-height: 1.9" dir="rtl">
+        <h1>هامزیار — دستیار دانشجوی پزشکی</h1>
+        <p>
+          برنامهٔ هفتگی، بانک سؤال و آزمون، جزوه و منابع، دستیار هوشمند و پشتیبانی.
+          برای استفاده از اپلیکیشن، جاوااسکریپت را فعال کنید یا از نسخهٔ تلگرام استفاده کنید.
+        </p>
+        <p><a href="https://t.me/">باز کردن در تلگرام</a></p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/landing/main-landing.jsx"></script>
+  </body>
+</html>
