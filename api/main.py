@@ -46,6 +46,7 @@ from api.routers import (
     web_ink,
     web_library,
     web_reader,
+    me_bridge,
     web_student,
 )
 from database import db
@@ -508,6 +509,15 @@ app.include_router(
     tags=["web-reader"],
 )
 
+# 🌀 موج v3 — پل «داده‌های من» برای مینی‌اپ تلگرام
+# (همان کالکشن‌های reading_progress/web_ink_pages، ولی با احراز هویت
+#  X-Init-Data؛ برای سه بلوک پروتوتایپ: ادامهٔ مطالعه / یادداشت / هدف هفتگی)
+app.include_router(
+    me_bridge.router,
+    prefix="/api/me",
+    tags=["me"],
+)
+
 # 🖋 موج P4 — قلم و حاشیه‌نویسی (استروک نرمال‌شده، یک سند برای هر صفحه)
 app.include_router(
     web_ink.router,
@@ -619,7 +629,7 @@ async def health_deep():
 # حالا تست واقعاً وجود دارد و روی هر push اجرا می‌شود.
 # هر تغییر عمدیِ سطح API باید این عدد و EXPECTED_OPENAPI_OPERATIONS در
 # tests/test_route_inventory.py را هم‌زمان به‌روز کند.
-_ROUTE_BASELINE = 719
+_ROUTE_BASELINE = 723
 
 
 def _walk_included_routes(routes, prefix: str = "") -> list:
